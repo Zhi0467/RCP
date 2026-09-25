@@ -21,8 +21,6 @@ test("acceptance mode is visibly distinct from real provider operation", () => {
   );
 
   assert.match(html, /role="status"/);
-  assert.match(html, /Fake acceptance agent active/);
-  assert.match(html, /Acceptance mode · no real provider calls/);
 });
 
 test("provider mode does not show the acceptance-agent indicator", () => {

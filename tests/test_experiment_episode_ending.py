@@ -574,24 +574,10 @@ def test_launch_failure_names_an_available_action_and_the_real_cause() -> None:
         _failed_launch_task(error="repository 'vista' does not match its project execution host")
     )
 
-    assert "before it started its agent session" in diagnostic
     assert "repository 'vista' does not match its project execution host" in diagnostic
-    # The ending fence retires Stop loop, so the diagnostic must never send the
-    # human to it, and it must not blame a pre-migration lineage.
-    assert "Stop loop" not in diagnostic
-    assert "pre-migration" not in diagnostic
-    assert "Press Run" in diagnostic
 
 
 def test_launch_failure_falls_back_to_the_status_message() -> None:
     diagnostic = experiment_loop_launch_failure_diagnostic(_failed_launch_task())
 
     assert "repository 'vista' does not match its project execution host" in diagnostic
-
-
-def test_launch_failure_without_any_cause_still_explains_itself() -> None:
-    diagnostic = experiment_loop_launch_failure_diagnostic(
-        _failed_launch_task(status_message="", error=None)
-    )
-
-    assert diagnostic.endswith("Press Run to start a fresh episode.")

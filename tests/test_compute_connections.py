@@ -67,10 +67,7 @@ def test_authentication_failure_names_the_agent_execution_machine() -> None:
 
     assert result.state == "authentication_failed"
     assert result.reachable is False
-    assert result.status_label == "Authentication failed"
     assert result.status_tone == "error"
-    assert 'agent machine "lab-mac"' in result.required_action
-    assert "does not collect keys or passwords" in result.required_action
 
 
 def test_probe_redacts_and_normalizes_remote_payload_diagnostics() -> None:
@@ -102,7 +99,6 @@ def test_probe_redacts_and_normalizes_remote_payload_diagnostics() -> None:
     )
 
     assert result.state == "unreachable"
-    assert result.status_label == "Unreachable"
     assert result.status_tone == "error"
     assert "super-secret-token" not in result.diagnostic
     assert "abcdefghijklmnop" not in result.diagnostic

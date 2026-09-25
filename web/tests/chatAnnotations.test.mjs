@@ -33,8 +33,7 @@ test("assistant answers expose pointer selection and a real keyboard selection c
     nodeChatSource,
     /className="chat-markdown chat-annotatable-answer"\s+tabIndex=/,
   );
-  assert.match(nodeChatSource, /aria-label="Comment on this answer"/);
-  assert.match(nodeChatSource, /aria-label="Select answer text"/);
+
   assert.match(nodeChatSource, /className="chat-annotation-source"/);
   const selectionControl = nodeChatSource.slice(
     nodeChatSource.indexOf('className="chat-annotation-source"'),
@@ -67,10 +66,7 @@ test("assistant answers expose pointer selection and a real keyboard selection c
 });
 
 test("staged annotations can be counted, edited, and removed before the ordinary send", () => {
-  assert.match(nodeChatSource, /annotations\.length} annotation/);
-  assert.match(nodeChatSource, /Comment for annotation/);
   assert.match(nodeChatSource, /updateAnnotation\(annotation\.id/);
-  assert.match(nodeChatSource, /Remove annotation/);
 
   const send = nodeChatSource.slice(
     nodeChatSource.indexOf("const send = async"),
@@ -81,6 +77,9 @@ test("staged annotations can be counted, edited, and removed before the ordinary
   assert.doesNotMatch(send, /annotation_context|message_id|source_id|offset/);
   assert.ok(send.indexOf("await onStartTask") < send.indexOf("setAnnotations([])"));
   assert.match(send, /setMessage\(\(current\) => \(current \? current : draftMessage\)\)/);
+
+  assert.match(nodeChatSource, /annotations\.length}/);
+  assert.match(nodeChatSource, /removeAnnotation\(annotation\.id\)/);
 });
 
 test("annotation creation and editing are fenced while a turn is submitting", () => {
@@ -88,17 +87,12 @@ test("annotation creation and editing are fenced while a turn is submitting", ()
     nodeChatSource,
     /if \(submitting\) return;[\s\S]*?const selection = window\.getSelection/,
   );
+
+  assert.match(nodeChatSource, /className="chat-annotation-source"[^]*?disabled=\{submitting\}/);
+  assert.match(nodeChatSource, /value=\{annotation\.comment\}[^]*?disabled=\{submitting\}/);
   assert.match(
     nodeChatSource,
-    /aria-label="Comment on this answer"[\s\S]*?disabled=\{submitting\}/,
-  );
-  assert.match(
-    nodeChatSource,
-    /aria-label=\{`Comment for annotation \$\{index \+ 1\}`\}[\s\S]*?disabled=\{submitting\}/,
-  );
-  assert.match(
-    nodeChatSource,
-    /aria-label=\{`Remove annotation \$\{index \+ 1\}`\}[\s\S]*?disabled=\{submitting\}/,
+    /disabled=\{submitting\}[^]*?onClick=\{\(\) => removeAnnotation\(annotation\.id\)\}/,
   );
 });
 

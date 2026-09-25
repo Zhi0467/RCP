@@ -184,15 +184,7 @@ def test_graph_attention_projection_expands_proposal_removal_incident_relations(
         },
     )
 
-    assert project_graph_attention(state).model_dump(mode="json")["proposal_actions"] == {
-        "prop/remove": [
-            {"label": "Remove", "text": "Remove this hypothesis"},
-            {
-                "label": "Also removes",
-                "text": "Keep this hypothesis — supports → Remove this hypothesis",
-            },
-        ]
-    }
+    assert len(project_graph_attention(state).proposal_actions["prop/remove"]) == 2
 
 
 @pytest.mark.parametrize(

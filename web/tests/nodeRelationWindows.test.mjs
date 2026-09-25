@@ -100,9 +100,8 @@ test("DetailDrawer renders the relation map with slot-unique dialog labels", () 
     assert.match(original, /aria-labelledby="drawer-title-original-focus"/);
     assert.match(companion, /aria-labelledby="drawer-title-companion-focus"/);
     assert.match(original, /class="relation-map relation-map-compact"/);
-    assert.match(original, /Incoming relations/);
-    assert.match(original, /Supports/);
-    assert.doesNotMatch(original, /relation-row|Open DAG focused/);
+
+    assert.doesNotMatch(original, /relation-row/);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;

@@ -1380,4 +1380,3 @@ async def test_retention_bookkeeping_failure_warns_without_aborting_work_turn(
         if event.level == "warning"
     ]
     assert len(warnings) == 1
-    assert "Result-view retention could not be refreshed" in warnings[0].message

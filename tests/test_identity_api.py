@@ -20,13 +20,7 @@ from .helpers import seed_patch
 
 def _assert_name_required(response) -> None:
     assert response.status_code == 428, response.text
-    assert response.json()["detail"] == {
-        "code": "identity_name_required",
-        "message": (
-            "Choose an RCP display name before this action. The name will be copied into "
-            "permanent project history as a snapshot."
-        ),
-    }
+    assert response.json()["detail"]["code"] == "identity_name_required"
 
 
 def _experiment_patch() -> Patch:

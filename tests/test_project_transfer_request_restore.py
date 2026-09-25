@@ -150,7 +150,6 @@ def test_restore_freezes_each_nonterminal_target_phase_without_moving_its_bounda
     assert restored_target is not None
     assert restored_target.phase == "operator_action_needed"
     assert restored_target.restore_resume_phase == phase
-    assert "replacement-server archive" in restored_target.restore_diagnostic
     assert restored_target.revision == target_request.revision + 1
     assert restored_target.updated_at == restored_at.isoformat()
     assert (

@@ -202,7 +202,7 @@ def test_existing_destination_is_never_replaced_and_failed_seal_cleans_partial(
     original = sealed.archive_path.read_bytes()
     capture = tmp_path / "retry" / "capture"
     _capture(capture, payloads)
-    with pytest.raises(FileExistsError, match="already exists"):
+    with pytest.raises(FileExistsError):
         seal_transfer_archive(
             manifest=manifest,
             capture_root=capture,

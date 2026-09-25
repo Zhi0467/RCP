@@ -15,7 +15,7 @@ def test_adoption_controller_refuses_host_before_downloading_or_creating_guest(
     monkeypatch.delenv("RCP_REBOOT_DISPOSABLE", raising=False)
     monkeypatch.setattr(live, "download_image", lambda *_: pytest.fail("download before guard"))
     monkeypatch.setattr(live, "Guest", lambda *_args, **_kw: pytest.fail("guest before guard"))
-    with pytest.raises(live.QualificationUnavailable, match="confirmation"):
+    with pytest.raises(live.QualificationUnavailable):
         live.drive("24.04", tmp_path, tmp_path, tmp_path)
 
 

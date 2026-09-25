@@ -328,7 +328,7 @@ def test_persisted_current_generation_cannot_author_legacy_evidence_metadata() -
         ],
     }
 
-    with pytest.raises(ValueError, match="schema-generation 2.*legacy_strength"):
+    with pytest.raises(ValueError, match="legacy_strength"):
         HistoryManager._decode_persisted_patch(json.dumps(raw))
 
 

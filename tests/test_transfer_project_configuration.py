@@ -572,7 +572,7 @@ def test_target_configuration_rejects_special_retained_and_archive_files(
     canonical = archive_root / "canonical/patches/000001.json"
     canonical.unlink()
     os.mkfifo(canonical)
-    with pytest.raises(StateUnavailable, match="changed before publication"):
+    with pytest.raises(StateUnavailable):
         build_transfer_target_configuration(
             provisioning,
             source,

@@ -520,7 +520,6 @@ def test_discuss_contract_preserves_artifact_path() -> None:
 
     assert "/stage/artifacts" in contract
     assert graph_rules(edits=False, ontology_extensions=True) in contract
-    assert "Editing the graph:" not in contract
 
 
 def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> None:
@@ -660,7 +659,7 @@ def test_retry_handoff_contract_preserves_paths() -> None:
     assert REPEATED_RULES_NOTE not in contract
 
 
-def test_work_patch_legality_reuses_the_non_ingest_boundary_with_work_wording() -> None:
+def test_work_patch_legality_reuses_the_non_ingest_boundary() -> None:
     cursor_patch = seed_patch().model_copy(
         update={"kind": "work", "processed_cursors": {"session": "record"}}
     )

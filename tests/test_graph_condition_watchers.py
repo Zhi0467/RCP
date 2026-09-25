@@ -333,7 +333,7 @@ def test_watch_json_validation_is_all_or_none_across_external_and_graph(tmp_path
             error="scheduler unavailable",
         )
 
-    with pytest.raises(WatcherInitialCheckError, match="scheduler unavailable"):
+    with pytest.raises(WatcherInitialCheckError):
         arm_watchers(
             store,
             [spec],

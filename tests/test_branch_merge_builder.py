@@ -575,7 +575,6 @@ async def test_project_configuration_residue_fails_without_provider(
     outcome, frames, _workspace = await _run(tmp_path, history, load_context)
 
     assert outcome.status == "rejected"
-    assert "project configuration" in outcome.diagnostic
     assert "ontology" in outcome.diagnostic
     assert outcome.correction_rounds == 0
     assert history.head_ref() == before

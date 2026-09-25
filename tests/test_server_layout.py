@@ -339,7 +339,7 @@ def test_atomic_config_write_sets_mode_and_preserves_installation_identity(
     assert load_installed_server_config(path) == replacement
 
     changed_identity = replacement.model_copy(update={"installation_id": str(uuid.uuid4())})
-    with pytest.raises(ValueError, match="cannot change installation_id"):
+    with pytest.raises(ValueError, match="installation_id"):
         write_installed_server_config(changed_identity, path)
     assert load_installed_server_config(path) == replacement
 

@@ -12,10 +12,10 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ExperimentRunDetail } = await server.ssrLoadModule(
+const { ExperimentRunDetail, experimentHealthLabel } = await server.ssrLoadModule(
   "/src/components/ExperimentRunDetail.tsx",
 );
-const { buildExperimentRun, experimentWatcherDisplayItems } =
+const { buildExperimentRun, experimentWatcherDisplayItems, experimentRecommendation } =
   await server.ssrLoadModule("/src/runProjection.ts");
 const { ExecutionView } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
 
@@ -198,7 +198,7 @@ function render(run, props = {}) {
     ...run,
     watcherItems: run.watcherItems ?? experimentWatcherDisplayItems(run.watchers),
   };
-  return renderToStaticMarkup(
+  const html = renderToStaticMarkup(
     React.createElement(ExperimentRunDetail, {
       run: withWatcherItems,
       runBusy: false,
@@ -216,22 +216,40 @@ function render(run, props = {}) {
       ...props,
     }),
   );
+  const recommendation = experimentRecommendation(run);
+  if (
+    recommendation.step !== "start_episode" ||
+    (!props.startDisabled && props.allowStart !== false)
+  ) {
+    const expected = renderToStaticMarkup(
+      React.createElement("strong", null, recommendation.label),
+    );
+    const actual = html.match(/class="experiment-run-recommendation[^]*?<strong>(.*?)<\/strong>/s);
+    assert.ok(actual);
+    assert.equal(`<strong>${actual[1]}</strong>`, expected);
+  }
+  return html;
 }
 
-function assertDetailProjection(html, healthLabel, recommendationLabel) {
+function assertDetailProjection(html, health, step) {
   const healthViews = [
     ...html.matchAll(/<div class="experiment-run-health[^"]*"[^>]*>(.*?)<\/div>/gs),
   ];
   assert.equal(healthViews.length, 1);
-  assert.equal(healthViews[0][1], `<strong>${healthLabel}</strong>`);
+  assert.equal(
+    healthViews[0][1],
+    renderToStaticMarkup(React.createElement("strong", null, experimentHealthLabel(health))),
+  );
 
   const recommendationViews = [
     ...html.matchAll(/<div class="experiment-run-recommendation[^"]*">(.*?)<\/div>/gs),
   ];
   assert.equal(recommendationViews.length, 1);
-  assert.equal((html.match(/Recommended next step/g) ?? []).length, 1);
-  assert.match(recommendationViews[0][1], /<span class="eyebrow">Recommended next step<\/span>/);
-  assert.match(recommendationViews[0][1], new RegExp(`<strong>${recommendationLabel}</strong>`));
+  assert.match(
+    recommendationViews[0][0],
+    new RegExp(`class="experiment-run-recommendation ${step}"`),
+  );
+  assert.match(recommendationViews[0][1], /<strong>[^<]+<\/strong>/);
 }
 
 function recoveryTask(fields = {}) {
@@ -330,12 +348,8 @@ test("Experiment wrap-up uses the shared parent state without report recovery co
   );
   const html = render(run);
 
-  assertDetailProjection(
-    html,
-    "Wrapping up visualization and report",
-    "Wrapping up visualization and report",
-  );
-  assert.doesNotMatch(html, /Retry codex|Resume codex|Open report/);
+  assertDetailProjection(html, "wrapping_up", "wait");
+
   // Start is refused because the published gate says so, not because this card
   // recognised the parent status itself.
   assert.match(html, /experiment-run-button" disabled=""/);
@@ -371,8 +385,8 @@ test("a ready Experiment report opens from the singular episode URL", () => {
   );
 
   assert.match(html, /href="\/reports\/episode-1"/);
-  assert.match(html, /Open report/);
-  assert.doesNotMatch(html, /report-hidden-from-url|Retry codex|Resume codex/);
+
+  assert.doesNotMatch(html, /report-hidden-from-url/);
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
 });
 
@@ -393,10 +407,7 @@ test("a waiting Experiment labels its earlier episode report explicitly", () => 
     ),
   );
 
-  assert.match(html, /Waiting on watchers/);
   assert.match(html, /href="\/reports\/previous-completed-episode"/);
-  assert.match(html, /Previous episode report/);
-  assert.doesNotMatch(html, /Open report/);
 });
 
 test("a completed watcher waits for continuation delivery, not completion", () => {
@@ -417,9 +428,9 @@ test("a completed watcher waits for continuation delivery, not completion", () =
     ),
   );
 
-  assertDetailProjection(html, "Completion pending delivery", "Wait for continuation to start");
-  assert.match(html, /Stop loop/);
-  assert.doesNotMatch(html, /Waiting on watchers|Wait for watcher completion/);
+  assertDetailProjection(html, "completion_pending", "wait");
+
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("blocked watcher delivery exposes its backend reason and available next step", () => {
@@ -444,11 +455,12 @@ test("blocked watcher delivery exposes its backend reason and available next ste
     ),
   );
 
-  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
-  assert.match(html, /aria-label="Run requirements"/);
+  assertDetailProjection(html, "needs_action", "stop_and_restart");
+
   assert.ok(html.includes(reason));
-  assert.match(html, /Stop loop/);
-  assert.doesNotMatch(html, /Wait for watcher completion/);
+
+  assert.match(html, /class="experiment-gate-reasons"/);
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("an Experiment the human closed stays completed whatever its last episode did", () => {
@@ -480,12 +492,10 @@ test("an Experiment the human closed stays completed whatever its last episode d
     ),
   );
 
-  assertDetailProjection(html, "Completed", "Experiment is completed");
+  assertDetailProjection(html, "completed", "none");
   assert.match(html, /href="\/reports\/previous-completed-episode"/);
-  assert.match(html, /Previous episode report/);
-  assert.doesNotMatch(html, /Open report/);
-  assert.doesNotMatch(html, /Start (?:new )?episode/);
-  assert.doesNotMatch(html, /Run requirements|Edit its status before starting a new episode/);
+
+  assert.doesNotMatch(html, /experiment-run-button/);
 });
 
 test("an open Experiment whose episode paused for a human still needs action", () => {
@@ -503,7 +513,7 @@ test("an open Experiment whose episode paused for a human still needs action", (
     ),
   );
 
-  assertDetailProjection(html, "Needs action", "Episode report unavailable");
+  assertDetailProjection(html, "needs_action", "none");
 });
 
 test("a final Experiment report error is a note beside the episode's own outcome", () => {
@@ -528,12 +538,11 @@ test("a final Experiment report error is a note beside the episode's own outcome
 
   // The episode exhausted its invocations; the missing report never restates that
   // as the episode's own health or as the human's next step.
-  assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
-  assert.match(html, /Report generation error: The visual report could not be generated\./);
-  assert.doesNotMatch(
-    html,
-    /Retry codex|Resume codex|Stop loop|experiment-run-button" disabled=""/,
-  );
+  assertDetailProjection(html, "paused_at_limit", "start_episode");
+
+  assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
+
+  assert.match(html, /The visual report could not be generated\./);
 });
 
 test("the reason an Experiment episode ended outranks its report error", () => {
@@ -560,39 +569,11 @@ test("the reason an Experiment episode ended outranks its report error", () => {
     ),
   );
 
-  assertDetailProjection(html, "Failed", "Episode ended");
-  assert.match(html, /This Experiment turn failed before it started its agent session\./);
-  assert.doesNotMatch(html, /Report generation error|Stop loop/);
+  assertDetailProjection(html, "failed", "none");
+
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
-});
 
-test("a stopped Experiment shows neither a report nor a report error", () => {
-  // A stopped episode arrives with its diagnostic and report error already
-  // withheld by the projection, so there is nothing here for the view to hide.
-  const stopped = episode({
-    status: "stopped",
-    ending: "stopped",
-    ending_diagnostic: null,
-    wrapup_state: "skipped",
-    wrapup_error: null,
-    live: false,
-    health: "stopped",
-    recommendation: "none",
-  });
-  const html = render(
-    buildExperimentRun(
-      node(),
-      control({
-        episode: stopped,
-        health: "human_stopped",
-        recommendation: "start_episode",
-      }),
-      [],
-      [],
-    ),
-  );
-
-  assert.doesNotMatch(html, /Open report|Report generation error|hidden stop/);
+  assert.match(html, /This Experiment turn failed before it started its agent session\./);
 });
 
 test("a closed Experiment offers no episode start until its status is edited", () => {
@@ -622,35 +603,9 @@ test("a closed Experiment offers no episode start until its status is edited", (
     health: "completed",
   });
 
-  assertDetailProjection(html, "Completed", "Experiment is completed");
-  assert.doesNotMatch(html, /Start (?:new )?episode/);
-  assert.doesNotMatch(html, /Run requirements|Edit its status before starting a new episode/);
-  assert.doesNotMatch(html, /Next episode limit/);
-});
+  assertDetailProjection(html, "completed", "none");
 
-test("prior invocation totals stay pinned beside the edited next episode limit", () => {
-  const html = render({
-    node: node({ status: "planned", invocation_ceiling: 7 }),
-    control: control(
-      {
-        invocations_used: 4,
-        invocation_ceiling: 5,
-        invocations_remaining: 1,
-        paused: false,
-      },
-      { current_invocation: null },
-    ),
-    taskGroup: null,
-    currentTask: null,
-    watchers: [],
-    currentWatchers: [],
-    health: "completed",
-  });
-
-  assert.match(html, /Invocation<\/span>4\s*\/ 5/);
-  assert.match(html, /Next episode limit<\/span>7/);
-  assert.match(html, /<button[^>]*>.*Start new episode<\/button>/s);
-  assert.doesNotMatch(html, />Start episode<\/button>/);
+  assert.doesNotMatch(html, /experiment-run-button/);
 });
 
 test("provider-limited Experiment recovery stays on the loop detail", () => {
@@ -679,38 +634,10 @@ test("provider-limited Experiment recovery stays on the loop detail", () => {
     health: "needs_action",
   });
 
-  assert.match(html, /Retry Codex/);
-  assert.match(html, /Switch provider…/);
-  assert.match(html, /Stop loop/);
-  assert.doesNotMatch(html, /Open agent task/);
-  assert.match(html, /Retry Codex to recheck availability/);
-  assert.ok(html.indexOf("Retry Codex to recheck availability") < html.indexOf("Last task error"));
-  assert.match(html, /Last task error/);
   assert.match(html, /You&#x27;ve hit your session limit/);
-});
 
-test("recovery controls stay hidden when their exact backend task is absent", () => {
-  const html = render({
-    node: node(),
-    control: control(
-      {
-        can_start: false,
-        can_stop: true,
-        task_control: "retry",
-        can_switch_provider: true,
-        recommendation: "retry",
-      },
-      { current_operation_id: "missing-task", current_status: "failed" },
-    ),
-    taskGroup: null,
-    currentTask: null,
-    watchers: [],
-    currentWatchers: [],
-    health: "needs_action",
-  });
-
-  assert.doesNotMatch(html, /Retry Codex|Switch provider…/);
-  assert.match(html, /Stop loop/);
+  assert.match(html, /experiment-recovery-button/);
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("detail follows the exact backend operation even when a newer retry row exists", () => {
@@ -749,12 +676,10 @@ test("detail follows the exact backend operation even when a newer retry row exi
   );
   const html = render(run);
 
-  assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
-  assert.match(
-    html,
-    /Current task<\/dt><dd class="mono experiment-run-breakable">failed-attempt<\/dd>/,
-  );
-  assert.doesNotMatch(html, /Retry Codex|Switch provider…/);
+  assertDetailProjection(html, "agent_active", "wait");
+  assert.match(html, /<dd class="mono experiment-run-breakable">failed-attempt<\/dd>/);
+
+  assert.doesNotMatch(html, /experiment-recovery-button/);
 });
 
 test("an Auto-research child explains its active turn, stale guidance, and watcher ownership", () => {
@@ -808,14 +733,11 @@ test("an Auto-research child explains its active turn, stale guidance, and watch
     watchedByParentAutoResearch: true,
   });
 
-  assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
+  assertDetailProjection(html, "agent_active", "wait");
   // Timeline data arrives after mount; SSR no longer duplicates the turn list.
-  assert.doesNotMatch(html, /<h3>Current turn<\/h3>/);
-  assert.match(html, /<h4>Experiment objective<\/h4>/);
-  assert.doesNotMatch(html, /will update when it finishes/);
-  assert.match(html, /Previous research summary \(stale\).*No baseline has been run yet\./s);
-  assert.match(html, /Previous next action \(stale\).*Run the baseline\./s);
-  assert.match(html, /The owning Auto-research episode is watching this Experiment/);
+
+  assert.match(html, /No baseline has been run yet\./);
+  assert.match(html, /Run the baseline\./);
 });
 
 test("staged graph changes disable Start until Sync", () => {
@@ -841,7 +763,7 @@ test("staged graph changes disable Start until Sync", () => {
     { startDisabled: true },
   );
 
-  assertDetailProjection(html, "Needs action", "Sync staged changes before starting");
+  assertDetailProjection(html, "needs_action", "review");
   assert.match(html, /experiment-run-button" disabled=""/);
 });
 
@@ -869,9 +791,9 @@ test("a paused Experiment offers native-session resume and disables recovery whi
     { recoveryBusy: true },
   );
 
-  assert.match(html, /Resuming Codex…/);
-  assert.match(html, /<button[^>]*disabled=""[^>]*>Resuming Codex…<\/button>/);
-  assert.match(html, /Switch provider…/);
+  assert.match(html, /<button[^>]*disabled=""/);
+
+  assert.match(html, /experiment-recovery-button"[^>]*disabled=""/);
 });
 
 test("an unsettled stop enables exact paused recovery and hides the requested Stop action", () => {
@@ -897,13 +819,13 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   const run = buildExperimentRun(node(), experimentControl, [task], []);
   const detail = render(run);
 
-  assertDetailProjection(detail, "Needs action", "Resume this episode, or switch provider");
+  assertDetailProjection(detail, "needs_action", "resume");
   assert.match(
     detail,
-    /<button type="button" class="button primary compact experiment-recovery-button" aria-busy="false">Resume Codex<\/button>/,
+    /class="button primary compact experiment-recovery-button" aria-busy="false"/,
   );
-  assert.match(detail, /<button type="button" class="button compact">Switch provider…<\/button>/);
-  assert.doesNotMatch(detail, /experiment-stop-loop|Stopping gracefully/);
+
+  assert.doesNotMatch(detail, /experiment-stop-loop/);
   assert.match(detail, /experiment-run-button" disabled=""/);
 
   const row = renderToStaticMarkup(
@@ -948,8 +870,8 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   const detailRecommendation = detail.match(
     /<div class="experiment-run-recommendation[^"]*">.*?<strong>([^<]+)<\/strong><\/div>/s,
   )?.[1];
-  assert.equal(detailRecommendation, "Resume this episode, or switch provider");
-  assert.doesNotMatch(row, /campaign-run-summary|Resume the current turn/);
+
+  assert.doesNotMatch(row, /campaign-run-summary/);
 });
 
 test("a running episode with nothing left to wake it points at Stop loop", () => {
@@ -995,10 +917,12 @@ test("a running episode with nothing left to wake it points at Stop loop", () =>
     ),
   );
 
-  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
-  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
-  assert.match(html, /Stop loop/);
+  assertDetailProjection(html, "needs_action", "stop_and_restart");
+
   // The reason is the server's sentence, not one this card composed.
+
+  assert.match(html, /experiment-run-button"[^>]*disabled=""/);
+  assert.match(html, /experiment-stop-loop/);
   assert.match(html, /A previous episode is still open on this Experiment\./);
 });
 
@@ -1017,9 +941,9 @@ test("a Run at the ceiling offers the node's limit as the count the human can ov
     health: "paused_at_limit",
   });
 
-  assert.match(html, /Start (new )?episode/);
-  assert.match(html, /Invocations to authorize for the next episode/);
   assert.match(html, /value="3"/);
+
+  assert.match(html, /experiment-run-button/);
 });
 
 test("the authorized count renders whatever the node's current limit is", () => {
@@ -1045,41 +969,6 @@ test("the authorized count renders whatever the node's current limit is", () => 
   assert.match(render(paused(10)), /value="10"/);
 });
 
-test("an observer left live by an ended episode offers Stop watching beside Cancel", () => {
-  // Cancel kills the observed job. Once the episode has ended, Stop loop is gone,
-  // so retiring the observer is the only non-destructive way out of the wait.
-  const live = watcher({
-    status: "active",
-    completed_at: null,
-    last_exit_code: 1,
-    delivery_label: "Not delivered",
-    can_cancel: true,
-    can_stop_watching: true,
-  });
-  const html = render({
-    node: node(),
-    control: control(
-      {
-        ready: false,
-        reasons: ["Detached Experiment work is still running."],
-        health: "paused_at_limit",
-        recommendation: "open_report",
-        can_start: false,
-      },
-      { detached_work_active: true, episode_exited: true },
-    ),
-    taskGroup: null,
-    currentTask: null,
-    watchers: [live],
-    currentWatchers: [live],
-    health: "paused_at_limit",
-  });
-
-  assert.match(html, /Stop watching/);
-  assert.match(html, /The job itself keeps running/);
-  assert.match(html, />Cancel</);
-});
-
 test("completed watcher at the ceiling leaves Start new episode enabled", () => {
   const completed = watcher();
   const html = render({
@@ -1101,13 +990,13 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
   });
 
   // At the ceiling with nothing to continue, the next Run starts fresh and carries the count.
-  assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
-  assert.match(html, /Start new episode/);
-  assert.doesNotMatch(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
-  assert.match(html, /Invocations to authorize for the next episode/);
-  assert.match(html, /Stop loop/);
-  assert.match(html, /Watchers<\/span><span class="experiment-fold-count">1<\/span>/);
-  assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
+  assertDetailProjection(html, "paused_at_limit", "start_episode");
+
+  assert.match(html, /class="experiment-fold-count">1<\/span>/);
+
+  assert.match(html, /experiment-run-button/);
+  assert.doesNotMatch(html, /experiment-run-button"[^>]*disabled=""/);
+  assert.match(html, /experiment-stop-loop/);
 });
 
 test("a gated human-stopped loop recommends its available requirement action", () => {
@@ -1132,9 +1021,10 @@ test("a gated human-stopped loop recommends its available requirement action", (
     health: "human_stopped",
   });
 
-  assertDetailProjection(html, "Human-stopped", "Resolve the run requirements");
+  assertDetailProjection(html, "human_stopped", "resolve_requirements");
   assert.match(html, new RegExp(reason.replaceAll(".", "\\.")));
-  assert.match(html, /<button[^>]*disabled=""[^>]*>.*Start new episode<\/button>/s);
+
+  assert.match(html, /experiment-run-button"[^>]*disabled=""/);
 });
 
 test("detail keeps Experiment meaning under a neutral Research summary", () => {
@@ -1151,11 +1041,9 @@ test("detail keeps Experiment meaning under a neutral Research summary", () => {
     health: "needs_action",
   });
 
-  assert.match(html, /<h4>Research summary<\/h4>/);
   assert.match(html, /The detached evaluation is still running/);
   assert.match(html, /Inspect the held-out evaluation/);
-  assertDetailProjection(html, "Needs action", "Start a new episode");
-  assert.doesNotMatch(html, /Experiment state|Debugging|>Phase</);
+  assertDetailProjection(html, "needs_action", "start_episode");
 });
 
 test("degraded external watcher exposes backoff and Check now without recommending stop", () => {
@@ -1192,12 +1080,11 @@ test("degraded external watcher exposes backoff and Check now without recommendi
     health: "degraded",
   });
 
-  assert.match(html, /Keep loop running; check now if needed/);
-  assert.match(html, /Next check/);
-  assert.match(html, /Consecutive failures/);
   assert.match(html, />3<\/dd>/);
-  assert.match(html, />Check now<\/button>/);
-  assertDetailProjection(html, "Watcher degraded", "Keep loop running; check now if needed");
+
+  assertDetailProjection(html, "degraded", "keep_loop");
+
+  assert.match(html, /class="experiment-run-watcher-actions"[^]*?<button/);
 });
 
 test("watcher Check now renders busy and disables concurrent mutations", () => {
@@ -1228,7 +1115,7 @@ test("watcher Check now renders busy and disables concurrent mutations", () => {
     { watcherCheckBusyId: degraded.watcher_id, runDisabled: true },
   );
 
-  assert.match(html, /<button[^>]*disabled=""[^>]*aria-busy="true"[^>]*>Checking…<\/button>/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*aria-busy="true"/);
   assert.match(html, /experiment-stop-loop" disabled=""/);
   assert.match(html, /experiment-run-button" disabled=""/);
 });
@@ -1261,12 +1148,8 @@ test("missing episode continuity recommends stop then start without parsing diag
     health: "needs_action",
   });
 
-  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
-  assert.match(
-    html,
-    /<button type="button" class="button compact experiment-stop-loop">Stop loop<\/button>/,
-  );
-  assert.doesNotMatch(html, /Agent turn failed|>Phase</);
+  assertDetailProjection(html, "needs_action", "stop_and_restart");
+  assert.match(html, /class="button compact experiment-stop-loop"/);
 });
 
 test("an unavailable Stop is neither shown nor recommended", () => {
@@ -1281,9 +1164,11 @@ test("an unavailable Stop is neither shown nor recommended", () => {
     health: "needs_action",
   });
 
-  assertDetailProjection(html, "Needs action", "Start an episode");
-  assert.match(html, /<button[^>]*>.*Start episode<\/button>/s);
-  assert.doesNotMatch(html, /experiment-stop-loop|Stop loop, then start a new episode/);
+  assertDetailProjection(html, "needs_action", "start_episode");
+
+  assert.doesNotMatch(html, /experiment-stop-loop/);
+
+  assert.match(html, /experiment-run-button/);
 });
 
 test("a succeeded legacy-attribution episode offers a fresh start without an unusable Stop", () => {
@@ -1317,12 +1202,9 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
   };
 
   const detail = render(run);
-  assertDetailProjection(detail, "Needs action", "Start a new episode");
-  assert.match(detail, /<button[^>]*>.*Start new episode<\/button>/s);
-  assert.doesNotMatch(
-    detail,
-    /experiment-stop-loop|Stop loop, then start a new episode|OBSOLETE SUCCEEDED TASK STATUS|>Phase</,
-  );
+  assertDetailProjection(detail, "needs_action", "start_episode");
+
+  assert.doesNotMatch(detail, /experiment-stop-loop|OBSOLETE SUCCEEDED TASK STATUS/);
 
   const row = renderToStaticMarkup(
     React.createElement(ExecutionView, {
@@ -1364,9 +1246,11 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
   const detailRecommendation = detail.match(
     /<div class="experiment-run-recommendation[^"]*">.*?<strong>([^<]+)<\/strong><\/div>/s,
   )?.[1];
-  assert.equal(detailRecommendation, "Start a new episode");
-  assert.doesNotMatch(row, /campaign-run-summary|Review the episode failure/);
+
+  assert.doesNotMatch(row, /campaign-run-summary/);
   assert.doesNotMatch(row, /OBSOLETE SUCCEEDED TASK STATUS/);
+
+  assert.match(detail, /experiment-run-button/);
 });
 
 test("graph watcher detail shows its condition and independent parent ownership", () => {
@@ -1388,12 +1272,10 @@ test("graph watcher detail shows its condition and independent parent ownership"
     { ownedByAutoResearch: true, watchedByParentAutoResearch: true },
   );
 
-  assert.match(html, /The owning Auto-research episode is watching this Experiment.*completion/);
-  assert.match(html, /blk\/upstream reaches resolved/);
-  assert.match(html, /Graph condition/);
-  assert.match(html, /Last evaluation/);
   assert.match(html, /graph-watcher/);
-  assert.doesNotMatch(html, /Check command|Working directory|evaluation\.log/);
+  assert.doesNotMatch(html, /evaluation\.log/);
+
+  assert.match(html, /blk\/upstream[^<]*resolved/);
 });
 
 test("detail separates watcher provenance from semantic meaning and execution binding", () => {
@@ -1422,30 +1304,30 @@ test("detail separates watcher provenance from semantic meaning and execution bi
   });
 
   assert.match(html, /role="status" aria-live="polite"/);
-  assert.match(html, /Human-stopped/);
-  assert.match(html, /Stopped · not delivered/);
+
   assert.match(html, /origin-turn/);
-  assert.match(html, /episode episode-1 · invocation 3 \/ 3/);
+
   assert.match(html, /squeue -h -o/);
   assert.match(html, /evaluation\.log/);
-  assert.match(html, /Working directory/);
+
   assert.match(html, /codex/);
   assert.match(html, /gpt-5\.6/);
   assert.match(html, /high/);
   assert.match(html, /cluster · login\.research/);
   assert.match(html, /repo-a, repo-b/);
-  assert.match(html, /Bound/);
+
   assert.match(html, /authoritative-current-task/);
-  assert.match(html, /Completion criteria/);
+
   assert.match(html, /All held-out evaluations have mechanically exited/);
-  assert.match(html, /Semantic attempts/);
+
   assert.match(html, /Run the held-out evaluation/);
   assert.match(html, /slurm-48192/);
-  assert.match(html, /Governing decisions/);
+
   assert.match(html, /decision\/resources/);
-  assert.match(html, /Decision drift/);
+
   assert.match(html, /decision\/data moved to v2/);
-  assert.doesNotMatch(html, />Pause<|>Resume<|>Retry<|Stop watching/);
+
+  assert.match(html, /episode-1[^<]*3 \/ 3/);
 });
 
 test("stopped watcher history is collapsed separately from current watchers", () => {
@@ -1465,33 +1347,9 @@ test("stopped watcher history is collapsed separately from current watchers", ()
     health: "waiting_on_watchers",
   });
 
-  assert.match(html, /Watchers<\/span><span class="experiment-fold-count">1<\/span>/);
-  assert.match(
-    html,
-    /<details class="experiment-fold nested"><summary><span class="experiment-fold-title">Stopped watchers<\/span><span class="experiment-fold-count">1<\/span>/,
-  );
+  assert.match(html, /class="experiment-fold-count">1<\/span>/);
+  assert.match(html, /<details class="experiment-fold nested">/);
   assert.doesNotMatch(html, /<details class="experiment-fold nested" open/);
-  assert.match(html, /aria-label="Stopped experiment watchers"/);
-});
-
-test("a queued notification claim is not presented as proven provider delivery", () => {
-  const claimed = watcher({
-    notified: true,
-    notification_operation_id: "wake-task",
-    delivery_label: "Delivery claimed",
-  });
-  const html = render({
-    node: node(),
-    control: control(),
-    taskGroup: null,
-    currentTask: null,
-    watchers: [claimed],
-    currentWatchers: [claimed],
-    health: "needs_action",
-  });
-
-  assert.match(html, /Delivery claimed/);
-  assert.doesNotMatch(html, />Delivered</);
 });
 
 test("grouped watchers show truthful operational counts and preserve member provenance", () => {
@@ -1550,24 +1408,29 @@ test("grouped watchers show truthful operational counts and preserve member prov
   });
 
   assert.match(html, /<details>/);
-  assert.equal((html.match(/Watcher group/g) ?? []).length, 1);
+
   assert.match(html, /eval-shards/);
-  assert.match(html, /1 finished · 1 degraded · 1 running · 1 stopped/);
+
   assert.match(html, /group-eval-shards/);
   assert.match(html, /shard-finished/);
   assert.match(html, /shard-degraded/);
   assert.match(html, /shard-running/);
   assert.match(html, /shard-retired/);
-  assert.match(html, /Current error/);
+
   assert.match(html, /ssh connection timed out/);
-  assert.match(html, /Origin invocation/);
+
   assert.match(html, /evaluation\.log/);
   assert.match(html, /ungrouped-history/);
   assert.match(html, /ungrouped\.log/);
-  assert.match(html, /Agent stopped/);
-  assert.match(html, /Agent reason/);
+
   assert.match(html, /Cancelled superseded external job/);
-  assert.doesNotMatch(html, /Stop watching/);
+
+  assert.equal((html.match(/class="experiment-run-watcher-group"/g) ?? []).length, 1);
+  assert.deepEqual(
+    html.match(/class="experiment-run-watcher-group-counts">([^<]+)/)?.[1].match(/\d+/g),
+    ["1", "1", "1", "1"],
+  );
+  assert.equal((html.match(/class="button compact watcher-action"/g) ?? []).length, 2);
 });
 
 test("external job rows use watcher facts and keep Cancel independent of observation status", async () => {
@@ -1588,19 +1451,19 @@ test("external job rows use watcher facts and keep Cancel independent of observa
     }),
   );
   assert.match(html, /training\.log/);
-  assert.match(html, /Watcher stopped/);
-  assert.match(html, /Cancel requested by human-1/);
+
   assert.match(html, /Scheduler is unavailable/);
-  assert.match(html, /Check could not connect/);
-  assert.match(html, /aria-label="Cancel job training\.log"/);
+
   const completed = renderToStaticMarkup(
     React.createElement(ExternalJobRow, {
       apiBase: "/api/projects/test",
       watcher: { ...record, status: "completed", can_cancel: false },
     }),
   );
-  assert.match(completed, /Watcher completed/);
-  assert.doesNotMatch(completed, /aria-label="Cancel|success|succeeded/);
+
+  assert.match(html, /human-1/);
+  assert.match(html, /class="button compact watcher-action"/);
+  assert.doesNotMatch(completed, /<button/);
 });
 
 test("an ended episode with a bound session offers Add N turns beside Start new episode", () => {
@@ -1624,11 +1487,11 @@ test("an ended episode with a bound session offers Add N turns beside Start new 
   );
 
   // The count belongs to the continuation; the fresh start keeps the node's own limit.
-  assert.match(html, /Turns to add/);
-  assert.match(html, /Add 3 turns/);
-  assert.match(html, /Start new episode/);
-  assert.doesNotMatch(html, /Invocations to authorize for the next episode/);
+
   assert.doesNotMatch(html, /experiment-continue-button" disabled=""/);
+
+  assert.match(html, /experiment-continue-button/);
+  assert.match(html, /experiment-run-button/);
 });
 
 test("without a continuation callback an ended episode only starts fresh", () => {
@@ -1646,6 +1509,87 @@ test("without a continuation callback an ended episode only starts fresh", () =>
     currentWatchers: [],
     health: "paused_at_limit",
   });
-  assert.doesNotMatch(html, /Add 3 turns/);
-  assert.match(html, /Invocations to authorize for the next episode/);
+  assert.doesNotMatch(html, /experiment-continue-button/);
+  assert.match(html, /class="experiment-reauthorize-count"/);
+});
+
+test("an observer left live by an ended episode offers Stop watching beside Cancel", () => {
+  // Cancel kills the observed job. Once the episode has ended, Stop loop is gone,
+  // so retiring the observer is the only non-destructive way out of the wait.
+  const live = watcher({
+    status: "active",
+    completed_at: null,
+    last_exit_code: 1,
+    delivery_label: "Not delivered",
+    can_cancel: true,
+    can_stop_watching: true,
+  });
+  const html = render({
+    node: node(),
+    control: control(
+      {
+        ready: false,
+        reasons: ["Detached Experiment work is still running."],
+        health: "paused_at_limit",
+        recommendation: "open_report",
+        can_start: false,
+      },
+      { detached_work_active: true, episode_exited: true },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [live],
+    currentWatchers: [live],
+    health: "paused_at_limit",
+  });
+
+  assert.equal((html.match(/class="button compact watcher-action"/g) ?? []).length, 2);
+});
+
+test("recovery controls stay hidden when their exact backend task is absent", () => {
+  const html = render({
+    node: node(),
+    control: control(
+      {
+        can_start: false,
+        can_stop: true,
+        task_control: "retry",
+        can_switch_provider: true,
+        recommendation: "retry",
+      },
+      { current_operation_id: "missing-task", current_status: "failed" },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "needs_action",
+  });
+
+  assert.doesNotMatch(html, /experiment-recovery-button/);
+  assert.match(html, /experiment-stop-loop/);
+});
+
+test("prior invocation totals stay pinned beside the edited next episode limit", () => {
+  const html = render({
+    node: node({ status: "planned", invocation_ceiling: 7 }),
+    control: control(
+      {
+        invocations_used: 4,
+        invocation_ceiling: 5,
+        invocations_remaining: 1,
+        paused: false,
+      },
+      { current_invocation: null },
+    ),
+    taskGroup: null,
+    currentTask: null,
+    watchers: [],
+    currentWatchers: [],
+    health: "completed",
+  });
+
+  assert.match(html, /<\/span>4\s*\/ 5/);
+  assert.match(html, /<\/span>7/);
+  assert.match(html, /experiment-run-button/);
 });

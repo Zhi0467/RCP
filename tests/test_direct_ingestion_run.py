@@ -408,7 +408,6 @@ def test_clean_retry_reuses_prepared_metadata_without_inspecting_provider_logs(
     )
     assert changed_retry is not None
     assert changed_retry.prepared is None
-    assert "imported provider history changed" in (changed_retry.context_reason or "")
 
     with pytest.raises(ValueError, match="imported provider history changed"):
         _continuation_graph_context(

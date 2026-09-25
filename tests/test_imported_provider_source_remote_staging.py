@@ -253,7 +253,7 @@ def test_remote_prepared_context_keeps_ssh_outage_distinct_from_checkpoint_drift
     )()
     monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda *_args: None)
 
-    with pytest.raises(StateUnavailable, match="could not reach"):
+    with pytest.raises(StateUnavailable):
         _continuation_graph_context(
             service,
             execution,

@@ -254,6 +254,7 @@ export function ProviderLoginRow({
         {account.sign_in_methods.includes("device_code") ? (
           <button
             className="button compact"
+            data-provider-action="sign-in"
             type="button"
             disabled={disabled}
             onClick={() =>
@@ -298,6 +299,7 @@ export function ProviderLoginRow({
         ) : null}
         {canVerify ? (
           <button
+            data-provider-action="verify"
             className="button secondary compact"
             type="button"
             disabled={disabled || token.trim() !== ""}

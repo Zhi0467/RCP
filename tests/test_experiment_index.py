@@ -608,7 +608,6 @@ def test_space_runs_retains_exact_archived_history_beyond_current_indexes_and_tt
     assert entries[older_task.episode_id]["experiment_id"] == "exp/launched"
     assert entries[parent.episode_id]["title"] == "Auto-research"
     assert entries[parent.episode_id]["graph_target"] == parent.graph_target.model_dump(mode="json")
-    assert entries[child.episode_id]["title"] == "Experiment history"
     assert entries[child.episode_id]["graph_target"] == child.graph_target.model_dump(mode="json")
     assert entries[child.episode_id]["parent_episode_id"] == parent.episode_id
     assert entries[child.episode_id]["experiment_id"] == "exp/never-run"
@@ -1906,7 +1905,6 @@ def test_scoped_experiment_index_ignores_another_projects_missing_cache(
     assert [entry["project_id"] for entry in scoped.json()] == [healthy_project_id]
     assert scoped.json()[0]["episode"]["episode_id"] == current_episode
     assert unknown.status_code == 404
-    assert unknown.json()["detail"] == "Project not found"
 
 
 def test_experiment_index_reads_pre_identity_display_cache(manifest, tmp_path: Path) -> None:

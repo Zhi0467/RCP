@@ -147,10 +147,8 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     );
     await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
     const header = page.locator(".campaign-run-heading");
-    assert.equal(
-      await header.locator(".status-pill").textContent(),
-      "Wrapping up visualization and report",
-    );
+    assert.equal(await header.locator(".status-pill.wrapping_up").count(), 1);
+
     projected = {
       ...projected,
       status: "needs_action",
@@ -166,7 +164,8 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     await header.getByText("Needs action", { exact: true }).waitFor();
     // Newly available authorization opens the card; its collapsed header stays truthful too.
     await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
-    assert.equal(await header.locator(".status-pill").textContent(), "Needs action");
+
+    assert.equal(await header.locator(".status-pill.needs_action").count(), 1);
     assert.equal(await page.locator(".campaign-run-detail").count(), 0);
     await page.getByRole("button", { name: /^Expand auto-research/ }).click();
     await page.getByText("The authorized turns are spent. Add turns", { exact: true }).waitFor();

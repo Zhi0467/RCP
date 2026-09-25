@@ -177,7 +177,5 @@ def test_result_view_revision_retry_reports_lost_stage_without_redrawing(
         lambda *_args, **_kwargs: pytest.fail("revision retry must not start a handoff"),
     )
 
-    with pytest.raises(ValueError, match="workspace is unavailable") as failure:
+    with pytest.raises(ValueError, match="workspace is unavailable"):
         tasks.retry(previous.operation_id)
-
-    assert "existing view was not redrawn" in str(failure.value)

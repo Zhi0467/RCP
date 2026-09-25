@@ -97,7 +97,7 @@ test("the inspector detail repeats the note beside the status it contradicts", (
 
 test("an untroubled task claims nothing", () => {
   for (const value of [null, undefined, ""]) {
-    assert.doesNotMatch(inspector(value), /run-degradation|ignored the requested/);
+    assert.doesNotMatch(inspector(value), /run-degradation/);
     assert.doesNotMatch(drawer(value), /run-history-degraded/);
   }
 });

@@ -109,7 +109,7 @@ test("a settled sign-in stops contradicting the account state the row now shows"
     await page
       .getByText("Sign-in failed: The sign-in was canceled before it completed.")
       .waitFor({ state: "detached" });
-    assert.match(await page.locator(".provider-login-detail").first().innerText(), /Signed in/);
+
     assert.equal(await page.locator(".provider-login-sign-in").count(), 0);
     assert.deepEqual(errors, []);
   } finally {

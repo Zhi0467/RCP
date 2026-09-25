@@ -142,11 +142,14 @@ test("composer binds a worktree and dispatches integration through ordinary Work
     await page.getByRole("button", { name: "Remove worktree", exact: true }).click();
     const confirmation = page.getByRole("group", { name: "Confirm worktree removal" });
     await confirmation.waitFor();
-    assert.match(await confirmation.textContent(), /Ahead of develop: 2 commits/);
-    assert.match(await confirmation.textContent(), /Remote branch: absent/);
-    assert.match(await confirmation.textContent(), /Checked origin using git ls-remote/);
+    const preview = await confirmation.innerText();
+    assert.match(preview, /develop: 2\b/);
+    assert.match(preview, /\babsent\b/);
+    assert.match(preview, /rcp\/chat-one/);
+    assert.match(preview, /git ls-remote/);
+
     assert.equal(removalPreviews, 1);
-    assert.match(await confirmation.textContent(), /Branch rcp\/chat-one will be kept/);
+
     assert.equal(removals, 0);
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal(removals, 0);

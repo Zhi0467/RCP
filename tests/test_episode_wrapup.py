@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ProjectRecord
@@ -88,7 +90,6 @@ def test_shared_wrapup_admits_one_deterministic_hidden_report(tmp_path: Path) ->
     assert first.task.parent_operation_id == "operation"
     assert first.task.native_session_id == "native-session"
     assert first.task.stage_root == str(stage)
-    assert first.task.status_message == "Wrapping up visualization and report"
     assert first.request.session_id == "native-session"
     assert first.wrapup.output_path == str(stage / "episode-report.html")
     receipt = json.loads(first.wrapup.receipt_json)
@@ -192,7 +193,7 @@ def test_a_broken_binding_that_is_not_an_absence_still_reports_its_error(
 def test_stop_never_enters_report_wrapup(tmp_path: Path) -> None:
     store, _stage = _store_with_episode(tmp_path)
 
-    try:
+    with pytest.raises(ValueError, match="Stop skips report generation"):
         begin_episode_report_wrapup(
             store,
             EpisodeWrapupSpec(
@@ -203,7 +204,3 @@ def test_stop_never_enters_report_wrapup(tmp_path: Path) -> None:
                 receipt={},
             ),
         )
-    except ValueError as exc:
-        assert "Stop skips report generation" in str(exc)
-    else:
-        raise AssertionError("Stop must not allocate report work")

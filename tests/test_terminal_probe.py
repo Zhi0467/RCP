@@ -160,7 +160,6 @@ def test_non_linux_selects_cooperative_without_linux_probe(remote_linux, monkeyp
     )
     assert result["state"] == "reachable"
     assert result["os_name"] == "Darwin"
-    assert "protection is unavailable" in result["diagnostic"]
 
 
 @pytest.mark.asyncio

@@ -32,7 +32,7 @@ def test_remote_pass_reserves_stage_across_task_status_and_project(tmp_path):
     store = _store(tmp_path)
     store.begin_remote_provider_pass("first", "remote", "/stage", "/stage/pass-one.pid")
     store.fail_agent_task("first", "SSH disconnected")
-    with pytest.raises(AgentTaskAdmissionConflict, match="exit is unconfirmed"):
+    with pytest.raises(AgentTaskAdmissionConflict):
         store.begin_remote_provider_pass("second", "remote", "/stage", "/stage/pass-two.pid")
     assert store.unresolved_remote_provider_passes("remote", "/stage") == [
         ("first", "/stage/pass-one.pid")

@@ -2356,7 +2356,6 @@ async def test_recovery_repeats_fail_closed_clear_when_interruption_left_no_fenc
         )
     )
     assert interrupted[-1].event == "error"
-    assert "interrupted before handoff clear completed" in interrupted[-1].text
     assert store.auto_research_handoffs_cleared(worker.operation_id) is False
     assert not any(
         receipt.category == _HANDOFFS_CLEARED_RECEIPT

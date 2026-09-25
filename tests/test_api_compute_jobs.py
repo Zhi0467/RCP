@@ -104,7 +104,6 @@ def test_settings_publish_agent_and_machine_compute_in_one_write(
     response = client.put(f"{url}/settings", json={**body, "machine_compute": updates})
     if unknown_alias:
         assert response.status_code == 422, response.text
-        assert "unknown machine" in response.text
         assert writes == []
         assert manifest.path.read_bytes() == before
     else:

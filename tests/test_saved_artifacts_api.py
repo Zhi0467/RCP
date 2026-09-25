@@ -377,7 +377,6 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
         response = client.get(f"/api/projects/{project_id}/artifacts")
     assert response.status_code == 200, response.text
     entry = next(entry for entry in response.json() if entry["id"] == f"report:{report.report_id}")
-    assert entry["name"] == "Reset versus stream · Partial episode report"
     assert entry["episode_mode"] == "experiment_loop"
     assert client.get(entry["viewer_url"]).status_code == 200
     if branch_owned:

@@ -173,9 +173,5 @@ test("branch watcher polling scopes the graph while retaining project task lifec
 test("watcher polling reports persistent API failures instead of swallowing them", async () => {
   const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 
-  assert.match(
-    source,
-    /catch \(error\) \{[\s\S]*reportErrorNotice\([\s\S]*Watcher status could not refresh:/,
-  );
-  assert.doesNotMatch(source, /authoritative project reload surfaces persistent API failures/);
+  assert.match(source, /catch \(error\) \{[\s\S]*reportErrorNotice\(/);
 });

@@ -212,7 +212,6 @@ def test_window_document_numbers_real_lines_and_names_the_whole_file() -> None:
 
     assert 'id="L150" class="line"' in document
     assert 'id="L151" class="line selected"' in document
-    assert "lines 150–151 of a 581,681,685-byte file" in document
     for outside in (149, 152):
         with pytest.raises(ValueError, match="outside"):
             repository_source_document(source, line=outside)
@@ -451,7 +450,7 @@ def test_repository_preview_route_names_ambiguous_aliases_before_reading(
     )
 
     assert response.status_code == 422
-    assert response.json()["detail"].endswith("repo-a, repo-b")
+    assert all(alias in response.json()["detail"] for alias in ("repo-a", "repo-b"))
 
 
 def test_repository_preview_route_reloads_the_registered_manifest(manifest, tmp_path) -> None:

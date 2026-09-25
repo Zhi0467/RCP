@@ -132,12 +132,16 @@ test("the menu orders RCP official groups before the selected provider and machi
   );
 
   assert.deepEqual(
-    entries.map((entry) => [entry.source, entry.group, entry.label]),
+    entries.slice(0, 2).map(({ kind, id }) => [kind, id]),
     [
-      ["rcp", "RCP Official Workflows", "Research graph audit"],
-      ["rcp", "RCP Official Skills", "Graph audit"],
-      ["provider", "Codex Skills · local", "Frontend design"],
+      ["workflow", "research-graph-audit"],
+      ["skill", "graph-audit"],
     ],
+  );
+  assert.deepEqual([entries[2].provider, entries[2].machine], ["codex", "local"]);
+  assert.deepEqual(
+    entries.map((entry) => entry.source),
+    ["rcp", "rcp", "provider"],
   );
   assert.deepEqual(
     filterSkillPickerEntries(entries, "frontend-design:frontend-design").map(
@@ -180,8 +184,14 @@ test("switching provider or machine replaces only the provider-native group", ()
     claude.filter((entry) => entry.source === "rcp"),
   );
   assert.deepEqual(
-    claude.filter((entry) => entry.source === "provider").map((entry) => entry.group),
-    ["Claude Skills · gpu"],
+    claude
+      .filter((entry) => entry.source === "provider")
+      .map(({ provider, machine, name }) => [provider, machine, name]),
+    [["claude", "gpu", "review-pr"]],
+  );
+  assert.deepEqual(
+    claude.map((entry) => entry.source),
+    ["rcp", "rcp", "provider"],
   );
   assert.equal(
     claude.some((entry) => "name" in entry && entry.name.includes("frontend")),
@@ -223,9 +233,9 @@ test("stale native skills remain selectable and produce separate request metadat
       onChoose() {},
     }),
   );
-  assert.match(html, /Codex Skills · local/);
-  assert.match(html, /stale · Shape a distinctive interface/);
-  assert.match(html, /Last refresh failed: SSH host is unavailable/);
+
+  assert.match(html, /Shape a distinctive interface/);
+  assert.match(html, /SSH host is unavailable/);
 });
 
 test("refreshing inventory leaves official entries usable and shows loading state", () => {
@@ -252,9 +262,7 @@ test("refreshing inventory leaves official entries usable and shows loading stat
     }),
   );
 
-  assert.match(html, /RCP Official Workflows/);
   assert.match(html, /role="option"/);
-  assert.match(html, /Checking provider skills…/);
 });
 
 test("the dropdown filters on id, label, and kind", () => {

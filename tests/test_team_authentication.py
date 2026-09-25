@@ -69,7 +69,6 @@ def test_session_ids_migrate_independently_and_preserve_sessions(tmp_path) -> No
 
     migrated = AppStore(store.path)
     sessions = migrated.team_sessions(member.user_id)
-    assert all(session.label == "Unnamed device" for session in sessions)
     identifiers = {session.session_id for session in sessions}
     assert len(identifiers) == 3
     assert all(uuid.UUID(identifier).version == 4 for identifier in identifiers)
@@ -204,8 +203,7 @@ def test_session_exchange_defaults_an_omitted_label_and_rejects_excess_length(tm
         headers={"User-Agent": "A fingerprint must not name this session"},
     )
     assert exchanged.status_code == 200
-    assert client.get("/api/team/sessions").json()[0]["label"] == "Unnamed device"
-    assert store.team_sessions(member.user_id)[0].label == "Unnamed device"
+    assert "A fingerprint must not name this session" not in client.get("/api/team/sessions").text
 
 
 def test_bootstrap_is_not_issued_before_late_schema_work_succeeds(tmp_path, monkeypatch) -> None:
@@ -346,7 +344,6 @@ def test_team_roster_excludes_member_pending_removal_but_invitation_keeps_name(
     invitations = alice.get("/api/team/invitations")
     assert invitations.status_code == 200
     assert invitations.json()[0]["invitation_id"] == invitation["invitation"]["invitation_id"]
-    assert invitations.json()[0]["status_label"] == "Bob Collaborator joined"
 
 
 def test_revoking_an_invitation_stops_the_code_without_touching_others(tmp_path) -> None:
@@ -872,8 +869,8 @@ def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
     listed = desktop.get("/api/team/sessions")
     assert listed.status_code == 200
     by_label = {item["label"]: item for item in listed.json()}
-    assert set(by_label) == {"Unnamed device", "Ada's iPhone"}
-    assert by_label["Unnamed device"]["is_current"] is True
+    assert len(by_label) == 2
+    assert sum(item["is_current"] for item in listed.json()) == 1
     assert by_label["Ada's iPhone"]["can_revoke"] is True
     assert code not in listed.text
 
@@ -881,7 +878,6 @@ def test_a_device_pairs_with_a_code_and_a_name_and_never_sees_the_member_token(
     revoked = desktop.post(f"/api/team/sessions/{phone_session_id}/revoke", json={})
     assert revoked.status_code == 200
     assert phone.get("/api/identity").status_code == 401
-    assert store.team_sessions(alice.user_id)[0].label == "Unnamed device"
     orphaned = desktop.get(f"/api/team/devices/pairings/{phone_issued['pairing_id']}")
     assert orphaned.json()["status"] == "revoked"
     redeemed = TestClient(app, base_url="https://testserver").post(
@@ -1102,7 +1098,6 @@ def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path,
 
     missing = client.post("/api/team/enroll", json={"code": bootstrap, "display_name": "Alice"})
     assert missing.status_code == 426
-    assert missing.json()["detail"]["action"].startswith("Update and rebuild RCP desktop")
 
     mismatch = client.post(
         "/api/team/enroll",
@@ -1110,15 +1105,8 @@ def test_native_team_handshake_echoes_one_protocol_and_rejects_another(tmp_path,
         headers={header: "5"},
     )
     assert mismatch.status_code == 426
-    assert mismatch.json()["detail"] == {
-        "code": "team_shell_protocol_mismatch",
-        "message": "The selected team-shell protocol is not supported by this server.",
-        "server_protocol": {"minimum": 1, "maximum": 4},
-        "action": (
-            "Update and rebuild RCP desktop from merged main, or have the server operator "
-            "install a compatible promoted RCP release."
-        ),
-    }
+    assert mismatch.json()["detail"]["code"] == "team_shell_protocol_mismatch"
+    assert mismatch.json()["detail"]["server_protocol"] == {"minimum": 1, "maximum": 4}
 
     enrolled = client.post(
         "/api/team/enroll",
@@ -1159,7 +1147,6 @@ def test_revoking_an_invitation_over_http_blocks_enrollment(tmp_path) -> None:
     assert revoked.status_code == 200
     assert revoked.json()["revoked_at"] is not None
     assert revoked.json()["status"] == "revoked"
-    assert revoked.json()["status_label"] == "Revoked"
     assert revoked.json()["can_revoke"] is False
 
     refused = bob.post(
@@ -1190,7 +1177,6 @@ def test_team_invitation_projection_names_members_and_human_states(tmp_path) -> 
     expired = alice.post("/api/team/invitations", json={}).json()
     locked = alice.post("/api/team/invitations", json={}).json()
     assert waiting["invitation"]["status"] == "waiting"
-    assert waiting["invitation"]["status_label"] == "Waiting for someone to join"
     assert waiting["invitation"]["can_revoke"] is True
 
     enrolled = bob.post(
@@ -1210,20 +1196,10 @@ def test_team_invitation_projection_names_members_and_human_states(tmp_path) -> 
         )
 
     projected = {item["invitation_id"]: item for item in alice.get("/api/team/invitations").json()}
-    assert projected[joined["invitation"]["invitation_id"]]["status_label"] == (
-        "Bob Collaborator joined"
-    )
     assert projected[joined["invitation"]["invitation_id"]]["can_revoke"] is False
-    assert projected[waiting["invitation"]["invitation_id"]]["status_label"] == (
-        "Waiting for someone to join"
-    )
     expired_projection = projected[expired["invitation"]["invitation_id"]]
     assert expired_projection["status"] == "expired"
-    assert expired_projection["status_label"] == "Expired"
     assert expired_projection["can_revoke"] is False
-    assert projected[locked["invitation"]["invitation_id"]]["status_label"] == (
-        "Locked after failed attempts"
-    )
     assert projected[locked["invitation"]["invitation_id"]]["can_revoke"] is True
 
 

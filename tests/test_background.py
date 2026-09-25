@@ -2529,11 +2529,8 @@ def test_legacy_experiment_episode_without_authorizer_names_the_fresh_run(tmp_pa
         )
     assert store.episode(_EXPERIMENT_EPISODE_ID).authorized_by is None
 
-    with pytest.raises(ValueError) as refusal:
+    with pytest.raises(ValueError, match="predates the recorded human authorizer"):
         tasks.retry(root.operation_id, authorized_by=fabricated_authorizer("Someone else"))
-    message = str(refusal.value)
-    assert "predates the recorded human authorizer" in message
-    assert "Press Run on the Experiment to start a fresh episode." in message
     assert store.agent_task(root.operation_id).status == "failed"
 
 

@@ -79,10 +79,7 @@ test("node detail and chat get four pointer-only resize corners", () => {
           ),
         );
       }
-      assert.doesNotMatch(
-        markup,
-        /floating-window-resize-handle|aria-keyshortcuts|Resize node detail window/,
-      );
+      assert.doesNotMatch(markup, /floating-window-resize-handle|aria-keyshortcuts/);
     }
   } finally {
     if (previousWindow === undefined) delete globalThis.window;

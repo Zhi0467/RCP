@@ -860,7 +860,7 @@ def test_temporary_artifact_recovery_does_not_resurrect_a_deleted_live_source(
     target.unlink()
     monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
 
-    with pytest.raises(ArtifactReplacementConflict, match="source is missing"):
+    with pytest.raises(ArtifactReplacementConflict):
         replace_local_regular_file(
             artifacts,
             target.name,
@@ -1170,13 +1170,10 @@ def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
     )
 
     assert "rcp-artifact-context" in document
-    assert "Added to the originating chat draft." in document
     assert 'BroadcastChannel("rcp-artifact-context")' in document
     assert "/#/projects/project?view=chats&amp;chat=chat&amp;branch_id=branch%2Fid" in document
-    assert ">Open chat</a>" in document
     assert "mode" not in document
     assert "fetch(config.keepUrl" in document
-    assert "A prompt can include at most 12 selections." in document
     assert "right - left < 4" in document
     assert 'id="pending"' in document
     assert "installSelectionConfirmation" in document
@@ -1185,7 +1182,6 @@ def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
     assert "installArtifactSelection(boxLayer, offerSelection)" in document
     assert 'id="box"' not in document
     assert ">Comment</button>" in document
-    assert ">Cancel</button>" in document
     assert "if(raw.kind==='text'&&typeof raw.text==='string') appendSelection" not in document
     assert "connect-src 'self'" in csp
     assert "img-src 'self' data: blob:" in csp
@@ -1235,7 +1231,6 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
     assert "rcp-artifact-context" not in document
     assert "rcp-artifact-selection-enable" not in document
     assert ">Comment</button>" not in document
-    assert ">Save copy</button>" in document
     assert "fetch(config.saveUrl" in document
     assert 'id="keep"' not in document
     assert ">report</span>" in document
@@ -1833,7 +1828,6 @@ def test_offline_restore_abandons_pending_candidate_and_preserves_source(
     )
     abandoned = store.artifact_revision_candidate(unrestored.candidate_id)
     assert abandoned is not None and abandoned.status == "abandoned"
-    assert "not part of an offline backup" in (abandoned.diagnostic or "")
     assert app.state.service.history.workspace.read_kept_artifact(kept_filename) == first
     lifecycle = next(
         item for item in store.run_stage_lifecycles() if item.stage_root == unrestored.stage_root

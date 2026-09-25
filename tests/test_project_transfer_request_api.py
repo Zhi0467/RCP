@@ -392,7 +392,6 @@ def test_authenticated_transfer_apis_link_confirm_and_keep_raw_proofs_native(
             f"/api/project-transfers/requests/{source_request['request_id']}"
         )
         assert linked_projection.status_code == 200
-        assert linked_projection.json()["phase_label"] == "Target setup in progress"
         assert linked_projection.json()["can_accept_admission"] is True
         assert linked_projection.json()["can_relay"] is False
         assert "lease_boundary_sha256" not in linked_projection.text

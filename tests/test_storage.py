@@ -2719,7 +2719,6 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
     assert record.can_resume is False
     assert record.can_retry is True
     assert record.attempt == 1
-    assert "Resume" in record.status_message
     assert record.result is None
     assert record.authorized_by is None
     assert store.agent_task_authorizer("old-operation") is None

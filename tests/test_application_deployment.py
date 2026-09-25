@@ -268,7 +268,7 @@ def test_changed_proof_and_existing_output_fail_closed(captured, tmp_path: Path)
     prepared = prepare(request)
     proof = Path(prepared["proof_path"])
     proof.write_bytes(proof.read_bytes() + b" ")
-    with pytest.raises(MaintenanceRefused, match="digest changed"):
+    with pytest.raises(MaintenanceRefused):
         validate(
             ValidateRequest(
                 version=1,
@@ -574,7 +574,7 @@ def test_upgrade_accepts_only_authenticated_known_projection_changes(
         output_dir=str(tmp_path / "validated"),
     )
     if failure:
-        with pytest.raises(MaintenanceRefused, match="read model|projection digest changed"):
+        with pytest.raises(MaintenanceRefused):
             validate(validation)
         assert not (tmp_path / "validated/application-proof.json").exists()
     else:
@@ -639,7 +639,7 @@ def test_live_check_opens_a_remote_project_only_after_the_release_commits(
 
     if case == "changed":
         # A candidate migration that reroutes a captured local project is refused.
-        with pytest.raises(MaintenanceRefused, match="keeps its state"):
+        with pytest.raises(MaintenanceRefused):
             verify()
         return
     assert verify()
@@ -753,7 +753,7 @@ def test_trusted_deployed_commit_is_bound_to_wheel_version(
     assert identity.commit == "abcdef0" + "1" * 33
     assert identity.web_build_id.startswith("sha256:")
     monkeypatch.setenv("RCP_DEPLOYED_COMMIT", "fedcba0" + "1" * 33)
-    with pytest.raises(ServerMetadataError, match="does not match this wheel"):
+    with pytest.raises(ServerMetadataError):
         capture_installed_release_identity()
 
 

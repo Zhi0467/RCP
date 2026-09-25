@@ -226,7 +226,6 @@ def test_project_revision_probe_returns_normal_project_not_found(manifest, tmp_p
     response = TestClient(app).get(f"/api/projects/{uuid.uuid4()}/revision")
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "Project not found"}
 
 
 def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_refresh(

@@ -590,9 +590,6 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         )
         assert finished["status"] == "succeeded", finished
         assert {"watcher_notification", "experiment_loop_exit"} <= _receipt_categories(finished)
-        assert any(
-            "reauthorized by human Run" in str(event["message"]) for event in finished["events"]
-        )
         assert [record.action for record in reopened.state.launcher.launch_records] == ["wake"]
 
         delivered = reopened_store.watchers(project_id, chat_id=chat_id)

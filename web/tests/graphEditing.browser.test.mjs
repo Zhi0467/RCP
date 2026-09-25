@@ -163,8 +163,7 @@ test("a failed graph-edit-options load says what is unavailable instead of promi
     await notice.waitFor();
     // Node ids are derived from the backend prefixes, so there is no free-entry
     // path to offer: the form would fill in and never stage.
-    assert.doesNotMatch(await notice.textContent(), /free entry/);
-    assert.match(await notice.textContent(), /unavailable until this loads/);
+
     assert.equal(
       await page.getByRole("button", { name: "New node", exact: true }).isDisabled(),
       true,

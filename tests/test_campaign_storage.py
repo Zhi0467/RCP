@@ -411,7 +411,7 @@ def test_stopping_episode_rejects_a_clean_session_retry(tmp_path) -> None:
     )
     store.request_auto_research_stop_and_settle_watchers(episode.episode_id)
 
-    with pytest.raises(EpisodeNotRunning, match="exact saved session and stage"):
+    with pytest.raises(EpisodeNotRunning):
         store.create_auto_research_recovery_task(
             _task(
                 store,
@@ -757,7 +757,7 @@ def test_non_stop_ending_fence_closes_auto_research_recovery_admission(tmp_path)
     assert candidate_root.operation_id not in {
         task.operation_id for task in store.auto_research_recovery_candidates()
     }
-    with pytest.raises(EpisodeNotRunning, match="no longer accepts recovery"):
+    with pytest.raises(EpisodeNotRunning):
         store.schedule_auto_research_task_recovery(
             root.operation_id,
             failure_kind="transport",

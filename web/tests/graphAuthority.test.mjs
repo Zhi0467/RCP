@@ -16,10 +16,8 @@ test("degraded replay blocks graph authority and names the last coherent state",
     },
   };
   assert.equal(projectGraphMutationsDisabled(project), true);
-  assert.equal(
-    projectGraphMutationFailureLabel(project),
-    "Replay stopped at revision 6 (invalid-edge): The accepted patch no longer validates. This is the last coherent graph.",
-  );
+  assert.equal(projectGraphMutationFailureLabel(project), project.graph_mutation.reason);
+
   assert.equal(
     projectGraphMutationsDisabled({ graph_mutation: { available: true, reason: null } }),
     false,

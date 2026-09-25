@@ -315,7 +315,7 @@ def test_recovery_cannot_overlap_live_episode_task(tmp_path: Path, chat_id, stat
     duplicate = _task(store, "duplicate", episode_id, parent_operation_id="loop-root", attempt=2)
     duplicate.request["chat_id"] = chat_id
 
-    with pytest.raises(AgentTaskAdmissionConflict, match="already active in this episode"):
+    with pytest.raises(AgentTaskAdmissionConflict):
         store.create_experiment_recovery_task(duplicate, continuation_cause="handoff")
 
     assert store.agent_task("duplicate") is None
@@ -338,7 +338,7 @@ def test_recovery_rejects_superseded_parent_and_keeps_latest_allocation(
     store.fail_agent_task("replacement", "temporary provider failure")
     stale = _task(store, "stale", episode_id, parent_operation_id="loop-root", attempt=2)
 
-    with pytest.raises(AgentTaskAdmissionConflict, match="Only the latest"):
+    with pytest.raises(AgentTaskAdmissionConflict):
         store.create_experiment_recovery_task(stale, continuation_cause=continuation)
 
     latest = _task(

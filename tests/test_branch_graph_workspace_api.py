@@ -191,10 +191,7 @@ def test_branch_merge_fences_manual_sync_and_projects_unavailability(
     base = f"/api/projects/{harness.project_id}"
     params = {"branch_id": harness.episode.episode_id}
     snapshot = harness.client.get(base, params=params).json()
-    assert snapshot["graph_mutation"] == {
-        "available": False,
-        "reason": "Wait for the graph merge to finish before editing.",
-    }
+    assert snapshot["graph_mutation"]["available"] is False
     assert (
         harness.client.get(f"{base}/cached/revision", params=params).json()["graph_mutation"]
         == snapshot["graph_mutation"]

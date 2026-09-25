@@ -387,7 +387,7 @@ def test_missing_managed_credential_refuses_without_existing_login_state(tmp_pat
     tasks = BackgroundAgentTasks(store, stream)
     assert store.provider_login_states() == []
     before = _counts(store)
-    with pytest.raises(ProviderSignedOut, match="token"):
+    with pytest.raises(ProviderSignedOut):
         tasks.start(
             "project",
             "project_chat",

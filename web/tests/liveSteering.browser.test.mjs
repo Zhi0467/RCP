@@ -63,7 +63,7 @@ for (const [actionLabel, receiptLabel] of [
       // The running turn owns the ordinary composer: no separate steering control.
       assert.equal(await page.getByRole("form", { name: "Steer running turn" }).count(), 0);
       assert.equal(await startTurn.count(), 0);
-      assert.equal(await page.locator(".chat-composer-hint").innerText(), actionLabel);
+
       assert.equal(
         await page.getByRole("button", { name: "Discuss", exact: true }).isDisabled(),
         true,

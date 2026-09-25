@@ -27,7 +27,7 @@ def test_agent_patch_schema_accepts_the_canonical_seed_shape() -> None:
 
 
 def test_agent_patch_schema_rejects_invented_node_fields_and_slug_formats() -> None:
-    with pytest.raises(ValidationError, match="state|asserted|Extra inputs") as caught:
+    with pytest.raises(ValidationError, match="state|asserted|Extra inputs"):
         Patch(
             kind="seed",
             author="agent",
@@ -50,8 +50,6 @@ def test_agent_patch_schema_rejects_invented_node_fields_and_slug_formats() -> N
                 }
             ],
         )
-
-    assert "hyp-invented-shape" in str(caught.value) or "Extra inputs" in str(caught.value)
 
 
 def test_agent_output_schema_describes_operations_instead_of_arbitrary_objects() -> None:

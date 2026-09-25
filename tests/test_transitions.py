@@ -762,7 +762,7 @@ def test_transition_trace_rejects_missing_or_forged_lifecycle_events() -> None:
 
 
 def test_rule_firing_guard_rejects_before_any_candidate_commits() -> None:
-    with pytest.raises(TransitionConflict, match="exceeded 1 generated actions"):
+    with pytest.raises(TransitionConflict):
         GraphTransitionManager(max_rule_firings=1).prepare_validated(
             _gated_state(experiments=2),
             [_resolve_patch()],

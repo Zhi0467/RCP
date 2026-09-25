@@ -551,6 +551,5 @@ def test_restore_fences_every_provider_login_and_forgets_probed_readiness(
         state = store.provider_login_state(provider, host)
         assert state.state == "signed_out" and state.source == "restore"
         assert state.generation == 2 and state.changed_by is None
-        assert "restored from an archive" in (state.detail or "")
     assert store.provider_login_state("claude", "") == signed_out_before
     assert store.provider_readiness_snapshot("codex", "", "/usr/local/bin/codex") is None

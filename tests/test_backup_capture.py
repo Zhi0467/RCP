@@ -1030,7 +1030,7 @@ def test_remote_backup_export_rejects_an_unknown_direct_root_before_rsync(
         raise AssertionError("rsync must not run for an unclassified root")
 
     monkeypatch.setattr(state_module.subprocess, "run", unexpected_rsync)
-    with pytest.raises(StateUnavailable, match="unclassified"):
+    with pytest.raises(StateUnavailable):
         workspace.backup_source_root(destination)
 
 

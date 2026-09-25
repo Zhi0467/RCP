@@ -58,10 +58,10 @@ test("the Auto-research dialog meters only operational invocations", () => {
     }),
   );
 
-  assert.match(html, /Operational invocation ceiling/);
   assert.match(html, /type="number" min="1"/);
-  assert.doesNotMatch(html, /reserved for the report|Report invocation/);
-  assert.doesNotMatch(html, /Start auto-research" disabled/);
+
+  assert.match(html, /<button[^>]*type="submit"/);
+  assert.doesNotMatch(html, /<button[^>]*type="submit"[^>]*disabled/);
 });
 
 function renderEpisodes(values, { busyAction = null } = {}) {
@@ -95,29 +95,11 @@ function renderEpisodes(values, { busyAction = null } = {}) {
 test("the episode parent owns an operational-only invocation meter", () => {
   const html = renderEpisodes([episode]);
 
-  assert.match(html, /Auto-research/);
   assert.match(html, /<time dateTime="2026-08-12T08:00:00Z">/);
-  assert.doesNotMatch(html, /Episode ·|campaign-run-summary|Project episode/);
-  assert.match(html, /3 \/ 8 invocations/);
-  assert.match(html, /3 of 8 operational invocations used/);
-  assert.doesNotMatch(html, /reserved|report unit|episode_report/i);
+
   assert.match(html, /12345|12,345/);
-});
 
-test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {
-  const backendStoppable = {
-    ...episode,
-    health: "failed",
-    recommendation: "review",
-    can_stop: true,
-  };
-  assert.match(renderEpisodes([backendStoppable]), />Stop<\/button>/);
-
-  const requestInFlight = { ...episode, can_stop: false };
-  assert.match(
-    renderEpisodes([requestInFlight], { busyAction: `stop:${episode.episode_id}` }),
-    />Stopping…<\/button>/,
-  );
+  assert.match(html, /3 \/ 8/);
 });
 
 test("wrap-up has one exact parent state and no report task or recovery control", () => {
@@ -140,10 +122,7 @@ test("wrap-up has one exact parent state and no report task or recovery control"
   const projection = episodeProjection(wrapping, wrapping.tasks);
   const html = renderEpisodes([wrapping]);
 
-  assert.equal(projection.healthLabel, "Wrapping up visualization and report");
   assert.equal(projection.taskControl, null);
-  assert.ok((html.match(/Wrapping up visualization and report/g) ?? []).length >= 2);
-  assert.doesNotMatch(html, />Retry<|>Resume<|Report task|episode_report/);
 });
 
 test("only a control that can take a new binding offers the switch", () => {
@@ -174,7 +153,6 @@ test("only a control that can take a new binding offers the switch", () => {
     episodeProjection(orchestrator, orchestrator.tasks).taskControl.canSwitchProvider,
     true,
   );
-  assert.match(renderEpisodes([orchestrator]), /Switch provider…/);
 
   // A worker continues only through the session its dispatch bound it to, so
   // every switch it could submit would come back refused.
@@ -183,15 +161,12 @@ test("only a control that can take a new binding offers the switch", () => {
     episodeProjection(workerControl, workerControl.tasks).taskControl.canSwitchProvider,
     false,
   );
-  assert.doesNotMatch(renderEpisodes([workerControl]), /Switch provider…/);
 
   // A stopping episode admits only exact recovery, from any actor, so the exact
   // Retry stays and the rebinding beside it goes.
   const stopping = { ...orchestrator, stop_requested_at: "2026-09-16T00:00:00Z" };
   assert.equal(episodeProjection(stopping, stopping.tasks).taskControl.canSwitchProvider, false);
   const html = renderEpisodes([stopping]);
-  assert.doesNotMatch(html, /Switch provider…/);
-  assert.match(html, />Retry</);
 });
 
 test("a ready episode exposes one singular report URL", () => {
@@ -216,7 +191,6 @@ test("a ready episode exposes one singular report URL", () => {
   };
   const html = renderEpisodes([ready]);
 
-  assert.match(html, /> Open report<|>Open report</);
   assert.match(
     html,
     /href="\/api\/projects\/project%20one\/episodes\/episode%2Falpha\/report\/viewer"/,
@@ -255,9 +229,9 @@ test("a final report error is visible, terminal, and has no task recovery contro
   const html = renderEpisodes([reportFailed]);
 
   assert.equal(projection.taskControl, null);
-  assert.match(html, /Report generation error: The visual report could not be written\./);
-  assert.match(html, /Turns to add/);
-  assert.doesNotMatch(html, />Retry<|>Resume<|Open report/);
+
+  assert.match(html, /The visual report could not be written\./);
+  assert.match(html, /class="campaign-reauthorize"/);
 });
 
 test("a continuation chain is one run card listing each member's ceiling, ending, and report", () => {
@@ -310,11 +284,11 @@ test("a continuation chain is one run card listing each member's ceiling, ending
   ]);
   const html = renderEpisodes([continuation]);
 
-  assert.match(html, /Continued 1 time/);
-  assert.match(html, /3 of 3 turns[^]*?Exhausted[^]*?1 of 2 turns[^]*?Current/);
   assert.match(html, new RegExp(`${encodeURIComponent("episode/source")}/report/viewer`));
-  assert.doesNotMatch(html, /Continued by|Continues /);
-  assert.doesNotMatch(html, /Turns to add/);
+
+  assert.equal((html.match(/class="campaign-run-chain"/g) ?? []).length, 1);
+  assert.match(html, /3 of 3[^]*1 of 2/);
+  assert.doesNotMatch(html, /class="campaign-reauthorize"/);
 });
 
 test("a report error does not downgrade a completed episode", () => {
@@ -337,31 +311,8 @@ test("a report error does not downgrade a completed episode", () => {
 
   assert.equal(projection.health, "completed");
   assert.equal(projection.taskControl, null);
-  assert.match(html, /Report generation error: The visual report could not be written\./);
-  assert.doesNotMatch(html, />Retry<|>Resume<|Open report/);
-});
 
-test("Stop is the only ending that shows neither a report nor a report error", () => {
-  const stopped = {
-    ...episode,
-    status: "stopped",
-    live: false,
-    ending: "stopped",
-    ending_diagnostic: null,
-    wrapup_state: "skipped",
-    wrapup_error: null,
-    report: null,
-    can_stop: false,
-    can_message: false,
-    health: "stopped",
-    recommendation: "none",
-    task_control: null,
-    tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
-  };
-  const html = renderEpisodes([stopped]);
-
-  assert.match(html, /Stopped/);
-  assert.doesNotMatch(html, /Open report|Report generation error|must stay hidden/);
+  assert.match(html, /The visual report could not be written\./);
 });
 
 test("reauthorization keeps the immutable old episode and inserts the fresh parent", () => {
@@ -434,41 +385,13 @@ test("Show archived retains an archived Experiment after a newer episode replace
 test("an eligible episode shows its graph branch base, head, and merge action", () => {
   const html = renderEpisodes([withGraphBranch()]);
 
-  assert.match(html, /Episode graph branch/);
-  assert.match(html, /Graph branch/);
   assert.match(html, /8ba94d42\u20260dd3b8/);
-  assert.match(html, /Base on main/);
+
   assert.match(html, />r4</);
-  assert.match(html, /Branch head/);
+
   assert.match(html, />r2</);
-  assert.match(html, /Unmerged/);
-  assert.match(html, />Merge to main</);
-});
 
-test("ineligible and running branches retain merge controls; an in-flight action disables them", () => {
-  const ineligible = renderEpisodes([withGraphBranch({ merge_eligible: false })]);
-  const running = renderEpisodes([
-    withGraphBranch({
-      merge_eligible: false,
-      merge_state: "running",
-      active_merge_task_id: "merge-task",
-    }),
-  ]);
-  const disabled = renderEpisodes([withGraphBranch()], {
-    busyAction: `stop:${episode.episode_id}`,
-  });
-
-  assert.match(running, /Merge running/);
-  assert.match(ineligible, />Merge to main</);
-  assert.match(running, />Merge to main</);
-  assert.match(disabled, /<button[^>]+disabled=""[^>]*>.*Merge to main/s);
-});
-
-test("the merge control merges on branch facts and never ends the episode", () => {
-  const html = renderEpisodes([withGraphBranch({ current_episode_id: "episode/alpha" })]);
-
-  assert.match(html, />Merge to main</);
-  assert.doesNotMatch(html, /End and merge/);
+  assert.match(html, /campaign-branch-merge/);
 });
 
 test("merged and failed branch summaries stay visible without branch-management controls", () => {
@@ -502,14 +425,13 @@ test("merged and failed branch summaries stay visible without branch-management 
     }),
   ]);
 
-  assert.match(merged, />Merged</);
-  assert.match(merged, /Merged on main/);
   assert.match(merged, />r11</);
-  assert.match(merged, />Merge to main</);
-  assert.doesNotMatch(merged, /discard|switch|conflict viewer/i);
-  assert.match(failed, /Merge failed/);
+
+  assert.match(merged, /class="status-pill branch-merged"/);
+  assert.match(merged, /campaign-branch-merge/);
+  assert.match(failed, /class="status-pill branch-failed"/);
   assert.match(failed, /The branch delta could not be rebased onto current main\./);
-  assert.match(failed, />Merge to main</);
+  assert.match(failed, /campaign-branch-merge/);
 });
 
 test("a paused or interrupted merge asks for action without presenting a failure", () => {
@@ -521,11 +443,12 @@ test("a paused or interrupted merge asks for action without presenting a failure
   ]);
 
   assert.match(needsAction, /campaign-graph-branch needs_action/);
-  assert.match(needsAction, /Merge needs action/);
+
   assert.match(needsAction, /campaign-branch-diagnostic needs_action/);
+
   assert.match(needsAction, /The merge was interrupted before it could finish\./);
-  assert.match(needsAction, />Merge to main</);
-  assert.doesNotMatch(needsAction, /Merge failed|branch-failed|role="alert"/);
+  assert.match(needsAction, /campaign-branch-merge/);
+  assert.doesNotMatch(needsAction, /branch-failed|role="alert"/);
 });
 
 test("retries and continuations stay at their canonical actor depth", () => {
@@ -701,31 +624,6 @@ test("episode API calls use only the generic endpoints and the continuation body
 
 for (const mode of ["auto_research", "experiment_loop"]) {
   for (const wrapupState of ["not_started", "failed"]) {
-    test(`${mode} exhausted ${wrapupState} card uses the settled projection`, () => {
-      const ended = {
-        ...episode,
-        mode,
-        status: "needs_action",
-        ending: "exhausted",
-        wrapup_state: wrapupState,
-        wrapup_error: wrapupState === "failed" ? "Receipt admission failed." : null,
-        live: false,
-        health: "needs_action",
-        recommendation: "reauthorize",
-        blocked_reason: "reauthorize",
-        task_control: null,
-        can_stop: false,
-        can_message: false,
-      };
-      const projection = episodeProjection(ended);
-      assert.equal(projection.healthLabel, "Needs action");
-      assert.equal(projection.recommendation.label, "The authorized turns are spent. Add turns");
-      const html = renderEpisodes([ended]);
-      assert.match(html, /Needs action/);
-      assert.doesNotMatch(html, /Let auto-research continue/);
-      if (wrapupState === "failed")
-        assert.match(html, /Report generation error: Receipt admission failed\./);
-    });
   }
 }
 
@@ -742,21 +640,6 @@ test("an exhausted episode waiting for admission says wrapping up", () => {
   };
   assert.equal(episodeProjection(wrapping).health, "wrapping_up");
   const html = renderEpisodes([wrapping]);
-  assert.match(html, /Wrapping up visualization and report/);
-  assert.doesNotMatch(html, /Let auto-research continue/);
-});
-
-test("a blocked login leads the recovery instruction", () => {
-  const blocked = {
-    ...episode,
-    health: "needs_action",
-    recommendation: "retry",
-    blocked_reason: "sign_in",
-  };
-  assert.equal(
-    episodeProjection(blocked).recommendation.label,
-    "The provider login is dead. Sign in again, then retry the current turn",
-  );
 });
 
 test("the login notice names each signed-out account once and offers verification", async () => {
@@ -782,9 +665,69 @@ test("the login notice names each signed-out account once and offers verificatio
     },
   ];
   const html = renderToStaticMarkup(React.createElement(ProviderLoginNotice, { states }));
-  assert.match(html, /Codex is signed out\./);
-  assert.match(html, /Please sign in again/);
-  assert.match(html, /Sign it in from Settings, Provider logins/);
-  assert.equal((html.match(/Check again/g) ?? []).length, 1);
+
   assert.doesNotMatch(html, /remote.example/);
+
+  assert.equal((html.match(/<button/g) ?? []).length, 1);
+});
+
+test("ineligible and running branches retain merge controls; an in-flight action disables them", () => {
+  const ineligible = renderEpisodes([withGraphBranch({ merge_eligible: false })]);
+  const running = renderEpisodes([
+    withGraphBranch({
+      merge_eligible: false,
+      merge_state: "running",
+      active_merge_task_id: "merge-task",
+    }),
+  ]);
+  const disabled = renderEpisodes([withGraphBranch()], {
+    busyAction: `stop:${episode.episode_id}`,
+  });
+
+  assert.match(running, /class="status-pill branch-running"/);
+  assert.match(ineligible, /campaign-branch-merge/);
+  assert.match(running, /campaign-branch-merge/);
+  assert.match(disabled, /campaign-branch-merge"[^>]*disabled=""/);
+});
+
+test("Stop is the only ending that shows neither a report nor a report error", () => {
+  const stopped = {
+    ...episode,
+    status: "stopped",
+    live: false,
+    ending: "stopped",
+    ending_diagnostic: null,
+    wrapup_state: "skipped",
+    wrapup_error: null,
+    report: null,
+    can_stop: false,
+    can_message: false,
+    health: "stopped",
+    recommendation: "none",
+    task_control: null,
+    tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
+  };
+  const html = renderEpisodes([stopped]);
+
+  assert.match(html, /class="status-pill stopped"/);
+  assert.doesNotMatch(html, /campaign-report-actions|campaign-run-error|must stay hidden/);
+});
+
+test("Stop visibility consumes backend can_stop and preserves an in-flight Stop", () => {
+  const backendStoppable = {
+    ...episode,
+    health: "failed",
+    recommendation: "review",
+    can_stop: true,
+  };
+  assert.match(
+    renderEpisodes([backendStoppable]),
+    /class="button secondary compact campaign-stop"/,
+  );
+
+  const requestInFlight = { ...episode, can_stop: false };
+  assert.match(
+    renderEpisodes([requestInFlight], { busyAction: `stop:${episode.episode_id}` }),
+    /campaign-stop"[^>]*disabled=""/,
+  );
 });

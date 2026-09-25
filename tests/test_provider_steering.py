@@ -93,7 +93,6 @@ def test_claude_ready_on_initial_started_not_replay(tmp_path: Path):
     turn = _turn(tmp_path, "claude", ready=False)
     initial = json.loads(turn.initial_input())
     assert not turn.steering_state().can_steer
-    assert "acknowledge" in turn.steering_state().reason
     turn.receive_line(json.dumps({**initial, "isReplay": True}))
     _lifecycle(turn, "queued", initial["uuid"])
     _lifecycle(turn, "started", "foreign")

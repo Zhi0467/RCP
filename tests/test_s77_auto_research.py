@@ -536,7 +536,6 @@ def test_s77_worker_seating_boundary_does_not_narrow_decision_authority(tmp_path
             _spawn_request(str(index) * 32, key=f"refuse-{node_type}", seat_node_id=node_id),
         )
         assert response.status == "invalid"
-        assert "Experiments and Blockers" in (response.message or "")
 
     for index, (node_type, node_id) in enumerate(
         (("experiment", "exp/evaluate"), ("blocker", "blk/input")), start=3

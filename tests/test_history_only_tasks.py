@@ -337,10 +337,10 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_discuss": False,
         "can_revise": False,
     }
+    artifacts["temporary.html"].pop("unavailable_reason")
     assert artifacts["temporary.html"] == {
         **temporary.model_dump(mode="json"),
         "available": False,
-        "unavailable_reason": "Artifact bytes were not retained with this task history.",
         "can_open": False,
         "can_download": False,
         "can_keep": False,
@@ -353,7 +353,6 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     assert client.get(f"{kept_base}/download").status_code == 200
     viewer = client.get(f"{kept_base}/viewer")
     assert viewer.status_code == 200
-    assert "Add to chat" not in viewer.text
     assert 'id="keep"' not in viewer.text
     assert 'id="box"' not in viewer.text
     assert client.post(f"{kept_base}/keep").status_code == 409

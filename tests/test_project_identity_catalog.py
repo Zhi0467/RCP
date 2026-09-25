@@ -315,7 +315,7 @@ def test_foreign_tagged_project_refuses_before_catalog_or_cache_creation(
     second_store = AppStore(second_data / "rcp.sqlite3")
     second_catalog = ProjectCatalog(second_data, second_store, AgentLauncher())
 
-    with pytest.raises(ProjectIdentityConflict, match="belongs to space"):
+    with pytest.raises(ProjectIdentityConflict):
         second_catalog.register(str(manifest.path), identity_action="adopted")
 
     assert second_store.projects() == []

@@ -230,8 +230,6 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
         # conservative: absence there is not a pass that never started.
         assert confirm_flags[-1] is False
         assert events[-1].event == "error"
-        # The blocked fallback is the consequence; the launch failure is the
-        # cause, and the human needs to be told the cause.
         assert "fallback is blocked" in events[-1].text
         assert "closed its provider runtime before accepting the turn" in events[-1].text
 

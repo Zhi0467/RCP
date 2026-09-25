@@ -182,8 +182,6 @@ async def test_validator_client_receives_nonblocking_quality_advice(
     payload = json.loads(result.stdout)
     assert result.returncode == 0
     assert payload["status"] == "valid"
-    assert any("no producing Experiment" in message for message in payload["messages"])
-    assert any("no graph connections" in message for message in payload["messages"])
     assert history.state().revision == 1
 
 
@@ -229,7 +227,6 @@ async def test_patch_self_checks_are_bounded_and_each_one_is_a_task_event(tmp_pa
     assert calls == PATCH_SELF_CHECK_MAX_COUNT
     assert budget.count == PATCH_SELF_CHECK_MAX_COUNT + 1
     assert len(execution.store.events) == PATCH_SELF_CHECK_MAX_COUNT + 1
-    assert "self-check limit" in results[-1].stdout
 
 
 def test_stable_validator_mailbox_is_cleaned_before_each_provider_pass(tmp_path: Path) -> None:

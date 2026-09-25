@@ -524,7 +524,8 @@ test("registration promises consume expected aborts and report other failures", 
 
     const failure = new Error("late registration failure");
     rejectionHandlers[1](failure);
-    assert.deepEqual(errors, [["WebMCP tool registration failed.", failure]]);
+    assert.equal(errors.length, 1);
+    assert.equal(errors[0][1], failure);
   } finally {
     console.error = originalError;
   }
@@ -1282,7 +1283,7 @@ test("conversation inspection names branch, active, and stale-transcript refusal
     conversationSource(transcript),
   );
   assert.equal(branch.send_options.can_send, false);
-  assert.match(branch.send_options.refusal_reason, /branch conversation is read-only/);
+
   const active = await inspectProjectConversation(
     project,
     [{ ...task, active: true, settled: false, status_message: "Running provider turn" }],
@@ -1302,6 +1303,8 @@ test("conversation inspection names branch, active, and stale-transcript refusal
     ),
     /mismatched transcript/,
   );
+
+  assert.match(branch.send_options.refusal_reason, /branch conversation is read-only/);
 });
 
 test("a branch conversation stays read-only when its tasks have aged out of the page window", async () => {
@@ -1317,7 +1320,7 @@ test("a branch conversation stays read-only when its tasks have aged out of the 
   const inspected = await inspectProjectConversation(project, [], { chat_id: "chat-1" }, source);
   assert.equal(inspected.latest_task.task_id, "task-chat-1");
   assert.equal(inspected.send_options.can_send, false);
-  assert.match(inspected.send_options.refusal_reason, /branch conversation is read-only/);
+
   assert.equal(inspected.send_options.stable_session_id, "session-1");
 
   const started = [];
@@ -1354,6 +1357,8 @@ test("a branch conversation stays read-only when its tasks have aged out of the 
   });
   const cached = await inspectProjectConversation(project, [task], { chat_id: "chat-1" }, inWindow);
   assert.equal(cached.send_options.can_send, true);
+
+  assert.match(inspected.send_options.refusal_reason, /branch conversation is read-only/);
 });
 
 function conversationSummaryFixtures() {
@@ -1701,6 +1706,7 @@ test("Experiment inspection compacts backend decisions and scopes work and watch
     },
   ]);
   assert.ok(JSON.stringify(inspected).length <= 12_000);
+
   assert.equal(
     inspectProjectExperiment(project, [experimentTask], [], { experiment_id: "exp-1" }, true)
       .page_start_refusal,

@@ -1377,16 +1377,13 @@ def test_interrupted_successful_spawn_reconciles_existing_worker_without_restart
         ),
     )
 
-    assert response == CommandResponse(
-        request_id=retry_request_id,
-        status="ok",
-        message="The existing Auto-research worker was recovered after interrupted Spawn.",
-        result={
-            "worker_id": existing.operation_id,
-            "status": existing.status,
-            "disposition": "existing",
-        },
-    )
+    assert response.request_id == retry_request_id
+    assert response.status == "ok"
+    assert response.result == {
+        "worker_id": existing.operation_id,
+        "status": existing.status,
+        "disposition": "existing",
+    }
     assert effects.spawn_calls == []
     assert [
         route.worker_id for route in store.auto_research_child_works(auto_research.episode_id)

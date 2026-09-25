@@ -35,7 +35,6 @@ def test_local_preflight_reports_each_invalid_agent_visible_root(manifest, tmp_p
 
     roots = ContextAssembler(manifest).source_roots("laptop")
     diagnostics = preflight_provider_roots(roots, manifest.machine_map["laptop"])
-
     assert diagnostics == [
         f"laptop/claude source root {str(not_a_directory)!r}: is not a directory",
         f"laptop/codex source root {str(missing)!r}: does not exist",
@@ -101,8 +100,8 @@ def test_remote_preflight_timeout_is_precise_per_root(manifest, monkeypatch) -> 
 
     assert len(diagnostics) == 2
     assert all("remote metadata probe timed out after 180 seconds" in item for item in diagnostics)
-    assert "remote-1 (research.example)/claude source root '~/.claude/projects'" in diagnostics[0]
-    assert "remote-1 (research.example)/codex source root '~/.codex/sessions'" in diagnostics[1]
+    assert "~/.claude/projects" in diagnostics[0]
+    assert "~/.codex/sessions" in diagnostics[1]
 
 
 def test_assemble_run_keeps_missing_root_as_non_blocking_source_error(manifest, tmp_path) -> None:

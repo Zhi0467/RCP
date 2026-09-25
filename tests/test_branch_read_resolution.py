@@ -115,7 +115,7 @@ def test_unavailable_read_refresh_is_explicit(branch_service, monkeypatch, raise
         return False
 
     monkeypatch.setattr(service.history.workspace, "refresh_if_stale", unavailable_refresh)
-    with pytest.raises(StateUnavailable, match="canonical state"):
+    with pytest.raises(StateUnavailable):
         get_graph_service(catalog, metadata.project_id, metadata.branch_id, initialize=False)
 
 

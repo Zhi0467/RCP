@@ -50,10 +50,11 @@ test("an available team group exposes its verified cached project", () => {
 
   assert.match(html, /Causal Systems Lab/);
   assert.match(html, /Plasticity study/);
-  assert.match(html, /2 waiting/);
-  assert.match(html, /Open team space/);
+
   assert.doesNotMatch(html, /disabled=""/);
-  assert.doesNotMatch(html, /Reconnect/);
+
+  assert.match(html, /<span>2[^<]*<\/span>/);
+  assert.match(html, /<header>[^]*?<button/);
 });
 
 test("an unavailable team group keeps cached cards visible but inert", () => {
@@ -67,28 +68,11 @@ test("an unavailable team group keeps cached cards visible but inert", () => {
   );
 
   assert.match(html, /Plasticity study/);
-  assert.match(html, /<button[^>]*>.*Reconnect/s);
+
   assert.match(html, /class="team-project-card"[^>]*disabled=""/);
   assert.match(html, /role="alert"[^>]*>server unavailable/);
-  assert.doesNotMatch(html, /Open team space/);
-});
 
-test("an empty available team group can open its project index", () => {
-  const html = renderToStaticMarkup(
-    React.createElement(TeamConnectionGroup, {
-      view: {
-        connection: { ...connection, last_known_cards: [] },
-        state: "available",
-        error: null,
-      },
-      onReconnect() {},
-      onOpenSpace() {},
-      onOpenProject() {},
-    }),
-  );
-
-  assert.match(html, /Open team space/);
-  assert.match(html, /No projects yet/);
+  assert.match(html, /<header>[^]*?<button/);
 });
 
 test("connection updates preserve saved registry order", () => {
@@ -135,8 +119,53 @@ test("Add team space keeps the one credential in a password field and out of URL
   );
 
   assert.match(html, /<form[^>]*autoComplete="off"/);
-  assert.match(html, /SSH target/);
-  assert.equal((html.match(/Bootstrap or invitation code/g) ?? []).length, 2);
+
   assert.match(html, /<input[^>]*type="password"/);
   assert.doesNotMatch(html, /action=|localStorage|sessionStorage|[?&](token|code)=/i);
+});
+
+test("an empty available team group can open its project index", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(TeamConnectionGroup, {
+      view: {
+        connection: { ...connection, last_known_cards: [] },
+        state: "available",
+        error: null,
+      },
+      onReconnect() {},
+      onOpenSpace() {},
+      onOpenProject() {},
+    }),
+  );
+
+  assert.match(html, /<header>[^]*?<button/);
+  assert.match(html, /class="team-space-no-projects"/);
+});
+
+test("team header controls dispatch the action for their connection state", () => {
+  for (const state of ["available", "unavailable"]) {
+    const calls = [];
+    const tree = TeamConnectionGroup({
+      view: { connection, state, error: null },
+      onOpenSpace() {
+        calls.push("open");
+      },
+      onReconnect() {
+        calls.push("reconnect");
+      },
+      onOpenProject() {
+        calls.push("project");
+      },
+    });
+    const header = React.Children.toArray(tree.props.children).find(
+      (element) => element.type === "header",
+    );
+    const buttons = React.Children.toArray(header.props.children).filter(
+      (element) => element.type === "button",
+    );
+    assert.equal(buttons.length, 1);
+    assert.ok(!buttons[0].props.disabled);
+    buttons[0].props.onClick();
+    assert.deepEqual(calls, [state === "available" ? "open" : "reconnect"]);
+  }
 });

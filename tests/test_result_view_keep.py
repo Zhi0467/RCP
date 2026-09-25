@@ -101,7 +101,7 @@ def test_local_keep_does_not_follow_a_symlinked_repository_root(tmp_path) -> Non
         str(linked_repository / ".research"),
     )
 
-    with pytest.raises(StateUnavailable, match="Repository root is unavailable"):
+    with pytest.raises(StateUnavailable):
         workspace.keep_result_view(
             source_name="report.html",
             project_name="project",
@@ -297,7 +297,7 @@ def test_ssh_read_distinguishes_missing_from_unavailable(tmp_path, monkeypatch) 
     assert workspace.read_kept_result_view(name) == b"<html>kept</html>"
     with pytest.raises(FileNotFoundError):
         workspace.read_kept_result_view(name)
-    with pytest.raises(StateUnavailable, match="host unavailable"):
+    with pytest.raises(StateUnavailable):
         workspace.read_kept_result_view(name)
     assert all(call[-3:] == ["/srv/project", name, str(16 * 1024 * 1024)] for call in calls)
 

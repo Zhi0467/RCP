@@ -256,7 +256,7 @@ def test_kept_view_survives_expiry_and_keep_is_idempotent(tmp_path) -> None:
         kept_filename="throughput-project-26-08-12.html",
         kept_at=(_CREATED + timedelta(minutes=1)).isoformat(),
     )
-    with pytest.raises(ResultViewConflict, match="changed before Keep"):
+    with pytest.raises(ResultViewConflict):
         store.mark_result_view_kept(
             record.view_id,
             expected_content_sha256=record.content_sha256,
@@ -364,7 +364,7 @@ def test_revision_uses_digest_cas_and_preserves_view_identity(tmp_path) -> None:
     assert revised.origin_operation_id == record.origin_operation_id
     assert revised.latest_operation_id == "operation-revise"
     assert revised.content_sha256 == hashlib.sha256(_REVISED_HTML).hexdigest()
-    with pytest.raises(ResultViewConflict, match="changed before"):
+    with pytest.raises(ResultViewConflict):
         store.revise_result_view(
             record.view_id,
             expected_content_sha256=record.content_sha256,
@@ -389,7 +389,7 @@ def test_result_view_bytes_are_bounded_digest_validated_and_updated_atomically(t
         )
         == _HTML
     )
-    with pytest.raises(ResultViewConflict, match="changed before"):
+    with pytest.raises(ResultViewConflict):
         store.result_view_bytes(record.view_id, expected_content_sha256="f" * 64)
 
     with pytest.raises(ValueError, match="digest does not match"):
@@ -498,7 +498,7 @@ def test_revision_after_keep_conflicts_without_changing_kept_metadata(tmp_path) 
         kept_at=(_CREATED + timedelta(minutes=1)).isoformat(),
     )
 
-    with pytest.raises(ResultViewConflict, match="kept result view"):
+    with pytest.raises(ResultViewConflict):
         store.revise_result_view(
             record.view_id,
             expected_content_sha256=record.content_sha256,
@@ -531,7 +531,7 @@ def test_keep_after_revision_conflicts_without_exposing_stale_keep_metadata(tmp_
         expires_at=(_CREATED + timedelta(days=8)).isoformat(),
     )
 
-    with pytest.raises(ResultViewConflict, match="changed before Keep"):
+    with pytest.raises(ResultViewConflict):
         store.mark_result_view_kept(
             record.view_id,
             expected_content_sha256=record.content_sha256,

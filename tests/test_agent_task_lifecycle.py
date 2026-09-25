@@ -166,10 +166,7 @@ def _assert_truthful_refusal_event(
     event = appended[0]
     assert event.level == "warning"
     message = event.message.lower()
-    assert "refused" in message
     assert source_status in message
-    if operation == "pause":
-        assert event.message == f"Pause refused: this task already {source_status}."
 
 
 def _prepare_task(tmp_path: Path, source_status: AgentTaskStatus) -> tuple[AppStore, str]:

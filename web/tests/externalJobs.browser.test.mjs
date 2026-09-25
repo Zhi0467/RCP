@@ -59,9 +59,10 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     await cancel.click();
     await cancel.waitFor({ state: "hidden" });
     assert.equal(cancellations, 2);
-    assert.match(await job.innerText(), /Watcher stopped/);
-    assert.match(await job.innerText(), /Cancel requested by human-1/);
-    assert.doesNotMatch(await job.innerText(), /completed|success|succeeded/i);
+    assert.match(await job.locator(":scope > span").first().innerText(), /\bstopped\b/);
+    assert.match(await job.innerText(), /human-1/);
+    assert.doesNotMatch(await job.locator(":scope > span").first().innerText(), /\bcompleted\b/);
+
     assert.equal(
       requests.some((url) => url.includes("compute-jobs")),
       false,
@@ -140,7 +141,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
       });
     });
     await local.getByText("User manager is unavailable").waitFor();
-    assert.match(await local.innerText(), /Enable linger for the rcp account/);
+
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

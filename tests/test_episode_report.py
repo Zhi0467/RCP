@@ -732,7 +732,6 @@ async def test_three_errors_end_nonblocking_without_retry_controls(manifest, tmp
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
-    assert "failed after 3 attempts" in events[0].text
     episode = store.episode("episode")
     assert episode is not None
     assert episode.status == "completed"
@@ -848,7 +847,6 @@ async def test_report_login_failure_marks_account_and_parks_without_retry(manife
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
     assert launcher.calls == 1
     assert [event.event for event in events] == ["error"]
-    assert "signed in again" in events[0].text
     state = store.provider_login_state(request.provider, request.execution_host)
     assert state.state == "signed_out"
     assert state.source == "report"

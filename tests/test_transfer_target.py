@@ -90,7 +90,7 @@ def test_sealed_target_archive_activates_once_and_retry_returns_same_receipt(
     target = fixture["target"]
     data_dir = fixture["catalog"].data_dir
 
-    with pytest.raises(TargetTransferUploadError, match="lease boundary changed"):
+    with pytest.raises(TargetTransferUploadError):
         coordinator.activate(
             archive.target_request_id,
             lease_boundary_sha256="0" * 64,

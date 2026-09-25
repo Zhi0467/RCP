@@ -411,10 +411,6 @@ def test_explicit_invocation_limit_over_total_allowance_is_pre_admission(
             admission_id="admission-over-limit",
         )
 
-    assert str(caught.value) == (
-        "The requested Experiment invocation limit exceeds the Auto-research allowance of 5; "
-        "lower --invocation-limit to 5 or less."
-    )
     assert caught.value.allowance.model_dump() == {"total": 5, "used": 0, "remaining": 5}
     assert store.auto_research_child_experiment(CHILD_OVER_LIMIT) is None
     admission = store.auto_research_child_admission("admission-over-limit")

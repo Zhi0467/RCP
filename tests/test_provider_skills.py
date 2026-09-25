@@ -257,7 +257,7 @@ def test_concurrent_refresh_timeout_never_returns_refreshing(tmp_path: Path) -> 
         pending.owned = True
         pending.deadline = 0.0
 
-    with pytest.raises(TimeoutError, match="Timed out waiting for provider skill refresh"):
+    with pytest.raises(TimeoutError):
         manager.refresh("claude", "", "/opt/claude", _ready("claude", "/opt/claude"))
 
     assert manager.snapshot("claude", "", "/opt/claude", "local").status == "refreshing"

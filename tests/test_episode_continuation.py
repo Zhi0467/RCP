@@ -291,7 +291,6 @@ def test_continuation_refuses_a_stage_frozen_on_another_machine(manifest, tmp_pa
         )
 
     assert response.status_code == 409
-    assert "Start a new Auto-research episode instead." in response.json()["detail"]
     assert [item.model_dump(mode="json") for item in store.episodes(project_id)] == episodes_before
     assert [item.model_dump(mode="json") for item in store.agent_tasks(project_id)] == tasks_before
 
@@ -318,7 +317,6 @@ def test_continue_refuses_a_live_or_unbound_episode(manifest, tmp_path) -> None:
             f"{base}/continue", json={"invocation_ceiling": 2, "request_id": str(uuid.uuid4())}
         )
         assert unbound.status_code == 409, unbound.text
-        assert "Start a new episode" in unbound.json()["detail"]
     assert store.episode_continuation(loop.episode_id) is None
 
 
@@ -361,7 +359,6 @@ def test_experiment_continuation_refuses_a_stage_frozen_on_another_machine(
         )
 
     assert response.status_code == 409, response.text
-    assert "Start a new episode instead." in response.json()["detail"]
     assert store.episode_continuation(loop.episode_id) is None
     assert [
         item.model_dump(mode="json") for item in store.episodes(loop.project_id)

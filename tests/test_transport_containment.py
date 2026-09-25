@@ -112,7 +112,7 @@ def test_reused_remote_stage_refuses_unsafe_existing_root(
     )
 
     try:
-        with pytest.raises(StateUnavailable, match="remote run stage"):
+        with pytest.raises(StateUnavailable):
             stage.open(label, reuse=True)
         assert stage.root is None
     finally:

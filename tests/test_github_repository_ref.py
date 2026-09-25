@@ -84,12 +84,7 @@ def test_repository_ref_rejects_ambiguous_or_non_github_sources_before_io(
     message: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each input names the guard that must reject it.
-
-    Matching the exact message keeps every guard independently pinned. A looser
-    assertion passes even when one guard is removed, because a later guard or the
-    model validator still raises something mentioning GitHub.
-    """
+    """Reject invalid references before network or filesystem access."""
 
     monkeypatch.setattr(
         socket,

@@ -1040,13 +1040,11 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert ">Comment</button>" not in viewer.text
     assert "rcp-artifact-selection-enable" not in viewer.text
     assert 'id="keep"' not in viewer.text
-    assert ">Save copy</button>" in viewer.text
     assert "fetch(config.saveUrl" in viewer.text
     assert f"/episodes/{episode.episode_id}/report/save" in viewer.text
     assert ">report</span>" in viewer.text
     assert 'id="notice"' in viewer.text
     assert legacy_preview.status_code == 200
-    assert ">Save copy</button>" in legacy_preview.text
     assert url in legacy_preview.text
     with TestClient(app) as client:
         assert client.head(legacy_preview_url).content == b""

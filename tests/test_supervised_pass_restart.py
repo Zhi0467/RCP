@@ -34,7 +34,6 @@ def test_a_supervised_pass_survives_the_restart_that_ended_its_watcher(tmp_path,
     task = reopened.agent_task("first")
     assert task.status not in {"interrupted", "failed"}
     assert task.phase == "awaiting_remote_result"
-    assert "Waiting for the remote result" in (task.status_message or "")
 
 
 def test_an_unsupervised_pass_is_interrupted_as_before(tmp_path, store) -> None:

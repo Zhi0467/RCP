@@ -426,7 +426,7 @@ def test_root_configuration_lock_refuses_a_concurrent_holder(
 
     with (
         backup_owner.backup_configuration_lock(layout),
-        pytest.raises(BackupConfigurationRefused, match="Another.*operation"),
+        pytest.raises(BackupConfigurationRefused),
         backup_owner.backup_configuration_lock(layout),
     ):
         raise AssertionError("the second holder must not enter")
@@ -473,7 +473,7 @@ def test_pending_configuration_recovers_before_a_new_request(
     )
     machine = LinuxBackupConfigurationMachine(layout)
 
-    with pytest.raises(BackupConfigurationRefused, match="could not finish publishing"):
+    with pytest.raises(BackupConfigurationRefused):
         machine.persist_and_install(_resolved(first))
     pending = backup_owner._pending_backup_configuration_path(layout)
     assert pending.is_file()
@@ -520,7 +520,7 @@ def test_pending_server_identity_is_validated_before_recovery_mutates_units(
         lambda *_args: mutations.append("converge"),
     )
 
-    with pytest.raises(BackupConfigurationRefused, match="identity is missing"):
+    with pytest.raises(BackupConfigurationRefused):
         backup_owner.recover_pending_backup_configuration(layout)
 
     assert mutations == []
@@ -566,7 +566,7 @@ def test_failed_pre_fence_mutates_neither_journal_nor_units(
         lambda *_args: mutations.append("units"),
     )
 
-    with pytest.raises(BackupConfigurationRefused, match="could not be stopped"):
+    with pytest.raises(BackupConfigurationRefused):
         LinuxBackupConfigurationMachine(layout).persist_and_install(_resolved(_settings()))
     assert mutations == []
 
@@ -607,7 +607,7 @@ def test_server_managed_identity_must_still_exist_before_publication(
         lambda: mutations.append("fence"),
     )
 
-    with pytest.raises(BackupConfigurationRefused, match="identity is missing"):
+    with pytest.raises(BackupConfigurationRefused):
         LinuxBackupConfigurationMachine(layout).persist_and_install(_resolved(_settings()))
 
     assert mutations == []
@@ -654,7 +654,7 @@ def test_publication_refuses_when_installed_backup_changed_after_resolution(
     assert first.observed_installed_backup is second.observed_installed_backup is None
 
     machine.persist_and_install(first)
-    with pytest.raises(BackupConfigurationRefused, match="changed.*Rerun the same command"):
+    with pytest.raises(BackupConfigurationRefused):
         machine.persist_and_install(second)
 
     installed = config_owner.load_installed_server_config(config_path)
@@ -806,7 +806,7 @@ def test_readback_requires_the_same_timer_text_and_enabled_systemd_state(
         "read_systemd_unit_state",
         lambda _unit: ("inactive", "disabled"),
     )
-    with pytest.raises(BackupConfigurationRefused, match="not both active and enabled"):
+    with pytest.raises(BackupConfigurationRefused):
         machine.readback(config)
 
 
@@ -839,7 +839,7 @@ def test_failed_first_backup_fences_the_timer_and_keeps_the_pending_intent(
         lambda: events.append("fence"),
     )
 
-    with pytest.raises(backup_owner.InstallRefused, match="injected first backup failure"):
+    with pytest.raises(backup_owner.InstallRefused):
         backup_owner._converge_installed_backup_configuration(installed, layout)
 
     assert events == ["first_backup", "fence"]

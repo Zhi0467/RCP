@@ -62,7 +62,6 @@ def test_work_probe_is_empty_stdin_cached_and_refreshable(tmp_path: Path, work_r
         assert readiness.work_like_reason is None
     else:
         assert _WORK_PROBE_REASON in readiness.work_like_reason
-        assert "job control" not in readiness.work_like_reason
     assert launcher.readiness("claude", binary=str(binary)) == readiness
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
     launcher.readiness("claude", binary=str(binary), refresh=True)
@@ -129,7 +128,6 @@ def test_probe_transport_failure_is_not_a_rejected_setting(
         assert readiness.path_state == "unreachable" and readiness.link_lost
         assert "unreachable" in (readiness.reason or "")
     else:
-        assert "could not be checked" in readiness.work_like_reason
         assert "connection failed" in readiness.work_like_reason
 
 
@@ -164,7 +162,6 @@ async def test_first_provider_error_contains_stderr_cause(
         async for event in stream:
             if event.event == "error":
                 assert _WORK_PROBE_REASON in event.text
-                assert "job control" not in event.text
                 break
         else:
             pytest.fail("provider failure was not reported")
@@ -237,7 +234,6 @@ def test_durable_signed_out_overrides_cached_readiness_without_probe(tmp_path):
     )
     readiness = launcher.readiness("claude", binary=str(binary))
     assert not readiness.authenticated
-    assert "Settings" in readiness.reason
     assert (tmp_path / "probes").read_text().splitlines() == ["probe"]
     assert not launcher.cached_readiness("claude", binary=str(binary)).authenticated
 

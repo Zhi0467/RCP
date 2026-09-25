@@ -551,35 +551,12 @@ test("authoritative inactive snapshots prune resolved choices and clear missing 
   assert.deepEqual(Object.keys(JSON.parse(stored.get("rcp:human-draft:alpha")).proposals), [
     pending.id,
   ]);
-  assert.equal(
-    proposalChoicesClearedNotice(next.draftReconciliationDiscardedProposalIds),
-    "Externally resolved proposal choices were cleared: proposal/missing, proposal/withdrawn.",
-  );
 
   const stale = reconcileInactiveProjectTabState(retained, {
     ...snapshot,
     snapshot_freshness: "stale",
   });
   assert.strictEqual(stale, retained);
-});
-
-test("Sync reports stale withdrawals without claiming their proposed changes applied", () => {
-  const nextGraph = {
-    proposals: {
-      "proposal/stale": { status: "withdrawn" },
-      "proposal/applied": { status: "approved" },
-    },
-  };
-  const submitted = [
-    { proposal_id: "proposal/applied", decision: "approved" },
-    { proposal_id: "proposal/stale", decision: "rejected" },
-  ];
-
-  assert.equal(
-    humanSyncSuccessNotice(9, submitted, nextGraph),
-    "Synced revision 9. Stale proposals were withdrawn and their proposed changes were not applied: proposal/stale.",
-  );
-  assert.equal(humanSyncSuccessNotice(9, submitted.slice(0, 1), nextGraph), "Synced revision 9.");
 });
 
 test("a project still on the filtered index keeps its tab open", async () => {

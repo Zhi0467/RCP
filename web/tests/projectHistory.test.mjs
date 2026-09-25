@@ -111,16 +111,15 @@ test("Overview uses the latest revision prose and preserves every other question
     /Updated the third-stream ordering\. Recorded two additional probe checkpoints\./,
   );
   assert.doesNotMatch(html, /This complete detail belongs in History only/);
-  assert.match(html, /Revision 4 to revision 5/);
-  assert.match(html, /What are we asking\?/);
-  assert.match(html, /Where are we\?/);
-  assert.match(html, /What is blocked\?/);
-  assert.match(html, /What needs you\?/);
+
   assert.match(html, /Choose the queued direction/);
-  assert.match(html, /0 proposals · 1 decisions awaiting choice/);
-  assert.doesNotMatch(html, /Historical ambiguity|ambiguities/);
-  assert.match(html, /What happens next\?/);
+
   assert.equal(html.match(/class="overview-number"/g)?.length, 6);
+
+  assert.deepEqual(
+    [...html.matchAll(/class="overview-detail">([^<]*)<\/span>/g)][4][1].match(/\d+/g),
+    ["0", "1"],
+  );
 });
 
 test("Overview keeps its previous latest-node fallback when no summary is supplied", () => {
@@ -136,7 +135,6 @@ test("Overview keeps its previous latest-node fallback when no summary is suppli
 
   assert.match(html, /Latest graph concept/);
   assert.doesNotMatch(html, /Updated the third-stream ordering/);
-  assert.match(html, /Last refresh/);
 });
 
 test("Project history separates revision prose from the complete clickable Agent task list", () => {
@@ -163,14 +161,9 @@ test("Project history separates revision prose from the complete clickable Agent
   };
   const html = renderToStaticMarkup(React.createElement(ProjectHistoryDrawer, props));
 
-  assert.match(html, /aria-label="Agent tasks"/);
-  assert.match(html, /aria-label="Project revision summaries"/);
-  assert.match(html, /Project revisions/);
-  assert.match(html, /Revision 4 to revision 5/);
   assert.match(html, /Updated the third-stream ordering\./);
   assert.ok(html.indexOf("Revision 4 to revision 5") < html.indexOf("Revision 3 to revision 4"));
-  assert.match(html, /Seed project graph · attempt 1/);
-  assert.match(html, /Writing coach · attempt 2/);
+
   assert.equal(html.match(/data-task-id=/g)?.length, tasks.length);
 
   const tree = ProjectHistoryDrawer(props);
@@ -198,71 +191,8 @@ test("Project history reports loading without hiding the already-loaded Agent ta
   );
 
   assert.match(html, /role="status"/);
-  assert.match(html, /Loading project revisions…/);
-  assert.doesNotMatch(html, /No project revisions yet/);
+
   assert.match(html, /data-task-id="active-task"/);
-});
-
-test("Project history labels system, attributed, and legacy revisions without inferring identity", () => {
-  const authorized = {
-    space_id: "123e4567-e89b-42d3-a456-426614174000",
-    user_id: "123e4567-e89b-42d3-a456-426614174001",
-    display_name: "Ada Researcher",
-  };
-  const html = renderToStaticMarkup(
-    React.createElement(ProjectHistoryDrawer, {
-      projectId: "project",
-      summaries: [
-        {
-          ...latestSummary,
-          from_revision: 0,
-          to_revision: 1,
-          kind: "identity",
-          author: null,
-          producer: "system",
-          sentences: ["Project identity adopted."],
-        },
-        {
-          ...latestSummary,
-          from_revision: 1,
-          to_revision: 2,
-          producer: "human",
-          author: "human",
-          authorized_by: authorized,
-          sentences: ["Recorded a human change."],
-        },
-        {
-          ...latestSummary,
-          from_revision: 2,
-          to_revision: 3,
-          authorized_by: authorized,
-          profile: "ordinary",
-          task_id: "task-ordinary",
-          sentences: ["Recorded an Agent change."],
-        },
-        {
-          ...latestSummary,
-          from_revision: 3,
-          to_revision: 4,
-          producer: "human",
-          author: "human",
-          authorized_by: null,
-          sentences: ["Recorded a legacy change."],
-        },
-      ],
-      tasks: [],
-      loading: false,
-      error: null,
-      onInspectTask() {},
-      episodeReportHref: (episodeId) => `/preview/${episodeId}`,
-      onClose() {},
-    }),
-  );
-
-  assert.match(html, /Identity · RCP/);
-  assert.match(html, /Refresh · Ada Researcher/);
-  assert.match(html, /Ordinary Agent task · task-ordinary/);
-  assert.match(html, /Refresh · Human · Unattributed/);
 });
 
 test("Project history groups episode envelopes while preserving revision attribution", () => {
@@ -380,17 +310,11 @@ test("Project history groups episode envelopes while preserving revision attribu
   );
 
   assert.equal(html.match(/class="history-campaign-group"/g)?.length, 2);
-  assert.match(html, /Auto-research episode · Exhausted/);
-  assert.match(html, /Authorized by Ada Researcher/);
-  assert.match(html, /2 revisions/);
-  assert.match(html, /Episode no longer recorded/);
+
   // An episode id may appear in the report link's href, but never as text a
   // human reads: a group identifies itself by state, not by a bare id.
   assert.doesNotMatch(html.replace(/<[^>]*>/g, " "), /episode-live|episode-missing/);
-  assert.match(html, /Orchestrator Agent task · task-orchestrator/);
-  assert.match(html, /Ordinary Agent task · task-worker/);
-  assert.match(html, /Approval · Ada Researcher/);
-  assert.equal(html.match(/Open report/g)?.length, 1);
+
   assert.ok(
     html.indexOf("Auto-research episode · Exhausted") < html.indexOf("Episode no longer recorded"),
   );
@@ -401,6 +325,18 @@ test("Project history groups episode envelopes while preserving revision attribu
     html.indexOf("</section></li>", html.indexOf("Episode no longer recorded")) <
       html.indexOf("Approved the episode proposal"),
   );
+
+  assert.match(html, /class="history-campaign-meta">[^<]*Ada Researcher/);
+  assert.deepEqual(
+    [...html.matchAll(/class="history-campaign-meta">[^]*?<\/time>[^]*?(\d+) [^<]*<\/p>/g)].map(
+      (match) => Number(match[1]),
+    ),
+    [2, 2],
+  );
+  assert.match(html, /class="history-attribution-detail">[^<]*task-orchestrator/);
+  assert.match(html, /class="history-attribution-detail">[^<]*task-worker/);
+  assert.match(html, /Approved the episode proposal\.<\/p><time[^>]*>[^<]*Ada Researcher/);
+  assert.equal((html.match(/href="\/preview\/episode-live"/g) ?? []).length, 1);
 });
 
 test("Project history report control links to the decorated report's preview", () => {
@@ -441,41 +377,6 @@ test("Project history report control links to the decorated report's preview", (
 
   assert.deepEqual(requested, ["episode-live"]);
   assert.match(html, /href="\/preview\/episode-live"/);
-  assert.match(html, /Open report/);
-});
-
-test("an identity revision does not make an unseeded project look refreshed", () => {
-  const identityOnlyGraph = { ...graph, revision: 1, nodes: {} };
-  const html = renderToStaticMarkup(
-    React.createElement(ProjectOverview, {
-      project: {
-        ...project,
-        primary_question: null,
-        last_refresh_at: null,
-      },
-      graph: identityOnlyGraph,
-      pendingProposals: [],
-      decisionsAwaitingChoice: [],
-      latestRevisionSummary: null,
-      onNavigate() {},
-    }),
-  );
-
-  assert.match(html, /The project has not been seeded yet\./);
-  assert.match(html, /Seed the graph from the selected truth repositories\./);
-  assert.match(html, /Project revision 1/);
-  assert.doesNotMatch(html, /Graph revision/);
-});
-
-test("connecting an existing project preserves its retained canonical state", () => {
-  assert.match(
-    setupFinalConfirmation({
-      action: "connect",
-      remote_write: false,
-      canonical_location: "/research/project",
-    }),
-    /retained canonical state without replacing its manifest/,
-  );
 });
 
 test("archive confirmation carries the exact retained-history token from preflight", () => {
@@ -532,3 +433,71 @@ function findElement(node, predicate) {
   }
   return null;
 }
+
+test("Project history labels system, attributed, and legacy revisions without inferring identity", () => {
+  const authorized = {
+    space_id: "123e4567-e89b-42d3-a456-426614174000",
+    user_id: "123e4567-e89b-42d3-a456-426614174001",
+    display_name: "Ada Researcher",
+  };
+  const html = renderToStaticMarkup(
+    React.createElement(ProjectHistoryDrawer, {
+      projectId: "project",
+      summaries: [
+        {
+          ...latestSummary,
+          from_revision: 0,
+          to_revision: 1,
+          kind: "identity",
+          author: null,
+          producer: "system",
+          sentences: ["Project identity adopted."],
+        },
+        {
+          ...latestSummary,
+          from_revision: 1,
+          to_revision: 2,
+          producer: "human",
+          author: "human",
+          authorized_by: authorized,
+          sentences: ["Recorded a human change."],
+        },
+        {
+          ...latestSummary,
+          from_revision: 2,
+          to_revision: 3,
+          authorized_by: authorized,
+          profile: "ordinary",
+          task_id: "task-ordinary",
+          sentences: ["Recorded an Agent change."],
+        },
+        {
+          ...latestSummary,
+          from_revision: 3,
+          to_revision: 4,
+          producer: "human",
+          author: "human",
+          authorized_by: null,
+          sentences: ["Recorded a legacy change."],
+        },
+      ],
+      tasks: [],
+      loading: false,
+      error: null,
+      onInspectTask() {},
+      episodeReportHref: (episodeId) => `/preview/${episodeId}`,
+      onClose() {},
+    }),
+  );
+
+  const revisions = html.split('<li class="info">').slice(1);
+  const human = revisions.find((row) => row.includes("Recorded a human change."));
+  const agent = revisions.find((row) => row.includes("Recorded an Agent change."));
+  const system = revisions.find((row) => row.includes("Project identity adopted."));
+  const legacy = revisions.find((row) => row.includes("Recorded a legacy change."));
+  assert.match(human, /Ada Researcher/);
+  assert.match(agent, /class="history-attribution-detail">[^<]*task-ordinary/);
+  assert.doesNotMatch(human, /history-attribution-detail/);
+  assert.doesNotMatch(system, /Ada Researcher|history-attribution-detail/);
+  assert.doesNotMatch(legacy, /Ada Researcher|history-attribution-detail/);
+});

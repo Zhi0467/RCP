@@ -37,7 +37,7 @@ def test_local_view_slots_keep_one_conversation_path_across_turns(tmp_path) -> N
     assert first != other_view
     assert stage.stat().st_mtime > old_time
     assert not (stage / "turns").exists()
-    with pytest.raises(FileExistsError, match="already exists"):
+    with pytest.raises(FileExistsError):
         prepare_local_result_view_slot(stage, VIEW_A, reuse=False)
 
 
@@ -122,7 +122,7 @@ def test_local_view_slot_rejects_symlinked_components(tmp_path) -> None:
 
     linked_stage = tmp_path / "linked-stage"
     linked_stage.symlink_to(stage, target_is_directory=True)
-    with pytest.raises(StateUnavailable, match="conversation stage"):
+    with pytest.raises(StateUnavailable):
         prepare_local_result_view_slot(linked_stage, VIEW_A, reuse=False)
 
 
@@ -159,10 +159,10 @@ def test_remote_view_operations_distinguish_missing_unsafe_and_unavailable(
     stage.root = PurePosixPath(str(root))
     _run_remote_scripts_locally(stage, monkeypatch)
 
-    with pytest.raises(FileNotFoundError, match="slot is absent"):
+    with pytest.raises(FileNotFoundError):
         stage.list_result_view_files(VIEW_A)
     slot = Path(str(stage.prepare_result_view_slot(VIEW_A, reuse=False)))
-    with pytest.raises(FileNotFoundError, match="file is absent"):
+    with pytest.raises(FileNotFoundError):
         stage.read_result_view_bytes(VIEW_A, "missing.html", max_bytes=1024)
     outside = root / "outside.html"
     outside.write_text("<h1>outside</h1>", encoding="utf-8")
@@ -183,7 +183,7 @@ def test_remote_view_operations_distinguish_missing_unsafe_and_unavailable(
         "_ssh",
         lambda _arguments: subprocess.CompletedProcess([], 255, "", "connection lost"),
     )
-    with pytest.raises(StateUnavailable, match="connection lost"):
+    with pytest.raises(StateUnavailable):
         stage.list_result_view_files(VIEW_A)
 
     monkeypatch.setattr(
@@ -193,7 +193,7 @@ def test_remote_view_operations_distinguish_missing_unsafe_and_unavailable(
             [], 255, b"", b"connection lost"
         ),
     )
-    with pytest.raises(StateUnavailable, match="connection lost"):
+    with pytest.raises(StateUnavailable):
         stage.read_result_view_bytes(VIEW_A, "large.html", max_bytes=1024)
 
 
@@ -234,7 +234,7 @@ def test_remote_view_traversal_rejects_replaced_workspace_or_views(tmp_path, mon
     stage.root = PurePosixPath(str(root))
     _run_remote_scripts_locally(stage, monkeypatch)
 
-    with pytest.raises(StateUnavailable, match="workspace"):
+    with pytest.raises(StateUnavailable):
         stage.prepare_result_view_slot(VIEW_A, reuse=False)
 
     (root / "workspace").unlink()

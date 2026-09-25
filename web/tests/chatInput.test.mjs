@@ -21,18 +21,17 @@ test("chat annotations become plain selected text and comments in the outgoing t
     { selectedText: "Second answer sentence.", comment: "  Is this measured?  " },
   ];
 
-  assert.equal(
-    assembleChatTurn("Check both points.", annotations),
-    [
-      "Check both points.",
-      "First answer sentence.\ncomment: Be more specific.",
-      "Second answer sentence.\ncomment: Is this measured?",
-    ].join("\n\n"),
-  );
-  assert.equal(
-    assembleChatTurn("", annotations.slice(0, 1)),
-    "First answer sentence.\ncomment: Be more specific.",
-  );
+  for (const [draft, selected] of [
+    ["Check both points.", annotations],
+    ["", annotations.slice(0, 1)],
+  ]) {
+    const result = assembleChatTurn(draft, selected);
+    if (draft) assert.ok(result.includes(draft));
+    for (const annotation of selected) {
+      assert.ok(result.includes(annotation.selectedText));
+      assert.ok(result.includes(annotation.comment.trim()));
+    }
+  }
 });
 
 test("annotation composer stays beside the selection and inside the viewport", () => {

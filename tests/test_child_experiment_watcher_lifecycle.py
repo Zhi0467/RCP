@@ -227,7 +227,7 @@ def test_unexpected_child_experiment_watcher_error_remains_visible(tmp_path, mon
     monkeypatch.setattr(store, "create_experiment_watcher_invocation", invalid_binding)
     poller.poll_once()
 
-    assert "Watcher completion callback failed" in caplog.text
+    assert any(record.levelname == "ERROR" and record.exc_info for record in caplog.records)
     assert "The watcher wake belongs to another episode." in caplog.text
     assert not store.watcher(watcher.watcher_id).notified
     assert launches == []

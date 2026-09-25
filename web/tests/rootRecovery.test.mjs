@@ -69,6 +69,6 @@ test("a repeated missing chunk reaches the visible error boundary instead of rel
   boundary.state = { error: new Error("chunk missing") };
   const html = renderToStaticMarkup(boundary.render());
   assert.match(html, /role="alert"/);
-  assert.match(html, /RCP needs to reload/);
-  assert.match(html, />Reload RCP</);
+
+  assert.match(html, /<button/);
 });

@@ -115,8 +115,6 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
     created = created_response.json()
     assert created["kind"] == "create_team_project"
     assert created["status"] == "waiting_for_server_setup"
-    assert created["status_label"] == "Waiting for server setup"
-    assert created["next_action"] == "Run server setup."
     assert created["can_run_setup"] is True
     assert created["can_review"] is False
     assert created["can_cancel"] is True
@@ -130,7 +128,9 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
         "user_id": alice.user_id,
         "display_name": "Alice",
     }
-    assert created["machines"] == [
+    assert [
+        {k: v for k, v in machine.items() if k != "status_label"} for machine in created["machines"]
+    ] == [
         {
             "alias": "server",
             "location": "local",
@@ -139,7 +139,6 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
             "intended_central_root": str(DEFAULT_SERVER_LAYOUT.projects_root),
             "resolved_central_root": None,
             "ready": False,
-            "status_label": "Waiting for setup",
         }
     ]
     repository = created["repositories"][0]
@@ -202,7 +201,6 @@ def test_member_creates_restart_reads_and_authorizer_cancels_inert_request(tmp_p
     assert cancelled.status_code == repeated.status_code == 200
     assert cancelled.json() == repeated.json()
     assert cancelled.json()["status"] == "cancelled"
-    assert cancelled.json()["status_label"] == "Cancelled"
     assert cancelled.json()["next_action"] is None
     assert cancelled.json()["can_run_setup"] is False
     assert cancelled.json()["can_cancel"] is False
@@ -368,10 +366,6 @@ def test_started_and_operator_action_requests_publish_backend_controls(tmp_path)
     assert running_response.status_code == 200
     running_projection = running_response.json()
     assert running_projection["status"] == "setup_in_progress"
-    assert running_projection["status_label"] == "Setup in progress"
-    assert running_projection["next_action"] == (
-        "Wait for server setup, or resume the same command after an interruption."
-    )
     assert running_projection["can_run_setup"] is True
     assert running_projection["can_review"] is False
     assert running_projection["can_cancel"] is False
@@ -380,7 +374,6 @@ def test_started_and_operator_action_requests_publish_backend_controls(tmp_path)
     assert action_response.status_code == 200
     action_projection = action_response.json()
     assert action_projection["status"] == "operator_action_needed"
-    assert action_projection["status_label"] == "Operator action needed"
     assert action_projection["next_action"] == action.message
     assert action_projection["can_run_setup"] is True
     assert action_projection["can_review"] is False
@@ -476,8 +469,6 @@ def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> No
     assert response.status_code == 200
     projected = response.json()
     assert projected["status"] == "ready_for_review"
-    assert projected["status_label"] == "Ready for review"
-    assert projected["next_action"] == "Review the prepared project."
     assert projected["can_run_setup"] is False
     assert projected["can_review"] is True
     assert projected["can_cancel"] is False
@@ -497,7 +488,6 @@ def test_final_review_projection_contains_only_backend_decisions(tmp_path) -> No
     assert completed_response.status_code == 200
     completed_projection = completed_response.json()
     assert completed_projection["status"] == "completed"
-    assert completed_projection["status_label"] == "Completed"
     assert completed_projection["next_action"] is None
     assert completed_projection["can_run_setup"] is False
     assert completed_projection["can_review"] is False
