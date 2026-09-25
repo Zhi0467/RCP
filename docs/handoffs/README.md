@@ -2,6 +2,11 @@
 
 Active:
 
+- [Remote state reads skip the sync when nothing changed](handoff-2026-09-25-remote-state-reads-skip-unchanged-sync.md)
+  — proposed 2026-09-25, not implemented. A read of SSH-hosted state runs one
+  fingerprint check and syncs only when the remote tree changed, instead of
+  five SSH/rsync steps on every poll.
+
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and
   real remote-machine SSH remain. The deploy key is the default push
