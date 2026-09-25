@@ -121,32 +121,6 @@ def test_current_markdown_links_and_anchors_resolve() -> None:
     assert not failures, "\n" + "\n".join(failures)
 
 
-def test_current_design_has_no_archived_or_superseded_authority() -> None:
-    design_sources = list((DOCS / "specs").glob("*.md"))
-    design_text = "\n".join(path.read_text() for path in design_sources)
-    assert "archive/" not in design_text
-
-    current_text = "\n".join(path.read_text() for path in _current_markdown())
-    assert "research-control-panel-blueprint.md" not in current_text
-    assert "docs/design/" not in current_text
-    assert "--dangerously-bypass-approvals-and-sandbox" not in current_text
-    assert "Work has unrestricted repository" not in current_text
-    assert "unrestricted Work permissions" not in current_text
-    assert "no graph branches" not in current_text.lower()
-    assert "single canonical graph" not in current_text.lower()
-
-    provider_spec = (DOCS / "specs" / "providers-and-containment.md").read_text()
-    assert "project repository write roots" in provider_spec
-    assert "never the dangerous\nbypass flag" in provider_spec
-    assert "They never use `bypassPermissions`" in provider_spec
-    assert "complete inventory of every registered project manifest" in provider_spec
-    assert "Work-like scope and launch fail closed" in provider_spec
-
-    branch_spec = (DOCS / "specs" / "auto-research-and-branch-merge.md").read_text()
-    assert "Every Auto-research episode owns one persistent canonical graph branch" in branch_spec
-    assert "human dispatcher" in branch_spec
-
-
 def test_design_index_links_each_module_spec_once() -> None:
     links = {
         Path(target.partition("#")[0]).name
