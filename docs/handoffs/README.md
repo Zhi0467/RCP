@@ -2,6 +2,13 @@
 
 Active:
 
+- [Turns wait for their own agents, and the helper is always offered](handoff-2026-09-25-turns-wait-for-their-agents.md)
+  — design confirmed 2026-09-25, not implemented. One turn-end rule: the
+  provider finished RCP's own prompt and has no unfinished subagents. Claude
+  runs subagents in the foreground; Codex exec and app-server use an RCP hook
+  fence. Codex exec retry notices become traces. The launch helper stays
+  offered on Slurm machines. Open: whether a service launch skips the watcher.
+
 - [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
   — implemented 2026-09-25 on one pull request and verified on copied
   team-server data. A tab return shows the kept Runs list at once, one list
