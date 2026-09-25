@@ -194,6 +194,10 @@ jobs:
         env:
           RELEASE_TAG: ${{ matrix.tag }}
         run: |
+          # The runner image gives /home a default ACL that makes new service-account
+          # directories 0775 regardless of umask; a real server has none.
+          sudo getfacl --absolute-names /home || true
+          sudo setfacl -k /home
           sudo --preserve-env=RCP_RUN_INSTALLED_UPGRADE,GITHUB_ACTIONS \
             "$PWD/.venv/bin/python" -m tests.server_installed_upgrade \
             --base "$RUNNER_TEMP/installed-upgrade/base" \
