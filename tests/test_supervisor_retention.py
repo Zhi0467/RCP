@@ -15,7 +15,6 @@ from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.limits import (
     RETAINED_CHECKPOINTS,
     RETAINED_RELEASES,
-    RETENTION_ORPHAN_MIN_AGE_SECONDS,
 )
 from rcp_supervisor.operations import OperationStore
 from rcp_supervisor.retention import plan_retention, prune_retained, remove_retained_tree
@@ -81,7 +80,7 @@ def _workspace(checkpoints: Path, operation_id: str, *, age: float = 0.0) -> Pat
     return workspace
 
 
-def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_path):
+def test_plan_removes_every_finished_checkpoint_and_keeps_the_newest_releases(tmp_path):
     checkpoints, releases = _roots(tmp_path, range(100, 105))
     chain = [
         _record(checkpoints, _release(releases, build), _release(releases, build + 1))
@@ -91,8 +90,7 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
         _workspace(checkpoints, record["operation_id"])
     records = [(record, float(index)) for index, record in enumerate(chain)]
     # Two newer journals aborted after preparing a candidate but before any
-    # checkpoint was recorded: their workspaces hold no rollback artifact and
-    # must not take the retained slots; terminal and recorded, they are reclaimed.
+    # checkpoint was recorded; terminal and recorded, they are reclaimed too.
     aborted_ids = set()
     for offset in (1, 2):
         aborted = _record(
@@ -110,19 +108,17 @@ def test_plan_keeps_the_newest_checkpoints_and_every_release_they_can_reach(tmp_
         current_release_directory=str(releases / "104"),
         selected=_release(releases, 104),
         protected_operation_ids=frozenset(),
-        now=NOW,
     )
 
-    assert RETAINED_CHECKPOINTS == 2 and RETAINED_RELEASES == 2
-    newest = [record["operation_id"] for record in chain[-2:]]
-    assert sorted(plan.kept_checkpoints) == sorted(newest)
+    # A committed update never restores old data, so no finished checkpoint
+    # serves recovery: every one, and every failed attempt's quarantine, goes.
+    assert RETAINED_CHECKPOINTS == 0 and RETAINED_RELEASES == 2
+    assert plan.kept_checkpoints == ()
     assert {path.name for path in plan.remove_checkpoints} == {
-        record["operation_id"] for record in chain[:2]
+        record["operation_id"] for record in chain
     } | aborted_ids
-    # 104 is live, 103 is its rollback target, 102 is where the older kept
-    # checkpoint would roll back to. 100 and 101 are unreachable.
-    assert plan.kept_releases == ("104", "103", "102")
-    assert {path.name for path in plan.remove_releases} == {"100", "101"}
+    assert plan.kept_releases == ("104", "103")
+    assert {path.name for path in plan.remove_releases} == {"100", "101", "102"}
     assert plan.left_alone == ()
 
 
@@ -144,24 +140,21 @@ def test_plan_refuses_as_a_whole_when_the_machine_state_disagrees(tmp_path, defe
             current_release_directory=str(releases / current),
             selected=_release(releases, 101),
             protected_operation_ids=frozenset(),
-            now=NOW,
         )
 
 
-def test_plan_reclaims_old_orphans_and_leaves_young_or_unknown_entries_alone(tmp_path):
+def test_plan_reclaims_failed_preparations_and_leaves_unrecognized_entries_alone(tmp_path):
     checkpoints, releases = _roots(tmp_path, range(100, 102))
     committed = _record(checkpoints, _release(releases, 100), _release(releases, 101))
     _workspace(checkpoints, committed["operation_id"])
-    old_orphan = _workspace(
-        checkpoints, str(uuid.uuid4()), age=RETENTION_ORPHAN_MIN_AGE_SECONDS + 60
-    )
+    old_orphan = _workspace(checkpoints, str(uuid.uuid4()), age=60)
     young_orphan = _workspace(checkpoints, str(uuid.uuid4()), age=60)
-    adoption = _workspace(checkpoints, str(uuid.uuid4()), age=10 * RETENTION_ORPHAN_MIN_AGE_SECONDS)
+    adoption = _workspace(checkpoints, str(uuid.uuid4()), age=600)
     (checkpoints / "scratch").mkdir(mode=0o700)
     (checkpoints / "notes.txt").write_text("operator notes")
     (releases / "install.log").write_text("log")
     (releases / "99").symlink_to(releases / "100")
-    # A build no completed deployment names may be mid-install for one.
+    # Preparation is serialized, so an unsealed build is a failed attempt.
     (releases / "42").mkdir(mode=0o700)
 
     plan = plan_retention(
@@ -171,17 +164,18 @@ def test_plan_reclaims_old_orphans_and_leaves_young_or_unknown_entries_alone(tmp
         current_release_directory=str(releases / "101"),
         selected=_release(releases, 101),
         protected_operation_ids=frozenset({adoption.name}),
-        now=NOW,
     )
 
-    assert plan.remove_checkpoints == (old_orphan,)
-    assert sorted(plan.kept_checkpoints) == sorted([committed["operation_id"], adoption.name])
-    assert plan.remove_releases == ()
+    assert set(plan.remove_checkpoints) == {
+        old_orphan,
+        young_orphan,
+        checkpoints / committed["operation_id"],
+    }
+    assert plan.kept_checkpoints == (adoption.name,)
+    assert plan.remove_releases == (releases / "42",)
     reasons = "\n".join(plan.left_alone)
-    assert str(young_orphan) in reasons
     assert str(checkpoints / "scratch") in reasons and str(checkpoints / "notes.txt") in reasons
     assert str(releases / "install.log") in reasons and str(releases / "99") in reasons
-    assert str(releases / "42") in reasons
 
 
 def test_remove_retained_tree_unlocks_read_only_trees_and_never_follows_links(tmp_path):
@@ -272,6 +266,7 @@ def _fake_runtime(tmp_path: Path, releases: Path, checkpoints: Path, *, live: in
         selected_release=lambda: _release(releases, live),
         current_release_directory=lambda: str(releases / str(current)),
         remove_retained=remove_retained_tree,
+        prune_backup_captures=lambda: None,
     )
 
 
@@ -293,13 +288,12 @@ def test_prune_retained_removes_through_the_runtime_from_the_journal(tmp_path):
 
     plan = prune_retained(runtime, store)
 
-    assert not (checkpoints / chain[0]["operation_id"]).exists()
-    assert all((checkpoints / record["operation_id"]).is_dir() for record in chain[1:])
-    assert not (releases / "100").exists()
-    assert all((releases / str(build)).is_dir() for build in (101, 102, 103))
+    assert not any((checkpoints / record["operation_id"]).exists() for record in chain)
+    assert not (releases / "100").exists() and not (releases / "101").exists()
+    assert all((releases / str(build)).is_dir() for build in (102, 103))
     names = {field["name"]: field["value"] for field in plan.fields()}
-    assert names["removed_checkpoints"] == 1 and names["removed_releases"] == 1
-    assert names["kept_releases"] == "103, 102, 101"
+    assert names["removed_checkpoints"] == 3 and names["removed_releases"] == 2
+    assert names["kept_releases"] == "103, 102"
     assert store.active() is None and len(store.records()) == 3
 
 
@@ -316,3 +310,287 @@ def test_a_refused_prune_is_reported_and_does_not_fail_the_committed_update(tmp_
     assert [field["name"] for field in fields] == ["retention"]
     assert fields[0]["value"].startswith("not pruned: The installed release pointer")
     assert (releases / "100").is_dir()
+
+
+def test_consumed_snapshot_releases_slot_and_pruning_follows_filesystem_catalog(tmp_path):
+    from rcp_supervisor.checkpoint import create_stopped_snapshot, restore_checkpoint
+    from rcp_supervisor.retention import _owns_checkpoint
+
+    root = tmp_path / "checkpoints"
+    root.mkdir()
+    identity = str(uuid.uuid4())
+    operation = root / identity
+    operation.mkdir()
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "retained").mkdir(mode=0o700)
+    saved = create_stopped_snapshot(operation / "checkpoint", (live,), boundary_sha256="b" * 64)
+    catalog = json.loads((saved.directory / "checkpoint.json").read_text())
+    record = {"operation_id": identity, "checkpoint": {"directory": str(saved.directory)}}
+    assert _owns_checkpoint(record, root)
+    restore_checkpoint(saved)
+    assert not _owns_checkpoint(record, root)
+    for workspace in catalog["workspaces"]:
+        quarantine = next(Path(workspace).glob("quarantine-*"))
+        (quarantine / "retained").chmod(0)
+    remove_retained_tree(operation, root)
+    assert not operation.exists()
+    assert all(not Path(workspace).exists() for workspace in catalog["workspaces"])
+    assert (live / "retained").is_dir()
+
+
+def _metadata_fixture(tmp_path):
+    checkpoints, releases = _roots(tmp_path, range(100, 103))
+    operations = tmp_path / "operations"
+    operations.mkdir(mode=0o700)
+    store = OperationStore(operations, releases)
+    runtime = _fake_runtime(tmp_path, releases, checkpoints, live=102, current=102)
+    return runtime.paths, store
+
+
+def test_success_bounds_journals_and_removes_interrupted_writes(tmp_path):
+    from rcp_supervisor.limits import RETAINED_OPERATION_JOURNALS
+    from rcp_supervisor.retention import prune_supervisor_metadata
+
+    paths, store = _metadata_fixture(tmp_path)
+    records = []
+    for index in range(RETAINED_OPERATION_JOURNALS + 3):
+        record = _record(
+            paths.checkpoints_root,
+            _release(paths.releases_root, 101),
+            _release(paths.releases_root, 102),
+        )
+        store.write(record)
+        os.utime(store.directory / f"{record['operation_id']}.json", (NOW + index, NOW + index))
+        records.append(record)
+    temporary = store.directory / f"{uuid.uuid4()}.tmp"
+    temporary.write_text("interrupted")
+    temporary.chmod(0o600)
+    prune_supervisor_metadata(paths, store)
+    assert {record["operation_id"] for record, _ in store.records()} == {
+        record["operation_id"] for record in records[-RETAINED_OPERATION_JOURNALS:]
+    }
+    assert not temporary.exists()
+
+
+def test_diagnostics_have_a_count_bound_and_are_cleared_after_success(tmp_path):
+    from rcp_supervisor.limits import RETAINED_SUPERVISOR_LOGS
+    from rcp_supervisor.retention import prune_logs, prune_supervisor_metadata
+
+    paths, store = _metadata_fixture(tmp_path)
+    logs = paths.supervisor / "logs"
+    logs.mkdir(mode=0o700)
+    for index in range(RETAINED_SUPERVISOR_LOGS + 3):
+        path = logs / f"error-{index}.log"
+        path.write_text("failure")
+        os.utime(path, (NOW + index, NOW + index))
+    untouched = logs / "operator-notes"
+    untouched.write_text("keep")
+    prune_logs(logs)
+    assert len(list(logs.glob("*.log"))) == RETAINED_SUPERVISOR_LOGS
+    assert not (logs / "error-0.log").exists()
+    prune_supervisor_metadata(paths, store)
+    assert list(logs.iterdir()) == [untouched]
+
+
+def test_receipts_are_bounded_by_retained_release_trees(tmp_path):
+    from rcp_supervisor.retention import prune_supervisor_metadata
+
+    paths, store = _metadata_fixture(tmp_path)
+    receipts = paths.supervisor / "release-receipts"
+    receipts.mkdir()
+    for build in range(95, 104):
+        (receipts / f"{build}.json").write_text("{}")
+    prune_supervisor_metadata(paths, store)
+    assert {path.stem for path in receipts.iterdir()} == {"100", "101", "102"}
+
+
+def test_success_clears_download_bundles_locks_and_interrupted_staging(tmp_path):
+    from rcp_supervisor.retention import prune_supervisor_metadata
+
+    paths, store = _metadata_fixture(tmp_path)
+    bundles = paths.supervisor / "bundles"
+    bundles.mkdir()
+    for _ in range(3):
+        identity = str(uuid.uuid4())
+        (bundles / identity).mkdir()
+        (bundles / f".{identity}.fetch-interrupted").mkdir()
+        (bundles / f".{identity}.fetch.lock").touch()
+    untouched = bundles / "operator-files"
+    untouched.mkdir()
+    prune_supervisor_metadata(paths, store)
+    assert list(bundles.iterdir()) == [untouched]
+
+
+@pytest.mark.parametrize("storage", ["operator", "versions"])
+def test_root_environments_keep_newest_and_executing_runtime(tmp_path, monkeypatch, storage):
+    from rcp_supervisor.limits import RETAINED_ROOT_ENVIRONMENTS
+    from rcp_supervisor.retention import prune_supervisor_metadata
+
+    paths, store = _metadata_fixture(tmp_path)
+    root = paths.supervisor / storage
+    root.mkdir()
+    children = []
+    for index in range(RETAINED_ROOT_ENVIRONMENTS + 3):
+        child = root / (str(index) if storage == "operator" else f"0.1.{index}")
+        (child / ".venv/bin").mkdir(parents=True)
+        (child / ".venv/bin/python").touch()
+        (child / "installed.json").write_text("{}")
+        os.utime(child, (NOW + index, NOW + index))
+        children.append(child)
+    monkeypatch.setattr(sys, "executable", str(children[0] / ".venv/bin/python"))
+    failed = root / ("99" if storage == "operator" else "0.2.0")
+    failed.mkdir()
+    prune_supervisor_metadata(paths, store)
+    assert set(root.iterdir()) == {children[0], *children[-RETAINED_ROOT_ENVIRONMENTS:]}
+    assert not failed.exists()
+
+
+def test_root_cache_and_unreferenced_python_are_reclaimed(tmp_path):
+    from rcp_supervisor.retention import prune_supervisor_metadata
+
+    paths, store = _metadata_fixture(tmp_path)
+    python = paths.supervisor / "python"
+    for name in ("cpython-live", "cpython-old"):
+        (python / name / "bin").mkdir(parents=True)
+        (python / name / "bin/python").touch()
+    (python / ".temp/interrupted-download").mkdir(parents=True)
+    environment = paths.supervisor / "operator/102"
+    (environment / ".venv/bin").mkdir(parents=True)
+    (environment / "installed.json").write_text("{}")
+    (environment / ".venv/bin/python").symlink_to(python / "cpython-live/bin/python")
+    cache = paths.supervisor / "cache"
+    (cache / "download").mkdir(parents=True)
+    (cache / "download/wheel").write_text("cached")
+    prune_supervisor_metadata(paths, store)
+    assert {path.name for path in python.iterdir()} == {"cpython-live"}
+    assert list(cache.iterdir()) == []
+
+
+def test_preparation_lock_excludes_pruning_but_allows_startup_operation_lock(tmp_path):
+    from rcp_supervisor.operations import OperationBusy
+
+    paths, store = _metadata_fixture(tmp_path)
+    other = OperationStore(store.directory, paths.releases_root)
+    with store.preparing():
+        with other.locked():
+            assert other.active() is None
+        with pytest.raises(OperationBusy), other.preparing():
+            pytest.fail("simultaneous preparations must refuse")
+
+
+def test_success_clears_backup_capture_stages_without_touching_agent_scratch(tmp_path):
+    from rcp_supervisor.retention import prune_backup_captures
+
+    stages = tmp_path / "run-stage"
+    stages.mkdir()
+    task = stages / str(uuid.uuid4())
+    task.mkdir()
+    (task / "work").write_text("agent scratch")
+    for _ in range(3):
+        backup = stages / f"backup-{uuid.uuid4()}"
+        backup.mkdir(mode=0o700)
+        (backup / "receipt.json").write_text("retained failure")
+    prune_backup_captures(tmp_path)
+    assert list(stages.iterdir()) == [task]
+    assert (task / "work").read_text() == "agent scratch"
+
+
+def test_backup_capture_cleanup_refuses_links(tmp_path):
+    from rcp_supervisor.retention import prune_backup_captures
+
+    stages = tmp_path / "run-stage"
+    stages.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (stages / f"backup-{uuid.uuid4()}").symlink_to(victim)
+    with pytest.raises(SupervisorError, match="unsafe"):
+        prune_backup_captures(tmp_path)
+    assert victim.is_dir()
+
+
+def test_success_removes_only_recognized_atomic_metadata_staging(tmp_path):
+    from rcp_supervisor.retention import prune_supervisor_metadata
+
+    paths, store = _metadata_fixture(tmp_path)
+    temporary = paths.supervisor / ".selected.json.abc123xy"
+    temporary.write_text("interrupted")
+    temporary.chmod(0o600)
+    pointer = paths.current.parent / f".current-{uuid.uuid4().hex}"
+    pointer.symlink_to(paths.releases_root / "101")
+    untouched = paths.supervisor / ".selected.json.operator-notes"
+    untouched.write_text("retain")
+    prune_supervisor_metadata(paths, store)
+    assert not temporary.exists() and not pointer.is_symlink()
+    assert untouched.read_text() == "retain"
+
+
+def test_checkpoint_records_external_workspace_before_creating_it(tmp_path, monkeypatch):
+    from rcp_supervisor import checkpoint
+
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "data").write_text("preserve")
+    destination = tmp_path / "checkpoint"
+
+    def interrupt(path, document):
+        assert document["workspaces"]
+        assert not any(Path(name).exists() for name in document["workspaces"])
+        raise OSError("interrupted publication")
+
+    monkeypatch.setattr(checkpoint, "_write_json", interrupt)
+    with pytest.raises(OSError, match="interrupted publication"):
+        checkpoint.create_stopped_snapshot(destination, (live,), boundary_sha256="b" * 64)
+    assert not list(tmp_path.rglob(".rcp-checkpoint-*"))
+
+
+def test_runtime_logs_bound_failure_bytes_and_count(tmp_path, monkeypatch):
+    from rcp_supervisor import runtime as runtime_module
+    from rcp_supervisor.limits import RETAINED_SUPERVISOR_LOGS
+
+    runtime = runtime_module.SystemRuntime.__new__(runtime_module.SystemRuntime)
+    runtime.paths = SimpleNamespace(supervisor=tmp_path)
+    directory = tmp_path / "logs"
+    directory.mkdir(mode=0o700)
+    original_lstat = Path.lstat
+
+    def root_log_directory(path):
+        info = original_lstat(path)
+        return SimpleNamespace(st_mode=info.st_mode, st_uid=0) if path == directory else info
+
+    monkeypatch.setattr(Path, "lstat", root_log_directory)
+    monkeypatch.setattr(runtime_module, "MAX_APP_OUTPUT_BYTES", 1024)
+    for index in range(RETAINED_SUPERVISOR_LOGS):
+        path = directory / f"error-old-{index}.log"
+        path.write_text("old")
+        os.utime(path, (0, 0))
+    with pytest.raises(RuntimeError, match="failed"), runtime._log("error") as (output, name):
+        output.write(b"x" * 4096)
+        raise RuntimeError("failed")
+    assert Path(name).stat().st_size == 1024
+    assert len(list(directory.iterdir())) == RETAINED_SUPERVISOR_LOGS
+
+
+def test_self_update_keeps_runtime_resolved_before_current_pointer_changes(tmp_path, monkeypatch):
+    from rcp_supervisor import retention
+
+    paths, store = _metadata_fixture(tmp_path)
+    versions = paths.supervisor / "versions"
+    children = []
+    for index in range(4):
+        child = versions / f"0.1.{index}"
+        child.mkdir(parents=True)
+        (child / "installed.json").write_text("{}")
+        os.utime(child, (NOW + index, NOW + index))
+        children.append(child)
+    current = paths.supervisor / "current"
+    current.symlink_to(children[0])
+    # Import took place via the old pointer; sys.executable may resolve directly
+    # to a shared managed Python and cannot identify this package environment.
+    monkeypatch.setattr(
+        retention, "_RUNNING_MODULE", (current / "rcp_supervisor/retention.py").resolve()
+    )
+    current.unlink()
+    current.symlink_to(children[-1])
+    retention.prune_supervisor_metadata(paths, store)
+    assert set(versions.iterdir()) == {children[0], children[-2], children[-1]}

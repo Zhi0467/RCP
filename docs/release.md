@@ -23,17 +23,25 @@ so that merging often costs nothing and releasing stays deliberate.
 
 ## What happens on a merge
 
-1. The ordinary CI jobs run: lint, pytest on 3.11 and 3.12, old-data upgrade,
-   web. A build exists only if they all pass.
-2. The `build` job builds the wheel once. Its version is
-   `<__version__>+build.<N>.g<sha7>`, where `__version__` comes from
-   `src/rcp/__init__.py`.
-3. The job independently builds `supervisor/` without stamping its version,
-   exports each package's locked runtime dependencies with hashes, requires the
-   complete asset set, writes a manifest of SHA-256 sums, and publishes
-   everything as prerelease `build/<N>`.
-4. A later merge never cancels an earlier `main` run. Every merge that passes
-   CI gets its own build, however close together they land.
+1. CI runs lint, pytest on 3.11 and 3.12, old-data upgrade, installed upgrade,
+   and web checks. Publication requires all of them to pass.
+2. The candidate packaging job builds the wheels once on PRs and main. The app
+   version is `<__version__>+build.<N>.g<sha7>`, where `__version__` comes from
+   `src/rcp/__init__.py`. It independently builds `supervisor/` without stamping
+   its version, exports locked runtime dependencies with hashes, checks the
+   complete asset set, and writes the SHA-256 manifest.
+3. The installed upgrade matrix installs every published stable release's
+   promoted wheels on a fresh Ubuntu runner and drives supervisor update,
+   application rollback, a complete subsequent backup, and successful retry
+   against those candidate bytes. The existing `old-data upgrade` required-check
+   name now aggregates migration tests and the installed matrix, and fails if
+   discovery, packaging, or any source-release journey fails. This preserves the
+   merge gate without requiring a new branch-protection check name.
+   See the [qualification boundary](specs/server-and-machine-operations.md#release-selection-deployment-and-automatic-recovery)
+   for the test-only artifact selection and port substitutions.
+4. On main, `build` downloads and publishes the qualified artifacts as prerelease
+   `build/<N>` without rebuilding them. A later merge never cancels an earlier
+   main run; every merge that passes CI gets its own build.
 
 Find a build under the repository's Releases page, filtered to prereleases, or
 with:
@@ -125,7 +133,7 @@ remain explicit follow-up evidence.
 
 ## What to check before promoting
 
-- The build's CI run is green on all jobs, including old-data upgrade.
+- The build's CI run is green on all jobs, including the aggregate old-data upgrade check.
 - `__version__` in that build equals the tag you intend.
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.

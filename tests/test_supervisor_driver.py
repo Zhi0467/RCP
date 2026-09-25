@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -195,12 +196,41 @@ def test_update_displays_bound_target_before_any_install_or_admission(monkeypatc
     )
     emitter = EventEmitter("server update", machine_readable=True)
     emitter.emit("running", "Verify")
-    assert driver.update(SimpleNamespace(confirm_target=None), emitter) == 3
+    assert driver.update.__wrapped__(SimpleNamespace(confirm_target=None), emitter) == 3
     events = capsys.readouterr().out.splitlines()
     step = ServerStepEvent.model_validate_json(events[-1]).step
     assert step.state == "operator_action_needed"
     assert step.resume_argv[-1] == f"v0.3.4:{'a' * 64}"
     assert json.loads(events[0])["event"] == "plan"
+
+
+@pytest.mark.parametrize("installed", ["0.1.0", "0.2.0", "0.3.0"])
+def test_update_requires_bundled_supervisor_before_application_preparation(
+    monkeypatch, capsys, installed
+):
+    target = {"release_tag": "v0.3.4", "manifest_sha256": "a" * 64, "build": 9, "commit": "b" * 40}
+    monkeypatch.setattr(driver, "__version__", installed)
+    monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *args: object())
+    monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
+    monkeypatch.setattr(
+        driver, "followed_release", lambda runtime: SimpleNamespace(supervisor_version="0.2.0")
+    )
+    monkeypatch.setattr(driver, "release_receipt", lambda *args: target)
+    monkeypatch.setattr(
+        driver, "prepare_release", lambda *args: pytest.fail("application preparation started")
+    )
+    monkeypatch.setattr(driver, "update", driver.update.__wrapped__)
+    code = cli.main(["--machine-readable", "server", "update"])
+    step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
+    if installed == "0.1.0":
+        assert code == 1
+        assert step.state == "failed"
+        assert "Update the independent supervisor" in step.message
+    else:
+        assert code == 3
+        assert step.state == "operator_action_needed"
+        assert step.resume_argv[-1] == f"v0.3.4:{'a' * 64}"
 
 
 @pytest.mark.parametrize("position", [0, 1, 2, 3])
@@ -273,7 +303,9 @@ def test_self_update_cannot_downgrade_recovery_below_running_or_selected_app(
     monkeypatch.setattr(driver, "selected_pointer", lambda _: {"supervisor_version": required})
     monkeypatch.setattr(driver, "install_supervisor", lambda *_: pytest.fail("downgrade installed"))
     with pytest.raises(SupervisorError, match="downgrade"):
-        driver.supervisor_update(None, EventEmitter("server supervisor update", stream=StringIO()))
+        driver.supervisor_update.__wrapped__(
+            None, EventEmitter("server supervisor update", stream=StringIO())
+        )
 
 
 def test_install_recovers_adoption_before_selecting(tmp_path, monkeypatch, capsys):
@@ -309,7 +341,7 @@ def test_install_recovers_adoption_before_selecting(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(migration, "recover", recover)
     monkeypatch.setattr(driver, "followed_release", lambda _: pytest.fail("release fetched"))
     emitter = EventEmitter("server install", machine_readable=True)
-    assert driver.install(SimpleNamespace(team_name="Team"), emitter, paths=paths) == 1
+    assert driver.install.__wrapped__(SimpleNamespace(team_name="Team"), emitter, paths=paths) == 1
     assert calls == ["runtime", "lock", "recover", "runtime"]
     assert not paths.selected.exists()
     step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
@@ -350,6 +382,7 @@ def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
         def recover(self, **kwargs):
             return {"phase": "rolled_back"}
 
+    monkeypatch.setattr(driver, "_retention_after_commit", lambda *args: [])
     startup_recover = driver.recover
     monkeypatch.setattr(driver, "recover", lambda **kwargs: None)
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args, **kwargs: runtime)
@@ -367,19 +400,18 @@ def test_restore_enables_before_deploy_and_guards_uninitialized_rollback(
     emitter = EventEmitter("server restore", stream=StringIO())
     emitter.emit("running", "Restore")
     if succeeds:
-        assert driver.restore(arguments, emitter, paths=paths) == 0
+        assert driver.restore.__wrapped__(arguments, emitter, paths=paths) == 0
         assert calls == ["enable", "committed"]
     else:
         with pytest.raises(SupervisorError, match="activation failed"):
-            driver.restore(arguments, emitter, paths=paths)
+            driver.restore.__wrapped__(arguments, emitter, paths=paths)
         assert calls == ["enable"]
         with pytest.raises(SupervisorError, match="completed team initialization or restore"):
             startup_recover(paths=paths, startup=True)
 
 
 def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(monkeypatch, tmp_path):
-    """Retention removes a release tree but keeps the root-owned receipt that
-    says the build is installed; selecting that version again must install."""
+    """A seal retained by an older supervisor does not replace the missing tree."""
 
     releases = tmp_path / "releases"
     target = releases / "7"
@@ -413,3 +445,33 @@ def test_prepare_release_reinstalls_a_pruned_build_behind_its_sealed_receipt(mon
     # Installed and sealed: nothing to do but verify.
     assert driver.prepare_release(runtime, release) == receipt
     assert calls == ["install", "capability", "capability", "capability"]
+
+
+def test_prepare_release_replaces_a_build_left_unsealed_by_a_failed_attempt(monkeypatch, tmp_path):
+    releases = tmp_path / "releases"
+    target = releases / "7"
+    (target / "partial").mkdir(parents=True)
+    supervisor = tmp_path / "supervisor"
+    (supervisor / "release-receipts").mkdir(parents=True)
+    receipt = {"build": 7, "release_directory": str(target)}
+    calls: list[str] = []
+
+    def filesystem(action, request):
+        calls.append(action)
+        target.mkdir()
+        return {"release_directory": str(target)}
+
+    runtime = SimpleNamespace(
+        paths=SimpleNamespace(supervisor=supervisor, releases_root=releases),
+        filesystem=filesystem,
+        remove_retained=lambda directory, root: (calls.append("remove"), shutil.rmtree(directory)),
+        require_capability=lambda _receipt, **kwargs: calls.append("capability"),
+    )
+    monkeypatch.setattr(driver, "release_receipt", lambda *_args: receipt)
+    monkeypatch.setattr(driver, "install_operator_console", lambda *_args: None)
+    monkeypatch.setattr(driver, "_root_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(driver, "write_root_json", lambda path, value: path.write_text("{}"))
+
+    assert driver.prepare_release(runtime, SimpleNamespace(build=7, directory=tmp_path)) == receipt
+    assert calls == ["remove", "install", "capability", "capability"]
+    assert not (target / "partial").exists()

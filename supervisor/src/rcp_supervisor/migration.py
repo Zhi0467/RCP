@@ -23,11 +23,11 @@ from pathlib import Path
 from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.launch import validate_selected_receipt
 from rcp_supervisor.limits import (
-    CHECKPOINT_COPY_BYTES,
+    DOWNLOAD_CHUNK_BYTES,
     HTTP_TIMEOUT_SECONDS,
     LEGACY_START_POLL_SECONDS,
-    MAX_CHECKPOINT_BYTES,
     MAX_OPERATION_BYTES,
+    MAX_RESTORE_ARCHIVE_BYTES,
     MAX_SELECTED_RECEIPT_BYTES,
     PROBE_TIMEOUT_SECONDS,
     SERVICE_TIMEOUT_SECONDS,
@@ -145,7 +145,7 @@ def _validate_document(runtime, record: dict) -> dict:
         not isinstance(record, dict)
         or record.keys() != _FIELDS
         or type(record["version"]) is not int
-        or record["version"] != 1
+        or record["version"] not in (1, 2)
         or record["phase"] not in _PHASES
     ):
         raise SupervisorError("Adoption journal is invalid.")
@@ -180,6 +180,8 @@ def _validate_document(runtime, record: dict) -> dict:
                 raise SupervisorError("Adoption integration entry is invalid.")
     workspace = runtime.paths.checkpoints_root / record["operation_id"]
     for key, name in (("raw_checkpoint", "raw-checkpoint"), ("checkpoint", "checkpoint")):
+        if record["version"] == 2:
+            name = "raw-checkpoint"
         value = record[key]
         if value is not None and (
             not isinstance(value, dict)
@@ -191,6 +193,8 @@ def _validate_document(runtime, record: dict) -> dict:
             )
         ):
             raise SupervisorError("Adoption checkpoint reference is invalid.")
+    if record["version"] == 2 and record["checkpoint"] not in (None, record["raw_checkpoint"]):
+        raise SupervisorError("Adoption checkpoint differs from its stopped roots.")
     if record["legacy_backup"] not in {"protected", "unavailable"}:
         raise SupervisorError("Legacy backup status is invalid.")
     if record["protected_backup"] is not None:
@@ -222,7 +226,7 @@ def _artifact_hash(path: Path, *, uid: int) -> str:
         or before.st_uid != uid
         or before.st_nlink != 1
         or before.st_mode & 0o077
-        or before.st_size > MAX_CHECKPOINT_BYTES
+        or before.st_size > MAX_RESTORE_ARCHIVE_BYTES
     ):
         raise SupervisorError("Protected adoption artifact is not one bounded private file.")
     digest = hashlib.sha256()
@@ -231,9 +235,9 @@ def _artifact_hash(path: Path, *, uid: int) -> str:
     with os.fdopen(descriptor, "rb") as source:
         if os.fstat(source.fileno()) != before:
             raise SupervisorError("Protected adoption artifact changed while opening.")
-        while chunk := source.read(CHECKPOINT_COPY_BYTES):
+        while chunk := source.read(DOWNLOAD_CHUNK_BYTES):
             total += len(chunk)
-            if total > MAX_CHECKPOINT_BYTES:
+            if total > MAX_RESTORE_ARCHIVE_BYTES:
                 raise SupervisorError("Protected adoption artifact exceeds its bound.")
             digest.update(chunk)
         after = os.fstat(source.fileno())
@@ -485,7 +489,11 @@ def _recover(runtime, *, for_install: bool = False) -> dict | None:
         runtime.stop_service()
     if record["phase"] != "previous_chosen":
         _publish(runtime, record, "rollback_chosen")
-        checkpoint = record["checkpoint"] or record["raw_checkpoint"]
+        checkpoint = (
+            record["raw_checkpoint"]
+            if record["version"] == 2
+            else (record["checkpoint"] or record["raw_checkpoint"])
+        )
         if checkpoint is not None:
             runtime.restore_roots(checkpoint)
         paths = _integration_paths(runtime)
@@ -562,9 +570,7 @@ def adopt(runtime, target: dict) -> dict:
         "version_string": metadata["app_version"],
     }
     legacy_backup = "protected"
-    try:
-        runtime.protected_backup(previous)
-    except SupervisorError:
+    if runtime.protected_backup(previous) is not None:
         legacy_backup = "unavailable"
         runtime.notify(
             "Legacy backup is incomplete or unavailable; adoption requires a stopped byte checkpoint and a complete current encrypted backup before activation."
@@ -589,7 +595,7 @@ def _adopt_guarded(runtime, target: dict, previous: dict, legacy_backup: str) ->
         raise SupervisorError("Run the paired-wheel bootstrap to stage supervisor integration.")
     operation_id = str(uuid.uuid4())
     record = {
-        "version": 1,
+        "version": 2,
         "operation_id": operation_id,
         "phase": "prepared",
         "nonce": uuid.uuid4().hex + uuid.uuid4().hex,
@@ -621,11 +627,21 @@ def _adopt_guarded(runtime, target: dict, previous: dict, legacy_backup: str) ->
         _publish(runtime, record, "stopped")
         workspace = runtime.paths.checkpoints_root / operation_id
         runtime.filesystem("workspace", {"directory": str(workspace)})
+        inventory = runtime.application(
+            target,
+            "offline-inventory",
+            {
+                "version": 1,
+                "data_dir": str(runtime.paths.data_dir),
+                "output_dir": str(workspace / "inventory"),
+                "source_commit": previous["commit"],
+            },
+        )
         record["raw_checkpoint"] = runtime.filesystem(
-            "snapshot",
+            "snapshot-roots",
             {
                 "directory": str(workspace / "raw-checkpoint"),
-                "live": str(runtime.paths.data_dir),
+                "roots": [root["live"] for root in inventory["roots"]],
                 "boundary_sha256": record["nonce"],
             },
         )
@@ -640,14 +656,11 @@ def _adopt_guarded(runtime, target: dict, previous: dict, legacy_backup: str) ->
                 "source_commit": previous["commit"],
             },
         )
-        record["checkpoint"] = runtime.filesystem(
-            "checkpoint",
-            {
-                "directory": str(workspace / "checkpoint"),
-                "roots": prepared["roots"],
-                "boundary_sha256": prepared["boundary_sha256"],
-            },
+        runtime.filesystem(
+            "check-roots",
+            dict(record["raw_checkpoint"], roots=[root["live"] for root in prepared["roots"]]),
         )
+        record["checkpoint"] = record["raw_checkpoint"]
         checked = runtime.application(
             target,
             "validate",

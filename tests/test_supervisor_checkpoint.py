@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import shutil
 import socket
 import sqlite3
 import stat
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,698 +15,246 @@ from rcp_supervisor.errors import SupervisorError
 
 
 class PowerLoss(BaseException):
-    """Interrupt without turning a simulated process death into ordinary recovery."""
+    pass
 
 
-def _directory(path: Path) -> Path:
-    path.mkdir(parents=True, mode=0o700)
-    return path
-
-
-def _write(path: Path, data: bytes, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path.write_bytes(data)
-    path.chmod(mode)
-
-
-def _case(tmp_path: Path, *, stopped: bool = False):
-    live_data = _directory(tmp_path / "server" / "data")
-    live_research = _directory(tmp_path / "repository" / ".research")
-    database = live_data / "rcp.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("CREATE TABLE observations (value TEXT NOT NULL)")
-        connection.execute("INSERT INTO observations VALUES ('before migration')")
-    database.chmod(0o600)
-    _write(live_data / "run-stage" / "retained" / "runner", b"retained stage\n", 0o700)
-    (live_data / "run-stage" / "retained" / "current").symlink_to("runner")
-    _write(live_research / "patches" / "000001.json", b'{"revision":1}\n')
-    _write(live_data / "providers" / "token", b"synthetic-provider-token")
-    _write(live_data / "jobs" / "local-job.json", b'{"state":"complete"}')
-    _write(live_research / "cursors.json", b'{"watermark":42}')
-    for relative in ("facts", "paper", "branches/topic/patches", "branches/topic/merges"):
-        _directory(live_research / relative)
-    if not stopped:
-        for root in (live_data, live_research):
-            for directory in root.rglob("*"):
-                if directory.is_dir():
-                    directory.chmod(0o700)
-    if stopped:
-        live_research.chmod(0o750)
-        (live_research / "paper").chmod(0o500)
-    payload_data = tmp_path / "prepared" / "data"
-    payload_research = tmp_path / "prepared" / "research"
-    _directory(payload_data.parent)
-    shutil.copytree(live_data, payload_data, symlinks=True)
-    shutil.copytree(live_research, payload_research, symlinks=True)
-    _directory(tmp_path / "checkpoints")
-    roots = (
-        checkpoint.SnapshotRoot(live=live_data, payload=payload_data),
-        checkpoint.SnapshotRoot(live=live_research, payload=payload_research),
+def _case(tmp_path):
+    roots = (tmp_path / "data", tmp_path / "project" / ".research")
+    for root in roots:
+        root.mkdir(parents=True)
+        (root / "empty").mkdir()
+        (root / "original").write_bytes(b"before")
+        (root / "original").chmod(0o666)
+        (root / "dangling").symlink_to("absent")
+    with sqlite3.connect(roots[0] / "db") as db:
+        db.execute("CREATE TABLE observations (value TEXT)")
+        db.execute("INSERT INTO observations VALUES ('before')")
+    saved = checkpoint.create_stopped_snapshot(
+        tmp_path / "checkpoint", roots, boundary_sha256="b" * 64
     )
-    if stopped:
-        saved = checkpoint.create_stopped_snapshot(
-            tmp_path / "checkpoints" / "operation",
-            tuple(root.live for root in roots),
-            boundary_sha256="b" * 64,
-        )
-    else:
-        saved = checkpoint.create_checkpoint(
-            tmp_path / "checkpoints" / "operation", roots, boundary_sha256="b" * 64
-        )
+    for root in roots:
+        (root / "original").write_bytes(b"after")
+        (root / "candidate").write_bytes(b"new")
     return saved, roots
 
 
-def _mutate_live(roots) -> None:
-    data, research = (root.live for root in roots)
-    with sqlite3.connect(data / "rcp.sqlite3") as connection:
-        connection.execute("ALTER TABLE observations ADD COLUMN migrated INTEGER DEFAULT 1")
-        connection.execute("UPDATE observations SET value = 'candidate changed data'")
-    _write(data / "candidate-only" / "diagnostic", b"candidate database side effect\n")
-    _write(data / "run-stage" / "retained" / "runner", b"changed stage\n", 0o600)
-    _write(research / "patches" / "000001.json", b'{"revision":2}\n')
-    _write(research / "candidate-only", b"candidate graph side effect\n")
-
-
-def _assert_restored(roots) -> None:
+def _assert_restored(roots):
     for root in roots:
-        live_paths = {path.relative_to(root.live) for path in root.live.rglob("*")}
-        expected_paths = {path.relative_to(root.payload) for path in root.payload.rglob("*")}
-        assert live_paths == expected_paths
-        assert stat.S_IMODE(root.live.stat().st_mode) == stat.S_IMODE(root.payload.stat().st_mode)
-        for relative in expected_paths:
-            actual = root.live / relative
-            expected = root.payload / relative
-            assert actual.lstat().st_uid == expected.lstat().st_uid
-            assert actual.lstat().st_gid == expected.lstat().st_gid
-            if expected.is_symlink():
-                assert actual.is_symlink() and os.readlink(actual) == os.readlink(expected)
-            elif expected.is_dir():
-                assert actual.is_dir() and not actual.is_symlink()
-                assert stat.S_IMODE(actual.stat().st_mode) == stat.S_IMODE(expected.stat().st_mode)
-            else:
-                assert actual.read_bytes() == expected.read_bytes()
-                assert stat.S_IMODE(actual.stat().st_mode) == stat.S_IMODE(expected.stat().st_mode)
-    with sqlite3.connect(f"file:{roots[0].live / 'rcp.sqlite3'}?mode=ro", uri=True) as connection:
-        assert [row[1] for row in connection.execute("PRAGMA table_info(observations)")] == [
-            "value"
-        ]
-        assert connection.execute("SELECT value FROM observations").fetchall() == [
-            ("before migration",)
-        ]
+        assert (root / "original").read_bytes() == b"before"
+        assert stat.S_IMODE((root / "original").stat().st_mode) == 0o666
+        assert (root / "empty").is_dir()
+        assert os.readlink(root / "dangling") == "absent"
+        assert not (root / "candidate").exists()
+        assert root.stat().st_uid == os.geteuid()
+        assert root.stat().st_gid == os.getegid()
+    with sqlite3.connect(roots[0] / "db") as db:
+        assert db.execute("SELECT value FROM observations").fetchall() == [("before",)]
 
 
-def test_checkpoint_restores_forward_migration_and_research_without_overlay(tmp_path: Path) -> None:
+def test_whole_root_rollback_consumes_snapshot_and_never_replays(tmp_path):
     saved, roots = _case(tmp_path)
-    unrelated = tmp_path / "unrelated" / "keep"
-    _write(unrelated, b"outside selected roots\n")
-    assert saved.boundary_sha256 == "b" * 64
     assert checkpoint.read_checkpoint(saved.directory, expected_sha256=saved.sha256) == saved
-    _mutate_live(roots)
-
-    checkpoint.restore_checkpoint(saved)
-
-    _assert_restored(roots)
-    assert unrelated.read_bytes() == b"outside selected roots\n"
-    assert any(
-        path.read_bytes() == b"candidate database side effect\n"
-        for path in roots[0].live.parent.rglob("diagnostic")
-    )
-    assert any(
-        path.is_file() and path.read_bytes() == b"candidate graph side effect\n"
-        for path in roots[1].live.parent.rglob("candidate-only")
-    )
     checkpoint.restore_checkpoint(saved)
     _assert_restored(roots)
+    catalog = json.loads((saved.directory / "checkpoint.json").read_text())
+    for root in catalog["roots"]:
+        assert not Path(root["payload"]).exists()
+        assert (Path(root["quarantine"]) / "candidate").read_bytes() == b"new"
+    (roots[0] / "accepted-later").write_text("keep")
+    checkpoint.restore_checkpoint(saved)
+    assert (roots[0] / "accepted-later").read_text() == "keep"
 
 
-@pytest.mark.parametrize(
-    "stopped,move",
-    [
-        (False, "quarantine"),
-        (False, "publication"),
-        (True, "quarantine"),
-        (True, "publication"),
-        ("missing", "publication"),
-    ],
-)
-@pytest.mark.parametrize("moved_root", [0, 1])
-def test_restore_reenters_after_each_live_root_rename(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, moved_root: int, move: str, stopped: bool | str
-) -> None:
-    saved, roots = _case(tmp_path, stopped=stopped)
-    _mutate_live(roots)
-    if stopped == "missing":
-        shutil.rmtree(roots[moved_root].live)
+@pytest.mark.parametrize("root_index", [0, 1])
+@pytest.mark.parametrize("move", ["quarantine", "publication"])
+def test_rollback_resumes_each_rename_after_crash(tmp_path, monkeypatch, root_index, move):
+    saved, roots = _case(tmp_path)
     replace = os.replace
-    interrupted = False
 
-    def die_after_rename(source, destination, *args, **kwargs):
-        nonlocal interrupted
-        result = replace(source, destination, *args, **kwargs)
-        moved_path = source if move == "quarantine" else destination
-        if Path(moved_path) == roots[moved_root].live and not interrupted:
-            interrupted = True
+    def crash(source, target):
+        replace(source, target)
+        if Path(source if move == "quarantine" else target) == roots[root_index]:
             raise PowerLoss
-        return result
 
     with monkeypatch.context() as fault:
-        fault.setattr(checkpoint.os, "replace", die_after_rename)
+        fault.setattr(checkpoint.os, "replace", crash)
         with pytest.raises(PowerLoss):
             checkpoint.restore_checkpoint(saved)
-    assert interrupted
-
-    reopened = checkpoint.read_checkpoint(saved.directory, expected_sha256=saved.sha256)
-    checkpoint.restore_checkpoint(reopened)
+    checkpoint.restore_checkpoint(saved)
     _assert_restored(roots)
 
 
-@pytest.mark.parametrize("stopped", [False, True])
-def test_restore_reenters_after_staged_file_fsync(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stopped: bool
-) -> None:
-    saved, roots = _case(tmp_path, stopped=stopped)
-    _mutate_live(roots)
-    fsync = os.fsync
-    interrupted = False
+@pytest.mark.parametrize("effect", ["copy", "sync"])
+def test_snapshot_is_not_ready_after_copy_or_sync_failure(tmp_path, monkeypatch, effect):
+    root = tmp_path / "data"
+    root.mkdir()
+    (root / "keep").write_text("original")
+    original = checkpoint._run
 
-    def die_after_staged_file(descriptor):
-        nonlocal interrupted
-        result = fsync(descriptor)
-        info = os.fstat(descriptor)
-        staged = [
-            path
-            for root in roots
-            for path in root.live.parent.rglob("runner")
-            if path != roots[0].live / "run-stage" / "retained" / "runner"
-        ]
-        if not interrupted and any(
-            path.stat().st_ino == info.st_ino and path.read_bytes() == b"retained stage\n"
-            for path in staged
-        ):
-            interrupted = True
-            raise PowerLoss
-        return result
+    def fail(argv):
+        if argv[0] == ("cp" if effect == "copy" else "sync"):
+            raise SupervisorError("injected I/O failure")
+        return original(argv)
 
-    with monkeypatch.context() as fault:
-        fault.setattr(checkpoint.os, "fsync", die_after_staged_file)
-        with pytest.raises(PowerLoss):
-            checkpoint.restore_checkpoint(saved)
-    assert interrupted
+    monkeypatch.setattr(checkpoint, "_run", fail)
+    with pytest.raises(SupervisorError):
+        checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (root,), boundary_sha256="b" * 64
+        )
+    document = json.loads((tmp_path / "checkpoint" / "checkpoint.json").read_text())
+    assert not document["ready"]
+    assert (root / "keep").read_text() == "original"
+    assert document["workspaces"]  # Partial copies remain reachable for retention.
 
-    checkpoint.restore_checkpoint(
-        checkpoint.read_checkpoint(saved.directory, expected_sha256=saved.sha256)
+
+def test_absence_nested_coverage_and_prepared_source_mapping(tmp_path):
+    live = tmp_path / "live"
+    live.mkdir()
+    nested = live / "nested"
+    nested.mkdir()
+    absent = tmp_path / "absent"
+    saved = checkpoint.create_stopped_snapshot(
+        tmp_path / "checkpoint", (live, nested, absent), boundary_sha256="b" * 64
     )
-    _assert_restored(roots)
+    checkpoint.check_checkpoint_roots(saved, (nested, absent))
+    with pytest.raises(SupervisorError):
+        checkpoint.check_checkpoint_roots(saved, (tmp_path / "uncovered",))
+    absent.mkdir()
+    (absent / "new").write_text("candidate")
+    checkpoint.restore_checkpoint(saved)
+    assert not absent.exists()
+    assert nested.exists()
+    source = tmp_path / "prepared"
+    source.mkdir()
+    (source / "candidate").write_text("prepared")
+    candidate = checkpoint.create_checkpoint(
+        tmp_path / "candidate-checkpoint",
+        (checkpoint.SnapshotRoot(live, source),),
+        boundary_sha256="c" * 64,
+    )
+    checkpoint.restore_checkpoint(candidate)
+    assert (live / "candidate").read_text() == "prepared"
+    assert not nested.exists()
 
 
-def test_checkpoint_detects_changed_payload_and_wrong_manifest_hash(tmp_path: Path) -> None:
-    saved, _ = _case(tmp_path)
+def test_catalog_identity_and_legacy_subset_cannot_authorize_rollback(tmp_path):
+    saved, roots = _case(tmp_path)
     with pytest.raises(SupervisorError):
         checkpoint.read_checkpoint(saved.directory, expected_sha256="f" * 64)
-    target = next(path for path in saved.directory.rglob("runner") if path.is_file())
-    target.chmod(0o600)
-    target.write_bytes(b"tampered checkpoint bytes\n")
-    with pytest.raises(SupervisorError):
-        checkpoint.read_checkpoint(saved.directory, expected_sha256=saved.sha256)
-    with pytest.raises(SupervisorError):
-        checkpoint.restore_checkpoint(saved)
-
-
-@pytest.mark.parametrize(
-    "invalid", ["unknown-field", "list-kind", "zero-mode", "link-size", "link-target"]
-)
-def test_checkpoint_refuses_invalid_manifest_even_with_matching_hash(
-    tmp_path: Path, invalid: str
-) -> None:
-    saved, _ = _case(tmp_path)
-    (manifest,) = saved.directory.glob("*.json")
-    document = json.loads(manifest.read_bytes())
-    if invalid == "unknown-field":
-        document["unknown-contract-field"] = True
-    elif invalid.startswith("link-"):
-        entry = next(item for item in document["roots"][0]["entries"] if item["kind"] == "symlink")
-        if invalid == "link-size":
-            entry["size"] = 0
-        else:
-            entry["target"] = "bad\x00target"
-    else:
-        entry = next(item for item in document["roots"][0]["entries"] if item["kind"] == "file")
-        entry["kind" if invalid == "list-kind" else "mode"] = [] if invalid == "list-kind" else 0
-    data = json.dumps(document).encode()
-    manifest.chmod(0o600)
-    manifest.write_bytes(data)
-    with pytest.raises(SupervisorError):
-        checkpoint.read_checkpoint(
-            saved.directory, expected_sha256=hashlib.sha256(data).hexdigest()
-        )
-
-
-@pytest.mark.parametrize("invalid", ["unknown-field", "malformed-json", "list-status"])
-def test_restore_refuses_unknown_or_malformed_journal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str
-) -> None:
-    saved, roots = _case(tmp_path)
-    _mutate_live(roots)
-    before = set(saved.directory.rglob("*.json"))
-    replace = os.replace
-
-    def die_after_first_root(source, destination, *args, **kwargs):
-        result = replace(source, destination, *args, **kwargs)
-        if Path(source) == roots[0].live:
-            raise PowerLoss
-        return result
-
-    with monkeypatch.context() as fault:
-        fault.setattr(checkpoint.os, "replace", die_after_first_root)
-        with pytest.raises(PowerLoss):
-            checkpoint.restore_checkpoint(saved)
-    (journal,) = set(saved.directory.rglob("*.json")) - before
-    if invalid == "malformed-json":
-        journal.write_bytes(b"{broken")
-    else:
-        document = json.loads(journal.read_bytes())
-        if invalid == "unknown-field":
-            document["unknown-contract-field"] = True
-        else:
-            document["status"] = []
-        journal.write_text(json.dumps(document))
+    path = saved.directory / "checkpoint.json"
+    document = json.loads(path.read_text())
+    document["version"] = 2
+    path.write_text(json.dumps(document))
     with pytest.raises(SupervisorError):
         checkpoint.restore_checkpoint(saved)
-    assert not roots[0].live.exists()
-    assert (roots[1].live / "candidate-only").read_bytes() == b"candidate graph side effect\n"
+    assert (roots[0] / "candidate").exists()
 
 
-def test_checkpoint_keeps_payload_links_by_text_and_never_follows_them(tmp_path: Path) -> None:
-    live = _directory(tmp_path / "live")
-    payload = _directory(tmp_path / "payload")
-    outside = tmp_path / "outside"
-    _write(outside, b"outside authority")
-    _write(payload / "stage" / "log.txt", b"ran\n")
-    links = {
-        "stage/current": "log.txt",  # relative, inside the stage
-        "stage/python": "/usr/bin/python3",  # absolute, an environment pointer
-        "stage/gone": "missing-target",  # dangling
-        "stage/escape": str(outside),  # points outside every root
-        "stage/odd": "dir\\name",  # a backslash is an ordinary character on Linux
-        "stage/pytest-current": "pytest-0",  # a link to a directory
-    }
-    (payload / "stage" / "pytest-0").mkdir(mode=0o700)
-    for relative, target in links.items():
-        (payload / relative).symlink_to(target)
-
-    saved = checkpoint.create_checkpoint(
-        tmp_path / "checkpoint",
-        (checkpoint.SnapshotRoot(live, payload),),
-        boundary_sha256="b" * 64,
-    )
-    (manifest,) = saved.directory.glob("*.json")
-    entries = json.loads(manifest.read_bytes())["roots"][0]["entries"]
-    assert {entry["path"]: entry["target"] for entry in entries if entry["kind"] == "symlink"} == (
-        links
-    )
-    stored = saved.directory / "payload" / "0"
-    assert {
-        p.relative_to(stored).as_posix(): os.readlink(p)
-        for p in stored.rglob("*")
-        if p.is_symlink()
-    } == links
-    assert outside.read_bytes() == b"outside authority"
-
-    _write(live / "stage" / "candidate.txt", b"candidate side effect\n")
-    (live / "stage").mkdir(exist_ok=True)
-    (live / "stage" / "current").symlink_to("candidate.txt")
-    checkpoint.restore_checkpoint(saved)
-    restored = {
-        p.relative_to(live).as_posix(): os.readlink(p) for p in live.rglob("*") if p.is_symlink()
-    }
-    assert restored == links
-    assert not (live / "stage" / "candidate.txt").exists()
-    assert (live / "stage" / "log.txt").read_bytes() == b"ran\n"
-    assert outside.read_bytes() == b"outside authority"
-
-
-@pytest.mark.parametrize("unsafe", ["fifo", "socket", "hardlink"])
-def test_checkpoint_refuses_unsafe_prepared_payload_entries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str
-) -> None:
-    live = _directory(tmp_path / "live")
-    payload = _directory(tmp_path / "payload")
-    target = payload / "unsafe"
-    listener = None
-    if unsafe == "fifo":
-        os.mkfifo(target)
-    elif unsafe == "socket":
-        listener = socket.socket(socket.AF_UNIX)
-        with monkeypatch.context() as directory:
-            directory.chdir(payload)
-            listener.bind(target.name)
-    else:
-        _write(payload / "original", b"hardlinked bytes")
-        os.link(payload / "original", target)
-    try:
-        with pytest.raises(SupervisorError):
-            checkpoint.create_checkpoint(
-                tmp_path / "checkpoint",
-                (checkpoint.SnapshotRoot(live, payload),),
-                boundary_sha256="b" * 64,
-            )
-    finally:
-        if listener is not None:
-            listener.close()
-
-
-@pytest.mark.parametrize(
-    "unsafe",
-    [
-        "live-file",
-        "payload-file",
-        "missing-live",
-        "missing-payload",
-        "live-link",
-        "payload-link",
-        "parent-link",
-        "writable-live",
-        "writable-parent",
-        "writable-payload",
-    ],
-)
-def test_checkpoint_refuses_unsafe_roots(tmp_path: Path, unsafe: str) -> None:
-    parent = _directory(tmp_path / "parent")
-    live = _directory(parent / "live")
-    payload = _directory(tmp_path / "payload")
-    if unsafe in {"missing-live", "missing-payload"}:
-        (live if unsafe == "missing-live" else payload).rmdir()
-    elif unsafe in {"live-file", "payload-file"}:
-        target = live if unsafe == "live-file" else payload
-        target.rmdir()
-        _write(target, b"not a directory")
-    elif unsafe in {"live-link", "payload-link"}:
-        target = live if unsafe == "live-link" else payload
-        target.rename(tmp_path / "original")
-        target.symlink_to(tmp_path / "original", target_is_directory=True)
-    elif unsafe == "parent-link":
-        link = tmp_path / "link"
-        link.symlink_to(parent, target_is_directory=True)
-        live = link / "live"
-    else:
-        target = {"writable-live": live, "writable-parent": parent, "writable-payload": payload}[
-            unsafe
-        ]
-        target.chmod(0o777)
+def test_staging_is_fresh_and_outside_every_root(tmp_path):
+    live = tmp_path / "live"
+    live.mkdir()
     with pytest.raises(SupervisorError):
-        checkpoint.create_checkpoint(
-            tmp_path / "checkpoint",
-            (checkpoint.SnapshotRoot(live, payload),),
-            boundary_sha256="b" * 64,
-        )
-
-
-@pytest.mark.parametrize(
-    "overlap",
-    [
-        "live-nested",
-        "payload-in-live",
-        "checkpoint-in-live",
-        "checkpoint-in-payload",
-        "duplicate-live",
-    ],
-)
-def test_checkpoint_refuses_overlapping_roots(tmp_path: Path, overlap: str) -> None:
-    live = _directory(tmp_path / "live")
-    payload = _directory(tmp_path / "payload")
+        checkpoint.create_stopped_snapshot(live / "checkpoint", (live,), boundary_sha256="b" * 64)
     destination = tmp_path / "checkpoint"
-    roots = (checkpoint.SnapshotRoot(live, payload),)
-    if overlap == "live-nested":
-        roots += (
-            checkpoint.SnapshotRoot(
-                _directory(live / "nested"), _directory(tmp_path / "second-payload")
-            ),
-        )
-    elif overlap == "payload-in-live":
-        roots = (checkpoint.SnapshotRoot(live, _directory(live / "payload")),)
-    elif overlap == "checkpoint-in-live":
-        destination = live / "checkpoint"
-    elif overlap == "checkpoint-in-payload":
-        destination = payload / "checkpoint"
-    else:
-        roots += (checkpoint.SnapshotRoot(live, _directory(tmp_path / "second-payload")),)
-    with pytest.raises(SupervisorError):
-        checkpoint.create_checkpoint(destination, roots, boundary_sha256="b" * 64)
+    destination.mkdir()
+    with pytest.raises(FileExistsError):
+        checkpoint.create_stopped_snapshot(destination, (live,), boundary_sha256="b" * 64)
 
 
-def test_checkpoint_never_overwrites_an_existing_destination(tmp_path: Path) -> None:
-    saved, roots = _case(tmp_path)
-    before = {
-        path.relative_to(saved.directory): path.read_bytes()
-        for path in saved.directory.rglob("*")
-        if path.is_file()
-    }
-    with pytest.raises(SupervisorError):
-        checkpoint.create_checkpoint(saved.directory, roots, boundary_sha256="c" * 64)
-    after = {
-        path.relative_to(saved.directory): path.read_bytes()
-        for path in saved.directory.rglob("*")
-        if path.is_file()
-    }
-    assert after == before
-    assert checkpoint.read_checkpoint(saved.directory, expected_sha256=saved.sha256) == saved
-
-
-def test_completed_restore_refuses_to_replace_subsequent_data(tmp_path: Path) -> None:
-    saved, roots = _case(tmp_path)
-    _mutate_live(roots)
-    checkpoint.restore_checkpoint(saved)
-    _assert_restored(roots)
-    database = roots[0].live / "rcp.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("INSERT INTO observations VALUES ('accepted after recovery')")
-    _write(roots[1].live / "facts" / "new-evidence.json", b'{"new":true}\n')
-    preserved_database = database.read_bytes()
-
-    with pytest.raises(SupervisorError):
-        checkpoint.restore_checkpoint(
-            checkpoint.read_checkpoint(saved.directory, expected_sha256=saved.sha256)
-        )
-
-    assert database.read_bytes() == preserved_database
-    assert (roots[1].live / "facts" / "new-evidence.json").read_bytes() == b'{"new":true}\n'
-
-
-def test_checkpoint_refuses_unreadable_prepared_file(tmp_path: Path) -> None:
-    live = _directory(tmp_path / "live")
-    payload = _directory(tmp_path / "payload")
-    unreadable = payload / "unreadable"
-    _write(unreadable, b"cannot verify after restoration", 0)
-    try:
-        with pytest.raises(SupervisorError):
-            checkpoint.create_checkpoint(
-                tmp_path / "checkpoint",
-                (checkpoint.SnapshotRoot(live, payload),),
-                boundary_sha256="b" * 64,
-            )
-    finally:
-        unreadable.chmod(0o600)
-
-
-def test_offline_adoption_snapshot_retains_original_sqlite_before_new_code(tmp_path):
-    import sqlite3
-
-    from rcp_supervisor.checkpoint import create_offline_snapshot, restore_checkpoint
-
-    live = tmp_path / "legacy"
-    live.mkdir(mode=0o700)
-    database = live / "rcp.sqlite3"
-    with sqlite3.connect(database) as connection:
-        connection.execute("CREATE TABLE old_records (value TEXT)")
-        connection.execute("INSERT INTO old_records VALUES ('retained original')")
-    original = database.read_bytes()
-    checkpoint = create_offline_snapshot(
-        tmp_path / "legacy-checkpoint", live, boundary_sha256="b" * 64
+def test_space_estimate_is_advisory_uses_allocated_bytes_and_one_copy(tmp_path, monkeypatch):
+    live = tmp_path / "live"
+    live.mkdir()
+    with (live / "sparse").open("wb") as stream:
+        stream.seek(1024**3)
+        stream.write(b"x")
+    monkeypatch.setattr(
+        os, "statvfs", lambda _: SimpleNamespace(f_bavail=0, f_frsize=4096, f_favail=0)
     )
-    with sqlite3.connect(database) as connection:
-        connection.execute("ALTER TABLE old_records ADD COLUMN new_value TEXT")
-    restore_checkpoint(checkpoint)
-    assert database.read_bytes() == original
-    with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT * FROM old_records").fetchall() == [
-            ("retained original",)
-        ]
-
-    # An opaque legacy root keeps the fail-closed rule: a link anywhere refuses.
-    (live / "stray").symlink_to("rcp.sqlite3")
-    with pytest.raises(SupervisorError):
-        create_offline_snapshot(tmp_path / "legacy-checkpoint-2", live, boundary_sha256="b" * 64)
+    with pytest.warns(UserWarning):
+        estimates = checkpoint.check_snapshot_space(tmp_path, (live,))
+    assert 0 < estimates[0]["bytes"] < 1024**2
 
 
-@pytest.mark.parametrize(
-    "change,detail",
-    [
-        ("missing", '"providers/token": missing'),
-        ("extra", '"unknown": extra'),
-        ("type", '"paper": changed'),
-        ("file-mode", '"jobs/local-job.json": changed'),
-        ("root-mode", ".: changed"),
-        ("link", '"run-stage/retained/current": changed'),
-        ("contents", '"providers/token": changed'),
-    ],
-)
-def test_stopped_snapshot_independently_proves_every_restored_entry(
-    tmp_path: Path, change: str, detail: str
-) -> None:
-    saved, roots = _case(tmp_path, stopped=True)
-    _mutate_live(roots)
-    checkpoint.restore_checkpoint(saved)
-    checkpoint.verify_checkpoint(saved)
-    _assert_restored(roots)
-    live = roots[0].live
-    if change == "missing":
-        (live / "providers" / "token").unlink()
-    elif change == "extra":
-        _write(live / "unknown", b"new entry")
-    elif change == "type":
-        (roots[1].live / "paper").rmdir()
-        _write(roots[1].live / "paper", b"file replacing empty directory")
-    elif change == "file-mode":
-        (live / "jobs" / "local-job.json").chmod(0o640)
-    elif change == "root-mode":
-        live.chmod(0o750)
-    elif change == "contents":
-        (live / "providers" / "token").write_bytes(b"secret changed token")
-    else:
-        link = live / "run-stage" / "retained" / "current"
-        link.unlink()
-        link.symlink_to("elsewhere")
-    for verify in (checkpoint.verify_checkpoint, checkpoint.restore_checkpoint):
-        with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
-            verify(saved)
-        assert detail in str(error.value)
-        assert "secret changed token" not in str(error.value)
-        assert "synthetic-provider-token" not in str(error.value)
-
-
-def test_stopped_snapshot_requires_exact_root_set_and_refuses_legacy_proof(tmp_path: Path) -> None:
-    saved, roots = _case(tmp_path, stopped=True)
-    checkpoint.check_checkpoint_roots(saved, tuple(root.live for root in reversed(roots)))
-    with pytest.raises(SupervisorError, match="checkpoint_root_mismatch"):
-        checkpoint.check_checkpoint_roots(saved, (roots[0].live,))
-    legacy, _ = _case(_directory(tmp_path / "legacy"))
-    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
-        checkpoint.verify_checkpoint(legacy)
-
-
-@pytest.mark.parametrize(
-    "unsafe",
-    ["link", "hardlink", "directory-mode", "uid", "gid", "directory-gid", "xattr", "root-xattr"],
-)
-def test_stopped_snapshot_refuses_uncopyable_metadata(
-    tmp_path: Path, unsafe: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    live = _directory(tmp_path / "live")
-    target = live / "file"
-    _write(target, b"preserve or refuse")
+@pytest.mark.skipif(sys.platform != "linux", reason="GNU copy metadata qualification")
+def test_gnu_copy_preserves_special_entries_metadata_and_cross_root_hardlinks(tmp_path):
+    roots = (tmp_path / "data", tmp_path / "project")
+    for root in roots:
+        root.mkdir()
+    file = roots[0] / "odd\nname"
+    file.write_bytes(b"linked")
+    file.chmod(0o666)
+    os.link(file, roots[1] / "link")
+    os.mkfifo(roots[0] / "fifo")
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.bind(str(roots[0] / "socket"))
+    os.setxattr(file, "user.checkpoint", b"kept")
     saved = checkpoint.create_stopped_snapshot(
-        tmp_path / "baseline", (live,), boundary_sha256="b" * 64
+        tmp_path / "checkpoint", roots, boundary_sha256="b" * 64
     )
     checkpoint.restore_checkpoint(saved)
-    checkpoint.verify_checkpoint(saved)
-    document = json.loads((saved.directory / "checkpoint.json").read_text())
-    entry = document["roots"][0]["entries"][0]
-    assert (entry["uid"], entry["gid"]) == (target.stat().st_uid, target.stat().st_gid)
-    if unsafe == "link":
-        (live / "link").symlink_to("file")
-    elif unsafe == "hardlink":
-        os.link(target, live / "alias")
-    elif unsafe == "directory-mode":
-        live.chmod(0o1700)
-    elif unsafe in {"uid", "gid", "directory-gid"}:
-        if unsafe == "directory-gid":
-            target = _directory(live / "directory")
-        original = Path.lstat
+    assert file.stat().st_ino == (roots[1] / "link").stat().st_ino
+    assert file.stat().st_nlink == 2
+    assert stat.S_IMODE(file.stat().st_mode) == 0o666
+    assert os.getxattr(file, "user.checkpoint") == b"kept"
+    assert stat.S_ISFIFO((roots[0] / "fifo").stat().st_mode)
+    assert stat.S_ISSOCK((roots[0] / "socket").stat().st_mode)
 
-        def different_owner(path, *args, **kwargs):
-            info = original(path, *args, **kwargs)
-            if path == target:
-                values = list(info)
-                values[4 if unsafe == "uid" else 5] += 1
-                return os.stat_result(values)
-            return info
 
-        monkeypatch.setattr(Path, "lstat", different_owner)
-    elif unsafe in {"xattr", "root-xattr"}:
-        target = live if unsafe == "root-xattr" else target
-        monkeypatch.setattr(
-            os,
-            "listxattr",
-            lambda path, **kwargs: ["user.checkpoint-test"] if path == target else [],
-            raising=False,
+@pytest.mark.skipif(sys.platform != "linux", reason="GNU cp overlay semantics")
+def test_overlay_replaces_destination_symlinks_instead_of_writing_through(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"untouched")
+    source, destination = tmp_path / "candidate", tmp_path / "live"
+    source.mkdir()
+    destination.mkdir()
+    (source / "view").write_bytes(b"candidate")
+    (destination / "view").symlink_to(outside)
+    checkpoint.copy_contents(source, destination)
+    assert outside.read_bytes() == b"untouched"
+    assert not (destination / "view").is_symlink()
+    assert (destination / "view").read_bytes() == b"candidate"
+
+
+def test_privileged_copy_refuses_root_owned_paths(tmp_path: Path) -> None:
+    system = Path("/usr/share")
+    assert system.stat().st_uid == 0
+    with pytest.raises(SupervisorError, match="owned by root"):
+        checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (system,), boundary_sha256="b" * 64
         )
-    for capture in (
-        lambda: checkpoint.check_snapshot_space(tmp_path, (live,)),
-        lambda: checkpoint.create_stopped_snapshot(
-            tmp_path / "checkpoint", (live,), boundary_sha256="b" * 64
-        ),
-    ):
-        with pytest.raises(SupervisorError) as error:
-            capture()
-        if unsafe in {"uid", "gid", "directory-gid", "xattr", "root-xattr"}:
-            assert "checkpoint_unsafe_entry" in str(error.value)
-            assert json.dumps(target.relative_to(live).as_posix()) in str(error.value)
-    assert not (tmp_path / "checkpoint").exists()
-    with pytest.raises(SupervisorError, match="rollback_tree_mismatch"):
-        checkpoint.verify_checkpoint(saved)
 
 
-def test_stopped_snapshot_rechecks_all_sources_before_sealing(
+def test_privileged_copy_refuses_roots_below_a_symlink(tmp_path: Path) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    with pytest.raises(SupervisorError, match="symlink"):
+        checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (tmp_path / "link" / "new",), boundary_sha256="b" * 64
+        )
+
+
+def test_overlay_lets_candidate_entries_replace_a_different_type(tmp_path: Path) -> None:
+    source, destination = tmp_path / "candidate", tmp_path / "live"
+    (source / "was-file").mkdir(parents=True)
+    (source / "was-file" / "inside").write_bytes(b"candidate")
+    (source / "was-dir").write_bytes(b"candidate")
+    (destination / "was-dir").mkdir(parents=True)
+    (destination / "was-dir" / "old").write_bytes(b"old")
+    (destination / "was-file").write_bytes(b"old")
+    (destination / "kept").write_bytes(b"unrelated")
+    checkpoint.copy_contents(source, destination)
+    assert (destination / "was-file" / "inside").read_bytes() == b"candidate"
+    assert (destination / "was-dir").read_bytes() == b"candidate"
+    assert (destination / "kept").read_bytes() == b"unrelated"
+
+
+def test_snapshot_refuses_a_root_rollback_could_not_rename_into_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _, roots = _case(tmp_path, stopped=True)
-    copy = checkpoint._copy_tree
-
-    def mutate_earlier_root(source, destination, entries, **kwargs):
-        copy(source, destination, entries, **kwargs)
-        if source == roots[1].live:
-            (roots[0].live / "providers" / "token").write_bytes(b"changed during second root copy")
-
-    monkeypatch.setattr(checkpoint, "_copy_tree", mutate_earlier_root)
-    destination = tmp_path / "not-sealed"
-    with pytest.raises(SupervisorError, match="checkpoint_unsafe_entry"):
+    live = tmp_path / "data"
+    live.mkdir()
+    monkeypatch.setattr(checkpoint.os.path, "ismount", lambda path: Path(path) == live)
+    with pytest.raises(SupervisorError, match="mount point"):
         checkpoint.create_stopped_snapshot(
-            destination, tuple(root.live for root in roots), boundary_sha256="b" * 64
+            tmp_path / "checkpoint", (live,), boundary_sha256="b" * 64
         )
-    assert not (destination / "checkpoint.json").exists()
-
-
-def test_restore_mismatch_report_is_bounded(tmp_path: Path) -> None:
-    saved, roots = _case(tmp_path, stopped=True)
-    checkpoint.restore_checkpoint(saved)
-    for index in range(20):
-        _write(roots[0].live / f"extra-{index:02}", b"must not be reported")
-    with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
-        checkpoint.verify_checkpoint(saved)
-    message = str(error.value)
-    assert (
-        sum(f'"extra-{index:02d}"' in message for index in range(7))
-        == checkpoint.MAX_CHECKPOINT_DIFFERENCES
-    )
-    assert '"extra-00"' in message
-    assert '"extra-04"' in message
-    assert "must not be reported" not in message
-    assert len(message) < 1500
-
-
-def test_snapshot_space_refuses_insufficient_inodes(tmp_path: Path, monkeypatch) -> None:
-    live = _directory(tmp_path / "live")
-    _write(live / "file", b"small")
-    _directory(live / "empty")
-    monkeypatch.setattr(checkpoint.shutil, "disk_usage", lambda _: SimpleNamespace(free=10**12))
-    filesystem = SimpleNamespace(f_frsize=4096, f_favail=5)
-    monkeypatch.setattr(os, "statvfs", lambda _: filesystem)
-    with pytest.raises(SupervisorError, match="checkpoint_capacity"):
-        checkpoint.check_snapshot_space(tmp_path, (live,))
-    # One copy fits (three checkpoint files, root, file, empty); the rollback's
-    # sibling copy on the same filesystem does not.
-    filesystem.f_favail = 6
-    with pytest.raises(SupervisorError, match="checkpoint_capacity"):
-        checkpoint.check_snapshot_space(tmp_path, (live,))
-    filesystem.f_favail = 9
-    checkpoint.check_snapshot_space(tmp_path, (live,))

@@ -448,6 +448,17 @@ def prepare_restore(runtime, request: dict, operation: dict, prepared_previous: 
                 "output_dir": str(workspace / f"restore-validated-{uuid.uuid4()}"),
             },
         )
+        if result.get("preserve_roots"):
+            preserved = runtime.filesystem(
+                "preserve-candidate",
+                {
+                    "directory": str(workspace / "preserved-candidate"),
+                    "roots": result["preserve_roots"],
+                    "boundary_sha256": result["boundary_sha256"],
+                },
+            )
+            replacements = {root["live"]: root for root in preserved["roots"]}
+            result["roots"] = [replacements.get(root["live"], root) for root in result["roots"]]
         candidate = runtime.filesystem(
             "checkpoint",
             {

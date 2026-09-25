@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -122,6 +123,8 @@ class Runtime:
         if action == "retire-source-keys":
             migration.retire_source_keys(Path(request["credentials"]))
             return {"status": "retired"}
+        if action == "check-roots":
+            return {"status": "verified"}
         path = Path(request["directory"])
         if action == "workspace":
             path.mkdir()
@@ -137,6 +140,8 @@ class Runtime:
     def application(self, target, action, request):
         self.calls.append(action)
         assert (self.paths.data_dir / "database").read_bytes() == b"original schema and rows"
+        if action == "offline-inventory":
+            return {"roots": [{"live": str(self.paths.data_dir)}]}
         if action == "offline-prepare":
             return {
                 "roots": [],
@@ -296,9 +301,10 @@ def test_legacy_guard_replaces_short_startup_timeout_without_changing_other_sect
 def test_complete_checkpoint_precedes_first_candidate_live_mutation(runtime):
     migration.adopt(runtime, runtime.target)
     assert (
-        runtime.calls.index("snapshot")
+        runtime.calls.index("offline-inventory")
+        < runtime.calls.index("snapshot-roots")
         < runtime.calls.index("offline-prepare")
-        < runtime.calls.index("checkpoint")
+        < runtime.calls.index("check-roots")
         < runtime.calls.index("probe")
     )
     assert (
@@ -321,7 +327,7 @@ def test_corrupt_adoption_journal_never_changes_data_or_launch(runtime):
 def test_known_legacy_partial_backup_requires_new_complete_encrypted_capture(runtime, monkeypatch):
     def partial(previous):
         runtime.calls.append("legacy_partial")
-        raise SupervisorError("legacy backup was partial")
+        return "legacy backup was partial"
 
     monkeypatch.setattr(runtime, "protected_backup", partial)
     migration.adopt(runtime, runtime.target)
@@ -329,7 +335,7 @@ def test_known_legacy_partial_backup_requires_new_complete_encrypted_capture(run
     assert record["legacy_backup"] == "unavailable"
     assert record["protected_backup"]["archive_sha256"]
     assert (
-        runtime.calls.index("snapshot")
+        runtime.calls.index("snapshot-roots")
         < runtime.calls.index("offline-protect")
         < runtime.calls.index("probe")
     )
@@ -436,7 +442,9 @@ def test_install_retries_terminal_rolled_back_adoption(runtime, monkeypatch):
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args, **kwargs: runtime)
     monkeypatch.setattr(driver, "_root_directory", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        driver, "store_for", lambda _: SimpleNamespace(locked=nullcontext, active=lambda: None)
+        driver,
+        "store_for",
+        lambda _: SimpleNamespace(locked=nullcontext, preparing=nullcontext, active=lambda: None),
     )
     monkeypatch.setattr(
         driver, "followed_release", lambda _: SimpleNamespace(directory=runtime.paths.releases_root)
@@ -449,3 +457,60 @@ def test_install_retries_terminal_rolled_back_adoption(runtime, monkeypatch):
     assert json.loads(journal.read_text())["phase"] == "committed"
     archived = journal.with_name("adoption-" + previous["operation_id"] + ".json")
     assert json.loads(archived.read_text()) == previous
+
+
+def test_adoption_captures_data_and_project_hardlinks_together(runtime, monkeypatch):
+    from dataclasses import asdict
+
+    from rcp_supervisor.checkpoint import (
+        Checkpoint,
+        check_checkpoint_roots,
+        create_stopped_snapshot,
+        restore_checkpoint,
+    )
+
+    project = runtime.paths.data_dir.parent / "project-state"
+    project.mkdir()
+    os.link(runtime.paths.data_dir / "database", project / "linked")
+    application, filesystem = runtime.application, runtime.filesystem
+
+    def call(release, action, request):
+        result = application(release, action, request)
+        if action == "offline-inventory":
+            result["roots"].append({"live": str(project)})
+        return result
+
+    def copy(action, request):
+        if action == "snapshot-roots":
+            saved = create_stopped_snapshot(
+                Path(request["directory"]),
+                tuple(map(Path, request["roots"])),
+                boundary_sha256=request["boundary_sha256"],
+            )
+            return {**asdict(saved), "directory": str(saved.directory)}
+        if action == "check-roots":
+            saved = Checkpoint(
+                Path(request["directory"]), request["sha256"], request["boundary_sha256"]
+            )
+            check_checkpoint_roots(saved, tuple(map(Path, request["roots"])))
+            return {}
+        return filesystem(action, request)
+
+    def rollback(reference):
+        restore_checkpoint(
+            Checkpoint(
+                Path(reference["directory"]), reference["sha256"], reference["boundary_sha256"]
+            )
+        )
+
+    monkeypatch.setattr(runtime, "application", call)
+    monkeypatch.setattr(runtime, "filesystem", copy)
+    monkeypatch.setattr(runtime, "restore_roots", rollback)
+    runtime.fail_probe = True
+    with pytest.raises(SupervisorError):
+        migration.adopt(runtime, runtime.target)
+    assert (project / "linked").read_bytes() == b"original schema and rows"
+    if sys.platform != "darwin":
+        assert (project / "linked").stat().st_ino == (
+            runtime.paths.data_dir / "database"
+        ).stat().st_ino

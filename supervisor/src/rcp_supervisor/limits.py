@@ -16,26 +16,25 @@ MAX_SELECTED_RECEIPT_BYTES = 16 * 1024
 MAX_UNPACKED_WHEEL_BYTES = 1024 * 1024 * 1024
 INSTALL_TIMEOUT_SECONDS = 900
 IDENTITY_TIMEOUT_SECONDS = 30
-CHECKPOINT_COPY_BYTES = 1024 * 1024
-MAX_CHECKPOINT_BYTES = 1024**4
-MAX_CHECKPOINT_ENTRIES = 100_000
-MAX_CHECKPOINT_MANIFEST_BYTES = 16 * 1024 * 1024
-MAX_CHECKPOINT_ROOTS = 1000
-MAX_CHECKPOINT_DIFFERENCES = 5
-MAX_CHECKPOINT_DIFFERENCE_PATH = 240
-# Retained artifacts a committed update leaves behind: the newest checkpoints
-# and installed release trees kept on disk. Two covers the live release and its
-# rollback target. An unrecorded checkpoint workspace is reclaimed only once it
-# is older than the age floor, so one an operation is still writing is never a
-# candidate.
-RETAINED_CHECKPOINTS = 2
+CHECKPOINT_SPACE_MARGIN = 1.1
+MAX_INSTALLED_RUNTIME_BYTES = 1024**4
+MAX_INSTALLED_RUNTIME_ENTRIES = 100_000
+# Retained artifacts a committed update leaves behind. No checkpoint: a committed
+# update never restores old data, so every snapshot and failed attempt's
+# quarantine is removed. Two release trees cover the live release and the
+# previous one. Preparation and pruning are serialized, so unrecorded failed
+# workspaces can be removed at the next successful operation.
+RETAINED_CHECKPOINTS = 0
 RETAINED_RELEASES = 2
-RETENTION_ORPHAN_MIN_AGE_SECONDS = 24 * 60 * 60
+RETAINED_OPERATION_JOURNALS = 20
+RETAINED_SUPERVISOR_LOGS = 20
+RETAINED_ROOT_ENVIRONMENTS = 2
 MAX_OPERATION_BYTES = 1024 * 1024
 APP_COMMAND_TIMEOUT_SECONDS = 300
-# Whole-root checkpoint copies scale with data size, up to MAX_CHECKPOINT_BYTES.
-CHECKPOINT_COPY_TIMEOUT_SECONDS = 3600
-MAINTENANCE_TIMEOUT_SECONDS = 1800
+# An update drains running agent turns for up to two hours before refusing.
+MAINTENANCE_TIMEOUT_SECONDS = 2 * 60 * 60
+# Startup recovery waits this long for a running protected backup to finish.
+DEPLOYMENT_LOCK_TIMEOUT_SECONDS = 30 * 60
 SERVICE_TIMEOUT_SECONDS = 90
 STARTUP_RECOVERY_TIMEOUT_SECONDS = 3600
 PROBE_TIMEOUT_SECONDS = 120

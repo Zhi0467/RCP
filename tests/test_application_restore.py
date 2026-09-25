@@ -71,6 +71,11 @@ def test_restore_reviews_then_prepares_exact_candidate_without_changing_live(
     original = (data / "rcp.sqlite3").read_bytes()
     research = Path(state["research"])
     before = {p.relative_to(research): p.read_bytes() for p in research.rglob("*") if p.is_file()}
+    artifacts = research.parent / "artifacts"
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "unrelated").symlink_to("missing-agent-output")
+    views = research.parent / "views"
+    assert not views.exists()
     review = prepare_restore(RestorePrepareRequest(**value))
     assert review["status"] == "operator_action_needed"
     fields = {item["name"]: item["value"] for item in review["fields"]}
@@ -91,6 +96,10 @@ def test_restore_reviews_then_prepares_exact_candidate_without_changing_live(
     assert {r["live"] for r in result["roots"]} >= {str(data), str(research)}
     assert not (Path(result["roots"][0]["payload"]) / "run-stage").exists()
     assert Path(result["proof_path"]).is_file()
+    assert not views.exists()
+    assert {root["live"] for root in result["preserve_roots"]} >= {str(artifacts)}
+    assert {tuple(root) for root in result["extra_previous_roots"]} == {("live",)}
+    assert (artifacts / "unrelated").is_symlink()
 
 
 def test_restore_rejects_changed_archive_before_any_candidate_publication(restore_request):
