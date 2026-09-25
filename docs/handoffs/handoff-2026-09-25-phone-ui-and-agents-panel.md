@@ -3,7 +3,8 @@
 Date: 2026-09-25
 Status: design confirmed by the human on 2026-09-25 against a rendered mockup of
 the Agents panel, then revised after an xhigh design review whose findings were
-verified against the code. Nothing is implemented.
+verified against the code. Implementation started 2026-09-25 on this pull
+request; nothing has landed yet.
 
 One pull request, in this order:
 
@@ -14,8 +15,11 @@ One pull request, in this order:
 3. **Agents panel.** The Chats list becomes an agent-hub list: grouped by what
    needs you, with a state and a reason on every row.
 
-Inbox push is a separate, later pull request:
-[handoff-2026-09-25-inbox-push.md](handoff-2026-09-25-inbox-push.md).
+The Agents panel includes one backend change: the agent task list keeps every
+chat whose latest turn still needs a human, so Needs you never loses one.
+
+Inbox push is a separate, later pull request with its own handoff,
+`handoff-2026-09-25-inbox-push.md`.
 
 Close this handoff when all three parts have landed and the checks below pass,
 including one real iPhone on a team space.
@@ -143,11 +147,19 @@ the controls the conversation already has.
 
 ### Data
 
-Everything comes from fields the web client already has: chat summaries and
-the agent task list. Chat summaries are paged by recency, so a conversation
-whose latest task needs you must appear under Needs you even when its summary
-is not on the loaded page. Implementation must confirm the task list already
-carries it; if it does not, fixing that is in scope.
+Rows come from fields the web client already has: chat summaries and the
+agent task list, merged by `groupChatConversations`. Both are bounded. Chat
+summaries are paged by recency, and `GET /api/projects/{id}/tasks` returns only
+the newest `AGENT_TASK_LIST_DEFAULT_LIMIT` (20) tasks of any kind. A chat whose
+last turn failed or paused therefore drops out of Needs you once 20 newer tasks
+exist.
+
+**Backend fix, in scope.** The task list also returns, beyond that limit, the
+latest task of every chat whose latest task is failed, paused, or awaiting a
+human. A failed turn followed by a later turn in the same chat is not included.
+The extra rows are bounded by a new limit in `limits.py`. The store query in
+`src/rcp/storage/agent_tasks.py` owns the selection, so every consumer of the
+list sees the same set.
 
 At phone width the panel keeps today's behavior: it starts closed behind the
 Chats disclosure and closes after choosing a conversation. Wider views keep the
@@ -170,9 +182,12 @@ resizable list and its saved width and collapse preference.
 - **Breakpoints agree.** A test that `useNarrowViewport` and the CSS phone width
   are the same value.
 - **Agents panel.** A web test that each task-state combination lands in the
-  right group with the right icon, that a needs-you conversation outside the
-  loaded summary page still appears, and that filters and search narrow the
+  right group with the right icon, and that filters and search narrow the
   list. Assertions use state and ids, not wording.
+- **Old needs-you chats.** A Python test that a chat whose latest turn failed
+  is still returned after more than 20 newer tasks, that a failed turn followed
+  by a later turn in the same chat is not, and that the extra rows respect
+  their limit.
 - **Real device.** On an iPhone over the tailnet: focus the composer without
   zoom, move between Inbox, Runs, and Chats, approve a Proposal through Sync,
   and open a conversation from the Agents panel.
@@ -183,5 +198,7 @@ resizable list and its saved width and collapse preference.
   `web/src/themes/aqua.css`, and `web/src/hooks/useNarrowViewport.ts`.
 - `web/src/views/ChatsWorkspace.tsx`, `web/src/chatWorkspace.ts`, and the
   conversation header, for the Agents panel.
+- `src/rcp/storage/agent_tasks.py` and `src/rcp/limits.py`, for the task-list
+  fix; `docs/specs/api-web-and-desktop-projections.md` for its contract.
 - `docs/specs/interface-and-visual-design.md` for the breakpoints, phone rules,
   and the Agents panel, updated in the same pull request.

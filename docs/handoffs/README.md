@@ -3,15 +3,11 @@
 Active:
 
 - [The phone works, and Chats shows every agent at a glance](handoff-2026-09-25-phone-ui-and-agents-panel.md)
-  — design confirmed 2026-09-25 and revised after an xhigh review; nothing
-  implemented. One pull request: a mechanical stylesheet split, size tokens
+  — design confirmed 2026-09-25 and revised after an xhigh review;
+  implementation started. One pull request: a mechanical stylesheet split, size tokens
   with named phone and tablet widths, a phone pass on Inbox, Runs, Chat, and
-  Settings, and an agent-hub Chats panel. Runs and the composer are unchanged.
-
-- [RCP tells your phone when you are needed](handoff-2026-09-25-inbox-push.md)
-  — confirmed 2026-09-25 as the follow-up pull request; the first design failed
-  review and must be rewritten against the recorded requirements before it
-  starts. Nothing implemented.
+  Settings, and an agent-hub Chats panel whose task list keeps every chat
+  that still needs a human. Runs and the composer are unchanged.
 
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and
