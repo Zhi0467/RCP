@@ -141,3 +141,31 @@ test("an empty available team group can open its project index", () => {
   assert.match(html, /<header>[^]*?<button/);
   assert.match(html, /class="team-space-no-projects"/);
 });
+
+test("team header controls dispatch the action for their connection state", () => {
+  for (const state of ["available", "unavailable"]) {
+    const calls = [];
+    const tree = TeamConnectionGroup({
+      view: { connection, state, error: null },
+      onOpenSpace() {
+        calls.push("open");
+      },
+      onReconnect() {
+        calls.push("reconnect");
+      },
+      onOpenProject() {
+        calls.push("project");
+      },
+    });
+    const header = React.Children.toArray(tree.props.children).find(
+      (element) => element.type === "header",
+    );
+    const buttons = React.Children.toArray(header.props.children).filter(
+      (element) => element.type === "button",
+    );
+    assert.equal(buttons.length, 1);
+    assert.ok(!buttons[0].props.disabled);
+    buttons[0].props.onClick();
+    assert.deepEqual(calls, [state === "available" ? "open" : "reconnect"]);
+  }
+});

@@ -12,10 +12,10 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { ExperimentRunDetail } = await server.ssrLoadModule(
+const { ExperimentRunDetail, experimentHealthLabel } = await server.ssrLoadModule(
   "/src/components/ExperimentRunDetail.tsx",
 );
-const { buildExperimentRun, experimentWatcherDisplayItems } =
+const { buildExperimentRun, experimentWatcherDisplayItems, experimentRecommendation } =
   await server.ssrLoadModule("/src/runProjection.ts");
 const { ExecutionView } = await server.ssrLoadModule("/src/views/GraphViews.tsx");
 
@@ -198,7 +198,7 @@ function render(run, props = {}) {
     ...run,
     watcherItems: run.watcherItems ?? experimentWatcherDisplayItems(run.watchers),
   };
-  return renderToStaticMarkup(
+  const html = renderToStaticMarkup(
     React.createElement(ExperimentRunDetail, {
       run: withWatcherItems,
       runBusy: false,
@@ -216,18 +216,40 @@ function render(run, props = {}) {
       ...props,
     }),
   );
+  const recommendation = experimentRecommendation(run);
+  if (
+    recommendation.step !== "start_episode" ||
+    (!props.startDisabled && props.allowStart !== false)
+  ) {
+    const expected = renderToStaticMarkup(
+      React.createElement("strong", null, recommendation.label),
+    );
+    const actual = html.match(/class="experiment-run-recommendation[^]*?<strong>(.*?)<\/strong>/s);
+    assert.ok(actual);
+    assert.equal(`<strong>${actual[1]}</strong>`, expected);
+  }
+  return html;
 }
 
-function assertDetailProjection(html) {
+function assertDetailProjection(html, health, step) {
   const healthViews = [
     ...html.matchAll(/<div class="experiment-run-health[^"]*"[^>]*>(.*?)<\/div>/gs),
   ];
   assert.equal(healthViews.length, 1);
+  assert.equal(
+    healthViews[0][1],
+    renderToStaticMarkup(React.createElement("strong", null, experimentHealthLabel(health))),
+  );
 
   const recommendationViews = [
     ...html.matchAll(/<div class="experiment-run-recommendation[^"]*">(.*?)<\/div>/gs),
   ];
   assert.equal(recommendationViews.length, 1);
+  assert.match(
+    recommendationViews[0][0],
+    new RegExp(`class="experiment-run-recommendation ${step}"`),
+  );
+  assert.match(recommendationViews[0][1], /<strong>[^<]+<\/strong>/);
 }
 
 function recoveryTask(fields = {}) {
@@ -326,11 +348,7 @@ test("Experiment wrap-up uses the shared parent state without report recovery co
   );
   const html = render(run);
 
-  assertDetailProjection(
-    html,
-    "Wrapping up visualization and report",
-    "Wrapping up visualization and report",
-  );
+  assertDetailProjection(html, "wrapping_up", "wait");
 
   // Start is refused because the published gate says so, not because this card
   // recognised the parent status itself.
@@ -410,7 +428,7 @@ test("a completed watcher waits for continuation delivery, not completion", () =
     ),
   );
 
-  assertDetailProjection(html, "Completion pending delivery", "Wait for continuation to start");
+  assertDetailProjection(html, "completion_pending", "wait");
 
   assert.match(html, /experiment-stop-loop/);
 });
@@ -437,7 +455,7 @@ test("blocked watcher delivery exposes its backend reason and available next ste
     ),
   );
 
-  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
+  assertDetailProjection(html, "needs_action", "stop_and_restart");
 
   assert.ok(html.includes(reason));
 
@@ -474,7 +492,7 @@ test("an Experiment the human closed stays completed whatever its last episode d
     ),
   );
 
-  assertDetailProjection(html, "Completed", "Experiment is completed");
+  assertDetailProjection(html, "completed", "none");
   assert.match(html, /href="\/reports\/previous-completed-episode"/);
 
   assert.doesNotMatch(html, /experiment-run-button/);
@@ -495,7 +513,7 @@ test("an open Experiment whose episode paused for a human still needs action", (
     ),
   );
 
-  assertDetailProjection(html, "Needs action", "Episode report unavailable");
+  assertDetailProjection(html, "needs_action", "none");
 });
 
 test("a final Experiment report error is a note beside the episode's own outcome", () => {
@@ -520,7 +538,7 @@ test("a final Experiment report error is a note beside the episode's own outcome
 
   // The episode exhausted its invocations; the missing report never restates that
   // as the episode's own health or as the human's next step.
-  assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
+  assertDetailProjection(html, "paused_at_limit", "start_episode");
 
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
 
@@ -551,7 +569,7 @@ test("the reason an Experiment episode ended outranks its report error", () => {
     ),
   );
 
-  assertDetailProjection(html, "Failed", "Episode ended");
+  assertDetailProjection(html, "failed", "none");
 
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);
 
@@ -585,7 +603,7 @@ test("a closed Experiment offers no episode start until its status is edited", (
     health: "completed",
   });
 
-  assertDetailProjection(html, "Completed", "Experiment is completed");
+  assertDetailProjection(html, "completed", "none");
 
   assert.doesNotMatch(html, /experiment-run-button/);
 });
@@ -658,7 +676,7 @@ test("detail follows the exact backend operation even when a newer retry row exi
   );
   const html = render(run);
 
-  assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
+  assertDetailProjection(html, "agent_active", "wait");
   assert.match(html, /<dd class="mono experiment-run-breakable">failed-attempt<\/dd>/);
 
   assert.doesNotMatch(html, /experiment-recovery-button/);
@@ -715,7 +733,7 @@ test("an Auto-research child explains its active turn, stale guidance, and watch
     watchedByParentAutoResearch: true,
   });
 
-  assertDetailProjection(html, "Agent active", "Wait for the active Experiment turn");
+  assertDetailProjection(html, "agent_active", "wait");
   // Timeline data arrives after mount; SSR no longer duplicates the turn list.
 
   assert.match(html, /No baseline has been run yet\./);
@@ -745,7 +763,7 @@ test("staged graph changes disable Start until Sync", () => {
     { startDisabled: true },
   );
 
-  assertDetailProjection(html, "Needs action", "Sync staged changes before starting");
+  assertDetailProjection(html, "needs_action", "review");
   assert.match(html, /experiment-run-button" disabled=""/);
 });
 
@@ -801,7 +819,7 @@ test("an unsettled stop enables exact paused recovery and hides the requested St
   const run = buildExperimentRun(node(), experimentControl, [task], []);
   const detail = render(run);
 
-  assertDetailProjection(detail, "Needs action", "Resume this episode, or switch provider");
+  assertDetailProjection(detail, "needs_action", "resume");
   assert.match(
     detail,
     /class="button primary compact experiment-recovery-button" aria-busy="false"/,
@@ -899,7 +917,7 @@ test("a running episode with nothing left to wake it points at Stop loop", () =>
     ),
   );
 
-  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
+  assertDetailProjection(html, "needs_action", "stop_and_restart");
 
   // The reason is the server's sentence, not one this card composed.
 
@@ -972,7 +990,7 @@ test("completed watcher at the ceiling leaves Start new episode enabled", () => 
   });
 
   // At the ceiling with nothing to continue, the next Run starts fresh and carries the count.
-  assertDetailProjection(html, "Paused at invocation limit", "Add turns or start a new episode");
+  assertDetailProjection(html, "paused_at_limit", "start_episode");
 
   assert.match(html, /class="experiment-fold-count">1<\/span>/);
 
@@ -1003,7 +1021,7 @@ test("a gated human-stopped loop recommends its available requirement action", (
     health: "human_stopped",
   });
 
-  assertDetailProjection(html, "Human-stopped", "Resolve the run requirements");
+  assertDetailProjection(html, "human_stopped", "resolve_requirements");
   assert.match(html, new RegExp(reason.replaceAll(".", "\\.")));
 
   assert.match(html, /experiment-run-button"[^>]*disabled=""/);
@@ -1025,7 +1043,7 @@ test("detail keeps Experiment meaning under a neutral Research summary", () => {
 
   assert.match(html, /The detached evaluation is still running/);
   assert.match(html, /Inspect the held-out evaluation/);
-  assertDetailProjection(html, "Needs action", "Start a new episode");
+  assertDetailProjection(html, "needs_action", "start_episode");
 });
 
 test("degraded external watcher exposes backoff and Check now without recommending stop", () => {
@@ -1064,7 +1082,7 @@ test("degraded external watcher exposes backoff and Check now without recommendi
 
   assert.match(html, />3<\/dd>/);
 
-  assertDetailProjection(html, "Watcher degraded", "Keep loop running; check now if needed");
+  assertDetailProjection(html, "degraded", "keep_loop");
 
   assert.match(html, /class="experiment-run-watcher-actions"[^]*?<button/);
 });
@@ -1130,7 +1148,7 @@ test("missing episode continuity recommends stop then start without parsing diag
     health: "needs_action",
   });
 
-  assertDetailProjection(html, "Needs action", "Stop loop, then start a new episode");
+  assertDetailProjection(html, "needs_action", "stop_and_restart");
   assert.match(html, /class="button compact experiment-stop-loop"/);
 });
 
@@ -1146,7 +1164,7 @@ test("an unavailable Stop is neither shown nor recommended", () => {
     health: "needs_action",
   });
 
-  assertDetailProjection(html, "Needs action", "Start an episode");
+  assertDetailProjection(html, "needs_action", "start_episode");
 
   assert.doesNotMatch(html, /experiment-stop-loop/);
 
@@ -1184,7 +1202,7 @@ test("a succeeded legacy-attribution episode offers a fresh start without an unu
   };
 
   const detail = render(run);
-  assertDetailProjection(detail, "Needs action", "Start a new episode");
+  assertDetailProjection(detail, "needs_action", "start_episode");
 
   assert.doesNotMatch(detail, /experiment-stop-loop|OBSOLETE SUCCEEDED TASK STATUS/);
 

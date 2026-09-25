@@ -302,7 +302,11 @@ test("a never-run Experiment shows only its next episode limit", () => {
 
   assert.doesNotMatch(html, /0 \/ 6/);
   assert.match(html, /<strong>6<\/strong>/);
-  assert.match(html, /<button/);
+  const startButton = html.match(
+    /<button[^>]*class="[^"]*\bexperiment-run-button\b[^"]*"[^>]*>/,
+  )?.[0];
+  assert.ok(startButton);
+  assert.doesNotMatch(startButton, /\bdisabled(?:=|\s|>)/);
 });
 
 test("an invocation-limited episode offers a new episode for its pending watcher", () => {

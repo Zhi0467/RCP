@@ -67,3 +67,18 @@ test("detail guidance retains stale authored text with an explicit stale label",
   assert.deepEqual(experimentGuidanceDetail({ next_action: "  " }, "next_action").status, "empty");
   assert.deepEqual(experimentGuidanceDetail({ next_action: "  " }, "next_action").text, null);
 });
+
+test("stale guidance labels differ from current and empty guidance labels", () => {
+  for (const field of ["current_summary", "next_action"]) {
+    const current = experimentGuidanceDetail({ [field]: "sentinel guidance" }, field);
+    const stale = experimentGuidanceDetail(
+      { [field]: "sentinel guidance", [`${field}_stale`]: true },
+      field,
+    );
+    const empty = experimentGuidanceDetail({}, field);
+    assert.ok(stale.label.trim());
+    assert.notEqual(stale.label, current.label);
+    assert.notEqual(stale.label, empty.label);
+    assert.equal(stale.text, current.text);
+  }
+});

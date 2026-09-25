@@ -14,8 +14,13 @@ const server = await createServer({
 const { ProjectActionsMenu, ProjectDeleteDialog, ProjectLanding } = await server.ssrLoadModule(
   "/src/views/ProjectLanding.tsx",
 );
-const { IdentityProvenanceSlip, TeamDevicePairingCard, TeamSessionList, copyIdentityId } =
-  await server.ssrLoadModule("/src/components/LandingIdentityMenu.tsx");
+const {
+  LandingIdentityMenu,
+  IdentityProvenanceSlip,
+  TeamDevicePairingCard,
+  TeamSessionList,
+  copyIdentityId,
+} = await server.ssrLoadModule("/src/components/LandingIdentityMenu.tsx");
 
 after(() => server.close());
 
@@ -89,7 +94,30 @@ test("the project index starts with covers and exposes the named identity with i
 
 test("an unnamed personal identity presents the landing sign-in action", () => {
   const unnamed = { ...identity, user: { ...identity.user, display_name: null } };
-  const html = renderToStaticMarkup(React.createElement(ProjectLanding, landingProps(unnamed)));
+  let requests = 0;
+  let trigger;
+  function CaptureLanding() {
+    const tree = ProjectLanding({
+      ...landingProps(unnamed),
+      onRequestIdentityName() {
+        requests += 1;
+      },
+    });
+    const menu = findElement(tree, (element) => element.type === LandingIdentityMenu);
+    assert.ok(menu);
+    const menuTree = LandingIdentityMenu(menu.props);
+    trigger = findElement(
+      menuTree,
+      (element) =>
+        element.type === "button" && element.props.className === "landing-identity-trigger",
+    );
+    return tree;
+  }
+  const html = renderToStaticMarkup(React.createElement(CaptureLanding));
+  assert.ok(trigger);
+  assert.equal(requests, 0);
+  trigger.props.onClick();
+  assert.equal(requests, 1);
 
   assert.doesNotMatch(html, /data-identity-record="provenance-slip"/);
 });
@@ -430,4 +458,26 @@ test("the project menu renders backend deletion and personal-only move actions",
   assert.match(personalMenu, /project-delete-action/);
   assert.doesNotMatch(teamMenu, /project-move-action/);
   assert.match(teamMenu, /project-delete-action/);
+});
+
+test("the delete dialog projects the selected project's backend confirmation", () => {
+  for (const [id, confirmation] of [
+    ["personal", "personal-confirmation-sentinel"],
+    ["team", "team-confirmation-sentinel"],
+  ]) {
+    const project = { id, name: id, can_delete: true, delete_confirmation: confirmation };
+    const html = renderToStaticMarkup(
+      React.createElement(ProjectDeleteDialog, {
+        project,
+        busy: false,
+        error: null,
+        onClose() {},
+        onConfirm() {},
+      }),
+    );
+    assert.equal(
+      html.match(/<p id="project-delete-warning">(.*?)<\/p>/)?.[1],
+      project.delete_confirmation,
+    );
+  }
 });
