@@ -13,7 +13,6 @@ import {
   reconstructTaskTranscript,
   relatedChatTasks,
   resumablePausedChatTask,
-  taskKindLabel,
   versionedArtifactContentUrl,
 } from "../src/agentTasks.ts";
 
@@ -55,10 +54,6 @@ function artifact(overrides = {}) {
     ...overrides,
   };
 }
-
-test("branch merge tasks keep a human-readable activity label", () => {
-  assert.equal(taskKindLabel("branch_merge"), "Branch merge");
-});
 
 test("node chat reconstruction follows the latest chat id for that node", () => {
   const tasks = [

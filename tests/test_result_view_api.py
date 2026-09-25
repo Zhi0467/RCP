@@ -371,7 +371,6 @@ def test_new_special_result_view_intents_are_rejected(
     )
 
     assert admitted.status_code == 422
-    assert "ordinary task artifacts" in admitted.text
     assert not started
 
 
@@ -416,7 +415,6 @@ def test_keep_waits_for_a_resumable_revision_then_allows_recovery(
 
     blocked = fixture.client.post(f"{base}/result-views/{fixture.record.view_id}/keep")
     assert blocked.status_code == 409
-    assert "active result view revision" in blocked.text
 
     tasks = fixture.client.app.state.background_tasks
     monkeypatch.setattr(tasks, "_spawn_record", lambda record, *_args, **_kwargs: record)

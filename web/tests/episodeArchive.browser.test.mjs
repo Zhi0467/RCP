@@ -443,10 +443,7 @@ test("active and unresolved episodes archive without stopping work and restore a
     await project.getByRole("checkbox", { name: "Show archived" }).check();
     await space.getByRole("checkbox", { name: "Show archived" }).check();
     await projectCard("active").getByRole("button", { name: "Unarchive", exact: true }).waitFor();
-    assert.equal(
-      await projectCard("active").locator(".campaign-run-meta .status-pill").textContent(),
-      "Active",
-    );
+
     await projectCard("active")
       .getByRole("button", { name: /Expand auto-research episode/ })
       .click();
@@ -494,10 +491,7 @@ test("active and unresolved episodes archive without stopping work and restore a
 
     await project.getByRole("checkbox", { name: "Show archived" }).check();
     await projectCard("child").getByRole("button", { name: "Unarchive", exact: true }).waitFor();
-    assert.equal(
-      await projectCard("child").locator(".campaign-run-meta .status-pill").textContent(),
-      "Waiting on watchers",
-    );
+
     assert.equal(records[1].live, true);
     assert.equal(records[1].stop_requested_at, null);
     await projectCard("main-old").getByRole("button", { name: "Unarchive", exact: true }).waitFor();

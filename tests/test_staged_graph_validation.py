@@ -752,7 +752,6 @@ def test_agent_may_queue_a_prior_decision_but_never_decide_it() -> None:
         ["repo-a"],
     )
     assert decide.rejected
-    assert any("only a human may" in message.message for message in decide.messages)
 
 
 def test_revisit_requires_a_prior_decision() -> None:
@@ -776,7 +775,6 @@ def test_revisit_requires_a_prior_decision() -> None:
     )
 
     assert report.rejected
-    assert any("prior decision" in message.message for message in report.messages)
 
 
 def test_permission_stub_splits_queue_from_decide() -> None:

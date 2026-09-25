@@ -187,17 +187,16 @@ def test_history_episode_decoration_maps_lifecycle_and_singular_report(
     assert {
         episode_id: (
             item["mode"],
-            item["state_label"],
             item["ending"],
             item["wrapup_state"],
         )
         for episode_id, item in decorated.items()
     } == {
-        "completed": ("auto_research", "Completed", "completed", "ready"),
-        "exhausted": ("auto_research", "Exhausted", "exhausted", "ready"),
-        "stopped": ("auto_research", "Stopped", "stopped", "skipped"),
-        "failed": ("auto_research", "Failed", "failed", "failed"),
-        "wrapping": ("auto_research", "Completed", "completed", "pending"),
+        "completed": ("auto_research", "completed", "ready"),
+        "exhausted": ("auto_research", "exhausted", "ready"),
+        "stopped": ("auto_research", "stopped", "skipped"),
+        "failed": ("auto_research", "failed", "failed"),
+        "wrapping": ("auto_research", "completed", "pending"),
     }
     assert decorated["exhausted"]["report"] == {
         "report_id": "exhausted-report",

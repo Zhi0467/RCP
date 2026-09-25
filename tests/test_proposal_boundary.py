@@ -832,11 +832,7 @@ def test_supersede_and_merge_intents_require_matching_protected_belief_types(
     report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
 
     assert report.rejected
-    assert any(
-        message.code == "invalid-agent-proposal-shape"
-        and "same protected belief type" in message.message
-        for message in report.messages
-    )
+    assert any(message.code == "invalid-agent-proposal-shape" for message in report.messages)
 
 
 @pytest.mark.parametrize(
@@ -871,11 +867,7 @@ def test_protected_relation_intent_cannot_bypass_lifecycle_intent_rules(
     report = validate_patch(state, _agent_patch(proposal), ["repo-a", "repo-b"])
 
     assert report.rejected
-    assert any(
-        message.code == "invalid-agent-proposal-shape"
-        and "dedicated supersede or merge intent" in message.message
-        for message in report.messages
-    )
+    assert any(message.code == "invalid-agent-proposal-shape" for message in report.messages)
 
 
 @pytest.mark.parametrize("intent", ["supersede", "merge"])

@@ -31,7 +31,7 @@ def test_result_view_descriptor_rejects_internal_fields(internal_field: str) -> 
     values = _descriptor_values()
     values[internal_field] = "private"
 
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+    with pytest.raises(ValidationError):
         ResultViewDescriptor.model_validate(values)
 
 

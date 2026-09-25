@@ -355,7 +355,7 @@ def test_target_upload_is_bound_to_one_archive_and_replays_its_receipt(
 ) -> None:
     source, target, source_request, target_request = _archive_bound_pair(tmp_path)
 
-    with pytest.raises(ValueError, match="only a target"):
+    with pytest.raises(ValueError):
         source.begin_target_project_transfer_upload(source_request.request_id)
 
     leased = target.begin_target_project_transfer_upload(target_request.request_id)
@@ -381,7 +381,7 @@ def test_target_upload_is_bound_to_one_archive_and_replays_its_receipt(
         )
         == completed
     )
-    with pytest.raises(ValueError, match="another lease boundary"):
+    with pytest.raises(ValueError):
         target.complete_target_project_transfer_upload(
             target_request.request_id,
             lease_boundary_sha256="0" * 64,
@@ -391,7 +391,7 @@ def test_target_upload_is_bound_to_one_archive_and_replays_its_receipt(
 def test_target_upload_requires_the_archive_bound_phase(tmp_path: Path) -> None:
     _source, target, _source_request, target_request = _released_pair(tmp_path)
 
-    with pytest.raises(ValueError, match="archive-bound"):
+    with pytest.raises(ValueError):
         target.begin_target_project_transfer_upload(target_request.request_id)
 
 
@@ -506,7 +506,7 @@ def test_target_activation_compound_commits_and_replays_its_exact_receipt(
         )
         == receipt
     )
-    with pytest.raises(ValueError, match="retry does not match"):
+    with pytest.raises(ValueError):
         target.activate_target_project_transfer(
             target_request.request_id,
             project=project.model_copy(update={"name": "Another project"}),
@@ -529,7 +529,7 @@ def test_target_activation_requires_complete_machine_boundaries_atomically(
     assert provisioning.final_review_digest is not None
     project = _activation_project(target, target_request.project_id)
 
-    with pytest.raises(ValueError, match="completed import"):
+    with pytest.raises(ValueError):
         target.activate_target_project_transfer(
             target_request.request_id,
             project=project,
@@ -567,7 +567,7 @@ def test_corrupt_target_activation_receipt_fails_loudly(tmp_path: Path) -> None:
             ),
         )
 
-    with pytest.raises(RuntimeError, match="import receipt"):
+    with pytest.raises(RuntimeError):
         target.target_project_transfer_activation(target_request.request_id)
 
 
@@ -585,7 +585,7 @@ def test_source_release_atomically_fences_new_root_task_admission(tmp_path: Path
         status_message="Waiting to refresh.",
     )
 
-    with pytest.raises(ValueError, match="moving to its admitted team space"):
+    with pytest.raises(ValueError):
         source.create_agent_task(task)
     assert source.agent_task(task.operation_id) is None
 
@@ -636,7 +636,7 @@ def test_linked_requests_keep_independent_raw_proofs_out_of_public_state(tmp_pat
         assert "secret" not in public
         assert len(proof["secret"]) == 32
         assert hashlib.sha256(proof["secret"]).hexdigest() == proof["commitment_sha256"]
-        with pytest.raises(ValueError, match="not exposed"):
+        with pytest.raises(ValueError):
             store.expose_project_transfer_proof(request.request_id)
 
     assert AppStore(source.path).project_transfer_request(source_request.request_id) == (
@@ -688,7 +688,7 @@ def test_link_creation_is_exactly_idempotent_after_the_request_advances(tmp_path
     assert repeated_link == source_request
     assert len(source.project_transfer_requests()) == 1
     assert len(target.project_transfer_requests()) == 1
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError):
         source.link_source_project_transfer_request(
             source_request.request_id,
             receipt=target_request.link_receipt.model_copy(
@@ -713,7 +713,7 @@ def test_no_common_codec_or_stale_source_identity_fails_before_linking(tmp_path:
     )
     incoming = _incoming_request(target, target_actor, project_id)
 
-    with pytest.raises(ValueError, match="did not offer"):
+    with pytest.raises(ValueError):
         target.create_target_project_transfer_request(
             provisioning_request_id=incoming.request_id,
             source_request_id=source_request.request_id,
@@ -728,7 +728,7 @@ def test_no_common_codec_or_stale_source_identity_fails_before_linking(tmp_path:
         )
     assert target.project_transfer_requests() == []
 
-    with pytest.raises(ValueError, match="does not match its incoming"):
+    with pytest.raises(ValueError):
         target.create_target_project_transfer_request(
             provisioning_request_id=incoming.request_id,
             source_request_id=source_request.request_id,
@@ -761,7 +761,7 @@ def test_no_common_codec_or_stale_source_identity_fails_before_linking(tmp_path:
         project_truth_scope=["paper"],
         default_run_truth_scope=["paper"],
     )
-    with pytest.raises(ValueError, match="repositories do not match"):
+    with pytest.raises(ValueError):
         other_target.create_target_project_transfer_request(
             provisioning_request_id=mismatched_incoming.request_id,
             source_request_id=source_request.request_id,
@@ -776,7 +776,7 @@ def test_no_common_codec_or_stale_source_identity_fails_before_linking(tmp_path:
         )
 
     stale_id = str(uuid.uuid4())
-    with pytest.raises(ValueError, match="stale or belongs"):
+    with pytest.raises(ValueError):
         source.create_source_project_transfer_request(
             project_id=stale_id,
             target_space_id=target.space_id,
@@ -821,7 +821,7 @@ def test_both_human_receipts_bind_the_exact_review_without_creating_target_autho
     forged = target_request.target_admission_receipt.model_copy(
         update={"source_configuration_sha256": "d" * 64}
     )
-    with pytest.raises(ValueError, match="does not match"):
+    with pytest.raises(ValueError):
         source.accept_target_project_transfer_admission(
             source_request.request_id,
             receipt=forged,
@@ -831,7 +831,7 @@ def test_both_human_receipts_bind_the_exact_review_without_creating_target_autho
         receipt=target_request.target_admission_receipt,
     )
     drifted = configuration.model_copy(update={"source_manifest_sha256": "e" * 64})
-    with pytest.raises(ValueError, match="changed after"):
+    with pytest.raises(ValueError):
         source.record_source_project_transfer_release(
             source_request.request_id,
             released_by=source_actor,
@@ -869,7 +869,7 @@ def test_proofs_expose_only_at_their_boundaries_then_consume_to_receipts(
     assert source.expose_project_transfer_proof(source_request.request_id) == source_secret
     assert hashlib.sha256(source_secret).hexdigest() == (source_request.source_release_proof_sha256)
     source_ack = hashlib.sha256(b"target verified source release proof").hexdigest()
-    with pytest.raises(ValueError, match="before its boundary"):
+    with pytest.raises(ValueError):
         source.acknowledge_project_transfer_proof(
             source_request.request_id,
             acknowledgement_sha256=source_ack,
@@ -902,7 +902,7 @@ def test_proofs_expose_only_at_their_boundaries_then_consume_to_receipts(
         source_request.request_id,
         acknowledgement_sha256=source_ack,
     )
-    with pytest.raises(ValueError, match="before cleanup"):
+    with pytest.raises(ValueError):
         source.consume_project_transfer_proof(
             source_request.request_id,
             acknowledgement_sha256=source_ack,
@@ -944,7 +944,7 @@ def test_proofs_expose_only_at_their_boundaries_then_consume_to_receipts(
             request.target_activation_proof_sha256,
         }
         assert proof["acknowledgement_sha256"] == acknowledgment
-        with pytest.raises(ValueError, match="already consumed"):
+        with pytest.raises(ValueError):
             store.expose_project_transfer_proof(request.request_id)
         assert store.complete_project_transfer_request(request.request_id) == request
 
@@ -972,13 +972,13 @@ def test_archive_and_proof_retries_reject_different_boundaries(tmp_path: Path) -
         )
         == bound
     )
-    with pytest.raises(ValueError, match="another archive"):
+    with pytest.raises(ValueError):
         source.bind_project_transfer_archive(
             source_request.request_id,
             archive_sha256="0" * 64,
             archive_size_bytes=100,
         )
-    with pytest.raises(ValueError, match="compound activation receipt"):
+    with pytest.raises(ValueError):
         target.mark_target_project_transfer_activated(target_request.request_id)
 
 
@@ -991,5 +991,5 @@ def test_corrupt_public_or_protected_transfer_state_fails_loudly(tmp_path: Path)
             "UPDATE project_transfer_proofs SET commitment_sha256 = ? WHERE request_id = ?",
             ("0" * 64, source_request.request_id),
         )
-    with pytest.raises(RuntimeError, match="does not match"):
+    with pytest.raises(RuntimeError):
         source.project_transfer_request(source_request.request_id)

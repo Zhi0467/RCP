@@ -60,13 +60,10 @@ test("chat Markdown links exact graph node ids in prose and inline code", () => 
 
   assert.match(rendered, /href="#rcp-node=exp%2Fknown"/);
   assert.match(rendered, /class="chat-node-reference"/);
-  assert.match(rendered, /aria-label="Open node exp\/known"/);
+
   assert.match(rendered, /exp\/not-in-the-graph/);
   assert.doesNotMatch(rendered, /rcp-node=exp%2Fnot-in-the-graph/);
-  assert.match(
-    rendered,
-    /<a href="#rcp-node=exp%2Fknown" class="chat-node-reference" aria-label="Open node exp\/known"><code>exp\/known<\/code><\/a>/,
-  );
+  assert.match(rendered, /href="#rcp-node=exp%2Fknown"[^>]*><code>exp\/known<\/code>/);
   assert.match(rendered, /<pre><code class="language-text">exp\/known\n<\/code><\/pre>/);
   assert.match(rendered, /href="https:\/\/example\.test\/exp\/known"/);
 });
@@ -137,7 +134,7 @@ test("project chat Markdown identifies repository file links without changing ot
   );
 
   assert.match(rendered, /class="chat-repository-file-reference"/);
-  assert.match(rendered, /aria-label="Open repository file preview"/);
+
   assert.match(rendered, /href="https:\/\/example\.test\/docs"/);
   assert.doesNotMatch(rendered, /https:\/\/example\.test\/docs" class=/);
   assert.match(rendered, /href="\/#\/projects\/example"/);

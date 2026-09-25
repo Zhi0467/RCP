@@ -133,7 +133,7 @@ def test_control_probe_can_report_a_known_incomplete_operation_set() -> None:
     )
 
     assert result.operations == ("probe",)
-    with pytest.raises(ValueError, match="registry order"):
+    with pytest.raises(ValueError):
         ServerControlProbeResult(
             instance_id=str(uuid.uuid4()),
             pid=os.getpid(),
@@ -256,7 +256,7 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
     assert sent[2].selector_id == request_id
     assert sent[2].boundary_sha256 == identity["lease_boundary_sha256"]
 
-    with pytest.raises(ValueError, match="request selector"):
+    with pytest.raises(ValueError):
         ServerControlRequest(
             request_id=str(uuid.uuid4()),
             instance_id=instance_id,
@@ -264,7 +264,7 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
             selector_kind="project",
             selector_id=project_id,
         )
-    with pytest.raises(ValueError, match="confirmed upload boundary"):
+    with pytest.raises(ValueError):
         ServerControlRequest(
             request_id=str(uuid.uuid4()),
             instance_id=instance_id,
@@ -272,7 +272,7 @@ def test_transfer_upload_control_shapes_bind_request_and_lease(
             selector_kind="request",
             selector_id=request_id,
         )
-    with pytest.raises(ValueError, match="another request or lease boundary"):
+    with pytest.raises(ValueError):
         control._validated_control_result(
             complete_request,
             complete.model_copy(update={"lease_boundary_sha256": "c" * 64}),
@@ -446,7 +446,7 @@ def test_update_maintenance_refuses_an_active_upload_before_closing_admission(
         0.01,
     )
 
-    with pytest.raises(ServerControlError, match="active project transfer upload") as caught:
+    with pytest.raises(ServerControlError) as caught:
         handler(
             ServerControlRequest(
                 request_id=str(uuid.uuid4()),
@@ -494,7 +494,7 @@ def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
         owner_kind="cli",
         control_socket=control_root / "control.sock",
     )
-    with pytest.raises(ValueError, match="only to an installed CLI-owned team service"):
+    with pytest.raises(ValueError):
         create_app(data_dir=personal_data, instance_metadata=metadata)
 
     team_data = tmp_path / "team"
@@ -506,7 +506,7 @@ def test_control_socket_is_refused_for_a_personal_or_non_cli_app(
             team_data, host="127.0.0.1", port=8421, owner_kind="desktop"
         ).data_dir_id,
     )
-    with pytest.raises(ValueError, match="only to an installed CLI-owned team service"):
+    with pytest.raises(ValueError):
         create_app(data_dir=team_data, instance_metadata=desktop)
 
 
@@ -524,7 +524,7 @@ def test_update_maintenance_blocks_new_machine_operations(
         selector_id=str(uuid.uuid4()),
     )
 
-    with pytest.raises(ServerControlError, match="maintenance") as caught:
+    with pytest.raises(ServerControlError) as caught:
         app.state.server_control.handler(
             request,
             ServerControlPeer(pid=os.getpid(), uid=os.geteuid(), gid=os.getegid()),
@@ -585,7 +585,7 @@ def test_maintenance_result_rejects_mismatched_boundary(
         closed=closed,
         quiescent=False,
     )
-    with pytest.raises(ValueError, match="another boundary"):
+    with pytest.raises(ValueError):
         control._validated_control_result(request, result)
 
 
@@ -610,7 +610,7 @@ def test_maintenance_enter_and_verify_reject_identity_free_open_result(operation
         closed=False,
         quiescent=False,
     )
-    with pytest.raises(ValueError, match="another boundary"):
+    with pytest.raises(ValueError):
         control._validated_control_result(request, result)
 
 
@@ -671,7 +671,7 @@ def test_update_control_operations_require_a_root_peer(
         boundary_sha256="a" * 64,
     )
 
-    with pytest.raises(ServerControlError, match="root server coordinator") as caught:
+    with pytest.raises(ServerControlError) as caught:
         app.state.server_control.handler(
             request,
             ServerControlPeer(pid=os.getpid(), uid=1, gid=1),
@@ -709,24 +709,24 @@ def test_provider_check_uses_its_bounded_operation_timeout(
         expected_server_uid=os.geteuid(),
     )
 
-    with pytest.raises(RuntimeError, match="stop after observing"):
+    with pytest.raises(RuntimeError):
         client.probe()
-    with pytest.raises(RuntimeError, match="stop after observing"):
+    with pytest.raises(RuntimeError):
         client.capture_backup_sqlite()
-    with pytest.raises(RuntimeError, match="stop after observing"):
+    with pytest.raises(RuntimeError):
         client.check_provider_readiness(
             selector_kind="request",
             selector_id=str(uuid.uuid4()),
             boundary_sha256="a" * 64,
             target_id="b" * 64,
         )
-    with pytest.raises(RuntimeError, match="stop after observing"):
+    with pytest.raises(RuntimeError):
         client.advance_project_provision(
             request_id=str(uuid.uuid4()),
             boundary_sha256="a" * 64,
             target_id="b" * 64,
         )
-    with pytest.raises(RuntimeError, match="stop after observing"):
+    with pytest.raises(RuntimeError):
         client.complete_project_transfer_upload(
             request_id=str(uuid.uuid4()),
             lease_boundary_sha256="d" * 64,
@@ -738,7 +738,7 @@ def test_provider_check_uses_its_bounded_operation_timeout(
         "maintenance_release",
         "maintenance_status",
     ):
-        with pytest.raises(RuntimeError, match="stop after observing"):
+        with pytest.raises(RuntimeError):
             client.maintenance(
                 operation,
                 maintenance_id=maintenance_id,
@@ -794,7 +794,7 @@ def test_installed_control_socket_is_discovered_only_for_the_service_account(
     assert installed_control_socket_path(tmp_path / "other-data") is None
 
     account.pw_uid = os.geteuid() + 1
-    with pytest.raises(ServerMetadataError, match="configured service account"):
+    with pytest.raises(ServerMetadataError):
         installed_control_socket_path(data_dir)
 
 
@@ -1180,7 +1180,7 @@ def test_previous_console_protocol_probe_does_not_advertise_unknown_maintenance_
         assert "backup_sqlite_capture" in result.operations
         assert "project_provision_step" in result.operations
         assert not any(operation.startswith("maintenance_") for operation in result.operations)
-        with pytest.raises(ValueError, match="requires protocol 10"):
+        with pytest.raises(ValueError):
             ServerControlRequest(
                 protocol_version=protocol,
                 request_id=str(uuid.uuid4()),

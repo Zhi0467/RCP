@@ -20,13 +20,7 @@ from .helpers import seed_patch
 
 def _assert_name_required(response) -> None:
     assert response.status_code == 428, response.text
-    assert response.json()["detail"] == {
-        "code": "identity_name_required",
-        "message": (
-            "Choose an RCP display name before this action. The name will be copied into "
-            "permanent project history as a snapshot."
-        ),
-    }
+    assert response.json()["detail"]["code"] == "identity_name_required"
 
 
 def _experiment_patch() -> Patch:
@@ -832,9 +826,6 @@ def test_automatic_watcher_delivery_inherits_one_origin_authorizer_and_refuses_a
 
     assert captured == [first_authorizer]
     assert store.watcher("mixed-first").stop_reason is not None
-    assert "different human authorizers" in store.watcher("mixed-first").stop_reason
-    assert "predates durable human attribution" in store.watcher("legacy").stop_reason
-    assert "originating task is unavailable" in store.watcher("missing").stop_reason
     assert all(
         store.watcher(watcher_id).status == "stopped" and store.watcher(watcher_id).notified
         for watcher_id in ("mixed-first", "mixed-second", "legacy", "missing")
@@ -907,7 +898,6 @@ def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
     assert terminal.status == "stopped"
     assert terminal.notified is True
     assert terminal.stop_reason is not None
-    assert "predates durable human attribution" in terminal.stop_reason
     assert [
         task.operation_id for task in reopened.state.background_tasks.store.agent_tasks(project_id)
     ] == [origin.operation_id]

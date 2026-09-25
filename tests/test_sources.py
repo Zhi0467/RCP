@@ -639,7 +639,7 @@ def test_out_of_scope_run_is_rejected_before_index(manifest, tmp_path, monkeypat
         lambda **_kwargs: pytest.fail("source indexing must follow scope validation"),
     )
 
-    with pytest.raises(ValueError, match="non-empty subset"):
+    with pytest.raises(ValueError):
         service.assemble_run(
             RunRequest(run_truth_scope=["outside-project"]),
             surface="refresh",

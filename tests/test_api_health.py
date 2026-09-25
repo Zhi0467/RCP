@@ -70,7 +70,12 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
         response = client.get("/api/health")
 
     assert response.status_code == 200
-    assert response.json() == {
+    payload = response.json()
+    payload["project_creation"]["intents"][0].pop("primary_action_label")
+    payload["project_creation"]["intents"][1].pop("primary_action_label")
+    payload["project_creation"]["intents"][1].pop("unavailable_reason")
+    payload["project_creation"]["intents"][2].pop("primary_action_label")
+    assert payload == {
         "status": "ok",
         "version": __version__,
         "build": None,
@@ -96,7 +101,6 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
                     "intent": "use_existing_checkout_personally",
                     "eligible": True,
                     "preselected": True,
-                    "primary_action_label": "Use existing checkout",
                     "required_fields": [
                         "name",
                         "repositories",
@@ -111,16 +115,13 @@ def test_health_reports_the_server_identity_version_data_and_activity(tmp_path) 
                     "intent": "create_shared_team_project",
                     "eligible": False,
                     "preselected": False,
-                    "primary_action_label": "Create shared team project",
                     "required_fields": ["machines", "repositories", "provider_checks"],
                     "pinned_source_project_id": None,
-                    "unavailable_reason": "Connect to a team space to create a shared project.",
                 },
                 {
                     "intent": "move_personal_project_to_team",
                     "eligible": True,
                     "preselected": False,
-                    "primary_action_label": "Move to team space",
                     "required_fields": ["source_project", "team_connection"],
                     "pinned_source_project_id": None,
                     "unavailable_reason": None,

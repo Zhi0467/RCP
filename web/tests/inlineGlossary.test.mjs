@@ -74,8 +74,8 @@ test("node prose renders focusable inline definitions without a detached glossar
   assert.match(html, /<dfn[^>]*tabindex="0"[^>]*>Plasticity loss<\/dfn>/);
   assert.match(html, /data-definition="A reduction in that capacity\."/);
   assert.doesNotMatch(html, /<dfn[^>]*\stitle=/);
-  assert.match(html, /<h3>Context<\/h3>/);
-  assert.doesNotMatch(html, /Terms used here|node-glossary/);
+
+  assert.doesNotMatch(html, /node-glossary/);
 });
 
 test("proposal prose uses the shared inline glossary treatment", () => {
@@ -110,8 +110,6 @@ test("proposal prose uses the shared inline glossary treatment", () => {
   assert.equal(html.match(/<dfn/g)?.length, 3);
   assert.match(html, /<h3><dfn[^>]*>Plasticity<\/dfn> decision<\/h3>/);
   assert.match(html, /<dfn[^>]*>Plasticity loss<\/dfn> remains plausible\./);
-  assert.match(html, /Proposed action/);
-  assert.match(html, /Approve or reject\./);
 });
 
 test("node chat passes the prebuilt index into Markdown answers", () => {

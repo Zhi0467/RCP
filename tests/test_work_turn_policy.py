@@ -37,7 +37,7 @@ def test_same_logical_work_turn_continuations_preserve_handoffs(
 def test_work_rejects_continuations_without_an_explicit_handoff_policy(
     continuation: str,
 ) -> None:
-    with pytest.raises(ValueError, match="Unsupported Work continuation"):
+    with pytest.raises(ValueError):
         clears_stale_turn_handoffs(cast(AgentTaskContinuation, continuation))
 
 

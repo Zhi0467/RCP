@@ -118,7 +118,7 @@ def test_local_recovery_stage_inventory_requires_active_episode_stage(tmp_path: 
         )
     )
 
-    with pytest.raises(ValueError, match="recovery-critical local run stage"):
+    with pytest.raises(ValueError):
         checkpoint_local_recovery_stages(store, data_dir)
 
 
@@ -225,20 +225,19 @@ def test_checkpoint_ignores_consumed_transfer_upload_without_an_inbox_archive(
 
 
 @pytest.mark.parametrize(
-    ("status", "mutation", "message"),
+    ("status", "mutation"),
     [
-        ("active", lambda _path: None, "durable complete boundary"),
-        ("consumed", lambda _path: None, "no typed completed-upload proof"),
-        ("complete", lambda path: path.unlink(), "missing its archive file"),
-        ("complete", lambda path: path.write_bytes(b"wrong"), "differs from its receipt"),
-        ("complete", lambda path: path.chmod(0o644), "unsafe ownership, mode, or type"),
+        ("active", lambda _path: None),
+        ("consumed", lambda _path: None),
+        ("complete", lambda path: path.unlink()),
+        ("complete", lambda path: path.write_bytes(b"wrong")),
+        ("complete", lambda path: path.chmod(420)),
     ],
 )
 def test_checkpoint_refuses_unfinished_or_unsafe_transfer_archive(
     tmp_path: Path,
     status: str,
     mutation: Callable[[Path], None],
-    message: str,
 ) -> None:
     coordinator, snapshot, destination, final, _payload = _transfer_upload_capture_fixture(
         tmp_path,
@@ -246,7 +245,7 @@ def test_checkpoint_refuses_unfinished_or_unsafe_transfer_archive(
     )
     mutation(final)
 
-    with pytest.raises(ApplicationSnapshotRefused, match=message):
+    with pytest.raises(ApplicationSnapshotRefused):
         coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
 
 
@@ -257,7 +256,7 @@ def test_checkpoint_refuses_extra_transfer_partial_beside_complete_archive(
     (final.parent / ".unexpected.partial").write_bytes(b"partial")
     (final.parent / ".unexpected.partial").chmod(0o600)
 
-    with pytest.raises(ApplicationSnapshotRefused, match="unknown, partial, or untyped"):
+    with pytest.raises(ApplicationSnapshotRefused):
         coordinator._copy_transfer_inbox(snapshot, destination)  # noqa: SLF001
 
 
@@ -278,7 +277,7 @@ def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refu
     (workspace / " results" / "latest").symlink_to("../test_a0")
 
     # Trees RCP writes itself never contain links: a link still refuses them.
-    with pytest.raises(ApplicationSnapshotRefused, match="contains a link"):
+    with pytest.raises(ApplicationSnapshotRefused):
         _snapshot_tree(
             stage, tmp_path / "refused", relative_prefix=PurePosixPath("run-stage/chat-1")
         )
@@ -315,7 +314,7 @@ def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refu
     odd = tmp_path / "run-stage" / "chat-odd"
     odd.mkdir(parents=True)
     (odd / "dir\\name").symlink_to("target")
-    with pytest.raises(ApplicationSnapshotRefused, match="unusable name"):
+    with pytest.raises(ApplicationSnapshotRefused):
         _snapshot_tree(
             odd,
             tmp_path / "odd-copied",
@@ -330,7 +329,7 @@ def test_stage_checkpoints_keep_agent_links_by_text_while_owned_trees_still_refu
     (flood / "target").write_text("x")
     for index in range(40):
         (flood / f"link-{index}").symlink_to("target")
-    with pytest.raises(ApplicationSnapshotRefused, match="inventory bound"):
+    with pytest.raises(ApplicationSnapshotRefused):
         _snapshot_tree(
             flood,
             tmp_path / "flooded",

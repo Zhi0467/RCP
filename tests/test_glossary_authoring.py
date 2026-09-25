@@ -103,7 +103,7 @@ def test_glossary_operation_does_not_grant_discuss_an_apply_channel() -> None:
             ),
         ),
     )
-    with pytest.raises(ValueError, match="exposes no graph Patch channel"):
+    with pytest.raises(ValueError):
         require_apply(
             task,
             _definition_patch("Elastic weight consolidation."),

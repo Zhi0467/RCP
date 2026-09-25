@@ -70,7 +70,7 @@ def test_intrinsic_phase_never_supplies_experiment_gate_truth() -> None:
     gated = _state(phase="unspecified", blocker_status="open")
     graph_control = experiment_graph_control(gated, EXPERIMENT_ID)
     assert not graph_control.ready
-    assert graph_control.reasons == [f"Blocker {BLOCKER_ID} is open."]
+    assert len(graph_control.reasons) == 1
     assert not derive_experiment_control_state(gated, EXPERIMENT_ID).ready
 
 

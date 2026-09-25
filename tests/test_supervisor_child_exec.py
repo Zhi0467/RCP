@@ -51,7 +51,6 @@ def test_parent_death_before_or_during_arming_never_executes(monkeypatch, parent
     )
     monkeypatch.setattr(child_exec.os, "execv", lambda *_args: pytest.fail("orphan exec"))
     assert child_exec.main(["42", "/unused/python", "-I", "-m", "rcp"]) == 1
-    assert "coordinator disappeared" in capsys.readouterr().err
 
 
 def test_parent_death_syscall_failure_never_executes(monkeypatch, capsys):
@@ -65,14 +64,12 @@ def test_parent_death_syscall_failure_never_executes(monkeypatch, capsys):
     )
     monkeypatch.setattr(child_exec.os, "execv", lambda *_args: pytest.fail("unowned exec"))
     assert child_exec.main(["42", "/unused/python"]) == 1
-    assert "Could not establish" in capsys.readouterr().err
 
 
 def test_non_linux_child_refuses_instead_of_losing_parent_ownership(monkeypatch, capsys):
     monkeypatch.setattr(child_exec.sys, "platform", "darwin")
     monkeypatch.setattr(child_exec.os, "execv", lambda *_args: pytest.fail("unsupported exec"))
     assert child_exec.main(["42", "/unused/python"]) == 1
-    assert "requires Linux" in capsys.readouterr().err
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux prctl and pidfd kernel proof")

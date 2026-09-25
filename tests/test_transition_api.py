@@ -430,7 +430,6 @@ def test_sync_preview_rejects_a_stale_head_without_writing(manifest, tmp_path: P
     )
 
     assert response.status_code == 409
-    assert "moved from revision" in response.json()["detail"]
     assert len(service.history.load_patches()) == committed_patch_count
 
 

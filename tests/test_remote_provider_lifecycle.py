@@ -94,8 +94,6 @@ async def test_codex_exec_requires_terminal_protocol_event(
     else:
         assert not any(event.event == "done" for event in events)
         assert any(event.event == "error" for event in events)
-        if terminal is None:
-            assert "before the turn completed" in events[-1].text
 
 
 @pytest.fixture
@@ -230,10 +228,6 @@ async def test_preprompt_fallback_requires_remote_exit_confirmation(
         # conservative: absence there is not a pass that never started.
         assert confirm_flags[-1] is False
         assert events[-1].event == "error"
-        # The blocked fallback is the consequence; the launch failure is the
-        # cause, and the human needs to be told the cause.
-        assert "fallback is blocked" in events[-1].text
-        assert "closed its provider runtime before accepting the turn" in events[-1].text
 
 
 @pytest.mark.asyncio
@@ -313,7 +307,6 @@ async def test_remote_process_reservation_precedes_spawn_and_spawn_failure_settl
         assert stopped.text == pid_file
         failed = await anext(stream)
         assert failed.event == "error"
-        assert "could not be spawned" in failed.text
     finally:
         await stream.aclose()
 

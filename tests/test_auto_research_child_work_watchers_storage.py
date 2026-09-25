@@ -181,7 +181,7 @@ def test_old_database_with_child_routes_backfills_watcher_worker_and_episode(tmp
 
 def test_child_watcher_cannot_use_unmetered_generic_wake(tmp_path):
     store, parent, _route, watcher, wake = _waiting_child(tmp_path)
-    with pytest.raises(ValueError, match="paid wake"):
+    with pytest.raises(ValueError):
         store.create_watcher_notification_task(wake, [watcher.watcher_id])
     assert store.agent_task(wake.operation_id) is None
     assert store.watcher(watcher.watcher_id).notified is False

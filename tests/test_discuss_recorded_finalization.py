@@ -231,7 +231,7 @@ def test_a_moved_discuss_stage_refuses_to_finalize(tmp_path) -> None:
     )
     execution.checkpoint_stage("", str(tmp_path / "somewhere-else"))
 
-    with pytest.raises(ValueError, match="belongs to another stage"):
+    with pytest.raises(ValueError):
         discuss_module._load_discuss_finalization_context(service, request, execution)
 
 

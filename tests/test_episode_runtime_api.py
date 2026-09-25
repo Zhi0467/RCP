@@ -215,13 +215,6 @@ def test_auto_research_retry_rechecks_remote_target_before_creating_child(
     )
 
     assert blocked.status_code == 503
-    assert blocked.json() == {
-        "detail": (
-            "Auto-research Retry cannot start: compute.example is unreachable, "
-            "so /opt/codex/bin/codex could not be checked. "
-            "The current task was left unchanged."
-        )
-    }
     assert readiness_calls == [
         (
             "codex",

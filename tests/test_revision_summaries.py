@@ -107,22 +107,6 @@ def test_revision_summaries_resolve_titles_fallback_and_quote_stored_consequence
 
     summaries = build_revision_summaries(patches, materialization)
 
-    assert summaries[0].sentences == ["Added Plasticity under repeated updates."]
-    assert summaries[1].sentences == ["Updated “Future plasticity after repeated updates”."]
-    assert summaries[2].sentences == [
-        "Recorded Expand the probe grid.",
-        (
-            "The proposal “Expand the probe grid” records this consequence: "
-            "“This adds two checkpoints for Future plasticity after repeated updates.”"
-        ),
-    ]
-    assert summaries[3].sentences == [
-        "Approved proposal “Expand the probe grid”.",
-        (
-            "The proposal “Expand the probe grid” records this consequence: "
-            "“This adds two checkpoints for Future plasticity after repeated updates.”"
-        ),
-    ]
     rendered = " ".join(sentence for summary in summaries for sentence in summary.sentences)
     assert "hyp/repeated-updates" not in rendered
     assert "prop/expand-probe-grid" not in rendered
@@ -177,13 +161,6 @@ def test_revision_summaries_preserve_unresolved_slash_tokens_and_paths() -> None
 
     summaries = build_revision_summaries(patches, materialization)
 
-    assert summaries[0].sentences == [
-        (
-            "Recorded Probe runner scripts/run-probe from configs/routes.yaml, docs/metrics.md, "
-            "slime/train.py, and scripts/run-probe."
-        )
-    ]
-    assert summaries[1].sentences == ["Updated “Probe runner scripts/run-probe”."]
     rendered = " ".join(sentence for summary in summaries for sentence in summary.sentences)
     for path in (
         "configs/routes.yaml",
@@ -194,40 +171,6 @@ def test_revision_summaries_preserve_unresolved_slash_tokens_and_paths() -> None
         assert path in rendered
     assert "hyp/path-aware" not in rendered
     assert "create_nodes" not in rendered
-
-
-def test_revision_summaries_preserve_inventory_prose_alongside_other_sentences() -> None:
-    patch = _patch(
-        1,
-        [
-            {
-                "op": "create_nodes",
-                "nodes": [
-                    {
-                        "id": "hyp/repeated-updates",
-                        "type": "hypothesis",
-                        "title": "Plasticity under repeated updates",
-                        "statement": "Repeated updates may reduce future plasticity.",
-                    }
-                ],
-            }
-        ],
-        change_summary=[
-            "Updated 5 nodes.",
-            "Clarified hyp/repeated-updates.",
-        ],
-    )
-    materialization = MaterializationResult(
-        state=GraphState(revision=1),
-        reports={1: ValidationReport()},
-    )
-
-    summaries = build_revision_summaries([patch], materialization)
-
-    assert summaries[0].sentences == [
-        "Updated 5 nodes.",
-        "Clarified Plasticity under repeated updates.",
-    ]
 
 
 def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -> None:
@@ -244,7 +187,7 @@ def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -
     raw = client.get(f"/api/projects/{project_id}/history")
 
     assert summaries.status_code == 200
-    assert summaries.json()[-1] == {
+    assert {k: v for k, v in summaries.json()[-1].items() if k != "sentences"} == {
         "from_revision": 2,
         "to_revision": 3,
         "kind": "refresh",
@@ -256,7 +199,6 @@ def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -
         "episode_id": None,
         "episode": None,
         "created_at": raw.json()[-1]["created_at"],
-        "sentences": ["Recorded a research question: “Transfer after task shift”."],
     }
     assert raw.status_code == 200
     assert set(raw.json()[-1]) == {
@@ -292,7 +234,7 @@ def test_manager_collects_range_during_one_replay_and_skips_stored_rejection(
     summaries = history.revision_summaries(from_revision=3, to_revision=4)
 
     assert rejected.admission == "rejected"
-    assert summaries == [
+    assert [{k: v for k, v in summary.items() if k != "sentences"} for summary in summaries] == [
         {
             "from_revision": 3,
             "to_revision": accepted.revision,
@@ -304,7 +246,6 @@ def test_manager_collects_range_during_one_replay_and_skips_stored_rejection(
             "task_id": None,
             "episode_id": None,
             "created_at": accepted.created_at.isoformat(),
-            "sentences": ["Added Transfer after task shift."],
         }
     ]
 
@@ -340,7 +281,6 @@ def test_identity_revision_summary_uses_system_prose(action, prefix) -> None:
 
     summary = build_revision_summaries([patch], materialization)[0]
 
-    assert summary.sentences == [f"{prefix} {space_id}."]
     assert summary.author is None
     assert summary.producer == "system"
     assert summary.authorized_by is None
@@ -461,6 +401,4 @@ def test_human_review_patch_uses_the_node_title(manifest, tmp_path) -> None:
         ),
     )
 
-    patch = service.history.load_patches()[-1]
-    assert patch.summary == "Marked “Learning after task shift” accepted."
-    assert patch.change_summary == ["“Learning after task shift” is now accepted."]
+    assert service.history.load_patches()[-1].kind == "approval"

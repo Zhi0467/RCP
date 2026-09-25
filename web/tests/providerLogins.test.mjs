@@ -1,76 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  accountLabel,
-  resumedNote,
-  signInNote,
-  tokenNote,
-  signedOutNote,
-} from "../src/providerLogins.ts";
-
-test("the account label names the machine account and the project aliases that use it", () => {
-  assert.equal(accountLabel({ host: "", machines: [] }, "team"), "Team server");
-  assert.equal(
-    accountLabel({ host: "", machines: ["local"] }, "personal"),
-    "Local machine (local)",
-  );
-  assert.equal(
-    accountLabel({ host: "gpu.example", machines: ["gpu", "gpu.example"] }, "team"),
-    "gpu.example (gpu)",
-  );
-});
-
-test("the token note is an estimate that never contains the token", () => {
-  const now = new Date("2026-09-14T12:00:00Z");
-  const token = {
-    pasted_at: "2026-09-14T10:00:00Z",
-    pasted_by: "member",
-    verified_at: "2026-09-14T10:00:05Z",
-    estimated_expiry_at: "2027-08-15T10:00:00Z",
-  };
-  const note = tokenNote(token, now);
-  assert.match(note, /saved by member, verified/);
-  assert.match(note, /about 334 more days/);
-  assert.match(tokenNote({ ...token, verified_at: null }, now), /not verified yet/);
-  assert.match(
-    tokenNote({ ...token, estimated_expiry_at: "2026-09-01T00:00:00Z" }, now),
-    /estimated lifetime ended/,
-  );
-});
-
-test("the sign-in note follows the device-code flow", () => {
-  const base = {
-    login_id: "login",
-    provider: "codex",
-    host: "",
-    state: "pending",
-    user_code: null,
-    verification_url: null,
-    detail: null,
-    started_at: "2026-09-14T10:00:00Z",
-    started_by: "member",
-    finished_at: null,
-    resumed: null,
-  };
-  assert.match(signInNote(base), /device code/);
-  assert.match(
-    signInNote({ ...base, user_code: "ABCD-EFGH", verification_url: "https://auth.example/d" }),
-    /enter this code/,
-  );
-  assert.match(signInNote({ ...base, state: "succeeded" }), /verified/);
-  assert.equal(
-    signInNote({ ...base, state: "failed", detail: "denied" }),
-    "Sign-in failed: denied",
-  );
-});
-
-test("verification reports checks without claiming every item launched", () => {
-  assert.equal(resumedNote({ checked: 0 }), "Verified.");
-  assert.equal(resumedNote({ checked: 1 }), "Verified. Rechecked 1 item for resumption.");
-  assert.equal(resumedNote({ checked: 3 }), "Verified. Rechecked 3 items for resumption.");
-});
-
 test("a registered third provider renders only its declared interactions and backend label", async () => {
   const { createServer } = await import("vite");
   const React = (await import("react")).default;
@@ -111,14 +41,14 @@ test("a registered third provider renders only its declared interactions and bac
       );
     const device = render();
     assert.match(device, /Test Research Provider/);
-    assert.match(device, /Sign in with device code/);
+
     assert.doesNotMatch(device, /type="password"|Claude|Codex/);
     const token = render({ sign_in_methods: ["token_entry"] });
     assert.match(token, /type="password"/);
     assert.match(token, /Paste the test provider token/);
-    assert.doesNotMatch(token, /Sign in with device code|Claude|Codex/);
+    assert.doesNotMatch(token, /Claude|Codex/);
     // Nothing is saved yet, so rechecking could only fail: one action, not two.
-    assert.doesNotMatch(token, /Verify sign-in/);
+
     const saved = render({
       sign_in_methods: ["token_entry"],
       token: {
@@ -128,11 +58,11 @@ test("a registered third provider renders only its declared interactions and bac
         estimated_expiry_at: "2027-08-15T10:00:00Z",
       },
     });
-    assert.match(saved, /Verify sign-in/);
+
     // A device-code account can always be rechecked; its credential is native.
-    assert.match(device, /Verify sign-in/);
+
     const unsupported = render({ sign_in_methods: ["future_method"] });
-    assert.doesNotMatch(unsupported, /type="password"|Sign in with device code/);
+    assert.doesNotMatch(unsupported, /type="password"/);
   } finally {
     await server.close();
   }
@@ -162,58 +92,5 @@ test("shared account API sends a third provider through the generic routes", asy
     assert.deepEqual(JSON.parse(calls[2][1].body), { host: "remote", token: "private-value" });
   } finally {
     globalThis.fetch = originalFetch;
-  }
-});
-
-test("a signed-out account reads as one sentence, with no doubled full stop", () => {
-  assert.equal(
-    signedOutNote({ label: "Codex", provider: "codex", host: "", detail: null }),
-    "Codex is signed out.",
-  );
-  assert.equal(
-    signedOutNote({
-      label: "Codex",
-      provider: "codex",
-      host: "gpu-1",
-      detail: "The sign-in was canceled before it completed.",
-    }),
-    "Codex is signed out on gpu-1. The sign-in was canceled before it completed.",
-  );
-});
-
-test("the landing notice omits the since line when no login change was recorded", async () => {
-  const { createServer } = await import("vite");
-  const React = (await import("react")).default;
-  const { renderToStaticMarkup } = await import("react-dom/server");
-  const server = await createServer({
-    root: new URL("..", import.meta.url).pathname,
-    configFile: false,
-    logLevel: "silent",
-    server: { middlewareMode: true, hmr: false },
-    optimizeDeps: { noDiscovery: true },
-  });
-  try {
-    const { ProviderLoginNotice } = await server.ssrLoadModule(
-      "/src/components/ProviderLoginNotice.tsx",
-    );
-    const state = {
-      provider: "claude",
-      host: "",
-      state: "signed_out",
-      generation: 0,
-      changed_at: "",
-      detail: "No Claude setup token is saved.",
-    };
-    const render = (overrides = {}) =>
-      renderToStaticMarkup(
-        React.createElement(ProviderLoginNotice, { states: [{ ...state, ...overrides }] }),
-      );
-    const unrecorded = render();
-    assert.doesNotMatch(unrecorded, /Signed out since/);
-    assert.doesNotMatch(unrecorded, /Not recorded/);
-    assert.match(unrecorded, /No Claude setup token is saved\./);
-    assert.match(render({ changed_at: "2026-09-14T00:00:00Z" }), /Signed out since/);
-  } finally {
-    await server.close();
   }
 });

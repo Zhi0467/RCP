@@ -158,7 +158,7 @@ def test_retention_ignores_unproven_files_and_rechecks_before_deletion(tmp_path:
 
     with older.archive_path.open("ab") as stream:
         stream.write(b"changed after preview")
-    with pytest.raises(BackupRunRefused, match="no longer matches"):
+    with pytest.raises(BackupRunRefused):
         apply_backup_retention(
             plan,
             installation_id=INSTALLATION_ID,

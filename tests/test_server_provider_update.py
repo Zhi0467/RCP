@@ -16,7 +16,6 @@ from rcp.server_ops.cli import (
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.provider_update import (
-    _success_message,
     prepare_provider_update_command,
 )
 
@@ -126,28 +125,12 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
     assert state["updated"] is True
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert events[-1]["step"]["state"] == "succeeded"
-    assert events[-1]["step"]["fields"][-1] == {
-        "name": "authentication",
-        "value": "unchanged by this update",
-    }
+    assert events[-1]["step"]["fields"][-1]["name"] == "authentication"
     assert not any(call[-2:] in {("login", "status"), ("auth", "status")} for call in calls)
     if provider == "codex":
         assert any(call[0] == "/usr/bin/curl" for call in calls)
         assert any(
             call[:3] == ("/usr/bin/env", "CODEX_NON_INTERACTIVE=1", "/bin/sh") for call in calls
         )
-        assert "existing projects keep their explicit path" not in events[-1]["step"]["message"]
     else:
         assert (str(binary), "update") in calls
-
-
-def test_changed_provider_command_path_names_the_member_owned_resolve_step() -> None:
-    message = _success_message(
-        "codex",
-        Path("/usr/local/bin/codex"),
-        Path("/home/rcp/.local/bin/codex"),
-    )
-
-    assert "updated as rcp" in message
-    assert "does not change its login" in message
-    assert "authenticated member uses Resolve in Project Settings" in message

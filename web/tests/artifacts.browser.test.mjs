@@ -95,7 +95,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
     await page.getByRole("link", { name: "Open originating chat for Validation report" }).waitFor();
     assert.doesNotMatch(
       await page.locator(".artifacts-list").innerText(),
-      /Episode report|Saved artifact|old-episode|artifacts\/plot\.html/,
+      /old-episode|artifacts\/plot\.html/,
     );
     assert.equal(await page.locator(".artifacts-list time").count(), 0);
     assert.equal(

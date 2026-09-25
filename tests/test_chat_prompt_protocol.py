@@ -385,7 +385,7 @@ def test_fresh_chat_master_contains_only_selected_nonsecret_compute_metadata(
     master = master_path.read_text(encoding="utf-8")
     assert "alice@gpu.example" in master
     assert "Use /scratch/shared for temporary outputs" in master
-    assert "Current machine" not in master
+    assert '"id": "laptop"' not in master
     assert ".ssh/" not in master
     assert "identity_file" not in master
     assert "private_key" not in master
@@ -814,7 +814,7 @@ async def test_node_chat_master_carries_the_focused_node_and_its_relations(
 
     master = Path(launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
     # The node's own prose, not a pointer to go read it.
-    assert "Search-time replanning restores future learning ability." in master
+    assert service.history.state().nodes[request.node_id].statement in master
     assert '"id": "hyp/replanning-restores-plasticity"' in master
     assert '"other_node_id": "rq/learning-after-shift"' in master
 

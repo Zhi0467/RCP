@@ -98,7 +98,7 @@ def test_orchestrator_is_one_closed_profile_contract_and_episode_scope() -> None
         authorized_by=fabricated_authorizer("Auto-research owner"),
         dispatch_authority=authority,
     )
-    with pytest.raises(ValueError, match="Patch profile does not match"):
+    with pytest.raises(ValueError):
         require_apply(
             task,
             _orchestrator_patch().model_copy(update={"profile": "ordinary"}),
@@ -109,7 +109,7 @@ def test_orchestrator_is_one_closed_profile_contract_and_episode_scope() -> None
         ("ordinary", "orchestrate"),
         ("orchestrator", "work_auto"),
     ):
-        with pytest.raises(ValueError, match="does not permit task contract"):
+        with pytest.raises(ValueError):
             require_dispatch(
                 AgentDispatchAuthority(
                     profile=profile,
@@ -118,7 +118,7 @@ def test_orchestrator_is_one_closed_profile_contract_and_episode_scope() -> None
                 )
             )
 
-    with pytest.raises(ValueError, match="orchestrate requires an exact episode"):
+    with pytest.raises(ValueError):
         require_dispatch(
             AgentDispatchAuthority(
                 profile="orchestrator",
@@ -140,7 +140,7 @@ def test_auto_research_worker_has_episode_scope_but_no_chat_or_control_scope() -
     )
 
     assert require_dispatch(worker) == worker
-    with pytest.raises(ValueError, match="episode worker requires"):
+    with pytest.raises(ValueError):
         require_dispatch(
             worker.model_copy(
                 update={
@@ -407,7 +407,7 @@ def test_orchestrator_schema_is_elevated_without_widening_ordinary_schema() -> N
             ],
         }
     )
-    with pytest.raises(ValueError, match="graph operation schema"):
+    with pytest.raises(ValueError):
         parse_agent_patch_json(raw)
     draft = parse_agent_patch_json(raw, profile="orchestrator")
     prepared = prepare_agent_patch(

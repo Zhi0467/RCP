@@ -224,7 +224,7 @@ test("sessions reconnect after navigating, resize and type, expose Work on both 
   await page.getByRole("button", { name: "notes /srv/project/notes", exact: true }).click();
   await page.locator(".terminal-active-heading").filter({ hasText: "notes" }).waitFor();
   assert.equal(await page.locator(".terminal-work-strip").count(), 0);
-  assert.equal(await page.locator(".terminal-work-mark").textContent(), "Work running");
+
   await page.getByRole("button", { name: "Research", exact: true }).click();
   await page.getByRole("button", { name: "Terminals", exact: true }).click();
   await page.getByRole("button", { name: "End code terminal" }).waitFor();

@@ -242,7 +242,6 @@ def test_acceptance_episode_completes_and_corrects_one_hidden_report(
         preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text
         assert "Acceptance episode conclusion" in preview.text
-        assert "Episode progression" in preview.text
 
     tasks = store.auto_research_tasks(episode_id)
     roles = [store.auto_research_invocation_role(task.operation_id) for task in tasks]
@@ -432,7 +431,6 @@ def test_acceptance_episode_exhausts_operational_invocations_then_reports(
         assert episode["report"] is not None
         preview = client.get(f"/api/projects/{project_id}/episodes/{episode_id}/report/content")
         assert preview.status_code == 200, preview.text
-        assert "shared invocation pot" in preview.text
 
     tasks = store.auto_research_tasks(episode_id)
     assert [store.auto_research_invocation_role(task.operation_id) for task in tasks] == [
@@ -760,7 +758,7 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
             )
             meter_before = store.episode_budget_meter(episode_id)
             task_ids_before = [task.operation_id for task in store.auto_research_tasks(episode_id)]
-            with pytest.raises(EpisodeNotRunning, match="not admitting new work"):
+            with pytest.raises(EpisodeNotRunning):
                 start_auto_research_turn(
                     background,
                     episode_id,

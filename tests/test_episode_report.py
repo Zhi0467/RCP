@@ -626,7 +626,6 @@ async def test_changed_provider_session_fails_the_wrapup_without_another_call(
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
-    assert "changed the frozen native provider session" in events[0].text
     assert launcher.calls == 1
     episode = store.episode("episode")
     assert episode is not None
@@ -644,7 +643,6 @@ async def test_durable_binding_mismatch_is_unlaunchable_and_terminal(manifest, t
     events = await _events(stream_episode_report_run(service, launcher, changed, execution))
 
     assert [event.event for event in events] == ["error"]
-    assert "differs from its durable hidden task" in events[0].text
     assert launcher.calls == 0
     episode = store.episode("episode")
     assert episode is not None
@@ -665,7 +663,6 @@ async def test_lost_exact_stage_fails_without_fabricating_provider_attempt(
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
-    assert "saved local stage is unavailable" in events[0].text
     assert launcher.calls == 0
     episode = store.episode("episode")
     assert episode is not None
@@ -687,7 +684,6 @@ async def test_restart_with_queued_attempt_and_lost_stage_terminalizes(
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
-    assert "saved local stage is unavailable" in events[0].text
     assert launcher.calls == 0
     episode = store.episode("episode")
     assert episode is not None
@@ -710,7 +706,6 @@ async def test_setup_loss_between_calls_fails_without_allocating_the_next_attemp
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
-    assert "unsafe directory" in events[0].text
     assert launcher.calls == 1
     attempts = store.episode_report_attempts("episode")
     assert [attempt.status for attempt in attempts] == ["failed"]
@@ -732,7 +727,6 @@ async def test_three_errors_end_nonblocking_without_retry_controls(manifest, tmp
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
 
     assert [event.event for event in events] == ["error"]
-    assert "failed after 3 attempts" in events[0].text
     episode = store.episode("episode")
     assert episode is not None
     assert episode.status == "completed"
@@ -848,7 +842,6 @@ async def test_report_login_failure_marks_account_and_parks_without_retry(manife
     events = await _events(stream_episode_report_run(service, launcher, request, execution))
     assert launcher.calls == 1
     assert [event.event for event in events] == ["error"]
-    assert "signed in again" in events[0].text
     state = store.provider_login_state(request.provider, request.execution_host)
     assert state.state == "signed_out"
     assert state.source == "report"

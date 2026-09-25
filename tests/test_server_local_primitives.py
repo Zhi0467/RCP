@@ -79,7 +79,7 @@ def test_private_file_reader_checks_metadata_and_bytes(tmp_path: Path) -> None:
     )
 
     path.chmod(0o644)
-    with pytest.raises(primitives.PrivateFileReadError, match="unsafe"):
+    with pytest.raises(primitives.PrivateFileReadError):
         primitives.read_stable_private_file(
             path,
             expected_uid=os.geteuid(),

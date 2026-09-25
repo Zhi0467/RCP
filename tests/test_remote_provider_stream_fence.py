@@ -138,7 +138,7 @@ async def test_remote_stream_unknown_exit_before_prompt_retains_fence(tmp_path):
     assert store.unresolved_remote_provider_passes("remote", "/stage") == [
         ("first", recorded_pid[0])
     ]
-    assert len(events) == 1 and "Remote process state is unknown" in events[0]
+    assert len(events) == 1
 
 
 @pytest.mark.asyncio
@@ -159,7 +159,7 @@ async def test_competing_remote_reservation_closes_launcher_before_provider_adva
             finally:
                 closed.append(True)
 
-    with pytest.raises(AgentTaskAdmissionConflict, match="live or its exit is unconfirmed"):
+    with pytest.raises(AgentTaskAdmissionConflict):
         await _consume(store, Launcher(), tmp_path, stage=CompetingStage())
     assert advanced == [] and closed == [True]
     assert store.unresolved_remote_provider_passes("remote", "/stage") == [

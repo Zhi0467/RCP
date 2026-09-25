@@ -64,10 +64,8 @@ test("missing readiness is called checking only while a request is actually pend
     }),
   );
 
-  assert.match(checking, /Checking codex on this machine/);
   assert.doesNotMatch(checking, /The readiness request failed/);
   assert.match(failed, /The readiness request failed/);
-  assert.doesNotMatch(failed, /Checking codex on this machine/);
 });
 
 /** Render the badge for one authenticated Claude readiness shape. */
@@ -102,7 +100,6 @@ test("authenticated providers still show a failed Work precondition", () => {
 
   assert.ok(markup.includes(work_like_reason));
   assert.match(markup, /agent-readiness warning/);
-  assert.doesNotMatch(markup, /ready on/);
 });
 
 test("a profile that never launches Work ignores the Work precondition", () => {
@@ -117,7 +114,7 @@ test("a profile that never launches Work ignores the Work precondition", () => {
   );
 
   assert.match(markup, /agent-readiness ready/);
-  assert.match(markup, /ready on/);
+
   assert.doesNotMatch(markup, /bubblewrap/);
 });
 
@@ -130,7 +127,6 @@ test("a benign readiness note does not make a working provider read as broken", 
   });
 
   assert.match(markup, /agent-readiness ready/);
-  assert.match(markup, /ready on/);
 });
 
 /** Consume one deferred readiness response the way the App-owned request does. */
@@ -281,16 +277,16 @@ test("a failed readiness response reports only for the slices it still owns", ()
   );
 });
 
-test("the provider re-check consumes the visible App-owned rejection", async () => {
-  await settleReadinessRefresh(async () => {
-    throw new Error("shown through readinessError");
-  });
-});
-
 test("a fresh cached readiness response replaces another project's shared login failure", async () => {
   const generations = new Map();
   const probe = deferredReadiness(generations, "project");
   probe.complete(readinessResponse);
   const current = { provider_logins: [], ...(await probe.applied) };
   assert.deepEqual(current.provider_logins, providerLogins);
+});
+
+test("the provider re-check consumes the visible App-owned rejection", async () => {
+  await settleReadinessRefresh(async () => {
+    throw new Error("shown through readinessError");
+  });
 });

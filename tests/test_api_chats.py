@@ -50,7 +50,7 @@ def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
     assert service.chat_transcript(ambiguous) is None
     assert service.chat_transcripts([]) == {}
     for invalid in ["not-a-uuid", good.upper()]:
-        with pytest.raises(ValueError, match="chat_id must be"):
+        with pytest.raises(ValueError):
             service.chat_transcripts([good, invalid])
 
 

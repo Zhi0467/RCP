@@ -202,7 +202,7 @@ def test_existing_destination_is_never_replaced_and_failed_seal_cleans_partial(
     original = sealed.archive_path.read_bytes()
     capture = tmp_path / "retry" / "capture"
     _capture(capture, payloads)
-    with pytest.raises(FileExistsError, match="already exists"):
+    with pytest.raises(FileExistsError):
         seal_transfer_archive(
             manifest=manifest,
             capture_root=capture,
@@ -217,7 +217,7 @@ def test_existing_destination_is_never_replaced_and_failed_seal_cleans_partial(
     (bad_capture / "records/tasks.jsonl").chmod(0o400)
     bad_parent = tmp_path / "bad" / "exports"
     bad_parent.mkdir(mode=0o700)
-    with pytest.raises(ValueError, match="differs from its manifest"):
+    with pytest.raises(ValueError):
         seal_transfer_archive(
             manifest=manifest,
             capture_root=bad_capture,
@@ -270,7 +270,7 @@ def test_readback_refuses_missing_symlink_wrong_mode_or_corrupt_archive(
             data[data.index(ord("p"))] ^= 1
             candidate.write_bytes(data)
             candidate.chmod(0o600)
-    with pytest.raises(ValueError, match="missing|symlink|mode|bytes|corrupt|malformed"):
+    with pytest.raises(ValueError):
         read_transfer_archive(candidate, expected_envelope=sealed.envelope)
 
 

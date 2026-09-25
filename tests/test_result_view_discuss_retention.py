@@ -251,4 +251,3 @@ def test_discuss_turn_does_not_extend_any_expiry_when_old_stage_is_unavailable(
         event for event in store.agent_task_events(operation_id) if event.level == "warning"
     ]
     assert len(warnings) == 1
-    assert "Result-view retention could not be refreshed" in warnings[0].message

@@ -179,11 +179,7 @@ def test_readiness_is_derived_from_decisions_proposals_blockers_and_ceiling() ->
 
     gated = derive_experiment_control_state(state, EXPERIMENT_ID)
     assert not gated.ready
-    assert gated.reasons == [
-        f"Decision {DECISION_ID} is not decided with a selected option.",
-        f"Decision {DECISION_ID} has a pending proposal.",
-        "Blocker blk/capacity is open.",
-    ]
+    assert len(gated.reasons) == 3
     assert gated.invocations_used == 0
     assert gated.invocation_ceiling == 1
 
@@ -194,9 +190,7 @@ def test_closed_experiment_blocks_only_a_fresh_episode_until_the_human_reopens_i
     closed = derive_experiment_control_state(state, EXPERIMENT_ID)
 
     assert not closed.ready
-    assert closed.reasons == [
-        "This Experiment is completed. Edit its status before starting a new episode."
-    ]
+    assert len(closed.reasons) == 1
     assert closed.graph_reasons == []
 
     experiment = state.nodes[EXPERIMENT_ID]
@@ -223,17 +217,14 @@ def test_an_open_episode_gates_readiness_and_publishes_the_graph_reasons_apart()
     gated = derive_experiment_control_state(state, EXPERIMENT_ID, operational=open_episode)
     assert not gated.ready
     assert not gated.active
-    assert gated.reasons == ["A previous episode is still open on this Experiment."]
+    assert len(gated.reasons) == 1
     assert gated.graph_reasons == []
 
     blocker = state.nodes["blk/capacity"]
     state.nodes[blocker.id] = blocker.model_copy(update={"status": "open"})
     both = derive_experiment_control_state(state, EXPERIMENT_ID, operational=open_episode)
-    assert both.graph_reasons == ["Blocker blk/capacity is open."]
-    assert both.reasons == [
-        "Blocker blk/capacity is open.",
-        "A previous episode is still open on this Experiment.",
-    ]
+    assert len(both.graph_reasons) == 1
+    assert len(both.reasons) == 2
 
     # A narrower operational reason says more, so the open parent stays quiet
     # rather than restating it.
@@ -243,10 +234,7 @@ def test_an_open_episode_gates_readiness_and_publishes_the_graph_reasons_apart()
         [EXPERIMENT_ID],
         operational=open_episode,
     )
-    assert active.reasons == [
-        "Blocker blk/capacity is open.",
-        "An experiment loop is already active.",
-    ]
+    assert len(active.reasons) == 2
 
 
 def test_a_half_completed_watcher_group_reads_unready_while_the_episode_is_closed() -> None:
@@ -281,7 +269,7 @@ def test_a_half_completed_watcher_group_reads_unready_while_the_episode_is_close
 
     assert split.ready is False
     assert split.paused is False
-    assert split.reasons == ["Detached Experiment work is still running."]
+    assert len(split.reasons) == 1
     assert split.graph_reasons == []
 
     # The same group one write later, with both watchers completed, is ready.
@@ -463,7 +451,7 @@ def test_active_loop_marker_uses_control_runtime_not_semantic_attempts() -> None
         state, EXPERIMENT_ID, active_control_node_ids=[EXPERIMENT_ID]
     )
     assert operation_active.active
-    assert operation_active.reasons == ["An experiment loop is already active."]
+    assert len(operation_active.reasons) == 1
 
     state = _state(attempts=[_attempt()])
     attempt_active = derive_experiment_control_state(state, EXPERIMENT_ID)

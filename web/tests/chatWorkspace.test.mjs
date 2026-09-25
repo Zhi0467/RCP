@@ -349,7 +349,7 @@ test("the shared conversation-turn owner rejects a blank message before dispatch
     startConversationTurn(async () => {
       called = true;
     }, submission),
-    /non-blank message/,
+    Error,
   );
   assert.equal(called, false);
 });

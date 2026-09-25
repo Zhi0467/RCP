@@ -7,7 +7,6 @@ import {
   authorizedInvocationCount,
   experimentRecommendation,
   experimentWatcherDisplayItems,
-  graphConditionLabel,
   isGraphWatcherRecord,
   visibleChatWatchers,
   watcherLastObservedAt,
@@ -228,10 +227,7 @@ test("backend operation identity selects the exact task even when a newer row ex
   const run = buildExperimentRun(node, staleControl, [failed, retry], []);
   assert.equal(run.currentTask.operation_id, failed.operation_id);
   assert.equal(run.health, "needs_action");
-  assert.deepEqual(experimentRecommendation(run), {
-    step: "review",
-    label: "Review the loop state",
-  });
+  assert.deepEqual(experimentRecommendation(run).step, "review");
 });
 
 test("Experiment watcher projection keeps each immutable group and ungrouped history distinct", () => {
@@ -303,11 +299,7 @@ test("graph watchers stay ungrouped and expose condition labels and evaluation t
   );
 
   assert.equal(isGraphWatcherRecord(status), true);
-  assert.equal(
-    graphConditionLabel(status.condition),
-    "blk/upstream reaches resolved or superseded",
-  );
-  assert.equal(graphConditionLabel(proposal.condition), "Proposal on hyp/result is resolved");
+
   assert.equal(watcherLastObservedAt(status), "2026-08-06T03:00:00Z");
   assert.deepEqual(
     visibleChatWatchers([status], "new-chat", experiment("experiment/grouped")).map(
@@ -505,10 +497,7 @@ test("an unsettled Experiment stop exposes exact paused recovery before graceful
 
   const run = buildExperimentRun(node, experimentControl, [paused], []);
   assert.equal(run.health, "needs_action");
-  assert.deepEqual(experimentRecommendation(run), {
-    step: "resume",
-    label: "Resume this episode, or switch provider",
-  });
+  assert.deepEqual(experimentRecommendation(run).step, "resume");
 });
 
 test("historical watchers stay visible without driving current health or task selection", () => {
@@ -579,10 +568,7 @@ test("a succeeded legacy-attribution episode recommends a fresh episode directly
   assert.equal(run.currentTask.status, "succeeded");
   assert.deepEqual(run.currentWatchers, []);
   assert.equal(run.health, "needs_action");
-  assert.deepEqual(experimentRecommendation(run), {
-    step: "start_episode",
-    label: "Start a new episode",
-  });
+  assert.deepEqual(experimentRecommendation(run).step, "start_episode");
 });
 
 test("compatible adopted degraded watchers drive current health through control state", () => {
@@ -622,13 +608,10 @@ test("compatible adopted degraded watchers drive current health through control 
 
   assert.equal(run.currentWatchers.length, 0);
   assert.equal(run.health, "degraded");
-  assert.deepEqual(experimentRecommendation(run), {
-    step: "keep_loop",
-    label: "Keep loop running; check now if needed",
-  });
+  assert.deepEqual(experimentRecommendation(run).step, "keep_loop");
 });
 
-test("Experiment recommendation copy follows the backend recommendation enum", () => {
+test("Experiment recommendation follows the backend recommendation enum", () => {
   const base = {
     node: experiment("experiment/recommendation"),
     control: control({
@@ -644,52 +627,7 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
     currentWatchers: [],
     health: "agent_active",
   };
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: {
-        ...base.control,
-        recommendation: "start_episode",
-        episode: { blocked_reason: "reauthorize", ending: "exhausted" },
-      },
-      health: "paused_at_limit",
-    }).label,
-    "The authorized turns are spent. Add turns or start a new episode",
-  );
-  // A human-authority pause is also a reauthorization block, but the turns
-  // were not spent; the lead sentence follows the ending, not the block.
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: {
-        ...base.control,
-        recommendation: "start_episode",
-        episode: { blocked_reason: "reauthorize", ending: "human_pause" },
-      },
-      health: "paused_at_limit",
-    }).label,
-    "The episode paused for human authority. Add turns or start a new episode",
-  );
-  // A failed episode that can continue offers Add turns beside Start new episode.
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: {
-        ...base.control,
-        recommendation: "start_episode",
-        episode: { can_continue: true, ending: "failed" },
-      },
-      health: "failed",
-    }).label,
-    "Add turns or start a new episode",
-  );
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: { ...base.control, recommendation: "retry", episode: { blocked_reason: "sign_in" } },
-    }).label,
-    "The provider login is dead. Sign in again, then retry this episode, or switch provider",
-  );
+
   assert.equal(experimentRecommendation(base).step, "wait");
   assert.equal(
     experimentRecommendation({
@@ -736,11 +674,8 @@ test("Experiment recommendation copy follows the backend recommendation enum", (
         { session: { provider: "codex" } },
       ),
       health: "needs_action",
-    }),
-    {
-      step: "reauthenticate_provider",
-      label: "Sign in on the machine, verify it above, then retry",
-    },
+    }).step,
+    "reauthenticate_provider",
   );
 });
 

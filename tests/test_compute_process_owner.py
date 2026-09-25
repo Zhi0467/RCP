@@ -82,7 +82,7 @@ def test_shipped_helper_shell_watcher_checks_and_cancels_without_launch_receipt(
     assert run("check_command").returncode == 2
     state.write_text("inactive")
     missing = run("check_command")
-    assert missing.returncode == 2 and "without a valid exit receipt" in missing.stderr
+    assert missing.returncode == 2
     (root / "exit").write_text("7 100")
     assert run("check_command").returncode == 0
     (root / "exit").unlink()

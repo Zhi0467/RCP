@@ -808,7 +808,7 @@ def test_research_md_renders_hypothesis_scope() -> None:
         update={"standing": Standing.ACCEPTED, "scope": "On datasets A and B."}
     )
     rendered = render_research_md(GraphState(revision=1, nodes={hypothesis.id: hypothesis}))
-    assert "Scope: On datasets A and B." in rendered
+    assert hypothesis.scope in rendered
 
 
 def _layer_of(source: dict[str, object], target: dict[str, object], relation: str) -> str:

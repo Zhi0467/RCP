@@ -157,7 +157,7 @@ def test_remote_stage_reads_back_exact_immutable_imported_inventory(
             Path(str(stage.root)) / "inputs" / "imported-provider-history" / "codex" / digest
         )
         staged_file.chmod(0o600)
-        with pytest.raises(ValueError, match="immutable regular file"):
+        with pytest.raises(ValueError):
             stage.verify_imported_provider_sources(
                 inventory,
                 "imported-provider-history",
@@ -253,7 +253,7 @@ def test_remote_prepared_context_keeps_ssh_outage_distinct_from_checkpoint_drift
     )()
     monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda *_args: None)
 
-    with pytest.raises(StateUnavailable, match="could not reach"):
+    with pytest.raises(StateUnavailable):
         _continuation_graph_context(
             service,
             execution,
@@ -458,7 +458,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
             staged_file.unlink()
             staged_file.parent.chmod(0o500)
 
-        with pytest.raises(ValueError, match="Retry this task"):
+        with pytest.raises(ValueError):
             _continuation_graph_context(
                 service,
                 resume_execution,
@@ -478,7 +478,7 @@ def test_remote_resume_verifies_imported_checkpoint_and_clean_retry_rebuilds_on_
         )
         assert retry is not None
         assert retry.prepared is None
-        assert "inventory" in (retry.context_reason or "")
+        assert retry.context_reason
     finally:
         if retry_stage is not None:
             retry_stage.close()

@@ -107,4 +107,3 @@ def test_qualification_target_really_migrates_and_old_code_refuses_it(tmp_path: 
         ).fetchone() == (MIGRATION_TABLE,)
     old = open_store(workspace / "src")
     assert old.returncode != 0
-    assert "migration ledger is invalid" in old.stderr

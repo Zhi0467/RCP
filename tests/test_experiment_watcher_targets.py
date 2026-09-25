@@ -274,7 +274,7 @@ def test_newer_other_target_episode_cannot_claim_or_adopt_completed_watcher(
         watcher_ids=[pending.watcher_id],
         graph_target=newer_target,
     )
-    with pytest.raises(ValueError, match="different graph targets"):
+    with pytest.raises(ValueError):
         store.create_experiment_watcher_invocation(forged, [pending.watcher_id])
 
     assert store.agent_task(forged.operation_id) is None

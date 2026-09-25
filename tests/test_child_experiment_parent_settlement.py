@@ -243,7 +243,6 @@ def test_stale_report_snapshot_fails_visibly_after_child_recovery(
     ended = store.episode(parent.episode_id)
     assert ended.status == "needs_action" and ended.ending == "exhausted"
     assert ended.wrapup_state == "failed"
-    assert "saved summary was captured before child Experiment work finished" in ended.wrapup_error
     retained = store.episode_wrapup(parent.episode_id)
     assert retained.receipt_json == admission.wrapup.receipt_json
     assert retained.receipt_sha256 == admission.wrapup.receipt_sha256

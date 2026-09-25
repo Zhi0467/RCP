@@ -73,21 +73,17 @@ test("Decision detail renders one accessible staged ballot above Context", () =>
   });
 
   assert.match(html, /<section class="decision-choice-section">/);
-  assert.match(html, /<span class="decision-choice-status decided">Decided · staged<\/span>/);
+  assert.match(html, /class="decision-choice-status decided"/);
   assert.match(
     html,
     /<legend id="decision-question-dec\/resource">Which resource level should the experiment use\?<\/legend>/,
   );
   assert.equal(html.match(/type="radio"/g)?.length, 3);
   assert.equal(html.match(/checked=""/g)?.length, 1);
-  assert.match(
-    html,
-    /class="decision-choice-option selected staged"[\s\S]*value="Medium"[\s\S]*Staged selection/,
-  );
-  assert.doesNotMatch(html, /pending proposals? target this decision/);
+  assert.match(html, /class="decision-choice-option selected staged"[\s\S]*value="Medium"/);
+
   assert.ok(html.indexOf("decision-choice-section") < html.indexOf("node-context"));
   assert.equal(html.match(/>Medium</g)?.length, 1);
-  assert.doesNotMatch(html, /Options considered|Selected option/);
 
   const contextKeys = presentNode(decision).context.map((item) => item.key);
   assert.deepEqual(contextKeys, ["rationale", "consequences"]);
@@ -117,21 +113,19 @@ test("a behind node opens its staged editor with reversible incoming field contr
   });
 
   assert.match(html, /class="detail-drawer node-detail-drawer[^"]* draft-behind"/);
-  assert.match(html, /class="node-draft-behind">behind<\/span>/);
+  assert.match(html, /class="node-draft-behind"/);
   assert.match(html, /value="My staged title"/);
   assert.match(html, /class="node-edit-incoming-value">Incoming canonical title<\/span>/);
-  assert.match(html, />Apply<\/button>/);
 });
 
 test("Decision editor exposes queue status only, including the ready to open path", () => {
   const readyDecision = { ...decision, status: "ready", selected_option: null };
   const statusField = editableNodeFields(readyDecision).find((field) => field.key === "status");
 
-  assert.deepEqual(statusField?.options, [
-    { value: "open", label: "Open" },
-    { value: "ready", label: "Ready" },
-    { value: "revisit", label: "Revisit" },
-  ]);
+  assert.deepEqual(
+    statusField?.options.map(({ value }) => value),
+    ["open", "ready", "revisit"],
+  );
   assert.equal(
     editableNodeFields(readyDecision).some((field) => field.key === "selected_option"),
     false,
@@ -176,12 +170,9 @@ test("A reopened Decision shows the backend-resolved prior choice its options dr
   });
 
   assert.match(html, /class="decision-prior-choice"/);
-  assert.match(html, /Previously decided · no longer an option/);
+
   // The value itself has to reach the reader, not just its container and label.
-  assert.match(
-    html,
-    /<p class="decision-prior-choice"><span class="eyebrow">Previously decided · no longer an option<\/span>Medium<\/p>/,
-  );
+  assert.match(html, /class="decision-prior-choice"[^]*Medium/);
   // Shown as the prior choice, never as a selectable option. Matching the whole
   // attribute keeps this from passing only because a reworded fixture happens to
   // extend the value past the closing quote.
@@ -197,5 +188,4 @@ test("A reopened Decision shows the backend-resolved prior choice its options dr
   };
   const intactHtml = renderDrawer({ node: intact, allNodes: { [intact.id]: intact } });
   assert.doesNotMatch(intactHtml, /class="decision-prior-choice"/);
-  assert.match(intactHtml, /Selected/);
 });

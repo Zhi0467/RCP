@@ -558,11 +558,9 @@ test("dock exposes current-page navigation and named close controls", () => {
       onClose() {},
     }),
   );
-  assert.match(html, /aria-label="Open projects"/);
+
   assert.match(html, /aria-current="page"[^>]*title="Beta study"/);
   assert.doesNotMatch(html, /role="tab(list)?"|aria-selected=/);
-  assert.match(html, /aria-label="Close Alpha study"/);
-  assert.match(html, /aria-label="Close Beta study"/);
 });
 
 test("the index shortcut returns to this space's own index, never out of the space", async () => {

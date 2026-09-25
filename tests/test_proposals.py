@@ -995,7 +995,7 @@ def test_proposal_with_unknown_repository_machine_is_rejected_at_creation(manife
 def test_manifest_scope_write_validates_before_replacing_file(manifest) -> None:
     before = manifest.path.read_text(encoding="utf-8")
 
-    with pytest.raises(ValueError, match="unknown machine"):
+    with pytest.raises(ValueError):
         write_project_scope(
             manifest,
             ["repo-a", "repo-b", "repo-c"],

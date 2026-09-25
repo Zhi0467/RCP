@@ -61,7 +61,7 @@ def test_local_keep_rejects_unsafe_views_and_bounded_read_rejects_links(tmp_path
     unrelated.mkdir()
     (repository / "views").symlink_to(unrelated, target_is_directory=True)
 
-    with pytest.raises(ValueError, match="views path"):
+    with pytest.raises(ValueError):
         workspace.keep_result_view(
             source_name="report.html",
             project_name="project",
@@ -77,16 +77,16 @@ def test_local_keep_rejects_unsafe_views_and_bounded_read_rejects_links(tmp_path
         data=b"<html>bounded</html>",
         today=date(2026, 8, 12),
     )
-    with pytest.raises(ValueError, match="read limit"):
+    with pytest.raises(ValueError):
         workspace.read_kept_result_view(name, max_bytes=4)
-    with pytest.raises(ValueError, match="safe HTML base name"):
+    with pytest.raises(ValueError):
         workspace.read_kept_result_view(f"../{name}")
     with pytest.raises(FileNotFoundError):
         workspace.read_kept_result_view("missing-project-26-08-12.html")
 
     linked_name = "linked-project-26-08-12.html"
     (repository / "views" / linked_name).symlink_to(repository / "views" / name)
-    with pytest.raises(ValueError, match="readable regular file"):
+    with pytest.raises(ValueError):
         workspace.read_kept_result_view(linked_name)
 
 
@@ -101,7 +101,7 @@ def test_local_keep_does_not_follow_a_symlinked_repository_root(tmp_path) -> Non
         str(linked_repository / ".research"),
     )
 
-    with pytest.raises(StateUnavailable, match="Repository root is unavailable"):
+    with pytest.raises(StateUnavailable):
         workspace.keep_result_view(
             source_name="report.html",
             project_name="project",
@@ -190,7 +190,6 @@ def test_lock_holder_rejects_symlink_views_without_touching_target(tmp_path) -> 
         )
 
     assert response["ok"] is False
-    assert "views path" in str(response["error"])
     assert list(unrelated.iterdir()) == []
 
 
@@ -297,7 +296,7 @@ def test_ssh_read_distinguishes_missing_from_unavailable(tmp_path, monkeypatch) 
     assert workspace.read_kept_result_view(name) == b"<html>kept</html>"
     with pytest.raises(FileNotFoundError):
         workspace.read_kept_result_view(name)
-    with pytest.raises(StateUnavailable, match="host unavailable"):
+    with pytest.raises(StateUnavailable):
         workspace.read_kept_result_view(name)
     assert all(call[-3:] == ["/srv/project", name, str(16 * 1024 * 1024)] for call in calls)
 

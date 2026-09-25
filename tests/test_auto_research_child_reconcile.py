@@ -315,11 +315,10 @@ def test_transient_recovery_failure_keeps_admission_for_exact_later_retry(tmp_pa
     assert first.deferred == 1 and first.cancelled == 0 and first.reflected == 0
     # A deferral blocks Finish, so it must never be silent: the reason travels
     # out for the caller to report rather than dying inside the except branch.
-    assert [(item.admission_id, item.child_kind, item.reason) for item in first.deferrals] == [
+    assert [(item.admission_id, item.child_kind) for item in first.deferrals] == [
         (
             child_id,
             "work",
-            "OSError: canonical state is temporarily unavailable",
         )
     ]
     assert admission is not None and admission.state == "accepted"

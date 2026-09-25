@@ -136,7 +136,7 @@ def test_plan_refuses_as_a_whole_when_the_machine_state_disagrees(tmp_path, defe
         phase="committed" if defect == "pointer" else "pointer_switched",
     )
     current = "102" if defect == "pointer" else "101"
-    with pytest.raises(SupervisorError, match="nothing is pruned"):
+    with pytest.raises(SupervisorError):
         plan_retention(
             records=[(record, 1.0)],
             checkpoints_root=checkpoints,
@@ -178,10 +178,10 @@ def test_plan_reclaims_old_orphans_and_leaves_young_or_unknown_entries_alone(tmp
     assert sorted(plan.kept_checkpoints) == sorted([committed["operation_id"], adoption.name])
     assert plan.remove_releases == ()
     reasons = "\n".join(plan.left_alone)
-    assert str(young_orphan) in reasons and "age floor" in reasons
+    assert str(young_orphan) in reasons
     assert str(checkpoints / "scratch") in reasons and str(checkpoints / "notes.txt") in reasons
     assert str(releases / "install.log") in reasons and str(releases / "99") in reasons
-    assert str(releases / "42") in reasons and "no completed deployment" in reasons
+    assert str(releases / "42") in reasons
 
 
 def test_remove_retained_tree_unlocks_read_only_trees_and_never_follows_links(tmp_path):

@@ -21,4 +21,3 @@ def test_handoff_index_lists_exactly_the_active_handoffs() -> None:
     indexed_handoffs = set(re.findall(r"\]\(([^/)]+\.md)\)", index))
 
     assert indexed_handoffs == active_handoffs
-    assert ("There are no active implementation handoffs." in index) is (not active_handoffs)

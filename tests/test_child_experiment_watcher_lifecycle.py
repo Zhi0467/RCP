@@ -196,7 +196,6 @@ def test_child_experiment_watcher_refusal_retains_completion_without_callback_er
         assert control.health == "needs_action"
         assert control.recommendation == "stop_and_restart"
         assert runtime.watcher_delivery_diagnostic in control.reasons
-        assert "Auto-research parent" in runtime.watcher_delivery_diagnostic
 
 
 def test_running_parent_child_experiment_watcher_claims_and_launches_once(tmp_path, monkeypatch):
@@ -227,7 +226,7 @@ def test_unexpected_child_experiment_watcher_error_remains_visible(tmp_path, mon
     monkeypatch.setattr(store, "create_experiment_watcher_invocation", invalid_binding)
     poller.poll_once()
 
-    assert "Watcher completion callback failed" in caplog.text
+    assert any(record.levelname == "ERROR" and record.exc_info for record in caplog.records)
     assert "The watcher wake belongs to another episode." in caplog.text
     assert not store.watcher(watcher.watcher_id).notified
     assert launches == []

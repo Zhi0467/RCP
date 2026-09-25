@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
+
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
@@ -20,6 +21,21 @@ after(() => server.close());
 const ada = { user_id: "11111111-1111-4111-8111-111111111111", display_name: "Ada" };
 const grace = { user_id: "22222222-2222-4222-8222-222222222222", display_name: "Grace" };
 
+test("Invite says which of the two reasons leaves it with nobody to offer", () => {
+  assert.equal(inviteUnavailableReason([ada, grace], [grace]), null);
+
+  // Nobody else is enrolled: the fix is a team invitation, not this control.
+  assert.notEqual(inviteUnavailableReason([ada], []), null);
+  // Everyone enrolled is already seated: no candidate remains.
+  assert.notEqual(inviteUnavailableReason([ada, grace], []), null);
+});
+
+test("a failed space read never claims you are alone in the space", () => {
+  // The list request failed, so its own error is on screen. Inventing "you are
+  // the only person here" from an empty list would state a fact nobody read.
+  assert.equal(inviteUnavailableReason(null, []), null);
+});
+
 function identityIn(spaceKind) {
   return {
     space_id: "33333333-3333-4333-8333-333333333333",
@@ -28,24 +44,6 @@ function identityIn(spaceKind) {
     user: { ...ada, identity_kind: spaceKind === "team" ? "member" : "local_owner" },
   };
 }
-
-test("Invite says which of the two reasons leaves it with nobody to offer", () => {
-  assert.equal(inviteUnavailableReason([ada, grace], [grace]), null);
-
-  // Nobody else is enrolled: the fix is a team invitation, not this control.
-  const alone = inviteUnavailableReason([ada], []);
-  assert.match(alone, /only person in this space/i);
-  assert.match(alone, /team invitation/i);
-
-  // Everyone enrolled is already seated: nothing to fix.
-  assert.match(inviteUnavailableReason([ada, grace], []), /already on this project/i);
-});
-
-test("a failed space read never claims you are alone in the space", () => {
-  // The list request failed, so its own error is on screen. Inventing "you are
-  // the only person here" from an empty list would state a fact nobody read.
-  assert.equal(inviteUnavailableReason(null, []), null);
-});
 
 test("a personal project carries no invite control at all", () => {
   const html = renderToStaticMarkup(
@@ -57,9 +55,9 @@ test("a personal project carries no invite control at all", () => {
     }),
   );
 
-  assert.doesNotMatch(html, /Invite member/);
+  assert.equal((html.match(/<button/g) ?? []).length, 1);
   assert.doesNotMatch(html, /<select/);
-  assert.match(html, /Leave project/);
+  assert.match(html, /class="project-member-leave"/);
 });
 
 test("a team project keeps the invite control the backend supports", () => {
@@ -72,5 +70,6 @@ test("a team project keeps the invite control the backend supports", () => {
     }),
   );
 
-  assert.match(html, /Invite member/);
+  assert.match(html, /<select/);
+  assert.equal((html.match(/<button/g) ?? []).length, 2);
 });

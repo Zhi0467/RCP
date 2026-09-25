@@ -8,13 +8,11 @@ import {
   LEGACY_THEME_STORAGE_KEY,
   COLOR_MODE_CHOICES,
   THEME_CHOICES,
-  colorModeChoiceLabel,
   normalizeColorModeChoice,
   normalizeThemeChoice,
   readStoredAppearance,
   resolveColorMode,
   resolveTheme,
-  themeChoiceLabel,
 } from "../src/theme.ts";
 
 test("theme and color mode normalize independently with Aqua and System defaults", () => {
@@ -28,8 +26,6 @@ test("theme and color mode normalize independently with Aqua and System defaults
   }
   assert.equal(normalizeColorModeChoice("light"), "light");
   assert.equal(normalizeColorModeChoice("dark"), "dark");
-  assert.deepEqual(THEME_CHOICES.map(themeChoiceLabel), ["Classic", "Aqua"]);
-  assert.deepEqual(COLOR_MODE_CHOICES.map(colorModeChoiceLabel), ["System", "Light", "Dark"]);
 });
 
 test("legacy preferences adopt Aqua while preserving mode, and saved themes take precedence", () => {

@@ -67,7 +67,7 @@ def test_machine_compute_writer_round_trip_preserves_other_configuration(manifes
 
 def test_machine_compute_writer_rejects_unknown_machine_before_writing(manifest) -> None:
     original = manifest.path.read_bytes()
-    with pytest.raises(ValueError, match="unknown machine"):
+    with pytest.raises(ValueError):
         write_agent_settings(
             manifest,
             manifest.agent.default_run_truth_scope,

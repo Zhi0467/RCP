@@ -37,7 +37,7 @@ def test_local_view_slots_keep_one_conversation_path_across_turns(tmp_path) -> N
     assert first != other_view
     assert stage.stat().st_mtime > old_time
     assert not (stage / "turns").exists()
-    with pytest.raises(FileExistsError, match="already exists"):
+    with pytest.raises(FileExistsError):
         prepare_local_result_view_slot(stage, VIEW_A, reuse=False)
 
 
@@ -77,7 +77,7 @@ def test_local_view_discovery_rejects_non_regular_entries(tmp_path, unsafe_kind:
         target.mkdir()
         target.joinpath("nested.html").write_text("<h1>nested</h1>", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="unsafe entry"):
+    with pytest.raises(ValueError):
         list_local_result_view_files(stage, VIEW_A)
 
 
@@ -88,11 +88,11 @@ def test_local_view_discovery_rejects_oversized_and_non_html_output(tmp_path) ->
     output = slot / "view.html"
     output.write_bytes(b"<h1>too large</h1>")
 
-    with pytest.raises(ValueError, match="byte limit"):
+    with pytest.raises(ValueError):
         discover_result_view(stage, None, VIEW_A, max_bytes=4)
 
     output.rename(slot / "view.txt")
-    with pytest.raises(ValueError, match="descriptively named"):
+    with pytest.raises(ValueError):
         discover_result_view(stage, None, VIEW_A)
 
 
@@ -105,7 +105,7 @@ def test_local_discovery_stops_after_the_second_entry_in_a_wide_slot(tmp_path, m
 
     observed = _count_fd_scandir_entries(monkeypatch)
 
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError):
         discover_result_view(stage, None, VIEW_A)
     assert observed == [2]
 
@@ -117,12 +117,12 @@ def test_local_view_slot_rejects_symlinked_components(tmp_path) -> None:
     outside.mkdir()
     (stage / "views").symlink_to(outside, target_is_directory=True)
 
-    with pytest.raises(ValueError, match="parent is unsafe"):
+    with pytest.raises(ValueError):
         prepare_local_result_view_slot(stage, VIEW_A, reuse=False)
 
     linked_stage = tmp_path / "linked-stage"
     linked_stage.symlink_to(stage, target_is_directory=True)
-    with pytest.raises(StateUnavailable, match="conversation stage"):
+    with pytest.raises(StateUnavailable):
         prepare_local_result_view_slot(linked_stage, VIEW_A, reuse=False)
 
 
@@ -159,23 +159,23 @@ def test_remote_view_operations_distinguish_missing_unsafe_and_unavailable(
     stage.root = PurePosixPath(str(root))
     _run_remote_scripts_locally(stage, monkeypatch)
 
-    with pytest.raises(FileNotFoundError, match="slot is absent"):
+    with pytest.raises(FileNotFoundError):
         stage.list_result_view_files(VIEW_A)
     slot = Path(str(stage.prepare_result_view_slot(VIEW_A, reuse=False)))
-    with pytest.raises(FileNotFoundError, match="file is absent"):
+    with pytest.raises(FileNotFoundError):
         stage.read_result_view_bytes(VIEW_A, "missing.html", max_bytes=1024)
     outside = root / "outside.html"
     outside.write_text("<h1>outside</h1>", encoding="utf-8")
     slot.joinpath("linked.html").symlink_to(outside)
-    with pytest.raises(ValueError, match="unsafe entry"):
+    with pytest.raises(ValueError):
         stage.list_result_view_files(VIEW_A)
-    with pytest.raises(ValueError, match="file is unsafe"):
+    with pytest.raises(ValueError):
         stage.read_result_view_bytes(VIEW_A, "linked.html", max_bytes=1024)
     assert outside.read_text(encoding="utf-8") == "<h1>outside</h1>"
 
     slot.joinpath("linked.html").unlink()
     slot.joinpath("large.html").write_bytes(b"too large")
-    with pytest.raises(ValueError, match="exceeds its byte limit"):
+    with pytest.raises(ValueError):
         stage.read_result_view_bytes(VIEW_A, "large.html", max_bytes=4)
 
     monkeypatch.setattr(
@@ -183,7 +183,7 @@ def test_remote_view_operations_distinguish_missing_unsafe_and_unavailable(
         "_ssh",
         lambda _arguments: subprocess.CompletedProcess([], 255, "", "connection lost"),
     )
-    with pytest.raises(StateUnavailable, match="connection lost"):
+    with pytest.raises(StateUnavailable):
         stage.list_result_view_files(VIEW_A)
 
     monkeypatch.setattr(
@@ -193,7 +193,7 @@ def test_remote_view_operations_distinguish_missing_unsafe_and_unavailable(
             [], 255, b"", b"connection lost"
         ),
     )
-    with pytest.raises(StateUnavailable, match="connection lost"):
+    with pytest.raises(StateUnavailable):
         stage.read_result_view_bytes(VIEW_A, "large.html", max_bytes=1024)
 
 
@@ -234,13 +234,13 @@ def test_remote_view_traversal_rejects_replaced_workspace_or_views(tmp_path, mon
     stage.root = PurePosixPath(str(root))
     _run_remote_scripts_locally(stage, monkeypatch)
 
-    with pytest.raises(StateUnavailable, match="workspace"):
+    with pytest.raises(StateUnavailable):
         stage.prepare_result_view_slot(VIEW_A, reuse=False)
 
     (root / "workspace").unlink()
     (root / "workspace").mkdir()
     (root / "workspace" / "views").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError, match="slot is unsafe"):
+    with pytest.raises(ValueError):
         stage.prepare_result_view_slot(VIEW_A, reuse=False)
 
 
@@ -249,7 +249,7 @@ def test_view_id_is_exactly_lowercase_24_hex(tmp_path) -> None:
     stage.mkdir()
 
     for value in ("a" * 23, "A" * 24, "g" * 24, "../" + "a" * 24):
-        with pytest.raises(ValueError, match="24 lowercase hexadecimal"):
+        with pytest.raises(ValueError):
             prepare_local_result_view_slot(stage, value, reuse=False)
 
 

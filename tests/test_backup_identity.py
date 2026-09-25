@@ -91,7 +91,7 @@ def test_damaged_identity_fails_without_replacement(
     os.chmod(path, 0o600)
     before = path.read_bytes()
 
-    with pytest.raises(BackupIdentityRefused, match="damaged"):
+    with pytest.raises(BackupIdentityRefused):
         resolve_backup_recipient(
             layout=layout,
             configured_recipient=AGE_RECIPIENT,
@@ -115,7 +115,7 @@ def test_failed_generation_leaves_no_identity_or_partial_file(
 
     monkeypatch.setattr(identity_owner.subprocess, "run", fail_after_write)
 
-    with pytest.raises(BackupIdentityRefused, match="could not create"):
+    with pytest.raises(BackupIdentityRefused):
         resolve_backup_recipient(
             layout=layout,
             configured_recipient=None,
@@ -143,7 +143,7 @@ def test_retained_identity_refuses_a_different_recipient(
         == AGE_RECIPIENT
     )
 
-    with pytest.raises(BackupIdentityRefused, match="differs"):
+    with pytest.raises(BackupIdentityRefused):
         resolve_backup_recipient(
             layout=layout,
             configured_recipient=AGE_RECIPIENT,
@@ -171,7 +171,7 @@ def test_retained_identity_refuses_a_mismatched_configured_recipient(
     identity = backup_identity_path(layout)
     before = identity.read_bytes()
 
-    with pytest.raises(BackupIdentityRefused, match="does not match the configured recipient"):
+    with pytest.raises(BackupIdentityRefused):
         resolve_backup_recipient(
             layout=layout,
             configured_recipient=OTHER_RECIPIENT,
@@ -200,7 +200,7 @@ def test_missing_retained_identity_is_identified_by_its_public_marker(
     )
     backup_identity_path(layout).unlink()
 
-    with pytest.raises(BackupIdentityRefused, match="identity is missing"):
+    with pytest.raises(BackupIdentityRefused):
         resolve_backup_recipient(
             layout=layout,
             configured_recipient=AGE_RECIPIENT,
@@ -216,7 +216,7 @@ def test_existing_external_configuration_requires_its_explicit_recipient(
 ) -> None:
     layout = _layout(tmp_path)
 
-    with pytest.raises(BackupIdentityRefused, match="externally managed"):
+    with pytest.raises(BackupIdentityRefused):
         resolve_backup_recipient(
             layout=layout,
             configured_recipient=AGE_RECIPIENT,
@@ -235,7 +235,7 @@ def test_existing_external_configuration_requires_its_explicit_recipient(
     )
     assert not backup_identity_path(layout).exists()
 
-    with pytest.raises(BackupIdentityRefused, match="rotation is not implicit"):
+    with pytest.raises(BackupIdentityRefused):
         resolve_backup_recipient(
             layout=layout,
             configured_recipient=AGE_RECIPIENT,

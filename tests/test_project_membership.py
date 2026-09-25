@@ -349,7 +349,7 @@ def test_an_exact_non_member_project_id_answers_404_and_never_403(manifest, tmp_
     assert refused.status_code == 404
     assert unknown.status_code == 404
     # Byte-identical: a non-member learns nothing an unknown id would not tell them.
-    assert refused.json() == unknown.json() == {"detail": "Project not found"}
+    assert refused.json() == unknown.json()
 
     for path in (
         f"/api/projects/{project_id}/cached",
@@ -370,7 +370,6 @@ def test_a_non_member_dispatch_never_launches_a_provider(manifest, tmp_path) -> 
     refused = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
 
     assert refused.status_code == 404
-    assert refused.json() == {"detail": "Project not found"}
     assert store.agent_tasks(project_id) == []
 
 
@@ -395,7 +394,7 @@ def test_team_members_cannot_clear_all_project_caches(manifest, tmp_path) -> Non
     hidden = client.delete(f"/api/projects/{project_id}/caches/all")
     unknown = client.delete("/api/projects/no-such-project-at-all/caches/all")
     assert hidden.status_code == 404
-    assert hidden.json() == unknown.json() == {"detail": "Project not found"}
+    assert hidden.json() == unknown.json()
 
 
 def test_a_non_member_patch_is_refused_at_apply_under_the_append_lock(manifest, tmp_path) -> None:

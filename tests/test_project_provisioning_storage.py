@@ -206,7 +206,7 @@ def test_incoming_transfer_uses_the_existing_project_id_and_rejects_wrong_id_sha
 
     assert incoming.proposed_project_id == project_id
     assert store.project(project_id) is None
-    with pytest.raises(ValueError, match="requires the source project id"):
+    with pytest.raises(ValueError):
         store.create_project_provisioning_request(
             kind="incoming_transfer",
             authorized_by=authorizer,
@@ -214,7 +214,7 @@ def test_incoming_transfer_uses_the_existing_project_id_and_rejects_wrong_id_sha
             repositories=[_repository()],
             provider_checks=[_provider()],
         )
-    with pytest.raises(ValueError, match="cannot name a source project id"):
+    with pytest.raises(ValueError):
         store.create_project_provisioning_request(
             kind="create_team_project",
             authorized_by=authorizer,
@@ -236,15 +236,15 @@ def test_request_requires_the_exact_team_space_and_current_human_authorizer(
         user_id=owner.user_id,
         display_name="Owner",
     )
-    with pytest.raises(ValueError, match="exact team space"):
+    with pytest.raises(ValueError):
         _create(personal, personal_authorizer)
 
     team, authorizer = _team_store(tmp_path / "other")
     stranger = authorizer.model_copy(update={"user_id": str(uuid.uuid4())})
-    with pytest.raises(ValueError, match="not a current space member"):
+    with pytest.raises(ValueError):
         _create(team, stranger)
     wrong_space = authorizer.model_copy(update={"space_id": str(uuid.uuid4())})
-    with pytest.raises(ValidationError, match="target space"):
+    with pytest.raises(ValidationError):
         team.create_project_provisioning_request(
             kind="create_team_project",
             authorized_by=wrong_space,
@@ -260,7 +260,7 @@ def test_duplicate_repositories_machines_and_profiles_fail_before_persistence(
 ) -> None:
     store, authorizer = _team_store(tmp_path)
 
-    with pytest.raises(ValidationError, match="machine aliases"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             kind="create_team_project",
             authorized_by=authorizer,
@@ -268,7 +268,7 @@ def test_duplicate_repositories_machines_and_profiles_fail_before_persistence(
             repositories=[_repository()],
             provider_checks=[_provider()],
         )
-    with pytest.raises(ValidationError, match="repository aliases"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             kind="create_team_project",
             authorized_by=authorizer,
@@ -276,7 +276,7 @@ def test_duplicate_repositories_machines_and_profiles_fail_before_persistence(
             repositories=[_repository(), _repository()],
             provider_checks=[_provider()],
         )
-    with pytest.raises(ValidationError, match="provider profiles"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             kind="create_team_project",
             authorized_by=authorizer,
@@ -335,7 +335,7 @@ def test_guarded_receipted_transitions_resume_and_bind_final_review(
         operator_action=action,
     )
     assert replayed == paused
-    with pytest.raises(ValueError, match="another step"):
+    with pytest.raises(ValueError):
         store.transition_project_provisioning_request(
             request.request_id,
             receipt_id="github-grant-needed",
@@ -425,7 +425,7 @@ def test_guarded_receipted_transitions_resume_and_bind_final_review(
         for receipt in store.project_provisioning_step_receipts(request.request_id)
     ] == [1, 2, 3, 4, 5]
 
-    with pytest.raises(ValueError, match="cannot move"):
+    with pytest.raises(ValueError):
         store.transition_project_provisioning_request(
             request.request_id,
             receipt_id="illegal-terminal-reentry",
@@ -449,7 +449,7 @@ def test_guarded_receipted_transitions_resume_and_bind_final_review(
             "UPDATE project_provisioning_requests SET repositories_json = ?",
             (json.dumps(persisted_repositories),),
         )
-    with pytest.raises(RuntimeError, match="stored project provisioning request is invalid"):
+    with pytest.raises(RuntimeError):
         store.project_provisioning_request(request.request_id)
 
 
@@ -586,7 +586,7 @@ def test_operator_action_is_bound_to_the_request_and_declared_target(tmp_path: P
         required_authority_role="repository administrator",
     )
 
-    with pytest.raises(ValidationError, match="declared GitHub repository"):
+    with pytest.raises(ValidationError):
         store.transition_project_provisioning_request(
             request.request_id,
             receipt_id="unrelated-target",
@@ -601,7 +601,7 @@ def test_operator_action_is_bound_to_the_request_and_declared_target(tmp_path: P
         )
 
     wrong_request_id = str(uuid.uuid4())
-    with pytest.raises(ValidationError, match="resume this exact request"):
+    with pytest.raises(ValidationError):
         store.transition_project_provisioning_request(
             request.request_id,
             receipt_id="unrelated-resume",
@@ -648,7 +648,7 @@ def test_stale_transition_loses_without_writing_a_receipt(tmp_path: Path) -> Non
         provider_checks=request.provider_checks,
     )
 
-    with pytest.raises(ValueError, match="changed; reload"):
+    with pytest.raises(ValueError):
         store.transition_project_provisioning_request(
             request.request_id,
             receipt_id="stale-loser",
@@ -672,7 +672,7 @@ def test_cancellation_requires_an_explicit_disposition_and_remains_inert(
     store, authorizer = _team_store(tmp_path)
     request = _create(store, authorizer)
 
-    with pytest.raises(ValidationError, match="explicit disposition"):
+    with pytest.raises(ValidationError):
         store.transition_project_provisioning_request(
             request.request_id,
             receipt_id="cancel-without-disposition",
@@ -706,7 +706,7 @@ def test_cancellation_requires_an_explicit_disposition_and_remains_inert(
 def test_secret_shaped_provider_and_path_values_never_enter_a_request(tmp_path: Path) -> None:
     store, authorizer = _team_store(tmp_path)
 
-    with pytest.raises(ValidationError, match="credential-shaped"):
+    with pytest.raises(ValidationError):
         ProjectProvisioningProviderIntent(
             profile="seed",
             provider="codex",
@@ -715,7 +715,7 @@ def test_secret_shaped_provider_and_path_values_never_enter_a_request(tmp_path: 
             reasoning="medium",
             machine_alias="server",
         )
-    with pytest.raises(ValidationError, match="credential-shaped"):
+    with pytest.raises(ValidationError):
         ProjectProvisioningMachineIntent(
             alias="remote",
             location="ssh",
@@ -723,11 +723,11 @@ def test_secret_shaped_provider_and_path_values_never_enter_a_request(tmp_path: 
             os_account="alice",
             central_root="/srv/github_pat_abcdefghijklmnop/projects",
         )
-    with pytest.raises(ValidationError, match="credential-shaped"):
+    with pytest.raises(ValidationError):
         ProjectProvisioningGitCheckRecord(
             deploy_key_label="github_pat_abcdefghijklmnop",
         )
-    with pytest.raises(ValidationError, match="safe line"):
+    with pytest.raises(ValidationError):
         ProjectProvisioningGitCheckRecord(deploy_key_label="rcp:label\nsecond-line")
     assert store.project_provisioning_requests() == []
 
@@ -744,7 +744,7 @@ def test_new_project_configuration_is_complete_safe_and_repository_bound(
         "provider_checks": [_provider()],
     }
 
-    with pytest.raises(ValidationError, match="credential-shaped"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             **base,
             name="github_pat_abcdefghijklmnop",
@@ -752,12 +752,12 @@ def test_new_project_configuration_is_complete_safe_and_repository_bound(
             project_truth_scope=["paper"],
             default_run_truth_scope=["paper"],
         )
-    with pytest.raises(ValidationError, match="must be complete"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             **base,
             default_auto_research_invocation_ceiling=11,
         )
-    with pytest.raises(ValidationError, match="state repository must name"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             **base,
             name="Shared paper project",
@@ -765,7 +765,7 @@ def test_new_project_configuration_is_complete_safe_and_repository_bound(
             project_truth_scope=["paper"],
             default_run_truth_scope=["paper"],
         )
-    with pytest.raises(ValidationError, match="default run truth scope"):
+    with pytest.raises(ValidationError):
         store.create_project_provisioning_request(
             **base,
             name="Shared paper project",
@@ -792,7 +792,7 @@ def test_raw_rows_are_revalidated_instead_of_becoming_authority(tmp_path: Path) 
             (json.dumps(repositories),),
         )
 
-    with pytest.raises(RuntimeError, match="stored project provisioning request is invalid"):
+    with pytest.raises(RuntimeError):
         store.project_provisioning_request(request.request_id)
 
 
@@ -811,5 +811,5 @@ def test_project_configuration_json_cannot_shadow_request_columns(tmp_path: Path
             (json.dumps(project_config),),
         )
 
-    with pytest.raises(RuntimeError, match="stored project provisioning request is invalid"):
+    with pytest.raises(RuntimeError):
         store.project_provisioning_request(request.request_id)

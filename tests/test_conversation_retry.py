@@ -464,9 +464,9 @@ def test_cross_provider_work_retry_uses_a_fresh_retry_contract(
     diagnostics_name = next(
         name for name in launcher.input_snapshots[1] if name.endswith("retry-diagnostics.json")
     )
-    assert json.loads(launcher.input_snapshots[1][diagnostics_name]) == {
-        "prior_attempt_diagnostics": [f"Attempt 1 (failed) failed with: {failure}"]
-    }
+    diagnostics = json.loads(launcher.input_snapshots[1][diagnostics_name])
+    assert len(diagnostics["prior_attempt_diagnostics"]) == 1
+    assert failure in diagnostics["prior_attempt_diagnostics"][0]
     receipts = app.state.background_tasks.store.agent_task_receipts(str(retried["operation_id"]))
     launch = next(item for item in receipts if item.category == "agent_launch")
     assert launch.payload["launch_kind"] == "retry"

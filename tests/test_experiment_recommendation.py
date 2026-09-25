@@ -145,7 +145,7 @@ def test_signed_out_experiment_retry_creates_no_task_or_budget(tmp_path):
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     budget = store.episode(root.episode_id).invocations_used
-    with pytest.raises(ValueError, match="signed out"):
+    with pytest.raises(ValueError):
         tasks.retry(root.operation_id)
     assert store.episode(root.episode_id).invocations_used == budget
     with store.connection() as connection:

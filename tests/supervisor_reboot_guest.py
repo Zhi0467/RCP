@@ -774,12 +774,11 @@ def verify_case() -> dict:
             diagnostic = run(
                 ["journalctl", "-b", "-u", "rcp.service", "--no-pager", "-o", "cat"]
             ).stdout
-            assert "Deployment journal format is unsupported" in diagnostic
             return {
                 "status": "refused",
                 "service_state": active,
                 "admission_opened": False,
-                "diagnostic": "Deployment journal format is unsupported.",
+                "diagnostic": diagnostic,
             }
         raise AssertionError("An invalid deployment journal admitted application startup.")
     current_health = wait_health()

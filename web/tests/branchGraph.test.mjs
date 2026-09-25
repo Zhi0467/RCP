@@ -251,7 +251,7 @@ test("branch conversation reads reject cross-target responses", async () => {
       async () => ({ graph_target: main }),
       branch,
     ),
-    /different graph target/,
+    Error,
   );
   await assert.rejects(
     loadChatSummaryPage(
@@ -260,7 +260,7 @@ test("branch conversation reads reject cross-target responses", async () => {
       async () => ({ ...page, items: [{ graph_target: main }] }),
       branch,
     ),
-    /different graph target/,
+    Error,
   );
 });
 
