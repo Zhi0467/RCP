@@ -1,0 +1,42 @@
+/* Phone overrides, imported last so they win over same-specificity rules.
+
+   Phone: max-width 560px, the same number as PHONE_MAX_WIDTH_PX in
+   useNarrowViewport. Tablet: max-width 920px. Other width queries are
+   content-driven and sit beside the layout that needs them. */
+
+@media (max-width: 560px) {
+  /* iOS Safari zooms the page when a focused field's text is under 16px.
+     Component rules set smaller sizes with varying specificity, hence
+     !important. */
+  input:not([type="checkbox"], [type="radio"], [type="range"]),
+  textarea,
+  select,
+  [contenteditable="true"] {
+    font-size: max(16px, 1em) !important;
+  }
+
+  /* Primary controls are at least 44px on the touch axis. */
+  .button,
+  .icon-button,
+  .project-back,
+  .project-dock-select,
+  .project-dock-close,
+  .project-tabs > button:not(.project-tabs-toggle),
+  .attention-item,
+  .card-actions .button,
+  .project-header-actions .button,
+  .project-header-actions .icon-button,
+  .conversation-list [role="option"],
+  .conversation-list-toggle {
+    height: auto;
+    min-height: 44px;
+  }
+  .icon-button {
+    min-width: 44px;
+  }
+  /* The project header packs every action into one 375px row, so its icon
+     buttons keep their width and gain only height. */
+  .project-header-actions .icon-button {
+    min-width: 32px;
+  }
+}

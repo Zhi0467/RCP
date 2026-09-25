@@ -77,10 +77,12 @@ Two reports from the human, 2026-09-25:
    and exists for that component's content, so none is folded: moving any of
    them would change layout at the widths in between. A test fails when a
    stylesheet adds a width outside this set.
-4. **Phone mode is token overrides.** One `@media` block at the phone width
-   resets the tokens. Every `input`, `textarea`, `select`, and contenteditable
-   field is at least 16px there, including those with explicit sizes; the rule
-   must win against their specificity.
+4. **One phone overrides file.** `web/src/styles/13-phone.css` is imported
+   last, so its rules win over same-specificity component rules. It holds the
+   16px field rule (with `!important`, because component rules set smaller
+   sizes at varying specificity) and the 44px tap-target rule. The project
+   header keeps its packed one-row layout: its icon buttons gain height, not
+   width.
 
 ### Settled
 
