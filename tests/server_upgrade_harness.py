@@ -237,22 +237,22 @@ def build_installed_candidate(
             (source, "requirements.lock.txt"),
             (source / "supervisor", "supervisor-requirements.lock.txt"),
         ):
-            _run(
-                [
-                    "uv",
-                    "export",
-                    "--no-header",  # Temporary build paths cannot change a supervisor identity.
-                    "--project",
-                    str(project),
-                    "--frozen",
-                    "--no-dev",
-                    "--no-emit-project",
-                    "--format",
-                    "requirements-txt",
-                    "--output-file",
-                    str(output / name),
-                ],
-                cwd=source,
+            # Export from the project to stdout: the header names no temporary path, so a
+            # dependency-free supervisor still gets a nonempty, reproducible lock.
+            (output / name).write_text(
+                _capture(
+                    [
+                        "uv",
+                        "export",
+                        "--frozen",
+                        "--no-dev",
+                        "--no-emit-project",
+                        "--format",
+                        "requirements-txt",
+                    ],
+                    cwd=project,
+                ),
+                encoding="utf-8",
             )
         _release_helper(source, "stamp-version", "--run-number", run_number, "--sha", sha)
         for project in (source, source / "supervisor"):
