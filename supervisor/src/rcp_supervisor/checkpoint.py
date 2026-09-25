@@ -149,6 +149,26 @@ def _service_owned(path: Path) -> None:
         raise SupervisorError(f"Checkpoint root is owned by root, not the service: {path}")
 
 
+def _require_rename_compatible(workspace: Path, live: Path) -> None:
+    """Rollback renames the saved copy into place; prove that rename works now."""
+    if os.path.ismount(live):
+        raise SupervisorError(f"Checkpoint root is a mount point and cannot be renamed: {live}")
+    probe = workspace / ".rename-probe"
+    target = _existing_parent(live.parent) / f".rcp-rename-probe-{uuid.uuid4().hex}"
+    probe.touch()
+    try:
+        os.rename(probe, target)
+        os.rename(target, probe)
+    except OSError as exc:
+        raise SupervisorError(
+            f"Checkpoint copies cannot be renamed into place beside {live}: {exc.strerror}"
+        ) from exc
+    finally:
+        for path in (probe, target):
+            if os.path.lexists(path):
+                path.unlink()
+
+
 def _roots(roots: tuple[SnapshotRoot, ...]) -> list[SnapshotRoot]:
     result: list[SnapshotRoot] = []
     for root in sorted(roots, key=lambda root: len(root.live.parts)):
@@ -258,6 +278,8 @@ def create_checkpoint(
         # first copied byte cannot strand an unrecorded filesystem workspace.
         _write_json(destination / "checkpoint.json", document)
         workspace.mkdir(mode=0o700)
+        for root in group:
+            _require_rename_compatible(workspace, root.live)
         sources = tuple(
             dict.fromkeys(root.payload for root in group if os.path.lexists(root.payload))
         )

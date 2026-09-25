@@ -246,3 +246,15 @@ def test_overlay_lets_candidate_entries_replace_a_different_type(tmp_path: Path)
     assert (destination / "was-file" / "inside").read_bytes() == b"candidate"
     assert (destination / "was-dir").read_bytes() == b"candidate"
     assert (destination / "kept").read_bytes() == b"unrelated"
+
+
+def test_snapshot_refuses_a_root_rollback_could_not_rename_into_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live = tmp_path / "data"
+    live.mkdir()
+    monkeypatch.setattr(checkpoint.os.path, "ismount", lambda path: Path(path) == live)
+    with pytest.raises(SupervisorError, match="mount point"):
+        checkpoint.create_stopped_snapshot(
+            tmp_path / "checkpoint", (live,), boundary_sha256="b" * 64
+        )
