@@ -7,7 +7,8 @@ Active:
   provider finished RCP's own prompt and has no unfinished subagents. Claude
   runs subagents in the foreground; Codex exec and app-server use an RCP hook
   fence. Codex exec retry notices become traces. The launch helper stays
-  offered on Slurm machines. Open: whether a service launch skips the watcher.
+  offered on Slurm machines, and `launch --service` runs until a human
+  cancels it.
 
 - [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
   — implemented 2026-09-25 on one pull request and verified on copied

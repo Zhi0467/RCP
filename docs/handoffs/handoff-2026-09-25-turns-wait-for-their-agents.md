@@ -16,8 +16,8 @@ Status on 2026-09-25: design only. Nothing is implemented.
   - The Codex exec retry-notice fix ships in the same pull request.
   - The live server needs no hotfix: the 2026-09-25 failures came from an
     OpenAI Codex outage.
-- Open: whether a helper launch may skip the watcher handoff (see
-  [Open question](#open-question)).
+  - `launch --service` starts a process that runs until a human cancels it.
+    It needs no watcher. Work only.
 - Closure: the pull request merges, the checks in
   [Verification](#verification) pass, and the specs carry the new sentences.
 
@@ -101,8 +101,14 @@ they do now.
 - **app-server:** `_disabled_hooks` becomes "RCP's fence hooks, and nothing
   else". The child-thread notifications the runtime drops today feed the
   same backstop receipt as Claude's task events.
-- To verify on the Linux team server: hooks run while the Work sandbox is
-  active, and the fence file lives where the hook can write it.
+- Linux, verified 2026-09-25 on the team-server host with RCP's exact Work
+  permission profile (Codex 0.152.0, own account): the hooks fired, the fence
+  blocked, the child ran inside the sandbox's own PID namespace and finished,
+  and the turn completed at 55 s. Hooks run **outside** the sandbox, in the
+  host PID namespace, and can write outside the writable roots. So the fence
+  file lives in the task stage, outside every writable root, where the agent
+  cannot rewrite it. The service's Codex 0.156.1 is covered by the local
+  blocking probe; the live check below repeats it on the server.
 
 **Prompt data:** one rendered sentence in every Discuss and Work contract.
 Subagents must finish inside the turn. Only helper and scheduler jobs outlive
@@ -131,16 +137,15 @@ the outage stream captured on 2026-09-25.
 - The settlement check, human Cancel and watchers are unchanged.
 - Discuss still has no helper (invariant 4).
 
-## Open question
+### 4. Service launches
 
-A helper job still running at settlement must have its watcher in the
-handoff. A dashboard never finishes, so its watcher checks "still running"
-until a human cancels it.
-
-- Option A, recommended: `launch --service` marks a job that runs until a
-  human stops it. Settlement does not require a watcher for it, and the job
-  shows in the project's job list with Cancel.
-- Option B: keep the watcher rule; a dashboard's watcher idles until Cancel.
+- `launch --service --key K --cwd <path> -- <argv...>` uses the same helper,
+  owner, keys and receipts as a job launch.
+- Settlement does not require a watcher for a still-running service. The
+  launch response returns no watcher object for it.
+- The service shows in the project's job list with human Cancel, and runs
+  until then. Compute belongs in a job launch or the job manager, and the
+  instructions say so.
 
 ## Verification
 
@@ -150,7 +155,8 @@ until a human cancels it.
   - the Claude launch env carries the variable;
   - Codex exec retry `error` events followed by `turn.failed`;
   - the hook script run directly: start, block, stop, cap;
-  - `allowed_verbs` and instructions on a Slurm machine.
+  - `allowed_verbs` and instructions on a Slurm machine;
+  - a still-running service passes settlement without a watcher.
 - Live, local real providers: a Claude turn and a Codex exec and app-server
   turn that each spawn a 60-second subagent. Each reply arrives after the
   child's result and uses it.
