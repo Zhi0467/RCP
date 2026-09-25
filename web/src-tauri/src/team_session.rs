@@ -11,7 +11,6 @@ use reqwest::{
     },
     Client, Method, RequestBuilder, Response,
 };
-use semver::Version;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use tauri::WebviewWindow;
@@ -28,7 +27,9 @@ use crate::{
         TransferGraphHead,
     },
     server_commands::ProjectProvisionReadback,
-    team_connections::{CachedTeamProjectCard, TeamConnectionMetadata, TeamConnectionState},
+    team_connections::{
+        CachedTeamProjectCard, TeamConnectionMetadata, TeamConnectionState, MAX_CACHED_CARDS,
+    },
     team_tunnel::{TeamTunnelReady, TeamTunnelState},
 };
 
@@ -75,7 +76,6 @@ pub struct ExistingTeamConnectionRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct TeamUserIdentity {
     pub user_id: String,
     pub display_name: Option<String>,
@@ -87,7 +87,6 @@ pub struct TeamUserIdentity {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct TeamIdentity {
     pub space_id: String,
     pub space_kind: String,
@@ -113,14 +112,12 @@ struct TeamHealth {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 struct TeamShellProtocolRange {
     minimum: u32,
     maximum: u32,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct EnrollmentResponse {
     identity: TeamIdentity,
     token: String,
@@ -141,7 +138,6 @@ struct ExchangeBody<'a> {
 struct TeamProjectCard {
     id: String,
     name: String,
-    primary_question: Option<String>,
     attention_count: u64,
 }
 
@@ -1249,10 +1245,10 @@ async fn read_project_cards(
     let cards: Vec<TeamProjectCard> = response_json(response, "team project index").await?;
     Ok(cards
         .into_iter()
+        .take(MAX_CACHED_CARDS)
         .map(|card| CachedTeamProjectCard {
             id: card.id,
             name: card.name,
-            primary_question: card.primary_question,
             attention_count: card.attention_count,
         })
         .collect())
@@ -1434,7 +1430,6 @@ fn validate_health(
     if health.space_name.as_deref().is_none_or(str::is_empty) {
         return Err("the team server has no display name".into());
     }
-    canonical_version(&health.version, "team server version")?;
     match (&health.running_commit, &health.web_build_id) {
         (Some(commit), Some(build))
             if commit.len() == 40
@@ -1514,7 +1509,6 @@ fn installed_server_commit(health: &TeamHealth) -> &str {
 fn validate_identity(identity: &TeamIdentity, health: &TeamHealth) -> Result<(), String> {
     if identity.space_id != health.space_id
         || identity.space_kind != "team"
-        || identity.space_name != health.space_name
         || identity.user.identity_kind != "team_member"
         || identity.user.removal_started_at.is_some()
         || identity.user.removed_at.is_some()
@@ -1613,14 +1607,6 @@ fn validate_uuid4(value: &str, label: &str) -> Result<(), String> {
         return Err(format!("{label} is invalid"));
     }
     Ok(())
-}
-
-fn canonical_version(value: &str, label: &str) -> Result<Version, String> {
-    let version = Version::parse(value).map_err(|_| format!("{label} is invalid"))?;
-    if version.to_string() != value {
-        return Err(format!("{label} is invalid"));
-    }
-    Ok(version)
 }
 
 fn is_lower_hex(value: &str) -> bool {
@@ -2037,6 +2023,41 @@ mod tests {
         let cookies = state.acquire_cookies().unwrap();
         assert!(!cookies.contains_key("team-a"));
         assert!(cookies.contains_key("team-b"));
+    }
+
+    #[test]
+    fn handshake_accepts_additive_response_fields() {
+        let enrolled: EnrollmentResponse = serde_json::from_value(serde_json::json!({
+            "identity": {
+                "space_id": health().space_id,
+                "space_kind": "team",
+                "space_name": "Renamed team",
+                "user": {
+                    "user_id": "88888888-8888-4888-8888-888888888888",
+                    "display_name": "Member",
+                    "identity_kind": "team_member",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                    "additional": true
+                },
+                "additional": true
+            },
+            "token": "test token",
+            "additional": true
+        }))
+        .unwrap();
+        validate_identity(&enrolled.identity, &health()).unwrap();
+        let mut verified = health();
+        verified.version = "server development build".into();
+        verified.team_shell_protocol = Some(
+            serde_json::from_value(serde_json::json!({
+                "minimum": TEAM_SHELL_PROTOCOL_MINIMUM,
+                "maximum": TEAM_SHELL_PROTOCOL_MAXIMUM,
+                "additional": true
+            }))
+            .unwrap(),
+        );
+        assert!(validate_health(&verified, None).is_ok());
     }
 
     #[test]
