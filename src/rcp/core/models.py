@@ -984,11 +984,6 @@ def _upgrade_projection_value(value: Any, annotation: Any, discriminator: Any = 
             _upgrade_projection_value(value, variants[0])
         elif isinstance(discriminator, str) and isinstance(value, dict):
             discriminator_value = value.get(discriminator)
-            if discriminator == "intent" and discriminator not in value:
-                from rcp.core.operations import _legacy_proposal_intent
-
-                # Resolve as validation does, without persisting the omitted intent.
-                discriminator_value = _legacy_proposal_intent(value)
             for variant in variants:
                 if isinstance(variant, type) and issubclass(variant, BaseModel):
                     tag = variant.model_fields.get(discriminator)
@@ -998,12 +993,19 @@ def _upgrade_projection_value(value: Any, annotation: Any, discriminator: Any = 
     elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
         if not isinstance(value, dict):
             return
+        # A field with its own serializer is stored as serialized: Proposal and Patch
+        # operations keep only what their author set, so no default belongs inside them.
+        serialized = {
+            name
+            for decorator in annotation.__pydantic_decorators__.field_serializers.values()
+            for name in decorator.info.fields
+        }
         for name, field in annotation.model_fields.items():
             if name not in value:
                 default = _projection_default(field)
                 if default is not PydanticUndefined:
                     value[name] = default
-            if name in value:
+            if name in value and name not in serialized:
                 _upgrade_projection_value(value[name], field.annotation, field.discriminator)
     elif origin is dict and isinstance(value, dict):
         for item in value.values():
@@ -1018,6 +1020,7 @@ def upgrade_graph_projection(graph: dict[str, object]) -> None:
 
     Walk discriminated variants and nested records without validation or
     normalization: explicit values, unknown keys and stored edge layers survive.
+    Fields with their own serializer, such as stored operations, stay as stored.
     Constant defaults, empty container factories and model factories composed of
     these defaults are safe; other factories require an explicit migration and
     fail the recursive schema invariant. Retired coverage is explicitly removed.
