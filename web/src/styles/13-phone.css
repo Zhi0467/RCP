@@ -27,7 +27,9 @@
   .project-header-actions .button,
   .project-header-actions .icon-button,
   .conversation-list [role="option"],
-  .conversation-list-toggle {
+  .conversation-list-toggle,
+  .conversation-list .agent-list-search input,
+  .agent-list-filters button {
     height: auto;
     min-height: 44px;
   }

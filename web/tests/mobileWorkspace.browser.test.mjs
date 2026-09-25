@@ -54,9 +54,11 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
         "A focused field is at least 16px, so iOS does not zoom the page",
       );
       for (const height of await list
-        .getByRole("option")
-        .evaluateAll((rows) => rows.map((row) => row.getBoundingClientRect().height))) {
-        assert.ok(height >= 44, `Conversation rows are at least 44px tall, got ${height}`);
+        .locator('[role="option"], input[type="search"], .agent-list-filters button')
+        .evaluateAll((controls) =>
+          controls.map((control) => control.getBoundingClientRect().height),
+        )) {
+        assert.ok(height >= 44, `Panel controls are at least 44px tall, got ${height}`);
       }
       await page.getByRole("option", { name: "Second chat, project conversation" }).click();
       await list.waitFor({ state: "hidden" });
