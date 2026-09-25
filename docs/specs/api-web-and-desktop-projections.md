@@ -146,6 +146,8 @@ Snapshots publish `graph_target`, `graph_head`, and `graph_changes` (null on mai
 `graph/changes?branch_id=...` publishes the same canonical base-to-head semantic
 delta, changed and neighboring node ids, before/after values, and Patch/task
 provenance. The backend derives that read model from one coherent branch replay.
+A project tab reopened from the space page or another tab returns to the graph
+target it was last left on, main or branch.
 
 The durable project display cache remains main-only. A branch cached-snapshot
 request returns an explicit cache miss, and the authoritative snapshot endpoint
@@ -833,6 +835,9 @@ non-null. Main-target entries consume the completed project snapshot's
 Experiment-control map; branch entries consume the exact branch read model.
 Episode task rows publish durable actor `role` and lineage `depth`, and episode
 cards consume those fields without interpreting persisted task requests.
+The page keeps each project's episode list, so returning to a project tab shows
+that list at once while it refreshes. A poll never overlaps a list request
+already in flight for the same project; it waits for that request instead.
 Project Runs refreshes this index while visible, so an Experiment dispatched on
 an Auto-research graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped

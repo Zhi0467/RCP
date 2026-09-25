@@ -480,6 +480,10 @@ never asked to discover or kill the old process manually.
 Remote canonical locks are process-held advisory files. Writers wait for live
 contention; a read-side refresh waits a bounded time and then reports canonical
 state unavailable, so one stuck writer cannot freeze a project's readers.
+Display-only routes (the episode list, the Experiment index, the Home run list,
+and the branch revision poll) accept a mirror up to 10 seconds old before they
+refresh it. Every read that gates a decision keeps the 2-second window, and
+writes sync first as before.
 Process death releases ownership. The remote holder releases the lock itself
 when its client stops heartbeating, so an orphaned holder cannot outlive a dead
 connection by more than the heartbeat timeout. RCP may reclaim only a provably

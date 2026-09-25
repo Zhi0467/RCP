@@ -2,6 +2,14 @@
 
 Active:
 
+- [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
+  — implemented 2026-09-25 on one pull request and verified on copied
+  team-server data. A tab return shows the kept Runs list at once, one list
+  never has two requests in flight, the Experiment index opens branches
+  read-only, and display reads of SSH-hosted state may use a mirror up to
+  10 s old. Remaining: the team-server measurement after release, and first
+  open still at 3.5 s against a 2 s target.
+
 - [The phone works, and Chats shows every agent at a glance](handoff-2026-09-25-phone-ui-and-agents-panel.md)
   — design confirmed 2026-09-25 and revised after an xhigh review;
   implemented, with the real-iPhone journey and a screenshot review remaining. One pull request: a mechanical stylesheet split, size tokens

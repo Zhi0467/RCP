@@ -37,6 +37,7 @@ from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, Experim
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
+from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
 from rcp.service import ProjectService
@@ -220,7 +221,12 @@ def _experiment_episode_entries(
     """Build the exact Experiment index once for both index projections."""
 
     entries: list[ExperimentLoopIndexEntryResponse] = []
-    branch_summary = partial(graph_branch_summary, store=store, catalog=catalog)
+    branch_summary = partial(
+        graph_branch_summary,
+        store=store,
+        catalog=catalog,
+        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+    )
     for record in store.projects():
         if record.project_id not in visible:
             continue
@@ -347,9 +353,13 @@ def _experiment_episode_entries(
                         else main_service.for_graph_target(
                             target,
                             expected_episode_id=target.branch_id,
+                            initialize=False,
+                            refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
                         )
                     )
-                    materialization = target_service.history.current_materialization()
+                    materialization = target_service.history.current_materialization(
+                        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+                    )
                     state = materialization.state
                     graph_head = target_service.history.head_ref(materialization)
                 except (KeyError, OSError, StateUnavailable, ValueError) as exc:

@@ -46,10 +46,10 @@ def test_repeated_read_resolution_never_repairs_or_publishes(branch_service, mon
     refresh_if_stale = workspace.refresh_if_stale
     refreshes = 0
 
-    def counted_refresh():
+    def counted_refresh(max_age_seconds: float):
         nonlocal refreshes
         refreshes += 1
-        return refresh_if_stale()
+        return refresh_if_stale(max_age_seconds)
 
     def forbidden_mutation(*_args, **_kwargs):
         raise AssertionError("read resolution must not repair, transact, or publish")
@@ -93,7 +93,7 @@ def test_read_resolution_refreshes_before_reading_metadata(branch_service, monke
     current = metadata_path.read_bytes()
     metadata_path.write_text("stale incomplete remote metadata")
 
-    def refresh_snapshot():
+    def refresh_snapshot(_max_age_seconds: float):
         metadata_path.write_bytes(current)
         return True
 
@@ -109,7 +109,7 @@ def test_unavailable_read_refresh_is_explicit(branch_service, monkeypatch, raise
     metadata_path = service.history.root / "branches" / metadata.branch_id / "branch.json"
     metadata_path.write_text("stale incomplete remote metadata")
 
-    def unavailable_refresh():
+    def unavailable_refresh(_max_age_seconds: float):
         if raises:
             raise StateUnavailable("canonical state is unreachable")
         return False

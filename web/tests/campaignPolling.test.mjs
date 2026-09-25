@@ -15,6 +15,8 @@ const {
   startLiveEpisodePolling,
   episodePollingTarget,
   mergeExactEpisode,
+  restoreEpisodeState,
+  trackEpisodeRequest,
 } = await server.ssrLoadModule("/src/hooks/useEpisodeDialogs.ts");
 
 after(() => server.close());
@@ -60,6 +62,50 @@ test("an older exact episode response cannot replace a newer row selection", () 
 
   assert.strictEqual(staleFirstResponse, secondResponse);
   assert.deepEqual(staleFirstResponse.episodes, [episode("second")]);
+});
+
+test("a returning project shows its kept episodes, and an unseen one starts empty", () => {
+  const keptA = { projectId: "a", episodes: [episode("a-run")], messages: {} };
+  const currentB = { projectId: "b", episodes: [episode("b-run")], messages: {} };
+  const kept = new Map([["a", keptA]]);
+
+  assert.strictEqual(restoreEpisodeState(currentB, kept, "b"), currentB);
+  assert.strictEqual(restoreEpisodeState(currentB, kept, "a"), keptA);
+  assert.deepEqual(restoreEpisodeState(currentB, kept, "c"), {
+    projectId: "c",
+    episodes: [],
+    messages: {},
+  });
+});
+
+test("an episode request stays joinable until it settles, per project", async () => {
+  const slot = { current: null };
+  let finish;
+  const first = trackEpisodeRequest(
+    slot,
+    "a",
+    new Promise((resolve) => {
+      finish = resolve;
+    }),
+  );
+  assert.equal(slot.current?.projectId, "a");
+  assert.strictEqual(slot.current?.request, first);
+
+  let finishSecond;
+  const second = trackEpisodeRequest(
+    slot,
+    "b",
+    new Promise((resolve) => {
+      finishSecond = resolve;
+    }),
+  );
+  finish(true);
+  await first;
+  assert.equal(slot.current?.projectId, "b", "an older request must not clear a newer one");
+  finishSecond(true);
+  await second;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(slot.current, null);
 });
 
 test("live episode polling is single-flight and keeps failures visible until recovery", async () => {

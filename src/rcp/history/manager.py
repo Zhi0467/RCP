@@ -63,7 +63,10 @@ from rcp.history.delta import (
     build_refresh_delta,
     render_revision_summary,
 )
-from rcp.limits import PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES
+from rcp.limits import (
+    PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES,
+    REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+)
 from rcp.providers import ProviderId
 from rcp.skill_registry import SkillDefaults
 from rcp.transport import (
@@ -854,6 +857,7 @@ class HistoryManager:
         expected_episode_id: str | None = None,
         expected_project_id: str | None = None,
         initialize: bool = True,
+        refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> BranchHistoryManager:
         """Open and verify one canonical episode branch."""
 
@@ -865,6 +869,7 @@ class HistoryManager:
             expected_episode_id=expected_episode_id,
             expected_project_id=expected_project_id,
             initialize=initialize,
+            refresh_max_age_seconds=refresh_max_age_seconds,
         )
 
     def branch_metadata(
@@ -883,12 +888,16 @@ class HistoryManager:
     def branch_read_snapshots(
         self,
         identities: list[tuple[str, str, str]],
+        *,
+        refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> dict[str, BranchReadSnapshot | None]:
         """Read several episode branches from one refreshed, read-only snapshot."""
 
         from rcp.history.branches import read_branch_snapshots
 
-        return read_branch_snapshots(self, identities)
+        return read_branch_snapshots(
+            self, identities, refresh_max_age_seconds=refresh_max_age_seconds
+        )
 
     def _require_branch_materialization_repair(self, branch_id: str) -> None:
         self._branch_materialization_repairs.add(branch_id)
