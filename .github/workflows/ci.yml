@@ -202,12 +202,14 @@ jobs:
       - name: Collect service logs
         if: always()
         run: |
-          mkdir -p "$RUNNER_TEMP/installed-upgrade/evidence"
-          sudo journalctl -u rcp.service --no-pager > "$RUNNER_TEMP/installed-upgrade/evidence/service.log"
+          # The harness leaves the evidence directory root-owned; collect as root and keep going.
+          evidence="$RUNNER_TEMP/installed-upgrade/evidence"
+          sudo mkdir -p "$evidence"
+          sudo sh -c "journalctl -u rcp.service --no-pager > '$evidence/service.log'" || true
           # The supervisor names its error log in each refusal; keep them all and print them here.
-          sudo cp -r /etc/rcp/supervisor/logs "$RUNNER_TEMP/installed-upgrade/evidence/supervisor-logs" || true
+          sudo cp -r /etc/rcp/supervisor/logs "$evidence/supervisor-logs" || true
           sudo sh -c 'for f in /etc/rcp/supervisor/logs/*; do echo "== $f"; tail -c 4000 "$f"; done' || true
-          sudo chmod -R a+rX "$RUNNER_TEMP/installed-upgrade/evidence"
+          sudo chmod -R a+rX "$evidence" || true
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
