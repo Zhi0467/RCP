@@ -494,7 +494,7 @@ this root/systemd journey. The installed jobs pin Ubuntu 24.04 and install the
 operator guide's checksum-pinned uv into `/usr/local/bin` with root ownership.
 The harness validates the executable and its ancestors, drops runner Python and
 uv environment settings, and keeps both ordinary and probation HTTP on the
-disposable port. Repeated post-update backups check archive/receipt retention
+disposable port. Repeated post-update backups check archive and receipt retention
 and capture-stage cleanup. The old source/cache tests retain current and stale
 projection cases; their duplicate standalone snapshot round-trip is removed.
 
@@ -1307,7 +1307,7 @@ rotation is not implicit. Private `AGE-SECRET-KEY-...` text is never accepted by
 the CLI or emitted in progress.
 The same resolved schedule renders the systemd timer; there is no second
 editable timer value. Retention also preserves the newest complete archive if
-it has fallen outside the configured count. This bounds archive/receipt pairs at
+it has fallen outside the configured count. This bounds archive and receipt pairs at
 `retention + 1`; nightly, manual, and pre-update protected captures use the same
 owner and destination. Status and optional diagnostic sidecars overwrite fixed
 paths and retain their existing byte/count limits. Backup capture stages retain
