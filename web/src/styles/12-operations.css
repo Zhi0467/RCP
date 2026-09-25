@@ -143,10 +143,10 @@
   margin: 0;
 }
 .server-settings h2 {
-  font-size: 21px;
+  font-size: var(--type-2xl);
 }
 .server-settings h3 {
-  font-size: 17px;
+  font-size: var(--type-lg);
 }
 .server-settings-loading,
 .server-settings-error {
@@ -167,7 +167,7 @@
   border: 1px solid currentColor;
   border-radius: 999px;
   display: inline-flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   letter-spacing: 0.045em;
   line-height: 1;
@@ -220,13 +220,13 @@
 .server-commit-row dt,
 .server-status-card dt {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 .server-commit-row dd {
-  font: 11px/1.5 var(--mono);
+  font: var(--type-xs)/1.5 var(--mono);
   margin: 2px 0 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -237,7 +237,7 @@
   background: var(--paper);
   border: 1px solid var(--line);
   color: var(--oxblood-dark);
-  font: 9px/1.4 var(--mono);
+  font: var(--type-3xs)/1.4 var(--mono);
   padding: 5px 7px;
 }
 .server-status-card-grid {
@@ -360,7 +360,7 @@
   border: 1px solid currentColor;
   border-radius: 4px;
   padding: 2px 5px;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.2;
   text-transform: capitalize;
 }
@@ -420,7 +420,7 @@
   table-layout: fixed;
   width: 100%;
   margin-top: 12px;
-  font-size: 12px;
+  font-size: var(--type-sm);
 }
 .branch-change-fields th,
 .branch-change-fields td {
@@ -487,7 +487,7 @@
   background: var(--surface-cool);
   border-radius: 4px;
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 600;
   line-height: 1.5;
   padding: 1px 6px;
@@ -569,7 +569,7 @@
   max-width: 340px;
 }
 .roster-summary span {
-  font-size: 12px;
+  font-size: var(--type-sm);
 }
 .roster-toolbar {
   display: flex;
@@ -609,18 +609,18 @@
   touch-action: pan-y;
   user-select: none;
   font-family: var(--ui);
-  font-size: 12px;
+  font-size: var(--type-sm);
   fill: var(--ink);
 }
 .roster-tick {
   fill: var(--muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .roster-number {
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .roster-group {
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -668,7 +668,7 @@
 }
 .roster-badge {
   fill: currentColor;
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .roster-danger {
   color: var(--red);
@@ -715,7 +715,7 @@
 }
 .roster-undelivered {
   fill: var(--red);
-  font-size: 11px;
+  font-size: var(--type-xs);
   paint-order: stroke;
   stroke: var(--surface);
   stroke-width: 3px;
@@ -757,7 +757,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--type-sm);
 }
 .episode-roster .roster-item-icon {
   display: inline-flex;
@@ -792,7 +792,7 @@
   margin: 0;
 }
 .roster-popover h4 {
-  font-size: 12px;
+  font-size: var(--type-sm);
   margin: 14px 0 6px;
 }
 .roster-popover blockquote {
@@ -855,7 +855,7 @@
 .terminal-repository code,
 .terminal-active-heading code {
   overflow-wrap: anywhere;
-  font-size: 13px;
+  font-size: var(--type-md);
 }
 .terminal-unavailable {
   color: var(--coral);
@@ -924,7 +924,7 @@
   border-bottom: 1px solid var(--mustard);
   background: var(--amber-soft);
   color: var(--walnut);
-  font-size: 14px;
+  font-size: var(--type-base);
 }
 .terminal-protection-warning svg {
   flex: none;
@@ -990,7 +990,7 @@
   width: 100%;
 }
 .node-edit-field .proxy-row input {
-  font-size: 13px;
+  font-size: var(--type-md);
   font-weight: 450;
   height: 34px;
 }

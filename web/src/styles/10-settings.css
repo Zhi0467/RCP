@@ -25,12 +25,12 @@
 .project-delete-dialog h2 {
   color: var(--ink);
   font-family: var(--editorial);
-  font-size: 25px;
+  font-size: var(--type-3xl);
   font-weight: 500;
   margin: 0;
 }
 .project-delete-dialog > p {
-  font-size: 11px;
+  font-size: var(--type-xs);
   line-height: 1.65;
   margin: 0;
   padding: 20px 24px;
@@ -54,7 +54,7 @@
   background: var(--red-soft);
   border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
   color: var(--red);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.45;
   padding: 10px 24px;
 }
@@ -70,7 +70,7 @@
 }
 .app-cache-danger-row strong {
   color: var(--ink);
-  font-size: 11px;
+  font-size: var(--type-xs);
 }
 .app-cache-clear-dialog > header {
   color: var(--red);
@@ -103,7 +103,7 @@
 .existing-research-dialog h2 {
   color: var(--ink);
   font-family: var(--editorial);
-  font-size: 28px;
+  font-size: var(--type-4xl);
   font-weight: 500;
   margin: 0;
 }
@@ -124,11 +124,11 @@
   border-left-color: var(--red);
 }
 .existing-research-status strong {
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .existing-research-status span {
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.5;
 }
 .existing-research-ledger {
@@ -152,12 +152,12 @@
 .existing-research-ledger dt {
   background: var(--sheet);
   color: var(--muted);
-  font: 700 8px/1.3 var(--mono);
+  font: 700 var(--type-4xs)/1.3 var(--mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .existing-research-ledger dd {
-  font: 10px/1.45 var(--mono);
+  font: var(--type-2xs)/1.45 var(--mono);
   overflow-wrap: anywhere;
 }
 .existing-research-failure {
@@ -172,16 +172,16 @@
 }
 .existing-research-failure code {
   border: 1px solid color-mix(in srgb, var(--red) 34%, var(--line));
-  font-size: 8px;
+  font-size: var(--type-4xs);
   padding: 2px 4px;
 }
 .existing-research-failure span {
-  font-size: 9px;
+  font-size: var(--type-3xs);
   line-height: 1.5;
 }
 .existing-research-body > p {
   color: var(--ink-soft);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.6;
   margin: 17px 0 0;
 }
@@ -248,12 +248,12 @@
 .desktop-access-dialog h2 {
   color: var(--ink);
   font-family: var(--editorial);
-  font-size: 25px;
+  font-size: var(--type-3xl);
   font-weight: 500;
   margin: 0;
 }
 .desktop-access-dialog > p {
-  font-size: 12px;
+  font-size: var(--type-sm);
   line-height: 1.65;
   margin: 0;
   padding: 22px 24px;
@@ -262,7 +262,7 @@
   background: var(--rose-paper);
   border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
   color: var(--red);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   padding: 10px 24px;
 }
 .desktop-access-dialog > footer {
@@ -289,7 +289,7 @@
 }
 .identity-name-dialog h2 {
   font-family: var(--editorial);
-  font-size: 24px;
+  font-size: var(--type-3xl);
   font-weight: 500;
   margin: 0;
 }
@@ -300,14 +300,14 @@
 }
 .identity-name-body p {
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-xs);
   line-height: 1.55;
   margin: 0;
 }
 .identity-name-body label {
   color: var(--ink-soft);
   display: grid;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 650;
   gap: 6px;
   letter-spacing: 0.08em;
@@ -317,7 +317,7 @@
   background: var(--paper);
   border: 1px solid var(--line-strong);
   color: var(--ink);
-  font-size: 12px;
+  font-size: var(--type-sm);
   font-weight: 400;
   letter-spacing: normal;
   min-height: 36px;
@@ -329,7 +329,7 @@
   background: var(--rose-paper);
   border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
   color: var(--red);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   padding: 9px 22px;
 }
 .identity-name-dialog > footer {
@@ -381,7 +381,7 @@
   color: var(--accent-ink);
   display: inline-flex;
   font-family: var(--editorial);
-  font-size: 14px;
+  font-size: var(--type-base);
   font-weight: 600;
   height: 31px;
   justify-content: center;
@@ -389,7 +389,7 @@
 }
 .team-login-space-kind {
   color: var(--ink-soft);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -434,7 +434,7 @@
 }
 .team-login-card label {
   color: var(--ink-soft);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -444,7 +444,7 @@
   border: 1px solid color-mix(in srgb, var(--rule) 64%, var(--walnut));
   color: var(--walnut);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--type-md);
   min-height: 42px;
   padding: 8px 10px;
   width: 100%;
@@ -459,7 +459,7 @@
 }
 .team-login-hint {
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--type-xs);
   line-height: 1.5;
   margin: 0 0 12px;
 }
@@ -468,7 +468,7 @@
   border: none;
   color: var(--ink-soft);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--type-xs);
   margin-top: 14px;
   min-height: 44px;
   padding: 0;
@@ -478,7 +478,7 @@
   background: var(--rose-paper);
   border-left: 3px solid var(--coral);
   color: var(--red);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.45;
   margin: 2px 0 0;
   padding: 8px 10px;
@@ -500,7 +500,7 @@
 }
 .run-dialog h2 {
   font-family: var(--editorial);
-  font-size: 28px;
+  font-size: var(--type-4xl);
   font-weight: 500;
   margin: 4px 0 0;
 }
@@ -511,7 +511,7 @@
 .field-label {
   color: var(--muted);
   display: block;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.1em;
   margin-bottom: 8px;
@@ -531,7 +531,7 @@
 .run-history-degraded {
   color: var(--walnut);
   display: block;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   line-height: 1.4;
   margin-top: 3px;
 }
@@ -555,7 +555,7 @@
   border-bottom: 1px solid color-mix(in srgb, var(--mustard) 55%, var(--rule));
   color: var(--walnut);
   display: flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   gap: 8px;
   padding: 10px 28px;
 }
@@ -590,7 +590,7 @@
 }
 .agent-config-fields label {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -604,7 +604,7 @@
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: 4px;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   height: 31px;
   padding: 0 7px;
   text-transform: none;
@@ -613,7 +613,7 @@
 .agent-readiness {
   align-items: center;
   display: flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   gap: 6px;
   margin-top: 11px;
 }
@@ -658,7 +658,7 @@
   outline-offset: 2px;
 }
 .agent-config-summary > span {
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
 }
 .agent-config-summary > svg,
@@ -727,7 +727,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-radius: 4px;
   display: inline-flex;
   flex: none;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
   min-height: 26px;
   padding: 4px 7px;
@@ -751,7 +751,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   color: var(--ink);
   display: inline-flex;
   flex: none;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 650;
   gap: 5px;
   min-height: 26px;
@@ -774,7 +774,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 4px 8px;
 }
 .chat-scope-control .scope-trigger strong {
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 650;
   margin-top: 0;
   overflow: hidden;
@@ -801,13 +801,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-auto-research-default > span {
   color: var(--ink);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 700;
 }
 .agent-auto-research-default small {
   color: var(--muted);
   display: block;
-  font: 500 8px var(--sans);
+  font: 500 var(--type-4xs) var(--sans);
   margin-top: 3px;
 }
 .agent-auto-research-default input {
@@ -815,7 +815,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   color: var(--ink);
-  font: 650 12px var(--mono);
+  font: 650 var(--type-sm) var(--mono);
   padding: 6px 8px;
   width: 92px;
 }
@@ -835,13 +835,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-role-card header strong {
   font-family: var(--editorial);
-  font-size: 16px;
+  font-size: var(--type-lg);
   font-weight: 550;
 }
 .role-permission {
   background: var(--cobalt-soft);
   color: var(--cobalt-dark);
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.08em;
   padding: 4px 6px;
@@ -857,7 +857,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-role-fields label {
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -867,7 +867,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   background: var(--surface);
   border: 1px solid var(--line);
   display: block;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   height: 29px;
   margin-top: 3px;
   padding: 0 5px;
@@ -879,7 +879,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-top: 1px solid var(--line);
   color: var(--ink-soft);
   display: flex;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   gap: 6px;
   line-height: 1.45;
   padding: 8px 12px;
@@ -917,7 +917,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .display-settings h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
@@ -936,7 +936,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border: 1px solid var(--line-strong);
   border-radius: 5px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   height: 30px;
   min-width: 58px;
 }
@@ -964,7 +964,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   gap: 8px;
   min-height: 52px;
   padding: 0 14px;
-  font-size: 14px;
+  font-size: var(--type-base);
 }
 .conversation-list > div {
   display: grid;
@@ -989,7 +989,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   box-shadow: inset 2px 0 var(--oxblood);
 }
 .conversation-list [role="option"] > span {
-  font-size: 14px;
+  font-size: var(--type-base);
   font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -998,7 +998,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .conversation-list [role="option"] small,
 .conversation-list [role="option"] time {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .conversation-list [role="option"] time {
   grid-column: 2;
@@ -1126,7 +1126,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .boundary-settings h2,
 .agent-defaults h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
@@ -1178,12 +1178,12 @@ details[open] > .view-disclosure-summary > svg:last-child {
   display: block;
 }
 .settings-repository-copy strong {
-  font-size: 11px;
+  font-size: var(--type-xs);
 }
 .settings-repository-path {
   color: var(--ink-soft);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   margin-top: 4px;
   overflow-wrap: anywhere;
 }
@@ -1191,7 +1191,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   gap: 5px;
 }
 .settings-repository-meta em {
@@ -1238,13 +1238,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .settings-agent > header strong {
   font-family: var(--editorial);
-  font-size: 16px;
+  font-size: var(--type-lg);
   font-weight: 550;
 }
 .settings-agent > header > span:last-child {
   background: var(--cobalt-soft);
   color: var(--cobalt-dark);
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.08em;
   padding: 4px 6px;
@@ -1274,13 +1274,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .skill-defaults-settings h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
 .settings-section-note {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.5;
   margin: 5px 0 0;
   max-width: 650px;
@@ -1323,13 +1323,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .skill-default-copy strong {
   font-family: var(--editorial);
-  font-size: 15px;
+  font-size: var(--type-base);
   font-weight: 600;
 }
 .skill-default-copy span,
 .skill-default-copy small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   line-height: 1.45;
 }
 .skill-default-copy small {
@@ -1338,7 +1338,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .skill-default-kind {
   color: var(--faint);
-  font: 7px var(--mono);
+  font: var(--type-4xs) var(--mono);
   letter-spacing: 0.08em;
   position: absolute;
   right: 12px;
@@ -1350,11 +1350,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-usage-widget-meta {
   color: var(--muted);
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
 }
 .agent-usage-empty {
   color: var(--muted);
-  font: 10px var(--mono);
+  font: var(--type-2xs) var(--mono);
   padding: 24px 20px;
 }
 .agent-usage-widgets {
@@ -1371,7 +1371,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
     inset 0 -1px rgba(0, 0, 0, 0.34);
   color: color-mix(in srgb, var(--paper) 94%, white);
   font-family: var(--editorial);
-  font-size: 15px;
+  font-size: var(--type-base);
   font-weight: 500;
   letter-spacing: 0.01em;
   line-height: 1.35;
@@ -1422,12 +1422,12 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-usage-widget > header strong {
   color: var(--usage-accent);
   font-family: var(--editorial);
-  font-size: 17px;
+  font-size: var(--type-lg);
   font-weight: 550;
 }
 .agent-usage-widget > header span {
   color: var(--ink);
-  font: 11px var(--mono);
+  font: var(--type-xs) var(--mono);
   white-space: nowrap;
 }
 .agent-usage-widget-meta {
@@ -1449,7 +1449,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-usage-provider {
   color: var(--muted);
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
   overflow: hidden;
   padding: 0 5px 6px;
   text-overflow: ellipsis;
@@ -1459,7 +1459,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   align-items: center;
   color: var(--ink-soft);
   display: flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   padding: 6px 5px 6px 0;
 }
 .agent-usage-cell {
@@ -1486,7 +1486,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   cursor: default;
 }
 .agent-usage-cell > span:last-child {
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
   white-space: nowrap;
 }
 .agent-usage-squares {
@@ -1526,7 +1526,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-usage-details > header strong {
   font-family: var(--editorial);
-  font-size: 15px;
+  font-size: var(--type-base);
   font-weight: 550;
 }
 .agent-usage-records {
@@ -1544,7 +1544,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-usage-records article > header strong {
   color: var(--teal);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -1553,7 +1553,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-usage-records article > header span {
   color: var(--muted);
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
 }
 .agent-usage-records dl {
   display: grid;
@@ -1568,10 +1568,10 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-usage-records dt {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
 }
 .agent-usage-records dd {
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
   margin: 0;
   overflow-wrap: anywhere;
 }
@@ -1594,7 +1594,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .provider-path-settings h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
@@ -1616,12 +1616,12 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .provider-machine > header strong {
   font-family: var(--editorial);
-  font-size: 16px;
+  font-size: var(--type-lg);
   font-weight: 550;
 }
 .provider-machine > header span {
   color: var(--muted);
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
 }
 .provider-path-list {
   display: grid;
@@ -1637,12 +1637,12 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-top: 1px solid var(--line);
 }
 .provider-path-row > strong {
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .provider-path-row input {
   background: var(--paper);
   border: 1px solid var(--line-strong);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   height: 31px;
   min-width: 0;
   padding: 0 8px;
@@ -1650,7 +1650,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .provider-path-state {
   border: 1px solid var(--line);
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.06em;
   padding: 5px 7px;
@@ -1696,7 +1696,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .compute-settings h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
@@ -1729,7 +1729,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .compute-connection-fields label > span {
   color: var(--muted);
-  font: 750 10px var(--mono);
+  font: 750 var(--type-2xs) var(--mono);
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -1737,7 +1737,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .compute-connection-fields select {
   background: var(--paper);
   border: 1px solid var(--line-strong);
-  font: 11px var(--mono);
+  font: var(--type-xs) var(--mono);
   height: 31px;
   min-width: 0;
   padding: 0 8px;
@@ -1751,7 +1751,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 8px 0 0;
 }
 .machine-compute legend {
-  font: 750 11px var(--mono);
+  font: 750 var(--type-xs) var(--mono);
   padding: 0 8px;
 }
 .machine-compute .compute-connection-fields {
@@ -1773,7 +1773,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .compute-probe {
   align-items: center;
   display: grid;
-  font-size: 11px;
+  font-size: var(--type-xs);
   gap: 7px;
   grid-template-columns: 7px minmax(80px, auto) minmax(105px, auto) minmax(0, 1fr);
   padding: 8px 12px;
@@ -1811,14 +1811,14 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .settings-empty {
   color: var(--muted);
-  font: 11px var(--mono);
+  font: var(--type-xs) var(--mono);
   padding: 12px;
   text-align: center;
 }
 .settings-error {
   border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
   color: var(--red);
-  font-size: 11px;
+  font-size: var(--type-xs);
   padding: 9px 16px;
 }
 .agent-machine-fixed > span {
@@ -1852,7 +1852,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .cache-settings h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
@@ -1874,11 +1874,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
   justify-content: space-between;
 }
 .cache-meter-heading strong {
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .cache-meter-heading span {
   color: var(--muted);
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
 }
 .cache-meter-track {
   background: var(--surface-cool);
@@ -1895,7 +1895,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .cache-meter-meta {
   color: var(--muted);
   display: grid;
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
   gap: 8px;
   grid-template-columns: repeat(4, auto);
   justify-content: space-between;
@@ -1906,7 +1906,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .cache-meter-meta em {
   color: var(--faint);
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-style: normal;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1928,7 +1928,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   gap: 7px;
 }
 .settings-save-status.saved {
@@ -1946,14 +1946,14 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .ontology-settings h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
 .ontology-sync-state {
   border: 1px solid var(--line-strong);
   color: var(--muted);
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.08em;
   padding: 5px 7px;
@@ -1971,7 +1971,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-top: 1px solid var(--line);
 }
 .ontology-block > h3 {
-  font: 750 9px var(--sans);
+  font: 750 var(--type-3xs) var(--sans);
   letter-spacing: 0.09em;
   margin: 0 0 12px;
   text-transform: uppercase;
@@ -1990,12 +1990,12 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 10px;
 }
 .ontology-base-grid strong {
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .ontology-base-grid span,
 .ontology-layer {
   color: var(--muted);
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
   text-transform: uppercase;
 }
 .ontology-definition-list {
@@ -2006,7 +2006,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .ontology-column-labels {
   color: var(--muted);
   display: grid;
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   gap: 7px;
   letter-spacing: 0.07em;
@@ -2044,7 +2044,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   background: var(--paper);
   border: 1px solid var(--line);
   color: var(--ink);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   height: 31px;
   min-width: 0;
   padding: 0 7px;
@@ -2054,7 +2054,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   align-items: center;
   color: var(--ink-soft);
   display: flex;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   gap: 5px;
   white-space: nowrap;
 }
@@ -2088,13 +2088,13 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .ontology-type-set legend {
   color: var(--muted);
   float: left;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   margin-right: 12px;
 }
 .ontology-type-set label {
   align-items: center;
   display: flex;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   gap: 4px;
 }
 .ontology-type-set input {
@@ -2280,11 +2280,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
     width: auto;
   }
   .project-header-actions .button.secondary {
-    font-size: 10px;
+    font-size: var(--type-2xs);
     width: auto;
   }
   .project-tabs > button span {
-    font-size: 9px;
+    font-size: var(--type-3xs);
   }
   .project-tabs > button {
     padding: 0 7px;
@@ -2304,7 +2304,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
     padding: 0 16px;
   }
   .overview-heading h1 {
-    font-size: 38px;
+    font-size: var(--type-5xl);
   }
   .overview-questions > button {
     gap: 10px;
@@ -2312,7 +2312,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
     padding: 17px 3px;
   }
   .overview-question strong {
-    font-size: 17px;
+    font-size: var(--type-lg);
   }
   .view-panel {
     padding: 26px 16px 60px;
@@ -2346,7 +2346,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
     border: 1px solid var(--line);
     color: var(--ink);
     display: flex;
-    font-size: 12px;
+    font-size: var(--type-sm);
     font-weight: 700;
     text-align: left;
   }
@@ -2385,7 +2385,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
     padding-right: 12px;
   }
   .agent-usage-comparison {
-    font-size: 14px;
+    font-size: var(--type-base);
     padding-left: 34px;
     padding-right: 34px;
   }
@@ -2578,7 +2578,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .skill-card-group h3 {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   letter-spacing: 0.09em;
   margin: 0 0 10px;
@@ -2615,7 +2615,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   cursor: pointer;
   display: grid;
   font-family: var(--editorial);
-  font-size: 14px;
+  font-size: var(--type-base);
   gap: 10px;
   grid-template-columns: 18px minmax(0, 1fr);
   min-height: 52px;
@@ -2664,18 +2664,18 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .skill-inspector h2 {
   font-family: var(--editorial);
-  font-size: 19px;
+  font-size: var(--type-xl);
   font-weight: 550;
   margin: 0;
 }
 .skill-inspector-meta {
   color: var(--muted);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
 }
 .skill-inspector-dependencies {
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   margin: 0;
   padding: 10px 18px;
 }

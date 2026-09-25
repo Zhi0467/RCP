@@ -15,7 +15,7 @@
   background: var(--surface-cool);
 }
 .session-history > summary > strong {
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .session-history > summary > small {
   align-items: center;
@@ -24,7 +24,7 @@
   color: var(--muted);
   display: flex;
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   height: 20px;
   justify-content: center;
   min-width: 20px;
@@ -39,7 +39,7 @@
 }
 .session-strip > span {
   display: block;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   padding: 9px;
   text-align: center;
 }
@@ -66,12 +66,12 @@
   white-space: nowrap;
 }
 .session-strip button > span:first-child {
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 650;
 }
 .session-strip .session-meta {
   color: var(--ink-soft);
-  font-size: 8px;
+  font-size: var(--type-4xs);
 }
 .session-strip button svg {
   grid-column: 3;
@@ -84,7 +84,7 @@
   color: var(--walnut);
   display: flex;
   flex: none;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   gap: 6px;
   padding: 6px 10px;
 }
@@ -102,7 +102,7 @@
 .chat-line {
   border-left: 2px solid var(--cobalt);
   font-family: var(--editorial);
-  font-size: 13px;
+  font-size: var(--type-md);
   line-height: 1.55;
   margin: 9px 0;
   padding: 7px 9px;
@@ -113,20 +113,20 @@
   border-color: var(--line-strong);
   color: var(--ink-soft);
   font-family: var(--body);
-  font-size: 9px;
+  font-size: var(--type-3xs);
 }
 .chat-line.error {
   background: var(--red-soft);
   border-color: var(--red);
   color: var(--red);
   font-family: var(--body);
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .chat-line.human {
   background: var(--cobalt-soft);
   border-color: var(--cobalt-dark);
   font-family: var(--body);
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .coach-composer,
 .chat-composer {
@@ -144,7 +144,7 @@
   border: 1px solid var(--line);
   border-radius: 7px;
   flex: 1;
-  font-size: 11px;
+  font-size: var(--type-xs);
   height: 65px;
   padding: 8px 9px;
   resize: none;
@@ -152,7 +152,7 @@
 /* The message field reads as a field. Shape and ground mark where to type, so no
    instructional placeholder copy is needed; it keeps the shared composer border. */
 .chat-composer textarea {
-  font-size: 14px;
+  font-size: var(--type-base);
   height: 72px;
   padding: 8px 9px;
 }
@@ -160,14 +160,14 @@
 .chat-steering-receipt {
   display: flex;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: var(--type-sm);
   gap: 4px 8px;
   margin-top: 8px;
 }
 
 .chat-composer-hint {
   flex-basis: 100%;
-  font-size: 12px;
+  font-size: var(--type-sm);
 }
 
 .chat-send {
@@ -242,7 +242,7 @@
   color: var(--cobalt-dark);
   display: inline-flex;
   flex: none;
-  font: 700 9px var(--mono);
+  font: 700 var(--type-3xs) var(--mono);
   gap: 4px;
   padding: 4px 9px;
 }
@@ -272,18 +272,18 @@
   border-left-color: var(--red);
 }
 .chat-watcher-row > strong {
-  font: 700 11px var(--mono);
+  font: 700 var(--type-xs) var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .chat-watcher-row time {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
 }
 .chat-watcher-row > span,
 .chat-watcher-row > code {
-  font-size: 10px;
+  font-size: var(--type-2xs);
   grid-column: 1 / -1;
   line-height: 1.4;
   overflow-wrap: anywhere;
@@ -313,7 +313,7 @@
 }
 .node-chat-line {
   border-radius: 0;
-  font-size: 13px;
+  font-size: var(--type-md);
   line-height: 1.62;
   margin: 0 auto 24px;
   max-width: 820px;
@@ -332,7 +332,7 @@
 .node-chat-line.agent {
   background: transparent;
   font-family: var(--ui);
-  font-size: 15px;
+  font-size: var(--type-base);
   padding: 2px 3px 8px;
 }
 .node-chat-text {
@@ -367,14 +367,14 @@
 }
 .chat-input-attachment strong {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--type-3xs);
 }
 .chat-input-attachment small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
 }
 .chat-input-attachment em {
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-style: normal;
   font-weight: 750;
   text-transform: uppercase;
@@ -387,7 +387,7 @@
   border: 0;
   color: var(--chat-mode-accent);
   display: block;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 700;
   margin: 7px 0 0 auto;
   padding: 0;
@@ -401,7 +401,7 @@
   border: 1px solid currentColor;
   border-radius: 999px;
   display: block;
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 800;
   letter-spacing: 0.08em;
   line-height: 1;
@@ -421,7 +421,7 @@
 .chat-turn-trigger {
   border-radius: 999px;
   display: block;
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 800;
   letter-spacing: 0.08em;
   line-height: 1;
@@ -534,7 +534,7 @@
 .chat-repository-file-error {
   color: var(--red);
   display: block;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 650;
   margin-top: 5px;
 }
@@ -559,7 +559,7 @@
 }
 .chat-artifact > span em {
   color: var(--forest);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-style: normal;
   margin-left: 7px;
   text-transform: uppercase;
@@ -595,7 +595,7 @@
   color: var(--ink-soft);
   display: inline-flex;
   font: inherit;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
   gap: 4px;
   padding: 4px 6px;
@@ -650,14 +650,14 @@
 .artifact-revision-dialog > header span,
 .artifact-revision-compare figcaption {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .artifact-revision-dialog > header h2 {
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--type-md);
   margin: 2px 0 0;
 }
 .artifact-revision-compare {
@@ -695,7 +695,7 @@
   background: color-mix(in srgb, var(--red) 8%, var(--paper));
   border-top: 1px solid color-mix(in srgb, var(--red) 20%, var(--line));
   color: var(--red);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   padding: 9px 16px;
 }
 @media (max-width: 720px) {
@@ -724,7 +724,7 @@
   color: var(--muted);
 }
 .chat-artifact.unavailable > strong {
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
 }
 .chat-artifact:has(.chat-artifact-shell-error) {
@@ -733,7 +733,7 @@
 .chat-artifact-shell-error {
   color: var(--red);
   flex-basis: 100%;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 650;
   padding: 2px 0;
 }
@@ -762,7 +762,7 @@
 .chat-graph-receipt-actions strong {
   align-items: center;
   display: inline-flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
   gap: 4px;
   line-height: 1.25;
@@ -795,7 +795,7 @@
 }
 .chat-graph-change-summary li,
 .chat-graph-validation li {
-  font-size: 12px;
+  font-size: var(--type-sm);
   line-height: 1.5;
 }
 .chat-graph-validation {
@@ -805,7 +805,7 @@
 .chat-graph-repair-error {
   color: var(--red);
   display: block;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   margin-top: 6px;
 }
 .node-chat-line.error {
@@ -830,13 +830,13 @@
 }
 .chat-task-inline.running {
   color: color-mix(in srgb, white 78%, var(--cobalt));
-  font-size: 9px;
+  font-size: var(--type-3xs);
 }
 .chat-task-inline.paused {
   background: var(--amber-soft);
   border: 1px solid color-mix(in srgb, var(--mustard) 55%, var(--rule));
   color: var(--walnut);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   justify-content: flex-start;
   padding: 7px 9px;
 }
@@ -858,7 +858,7 @@
   align-items: center;
   cursor: pointer;
   display: inline-flex;
-  font: 700 10px/1.2 var(--mono);
+  font: 700 var(--type-2xs)/1.2 var(--mono);
   gap: 6px;
   list-style: none;
 }
@@ -873,7 +873,7 @@
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   gap: 4px;
   margin: 8px;
 }
@@ -917,7 +917,7 @@
   border: 0;
   color: var(--plum);
   display: flex;
-  font: 700 9px var(--mono);
+  font: 700 var(--type-3xs) var(--mono);
   gap: 4px;
   margin: 6px 0 0 auto;
   padding: 2px;
@@ -939,7 +939,7 @@
   border-radius: 999px;
   color: var(--chat-mode-accent);
   display: inline-flex;
-  font: 700 9px var(--mono);
+  font: 700 var(--type-3xs) var(--mono);
   gap: 5px;
   padding: 5px 9px;
 }
@@ -972,7 +972,7 @@
 }
 .chat-annotation-review > header strong,
 .chat-annotation-composer > header strong {
-  font: 700 10px var(--mono);
+  font: 700 var(--type-2xs) var(--mono);
 }
 .chat-annotation-review-list {
   max-height: min(330px, 54vh);
@@ -1001,7 +1001,7 @@
 }
 .chat-annotation-review textarea {
   flex: none;
-  font-size: 11px;
+  font-size: var(--type-xs);
   height: 58px;
   min-height: 58px;
   padding: 6px 7px;
@@ -1014,7 +1014,7 @@
   border: 0;
   color: var(--red);
   display: inline-flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   gap: 3px;
   justify-self: end;
   padding: 2px;
@@ -1041,7 +1041,7 @@
   background: var(--paper);
   border: 1px solid var(--line-strong);
   border-radius: 6px;
-  font: 11px/1.45 var(--body);
+  font: var(--type-xs)/1.45 var(--body);
   height: 68px;
   margin: 0 10px;
   padding: 7px 8px;
@@ -1062,7 +1062,7 @@
 }
 .chat-annotation-error {
   color: var(--red);
-  font: 700 9px/1.35 var(--mono);
+  font: 700 var(--type-3xs)/1.35 var(--mono);
   margin: 0 10px;
 }
 @media (max-width: 640px) {
@@ -1096,7 +1096,7 @@
   border-radius: 5px;
   color: var(--ink-soft);
   display: inline-flex;
-  font: 700 11px var(--mono);
+  font: 700 var(--type-xs) var(--mono);
   gap: 5px;
   height: 27px;
   padding: 0 7px;
@@ -1107,7 +1107,7 @@
   border-radius: 50%;
   color: var(--cobalt-dark);
   display: inline-flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   height: 15px;
   justify-content: center;
   min-width: 15px;
@@ -1152,7 +1152,7 @@
   width: 15px;
 }
 .chat-compute-menu strong {
-  font-size: 11px;
+  font-size: var(--type-xs);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1165,7 +1165,7 @@
   border-radius: 6px;
   display: flex;
   flex-basis: 100%;
-  font: 700 9px var(--mono);
+  font: 700 var(--type-3xs) var(--mono);
   justify-content: space-between;
   padding: 5px 7px;
 }
@@ -1231,11 +1231,11 @@
 }
 .chat-attachment-chip strong {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--type-3xs);
 }
 .chat-attachment-chip small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
 }
 .chat-attachment-chip.error small {
   color: var(--red);
@@ -1273,7 +1273,7 @@
 }
 .chat-dictation-error {
   color: var(--red);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   max-width: 150px;
   text-align: right;
 }
@@ -1342,19 +1342,19 @@
 }
 .chat-skill-menu button strong {
   font-family: var(--editorial);
-  font-size: 13px;
+  font-size: var(--type-md);
   font-weight: 600;
 }
 .chat-skill-menu button small {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   line-height: 1.35;
 }
 .chat-skill-group-label {
   background: var(--paper-deep);
   border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 700;
   letter-spacing: 0.06em;
   padding: 6px 11px;
@@ -1363,7 +1363,7 @@
 .chat-skill-menu-status {
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   line-height: 1.4;
   padding: 7px 11px;
 }
@@ -1382,7 +1382,7 @@
   border: 0;
   border-radius: 7px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
   min-height: 25px;
   padding: 0 8px;
@@ -1427,7 +1427,7 @@
   box-shadow: var(--shadow);
   /* Notices carry errors, so this pair must stay readable in both themes. */
   color: var(--paper);
-  font-size: 11px;
+  font-size: var(--type-xs);
   left: 50%;
   max-width: min(620px, 90vw);
   padding: 9px 13px;

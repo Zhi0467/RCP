@@ -7,7 +7,7 @@
   box-shadow: var(--shadow);
   color: var(--ink);
   display: flex;
-  font: 700 9px var(--sans);
+  font: 700 var(--type-3xs) var(--sans);
   gap: 8px;
   position: fixed;
   right: 16px;
@@ -28,7 +28,7 @@
   padding: 6px 8px 6px 11px;
 }
 .desktop-update-notice > strong {
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 650;
 }
 .desktop-update-notice.error {
@@ -44,7 +44,7 @@
   border: 0;
   color: var(--muted);
   cursor: pointer;
-  font: 700 9px var(--sans);
+  font: 700 var(--type-3xs) var(--sans);
   padding: 7px;
 }
 .desktop-update-dismiss:hover {
@@ -197,7 +197,7 @@
     margin: 0 auto 4px;
   }
   .setup-step strong {
-    font-size: 8px;
+    font-size: var(--type-4xs);
   }
   .setup-section {
     padding: 30px 20px 25px;
@@ -207,7 +207,7 @@
     padding-bottom: 20px;
   }
   .setup-section-heading h1 {
-    font-size: 29px;
+    font-size: var(--type-4xl);
   }
   .repository-fields {
     grid-template-columns: 1fr;
@@ -238,7 +238,7 @@
     padding-right: 20px;
   }
   .setup-actions .button {
-    font-size: 10px;
+    font-size: var(--type-2xs);
     padding: 0 9px;
   }
   .boundary-ledger {
@@ -352,7 +352,7 @@
   border: 1px solid rgb(255 255 255 / 38%);
   border-radius: 999px;
   display: inline-flex;
-  font: 700 8px/1 var(--mono);
+  font: 700 var(--type-4xs)/1 var(--mono);
   height: 18px;
   justify-content: center;
   min-width: 18px;
@@ -370,7 +370,7 @@
   align-items: center;
   color: var(--walnut);
   display: inline-flex;
-  font: 700 8px/1 var(--mono);
+  font: 700 var(--type-4xs)/1 var(--mono);
   gap: 4px;
   letter-spacing: 0.05em;
   margin-left: 4px;
@@ -457,7 +457,7 @@
   color: var(--muted);
   display: inline-flex;
   flex: none;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   gap: 6px;
   letter-spacing: 0.08em;
@@ -477,7 +477,7 @@
   color: var(--ink);
   display: inline-flex;
   flex: none;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   gap: 7px;
   max-width: 250px;
   min-height: 29px;
@@ -518,7 +518,7 @@
   color: var(--muted);
   display: inline-flex;
   flex: none;
-  font-size: 13px;
+  font-size: var(--type-md);
   font-weight: 650;
   gap: 6px;
   margin-bottom: -1px;
@@ -541,7 +541,7 @@
   color: var(--cobalt-dark);
   display: flex;
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   height: 17px;
   justify-content: center;
   width: 17px;
@@ -554,7 +554,7 @@
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   gap: 7px;
   margin-left: auto;
 }
@@ -562,7 +562,7 @@
   background: transparent;
   border: 0;
   border-bottom: 1px solid var(--line-strong);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   padding: 3px;
 }
 .research-subpanel {
@@ -580,7 +580,7 @@
   border-radius: 5px;
   color: var(--muted);
   display: inline-flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 700;
   gap: 6px;
   min-height: 29px;
@@ -644,13 +644,13 @@
 }
 .overview-revision span {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 .overview-revision strong {
   font-family: var(--editorial);
-  font-size: 38px;
+  font-size: var(--type-5xl);
   font-weight: 500;
   line-height: 1;
   margin: 7px 0;
@@ -678,7 +678,7 @@
 .overview-number {
   color: var(--cobalt);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
 }
 .overview-question small,
@@ -687,7 +687,7 @@
 }
 .overview-question small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   letter-spacing: 0.11em;
   margin-bottom: 7px;
@@ -702,7 +702,7 @@
 .overview-detail {
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   line-height: 1.55;
 }
 .overview-questions svg {
@@ -820,7 +820,7 @@
 }
 .new-custom-node-grid label {
   color: var(--ink-soft);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -835,7 +835,7 @@
   border: 1px solid var(--line-strong);
   color: var(--ink);
   display: block;
-  font: 11px/1.4 var(--sans);
+  font: var(--type-xs)/1.4 var(--sans);
   margin-top: 5px;
   padding: 7px 8px;
   resize: vertical;
@@ -848,7 +848,7 @@
 }
 .new-custom-node > footer > span {
   color: var(--muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
 }
 
 .dag-panel {
@@ -876,7 +876,7 @@
   color: var(--ink);
   display: flex;
   flex: 1 0 100%;
-  font: 12px/1.45 var(--ui);
+  font: var(--type-sm)/1.45 var(--ui);
   gap: 8px;
   margin: 0;
   padding: 8px 10px;
@@ -896,7 +896,7 @@
   align-items: center;
   color: var(--ink);
   display: inline-flex;
-  font: 12px/1.45 var(--ui);
+  font: var(--type-sm)/1.45 var(--ui);
   gap: 6px;
 }
 .worktree-failure > svg {
@@ -915,7 +915,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-size: 12px;
+  font-size: var(--type-sm);
   overflow-wrap: anywhere;
 }
 .graph-connection-list .is-removed > span {
@@ -946,7 +946,7 @@
   border: 1px solid color-mix(in srgb, var(--oxblood) 32%, var(--rule));
   color: var(--oxblood-dark);
   display: flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   gap: 9px;
   margin-bottom: 8px;
   padding: 8px 10px;
@@ -991,7 +991,7 @@
   border-radius: 3px;
   color: var(--ink-soft);
   display: inline-flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   gap: 5px;
   height: 25px;
@@ -1022,7 +1022,7 @@
   align-items: center;
   color: var(--ink-soft);
   display: inline-flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   gap: 6px;
   letter-spacing: 0.09em;
@@ -1036,7 +1036,7 @@
   border: 1px solid var(--line-strong);
   border-radius: 5px;
   display: inline-flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
   gap: 5px;
   height: 29px;
@@ -1067,7 +1067,7 @@
   border-radius: 999px;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   line-height: 1;
   padding: 3px 5px;
 }
@@ -1099,7 +1099,7 @@
 .dag-force-control > span {
   align-items: center;
   display: inline-flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
   gap: 5px;
 }
@@ -1111,7 +1111,7 @@
 .dag-force-control output {
   color: var(--cobalt-dark);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 700;
   text-align: right;
   text-transform: uppercase;
@@ -1169,7 +1169,7 @@
 .dag-edge-label {
   fill: var(--ink-soft);
   font-family: var(--mono);
-  font-size: 7px;
+  font-size: var(--type-4xs);
   font-weight: 650;
   paint-order: stroke;
   stroke: var(--paper);
@@ -1278,7 +1278,7 @@
 }
 .dag-node-inspect > strong {
   font-family: var(--editorial);
-  font-size: 14px;
+  font-size: var(--type-base);
   font-weight: 600;
   line-height: 1.18;
   margin: 4px 0 7px;
@@ -1289,7 +1289,7 @@
   align-items: center;
   color: var(--muted);
   display: flex;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   gap: 6px;
   min-width: 0;
 }
@@ -1305,7 +1305,7 @@
   cursor: pointer;
   display: inline-flex;
   font: inherit;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   gap: 3px;
   padding: 1px 2px;

@@ -50,6 +50,20 @@
   /* Text and glyphs printed on a solid accent fill. The accent brightens in
      dark mode, so what reads on it inverts with the theme. */
   --accent-ink: #fffaf0;
+  /* Type scale. Phone mode overrides these in one place. */
+  --type-4xs: 8px;
+  --type-3xs: 9px;
+  --type-2xs: 10px;
+  --type-xs: 11px;
+  --type-sm: 12px;
+  --type-md: 13px;
+  --type-base: 14px;
+  --type-lg: 16px;
+  --type-xl: 18px;
+  --type-2xl: 21px;
+  --type-3xl: 25px;
+  --type-4xl: 28px;
+  --type-5xl: 37px;
 }
 
 /* Dark mode.
@@ -104,7 +118,7 @@ body {
   background: var(--paper);
   color: var(--walnut);
   font-family: var(--ui);
-  font-size: 14px;
+  font-size: var(--type-base);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
@@ -161,14 +175,14 @@ button:disabled {
 }
 .acceptance-agent-indicator strong {
   color: #fff9ed;
-  font-size: 11px;
+  font-size: var(--type-xs);
   font-weight: 750;
   letter-spacing: 0.015em;
   line-height: 1.25;
 }
 .acceptance-agent-indicator span {
   color: color-mix(in srgb, var(--paper) 72%, var(--mustard));
-  font: 650 8px/1.35 var(--mono);
+  font: 650 var(--type-4xs)/1.35 var(--mono);
   letter-spacing: 0.055em;
   text-transform: uppercase;
 }
@@ -178,12 +192,12 @@ button:disabled {
   gap: 11px;
 }
 .brand-lockup > strong {
-  font-size: 15px;
+  font-size: var(--type-base);
   font-weight: 650;
 }
 .eyebrow {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -203,7 +217,7 @@ button:disabled {
   align-items: center;
   border-radius: 999px;
   display: inline-flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 700;
   gap: 5px;
   letter-spacing: 0.045em;
@@ -215,7 +229,7 @@ button:disabled {
 .tiny-tag {
   background: var(--cobalt-soft);
   color: var(--cobalt-dark);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   margin-left: auto;
 }
 .button,
@@ -259,7 +273,7 @@ button:disabled {
   background: var(--surface);
 }
 .button.tiny {
-  font-size: 9px;
+  font-size: var(--type-3xs);
   padding: 5px 9px;
 }
 .button.ghost {
@@ -272,7 +286,7 @@ button:disabled {
   color: var(--coral);
 }
 .button.compact {
-  font-size: 12px;
+  font-size: var(--type-sm);
   min-height: 28px;
   padding: 0 7px;
 }

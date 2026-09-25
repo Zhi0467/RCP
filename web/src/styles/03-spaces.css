@@ -11,7 +11,7 @@
   font-family: var(--editorial);
 }
 .space-group-title {
-  font-size: 22px;
+  font-size: var(--type-2xl);
   font-weight: 600;
   margin: 0 0 20px;
 }
@@ -36,7 +36,7 @@
   margin-bottom: 18px;
 }
 .team-space-groups-header h2 {
-  font-size: 22px;
+  font-size: var(--type-2xl);
   font-weight: 600;
   margin: 0;
 }
@@ -50,7 +50,7 @@
   border-radius: 5px;
   color: var(--landing-ink);
   display: inline-flex;
-  font-size: 11px;
+  font-size: var(--type-xs);
   font-weight: 700;
   gap: 7px;
   padding: 8px 11px;
@@ -80,7 +80,7 @@
   gap: 9px;
 }
 .team-space-group h3 {
-  font-size: 17px;
+  font-size: var(--type-lg);
   font-weight: 600;
   margin: 0;
 }
@@ -119,13 +119,13 @@
 }
 .team-project-card strong {
   font-family: var(--editorial);
-  font-size: 16px;
+  font-size: var(--type-lg);
   font-weight: 600;
 }
 .team-project-card span,
 .team-space-no-projects {
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   margin-top: auto;
   text-transform: uppercase;
 }
@@ -141,7 +141,7 @@
 .team-space-connection-error,
 .add-team-error {
   color: var(--red);
-  font-size: 12px;
+  font-size: var(--type-sm);
 }
 .team-space-connection-error {
   margin: 10px 0 0 23px;
@@ -163,7 +163,7 @@
 }
 .add-team-dialog > header h2 {
   font-family: var(--editorial);
-  font-size: 25px;
+  font-size: var(--type-3xl);
   margin: 0;
 }
 .add-team-dialog > header button {
@@ -202,7 +202,7 @@
 .add-team-dialog form label {
   color: var(--landing-ink);
   display: grid;
-  font-size: 11px;
+  font-size: var(--type-xs);
   font-weight: 700;
   gap: 6px;
 }
@@ -426,7 +426,7 @@
   color: var(--landing-muted);
   display: block;
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 750;
   letter-spacing: 0.08em;
   margin: 0 1px 9px;
@@ -448,7 +448,7 @@
 .project-cover-option-label {
   color: var(--landing-muted);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
@@ -483,7 +483,7 @@
   border-top: 1px solid var(--line);
   color: var(--landing-ink);
   display: flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 700;
   gap: 7px;
   margin-top: 12px;
@@ -534,7 +534,7 @@
   align-self: flex-start;
   display: inline-flex;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
   gap: 5px;
   letter-spacing: 0.06em;
@@ -550,7 +550,7 @@
 .project-cover > strong {
   display: -webkit-box;
   font-family: var(--editorial);
-  font-size: 17px;
+  font-size: var(--type-lg);
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.18;
@@ -562,7 +562,7 @@
 }
 .project-cover-meta {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   letter-spacing: 0.02em;
   margin-top: 8px;
   opacity: 0.7;
@@ -571,7 +571,7 @@
   z-index: 1;
 }
 .project-cover-open {
-  font-size: 11px;
+  font-size: var(--type-xs);
   font-weight: 700;
   margin-top: auto;
   opacity: 0.84;
@@ -610,7 +610,7 @@
   border-radius: 50%;
   color: var(--oxblood);
   display: flex;
-  font-size: 26px;
+  font-size: var(--type-3xl);
   font-weight: 400;
   height: 42px;
   justify-content: center;
@@ -641,7 +641,7 @@
   align-items: center;
   color: var(--landing-muted);
   display: flex;
-  font: 700 9px/1 var(--mono);
+  font: 700 var(--type-3xs)/1 var(--mono);
   gap: 7px;
   letter-spacing: 0.12em;
   margin-bottom: 7px;
@@ -649,7 +649,7 @@
 }
 .experiment-board-header h2 {
   font-family: var(--editorial);
-  font-size: 27px;
+  font-size: var(--type-4xl);
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 1;
@@ -660,7 +660,7 @@
   color: var(--landing-muted);
   display: flex;
   flex-wrap: wrap;
-  font: 650 9px/1.4 var(--mono);
+  font: 650 var(--type-3xs)/1.4 var(--mono);
   gap: 7px;
   justify-content: flex-end;
   letter-spacing: 0.025em;
@@ -669,7 +669,7 @@
 }
 .experiment-board-counts strong {
   color: var(--landing-ink);
-  font-size: 11px;
+  font-size: var(--type-xs);
 }
 .experiment-board-register {
   padding: 5px 0;
@@ -679,7 +679,7 @@
   align-items: center;
   color: var(--landing-muted);
   display: flex;
-  font: 750 9px/1 var(--mono);
+  font: 750 var(--type-3xs)/1 var(--mono);
   gap: 8px;
   letter-spacing: 0.11em;
   min-height: 37px;
@@ -695,7 +695,7 @@
   border: 1px solid color-mix(in srgb, var(--landing-rule) 80%, var(--landing-muted));
   border-radius: 999px;
   display: inline-flex;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   height: 18px;
   justify-content: center;
   min-width: 18px;
@@ -771,7 +771,7 @@
 }
 .experiment-board-row-heading > strong {
   font-family: var(--editorial);
-  font-size: 16px;
+  font-size: var(--type-lg);
   font-weight: 600;
   letter-spacing: -0.012em;
   line-height: 1.2;
@@ -782,14 +782,14 @@
 .experiment-board-project {
   color: var(--landing-muted);
   flex: none;
-  font: 650 8px/1.2 var(--mono);
+  font: 650 var(--type-4xs)/1.2 var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 .experiment-board-summary {
   color: var(--landing-muted);
   display: -webkit-box;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.42;
   overflow: hidden;
   -webkit-box-orient: vertical;
@@ -804,14 +804,14 @@
 }
 .experiment-board-row-meta time {
   color: var(--landing-muted);
-  font: 8px/1.2 var(--mono);
+  font: var(--type-4xs)/1.2 var(--mono);
   letter-spacing: 0.025em;
 }
 .experiment-board-unavailable {
   align-items: center;
   color: var(--coral);
   display: inline-flex;
-  font: 700 8px/1 var(--mono);
+  font: 700 var(--type-4xs)/1 var(--mono);
   gap: 5px;
   letter-spacing: 0.055em;
   text-transform: uppercase;
@@ -819,7 +819,7 @@
 .experiment-board-row .status-pill {
   background: color-mix(in srgb, var(--board-health) 13%, var(--landing-sheet));
   color: color-mix(in srgb, var(--board-health) 84%, var(--landing-ink));
-  font-size: 8px;
+  font-size: var(--type-4xs);
   padding: 5px 7px;
 }
 .experiment-board-row-arrow {
@@ -856,7 +856,7 @@
 .experiment-board-empty {
   color: var(--landing-muted);
   font-family: var(--editorial);
-  font-size: 15px;
+  font-size: var(--type-base);
   padding: 28px 26px 31px;
 }
 
@@ -883,7 +883,7 @@
     left: 14px;
   }
   .project-cover > strong {
-    font-size: 19px;
+    font-size: var(--type-xl);
   }
   .experiment-board {
     margin-top: 50px;
@@ -945,7 +945,7 @@
 }
 .space-runs-header h2 {
   font-family: var(--editorial);
-  font-size: 28px;
+  font-size: var(--type-4xl);
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 1;
@@ -956,7 +956,7 @@
 .space-runs-completed > header,
 .space-runs-group > summary {
   color: var(--landing-muted);
-  font: 750 10px/1 var(--mono);
+  font: 750 var(--type-2xs)/1 var(--mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -985,7 +985,7 @@
   border: 1px solid var(--landing-rule);
   border-radius: 999px;
   display: inline-flex;
-  font-size: 9px;
+  font-size: var(--type-3xs);
   height: 20px;
   justify-content: center;
   min-width: 20px;
@@ -1063,7 +1063,7 @@
 }
 .space-run-copy strong {
   font-family: var(--editorial);
-  font-size: 17px;
+  font-size: var(--type-lg);
   font-weight: 600;
   line-height: 1.2;
   overflow: hidden;
@@ -1072,7 +1072,7 @@
 }
 .space-run-copy > span {
   color: var(--landing-muted);
-  font: 700 10px/1.2 var(--mono);
+  font: 700 var(--type-2xs)/1.2 var(--mono);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -1085,13 +1085,13 @@
 }
 .space-run-meta time {
   color: var(--landing-muted);
-  font: 10px/1.2 var(--mono);
+  font: var(--type-2xs)/1.2 var(--mono);
 }
 .space-run-unavailable {
   align-items: center;
   color: var(--coral);
   display: inline-flex;
-  font: 700 9px/1 var(--mono);
+  font: 700 var(--type-3xs)/1 var(--mono);
   gap: 4px;
   text-transform: uppercase;
 }
@@ -1135,7 +1135,7 @@
 .space-runs-empty {
   border-top: 1px solid var(--landing-rule);
   color: var(--landing-muted);
-  font: 11px/1.5 var(--ui);
+  font: var(--type-xs)/1.5 var(--ui);
   margin: 0;
   padding: 14px 2px;
 }
@@ -1152,7 +1152,7 @@
 }
 .run-route-history strong {
   color: var(--walnut);
-  font-size: 12px;
+  font-size: var(--type-sm);
 }
 
 @media (max-width: 560px) {
@@ -1251,7 +1251,7 @@
   cursor: pointer;
   flex: 1 1 auto;
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 650;
   min-width: 0;
   padding: 0 4px 0 12px;

@@ -102,7 +102,7 @@
 }
 .campaign-dialog h2 {
   font-family: var(--editorial);
-  font-size: 26px;
+  font-size: var(--type-3xl);
   font-weight: 550;
   margin: 0;
 }
@@ -117,7 +117,7 @@
 }
 .campaign-dialog-fields label > span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   font-weight: 750;
   letter-spacing: 0.08em;
   margin-bottom: 7px;
@@ -126,7 +126,7 @@
 .campaign-dialog-fields label > span small {
   color: var(--ink-soft);
   float: right;
-  font: 500 9px var(--mono);
+  font: 500 var(--type-3xs) var(--mono);
   letter-spacing: 0;
   text-transform: none;
 }
@@ -143,7 +143,7 @@
   width: 100%;
 }
 .campaign-dialog-fields input {
-  font: 600 18px var(--mono);
+  font: 600 var(--type-xl) var(--mono);
   padding: 10px 12px;
 }
 .campaign-dialog-fields textarea,
@@ -165,14 +165,14 @@
   background: var(--red-soft);
   border-top: 1px solid color-mix(in srgb, var(--red) 32%, var(--line));
   color: var(--red);
-  font-size: 11px;
+  font-size: var(--type-xs);
   padding: 10px 24px;
 }
 .provider-login-notice {
   border: 1px solid color-mix(in srgb, var(--red) 32%, var(--line));
   border-radius: 5px;
   display: grid;
-  font-size: 13px;
+  font-size: var(--type-md);
   gap: 8px;
   justify-items: start;
   line-height: 1.5;
@@ -197,13 +197,13 @@
 }
 .provider-login-settings h2 {
   font-family: var(--editorial);
-  font-size: 21px;
+  font-size: var(--type-2xl);
   font-weight: 550;
   margin: 0;
 }
 .provider-login-intro {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-sm);
   line-height: 1.5;
   margin: 0;
   padding: 12px 20px 0;
@@ -231,19 +231,19 @@
 }
 .provider-login-account > header strong {
   font-family: var(--editorial);
-  font-size: 16px;
+  font-size: var(--type-lg);
   font-weight: 550;
 }
 .provider-login-account > header > span:not(.provider-path-state) {
   color: var(--muted);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .provider-login-detail {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--type-sm);
   line-height: 1.5;
   margin: 0;
 }
@@ -255,7 +255,7 @@
   padding: 10px 12px;
 }
 .provider-login-sign-in p {
-  font-size: 12px;
+  font-size: var(--type-sm);
   line-height: 1.5;
   margin: 0;
 }
@@ -268,7 +268,7 @@
 .provider-login-code code {
   background: var(--surface);
   border: 1px solid var(--line-strong);
-  font: 15px var(--mono);
+  font: var(--type-base) var(--mono);
   letter-spacing: 0.12em;
   padding: 4px 10px;
   user-select: all;
@@ -289,7 +289,7 @@
   background: var(--paper);
   border: 1px solid var(--line-strong);
   flex: 1 1 auto;
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   height: 31px;
   min-width: 0;
   padding: 0 8px;
@@ -297,7 +297,7 @@
 .campaign-run-note {
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--type-xs);
   padding: 10px 24px;
 }
 .campaign-dialog > footer {
@@ -335,13 +335,13 @@
 }
 .campaign-runs > header h2 {
   font-family: var(--editorial);
-  font-size: 18px;
+  font-size: var(--type-xl);
   font-weight: 550;
   margin: 0;
 }
 .campaign-runs > header span {
   color: var(--muted);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
 }
 .campaign-run-list {
   display: grid;
@@ -420,7 +420,7 @@
   align-items: center;
   color: var(--ink);
   display: inline-flex;
-  font-size: 12px;
+  font-size: var(--type-sm);
   gap: 7px;
   white-space: nowrap;
 }
@@ -435,7 +435,7 @@
   background: var(--sheet);
   border: 1px solid var(--coral);
   color: var(--ink);
-  font: 12px/1.4 var(--sans);
+  font: var(--type-sm)/1.4 var(--sans);
   max-width: 320px;
   min-width: 200px;
   padding: 10px;
@@ -450,7 +450,7 @@
   color: var(--ink);
   display: inline-flex;
   flex: none;
-  font: 12px var(--sans);
+  font: var(--type-sm) var(--sans);
   gap: 6px;
   max-width: 180px;
   pointer-events: auto;
@@ -458,7 +458,7 @@
 .episode-author-avatar {
   background: var(--cobalt);
   border-radius: 50%;
-  font-size: 11px;
+  font-size: var(--type-xs);
   height: 22px;
   width: 22px;
 }
@@ -501,7 +501,7 @@
 }
 .campaign-run-identity > .campaign-run-title {
   font-family: var(--editorial);
-  font-size: 18px;
+  font-size: var(--type-xl);
   font-weight: 600;
   margin: 0 0 10px;
 }
@@ -514,12 +514,12 @@
 }
 .campaign-run-meta time {
   color: var(--muted);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   white-space: nowrap;
 }
 .campaign-run-chain {
   color: var(--muted);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   white-space: nowrap;
 }
 .campaign-run-chain-members {
@@ -533,7 +533,7 @@
 .campaign-run-chain-members li {
   color: var(--muted);
   display: flex;
-  font: 10px var(--mono);
+  font: var(--type-2xs) var(--mono);
   gap: 6px;
 }
 .campaign-run-chain-members li[aria-current="true"] {
@@ -571,12 +571,12 @@
 }
 .campaign-budget-copy strong {
   color: var(--ink);
-  font: 700 11px var(--mono);
+  font: 700 var(--type-xs) var(--mono);
   white-space: nowrap;
 }
 .campaign-budget-copy > span {
   color: var(--muted);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   overflow: hidden;
   text-align: right;
   text-overflow: ellipsis;
@@ -601,7 +601,7 @@
   align-items: center;
   color: var(--muted);
   display: flex;
-  font: 8px var(--mono);
+  font: var(--type-4xs) var(--mono);
   gap: 12px;
   white-space: nowrap;
 }
@@ -629,7 +629,7 @@
 
 .campaign-run-health strong {
   font-family: var(--editorial);
-  font-size: 16px;
+  font-size: var(--type-lg);
   font-weight: 650;
   color: var(--ink-strong);
 }
@@ -645,11 +645,11 @@
 }
 .campaign-run-recommendation > .eyebrow {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   letter-spacing: 0.1em;
 }
 .campaign-run-recommendation > strong {
-  font-size: 12px;
+  font-size: var(--type-sm);
   font-weight: 650;
   line-height: 1.35;
 }
@@ -687,7 +687,7 @@
   display: block;
 }
 .campaign-branch-identity > strong {
-  font: 650 11px var(--mono);
+  font: 650 var(--type-xs) var(--mono);
   margin-top: 3px;
 }
 .campaign-graph-branch .status-pill.branch-unmerged {
@@ -725,18 +725,18 @@
 }
 .campaign-branch-head > span {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   grid-column: 1 / -1;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 .campaign-branch-head > strong {
   color: var(--ink);
-  font: 700 12px var(--mono);
+  font: 700 var(--type-sm) var(--mono);
 }
 .campaign-branch-head > code {
   color: var(--ink-soft);
-  font: 9px var(--mono);
+  font: var(--type-3xs) var(--mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -763,7 +763,7 @@
   padding-top: 8px;
 }
 .campaign-branch-diagnostic {
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.4;
 }
 .campaign-branch-diagnostic.needs_action {
@@ -790,7 +790,7 @@
   gap: 6px;
 }
 .campaign-reauthorize input {
-  font: 650 11px var(--mono);
+  font: 650 var(--type-xs) var(--mono);
   height: 28px;
   padding: 4px 7px;
   width: 92px;
@@ -820,7 +820,7 @@
 }
 .campaign-empty {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   margin: 0;
   padding: 10px 2px;
 }

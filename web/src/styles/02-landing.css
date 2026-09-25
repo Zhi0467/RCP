@@ -60,14 +60,14 @@
   display: inline-flex;
   flex: none;
   font-family: var(--editorial);
-  font-size: 14px;
+  font-size: var(--type-base);
   font-weight: 650;
   height: 27px;
   justify-content: center;
   width: 27px;
 }
 .landing-identity-avatar.large {
-  font-size: 22px;
+  font-size: var(--type-2xl);
   height: 42px;
   width: 42px;
 }
@@ -78,7 +78,7 @@
   min-width: 0;
 }
 .landing-identity-trigger-copy strong {
-  font-size: 13px;
+  font-size: var(--type-md);
   font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -86,14 +86,14 @@
 }
 .landing-identity-trigger-copy small {
   color: var(--landing-muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   letter-spacing: 0.035em;
   margin-top: 3px;
 }
 .landing-identity-trigger-error {
   color: var(--coral);
   display: block;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   line-height: 1.35;
   margin-left: auto;
   margin-top: 4px;
@@ -147,7 +147,7 @@
   align-items: center;
   color: var(--landing-muted);
   display: flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
   justify-content: space-between;
   letter-spacing: 0.12em;
@@ -169,14 +169,14 @@
 }
 .landing-identity-slip-person strong {
   font-family: var(--editorial);
-  font-size: 20px;
+  font-size: var(--type-2xl);
   font-weight: 600;
   line-height: 1.15;
   overflow-wrap: anywhere;
 }
 .landing-identity-slip-person small {
   color: var(--landing-muted);
-  font-size: 11px;
+  font-size: var(--type-xs);
   margin-top: 2px;
 }
 .landing-identity-edit,
@@ -186,7 +186,7 @@
   border: 1px solid var(--landing-rule);
   color: var(--landing-muted);
   display: inline-flex;
-  font-size: 11px;
+  font-size: var(--type-xs);
   gap: 5px;
   min-height: 27px;
   padding: 4px 7px;
@@ -209,7 +209,7 @@
 }
 .landing-identity-slip dt {
   color: var(--landing-muted);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
   letter-spacing: 0.08em;
   padding-top: 5px;
@@ -227,7 +227,7 @@
   cursor: text;
   flex: 1 1 auto;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--type-xs);
   line-height: 1.55;
   overflow-wrap: anywhere;
   padding-top: 4px;
@@ -239,7 +239,7 @@
 .landing-identity-copy-error,
 .landing-identity-panel-error {
   color: var(--coral);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   line-height: 1.45;
   margin: 10px 0 0 60px;
 }
@@ -252,7 +252,7 @@
 }
 .landing-team-seam > p {
   color: var(--landing-muted);
-  font-size: 11px;
+  font-size: var(--type-xs);
   line-height: 1.45;
   margin: 8px 0 11px;
 }
@@ -266,7 +266,7 @@
 .landing-team-seam-list li {
   border-left: 2px solid var(--teal);
   color: var(--landing-ink);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 600;
   padding: 3px 0 3px 8px;
 }
@@ -281,7 +281,7 @@
   border: 1px dashed color-mix(in srgb, var(--landing-rule) 82%, var(--landing-muted));
   color: var(--landing-muted);
   display: flex;
-  font-size: 11px;
+  font-size: var(--type-xs);
   gap: 6px;
   min-height: 31px;
   padding: 6px 8px;
@@ -309,7 +309,7 @@
   align-items: center;
   color: var(--landing-muted);
   display: flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
   justify-content: space-between;
   letter-spacing: 0.12em;
@@ -318,7 +318,7 @@
 .landing-team-members > header strong {
   color: var(--landing-accent);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--type-3xs);
 }
 .landing-team-members ul {
   display: grid;
@@ -330,14 +330,14 @@
 .landing-team-members li {
   border-left: 2px solid color-mix(in srgb, var(--teal) 72%, var(--landing-rule));
   color: var(--landing-ink);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   padding: 3px 0 3px 8px;
 }
 .landing-team-invitations > header {
   align-items: center;
   color: var(--landing-muted);
   display: flex;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
   justify-content: space-between;
   letter-spacing: 0.12em;
@@ -361,7 +361,7 @@
   border: 0;
   color: var(--landing-muted);
   display: inline-flex;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   gap: 4px;
   padding: 2px 0;
 }
@@ -375,7 +375,7 @@
   border: 1px solid var(--landing-accent);
   color: var(--accent-ink);
   display: inline-flex;
-  font-size: 11px;
+  font-size: var(--type-xs);
   font-weight: 700;
   gap: 6px;
   justify-content: center;
@@ -418,21 +418,21 @@
 .landing-team-invitation-expiry,
 .landing-team-invitation-ledger > span {
   color: var(--landing-muted);
-  font-size: 8px;
+  font-size: var(--type-4xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .landing-team-invitation-code > div:first-child strong {
   font-family: var(--editorial);
-  font-size: 13px;
+  font-size: var(--type-md);
   font-weight: 600;
 }
 .landing-team-invitation-code code {
   background: color-mix(in srgb, var(--landing-paper) 70%, transparent);
   border: 1px solid var(--landing-rule);
   color: var(--landing-ink);
-  font: 650 11px/1.5 var(--mono);
+  font: 650 var(--type-xs)/1.5 var(--mono);
   overflow-wrap: anywhere;
   padding: 8px;
   user-select: text;
@@ -440,7 +440,7 @@
 .landing-team-invitation-code > p,
 .landing-team-invitation-error {
   color: var(--coral);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   line-height: 1.45;
   margin: 0;
 }
@@ -450,7 +450,7 @@
 }
 .landing-team-invitation-ledger > p {
   color: var(--landing-muted);
-  font-size: 9px;
+  font-size: var(--type-3xs);
   margin: 7px 0 0;
 }
 .landing-team-invitation-ledger ul {
@@ -465,7 +465,7 @@
   background: color-mix(in srgb, var(--landing-sheet) 62%, transparent);
   border: 1px solid var(--landing-rule);
   display: grid;
-  font-size: 8px;
+  font-size: var(--type-4xs);
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) auto auto;
   padding: 6px 8px;
@@ -491,7 +491,7 @@
   gap: 8px;
 }
 .landing-team-devices > header {
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 750;
 }
 .landing-team-devices ul {
@@ -505,7 +505,7 @@
   display: grid;
   gap: 4px;
   min-width: 0;
-  font-size: 10px;
+  font-size: var(--type-2xs);
   overflow-wrap: anywhere;
 }
 .landing-team-devices button {
@@ -520,7 +520,7 @@
   margin-top: 10px;
   width: 100%;
   border: 1px solid var(--landing-rule);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   font-weight: 700;
 }
 .landing-team-qr {
@@ -537,7 +537,7 @@
   margin-top: 10px;
   padding: 10px;
   border: 1px solid var(--landing-rule);
-  font-size: 10px;
+  font-size: var(--type-2xs);
   line-height: 1.45;
 }
 .landing-team-pairing p {
@@ -545,7 +545,7 @@
 }
 .landing-team-pairing code {
   font-family: var(--mono);
-  font-size: 22px;
+  font-size: var(--type-2xl);
   font-weight: 700;
   letter-spacing: 0.12em;
   text-align: center;
@@ -574,7 +574,7 @@
   color: var(--accent-ink);
   display: inline-flex;
   font-family: var(--editorial);
-  font-size: 19px;
+  font-size: var(--type-xl);
   font-weight: 700;
   height: 38px;
   letter-spacing: 0.045em;
