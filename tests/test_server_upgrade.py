@@ -28,13 +28,25 @@ from .server_upgrade_harness import (
     build_exact_base_checkout,
     build_exact_base_fixture,
     build_release_checkout,
+    capture_release_update_with,
     exact_base_gate_enabled,
     immutable_fixture_directories,
-    prepare_release_update_with,
     published_release_tags,
     verify_fixture_integrity,
     verify_fixture_registry,
 )
+from .server_upgrade_scratch import (
+    assert_scratch_usable,
+    build_scratch_wheel,
+    populate_agent_scratch,
+    supervisor_filesystem,
+    tree_state,
+)
+
+
+@pytest.fixture(scope="session")
+def scratch_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_scratch_wheel(tmp_path_factory.mktemp("scratch-wheel"))
 
 
 def test_immutable_server_boundary_registry_is_complete() -> None:
@@ -188,9 +200,14 @@ def test_exact_candidate_base_upgrades_and_starts(tmp_path: Path) -> None:
 )
 @pytest.mark.parametrize("stale_cache", [False, True], ids=["current-cache", "stale-cache"])
 def test_release_update_from_every_published_release_validates(
-    release_tag: str, stale_cache: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    release_tag: str,
+    stale_cache: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    scratch_wheel: Path,
+    request: pytest.FixtureRequest,
 ) -> None:
-    """An update prepared by every published non-prerelease v* release must pass.
+    """Every published release must update and roll back real agent-created scratch.
 
     No supported source floor is declared yet; that policy decision remains open.
 
@@ -199,12 +216,30 @@ def test_release_update_from_every_published_release_validates(
     against the old release's data and display cache, current or left stale by a
     failed refresh.
     """
-    from rcp.server_ops.deployment import ValidateRequest, validate, verify_live_application
+    from rcp.server_ops.deployment import (
+        PrepareRequest,
+        ValidateRequest,
+        prepare,
+        validate,
+        verify_live_application,
+    )
 
     # git archive fails for a missing tag; an incomplete fetch cannot skip a source.
     checkout = build_release_checkout(release_tag, tmp_path / "release")
     root = tmp_path / "update"
-    prepared = prepare_release_update_with(checkout, root, stale_cache=stale_cache)
+    capture = capture_release_update_with(checkout, root, stale_cache=stale_cache)
+    scratch = populate_agent_scratch(root / "data", root / "projects", scratch_wheel)
+    request.addfinalizer(lambda: (scratch / "unreadable-directory").chmod(0o700))
+    roots = (root / "data", root / "projects")
+    before = tree_state(roots)
+    checkpoint = supervisor_filesystem(
+        "snapshot-roots",
+        {
+            "directory": str(tmp_path / "checkpoint"),
+            "roots": [str(path) for path in roots],
+            "boundary_sha256": "a" * 64,
+        },
+    )
     monkeypatch.setattr(
         storage_models,
         "DEFAULT_SERVER_LAYOUT",
@@ -213,33 +248,62 @@ def test_release_update_from_every_published_release_validates(
             projects_root=root / "projects",
         ),
     )
-    checked = validate(
-        ValidateRequest(
-            version=1,
-            proof_path=str(prepared["proof_path"]),
-            proof_sha256=str(prepared["proof_sha256"]),
-            output_dir=str(tmp_path / "validated"),
+    try:
+        # Use the candidate's preparation path: installed releases cannot classify
+        # scratch produced by every tool an agent may have used after their release.
+        prepared = prepare(
+            PrepareRequest(
+                version=1,
+                data_dir=str(root / "data"),
+                output_dir=str(root / "prepared"),
+                **capture,
+            )
         )
-    )
-    assert checked["status"] == "verified"
-    live = create_app(data_dir=root / "data")
-    assert verify_live_application(
-        Path(checked["proof_path"]),
-        proof_sha256=checked["proof_sha256"],
-        background=live.state.background_tasks,
-        catalog=live.state.catalog,
-        store=live.state.background_tasks.store,
-    )
-    # On a real server the copied cache can be stale while the live one is current,
-    # so each check may read either; a current cache must equal a fresh replay.
-    for card in live.state.catalog.cards():
-        status, cached = live.state.catalog.cached_snapshot_status(card["id"])
-        _service, fresh = live.state.catalog.open_snapshot(card["id"])
-        assert status == "valid" and cached is not None
-        if stale_cache:
-            assert cached["graph"]["revision"] < fresh["graph"]["revision"]
-        else:
-            assert cached["graph"] == fresh["graph"]
+        checked = validate(
+            ValidateRequest(
+                version=1,
+                proof_path=str(prepared["proof_path"]),
+                proof_sha256=str(prepared["proof_sha256"]),
+                output_dir=str(tmp_path / "validated"),
+            )
+        )
+        assert checked["status"] == "verified"
+        live = create_app(data_dir=root / "data")
+        assert verify_live_application(
+            Path(checked["proof_path"]),
+            proof_sha256=checked["proof_sha256"],
+            background=live.state.background_tasks,
+            catalog=live.state.catalog,
+            store=live.state.background_tasks.store,
+        )
+        # On a real server the copied cache can be stale while the live one is current,
+        # so each check may read either; a current cache must equal a fresh replay.
+        for card in live.state.catalog.cards():
+            status, cached = live.state.catalog.cached_snapshot_status(card["id"])
+            _service, fresh = live.state.catalog.open_snapshot(card["id"])
+            assert status == "valid" and cached is not None
+            if stale_cache:
+                assert cached["graph"]["revision"] < fresh["graph"]["revision"]
+            else:
+                assert cached["graph"] == fresh["graph"]
+
+        # Candidate startup has migrated the real database; force a failed cutover
+        # after additionally changing scratch, then consume the actual supervisor copy.
+        (scratch / "repo" / "result.txt").write_text("candidate changed this\n")
+        (scratch / "candidate-only").write_text("discard on rollback\n")
+        supervisor_filesystem("restore", checkpoint)
+        assert tree_state(roots) == before
+        assert_scratch_usable(scratch)
+        with sqlite3.connect(root / "data" / "rcp.sqlite3") as connection:
+            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        supervisor_filesystem(
+            "remove",
+            {
+                "directory": checkpoint["directory"],
+                "root": str(tmp_path),
+            },
+        )
 
 
 def _exercise_candidate_upgrade(fixture: Path) -> None:

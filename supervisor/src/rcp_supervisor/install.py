@@ -14,8 +14,8 @@ from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.limits import (
     IDENTITY_TIMEOUT_SECONDS,
     INSTALL_TIMEOUT_SECONDS,
-    MAX_CHECKPOINT_BYTES,
-    MAX_CHECKPOINT_ENTRIES,
+    MAX_INSTALLED_RUNTIME_BYTES,
+    MAX_INSTALLED_RUNTIME_ENTRIES,
     MAX_SELECTED_RECEIPT_BYTES,
 )
 from rcp_supervisor.releases import VerifiedRelease, _fsync_directory, verify_release
@@ -494,7 +494,7 @@ def _fsync_owned_tree(root: Path, *, uid: int | None = None) -> None:
     size = 0
     for current, directories, files in os.walk(root, topdown=False, followlinks=False):
         count += len(directories) + len(files) + 1
-        if count > MAX_CHECKPOINT_ENTRIES:
+        if count > MAX_INSTALLED_RUNTIME_ENTRIES:
             raise SupervisorError("Prepared runtime exceeds its entry bound.")
         for name in files:
             path = Path(current) / name
@@ -506,7 +506,7 @@ def _fsync_owned_tree(root: Path, *, uid: int | None = None) -> None:
                     f"Prepared runtime contains unsafe file metadata: {path.relative_to(root)}."
                 )
             size += info.st_size
-            if size > MAX_CHECKPOINT_BYTES:
+            if size > MAX_INSTALLED_RUNTIME_BYTES:
                 raise SupervisorError("Prepared runtime exceeds its size bound.")
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
             try:

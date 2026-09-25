@@ -379,43 +379,6 @@ def test_candidate_requires_inventory_command(runtime):
         runtime.require_capability({}, extra_commands=("inventory",))
 
 
-def test_filesystem_mismatch_reaches_operation_record(runtime, tmp_path):
-    from rcp_supervisor.checkpoint import create_stopped_snapshot
-
-    from tests.test_supervisor_operations import _case
-
-    coordinator, fake, previous, target = _case(tmp_path / "operation")
-    # Exercise the real worker JSON transport from this checkout.
-    source = Path(__file__).resolve().parents[1] / "supervisor" / "src"
-    runtime.owned_argv = lambda argv: [
-        sys.executable,
-        "-I",
-        "-c",
-        f"import sys,runpy; sys.path.insert(0, {str(source)!r}); "
-        "sys.argv = ['fs_worker', 'verify']; runpy.run_module('rcp_supervisor.fs_worker', run_name='__main__')",
-    ]
-    saved = create_stopped_snapshot(tmp_path / "snapshot", (fake.data,), boundary_sha256="b" * 64)
-    identity = {
-        "directory": str(saved.directory),
-        "sha256": saved.sha256,
-        "boundary_sha256": saved.boundary_sha256,
-    }
-    fake.fail_target = True
-
-    def verify(checkpoint):
-        (fake.data / "value").write_text("secret changed bytes")
-        runtime.filesystem("verify", identity)
-
-    fake.verify_roots = verify
-    with pytest.raises(SupervisorError, match="rollback_tree_mismatch") as error:
-        coordinator.deploy(previous, target)
-    assert "value" in str(error.value) and "changed" in str(error.value)
-    assert "secret changed bytes" not in str(error.value)
-    journal = coordinator.store.active()["error"]
-    assert "rollback_tree_mismatch" in journal and '"value": changed' in journal
-    assert fake.starts == 0
-
-
 @pytest.mark.parametrize(
     "invalid",
     [
@@ -539,3 +502,49 @@ def test_probe_failure_retains_last_readiness_cause_and_private_log(
     assert "readiness_unavailable" in diagnostic
     assert "private-value" not in diagnostic
     assert str(next((runtime.paths.service_home / "logs").glob("*-probe.log"))) in diagnostic
+
+
+def test_filesystem_copy_keeps_supervisor_credentials_without_total_deadline(runtime, monkeypatch):
+    calls = []
+
+    def command(argv, request, **kwargs):
+        calls.append((argv[-1], kwargs))
+        return {"status": "ready"}
+
+    monkeypatch.setattr(runtime, "service_json", command)
+    for action in ("checkpoint", "snapshot-roots", "restore", "preserve-candidate"):
+        runtime.filesystem(action, {})
+    assert all(options["privileged"] and options["timeout"] is None for _, options in calls)
+
+
+def test_update_preparation_uses_candidate_and_keeps_stopped_checkpoint(runtime, tmp_path):
+    runtime.paths = Paths(data_dir=tmp_path / "data", checkpoints_root=tmp_path)
+    prepared = {
+        "roots": [{"live": str(runtime.paths.data_dir), "payload": str(tmp_path / "prepared")}],
+        "proof_path": str(tmp_path / "proof"),
+        "proof_sha256": "c" * 64,
+    }
+    target = {"commit": "candidate"}
+    calls = []
+
+    def application(release, action, request):
+        assert release == target
+        calls.append(action)
+        return prepared
+
+    runtime.application = application
+    runtime.filesystem = lambda action, request: calls.append(action)
+    checkpoint = {"directory": str(tmp_path / "checkpoint"), "sha256": "a" * 64}
+    result = runtime.prepare(
+        {
+            "operation_id": "operation",
+            "target": target,
+            "previous": {},
+            "kind": "update",
+            "checkpoint": checkpoint,
+        },
+        {"receipt_path": "receipt", "receipt_sha256": "b" * 64},
+    )
+    assert result[0] is checkpoint
+    assert result[1] is None  # Old startup probes never consume a new-release proof.
+    assert calls == ["prepare", "check-roots", "validate"]

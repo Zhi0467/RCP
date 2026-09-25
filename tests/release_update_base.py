@@ -1,7 +1,7 @@
-"""Capture representative team data and prepare its release update.
+"""Capture representative team data using the installed release.
 
 The old-data upgrade gate runs this with a recent release's code, then validates
-the prepared update with the candidate, as a real server update does.
+the captured update with the candidate, as a real server update does.
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from rcp.api import create_app  # noqa: E402
 from rcp.core.models import Patch  # noqa: E402
 from rcp.history import HistoryManager  # noqa: E402
 from rcp.server_ops.backup_capture import BackupCaptureCoordinator  # noqa: E402
-from rcp.server_ops.deployment import PrepareRequest, prepare  # noqa: E402
 from rcp.server_runtime import ServerMetadata  # noqa: E402
 from rcp.storage import AppStore  # noqa: E402
 from tests.supervisor_reboot_data import prepare_data  # noqa: E402
@@ -59,16 +58,14 @@ def main(root: Path, *, stale_cache: bool) -> None:
         capture = BackupCaptureCoordinator(
             AppStore(data / "rcp.sqlite3"), data, metadata
         ).capture_sqlite()
-        prepared = prepare(
-            PrepareRequest(
-                version=1,
-                data_dir=str(data),
-                output_dir=str(root / "prepared"),
-                sqlite_receipt_path=str(capture.receipt_path),
-                sqlite_receipt_sha256=capture.receipt_sha256,
-            )
+    print(
+        json.dumps(
+            {
+                "sqlite_receipt_path": str(capture.receipt_path),
+                "sqlite_receipt_sha256": capture.receipt_sha256,
+            }
         )
-    print(json.dumps(prepared))
+    )
 
 
 def _append_patch_without_cache_refresh(app, project_id: str) -> None:

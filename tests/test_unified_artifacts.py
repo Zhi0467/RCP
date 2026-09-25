@@ -6,7 +6,6 @@ import os
 import subprocess
 from datetime import date
 from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,7 +28,6 @@ from rcp.runs.chat import (
     finalize_artifact_revision,
     stage_artifact_context,
 )
-from rcp.server_ops.application_snapshot import _settle_accepting_artifact_replacements
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, ArtifactRevisionCandidateRecord
 from rcp.transport import LocalStateWorkspace, RemoteRunStage, StateUnavailable
@@ -1815,94 +1813,6 @@ def test_interrupted_accept_recovers_from_the_already_published_digest(
 
     assert recovered.status_code == 200, recovered.text
     assert recovered.json()["status"] == "accepted"
-
-
-@pytest.mark.parametrize("kept", [False, True], ids=("temporary", "kept"))
-def test_update_checkpoint_settles_accepting_artifact_journal_before_copy(
-    manifest,
-    tmp_path: Path,
-    monkeypatch,
-    kept: bool,
-) -> None:
-    data_dir = tmp_path / "data"
-    app = create_named_app(str(manifest.path), data_dir=data_dir)
-    source, candidate, kept_filename, first, second = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=kept,
-    )
-    store = app.state.background_tasks.store
-    source_task = store.agent_task(candidate.source_operation_id)
-    assert source_task is not None and source_task.stage_root
-    target = (
-        app.state.service.history.workspace.root.parent / "artifacts" / str(kept_filename)
-        if kept
-        else _local_chat_artifact_directory(store, source_task, source_task.operation_id)
-        / source.name
-    )
-    external = b"<!doctype html><p>edit displaced before checkpoint</p>"
-    exchange = artifact_replace_module.exchange_regular_files
-    injected = False
-
-    def exchange_then_crash(*args) -> None:
-        nonlocal injected
-        if not injected:
-            injected = True
-            target.write_bytes(external)
-            exchange(*args)
-            raise OSError("simulated crash after exchange")
-        exchange(*args)
-
-    store.begin_artifact_revision_acceptance(
-        candidate.candidate_id,
-        decided_by=authorized_human(app),
-    )
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange_then_crash)
-    with pytest.raises(OSError, match="crash after exchange"):
-        if kept:
-            assert kept_filename is not None
-            app.state.service.history.workspace.replace_kept_artifact(
-                kept_filename,
-                second,
-                expected_sha256=hashlib.sha256(first).hexdigest(),
-            )
-        else:
-            source_scope_id = source_task.operation_id
-            recovery_key = hashlib.sha256(
-                f"{source_task.stage_root}\0{source_scope_id}".encode()
-            ).hexdigest()[:32]
-            replace_local_regular_file(
-                target.parent,
-                target.name,
-                second,
-                expected_sha256=hashlib.sha256(first).hexdigest(),
-                recovery_directory=(
-                    Path(source_task.stage_root)
-                    / "inputs"
-                    / ".artifact-replacements"
-                    / recovery_key
-                ),
-            )
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
-    project_receipt = SimpleNamespace(
-        projects=(
-            SimpleNamespace(
-                project_id=candidate.project_id,
-                status="captured",
-                locator=str(manifest.path),
-            ),
-        )
-    )
-
-    _settle_accepting_artifact_replacements(store, data_dir, project_receipt)
-
-    assert target.read_bytes() == external
-    response = TestClient(app).post(
-        f"/api/projects/{app.state.default_project_id}"
-        f"/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-    assert response.status_code == 409, response.text
-    assert target.read_bytes() == external
 
 
 def test_offline_restore_abandons_pending_candidate_and_preserves_source(

@@ -5,8 +5,8 @@ installed tree under the releases root, and until now nothing removed either.
 Only the newest checkpoints can serve a rollback, and only the live release and
 its rollback target are reachable, so everything older is dead weight. The
 decision is made here from the journal, the release pointer, and the selected
-receipt; the removal runs as the service account through the filesystem worker,
-the same path that created the directories.
+receipt; the privileged filesystem worker also removes referenced per-filesystem
+workspaces, including consumed snapshots and candidate quarantines.
 """
 
 from __future__ import annotations
@@ -14,14 +14,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import stat
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp_supervisor.checkpoint import _directory, _fsync_directory
+from rcp_supervisor.checkpoint import _fsync_directory
 from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.limits import (
     MAX_OPERATION_BYTES,
@@ -73,7 +72,14 @@ def _owns_checkpoint(record: dict, checkpoints_root: Path) -> bool:
     if not isinstance(directory, str):
         return False
     path = Path(directory)
-    return path.parent == checkpoints_root / record["operation_id"] and path.is_dir()
+    if path.parent != checkpoints_root / record["operation_id"] or not path.is_dir():
+        return False
+    publication = path / "restore.json"
+    if publication.exists():
+        progress = json.loads(publication.read_text())
+        if "states" in progress and all(state == "complete" for state in progress["states"]):
+            return False  # Consumed snapshots no longer reserve a rollback slot.
+    return True
 
 
 def _children(root: Path) -> list[os.DirEntry]:
@@ -217,11 +223,11 @@ def prune_retained(runtime: SystemRuntime, store: OperationStore) -> RetentionPl
 
 
 def remove_retained_tree(directory: Path, root: Path) -> None:
-    """Delete one retained artifact, as the service account, inside its root.
+    """Delete one retained artifact and its referenced filesystem workspaces.
 
     The coordinator decided; this only checks the shape of what it was handed:
-    an absolute direct child of a root this account owns, itself a directory
-    this account owns and not a link. Read-only trees (protected staged inputs,
+    an absolute direct child of the requested root, itself a directory and not
+    a link. Read-only trees (protected staged inputs,
     the managed Python) are made writable first so the removal completes.
     """
 
@@ -234,12 +240,34 @@ def remove_retained_tree(directory: Path, root: Path) -> None:
         raise SupervisorError(
             "Retained artifacts are removed only as direct children of their root."
         )
-    _directory(root)
-    info = directory.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
-        raise SupervisorError(
-            "A retained artifact must be a directory owned by the service account."
-        )
+    if directory.is_symlink() or not directory.is_dir():
+        raise SupervisorError("A retained artifact must be a directory, not a link.")
+    # New catalogs point outside the central workspace, onto each live filesystem.
+    # Old completed catalogs remain removable without interpreting their entries.
+    catalogs = [directory / "checkpoint.json", *directory.glob("*/checkpoint.json")]
+    for catalog in catalogs:
+        if not catalog.is_file():
+            continue
+        document = json.loads(catalog.read_text())
+        if document.get("version") != 3:
+            continue
+        for name in document["workspaces"]:
+            workspace = Path(name)
+            if (
+                not workspace.is_absolute()
+                or not workspace.name.startswith(
+                    f".rcp-checkpoint-{document['checkpoint_id'][:16]}-"
+                )
+                or workspace.is_symlink()
+            ):
+                raise SupervisorError("Checkpoint workspace reference is invalid.")
+            if workspace.exists():
+                _remove_tree(workspace)
+    _remove_tree(directory)
+
+
+def _remove_tree(directory: Path) -> None:
+    # Preserved directory modes may be 000, including in development without root.
     os.chmod(directory, 0o700)
     for current, names, _files in os.walk(directory, followlinks=False):
         for name in names:
@@ -247,4 +275,4 @@ def remove_retained_tree(directory: Path, root: Path) -> None:
             if not child.is_symlink():
                 os.chmod(child, 0o700)
     shutil.rmtree(directory)
-    _fsync_directory(root)
+    _fsync_directory(directory.parent)

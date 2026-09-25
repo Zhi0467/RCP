@@ -562,16 +562,22 @@ requires a complete protected backup, closes application admission, and verifies
 copied state before changing live data. A fenced candidate probe must pass before
 the durable selected-release decision allows ordinary systemd startup.
 
-Before that decision, interruption chooses verified rollback. Afterwards,
-recovery completes the selected release. Both paths retain failed preparation,
-checkpoints, and quarantined roots for inspection. Reboot follows the same
+Before that decision, interruption restores the stopped roots by rename. The
+supervisor copies whole roots with root privilege onto their own filesystems,
+retaining scratch, modes, ownership, links and special-file nodes. Copy and sync
+must finish before the snapshot becomes ready; space estimates are advisory.
+Rollback consumes that snapshot, preserves failed candidate trees in quarantine,
+and restores absence for destinations that did not previously exist. Interrupted
+renames resume from the journal; completed rollback never overwrites later work.
+After the release decision, recovery completes the selected release. Reboot follows the same
 root-owned journal without fetching a release or consulting `main`.
 
 Retention is bounded. After an update commits, the supervisor keeps the two
-newest rollback checkpoints under `update-checkpoints/` and the two newest
+newest unconsumed rollback checkpoints indexed under `update-checkpoints/` and the two newest
 release trees under `releases/`, plus whatever those checkpoints need: the live
 release, its rollback target, and the releases the kept checkpoints were taken
-between. Everything older is removed as `rcp`. A checkpoint workspace that no
+between. The privileged worker removes older operation workspaces and their
+referenced payloads and quarantines on each filesystem. A checkpoint workspace that no
 journal names is removed once it is a day old; the source-adoption workspace is
 never touched. The prune refuses as a whole when the release pointer and the
 selected receipt disagree or an operation is unfinished, and it leaves alone,

@@ -12,7 +12,6 @@ from rcp_supervisor.checkpoint import (
     create_checkpoint,
     create_stopped_snapshot,
     restore_checkpoint,
-    verify_checkpoint,
 )
 from rcp_supervisor.errors import SupervisorError
 from rcp_supervisor.operations import Coordinator, OperationBusy, OperationStore
@@ -68,13 +67,6 @@ class FakeRuntime:
             "sha256": checkpoint.sha256,
             "boundary_sha256": checkpoint.boundary_sha256,
         }
-
-    def verify_roots(self, checkpoint):
-        verify_checkpoint(
-            Checkpoint(
-                Path(checkpoint["directory"]), checkpoint["sha256"], checkpoint["boundary_sha256"]
-            )
-        )
 
     def prepare(self, operation, capture):
         if operation["kind"] == "update":
@@ -432,8 +424,8 @@ def test_stale_previous_is_refused_before_journal_or_admission(tmp_path, monkeyp
     assert runtime.stops == runtime.starts == 0
 
 
-@pytest.mark.parametrize("failure", ["prepare", "tree", "legacy"])
-def test_stopped_checkpoint_protects_preparation_and_requires_live_tree_proof(tmp_path, failure):
+@pytest.mark.parametrize("failure", ["prepare", "legacy"])
+def test_stopped_checkpoint_protects_preparation_and_refuses_legacy_rollback(tmp_path, failure):
     coordinator, runtime, previous, target = _case(tmp_path / "case")
 
     def prepare(operation, capture):
@@ -441,7 +433,7 @@ def test_stopped_checkpoint_protects_preparation_and_requires_live_tree_proof(tm
         raise SupervisorError(f"{failure} failed")
 
     runtime.prepare = prepare
-    if failure in {"tree", "legacy"}:
+    if failure == "legacy":
 
         def interrupted(phase):
             if phase == "rollback_roots_complete":
@@ -451,18 +443,14 @@ def test_stopped_checkpoint_protects_preparation_and_requires_live_tree_proof(tm
         with pytest.raises(PowerLoss):
             coordinator.deploy(previous, target)
         coordinator.boundary = lambda _: None
-        if failure == "tree":
-            (runtime.data / "extra").write_text("not at stopped boundary")
-            expected = "rollback_tree_mismatch"
-        else:
-            operation = coordinator.store.active()
-            operation["version"] = 1
-            operation["target_proof"] = operation["previous_proof"] = {
-                "path": str(runtime.root / "proof.json"),
-                "sha256": "c" * 64,
-            }
-            coordinator.store.write(operation)
-            expected = "operation_recovery_required"
+        operation = coordinator.store.active()
+        operation["version"] = 1
+        operation["target_proof"] = operation["previous_proof"] = {
+            "path": str(runtime.root / "proof.json"),
+            "sha256": "c" * 64,
+        }
+        coordinator.store.write(operation)
+        expected = "operation_recovery_required"
         with pytest.raises(SupervisorError, match=expected) as error:
             coordinator.recover()
         assert coordinator.store.active()["error"].endswith(str(error.value))
@@ -471,37 +459,4 @@ def test_stopped_checkpoint_protects_preparation_and_requires_live_tree_proof(tm
         with pytest.raises(SupervisorError, match="rolled_back"):
             coordinator.deploy(previous, target)
         assert runtime.starts == 1
-    assert (runtime.data / "value").read_text() == "old"
-
-
-def test_insufficient_checkpoint_space_refuses_before_service_stop(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from rcp_supervisor.checkpoint import check_snapshot_space
-    from rcp_supervisor.runtime import SystemRuntime
-
-    coordinator, runtime, previous, target = _case(tmp_path / "case")
-    runtime.paths = SimpleNamespace(data_dir=runtime.data, checkpoints_root=runtime.root)
-    runtime.enter_maintenance = lambda operation: {
-        "receipt_path": "receipt",
-        "receipt_sha256": "a" * 64,
-    }
-    runtime.application = lambda *args: {
-        "roots": [{"live": str(runtime.data)}],
-    }
-
-    def filesystem(action, request):
-        assert action == "check-space"
-        check_snapshot_space(Path(request["directory"]), tuple(map(Path, request["roots"])))
-
-    runtime.filesystem = filesystem
-    runtime.checkpoint_roots = SystemRuntime.checkpoint_roots.__get__(runtime)
-    monkeypatch.setattr(
-        "rcp_supervisor.checkpoint.shutil.disk_usage", lambda _: SimpleNamespace(free=0)
-    )
-    with pytest.raises(SupervisorError, match="checkpoint_capacity"):
-        coordinator.deploy(previous, target)
-    assert runtime.stops == runtime.starts == runtime.restores == 0
-    record = coordinator.store.records()[0][0]
-    assert record["phase"] == "aborted" and "checkpoint_capacity" in record["error"]
     assert (runtime.data / "value").read_text() == "old"

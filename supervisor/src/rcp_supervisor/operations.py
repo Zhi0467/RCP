@@ -78,8 +78,9 @@ class Runtime(Protocol):
     def stop_service(self) -> None: ...
     def checkpoint_roots(self, operation: dict, capture: dict) -> list[str]: ...
     def snapshot(self, operation: dict, roots: list[str]) -> dict: ...
-    def verify_roots(self, checkpoint: dict) -> None: ...
-    def prepare(self, operation: dict, capture: dict) -> tuple[dict, dict, dict, dict | None]: ...
+    def prepare(
+        self, operation: dict, capture: dict
+    ) -> tuple[dict, dict | None, dict, dict | None]: ...
     def prepare_fresh_restore(self, operation: dict) -> tuple[dict, None, dict, dict]: ...
     def restore_roots(self, checkpoint: dict) -> None: ...
     def switch_pointer(self, release: dict, *, allowed: tuple[dict, ...]) -> None: ...
@@ -196,7 +197,7 @@ class OperationStore:
             not isinstance(record, dict)
             or record.keys() != _FIELDS
             or type(record["version"]) is not int
-            or record["version"] not in (1, 2)
+            or record["version"] not in (1, 2, 3)
         ):
             raise SupervisorError("Deployment journal format is unsupported.")
         try:
@@ -237,7 +238,7 @@ class OperationStore:
         for name in ("previous_proof", "target_proof"):
             if record[name] is not None and not _proof(record[name]):
                 raise SupervisorError("Deployment application proof is invalid.")
-        exact_update = record["version"] == 2 and record["kind"] == "update"
+        exact_update = record["version"] >= 2 and record["kind"] == "update"
         needs_checkpoint = record["phase"] not in EARLY - {"checkpoint_ready"} | {"aborted"}
         if needs_checkpoint and record["checkpoint"] is None:
             raise SupervisorError("Deployment state lacks its exact checked checkpoint.")
@@ -255,7 +256,11 @@ class OperationStore:
         )
         if needs_proofs and (
             record["target_proof"] is None
-            or (not record["previous_uninitialized"] and record["previous_proof"] is None)
+            or (
+                record["version"] < 3
+                and not record["previous_uninitialized"]
+                and record["previous_proof"] is None
+            )
         ):
             raise SupervisorError("Deployment state lacks its application proof.")
         if record["kind"] == "update" and record["candidate_checkpoint"] is not None:
@@ -401,7 +406,7 @@ class Coordinator:
                     "The selected release changed before deployment; rerun the operation."
                 )
             operation = {
-                "version": 2 if kind == "update" else 1,
+                "version": 3,
                 "operation_id": str(uuid.uuid4()),
                 "kind": kind,
                 "phase": "preparing",
@@ -512,7 +517,7 @@ class Coordinator:
 
     def _recover_operation(self, operation: dict, *, startup: bool) -> dict:
         phase = operation["phase"]
-        exact_update = operation["kind"] == "update" and operation["version"] == 2
+        exact_update = operation["kind"] == "update" and operation["version"] >= 2
         if phase in ("candidate_chosen", "previous_chosen"):
             release = operation["target"] if phase == "candidate_chosen" else operation["previous"]
             if not startup:
@@ -575,9 +580,6 @@ class Coordinator:
                 operation["previous"], allowed=(operation["previous"], operation["target"])
             )
             operation = self._phase(operation, "previous_pointer_restored")
-        if exact_update:
-            # Recheck after an interrupted rename/phase boundary, before any old code.
-            self.runtime.verify_roots(operation["checkpoint"])
         if operation["phase"] == "previous_pointer_restored":
             if not operation["previous_uninitialized"]:
                 self.runtime.probe(operation["previous"], operation, operation["previous_proof"])

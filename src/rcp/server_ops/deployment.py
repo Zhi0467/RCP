@@ -18,18 +18,15 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from rcp.attachments import checkpoint_attachment_sets
 from rcp.core.models import upgrade_graph_projection
 from rcp.limits import PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES
-from rcp.runs.shared import checkpoint_local_recovery_stages
 from rcp.server_ops._local_primitives import canonical_json_line, fsync_file_tree
 from rcp.server_ops.application_snapshot import (
-    ApplicationSnapshotPolicy,
     _copy_declared_file,
     _project_restore_location,
     _set_private_directory_modes,
-    _settle_accepting_artifact_replacements,
-    _snapshot_tree,
+    copy_project_roots,
+    copy_proof_tree,
 )
 from rcp.server_ops.application_validation import (
     CandidateProjectVerification,
@@ -256,22 +253,13 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
     if os.path.lexists(output):
         raise MaintenanceRefused("Prepared output already exists.")
     with instance_lock(data_dir, timeout=0.0):
-        current_plan = inspect_app_data_capture_plan(data_dir)
-        if current_plan.unclassified_entries or current_plan.deferred_entries:
-            raise MaintenanceRefused("Application state has unowned or deferred local entries.")
         receipt_path = Path(request.sqlite_receipt_path)
         sqlite = read_backup_sqlite_capture_receipt(
             receipt_path, expected_sha256=request.sqlite_receipt_sha256
         )
         validate_backup_sqlite_snapshot(sqlite)
-        if (
-            Path(sqlite.app_data_plan.data_dir) != data_dir
-            or sqlite.app_data_plan.unclassified_entries
-            or sqlite.app_data_plan.deferred_entries
-        ):
-            raise MaintenanceRefused(
-                "Application capture contains an unowned or deferred local state boundary."
-            )
+        if Path(sqlite.app_data_plan.data_dir) != data_dir:
+            raise MaintenanceRefused("Application capture belongs to a different data directory.")
         coordinator = BackupProjectFileCaptureCoordinator(data_dir)
         capture_files = coordinator.capture_offline if offline else coordinator.capture
         publication = capture_files(receipt_path, expected_sha256=request.sqlite_receipt_sha256)
@@ -294,53 +282,21 @@ def prepare(request: PrepareRequest, *, offline: bool = False) -> dict[str, obje
         _new_output(output)
         (output / "payload").mkdir(mode=0o700)
         capture = output / "capture"
-        _snapshot_tree(receipt_path.parent, capture, relative_prefix=PurePosixPath("capture"))
-        policy = ApplicationSnapshotPolicy(data_dir)
-        snapshot_store = AppStore.open_read_only_snapshot(Path(sqlite.snapshot_path))
-        _settle_accepting_artifact_replacements(snapshot_store, data_dir, projects)
-        stages = checkpoint_local_recovery_stages(snapshot_store, data_dir)
-        policy._require_empty_transfer_exports()
+        copy_proof_tree(receipt_path.parent, capture)
         app = output / "payload" / "app-data"
         app.mkdir(mode=0o700)
-        files = [
-            _copy_declared_file(
-                Path(sqlite.snapshot_path),
-                app / "rcp.sqlite3",
-                relative_path="rcp.sqlite3",
-                expected_sha256=sqlite.sqlite_snapshot.sha256,
-                expected_size=sqlite.sqlite_snapshot.size_bytes,
-                restore_mode=0o600,
-            )
-        ]
-        _, copied = policy._copy_transfer_inbox(snapshot_store, app)
-        files.extend(copied)
-        for name in ("bootstrap-manifests", "project-snapshots"):
-            source = data_dir / name
-            if os.path.lexists(source):
-                _, copied = _snapshot_tree(source, app / name, relative_prefix=PurePosixPath(name))
-                files.extend(copied)
-        _, copied = policy._copy_imported_sources(
-            app, projects, captured_root="project-sources" in sqlite.app_data_plan.captured_entries
+        # The supervisor owns the complete stopped copy. This payload contains
+        # only the database and typed project material needed for application proof.
+        _copy_declared_file(
+            Path(sqlite.snapshot_path),
+            app / "rcp.sqlite3",
+            relative_path="rcp.sqlite3",
+            expected_sha256=sqlite.sqlite_snapshot.sha256,
+            expected_size=sqlite.sqlite_snapshot.size_bytes,
+            restore_mode=0o600,
         )
-        files.extend(copied)
-        for stage in stages:
-            # An agent's scratch legitimately holds links; a rollback restores the
-            # stage exactly as the run left it, links included (never followed).
-            prefix = PurePosixPath("run-stage") / stage.root.name
-            _, copied = _snapshot_tree(
-                stage.root, app.joinpath(*prefix.parts), relative_prefix=prefix, keep_links=True
-            )
-            files.extend(copied)
-        with checkpoint_attachment_sets(data_dir / "chat-attachments") as attachments:
-            for attachment in attachments:
-                prefix = PurePosixPath("chat-attachments") / attachment.attachment_set_id
-                _, copied = _snapshot_tree(
-                    attachment.root, app.joinpath(*prefix.parts), relative_prefix=prefix
-                )
-                files.extend(copied)
-        for item in files:
-            app.joinpath(*PurePosixPath(item.relative_path).parts).chmod(item.mode)
-        project_roots = policy.copy_project_roots(output, projects, capture_root=capture)
+        (app / "rcp.sqlite3").chmod(0o600)
+        project_roots = copy_project_roots(output, projects, capture_root=capture)
         roots = [PreparedRoot(live=str(data_dir), payload=str(app))]
         for root in project_roots:
             payload = output / root.archive_path
@@ -615,8 +571,6 @@ def inspect(request: InspectRequest) -> dict[str, object]:
     _private_ancestors(data)
     database = data / "rcp.sqlite3"
     if not os.path.lexists(database):
-        if set(p.name for p in data.iterdir()) - {"rcp.lock"}:
-            raise MaintenanceRefused("Uninitialized data directory contains unowned entries.")
         return {"version": 1, "status": "uninitialized"}
     info = database.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
@@ -626,13 +580,60 @@ def inspect(request: InspectRequest) -> dict[str, object]:
             "SELECT name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"
         ).fetchall()
     if not schema:
-        if set(p.name for p in data.iterdir()) - {"rcp.sqlite3", "rcp.lock"}:
-            raise MaintenanceRefused("Empty SQLite has unexplained sibling state.")
         return {"version": 1, "status": "uninitialized"}
     store = AppStore.open_read_only_snapshot(database)
     if store.space_kind != "team" or not store.space_name:
         raise MaintenanceRefused("Existing database is not an initialized team.")
     return {"version": 1, "status": "initialized_team", "space_id": store.space_id}
+
+
+def _copy_offline_database(data: Path, database: Path) -> None:
+    """Read stopped SQLite bytes without opening or creating files beside the live DB."""
+    import shutil
+    import tempfile
+
+    source = data / "rcp.sqlite3"
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise MaintenanceRefused("Offline database has unsafe metadata.")
+    with tempfile.TemporaryDirectory(dir=database.parent) as directory:
+        detached = Path(directory) / "rcp.sqlite3"
+        shutil.copyfile(source, detached)
+        wal = data / "rcp.sqlite3-wal"
+        if wal.exists():
+            shutil.copyfile(wal, detached.with_name("rcp.sqlite3-wal"))
+        with sqlite3.connect(detached) as origin, sqlite3.connect(database) as destination:
+            origin.backup(destination)
+    database.chmod(0o600)
+
+
+def offline_inventory(request: OfflinePrepareRequest) -> dict[str, object]:
+    """Discover stopped legacy roots using only a migrated, disposable database."""
+    from datetime import UTC, datetime
+
+    from rcp.server_ops.backup_capture import inspect_snapshot_project_inventory
+
+    data, output = Path(request.data_dir), Path(request.output_dir)
+    _private_ancestors(data)
+    if output == data or output.is_relative_to(data) or data.is_relative_to(output):
+        raise MaintenanceRefused("Offline inventory overlaps live data.")
+    _new_output(output)
+    database = output / "rcp.sqlite3"
+    _copy_offline_database(data, database)
+    store = AppStore(database)
+    if store.space_kind != "team" or not store.space_name:
+        raise MaintenanceRefused("Offline snapshot is not an initialized team.")
+    roots = [{"live": str(data)}]
+    for record in sorted(store.projects(), key=lambda item: item.project_id):
+        project = inspect_snapshot_project_inventory(
+            store, record, data_dir=data, captured_at=datetime.now(UTC)
+        )
+        if project.status != "capturable" or project.recovery is None:
+            raise MaintenanceRefused("Inventory capture has an unresolved project.")
+        _, live = _project_restore_location(project)
+        if live is not None:
+            roots.append({"live": str(live)})
+    return {"version": 1, "roots": roots}
 
 
 def offline_prepare(request: OfflinePrepareRequest) -> dict[str, object]:
@@ -660,15 +661,7 @@ def offline_prepare(request: OfflinePrepareRequest) -> dict[str, object]:
     capture.mkdir(mode=0o700)
     database = capture / "rcp.sqlite3"
     with instance_lock(data, timeout=0):
-        info = (data / "rcp.sqlite3").lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
-            raise MaintenanceRefused("Offline database has unsafe metadata.")
-        with (
-            sqlite3.connect(f"file:{data / 'rcp.sqlite3'}?mode=ro", uri=True) as source,
-            sqlite3.connect(database) as destination,
-        ):
-            source.backup(destination)
-        database.chmod(0o600)
+        _copy_offline_database(data, database)
         original = output / "original.sqlite3"
         shutil.copyfile(database, original)
         original.chmod(0o600)
@@ -728,9 +721,7 @@ def offline_prepare(request: OfflinePrepareRequest) -> dict[str, object]:
         offline=True,
     )
     migrated = output / "migrated-data"
-    _snapshot_tree(
-        Path(result["roots"][0]["payload"]), migrated, relative_prefix=PurePosixPath("migrated")
-    )
+    copy_proof_tree(Path(result["roots"][0]["payload"]), migrated)
     # Rollback must restore the pre-migration database; the proof/capture keeps the
     # migrated copy for the candidate's bounded offline verification.
     shutil.copyfile(original, Path(result["roots"][0]["payload"]) / "rcp.sqlite3")
@@ -754,7 +745,7 @@ def offline_protect(request: OfflineProtectRequest) -> dict[str, object]:
     output = Path(request.output_dir)
     _new_output(output)
     capture = output / f"backup-{proof.sqlite_receipt.capture_id}"
-    _snapshot_tree(Path(proof.capture_root), capture, relative_prefix=PurePosixPath("capture"))
+    copy_proof_tree(Path(proof.capture_root), capture)
     installed = InstalledServerConfig(
         installation_id=request.installation_id,
         paths=ServerPathsConfig.from_layout(),
@@ -792,6 +783,7 @@ def main(argv: list[str] | None = None) -> int:
             "validate",
             "capabilities",
             "inspect",
+            "offline-inventory",
             "offline-prepare",
             "restore-prepare",
             "offline-protect",
@@ -814,6 +806,7 @@ def main(argv: list[str] | None = None) -> int:
                         "prepare",
                         "validate",
                         "inspect",
+                        "offline-inventory",
                         "offline-prepare",
                         "restore-prepare",
                         "offline-protect",
@@ -844,6 +837,8 @@ def main(argv: list[str] | None = None) -> int:
             result = offline_protect(OfflineProtectRequest.model_validate_json(payload))
         elif args.operation == "inspect":
             result = inspect(InspectRequest.model_validate_json(payload))
+        elif args.operation == "offline-inventory":
+            result = offline_inventory(OfflinePrepareRequest.model_validate_json(payload))
         elif args.operation == "offline-prepare":
             result = offline_prepare(OfflinePrepareRequest.model_validate_json(payload))
         else:

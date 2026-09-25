@@ -28,7 +28,6 @@ from rcp_supervisor.errors import ApplicationCommandError, SupervisorError, safe
 from rcp_supervisor.launch import read_selected_receipt, validate_selected_receipt
 from rcp_supervisor.limits import (
     APP_COMMAND_TIMEOUT_SECONDS,
-    CHECKPOINT_COPY_TIMEOUT_SECONDS,
     CONTROL_MAX_ERROR_CODE_CHARS,
     CONTROL_MAX_ERROR_MESSAGE_CHARS,
     CONTROL_MAX_RESPONSE_BYTES,
@@ -296,8 +295,9 @@ class SystemRuntime:
         argv: list[str],
         request: dict | None = None,
         *,
-        timeout: float,
+        timeout: float | None,
         release: dict | None = None,
+        privileged: bool = False,
     ) -> bytes:
         payload = b"" if request is None else json.dumps(request, allow_nan=False).encode()
         if len(payload) > MAX_APP_OUTPUT_BYTES:
@@ -309,15 +309,15 @@ class SystemRuntime:
                 stdin=subprocess.PIPE if request is not None else subprocess.DEVNULL,
                 stdout=output,
                 stderr=error,
-                user=self.uid,
-                group=self.gid,
-                extra_groups=[],
+                user=None if privileged else self.uid,
+                group=None if privileged else self.gid,
+                extra_groups=None if privileged else [],
                 cwd=self.paths.service_home,
                 env=self.environment(release),
                 start_new_session=True,
             )
             try:
-                deadline = time.monotonic() + timeout
+                deadline = None if timeout is None else time.monotonic() + timeout
                 with selectors.DefaultSelector() as selector:
                     if process.stdin is not None:
                         os.set_blocking(process.stdin.fileno(), False)
@@ -331,12 +331,14 @@ class SystemRuntime:
                             raise SupervisorError(
                                 f"Application output exceeded its bound; inspect {error_path}."
                             )
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
+                        remaining = None if deadline is None else deadline - time.monotonic()
+                        if remaining is not None and remaining <= 0:
                             raise SupervisorError(
                                 f"Application subprocess exceeded its time limit; inspect {error_path}."
                             )
-                        for key, _ in selector.select(min(0.1, remaining)):
+                        for key, _ in selector.select(
+                            0.1 if remaining is None else min(0.1, remaining)
+                        ):
                             try:
                                 offset += os.write(key.fd, payload[offset : offset + 65536])
                             except BlockingIOError:
@@ -373,10 +375,13 @@ class SystemRuntime:
         argv: list[str],
         request: dict | None = None,
         *,
-        timeout: float = APP_COMMAND_TIMEOUT_SECONDS,
+        timeout: float | None = APP_COMMAND_TIMEOUT_SECONDS,
         release: dict | None = None,
+        privileged: bool = False,
     ) -> dict:
-        output = self._service_output(argv, request, timeout=timeout, release=release)
+        output = self._service_output(
+            argv, request, timeout=timeout, release=release, privileged=privileged
+        )
         try:
             result = json.loads(output)
         except (ValueError, UnicodeError) as exc:
@@ -396,17 +401,28 @@ class SystemRuntime:
             timeout=(
                 INSTALL_TIMEOUT_SECONDS
                 if action in {"install", "remove"}
-                else CHECKPOINT_COPY_TIMEOUT_SECONDS
-                if action in {"check-space", "snapshot-roots", "restore", "verify"}
+                else None
+                if action
+                in {"check-space", "checkpoint", "snapshot-roots", "restore", "preserve-candidate"}
                 else APP_COMMAND_TIMEOUT_SECONDS
             ),
+            privileged=action
+            in {
+                "check-space",
+                "checkpoint",
+                "snapshot-roots",
+                "restore",
+                "check-roots",
+                "remove",
+                "preserve-candidate",
+            },
         )
         if isinstance(result.get("error"), str):
             raise SupervisorError(result["error"][:4096])
         return result
 
     def remove_retained(self, directory: Path, root: Path) -> None:
-        """Delete one retained artifact through the account that created it."""
+        """Delete retained trees with the privilege needed for preserved modes."""
         self.filesystem("remove", {"directory": str(directory), "root": str(root)})
 
     def current_release_directory(self) -> str:
@@ -732,7 +748,7 @@ class SystemRuntime:
         return roots
 
     def snapshot(self, operation: dict, roots: list[str]) -> dict:
-        """Only the supervisor copies stopped bytes, before old preparation."""
+        """Copy stopped roots before candidate preparation."""
         with self.stopped_data_lock():
             workspace = self.paths.checkpoints_root / operation["operation_id"]
             self.filesystem("workspace", {"directory": str(workspace)})
@@ -745,14 +761,10 @@ class SystemRuntime:
                 },
             )
 
-    def verify_roots(self, checkpoint: dict) -> None:
-        with self.stopped_data_lock():
-            self.filesystem("verify", checkpoint)
-
-    def prepare(self, operation: dict, capture: dict) -> tuple[dict, dict, dict, dict | None]:
+    def prepare(self, operation: dict, capture: dict) -> tuple[dict, None, dict, dict | None]:
         workspace = self.paths.checkpoints_root / operation["operation_id"]
         prepared = self.application(
-            operation["previous"],
+            operation["target"],
             "prepare",
             {
                 "version": 1,
@@ -789,16 +801,16 @@ class SystemRuntime:
         checkpoint = operation["checkpoint"]
         if operation["kind"] != "update":
             checkpoint = self.filesystem(
-                "checkpoint",
+                "snapshot-roots",
                 {
                     "directory": str(workspace / "checkpoint"),
-                    "roots": [*prepared["roots"], *extra_previous_roots],
+                    "roots": [root["live"] for root in [*prepared["roots"], *extra_previous_roots]],
                     "boundary_sha256": prepared["boundary_sha256"],
                 },
             )
         return (
             checkpoint,
-            {"path": prepared["proof_path"], "sha256": prepared["proof_sha256"]},
+            None,
             target_proof,
             candidate_checkpoint,
         )
@@ -807,7 +819,7 @@ class SystemRuntime:
         from rcp_supervisor.restore import prepare_restore
 
         inspection = self.application(
-            operation["previous"], "inspect", {"version": 1, "data_dir": str(self.paths.data_dir)}
+            operation["target"], "inspect", {"version": 1, "data_dir": str(self.paths.data_dir)}
         )
         if inspection.get("status") != "uninitialized":
             raise SupervisorError(
@@ -822,10 +834,10 @@ class SystemRuntime:
             self, self.restore_request, operation, prepared
         )
         checkpoint = self.filesystem(
-            "checkpoint",
+            "snapshot-roots",
             {
                 "directory": str(workspace / "checkpoint"),
-                "roots": [*prepared["roots"], *extra_previous_roots],
+                "roots": [root["live"] for root in [*prepared["roots"], *extra_previous_roots]],
                 "boundary_sha256": operation["nonce"],
             },
         )

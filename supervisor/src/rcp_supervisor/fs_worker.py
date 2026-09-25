@@ -1,9 +1,10 @@
-"""Service-account filesystem operations, called by the narrow root coordinator."""
+"""Filesystem operations, retaining coordinator privilege for faithful copies."""
 
 from __future__ import annotations
 
 import errno
 import json
+import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -11,24 +12,21 @@ from pathlib import Path
 from rcp_supervisor.checkpoint import (
     Checkpoint,
     SnapshotRoot,
-    _directory,
     check_checkpoint_roots,
     check_snapshot_space,
     create_checkpoint,
-    create_offline_snapshot,
     create_stopped_snapshot,
     restore_checkpoint,
-    verify_checkpoint,
 )
 from rcp_supervisor.errors import SupervisorError
-from rcp_supervisor.limits import MAX_CHECKPOINT_MANIFEST_BYTES
+from rcp_supervisor.limits import MAX_APP_OUTPUT_BYTES
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     try:
-        payload = sys.stdin.buffer.read(MAX_CHECKPOINT_MANIFEST_BYTES + 1)
-        if len(payload) > MAX_CHECKPOINT_MANIFEST_BYTES:
+        payload = sys.stdin.buffer.read(MAX_APP_OUTPUT_BYTES + 1)
+        if len(payload) > MAX_APP_OUTPUT_BYTES:
             raise SupervisorError("Filesystem request exceeds its limit.")
         request = json.loads(payload)
         if (
@@ -58,23 +56,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             result = {"version": 1, "status": "ready"}
         elif (
-            arguments in (["verify"], ["check-roots"])
+            arguments == ["check-roots"]
             and isinstance(request, dict)
-            and request.keys()
-            == (
-                {"directory", "sha256", "boundary_sha256"}
-                | ({"roots"} if arguments == ["check-roots"] else set())
-            )
+            and request.keys() == {"directory", "sha256", "boundary_sha256", "roots"}
         ):
             checkpoint = Checkpoint(
                 Path(request["directory"]), request["sha256"], request["boundary_sha256"]
             )
-            if arguments == ["check-roots"]:
-                check_checkpoint_roots(checkpoint, tuple(Path(root) for root in request["roots"]))
-                result = {"version": 1, "status": "verified"}
-            elif arguments == ["verify"]:
-                verify_checkpoint(checkpoint)
-                result = {"version": 1, "status": "verified"}
+            check_checkpoint_roots(checkpoint, tuple(Path(root) for root in request["roots"]))
+            result = {"version": 1, "status": "verified"}
         elif (
             arguments == ["prepare-deployment-lock"]
             and isinstance(request, dict)
@@ -99,22 +89,30 @@ def main(argv: list[str] | None = None) -> int:
             and request.keys() == {"directory"}
         ):
             directory = Path(request["directory"])
-            _directory(directory.parent)
             directory.mkdir(mode=0o700)
             result = {"directory": str(directory)}
         elif (
-            arguments == ["snapshot"]
+            arguments == ["preserve-candidate"]
             and isinstance(request, dict)
-            and request.keys() == {"directory", "live", "boundary_sha256"}
+            and request.keys() == {"directory", "roots", "boundary_sha256"}
         ):
-            result = asdict(
-                create_offline_snapshot(
-                    Path(request["directory"]),
-                    Path(request["live"]),
-                    boundary_sha256=request["boundary_sha256"],
-                )
+            from rcp_supervisor.checkpoint import copy_contents
+
+            roots = request["roots"]
+            staged = create_stopped_snapshot(
+                Path(request["directory"]),
+                tuple(Path(root["live"]) for root in roots if os.path.lexists(root["live"])),
+                boundary_sha256=request["boundary_sha256"],
             )
-            result["directory"] = str(result["directory"])
+            catalog = json.loads((staged.directory / "checkpoint.json").read_text())
+            copied = {root["live"]: root["payload"] for root in catalog["roots"]}
+            merged = []
+            for root in roots:
+                preserved = copied.get(root["live"])
+                if preserved is not None:
+                    copy_contents(Path(root["payload"]), Path(preserved))
+                merged.append({"live": root["live"], "payload": preserved or root["payload"]})
+            result = {"roots": merged}
         elif (
             arguments == ["install"]
             and isinstance(request, dict)
@@ -155,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         message = str(exc)
         if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EDQUOT):
             message = "checkpoint_capacity: insufficient storage for filesystem operation."
-        if message.startswith(("rollback_tree_mismatch:", "checkpoint_capacity:")):
+        if message.startswith("checkpoint_capacity:"):
             # Only bounded checkpoint diagnostics cross the worker boundary.
             print(json.dumps({"error": message[:4096]}), flush=True)
             return 0

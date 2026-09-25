@@ -221,10 +221,10 @@ def build_exact_base_fixture(checkout: Path, base_commit: str, work_root: Path) 
     return fixture
 
 
-def prepare_release_update_with(
+def capture_release_update_with(
     checkout: Path, root: Path, *, stale_cache: bool
 ) -> dict[str, object]:
-    """Capture representative data and prepare its update with the checkout's code."""
+    """Create data and capture SQLite with the old release; candidate owns preparation."""
     script = REPOSITORY_ROOT / "tests" / "release_update_base.py"
     output = _capture(
         # `-I` keeps an inherited PYTHONPATH from putting candidate code on the base side.
@@ -283,7 +283,7 @@ __all__ = [
     "fixture_bundle_digest",
     "immutable_fixture_directories",
     "published_release_tags",
-    "prepare_release_update_with",
+    "capture_release_update_with",
     "verify_fixture_integrity",
     "verify_fixture_registry",
 ]

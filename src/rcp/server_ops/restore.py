@@ -908,34 +908,6 @@ def _verify_project_publication_bytes(workspace, entries) -> None:
             )
 
 
-def _preserve_unrestored_files(source: Path, destination: Path) -> None:
-    """Keep repository files which the archive does not claim to replace."""
-    from rcp.server_ops.application_snapshot import _copy_declared_file
-
-    for root, directories, files in os.walk(source, followlinks=False):
-        relative = Path(root).relative_to(source)
-        target = destination / relative
-        target.mkdir(mode=0o700, exist_ok=True)
-        for name in directories:
-            child = Path(root) / name
-            if not stat.S_ISDIR(child.lstat().st_mode):
-                raise RestoreRefused("Retained repository output has an unsafe directory.")
-        for name in files:
-            old = Path(root) / name
-            restored = target / name
-            if os.path.lexists(restored):
-                continue
-            digest, size = _hash_regular_file(old, expected_uid=os.geteuid())
-            _copy_declared_file(
-                old,
-                restored,
-                relative_path=name,
-                expected_sha256=digest,
-                expected_size=size,
-                restore_mode=stat.S_IMODE(old.stat().st_mode),
-            )
-
-
 def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     import shutil
     from datetime import UTC
@@ -946,7 +918,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         rebind_restored_project_registration,
         restored_project_owners,
     )
-    from rcp.server_ops.application_snapshot import _set_private_directory_modes, _snapshot_tree
+    from rcp.server_ops.application_snapshot import _set_private_directory_modes, copy_proof_tree
     from rcp.server_ops.backup_capture import (
         BackupSnapshotProjectInventory,
         BackupSQLiteCaptureReceipt,
@@ -1083,6 +1055,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         }
         roots = [{"live": str(data), "payload": str(app)}]
         extra_previous = []
+        preserve_roots = []
         known = {r["live"] for r in request.previous_roots}
         for capture in manifest.projects:
             if capture.status != "captured":
@@ -1148,22 +1121,11 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                         continue
                     candidate_root.mkdir(mode=0o700, exist_ok=True)
                     _private_ancestors(live.parent)
-                    if not os.path.lexists(live):
-                        live.mkdir(mode=0o700)
-                    _private_ancestors(live)
                     if str(live) not in known:
-                        previous_payload = output / "previous" / capture.project_id / name
-                        previous_payload.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                        _snapshot_tree(live, previous_payload, relative_prefix=PurePosixPath(name))
-                        extra_previous.append({"live": str(live), "payload": str(previous_payload)})
+                        extra_previous.append({"live": str(live)})
                         known.add(str(live))
                     if name in {"artifacts", "views"}:
-                        prior = next(
-                            r
-                            for r in (*request.previous_roots, *extra_previous)
-                            if r["live"] == str(live)
-                        )
-                        _preserve_unrestored_files(Path(prior["payload"]), candidate_root)
+                        preserve_roots.append({"live": str(live), "payload": str(candidate_root)})
                     roots.append({"live": str(live), "payload": str(candidate_root)})
         for old in request.previous_roots:
             if old["live"] not in {r["live"] for r in roots}:
@@ -1174,7 +1136,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         # its SQLite entry with the detached, rebound, migrated candidate.
         capture_id = str(uuid.uuid4())
         capture_root = output / f"backup-{capture_id}"
-        _snapshot_tree(payload, capture_root, relative_prefix=PurePosixPath("capture"))
+        copy_proof_tree(payload, capture_root)
         snapshot = capture_root / "rcp.sqlite3"
         store.online_snapshot(snapshot)
         digest, size = _hash_regular_file(snapshot)
@@ -1268,6 +1230,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             "boundary_sha256": boundary,
             "roots": roots,
             "extra_previous_roots": extra_previous,
+            "preserve_roots": preserve_roots,
             "proof_path": str(proof_path),
             "proof_sha256": proof_digest,
         }

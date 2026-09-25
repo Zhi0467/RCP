@@ -316,3 +316,30 @@ def test_a_refused_prune_is_reported_and_does_not_fail_the_committed_update(tmp_
     assert [field["name"] for field in fields] == ["retention"]
     assert fields[0]["value"].startswith("not pruned: The installed release pointer")
     assert (releases / "100").is_dir()
+
+
+def test_consumed_snapshot_releases_slot_and_pruning_follows_filesystem_catalog(tmp_path):
+    from rcp_supervisor.checkpoint import create_stopped_snapshot, restore_checkpoint
+    from rcp_supervisor.retention import _owns_checkpoint
+
+    root = tmp_path / "checkpoints"
+    root.mkdir()
+    identity = str(uuid.uuid4())
+    operation = root / identity
+    operation.mkdir()
+    live = tmp_path / "live"
+    live.mkdir()
+    (live / "retained").mkdir(mode=0o700)
+    saved = create_stopped_snapshot(operation / "checkpoint", (live,), boundary_sha256="b" * 64)
+    catalog = json.loads((saved.directory / "checkpoint.json").read_text())
+    record = {"operation_id": identity, "checkpoint": {"directory": str(saved.directory)}}
+    assert _owns_checkpoint(record, root)
+    restore_checkpoint(saved)
+    assert not _owns_checkpoint(record, root)
+    for workspace in catalog["workspaces"]:
+        quarantine = next(Path(workspace).glob("quarantine-*"))
+        (quarantine / "retained").chmod(0)
+    remove_retained_tree(operation, root)
+    assert not operation.exists()
+    assert all(not Path(workspace).exists() for workspace in catalog["workspaces"])
+    assert (live / "retained").is_dir()

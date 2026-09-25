@@ -292,3 +292,27 @@ def test_decryption_kills_child_when_output_exceeds_bound(tmp_path, monkeypatch,
     assert processes[0].poll() is not None
     assert (tmp_path / "archive.tar").stat().st_size <= 128
     assert (tmp_path / "archive.stderr").stat().st_size <= 128
+
+
+def test_candidate_overlay_preserves_unrelated_live_artifacts(tmp_path, monkeypatch, capsys):
+    from rcp_supervisor import fs_worker
+
+    live, candidate = tmp_path / "live", tmp_path / "candidate"
+    live.mkdir()
+    candidate.mkdir()
+    (live / "unrelated").write_bytes(b"retained")
+    (live / "selected").write_bytes(b"previous")
+    (live / "dangling").symlink_to("missing")
+    (candidate / "selected").write_bytes(b"restored")
+    request = {
+        "directory": str(tmp_path / "preserved"),
+        "boundary_sha256": "a" * 64,
+        "roots": [{"live": str(live), "payload": str(candidate)}],
+    }
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(json.dumps(request).encode())))
+    assert fs_worker.main(["preserve-candidate"]) == 0
+    merged = Path(json.loads(capsys.readouterr().out)["roots"][0]["payload"])
+    assert (merged / "unrelated").read_bytes() == b"retained"
+    assert (merged / "selected").read_bytes() == b"restored"
+    assert os.readlink(merged / "dangling") == "missing"
+    assert (live / "selected").read_bytes() == b"previous"
