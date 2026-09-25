@@ -61,11 +61,17 @@ test("a registered third provider renders only its declared interactions and bac
 
     // A device-code account can always be rechecked; its credential is native.
 
-    assert.equal((device.match(/<button/g) ?? []).length, 2);
-    assert.equal((token.match(/<button/g) ?? []).length, 1);
-    assert.equal((saved.match(/<button/g) ?? []).length, 3);
+    assert.match(device, /data-provider-action="sign-in"/);
+    assert.match(device, /data-provider-action="verify"/);
+    assert.doesNotMatch(token, /data-provider-action=/);
+    assert.match(token, /<form class="provider-login-token"/);
+    assert.match(token, /type="submit"/);
+    assert.match(saved, /data-provider-action="verify"/);
+    assert.doesNotMatch(saved, /data-provider-action="sign-in"/);
+    assert.match(saved, /<form class="provider-login-token"/);
     const unsupported = render({ sign_in_methods: ["future_method"] });
-    assert.equal((unsupported.match(/<button/g) ?? []).length, 1);
+    assert.match(unsupported, /data-provider-action="verify"/);
+    assert.doesNotMatch(unsupported, /data-provider-action="sign-in"|<form/);
     assert.doesNotMatch(unsupported, /type="password"/);
   } finally {
     await server.close();
@@ -96,5 +102,96 @@ test("shared account API sends a third provider through the generic routes", asy
     assert.deepEqual(JSON.parse(calls[2][1].body), { host: "remote", token: "private-value" });
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("declared provider controls invoke the matching provider operations", async () => {
+  const { createServer } = await import("vite");
+  const { chromium } = await import("playwright");
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "error",
+    server: { host: "127.0.0.1", port: 0, hmr: false },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    // Settle the fixture's initial pending sign-in before exercising new actions.
+    await page.route("**/api/providers/codex/logins/sign-in/login-1", (route) =>
+      route.fulfill({ json: { login_id: "login-1", state: "succeeded" } }),
+    );
+    const calls = [];
+    await page.route("**/api/providers/test-provider/logins/*", (route) => {
+      calls.push({
+        operation: route.request().url().split("/").at(-1),
+        method: route.request().method(),
+        body: route.request().postDataJSON(),
+      });
+      return route.fulfill({ json: { resumed: { checked: 0 } } });
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/providerLoginRow.html`,
+    );
+    await page.waitForFunction(() => window.loginChanges === 1);
+    await page.evaluate(() =>
+      window.setLoginAccount({
+        provider: "test-provider",
+        host: "remote",
+        sign_in: null,
+      }),
+    );
+    const invoke = async (selector, operation, body = { host: "remote" }) => {
+      const changes = await page.evaluate(() => window.loginChanges);
+      await page.locator(selector).click();
+      await page.waitForFunction((previous) => window.loginChanges > previous, changes);
+      assert.deepEqual(calls.at(-1), { operation, method: "POST", body });
+    };
+    await invoke('[data-provider-action="sign-in"]', "sign-in");
+    await invoke('[data-provider-action="verify"]', "verify");
+    await page.evaluate(() => window.setLoginAccount({ sign_in_methods: ["token_entry"] }));
+    await page.locator(".provider-login-token input").fill("  private-value  ");
+    assert.equal(await page.locator("[data-provider-action]").count(), 0);
+    await invoke('.provider-login-token button[type="submit"]', "token", {
+      host: "remote",
+      token: "private-value",
+    });
+    await page.evaluate(() => {
+      const now = new Date().toISOString();
+      window.setLoginAccount({
+        token: {
+          pasted_at: now,
+          pasted_by: "member",
+          verified_at: now,
+          estimated_expiry_at: null,
+        },
+      });
+    });
+    await invoke('[data-provider-action="verify"]', "verify");
+    await page.locator(".provider-login-token input").fill("replacement-token");
+    await invoke('.provider-login-token button[type="submit"]', "token", {
+      host: "remote",
+      token: "replacement-token",
+    });
+    await page.evaluate(() =>
+      window.setLoginAccount({
+        sign_in_methods: ["future_method"],
+        token: null,
+      }),
+    );
+    await page.locator(".provider-login-token").waitFor({ state: "detached" });
+    assert.equal(await page.locator('[data-provider-action="sign-in"]').count(), 0);
+    await invoke('[data-provider-action="verify"]', "verify");
+    assert.equal(calls.length, 6);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
   }
 });

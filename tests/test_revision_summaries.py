@@ -107,6 +107,18 @@ def test_revision_summaries_resolve_titles_fallback_and_quote_stored_consequence
 
     summaries = build_revision_summaries(patches, materialization)
 
+    assert len(summaries) == len(patches)
+    assert all(summary.sentences and all(summary.sentences) for summary in summaries)
+    original_title = patches[0].ops[0].model_dump()["nodes"][0]["title"]
+    updated_title = patches[1].ops[0].model_dump()["nodes"][0]["changes"]["title"]
+    proposal = patches[2].ops[0].model_dump()["proposals"][0]
+    consequence = proposal["card"]["consequences"].replace("hyp/repeated-updates", updated_title)
+    assert original_title in " ".join(summaries[0].sentences)
+    assert updated_title in " ".join(summaries[1].sentences)
+    for summary in summaries[2:]:
+        assert proposal["title"] in " ".join(summary.sentences)
+        assert consequence in " ".join(summary.sentences)
+
     rendered = " ".join(sentence for summary in summaries for sentence in summary.sentences)
     assert "hyp/repeated-updates" not in rendered
     assert "prop/expand-probe-grid" not in rendered
@@ -161,6 +173,10 @@ def test_revision_summaries_preserve_unresolved_slash_tokens_and_paths() -> None
 
     summaries = build_revision_summaries(patches, materialization)
 
+    for summary in summaries:
+        assert summary.sentences and all(summary.sentences)
+        assert patches[0].ops[0].model_dump()["nodes"][0]["title"] in " ".join(summary.sentences)
+
     rendered = " ".join(sentence for summary in summaries for sentence in summary.sentences)
     for path in (
         "configs/routes.yaml",
@@ -200,6 +216,10 @@ def test_summary_api_is_additive_and_preserves_raw_history(manifest, tmp_path) -
         "episode": None,
         "created_at": raw.json()[-1]["created_at"],
     }
+    sentences = summaries.json()[-1]["sentences"]
+    assert isinstance(sentences, list) and sentences
+    assert all(isinstance(sentence, str) and sentence.strip() for sentence in sentences)
+    assert refresh_patch().ops[0].model_dump()["nodes"][0]["title"] in " ".join(sentences)
     assert raw.status_code == 200
     assert set(raw.json()[-1]) == {
         "revision",
@@ -233,6 +253,10 @@ def test_manager_collects_range_during_one_replay_and_skips_stored_rejection(
 
     summaries = history.revision_summaries(from_revision=3, to_revision=4)
 
+    assert summaries[0]["sentences"] and all(summaries[0]["sentences"])
+    assert refresh_patch().ops[0].model_dump()["nodes"][0]["title"] in " ".join(
+        summaries[0]["sentences"]
+    )
     assert rejected.admission == "rejected"
     assert [{k: v for k, v in summary.items() if k != "sentences"} for summary in summaries] == [
         {

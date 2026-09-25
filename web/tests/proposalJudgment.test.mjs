@@ -394,6 +394,7 @@ test("legacy or stale proposals use the existing card fallback instead of inferr
   );
 
   assert.match(html, /Compare this proposal from its stored card\./);
+  assert.doesNotMatch(html, /<strong\b/);
 
   const undeclared = renderProposal(
     {
@@ -404,4 +405,5 @@ test("legacy or stale proposals use the existing card fallback instead of inferr
     "Review this legacy proposal.",
   );
   assert.match(undeclared, /Review this legacy proposal\./);
+  assert.doesNotMatch(undeclared, /<strong\b/);
 });

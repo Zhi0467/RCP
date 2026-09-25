@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { presentNode } from "../src/nodePresentation.ts";
+import { nodeTypeLabel, presentNode } from "../src/nodePresentation.ts";
 
 test("node presentation promotes the claim and human-readable context", () => {
   const node = {
@@ -32,4 +32,12 @@ test("Evidence presentation separates methodological role from labelled legacy s
     presentation.context.map(({ value }) => value),
     ["The change matters in the tested regime.", "result", "supporting"],
   );
+});
+
+test("custom nodes keep their extension label even after the definition is removed", () => {
+  const extension_type = "mechanism_hypothesis";
+  const custom = nodeTypeLabel({ type: "hypothesis", extension_type });
+  assert.notEqual(custom, nodeTypeLabel({ type: "hypothesis" }));
+  assert.equal(custom, nodeTypeLabel({ type: "evidence", extension_type }));
+  assert.equal(custom.toLowerCase().replaceAll(" ", "_"), extension_type);
 });
