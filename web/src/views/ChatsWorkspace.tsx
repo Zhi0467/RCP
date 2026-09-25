@@ -272,7 +272,7 @@ export function ChatsWorkspace({
         onClick={() => setMobileListOpen((current) => !current)}
       >
         <MessageCircle size={14} />
-        <span>Chats</span>
+        <span>Agents</span>
         <ChevronDown size={14} />
       </button>
       <aside
@@ -283,20 +283,20 @@ export function ChatsWorkspace({
       >
         <header>
           <MessageCircle size={16} />
-          <strong>Chats</strong>
+          <strong>Agents</strong>
         </header>
         <div className="agent-list-tools">
           <label className="agent-list-search">
             <Search size={13} aria-hidden="true" />
             <input
               type="search"
-              aria-label="Search chats"
-              placeholder="Search chats"
+              aria-label="Search agents"
+              placeholder="Search agents"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
-          <div className="agent-list-filters" role="group" aria-label="Filter chats">
+          <div className="agent-list-filters" role="group" aria-label="Filter agents">
             {(["all", "needs_you", "working"] as const).map((value) => {
               const count =
                 value === "all"

@@ -706,7 +706,7 @@ The node detail is a persistent, resizable, viewport-clamped inspection window.
 Its stable vertical one-hop relation map shows incoming neighbors, focus, and
 outgoing neighbors without a nested scroll area. At most two comparison windows
 remain open. Full-screen relation inspection does not navigate or add authoring
-authority. Entering Chats closes node detail.
+authority. Entering Agents closes node detail.
 
 ### Runs
 
@@ -927,9 +927,9 @@ fields. Its seven-day completed window is presentation-only; active and
 actionable parents remain visible regardless of age, and project-scoped Runs and
 History retain their existing complete records.
 
-### Chats
+### Agents
 
-Chats groups project and node conversations. Every human and assistant turn
+Agents (route view `chats`) groups project and node conversations. Every human and assistant turn
 keeps its immutable Discuss/Work label; progress stays inline under the triggering
 message. There is no global task banner. The composer and history remain usable
 while unrelated background tasks run.

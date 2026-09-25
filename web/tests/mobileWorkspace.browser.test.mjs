@@ -36,7 +36,7 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const composer = page.getByRole("textbox", { name: "Message", exact: true });
       await composer.waitFor();
       const list = page.locator(".conversation-list");
-      const chatToggle = page.getByRole("button", { name: "Chats", exact: true });
+      const chatToggle = page.getByRole("button", { name: "Agents", exact: true });
       assert.equal(await list.isVisible(), false, "Mobile conversation list starts closed");
       assert.equal(await page.getByRole("separator").count(), 0, "No narrow resize strip");
       const composerWidth = (await composer.boundingBox()).width;
