@@ -302,7 +302,7 @@ def test_deployment_and_existing_backup_share_one_kernel_lock(runtime, monkeypat
 
     runtime.paths = replace(runtime.paths, data_dir=runtime.paths.service_home / "data")
     layout = SimpleNamespace(server_root=runtime.paths.service_home)
-    monkeypatch.setattr("rcp_supervisor.runtime.MAINTENANCE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr("rcp_supervisor.runtime.DEPLOYMENT_LOCK_TIMEOUT_SECONDS", 0.01)
     with (
         backup_run_lock(layout),
         pytest.raises(SupervisorError, match="running protected backup"),

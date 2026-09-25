@@ -395,7 +395,8 @@ stopped whole-root snapshot, and the result reports the backup's causes as a
 `backup_warning` field. Root authenticates the maintenance RPC to the actual service
 PID, account, instance, and data-directory identity. The application closes new
 mutations, provider launches, watchers, machine operations, and runtime recovery
-owners, drains entered work, then returns a SQLite capture bound to that
+owners, drains entered work (running agent turns get up to two hours to
+finish; the update refuses cleanly after that), then returns a SQLite capture bound to that
 quiescent boundary. The candidate's thin `inventory` command projects the roots
 from backup's captured registration receipt using `_project_restore_location`,
 shared with preparation; it does not reread SQLite or parse manifests separately.

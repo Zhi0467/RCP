@@ -66,7 +66,7 @@ def receipt(root: Path) -> dict:
 def test_installed_systemd_guard_allows_bounded_recovery_to_finish() -> None:
     from rcp_supervisor.limits import (
         APP_COMMAND_TIMEOUT_SECONDS,
-        MAINTENANCE_TIMEOUT_SECONDS,
+        DEPLOYMENT_LOCK_TIMEOUT_SECONDS,
         PROBE_TIMEOUT_SECONDS,
         SERVICE_TIMEOUT_SECONDS,
         STARTUP_RECOVERY_TIMEOUT_SECONDS,
@@ -78,7 +78,7 @@ def test_installed_systemd_guard_allows_bounded_recovery_to_finish() -> None:
     assert "ExecStartPre=+/usr/local/bin/rcp-supervisor recover --startup\n" in unit
     assert f"TimeoutStartSec={STARTUP_RECOVERY_TIMEOUT_SECONDS}\n" in unit
     assert STARTUP_RECOVERY_TIMEOUT_SECONDS > (
-        MAINTENANCE_TIMEOUT_SECONDS
+        DEPLOYMENT_LOCK_TIMEOUT_SECONDS
         + 3 * APP_COMMAND_TIMEOUT_SECONDS
         + PROBE_TIMEOUT_SECONDS
         + 2 * SERVICE_TIMEOUT_SECONDS
