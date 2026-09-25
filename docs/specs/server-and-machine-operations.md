@@ -438,7 +438,9 @@ digest, then removes the retired
 graph model, its discriminated variants, and nested records. Constant defaults,
 built-in empty container factories, and model factories composed of these defaults are
 safe; arbitrary factories are never executed to guess at determinism. Existing
-values, unknown keys and stored edge layers remain untouched. All remaining graph
+values, unknown keys and stored edge layers remain untouched. A field with its own
+serializer, such as stored Proposal and Patch operations, keeps only what its author
+set, so the walk leaves it exactly as stored. All remaining graph
 content and startup recovery reads must still match; the candidate proof records
 the current graph digest used by live verification. `upgrade_graph_projection`
 also upgrades the project display cache on load, because live verification reads
@@ -447,7 +449,9 @@ proof, as a failed refresh leaves it, is rebuilt from canonical history instead.
 The retained baseline graph shares the display snapshot's size bound. One
 recursive test covers every reachable model with explicit serialized examples,
 including populated optional, list and map fields, and independently omits every
-defaulted field to check restoration. It checks idempotence and preservation of
+defaulted field outside serializer-owned fields to check restoration; a fresh
+serialization whose stored operations omit defaults must come back unchanged, and
+the installed-upgrade seed carries a pending Proposal. It checks idempotence and preservation of
 explicit values and stored edge layers. New fields or types without an example
 fail the invariant; unproven default factories (including UUIDs and timestamps)
 fail with the field names and require a human-authored explicit migration.
