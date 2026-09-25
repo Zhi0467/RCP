@@ -1114,6 +1114,7 @@ export default function App() {
     visibleChatSummaries,
     selectChat,
     selectCanonicalChat,
+    selectListedConversation,
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
@@ -4706,7 +4707,7 @@ export default function App() {
               chatTranscripts={chatTranscripts}
               hasMore={chatSummaryNextOffset < chatSummaryTotal}
               loadingMore={chatSummariesLoading}
-              onSelect={selectChat}
+              onSelect={selectListedConversation}
               onOpenNode={openNodeById}
               onLoadMore={() => void loadMoreChatSummaries()}
               onStartTask={startAgentTask}
