@@ -14,6 +14,7 @@ import {
   resolveColorMode,
   resolveTheme,
 } from "../src/theme.ts";
+import { appStylesheet } from "./appStylesheet.mjs";
 
 test("theme and color mode normalize independently with Aqua and System defaults", () => {
   for (const value of [null, undefined, "", "sepia", "dark", "system"]) {
@@ -129,9 +130,7 @@ test("blocked storage still follows the OS before first paint", () => {
   }
 });
 
-const STYLESHEET = ["../src/styles.css", "../src/themes/aqua.css"]
-  .map((path) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf-8"))
-  .join("\n");
+const STYLESHEET = appStylesheet();
 
 function rootTokens(selector) {
   const start = STYLESHEET.indexOf(`${selector} {`);

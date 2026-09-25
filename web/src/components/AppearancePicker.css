@@ -24,7 +24,7 @@
   min-width: 0;
 }
 .appearance-picker-row > span {
-  font-size: 12px;
+  font-size: var(--type-sm);
   font-weight: 700;
 }
 .appearance-picker-options {
@@ -42,7 +42,7 @@
   color: var(--ink);
   flex: 1;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--type-sm);
   min-width: 0;
   padding: 7px 9px;
 }

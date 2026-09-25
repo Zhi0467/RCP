@@ -7,6 +7,12 @@ EPISODE_TIMELINE_HEADLINE_MAX_LENGTH = 240
 EPISODE_TIMELINE_ERROR_MAX_LENGTH = 500
 AGENT_TASK_LIST_DEFAULT_LIMIT = 20
 AGENT_TASK_LIST_MAX_LIMIT = 100
+# Chats whose latest turn is still moving or waiting on a person, listed beyond
+# the recency limit so the Chats panel never loses one.
+AGENT_TASK_LIST_OPEN_CHAT_LIMIT = 50
+# How long such a chat's turn stays listed after it finishes, so an open client
+# sees the terminal record and marks the result unread.
+AGENT_TASK_LIST_FINISHED_CHAT_SECONDS = 600
 AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT = 200
 AGENT_TASK_EVENT_LIST_MAX_LIMIT = 500
 AGENT_TASK_EVENT_RETENTION_COUNT = 200

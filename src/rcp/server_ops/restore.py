@@ -98,6 +98,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # whose graph_runs kept the rebuilt column order has the second.
         "657bf07e3bdb4358fdb7d243a774d3596b2c91c9b65445b648e85426559484cc",
         "25b83f855aa94e284a3e41efd60b222977c3f3a5cea94a402bee35cfdcf127fa",
+        # Agent task list indexes on graph_runs, fresh and upgraded in place.
+        "8ea330738b081a038f99313df5387d73b93437a11c3f90f8f18b8765f6cff9c5",
+        "6060e34cbafc7686da7b7bc0b3c2c20d7635568530bb08108b455c2f2bcfa8bb",
     }
 )
 

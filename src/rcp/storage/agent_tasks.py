@@ -36,7 +36,9 @@ from rcp.limits import (
     AGENT_TASK_EVENT_LIST_MAX_LIMIT,
     AGENT_TASK_EVENT_RETENTION_COUNT,
     AGENT_TASK_LIST_DEFAULT_LIMIT,
+    AGENT_TASK_LIST_FINISHED_CHAT_SECONDS,
     AGENT_TASK_LIST_MAX_LIMIT,
+    AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
     AGENT_TASK_RECEIPT_LIST_LIMIT,
     AGENT_TASK_RECEIPT_MAX_BYTES,
     AGENT_TASK_RECEIPT_RETENTION_COUNTS,
@@ -53,6 +55,7 @@ from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_PROJECTION_FIELDS,
     AGENT_TASK_TRANSITIONS,
+    AWAITING_HUMAN_AGENT_TASK_STATUSES,
     AgentFailureKind,
     AgentTaskAdmissionConflict,
     AgentTaskAlreadyContinued,
@@ -1400,9 +1403,66 @@ class AgentTaskStoreMixin:
         include_hidden: bool = False,
         graph_target: GraphTargetRef | None = None,
     ) -> list[AgentTaskRecord]:
+        """The newest tasks, plus every chat whose latest turn is still open.
+
+        A chat turn that is running or waiting on a person stays listed after
+        newer tasks push it past ``limit``, so the Chats panel can always show
+        it. Only a chat's latest turn counts: a failure followed by a later turn
+        in the same chat is history, not an open item. A latest turn that
+        finished recently stays too, so a client that saw it open also sees it
+        end.
+        """
+        target_json = graph_target.model_dump_json() if graph_target is not None else None
+        open_statuses = sorted(ACTIVE_AGENT_TASK_STATUSES | AWAITING_HUMAN_AGENT_TASK_STATUSES)
+        finished_since = (
+            datetime.fromisoformat(self.now())
+            - timedelta(seconds=AGENT_TASK_LIST_FINISHED_CHAT_SECONDS)
+        ).isoformat()
+        # Each branch is index-backed (graph_runs_project, graph_runs_status,
+        # graph_runs_finished, graph_runs_chat_turn), so the list never ranks a
+        # project's whole chat history; the active-task poll calls it every second.
+        scope = (
+            "{run}.project_id = :project AND (:hidden OR {run}.visible = 1)"
+            " AND (:target IS NULL OR {run}.graph_target_json = :target)"
+        )
+        own_scope, later_scope = scope.format(run="graph_runs"), scope.format(run="later")
+        statuses = ",".join(f":status{index}" for index in range(len(open_statuses)))
         with self.connection() as connection:
             rows = connection.execute(
-                """
+                f"""
+                WITH recent AS (
+                    SELECT operation_id FROM graph_runs
+                    WHERE {own_scope}
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                ),
+                candidates AS (
+                    SELECT operation_id, created_at, 1 AS still_open,
+                           json_extract(request_json, '$.chat_id') AS chat_id
+                    FROM graph_runs
+                    WHERE {own_scope} AND status IN ({statuses})
+                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
+                    UNION ALL
+                    SELECT operation_id, created_at, 0 AS still_open,
+                           json_extract(request_json, '$.chat_id') AS chat_id
+                    FROM graph_runs
+                    WHERE {own_scope} AND finished_at >= :finished_since
+                      AND status NOT IN ({statuses})
+                      AND kind IN ('node_chat', 'project_chat') AND history_only = 0
+                ),
+                open_chats AS (
+                    SELECT operation_id FROM candidates
+                    WHERE chat_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM graph_runs AS later
+                        WHERE {later_scope}
+                          AND json_extract(later.request_json, '$.chat_id') = candidates.chat_id
+                          AND later.kind IN ('node_chat', 'project_chat')
+                          AND (later.created_at, later.operation_id)
+                              > (candidates.created_at, candidates.operation_id)
+                    )
+                    ORDER BY still_open DESC, created_at DESC, operation_id DESC
+                    LIMIT :open_limit
+                )
                 SELECT graph_runs.*,
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
@@ -1413,18 +1473,19 @@ class AgentTaskStoreMixin:
                              )
                        ) AS recovery_abandoned
                 FROM graph_runs
-                WHERE project_id = ? AND (? OR visible = 1)
-                  AND (? IS NULL OR graph_target_json = ?)
+                WHERE operation_id IN (SELECT operation_id FROM recent)
+                   OR operation_id IN (SELECT operation_id FROM open_chats)
                 ORDER BY created_at DESC
-                LIMIT ?
                 """,
-                (
-                    project_id,
-                    int(include_hidden),
-                    graph_target.model_dump_json() if graph_target is not None else None,
-                    graph_target.model_dump_json() if graph_target is not None else None,
-                    max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
-                ),
+                {
+                    "project": project_id,
+                    "hidden": int(include_hidden),
+                    "target": target_json,
+                    "limit": max(1, min(limit, AGENT_TASK_LIST_MAX_LIMIT)),
+                    **{f"status{index}": status for index, status in enumerate(open_statuses)},
+                    "finished_since": finished_since,
+                    "open_limit": AGENT_TASK_LIST_OPEN_CHAT_LIMIT,
+                },
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 

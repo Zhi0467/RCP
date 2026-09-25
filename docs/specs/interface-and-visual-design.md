@@ -117,7 +117,7 @@ jargon. Relation rows open a focused one-hop DAG view.
 
 Node detail is a resizable floating inspection window. Its project-scoped size
 survives minimize/restore and close/reopen, remains reachable after a viewport
-change, and closes when the human enters Chats.
+change, and closes when the human enters Agents.
 
 Node wording correction is a literal human edit, not an agent request. A direct
 prose editor stages the change in the project draft and clears the draft standing
@@ -167,8 +167,20 @@ row when its underlying status can already be inspected, while failures and
 recovery controls stay explicit. The composer is a calm contained writing
 surface rather than a full-width control bar.
 
-At viewport widths of 560px or less, Chats uses a single column. The conversation
-list starts closed behind a **Chats** disclosure above the conversation and
+The **Agents** destination (formerly Chats; the route view is still `chats`) lists
+conversations as an agent-hub panel. Conversations are grouped **Needs you**,
+**Working**, and **Recent**, each in recency order, from the backend's answers on
+the latest turn: a paused, failed, or interrupted turn needs the human; a
+queued, running, or pausing turn is working. Each row is a raised card with a
+state icon, a two-line title, the backend status label as its reason when the
+human is needed, and a provider · mode · repository line (the live phase and
+elapsed time while working). Search narrows by title and chips filter to All,
+Needs you, or Working. Above the conversation, a header names the title,
+provider, model, mode, repository, and chat scope; a needs-you turn adds a banner
+with the backend label and Resume or Retry when the task offers it.
+
+At viewport widths of 560px or less, Agents uses a single column. The conversation
+list starts closed behind an **Agents** disclosure above the conversation and
 closes after selecting a chat. Wider views retain the resizable list and its
 saved collapse preference; changing viewport size does not overwrite that
 preference or the saved list width.
@@ -238,7 +250,7 @@ lists; a watcher that becomes active again is visible regardless of the preferen
 ## Terminals
 
 **Terminals** is a project destination beside Overview, Inbox, Research, Runs,
-Artifacts, Paper, Settings, and Chats when at least one project machine can host
+Artifacts, Paper, Settings, and Agents when at least one project machine can host
 a session. Remote pending and failed probes also keep it visible so their
 status and recovery control remain reachable. It is hidden for empty projects
 or only unavailable local machines. Settings has no terminal control. The empty

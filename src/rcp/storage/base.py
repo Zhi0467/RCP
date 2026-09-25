@@ -57,6 +57,7 @@ class AppStoreBase:
         (20, "lifecycle_notice_acknowledging_turn_v1"),
         (21, "provider_readiness_snapshots_v1"),
         (22, "episode_continuations_v1"),
+        (23, "agent_task_list_indexes_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -573,6 +574,12 @@ class AppStoreBase:
             version=22,
             name="episode_continuations_v1",
             migration=self._migrate_episode_continuations,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=23,
+            name="agent_task_list_indexes_v1",
+            migration=self._migrate_agent_task_list_indexes,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2015,6 +2022,7 @@ class AppStoreBase:
         self._migrate_lifecycle_notice_acknowledging_turn(connection)
         self._migrate_provider_readiness_snapshots(connection)
         self._migrate_episode_continuations(connection)
+        self._migrate_agent_task_list_indexes(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2272,6 +2280,22 @@ class AppStoreBase:
                 PRIMARY KEY(project_id, chat_id)
             )
             """
+        )
+
+    @staticmethod
+    def _migrate_agent_task_list_indexes(connection: sqlite3.Connection) -> None:
+        # The agent task list finds open and just-finished chat turns, and each
+        # chat's later turns, without scanning project history.
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_status ON graph_runs(project_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_finished ON graph_runs(project_id, finished_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_chat_turn "
+            "ON graph_runs(project_id, json_extract(request_json, '$.chat_id'), "
+            "created_at, operation_id)"
         )
 
     @staticmethod

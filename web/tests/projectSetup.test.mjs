@@ -21,6 +21,7 @@ import {
   sshBrowseTargetIdentity,
   stateRepositoryAfterRemoval,
 } from "../src/projectSetup.ts";
+import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -151,7 +152,7 @@ test("a deferred SSH browse response cannot apply after the target inputs change
 });
 
 test("the SSH repository browser does not introduce sub-10px primary or status text", async () => {
-  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+  const styles = withResolvedTypeScale(appStylesheet());
   const start = styles.indexOf(".ssh-repository-browser {");
   const end = styles.indexOf(".setup-field > input", start);
 

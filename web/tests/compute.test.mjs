@@ -7,6 +7,7 @@ import {
   latestPersistedComputeIds,
   reconcileActiveComputeIds,
 } from "../src/compute.ts";
+import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
 
 const connections = [
   { id: "local", name: "Local", kind: "local", ssh_target: "", access_hint: "" },
@@ -104,7 +105,7 @@ test("a compute-settings save weighs the execution machines the backend key cove
 });
 
 test("compute controls introduce no sub-10px primary or status text", () => {
-  const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  const styles = withResolvedTypeScale(appStylesheet());
   const composer = styles.slice(
     styles.indexOf(".chat-compute-picker"),
     styles.indexOf(".artifact-context-chip"),
