@@ -2,11 +2,11 @@
 
 Active:
 
-- [Remote state reads skip the sync when nothing changed](handoff-2026-09-25-remote-state-reads-skip-unchanged-sync.md)
-  — proposed 2026-09-25 and revised after an xhigh review, not implemented. A
-  read of SSH-hosted state compares content digests of the remote tree and the
-  local mirror in one SSH call, and syncs only when they differ, instead of
-  five SSH/rsync steps on every poll.
+- [Runs load from cache and fetch only on change](handoff-2026-09-25-runs-load-from-cache-and-fetch-on-change.md)
+  — proposed 2026-09-25, not implemented. The page keeps each project's Runs
+  data and refetches run lists only when a change counter moves; the server
+  reuses computed run lists; display reads of SSH-hosted state may use a
+  mirror up to 10 s old. State storage and sync do not change.
 
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and
