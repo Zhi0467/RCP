@@ -21,6 +21,7 @@ from rcp.api.index import SpaceRunIndexEntryResponse, _space_run_is_visible
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -1138,6 +1139,7 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
     tmp_path: Path,
     parent_condition: dict[str, object],
     expected_parent_watching: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -1196,8 +1198,26 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         assert cached.status_code == 200
         assert "exp/branch-created" not in cached.json()["graph"]["nodes"]
 
+        workspace = service.history.workspace
+        refresh_if_stale = workspace.refresh_if_stale
+        refresh_bounds: list[float] = []
+
+        def recorded_refresh(max_age_seconds: float) -> bool:
+            refresh_bounds.append(max_age_seconds)
+            return refresh_if_stale(max_age_seconds)
+
+        @contextmanager
+        def forbidden_transaction():
+            raise AssertionError("the Experiment index must open branches read-only")
+            yield
+
+        monkeypatch.setattr(workspace, "refresh_if_stale", recorded_refresh)
+        monkeypatch.setattr(workspace, "transaction", forbidden_transaction)
         response = client.get("/api/episodes", params={"mode": "experiment_loop"})
+        monkeypatch.undo()
         assert response.status_code == 200
+        assert refresh_bounds
+        assert set(refresh_bounds) == {REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS}
         assert len(response.json()) == 1
         entry = response.json()[0]
         assert entry["node"]["id"] == "exp/branch-created"

@@ -833,6 +833,9 @@ non-null. Main-target entries consume the completed project snapshot's
 Experiment-control map; branch entries consume the exact branch read model.
 Episode task rows publish durable actor `role` and lineage `depth`, and episode
 cards consume those fields without interpreting persisted task requests.
+The page keeps each project's episode list, so returning to a project tab shows
+that list at once while it refreshes. A poll never overlaps a list request
+already in flight for the same project; it waits for that request instead.
 Project Runs refreshes this index while visible, so an Experiment dispatched on
 an Auto-research graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped

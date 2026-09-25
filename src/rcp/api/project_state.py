@@ -34,6 +34,7 @@ from rcp.config import load_manifest
 from rcp.core.attention import project_graph_mutation_availability
 from rcp.core.transition_models import GraphMutationAvailability
 from rcp.history.branches import BranchHistoryManager
+from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
 from rcp.repository_preview import (
@@ -143,12 +144,18 @@ _BRANCH_HEARTBEATS: dict[
 def _branch_revision(
     project_id: str, branch_id: str, catalog: ProjectCatalog, store: AppStore
 ) -> dict[str, object]:
-    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    service = get_graph_service(
+        catalog,
+        project_id,
+        branch_id,
+        initialize=False,
+        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+    )
     history = service.history
     assert isinstance(history, BranchHistoryManager)
     canonical_project_id = catalog.resolve_project_id(project_id)
     with history.workspace.snapshot_lock:
-        if not history.workspace.refresh_if_stale():
+        if not history.workspace.refresh_if_stale(REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS):
             raise StateUnavailable("The episode graph could not confirm a current snapshot.")
         signature = history.retained_patch_signature()
         remembered = _BRANCH_HEARTBEATS.get((canonical_project_id, branch_id))

@@ -3,11 +3,12 @@
 Active:
 
 - [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
-  — proposed 2026-09-25 and revised after two xhigh reviews, not implemented.
-  The page keeps each project's Runs data and never has two requests in
-  flight for one list; the run lists compute less after profiling; display
-  reads of SSH-hosted state may use a mirror up to 10 s old. Timer polls,
-  state storage, and sync do not change. One pull request.
+  — implemented 2026-09-25 on one pull request and verified on copied
+  team-server data. A tab return shows the kept Runs list at once, one list
+  never has two requests in flight, the Experiment index opens branches
+  read-only, and display reads of SSH-hosted state may use a mirror up to
+  10 s old. Remaining: the team-server measurement after release, and first
+  open still at 3.5 s against a 2 s target.
 
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and

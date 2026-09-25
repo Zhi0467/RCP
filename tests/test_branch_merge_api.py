@@ -26,6 +26,10 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import BranchMergeAlreadyCommitted
+from rcp.limits import (
+    REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+    REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+)
 from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     AutoResearchStartRequest,
@@ -300,10 +304,12 @@ def test_episode_list_reads_all_branches_from_one_snapshot_without_publishing(
     refresh_if_stale = workspace.refresh_if_stale
     materialize = harness.service.history.materialize
     calls = {"refresh": 0, "main_replay": 0}
+    refresh_bounds: list[float] = []
 
-    def counted_refresh() -> bool:
+    def counted_refresh(max_age_seconds: float) -> bool:
         calls["refresh"] += 1
-        return refresh_if_stale()
+        refresh_bounds.append(max_age_seconds)
+        return refresh_if_stale(max_age_seconds)
 
     def counted_materialize(*args, **kwargs):
         calls["main_replay"] += 1
@@ -330,6 +336,7 @@ def test_episode_list_reads_all_branches_from_one_snapshot_without_publishing(
     assert listed.status_code == 200, listed.text
     assert len(listed.json()) == 2
     assert calls == {"refresh": 1, "main_replay": 1}
+    assert refresh_bounds == [REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS]
 
 
 def _current_receipt(harness: _BranchHarness, *, task_id: str) -> BranchMergeReceipt:
@@ -805,16 +812,30 @@ def test_merge_refuses_an_active_or_unchanged_branch(
     tmp_path: Path,
     change: BranchChange,
     ended: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     harness = _create_branch_harness(manifest, tmp_path, change=change, ended=ended)
 
     summary = _episode_payload(harness)["graph_branch"]
     assert summary["merge_eligible"] is False
+    workspace = harness.service.history.workspace
+    refresh_if_stale = workspace.refresh_if_stale
+    refresh_bounds: list[float] = []
+
+    def recorded_refresh(max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS) -> bool:
+        refresh_bounds.append(max_age_seconds)
+        return refresh_if_stale(max_age_seconds)
+
+    monkeypatch.setattr(workspace, "refresh_if_stale", recorded_refresh)
     refused = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
+    monkeypatch.undo()
 
     assert refused.status_code == 409
+    # Merge admission gates on the branch summary, so it keeps the short window.
+    assert refresh_bounds
+    assert set(refresh_bounds) == {REMOTE_STATE_RECONCILE_WINDOW_SECONDS}
     assert refused.json()["detail"] == summary["merge_blocked_reason"]
     if ended:
         assert "no changes" in refused.json()["detail"]

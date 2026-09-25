@@ -98,6 +98,7 @@ from rcp.limits import (
     CHAT_PREVIEW_MAX_CHARS,
     CHAT_TITLE_MAX_CHARS,
     COMPUTE_CONNECTION_MAX_COUNT,
+    REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -1148,6 +1149,7 @@ class ProjectService:
         *,
         expected_episode_id: str | None = None,
         initialize: bool = True,
+        refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> ProjectService:
         """Return a service whose graph reads and writes stay on one exact target."""
 
@@ -1161,6 +1163,7 @@ class ProjectService:
             expected_episode_id=expected_episode_id,
             expected_project_id=self._project_id,
             initialize=initialize,
+            refresh_max_age_seconds=refresh_max_age_seconds,
         )
         return ProjectService(
             history.manifest,

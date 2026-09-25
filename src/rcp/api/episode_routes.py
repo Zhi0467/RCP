@@ -37,6 +37,10 @@ from rcp.api.identity import IdentityAccess
 from rcp.artifacts import AgentArtifactDescriptor, artifact_viewer_document, html_preview_document
 from rcp.background import BackgroundAgentTasks
 from rcp.keyed_locks import KeyedLocks
+from rcp.limits import (
+    REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+    REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+)
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchStartRequest, settle_auto_research_stop
 from rcp.runs.auto_research_admission import (
@@ -84,15 +88,27 @@ class ArchiveEpisodeBody(BaseModel):
 def _branch_summaries(
     store: AppStore,
     catalog: ProjectCatalog,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> partial:
-    return partial(graph_branch_summaries, store=store, catalog=catalog)
+    return partial(
+        graph_branch_summaries,
+        store=store,
+        catalog=catalog,
+        refresh_max_age_seconds=refresh_max_age_seconds,
+    )
 
 
 def _branch_summary(
     store: AppStore,
     catalog: ProjectCatalog,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> partial:
-    return partial(graph_branch_summary, store=store, catalog=catalog)
+    return partial(
+        graph_branch_summary,
+        store=store,
+        catalog=catalog,
+        refresh_max_age_seconds=refresh_max_age_seconds,
+    )
 
 
 @router.get(
@@ -117,14 +133,18 @@ def episodes(
                 store,
                 project_id,
                 episode,
-                branch_summary=_branch_summary(store, catalog),
+                branch_summary=_branch_summary(
+                    store, catalog, REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+                ),
             )
         ]
     return serialize_episodes(
         store,
         project_id,
         mode=mode,
-        branch_summaries=_branch_summaries(store, catalog),
+        branch_summaries=_branch_summaries(
+            store, catalog, REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+        ),
     )
 
 

@@ -1,10 +1,19 @@
 # Runs load without waiting
 
-Status on 2026-09-25: design proposed and revised after two xhigh Codex design
-reviews, not implemented. Waiting for the human's start.
+Status on 2026-09-25: implemented on one pull request and verified on copied
+team-server data. Two things remain.
 
-- Implemented: nothing.
-- Remains: everything below.
+- Implemented and verified:
+  - the per-project Runs cache and one request per list (changes 1 and 2);
+  - branches open read-only in the Experiment index (change 3);
+  - the 10 s display bound (change 4).
+  Results are under [Results on copied data](#results-on-copied-data).
+- Remains:
+  - Measure the team server after the release that carries this pull request.
+  - First open of a busy project's Runs still takes 3.5 s on the copy, above
+    the 2 s target. The rest of the project-open burst queues on the same
+    server. Deferring the requests the visible panel does not need is the
+    next step, proposed separately.
 - Settled (human, 2026-09-25):
   - State storage, sync, locking, and publication stay as they are. This work
     is only caching and when to fetch.
@@ -114,11 +123,8 @@ known.
   replays main again. For SSH state, that transaction always takes the lock
   and runs rsync, once per branch-target Experiment. Every other branch read
   route already passes `initialize=False`. Pass it here too.
-- **The revision poll builds live controls.** `/cached/revision` calls
-  `cached_project_snapshot()`, which completes the project's live Experiment
-  controls on every call. The poll needs only the revision, the snapshot
-  freshness, and the last sync time. Read those without completing the rest.
-  Keep its existing reconciliation scheduling.
+- **The revision poll builds live controls.** Measured at 14 ms per call on
+  the copy, so it is not a real cost and stays unchanged.
 
 Any other cost the profile finds follows the same rule: compute less for the
 same answer. Do not add a response cache keyed on change signals.
@@ -154,6 +160,29 @@ Writes still sync first through `transaction()`, unchanged. The explicit
   after changes 1–4, and propose it separately only if the burst still costs
   seconds.
 
+## Results on copied data
+
+A copy of the team-server data (database and state repositories), served on
+this machine, driven through the same journey on `main` and on this branch.
+
+| Step 1 profile, in process | `main` | This branch |
+|---|---|---|
+| `experiment-episodes`, one project | 1.2 s (36 graph replays) | 0.68 s |
+| Experiment index, all projects | 1.2 s | 0.70 s |
+| `episodes`, one project | 0.7 s | 0.7 s |
+| `cached/revision` | 14 ms | 14 ms |
+
+| Served-app journey, the busy project | `main` | This branch |
+|---|---|---|
+| Open Runs, list complete | 5.2 s | 3.5 s |
+| Switch project tabs and come back | 4.5 s | 0.05 s |
+| Switch panels and back | 0.05 s | 0.05 s |
+| Two episode-list requests for one project in flight | yes | never |
+
+In the episode list, 963 SQLite queries on 384 connections cost 0.44 s, and
+the branch reads cost 0.37 s. During the burst, chats, history summaries,
+readiness, and usage each take 1.6–2 s against 0.1–0.3 s alone.
+
 ## Invariants touched
 
 - 6 (one canonical state repository; `StateWorkspace` owns locking and
@@ -174,10 +203,8 @@ Focused tests:
 2. Python:
    - the Experiment index with a branch-target Experiment opens no write
      transaction;
-   - the revision poll does not complete live controls;
-   - a display route within 10 s of the last sync runs no SSH;
-   - a gating read after 2 s still syncs, including through the shared
-     branch summary and `current_materialization()`.
+   - the episode list and the Experiment index refresh with the 10 s bound;
+   - merge admission, which gates on the same branch summary, keeps 2 s.
 
 Served-app journeys, with the `fetch`-wrapping trace used for the
 measurements above:

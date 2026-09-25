@@ -15,6 +15,7 @@ from rcp.attachments import ChatAttachmentStore
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
+from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.server_ops.backup import BackupArchiveReceipt
@@ -172,6 +173,7 @@ def get_graph_service(
     branch_id: str | None = None,
     *,
     initialize: bool = True,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> ProjectService:
     """Resolve the normal graph owner on an exact project-owned branch or main."""
 
@@ -183,6 +185,7 @@ def get_graph_service(
             GraphTargetRef(kind="branch", branch_id=branch_id),
             expected_episode_id=branch_id,
             initialize=initialize,
+            refresh_max_age_seconds=refresh_max_age_seconds,
         )
     except (KeyError, ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="Episode graph not found") from exc
