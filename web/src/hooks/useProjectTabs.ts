@@ -56,26 +56,14 @@ export function cacheProjectTabState<T>(
   }
 }
 
-/** The graph target a project was last left on, from the most recent cached state. */
-export function lastCachedGraphTarget<T extends { project: ProjectSnapshot }>(
-  cache: Map<string, T>,
-  projectId: string,
-): GraphTargetRef {
-  let target = MAIN_GRAPH;
-  for (const state of cache.values()) {
-    if (state.project.id === projectId) target = state.project.graph_target;
-  }
-  return target;
-}
-
-/** The route that reopens a project where its human left it. */
-export function projectReturnHash<T extends { project: ProjectSnapshot }>(
-  cache: Map<string, T>,
+/** The route that reopens a project on the graph target its human last left it on. */
+export function projectReturnHash(
+  leftGraphTargets: ReadonlyMap<string, GraphTargetRef>,
   projectId: string,
 ): string {
   return graphTargetUrl(
     `/projects/${encodeURIComponent(projectId)}`,
-    lastCachedGraphTarget(cache, projectId),
+    leftGraphTargets.get(projectId) ?? MAIN_GRAPH,
   );
 }
 
@@ -177,6 +165,8 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
   const activeProjectId = useRef(projectId);
   const openProjectTabsRef = useRef(openProjectTabs);
   const projectTabStatesRef = useRef(new Map<string, T>());
+  // Where the human left each project; background cache writes never change it.
+  const leftGraphTargetsRef = useRef(new Map<string, GraphTargetRef>());
   const projectCacheHeartbeatInFlight = useRef(new Map<string, Promise<void>>());
   const experimentLoopRefreshGeneration = useRef(0);
   const spaceRunRefreshGeneration = useRef(0);
@@ -287,7 +277,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       setSetupOpen(false);
       window.location.hash = experimentRoute
         ? experimentBoardHref(id, experimentRoute).slice(1)
-        : projectReturnHash(projectTabStatesRef.current, id);
+        : projectReturnHash(leftGraphTargetsRef.current, id);
     },
     [setTabs, tabForProject],
   );
@@ -305,12 +295,13 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       for (const [key, state] of projectTabStatesRef.current) {
         if (state.project.id === id) projectTabStatesRef.current.delete(key);
       }
+      leftGraphTargetsRef.current.delete(id);
       setTabs(result.tabs);
       if (id !== activeProjectId.current) return true;
       if (result.activeProjectId) {
         setSetupOpen(false);
         window.location.hash = projectReturnHash(
-          projectTabStatesRef.current,
+          leftGraphTargetsRef.current,
           result.activeProjectId,
         );
       } else {
@@ -330,6 +321,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       for (const [key, state] of projectTabStatesRef.current) {
         if (state.project.id === id) projectTabStatesRef.current.delete(key);
       }
+      leftGraphTargetsRef.current.delete(id);
       setTabs(closeProjectTab(openProjectTabsRef.current, activeProjectId.current, id).tabs);
     },
     [setTabs],
@@ -351,6 +343,9 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
       graphSessionKey(id, state.project.graph_target),
       state,
     );
+  }, []);
+  const rememberLeftGraphTarget = useCallback((id: string, target: GraphTargetRef) => {
+    leftGraphTargetsRef.current.set(id, target);
   }, []);
   const cachedProjectStateForOpen = useCallback(
     (id: string, graphTarget: GraphTargetRef = MAIN_GRAPH) =>
@@ -468,6 +463,7 @@ export function useProjectTabs<T extends { project: ProjectSnapshot }>({
     restoreProjectHeader,
     toggleProjectHeader,
     cacheProjectState,
+    rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
     isProjectTabOpen,

@@ -924,6 +924,7 @@ export default function App() {
     restoreProjectHeader,
     toggleProjectHeader,
     cacheProjectState,
+    rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
     isProjectTabOpen,
@@ -1227,6 +1228,7 @@ export default function App() {
       const current = currentProjectStateRef.current;
       if (!current || current.project.id !== id) return;
       const selection = captureProjectSelection(id, current.project.graph_target);
+      rememberLeftGraphTarget(id, current.project.graph_target);
       cacheProjectState(id, {
         ...current,
         ...selection,
@@ -1236,7 +1238,7 @@ export default function App() {
         watchers: [...current.watchers],
       });
     },
-    [cacheProjectState, captureProjectSelection],
+    [cacheProjectState, captureProjectSelection, rememberLeftGraphTarget],
   );
 
   useEffect(() => {
