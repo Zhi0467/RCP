@@ -3,8 +3,10 @@
 Date: 2026-09-25
 Status: design confirmed by the human on 2026-09-25 against a rendered mockup of
 the Agents panel, then revised after an xhigh design review whose findings were
-verified against the code. Implementation started 2026-09-25 on this pull
-request; nothing has landed yet.
+verified against the code. All three parts and the task-list fix are
+implemented on this pull request and driven on a seeded throwaway server at
+375px and 1440px, light and dark. Remaining: the real-iPhone journey below, and
+a human screenshot review of the 1px type snaps across destinations.
 
 One pull request, in this order:
 
