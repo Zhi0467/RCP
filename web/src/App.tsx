@@ -1225,10 +1225,11 @@ export default function App() {
   const rememberProjectState = useCallback(
     (id: string | null) => {
       if (!id) return;
+      // The routed target, so a branch still loading is remembered too.
+      rememberLeftGraphTarget(id, activeGraphTargetRef.current);
       const current = currentProjectStateRef.current;
       if (!current || current.project.id !== id) return;
       const selection = captureProjectSelection(id, current.project.graph_target);
-      rememberLeftGraphTarget(id, current.project.graph_target);
       cacheProjectState(id, {
         ...current,
         ...selection,
