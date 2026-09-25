@@ -236,15 +236,6 @@ impl TeamSessionState {
             response_json(response, "project provisioning request readback").await?;
         if readback.request_id != request_id
             || readback.target_space_id != connection.expected_space_id
-            || !matches!(
-                readback.status.as_str(),
-                "waiting_for_server_setup"
-                    | "setup_in_progress"
-                    | "operator_action_needed"
-                    | "ready_for_review"
-                    | "completed"
-                    | "cancelled"
-            )
         {
             return Err("the project provisioning readback does not match this team space".into());
         }
@@ -1347,21 +1338,6 @@ fn parse_target_transfer_readback(
         return Err("the target transfer request is not a target request".into());
     }
     let phase = text("phase")?;
-    if !matches!(
-        phase,
-        "awaiting_link"
-            | "linked"
-            | "target_admitted"
-            | "source_released"
-            | "source_fenced"
-            | "archive_bound"
-            | "target_activated"
-            | "cleanup_acknowledged"
-            | "completed"
-            | "operator_action_needed"
-    ) {
-        return Err("the target transfer request has an invalid durable phase".into());
-    }
     let linked_request_id = text("linked_request_id")?.to_string();
     validate_uuid4(&linked_request_id, "source transfer request identity")?;
     let target_space_id = text("target_space_id")?.to_string();

@@ -122,7 +122,7 @@ pub async fn run_project_provision(
         .take()
         .ok_or_else(|| "the server command stderr pipe is unavailable".to_string())?;
     let stderr_task = tauri::async_runtime::spawn(read_capped(stderr, MAX_STDERR_BYTES));
-    let events = match stream_events(stdout, on_event).await {
+    let events = match stream_events(stdout, on_event, PROVISION_COMMAND).await {
         Ok(events) => events,
         Err(error) => {
             let _ = child.kill().await;
@@ -144,9 +144,9 @@ pub async fn run_project_provision(
             diagnostic_suffix(&stderr_text)
         ));
     }
-    validate_terminal_events(&events, status.code())?;
     let exit_code = status
         .code()
+        .filter(|code| (0..=125).contains(code))
         .ok_or_else(|| "the server command ended without an exit code".to_string())?;
     Ok((exit_code, events.len()))
 }
@@ -231,7 +231,7 @@ async fn run_project_transfer_import_with_idle_timeout(
         expected_archive_size_bytes,
         idle_timeout,
     );
-    let events_future = stream_transfer_events(stdout, on_event);
+    let events_future = stream_events(stdout, on_event, TRANSFER_IMPORT_COMMAND);
     tokio::pin!(archive_future);
     tokio::pin!(events_future);
     let stderr_task = tauri::async_runtime::spawn(read_capped(stderr, MAX_STDERR_BYTES));
@@ -324,9 +324,9 @@ async fn run_project_transfer_import_with_idle_timeout(
             diagnostic_suffix(&stderr_text)
         ));
     }
-    validate_transfer_terminal_events(&events, status.code())?;
     let exit_code = status
         .code()
+        .filter(|code| (0..=125).contains(code))
         .ok_or_else(|| "the transfer command ended without an exit code".to_string())?;
     Ok((exit_code, events.len()))
 }
@@ -573,21 +573,7 @@ async fn read_capped(mut reader: impl AsyncRead + Unpin, limit: usize) -> Result
 async fn stream_events(
     reader: impl AsyncRead + Unpin,
     on_event: &Channel<Value>,
-) -> Result<Vec<Value>, String> {
-    stream_events_inner(reader, on_event, validate_event_prefix).await
-}
-
-async fn stream_transfer_events(
-    reader: impl AsyncRead + Unpin,
-    on_event: &Channel<Value>,
-) -> Result<Vec<Value>, String> {
-    stream_events_inner(reader, on_event, validate_transfer_event_prefix).await
-}
-
-async fn stream_events_inner(
-    reader: impl AsyncRead + Unpin,
-    on_event: &Channel<Value>,
-    validate_prefix: fn(&[Value]) -> Result<(), String>,
+    command: &str,
 ) -> Result<Vec<Value>, String> {
     let mut lines = BufReader::new(reader.take((MAX_STDOUT_BYTES + 1) as u64)).lines();
     let mut events = Vec::new();
@@ -611,7 +597,7 @@ async fn stream_events_inner(
         if events.len() > MAX_EVENTS {
             return Err("the server command returned too many progress events".into());
         }
-        validate_prefix(&events)?;
+        validate_event_prefix(&events, command)?;
         on_event
             .send(events.last().unwrap().clone())
             .map_err(|_| "the server command progress receiver closed".to_string())?;
@@ -619,22 +605,12 @@ async fn stream_events_inner(
     Ok(events)
 }
 
-fn validate_event_prefix(events: &[Value]) -> Result<(), String> {
-    validate_event_prefix_inner(events, validate_provision_common)
-}
-
-fn validate_transfer_event_prefix(events: &[Value]) -> Result<(), String> {
-    validate_event_prefix_inner(events, validate_transfer_common)
-}
-
-fn validate_event_prefix_inner(
-    events: &[Value],
-    validate_common: fn(&Value, &str) -> Result<(), String>,
-) -> Result<(), String> {
+// Progress is presentation input; authenticated durable readback owns success.
+fn validate_event_prefix(events: &[Value], command: &str) -> Result<(), String> {
     let Some(first) = events.first() else {
         return Err("the server command returned no structured progress".into());
     };
-    validate_common(first, "plan")?;
+    validate_common(first, "plan", command)?;
     let steps = first
         .get("steps")
         .and_then(Value::as_array)
@@ -642,193 +618,39 @@ fn validate_event_prefix_inner(
     if steps.is_empty() || steps.len() > MAX_STEPS {
         return Err("the server command plan has an invalid step count".into());
     }
-    for (index, step) in steps.iter().enumerate() {
-        validate_step(step, index + 1, "pending")?;
+    for step in steps {
+        validate_step(step)?;
     }
-    let mut latest = vec![None; steps.len()];
-    let mut last_number = 0_usize;
-    let mut terminated = false;
     for event in &events[1..] {
-        validate_common(event, "step")?;
+        validate_common(event, "step", command)?;
         let step = event
             .get("step")
             .ok_or_else(|| "the server command step event has no step".to_string())?;
-        let number = step
-            .get("number")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "the server command step has no number".to_string())?;
-        if number == 0 || number as usize > steps.len() {
-            return Err("the server command step is outside its plan".into());
-        }
-        if terminated {
-            return Err("the server command continued after a terminal step".into());
-        }
-        let number = number as usize;
-        if number < last_number {
-            return Err("the server command steps moved backwards".into());
-        }
-        if number > last_number
-            && latest[..number - 1]
-                .iter()
-                .any(|state| state.as_deref() != Some("succeeded"))
-        {
-            return Err("the server command began a step before earlier steps succeeded".into());
-        }
-        let state = step
-            .get("state")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "the server command step has no state".to_string())?;
-        if state == "pending" {
-            return Err("a server command progress step cannot remain pending".into());
-        }
-        validate_step(step, number, state)?;
-        let planned = &steps[number - 1];
-        // A pause is named for the human's task, not for the machine check it
-        // interrupted, so only a human operator action may retitle its step.
-        // Everything that identifies the step stays pinned.
-        let renames = state == "operator_action_needed"
-            && step.get("performed_by").and_then(Value::as_str) == Some("human");
-        let pinned: &[&str] = if renames {
-            &["target", "phase", "expected_success"]
-        } else {
-            &["title", "purpose", "target", "phase", "expected_success"]
-        };
-        for field in pinned {
-            if step.get(field) != planned.get(field) {
-                return Err(format!("the server command changed its planned {field}"));
-            }
-        }
-        let planned_actor = planned.get("performed_by").and_then(Value::as_str);
-        let actor = step.get("performed_by").and_then(Value::as_str);
-        if actor != planned_actor
-            && !(planned_actor == Some("system")
-                && actor == Some("human")
-                && state == "operator_action_needed")
-        {
-            return Err(
-                "only an operator-action pause may transfer a server step to a human".into(),
-            );
-        }
-        let previous = latest[number - 1].as_deref();
-        if state == "running" && previous.is_some() {
-            return Err("the server command started one step more than once".into());
-        }
-        if state == "succeeded" && previous != Some("running") {
-            return Err("the server command succeeded a step before starting it".into());
-        }
-        if matches!(
-            previous,
-            Some("succeeded" | "failed" | "operator_action_needed" | "unavailable")
-        ) {
-            return Err("the server command changed a completed step".into());
-        }
-        latest[number - 1] = Some(state.to_string());
-        last_number = number;
-        terminated = matches!(state, "failed" | "operator_action_needed" | "unavailable");
+        validate_step(step)?;
     }
     Ok(())
 }
 
-fn validate_terminal_events(events: &[Value], exit_code: Option<i32>) -> Result<(), String> {
-    validate_terminal_events_inner(events, exit_code, validate_event_prefix)
-}
-
-fn validate_transfer_terminal_events(
-    events: &[Value],
-    exit_code: Option<i32>,
-) -> Result<(), String> {
-    validate_terminal_events_inner(events, exit_code, validate_transfer_event_prefix)
-}
-
-fn validate_terminal_events_inner(
-    events: &[Value],
-    exit_code: Option<i32>,
-    validate_prefix: fn(&[Value]) -> Result<(), String>,
-) -> Result<(), String> {
-    validate_prefix(events)?;
-    let exit_code = exit_code
-        .filter(|code| (0..=125).contains(code))
-        .ok_or_else(|| "the server command ended without a valid exit code".to_string())?;
-    let final_state = events
-        .last()
-        .and_then(|event| event.get("step"))
-        .and_then(|step| step.get("state"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| "the server command did not end with a step event".to_string())?;
-    if !matches!(
-        final_state,
-        "succeeded" | "failed" | "operator_action_needed" | "unavailable"
-    ) {
-        return Err("the server command did not end in a durable terminal state".into());
-    }
-    let steps = events[0]["steps"].as_array().unwrap();
-    let mut latest = vec![None; steps.len()];
-    for event in &events[1..] {
-        let step = &event["step"];
-        let number = step["number"].as_u64().unwrap() as usize;
-        latest[number - 1] = step["state"].as_str();
-    }
-    let all_succeeded = latest.iter().all(|state| *state == Some("succeeded"));
-    if exit_code == 0 && !all_succeeded {
-        return Err("the server command exited successfully before every step succeeded".into());
-    }
-    if exit_code != 0 && all_succeeded {
-        return Err("the server command completed every step with a failing exit code".into());
-    }
-    Ok(())
-}
-
-fn validate_provision_common(event: &Value, expected: &str) -> Result<(), String> {
+fn validate_common(event: &Value, expected: &str, command: &str) -> Result<(), String> {
     if event.get("version").and_then(Value::as_u64) != Some(1)
         || event.get("event").and_then(Value::as_str) != Some(expected)
-        || event.get("command").and_then(Value::as_str) != Some(PROVISION_COMMAND)
-        || event
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .is_none_or(|timestamp| timestamp.is_empty() || timestamp.len() > 64)
+        || event.get("command").and_then(Value::as_str) != Some(command)
+        || !event.get("timestamp").is_some_and(Value::is_string)
     {
         return Err("the server command returned an incompatible progress event".into());
     }
     Ok(())
 }
 
-fn validate_transfer_common(event: &Value, expected: &str) -> Result<(), String> {
-    if event.get("version").and_then(Value::as_u64) != Some(1)
-        || event.get("event").and_then(Value::as_str) != Some(expected)
-        || event.get("command").and_then(Value::as_str) != Some(TRANSFER_IMPORT_COMMAND)
-        || event
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .is_none_or(|timestamp| timestamp.is_empty() || timestamp.len() > 64)
-    {
-        return Err("the server command returned an incompatible progress event".into());
-    }
-    Ok(())
-}
-
-fn validate_step(step: &Value, expected_number: usize, expected_state: &str) -> Result<(), String> {
+fn validate_step(step: &Value) -> Result<(), String> {
     let object = step
         .as_object()
         .ok_or_else(|| "the server command returned an invalid step".to_string())?;
-    if object.get("number").and_then(Value::as_u64) != Some(expected_number as u64)
-        || object.get("state").and_then(Value::as_str) != Some(expected_state)
-        || !matches!(
-            expected_state,
-            "pending"
-                | "running"
-                | "succeeded"
-                | "failed"
-                | "operator_action_needed"
-                | "unavailable"
-        )
-        || !matches!(
-            object.get("performed_by").and_then(Value::as_str),
-            Some("system" | "human")
-        )
-    {
-        return Err("the server command returned a mismatched step".into());
+    if !object.get("number").is_some_and(Value::is_u64) {
+        return Err("the server command returned an invalid step number".into());
     }
     for field in [
+        "state",
         "title",
         "purpose",
         "performed_by",
@@ -836,11 +658,7 @@ fn validate_step(step: &Value, expected_number: usize, expected_state: &str) -> 
         "expected_success",
         "message",
     ] {
-        if object
-            .get(field)
-            .and_then(Value::as_str)
-            .is_none_or(|value| value.is_empty() || value.len() > 4096 || has_control(value))
-        {
+        if object.get(field).and_then(Value::as_str).is_none() {
             return Err("the server command returned invalid step text".into());
         }
     }
@@ -850,15 +668,6 @@ fn validate_step(step: &Value, expected_number: usize, expected_state: &str) -> 
         || !object.get("resume_argv").is_some_and(Value::is_array)
     {
         return Err("the server command returned an incomplete step".into());
-    }
-    let actions_empty = object["actions"].as_array().unwrap().is_empty();
-    let resume_empty = object["resume_argv"].as_array().unwrap().is_empty();
-    if expected_state == "operator_action_needed" {
-        if object["performed_by"] != "human" || actions_empty || resume_empty {
-            return Err("the server command returned an incomplete operator action".into());
-        }
-    } else if !actions_empty || !resume_empty {
-        return Err("only an operator action may carry actions or a resume command".into());
     }
     Ok(())
 }
@@ -1190,66 +999,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn structured_progress_requires_one_plan_and_terminal_step() {
-        let plan = serde_json::json!({
-            "version": 1,
-            "event": "plan",
-            "command": "server project provision",
-            "timestamp": "2026-08-30T00:00:00Z",
-            "steps": [step(1, "pending")],
-        });
-        let running = serde_json::json!({
-            "version": 1,
-            "event": "step",
-            "command": "server project provision",
-            "timestamp": "2026-08-30T00:00:01Z",
-            "step": step(1, "running"),
-        });
-        let final_event = serde_json::json!({
-            "version": 1,
-            "event": "step",
-            "command": "server project provision",
-            "timestamp": "2026-08-30T00:00:02Z",
-            "step": step(1, "operator_action_needed"),
-        });
-        let events = vec![plan, running, final_event];
-        validate_terminal_events(&events, Some(75)).unwrap();
-        assert!(validate_terminal_events(&events[..1], Some(0)).is_err());
-    }
-
-    #[test]
-    fn structured_progress_preserves_plan_order_state_and_exit_meaning() {
-        let plan = serde_json::json!({
-            "version": 1,
-            "event": "plan",
-            "command": "server project provision",
-            "timestamp": "2026-08-30T00:00:00Z",
-            "steps": [step(1, "pending"), step(2, "pending")],
-        });
-        let event = |number, state| {
-            serde_json::json!({
-                "version": 1,
-                "event": "step",
-                "command": "server project provision",
-                "timestamp": "2026-08-30T00:00:01Z",
-                "step": step(number, state),
-            })
-        };
-
-        assert!(validate_event_prefix(&[plan.clone(), event(2, "running")]).is_err());
-        let mut changed = event(1, "running");
-        changed["step"]["target"]["host"] = Value::String("other".into());
-        assert!(validate_event_prefix(&[plan.clone(), changed]).is_err());
-        let complete = vec![
-            plan,
-            event(1, "running"),
-            event(1, "succeeded"),
-            event(2, "running"),
-            event(2, "succeeded"),
-        ];
-        validate_terminal_events(&complete, Some(0)).unwrap();
-        assert!(validate_terminal_events(&complete, Some(1)).is_err());
+    #[tokio::test]
+    async fn failed_progress_accepts_recovery_actions_and_long_multiline_text() {
+        for command in [PROVISION_COMMAND, TRANSFER_IMPORT_COMMAND] {
+            let mut failed = step(1, "failed");
+            let recovery = step(1, "operator_action_needed");
+            failed["actions"] = serde_json::json!([{
+                "kind": "external", "instruction": "Repair the server."
+            }]);
+            failed["resume_argv"] = recovery["resume_argv"].clone();
+            failed["message"] = Value::String("恢复\n".repeat(700) + "Retry");
+            let events = [
+                serde_json::json!({"version": 1, "event": "plan", "command": command,
+                    "timestamp": "2026-08-30T00:00:00Z", "steps": [step(1, "pending")]}),
+                serde_json::json!({"version": 1, "event": "step", "command": command,
+                    "timestamp": "2026-08-30T00:00:01Z", "step": step(1, "running")}),
+                serde_json::json!({"version": 1, "event": "step", "command": command,
+                    "timestamp": "2026-08-30T00:00:02Z", "step": failed}),
+            ];
+            let input = events
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let channel = Channel::new(|_| Ok(()));
+            assert_eq!(
+                stream_events(input.as_bytes(), &channel, command)
+                    .await
+                    .unwrap(),
+                events
+            );
+        }
     }
 
     #[test]
@@ -1276,50 +1056,10 @@ mod tests {
             "step": step(1, "succeeded"),
         });
         let events = vec![plan, running, succeeded];
-        validate_transfer_terminal_events(&events, Some(0)).unwrap();
+        validate_event_prefix(&events, TRANSFER_IMPORT_COMMAND).unwrap();
         let mut wrong = events[0].clone();
         wrong["command"] = Value::String(PROVISION_COMMAND.into());
-        assert!(validate_transfer_event_prefix(&[wrong]).is_err());
-    }
-
-    #[test]
-    fn only_a_human_pause_may_rename_its_planned_step() {
-        let plan = serde_json::json!({
-            "version": 1,
-            "event": "plan",
-            "command": "server project provision",
-            "timestamp": "2026-08-30T00:00:00Z",
-            "steps": [step(1, "pending")],
-        });
-        let event = |state| {
-            serde_json::json!({
-                "version": 1,
-                "event": "step",
-                "command": "server project provision",
-                "timestamp": "2026-08-30T00:00:01Z",
-                "step": step(1, state),
-            })
-        };
-
-        // A pause is named for the human's task, not the check it interrupted.
-        let mut paused = event("operator_action_needed");
-        paused["step"]["title"] = Value::String("Add a deploy key on GitHub".into());
-        paused["step"]["purpose"] = Value::String("Give the checkout its write identity.".into());
-        validate_event_prefix(&[plan.clone(), paused.clone()]).unwrap();
-
-        // Nothing else may rename a step, and a pause may still not become a
-        // different step.
-        let mut renamed_while_running = event("running");
-        renamed_while_running["step"]["title"] = Value::String("Something else".into());
-        assert!(validate_event_prefix(&[plan.clone(), renamed_while_running]).is_err());
-
-        let mut retargeted = paused.clone();
-        retargeted["step"]["target"]["host"] = Value::String("other".into());
-        assert!(validate_event_prefix(&[plan.clone(), retargeted]).is_err());
-
-        let mut rephased = paused;
-        rephased["step"]["phase"] = Value::String("other".into());
-        assert!(validate_event_prefix(&[plan, rephased]).is_err());
+        assert!(validate_event_prefix(&[wrong], TRANSFER_IMPORT_COMMAND).is_err());
     }
 
     #[test]
@@ -1334,7 +1074,9 @@ mod tests {
     async fn one_unterminated_progress_line_is_bounded_before_parsing() {
         let input = vec![b'x'; MAX_STDOUT_BYTES + 1];
         let channel = Channel::<Value>::new(|_| Ok(()));
-        let error = stream_events(input.as_slice(), &channel).await.unwrap_err();
+        let error = stream_events(input.as_slice(), &channel, PROVISION_COMMAND)
+            .await
+            .unwrap_err();
         assert!(error.contains("bounded output limit"));
     }
 
