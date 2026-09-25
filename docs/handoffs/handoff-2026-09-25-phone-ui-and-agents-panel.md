@@ -1,0 +1,187 @@
+# The phone works, and Chats shows every agent at a glance
+
+Date: 2026-09-25
+Status: design confirmed by the human on 2026-09-25 against a rendered mockup of
+the Agents panel, then revised after an xhigh design review whose findings were
+verified against the code. Nothing is implemented.
+
+One pull request, in this order:
+
+1. **Style foundation.** Size tokens, one phone width and one tablet width,
+   one file per view. Desktop looks the same afterwards, apart from accepted
+   1px text shifts.
+2. **Phone pass.** Inbox, Runs, Chat, and Settings work at phone width.
+3. **Agents panel.** The Chats list becomes an agent-hub list: grouped by what
+   needs you, with a state and a reason on every row.
+
+Inbox push is a separate, later pull request:
+[handoff-2026-09-25-inbox-push.md](handoff-2026-09-25-inbox-push.md).
+
+Close this handoff when all three parts have landed and the checks below pass,
+including one real iPhone on a team space.
+
+## Why
+
+Two reports from the human, 2026-09-25:
+
+- On a phone over the tailnet, tapping the chat box zooms the page. The page
+  then scrolls sideways and its edge is not fixed.
+- The Chats sidebar does not show what the agents are doing. Orca and Herdr,
+  two multi-agent tools, both make the sidebar the dashboard: every agent has a
+  state, and the ones that need you sort first.
+
+## Part 1: style foundation
+
+### What the code does today
+
+- `web/src/styles.css` is 13,818 lines. `AppearancePicker.css`,
+  `WorktreeControls.css`, and `themes/aqua.css` sit beside it. Aqua changes
+  geometry and shadows as well as colors, so its import order and specificity
+  matter.
+- Colors are already tokens on `:root`. Themes swap them.
+- Sizes are not tokens. `styles.css` has 493 `font-size` declarations: 474 in
+  literal pixels across 25 distinct sizes, the rest in `em`, `rem`, `clamp()`,
+  or `font` shorthands.
+- The body font is 14px. Most inputs inherit it; the chat composer sets 14px
+  explicitly and some fields set smaller sizes. iOS Safari zooms any focused
+  field under 16px. That is the zoom in the report.
+- There are 20 width media queries at eight widths (560, 640, 680, 700, 720,
+  820, 920, 1180px) plus five reduced-motion queries. `AppearancePicker.css`
+  adds one more at 680px.
+- JavaScript checks width in one hook, `useNarrowViewport` (560px), used by
+  Chats and the graph view.
+- Phone and desktop are the same pages. The browser picks the layout by its own
+  width. How the device connected never matters.
+
+### The change
+
+1. **Mechanical split first, as its own commit.** `styles.css` becomes a base
+   file (tokens, reset, shared controls) plus one file per destination. Rules
+   move unedited, and imports keep today's cascade order, including aqua last.
+   Where a later rule overrides an earlier one across destinations (for example
+   `.project-shelf` gets two columns in one phone block and one in a later
+   block), the pair moves together or the override is resolved and noted.
+2. **Size tokens, as a second commit.** A type scale and a spacing scale on
+   `:root`. The 25 pixel sizes map to about eight tokens through an explicit
+   old-to-new table in the pull request. Shorthands and fluid `clamp()` values
+   are converted by hand or left with a note. Spacing moves to tokens only
+   where a rule is already touched.
+3. **Named breakpoints.** Phone is `max-width: 560px`, tablet is
+   `max-width: 920px`. Queries at 680, 720, and 820px that exist only to
+   approximate phone or tablet fold into these two. Content-driven thresholds
+   stay where they are, with a comment naming the layout that needs them: 1180px
+   (the setup grid needs 1,134px without it), 700px (terminals), and 640px
+   (annotations). CSS cannot read a variable inside `@media`, so the phone width
+   is written once in CSS and once in `useNarrowViewport`, with a test that they
+   agree.
+4. **Phone mode is token overrides.** One `@media` block at the phone width
+   resets the tokens. Every `input`, `textarea`, `select`, and contenteditable
+   field is at least 16px there, including those with explicit sizes; the rule
+   must win against their specificity.
+
+### Settled
+
+- Pinch zoom stays enabled. The 16px field rule fixes the zoom without it.
+- No user-agent checks or separate phone build. Where behavior depends on the
+  device, check the capability (width, pointer, display mode), not the brand.
+- Accepted 1px desktop text shifts from snapping, reviewed by screenshot.
+
+## Part 2: phone pass
+
+At phone width these screens must work: Inbox with Proposal and Decision
+choices and Sync, Runs with episode cards and recovery dialogs, Chat including
+the Agents panel and composer, Settings, and the pairing and login screens.
+
+For each:
+
+- no horizontal page scroll, and no control clipped by `overflow: hidden`;
+- no zoom when a field is focused;
+- primary actions reachable without horizontal panning, including with the
+  on-screen keyboard open; and
+- tap targets at least 44px tall.
+
+The graph views, paper editor, terminals, and setup wizards are out of scope.
+They must not get worse.
+
+## Part 3: Agents panel
+
+The Chats list (`ChatsWorkspace.tsx`) becomes the panel in the confirmed
+mockup. Runs is not touched. The composer and the conversation body stay as
+they are today.
+
+### Rows
+
+- **Groups, in order:** Needs you, Working, Recent. Counts in each group
+  header.
+- **State icon per row**, from the latest task of the conversation:
+  - needs you: `failed`, or `awaiting_human` (sign-in, reauthorization);
+  - paused: `paused`;
+  - working: `active` or `queued`;
+  - unread result: finished and in the existing unread set (title in bold);
+  - idle: everything else.
+- **Reason line** on a needs-you or paused row, derived from `failure_kind`
+  and the existing task status fields. No new backend judgment.
+- **Title** wraps to two lines instead of truncating.
+- **Meta line:** provider (`runtime_label`) · Discuss or Work
+  (`request.mode`) · repository. While working, the live phase and elapsed
+  time replace the repository.
+- **Right edge:** time since last activity, or "live" while working.
+- The `Node`/`Project` label moves from the row to the conversation header.
+
+### Top of the panel
+
+- Search over loaded conversation titles.
+- Filter chips: All, Needs you, Working, with counts.
+- The existing New chat action.
+
+### Conversation header
+
+One line with the title, and one line with provider, model, mode, repository
+and worktree, and node or project scope. A colored banner shows the one action
+that clears a needs-you or paused state (for example Sign in or Resume), using
+the controls the conversation already has.
+
+### Data
+
+Everything comes from fields the web client already has: chat summaries and
+the agent task list. Chat summaries are paged by recency, so a conversation
+whose latest task needs you must appear under Needs you even when its summary
+is not on the loaded page. Implementation must confirm the task list already
+carries it; if it does not, fixing that is in scope.
+
+At phone width the panel keeps today's behavior: it starts closed behind the
+Chats disclosure and closes after choosing a conversation. Wider views keep the
+resizable list and its saved width and collapse preference.
+
+## Checks
+
+- **Desktop unchanged.** Before and after screenshots of each destination at
+  1440px, and on both sides of each kept threshold (1180, 920, 700, 640px), in
+  all four theme and color-mode combinations. Differences are only the accepted
+  1px shifts and the new Chats panel.
+- **Split is mechanical.** The first commit's diff shows only moved rules and
+  imports.
+- **Phone.** A browser test at 375px on Inbox, Runs, Chat, and Settings asserts
+  no horizontal page scroll, focused-field font size of at least 16px, and 44px
+  tap targets on primary actions. Assertions use geometry, ids, and roles,
+  never wording.
+- **Existing mobile behavior.** `web/tests/mobileWorkspace.browser.test.mjs`
+  keeps passing: the disclosure and the saved width.
+- **Breakpoints agree.** A test that `useNarrowViewport` and the CSS phone width
+  are the same value.
+- **Agents panel.** A web test that each task-state combination lands in the
+  right group with the right icon, that a needs-you conversation outside the
+  loaded summary page still appears, and that filters and search narrow the
+  list. Assertions use state and ids, not wording.
+- **Real device.** On an iPhone over the tailnet: focus the composer without
+  zoom, move between Inbox, Runs, and Chats, approve a Proposal through Sync,
+  and open a conversation from the Agents panel.
+
+## Owners
+
+- `web/src/styles.css` and its split files, the two component stylesheets,
+  `web/src/themes/aqua.css`, and `web/src/hooks/useNarrowViewport.ts`.
+- `web/src/views/ChatsWorkspace.tsx`, `web/src/chatWorkspace.ts`, and the
+  conversation header, for the Agents panel.
+- `docs/specs/interface-and-visual-design.md` for the breakpoints, phone rules,
+  and the Agents panel, updated in the same pull request.
