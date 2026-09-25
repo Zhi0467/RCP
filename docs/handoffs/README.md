@@ -2,11 +2,12 @@
 
 Active:
 
-- [Runs load from cache and fetch only on change](handoff-2026-09-25-runs-load-from-cache-and-fetch-on-change.md)
-  — proposed 2026-09-25, not implemented. The page keeps each project's Runs
-  data and refetches run lists only when a change counter moves; the server
-  reuses computed run lists; display reads of SSH-hosted state may use a
-  mirror up to 10 s old. State storage and sync do not change.
+- [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
+  — proposed 2026-09-25 and revised after two xhigh reviews, not implemented.
+  The page keeps each project's Runs data and never has two requests in
+  flight for one list; the run lists compute less after profiling; display
+  reads of SSH-hosted state may use a mirror up to 10 s old. Timer polls,
+  state storage, and sync do not change. One pull request.
 
 - [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
   — confirmed and implemented 2026-09-24; the live team-space push run and
