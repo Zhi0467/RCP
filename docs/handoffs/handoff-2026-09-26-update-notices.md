@@ -63,8 +63,10 @@ numbered releases while desktop apps run whatever commit the checkout is on.
   and reveal the machine's IP and timing. They carry no project data, no
   credentials, and no install identifier.
 - `RCP_UPDATE_CHECK=off` turns all network calls off.
-- Companion lookup, for prebuilt apps only: `/releases/tags/desktop-vX.Y.Z`.
-  It is ready only when it is published (not a draft), its tag matches, its
+- Companion lookup: `/releases/tags/desktop-vX.Y.Z`. It runs whenever a newer
+  `vX.Y.Z` exists, whatever kind of install the backend is, because a prebuilt
+  shell may reuse a backend of the other kind. Once confirmed it is not asked
+  again for that release. It is ready only when it is published (not a draft), its tag matches, its
   target commit equals the `vX.Y.Z` commit, and both the app zip and its
   checksum are uploaded. A missing or incomplete companion is rechecked every
   cycle, even when `/latest` has not changed. Desktop availability is its own
@@ -97,8 +99,8 @@ numbered releases while desktop apps run whatever commit the checkout is on.
 - `GET /api/update-notice` returns, from the cache: the latest release, the
   last check time, a status (`update_available`, `current`, `pinned`,
   `unchecked`, `failed`, `off`, or `unknown`), and, for a team space, the
-  installed release. For prebuilt apps it also says whether the companion
-  release is ready.
+  installed release. It always says whether the companion release is ready;
+  only the native shell decides whether that matters.
 - Any signed-in member may read it. It carries no secrets.
 - Release-check status stays separate from installation integrity. The
   doctor's `source_state` keeps meaning "is the installed release consistent".
@@ -125,7 +127,7 @@ numbered releases while desktop apps run whatever commit the checkout is on.
   Until then the notice says the app build is not published yet.
 - Source checkout: "RCP v0.4.3 is out. This app is built from v0.4.2." Then
   `scripts/update-from-source v0.4.3`, run in the checkout, and a Copy command
-  button.
+  button. A source-built desktop app copies it with `--desktop`.
 - The client polls `/api/update-notice` while the window is visible: every
   30 seconds while the status is `unchecked`, then every 10 minutes, and once
   more whenever the window becomes visible again. The endpoint reads only the
@@ -144,21 +146,30 @@ numbered releases while desktop apps run whatever commit the checkout is on.
 
 ### 5. One update command for source checkouts
 
-New script `scripts/update-from-source <tag>`:
+New script `scripts/update-from-source <tag> [--desktop]`. `--desktop` asks
+for the desktop app; without it the script updates the local Web app only and
+never mentions `/Applications`.
 
-1. Refuses while an RCP backend from this checkout is running: it tries the
-   data directory's OS lock (invariant 8). A running backend with reload on
-   would otherwise pick up half-updated code.
-2. Checks that `git`, `uv`, `npm`, and, for the desktop app, Rust are present.
+Every `rcp serve` started from a source checkout holds a shared OS lock on one
+lock file in that checkout, whatever its data directory. This is new, and it
+follows invariant 8: an OS lock, not a path's existence, proves a live owner.
+
+1. Refuses while any RCP backend from this checkout is running: it takes that
+   checkout lock exclusively, without waiting. A backend with reload on would
+   otherwise pick up half-updated code, and two backends with different data
+   directories would each be missed by a data-directory lock.
+2. Checks that `git`, `uv`, and `npm` are present, and with `--desktop` that
+   Rust and the Xcode tools are present too. A missing tool stops the script
+   before anything changes.
 3. Validates the tag's `vX.Y.Z` form, fetches that exact `refs/tags/<tag>`,
    and refuses a tree with uncommitted or untracked changes.
 4. Records where the checkout started (branch or commit) and prints it.
 5. Checks out the tag, detached. Local branches and detached commits stay
    reachable; nothing is reset or cleaned.
-6. Builds `web/dist`, then runs `uv sync`, then, on macOS with Rust, runs
-   `desktop:build-dev`.
-7. Prints how to restart: replace `/Applications/RCP.app` and reopen it, or
-   rerun `uv run rcp serve`.
+6. Builds `web/dist`, then runs `uv sync`. With `--desktop` it then runs
+   `desktop:build-dev`, and a failed app build fails the script.
+7. Prints how to restart: with `--desktop`, replace `/Applications/RCP.app`
+   and reopen it; otherwise rerun `uv run rcp serve`.
 
 It stops at the first failed step and names it. After a failure past step 5 it
 prints the exact command that returns to the recorded start.
@@ -230,11 +241,12 @@ latest release", and gains an "Update a source checkout" section.
 
 ## Verification
 
-- Python: `release_check` against a fake GitHub server: newer, equal, older,
+- Python: the checkout lock is held by every source `rcp serve` and released
+  on exit. `release_check` against a fake GitHub server: newer, equal, older,
   `0.4.10` against `0.4.9`, a stamped equal version, malformed, pre-release,
   `403`/`429`, timeout, oversized body, and `off`. The companion lookup:
   missing, draft, wrong commit, one asset missing, then published on a later
-  cycle. The poller starts and stops with the app. The endpoint's shape. The
+  cycle, from a source backend as well as a frozen one. The poller starts and stops with the app. The endpoint's shape. The
   GitHub base URL is overridable only in tests.
 - Team comparison: installed behind, current, pinned, and an invalid receipt,
   which leaves `source_state` alone.
@@ -252,8 +264,10 @@ latest release", and gains an "Update a source checkout" section.
   source notice.
 - Script: on a throwaway clone, from an older tag, a detached commit, a local
   branch, and a branch named like the tag. It ends on the new tag with a built
-  `web/dist`, refuses a dirty tree and a running backend, and after an injected
-  failure following checkout prints the way back.
+  `web/dist`, refuses a dirty tree, refuses while either of two backends with
+  different data directories is running, and after an injected failure
+  following checkout prints the way back. With `--desktop` and no Rust it stops
+  before changing anything.
 - Native: rebuild Tauri; the build kind is reported; the `team_session`
   mismatch message for a prebuilt app with the companion ready, a prebuilt app
   without it, and a source build.
