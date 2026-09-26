@@ -133,14 +133,22 @@ one bound, the **delegation wait limit** in `limits.py`.
   cwd do not load; without the flag, nothing runs, RCP's hook included.
   App-server's `hooks/list` cannot stand in for exec: app-server has no
   `--ignore-user-config`, so it lists different layers.
-  - The guard inspects the hook sources exec loads under RCP's flags, as
-    files, on the execution host, as the execution account, with the launch's
-    own binary, environment and `CODEX_HOME`. Today that list is the
-    account's `hooks.json` plus the managed and system layers. Any foreign
-    hook refuses the launch with a typed failure that names each file.
+  - The guard inspects, as files, the hook sources the chosen runtime loads
+    under its resolved launch configuration. It runs on the execution host,
+    as the execution account, with the launch's own binary, environment and
+    `CODEX_HOME`. The inventory is per runtime, because the loaders differ:
+    - exec, under `--ignore-user-config`: the account's `hooks.json`, and
+      the managed and system layers;
+    - app-server, which cannot ignore user configuration: additionally the
+      account's inline `[hooks]` in `config.toml`, every trusted project
+      layer for the cwd (`hooks.json` and inline), and enabled plugin hooks.
+    Both file forms count in every layer. Any foreign hook refuses the
+    launch, before the bypass is enabled, with a typed failure that names
+    each file.
   - That source list is qualified per Codex version by an acceptance probe:
-    plant a hook in each source (user, project, managed, plugin) and check the
-    guard's inventory against what exec actually runs, for both runtimes.
+    plant a hook in each source and form (user `hooks.json`, user inline,
+    trusted project, managed, plugin) and check the guard's inventory against
+    what each runtime actually runs.
     RCP records the qualified versions. On an unqualified version the launch
     proceeds with the file guard and shows a visible warning on the turn and
     in Settings until the probe is rerun (human, 2026-09-25: Codex updates
