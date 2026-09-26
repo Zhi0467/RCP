@@ -89,11 +89,11 @@ still works. Same in the host `TurnFence` and in recorded replay.
   the turn; wait for their results before replying; only helper and scheduler
   jobs outlive a turn. It comes from one constant, and tests check that it is
   present, never its wording.
-- App-server already sees child threads. When the root turn completes while
-  a child is still running, RCP records a diagnostic receipt. It does not
-  hold the turn open.
-- A Codex agent that ignores the instruction still loses its subagents. The
-  receipt makes that visible on app-server; exec cannot see it.
+- The fact covers provider-native subagents only. RCP-managed workers, such
+  as Auto-research children, keep their own lifecycle.
+- A Codex agent that ignores the instruction still loses its subagents.
+  RCP does not detect or hold for this; an app-server diagnostic was
+  considered and dropped because it prevents nothing.
 
 ### 4. The helper is always offered (implemented)
 
@@ -123,7 +123,8 @@ they were about two thirds of the pull request for a partial guarantee:
   and `--dangerously-bypass-hook-trust`;
 - the delegation wait limit, its launcher and host-supervisor enforcement,
   journal and replay verdicts, and `delegation_unfinished`;
-- holding a Claude or app-server turn open while delegated work is open.
+- holding a Claude or app-server turn open while delegated work is open,
+  and the shared completion tracker behind it.
 
 The probes behind these remain in the table above and in Git history.
 
@@ -133,8 +134,8 @@ The probes behind these remain in the table above and in Git history.
   through the local decoder and the host fence; the Claude launch env
   carries the variable; Codex exec retry `error` events, then `turn.failed`,
   and a non-zero exit with no `turn.failed`; the contract fact is present on
-  every provider contract; the app-server receipt when a child outlives the
-  root; split readiness and instructions on a Slurm machine (done).
+  every provider contract; replay of an exec journal that ends non-zero
+  after retry notices; split readiness and instructions on a Slurm machine (done).
 - Live, local real providers: a Claude turn whose subagent runs 60 seconds
   replies after the child finishes.
 - Live, disposable server on the Linux host: a helper `launch` on the Slurm
