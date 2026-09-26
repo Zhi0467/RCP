@@ -6,8 +6,9 @@ Active:
   — design confirmed 2026-09-26, not implemented. One cached release check in
   `rcp serve` drives an app-wide banner with a Copy command button: team
   spaces compare the installed release, local installs compare the checkout.
-  Local source installs follow releases, updated by one script. No Apple
-  signing, no one-click update.
+  Every release also ships an unsigned prebuilt macOS app in a companion
+  `desktop-vX.Y.Z` pre-release; source checkouts follow release tags and
+  update with one script. No Apple signing, no one-click update.
 
 - [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
   — implemented 2026-09-25 on one pull request and verified on copied

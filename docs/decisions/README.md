@@ -1,8 +1,9 @@
 # Active decision records
 
-- [Source installs follow releases](2026-09-26-source-installs-follow-releases.md)
+- [Desktop installs follow releases](2026-09-26-desktop-installs-follow-releases.md)
   records why desktop and local Web installs follow promoted releases like
-  team servers, why RCP skips Apple signing, and why updates are notified
+  team servers, why each release ships an unsigned prebuilt app in a companion
+  pre-release, why RCP skips Apple signing, and why updates are notified
   rather than applied.
 
 - [Job managers add rules, never remove the helper](2026-09-25-job-managers-add-rules-never-remove-the-helper.md)
