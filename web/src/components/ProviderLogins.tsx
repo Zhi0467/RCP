@@ -20,6 +20,8 @@ const SIGN_IN_POLL_FAILURE_LIMIT = 5;
 interface Props {
   spaceKind: "personal" | "team";
   writesDisabled?: boolean;
+  /** A login change invalidates provider readiness the page already shows. */
+  onLoginChanged?: () => void;
 }
 
 /**
@@ -30,7 +32,7 @@ interface Props {
  * credential: device sign-in shows a code and a link; token entry takes a pasted
  * token that is sent once and never read back.
  */
-export function ProviderLogins({ spaceKind, writesDisabled = false }: Props) {
+export function ProviderLogins({ spaceKind, writesDisabled = false, onLoginChanged }: Props) {
   const [accounts, setAccounts] = useState<ProviderLoginAccount[] | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -79,7 +81,10 @@ export function ProviderLogins({ spaceKind, writesDisabled = false }: Props) {
             spaceKind={spaceKind}
             writesDisabled={writesDisabled}
             memberName={(id) => names[id] ?? "a member"}
-            onChanged={refresh}
+            onChanged={async () => {
+              await refresh();
+              onLoginChanged?.();
+            }}
           />
         ))}
       </div>

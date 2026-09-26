@@ -881,7 +881,11 @@ export function ProjectSettings({
         </div>
       </section>
 
-      <ProviderLogins spaceKind={spaceKind} writesDisabled={writesDisabled} />
+      <ProviderLogins
+        spaceKind={spaceKind}
+        writesDisabled={writesDisabled}
+        onLoginChanged={() => void onRefreshReadiness().catch(() => {})}
+      />
 
       <section className="settings-section compute-settings">
         <header>
