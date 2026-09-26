@@ -1532,11 +1532,11 @@ struct DesktopUpdateNotice {
 }
 
 fn desktop_update_action(kind: &str, notice: Option<&DesktopUpdateNotice>) -> String {
+    // A failed cycle keeps the previous release and companion cached; use them
+    // only when the current check succeeded.
+    let checked = notice
+        .is_some_and(|notice| matches!(notice.status.as_str(), "update_available" | "current"));
     if kind == "prebuilt" {
-        // A companion confirmed by an earlier cycle stays cached; offer it only
-        // when the current check succeeded.
-        let checked = notice
-            .is_some_and(|notice| matches!(notice.status.as_str(), "update_available" | "current"));
         if let Some(url) = notice
             .filter(|notice| checked && notice.companion_ready)
             .and_then(|notice| notice.download_url.as_deref())
@@ -1550,7 +1550,10 @@ fn desktop_update_action(kind: &str, notice: Option<&DesktopUpdateNotice>) -> St
         }
         return format!("Find a compatible release at {RELEASES_PAGE}.");
     }
-    match notice.and_then(|notice| notice.latest_version.as_deref()) {
+    match notice
+        .filter(|_| checked)
+        .and_then(|notice| notice.latest_version.as_deref())
+    {
         Some(version) => format!("To install a compatible release, run scripts/update-from-source v{version} --desktop in the source checkout."),
         None => "To install a compatible release, run scripts/update-from-source <tag> --desktop in the source checkout, using the tag of the latest release.".into(),
     }
@@ -1938,9 +1941,13 @@ mod tests {
             assert!(desktop_update_action("prebuilt", Some(&notice)).contains(RELEASES_PAGE));
         }
         assert!(desktop_update_action("prebuilt", None).contains(RELEASES_PAGE));
+        notice.status = "update_available".into();
         assert!(desktop_update_action("source", Some(&notice))
             .contains("scripts/update-from-source v0.4.3 --desktop"));
         assert!(desktop_update_action("source", None)
+            .contains("scripts/update-from-source <tag> --desktop"));
+        notice.status = "failed".into();
+        assert!(desktop_update_action("source", Some(&notice))
             .contains("scripts/update-from-source <tag> --desktop"));
     }
 
