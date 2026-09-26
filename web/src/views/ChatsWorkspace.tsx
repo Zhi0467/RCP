@@ -2,11 +2,11 @@ import {
   AlertCircle,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Circle,
   LoaderCircle,
   MessageCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   PauseCircle,
   Search,
 } from "lucide-react";
@@ -262,7 +262,9 @@ export function ChatsWorkspace({
       style={{
         gridTemplateColumns: narrow
           ? undefined
-          : `${listCollapsed ? CHAT_LIST_COLLAPSED_WIDTH : listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
+          : listCollapsed
+            ? `${CHAT_LIST_COLLAPSED_WIDTH}px 0px minmax(0, 1fr)`
+            : `${listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
       }}
     >
       <button
@@ -285,6 +287,18 @@ export function ChatsWorkspace({
         <header>
           <MessageCircle size={16} />
           <strong>Agents</strong>
+          <button
+            aria-controls="conversation-list-panel"
+            aria-expanded
+            aria-keyshortcuts="Meta+B"
+            aria-label="Collapse conversation list"
+            className="conversation-list-fold"
+            onClick={() => setListCollapsed(true)}
+            title="Collapse conversation list"
+            type="button"
+          >
+            <PanelLeftClose size={15} />
+          </button>
         </header>
         <div className="agent-list-tools">
           <label className="agent-list-search">
@@ -390,86 +404,65 @@ export function ChatsWorkspace({
           </footer>
         )}
       </aside>
-      <div className={`conversation-divider${listCollapsed ? " is-collapsed" : ""}`}>
+      <div className="conversation-divider" hidden={listCollapsed}>
         <div
           aria-controls="conversation-list-panel conversation-surface-panel"
-          aria-hidden={listCollapsed}
           aria-label="Resize conversation list"
           aria-orientation="vertical"
           aria-valuemax={widthBounds.maximum}
           aria-valuemin={widthBounds.minimum}
           aria-valuenow={Math.round(listWidth)}
           className="conversation-resize-handle"
-          onKeyDown={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                    event.preventDefault();
-                    setListWidth((current) =>
-                      clampChatListWidth(
-                        current + (event.key === "ArrowLeft" ? -16 : 16),
-                        widthBounds,
-                      ),
-                    );
-                  }
-                  if (event.key === "Home" || event.key === "End") {
-                    event.preventDefault();
-                    setListWidth(event.key === "Home" ? widthBounds.minimum : widthBounds.maximum);
-                  }
-                }
-          }
-          onPointerCancel={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  }
-                }
-          }
-          onPointerDown={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                  resizeFromPointer(event.clientX);
-                }
-          }
-          onPointerMove={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    resizeFromPointer(event.clientX);
-                  }
-                }
-          }
-          onPointerUp={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  }
-                }
-          }
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              event.preventDefault();
+              setListWidth((current) =>
+                clampChatListWidth(current + (event.key === "ArrowLeft" ? -16 : 16), widthBounds),
+              );
+            }
+            if (event.key === "Home" || event.key === "End") {
+              event.preventDefault();
+              setListWidth(event.key === "Home" ? widthBounds.minimum : widthBounds.maximum);
+            }
+          }}
+          onPointerCancel={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+          }}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            resizeFromPointer(event.clientX);
+          }}
+          onPointerMove={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              resizeFromPointer(event.clientX);
+            }
+          }}
+          onPointerUp={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+          }}
           role="separator"
-          tabIndex={listCollapsed ? -1 : 0}
+          tabIndex={0}
         />
-        <button
-          aria-controls="conversation-list-panel"
-          aria-expanded={!listCollapsed}
-          aria-keyshortcuts="Meta+B"
-          aria-label={listCollapsed ? "Expand conversation list" : "Collapse conversation list"}
-          className="conversation-divider-toggle"
-          onClick={() => setListCollapsed((current) => !current)}
-          type="button"
-        >
-          {listCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
-        </button>
       </div>
       <div className="conversation-surface" id="conversation-surface-panel">
+        {!narrow && listCollapsed && (
+          <button
+            aria-controls="conversation-list-panel"
+            aria-expanded={false}
+            aria-keyshortcuts="Meta+B"
+            aria-label="Expand conversation list"
+            className="conversation-list-fold is-floating"
+            onClick={() => setListCollapsed(false)}
+            title="Expand conversation list"
+            type="button"
+          >
+            <PanelLeftOpen size={15} />
+          </button>
+        )}
         {selected && selectedStatus && (
           <header className="conversation-header" data-state={selectedStatus.state}>
             <strong>{selected.title}</strong>

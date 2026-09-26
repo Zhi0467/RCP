@@ -1145,6 +1145,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   flex-direction: column;
   grid-column: 3;
   min-height: 0;
+  position: relative;
 }
 .conversation-surface > .chat-dock {
   flex: 1 1 auto;
@@ -1209,36 +1210,35 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .conversation-resize-handle:active {
   background: color-mix(in srgb, var(--teal) 16%, transparent);
 }
-.conversation-divider.is-collapsed .conversation-resize-handle {
-  cursor: default;
-  pointer-events: none;
-}
-.conversation-divider-toggle {
+.conversation-list-fold {
   align-items: center;
   background: transparent;
   border: 0;
-  color: var(--line-strong);
+  border-radius: 6px;
+  color: var(--muted);
   cursor: pointer;
   display: flex;
-  height: 32px;
+  height: 28px;
   justify-content: center;
-  left: 0;
+  margin-left: auto;
   padding: 0;
+  width: 28px;
+}
+.conversation-list-fold:hover,
+.conversation-list-fold:focus-visible {
+  background: var(--surface);
+  color: var(--ink);
+}
+.conversation-list-fold.is-floating {
+  left: 10px;
+  margin: 0;
   position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 100%;
+  top: 12px;
   z-index: 2;
 }
-.conversation-divider.is-collapsed .conversation-divider-toggle {
-  height: 100%;
-}
-.conversation-divider-toggle:hover,
-.conversation-divider-toggle:focus-visible {
-  color: var(--oxblood);
-}
-.conversation-divider-toggle:active {
-  color: var(--oxblood-dark);
+.conversation-list-fold.is-floating + .conversation-header,
+.conversation-list-fold.is-floating + .chat-dock > header {
+  padding-left: 48px;
 }
 .conversation-surface .chat-dock > header {
   min-height: 52px;
