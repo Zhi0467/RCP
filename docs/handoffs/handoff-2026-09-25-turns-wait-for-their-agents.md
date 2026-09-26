@@ -22,8 +22,6 @@ Status on 2026-09-25: design only. Nothing is implemented.
   - Codex uses an RCP hook fence behind a hook guard that refuses a launch
     when any other hook would load (human choice over an app-server-only
     route).
-- Open: the policy for a Codex version whose hook sources are not yet
-  qualified (see [Open question](#open-question)).
 - Closure: the pull request merges, the checks in
   [Verification](#verification) pass, and the specs carry the new sentences.
 
@@ -143,8 +141,10 @@ one bound, the **delegation wait limit** in `limits.py`.
   - That source list is qualified per Codex version by an acceptance probe:
     plant a hook in each source (user, project, managed, plugin) and check the
     guard's inventory against what exec actually runs, for both runtimes.
-    RCP records the qualified versions. Policy for an unqualified version:
-    see [Open question](#open-question).
+    RCP records the qualified versions. On an unqualified version the launch
+    proceeds with the file guard and shows a visible warning on the turn and
+    in Settings until the probe is rerun (human, 2026-09-25: Codex updates
+    are usually benign; nothing blocks on them).
   - Positive evidence: RCP's own `SessionStart` hook writes a start marker.
     No marker means the fence is not running, and the turn fails closed.
   - The guard ships from its source module. The leftover risk is the moment
@@ -246,18 +246,6 @@ Test fixtures come from the outage stream captured on 2026-09-25.
   outside stage retention.
 - A service survives its turn. It is not restarted if it exits (launchd runs
   with `KeepAlive=false`, systemd without restart).
-
-## Open question
-
-Codex updates often: the laptop moved from 0.156.1 to 0.157.0 during this
-design. When the execution host runs a Codex version the hook-source probe
-has not qualified:
-
-- Option A, recommended: launch anyway with the file guard, and show a
-  visible warning on the turn and in Settings naming the unqualified version
-  until the probe is rerun.
-- Option B: refuse Codex launches on that host until the probe qualifies the
-  version.
 
 ## Verification
 
