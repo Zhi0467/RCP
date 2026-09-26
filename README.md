@@ -38,9 +38,9 @@ access, then send:
 - **Agents propose, you decide.** Agents create nodes and file Proposals; only
   a human approves one, promotes a claim to project truth, or authorizes an
   autonomous episode.
-- **Bounded autonomy.** Dispatch an Experiment or an Auto-research episode from
-  the graph with a budget and a Stop. Watchers, recovery, and visual reports
-  keep running without an open tab, and the phone UI shows them.
+- **Bounded autonomy.** One click starts an Experiment or an Auto-research
+  episode from the graph, with a budget and a Stop. Watchers, recovery, and
+  visual reports keep running without an open tab, and the phone UI shows them.
 - **Artifacts with a reply path.** Inspect generated artifacts in the built-in
   viewer, annotate text or image regions, and send the annotation back to the
   agent that made it.
