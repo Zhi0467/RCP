@@ -116,6 +116,7 @@ def commands(tmp_path, manifest, monkeypatch):
         return probe
 
     monkeypatch.setattr(compute_commands, "probe_compute_backend", probe_backend)
+    monkeypatch.setattr(compute_commands, "COMPUTE_JOB_STARTUP_CHECK_SECONDS", 0)
     execution = AgentTaskExecution(
         operation_id="work-turn",
         store=store,
@@ -175,7 +176,10 @@ def test_helper_launch_replays_its_shell_handoff_after_store_reopen(commands):
     first = commands.launch()
     assert first.status == "ok", first.message
     job = commands.job_for(first)
-    assert first.result == {"watcher": jobs.helper_watch_spec(job)}
+    assert first.result == {
+        "watcher": jobs.helper_watch_spec(job),
+        "startup": {"status": "running"},
+    }
     assert set(first.result["watcher"]) == {"check_command", "cancel_command", "cwd", "log_path"}
     assert job.origin_operation_id == "work-turn"
     assert commands.backend.starts[0][1] == (str(commands.workspace), job.job_root)
@@ -361,6 +365,25 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
             stop.set()
             await server
     staged.cleanup()
+
+
+def test_helper_launch_reports_a_job_that_ended_at_startup(commands, monkeypatch):
+    start = commands.backend.start
+
+    def start_and_fail(root, wrapper, request, context):
+        handle = start(root, wrapper, request, context)
+        commands.backend.alive_handles.discard(handle)
+        (Path(root) / "log").write_text("OSError: [Errno 98] Address already in use\n")
+        (Path(root) / "exit").write_text("1 101\n")
+        return handle
+
+    monkeypatch.setattr(commands.backend, "start", start_and_fail)
+    response = commands.launch()
+    assert response.status == "ok", response.message
+    startup = response.result["startup"]
+    assert (startup["status"], startup["exit_status"]) == ("exited", 1)
+    assert "Errno 98" in startup["log_tail"]
+    commands.handler.validate_handoff(set())
 
 
 def test_compute_launch_key_survives_diagnostic_retention(commands):

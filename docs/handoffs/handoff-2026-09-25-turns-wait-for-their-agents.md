@@ -2,7 +2,7 @@
 
 Status on 2026-09-25: the simpler design is implemented; live qualification remains.
 
-- Implemented on this branch: sections 1–5, including recorded retry failures.
+- Implemented on this branch: sections 1–5.
   The hook fence and completion tracker are removed. Specs carry the design.
 - Remains: the local Claude journey in [Verification](#verification), then
   human review and merge. Local checks pass with disposable data and fake providers.
@@ -79,7 +79,10 @@ the helper or a scheduler can own a process past that point.
 An exec `error` event is a trace. `turn.failed` or a non-zero exit ends the
 turn. The last `error` text is kept and becomes the failure message when the
 process exits non-zero without `turn.failed`, so the failure-kind classifier
-still works. Same in the host `TurnFence` and in recorded replay.
+still works. Same in the host `TurnFence`. Recorded replay treats retry
+notices as traces too, but recovery does not finalize a journal without a
+terminal event: the host snapshots `patch.json` only at a terminal event, and
+finalizing would delete the stage copy.
 
 ### 3. Codex is told to wait for its subagents
 
@@ -131,8 +134,7 @@ The probes behind these remain in the table above and in Git history.
   through the local decoder and the host fence; the Claude launch env
   carries the variable; Codex exec retry `error` events, then `turn.failed`,
   and a non-zero exit with no `turn.failed`; the contract fact is present on
-  every provider contract; replay of an exec journal that ends non-zero
-  after retry notices; split readiness and instructions on a Slurm machine (done).
+  every provider contract; split readiness and instructions on a Slurm machine (done).
 - Live, local real providers: a Claude turn whose subagent runs 60 seconds
   replies after the child finishes.
 - Live, disposable server on the Linux host: a helper `launch` on the Slurm

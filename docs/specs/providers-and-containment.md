@@ -206,8 +206,9 @@ Parallel Agent calls still work.
 Codex exec `error` events are retry traces. `turn.failed` or a non-zero exit
 ends a failed turn. Without `turn.failed`, the last retry error supplies the
 failure text on non-zero exit. The live decoder, host fence, and recorded replay
-use this rule. Recovery accepts an intact exec journal with a non-zero exit
-even when it has no terminal event.
+treat retry notices as traces. Recovery still fails a journal with no terminal
+event without finalizing it, because the host snapshots deliverables only at a
+terminal event; the stage keeps its patch text.
 
 The preferred runtime is chosen anew from the current project profile for every
 RCP task invocation, including a continuation of an existing native session. A

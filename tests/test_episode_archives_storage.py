@@ -278,6 +278,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "provider_readiness_snapshots_v1",
         "episode_continuations_v1",
         "agent_task_list_indexes_v1",
+        "compute_probe_routes_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

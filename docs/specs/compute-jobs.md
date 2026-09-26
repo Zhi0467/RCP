@@ -118,7 +118,12 @@ outside protected paths. The response is
 object into `watch.json` rather than inventing a PID check. Helper-owned observation distinguishes running work, a valid completion receipt, and unknown
 or missing evidence. Cancellation uses the saved OS handle.
 
-A helper launch runs a fresh readiness probe. Before a turn ends, settlement
+A helper launch runs a fresh readiness probe. After starting the job, RCP waits
+`COMPUTE_JOB_STARTUP_CHECK_SECONDS`, refreshes it once, and returns a `startup`
+object: `running`, or the ended status with its exit code and log tail. RCP
+reads this outside the agent sandbox, where the returned check command may not
+run, so a startup failure such as a port already in use reaches the agent in
+the launch response. Before a turn ends, settlement
 checks that its still-running helper jobs have their returned check commands in
 the final handoff. This includes helper jobs retained from a retry or resume
 lineage. Missing observers enter the existing correction path without another

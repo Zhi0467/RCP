@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import time
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path, PurePosixPath
@@ -24,6 +25,7 @@ from rcp.compute_jobs.backend_context import (
 )
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.compute_jobs.jobs import (
+    helper_startup_state,
     helper_watch_spec,
     launch_compute_job,
     refresh_compute_job,
@@ -32,6 +34,7 @@ from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
 from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
+from rcp.limits import COMPUTE_JOB_STARTUP_CHECK_SECONDS
 from rcp.transport import RemoteRunStage
 
 
@@ -160,7 +163,10 @@ class WorkComputeCommands:
             "For work that must outlive this agent turn, use the process launch helper: "
             f"`{launch_command}`. Copy its returned watcher object into watch.json's external list "
             "before ending the turn while that work is running. The helper provides check_command, "
-            "log_path, cwd and cancel_command. A repeated launch must use the same idempotency key "
+            "log_path, cwd and cancel_command; check_command is for RCP's watcher and may not run "
+            "inside your sandbox. The launch response's startup object reports the job a moment "
+            "after start: if its status is not running, the job already ended, and log_tail says why. "
+            "Confirm success from startup, not from a port or URL another process could answer. A repeated launch must use the same idempotency key "
             "and arguments. If submission is uncertain, inspect the retained receipt; do not submit "
             "again under a new key. RCP refuses helper launches without reliable process ownership."
         )
@@ -240,7 +246,14 @@ class WorkComputeCommands:
             protected_paths=self.write_scope.protected_write_paths,
             probe=probe,
         )
-        result = {"watcher": helper_watch_spec(job)}
+        time.sleep(COMPUTE_JOB_STARTUP_CHECK_SECONDS)
+        job = refresh_compute_job(
+            self.execution.store, self.manifest, job.job_id, data_dir=self.data_dir
+        )
+        result = {
+            "watcher": helper_watch_spec(job),
+            "startup": helper_startup_state(self.manifest, job),
+        }
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
     def validate_handoff(self, observed_check_commands: set[str]) -> None:
