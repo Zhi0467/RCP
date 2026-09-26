@@ -488,7 +488,7 @@ its execution machine, enable **Use Slurm**, and Save. Run **Probe**, or use the
 installed-service check from the server operator session:
 
 ```bash
-sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias>
+sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias> --route scheduler
 ```
 
 The check runs through the actual execution account: `rcp` for server-local

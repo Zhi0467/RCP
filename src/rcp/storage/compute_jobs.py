@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeJobStatus
+from rcp.compute_jobs.models import (
+    ComputeBackendProbe,
+    ComputeJobRecord,
+    ComputeJobStatus,
+)
+from rcp.compute_jobs.routes import ComputeRoute
 from rcp.limits import COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT
 
 
@@ -30,13 +35,13 @@ class ComputeJobStoreMixin:
         return [json.loads(row[0]) for row in rows]
 
     def compute_backend_probe(
-        self, project_id: str, execution_machine: str
+        self, project_id: str, execution_machine: str, route: ComputeRoute
     ) -> ComputeBackendProbe | None:
         with self.connection() as connection:
             row = connection.execute(
                 "SELECT probe_json FROM compute_backend_probes "
-                "WHERE project_id = ? AND execution_machine = ?",
-                (project_id, execution_machine),
+                "WHERE project_id = ? AND execution_machine = ? AND route = ?",
+                (project_id, execution_machine, route),
             ).fetchone()
         return ComputeBackendProbe.model_validate_json(row[0]) if row is not None else None
 
@@ -48,16 +53,16 @@ class ComputeJobStoreMixin:
             )
 
     def record_compute_backend_probe(
-        self, project_id: str, probe: ComputeBackendProbe
+        self, project_id: str, probe: ComputeBackendProbe, route: ComputeRoute
     ) -> ComputeBackendProbe:
         probe = ComputeBackendProbe.model_validate(probe.model_dump())
         with self.connection() as connection:
             connection.execute(
                 "INSERT INTO compute_backend_probes "
-                "(project_id, execution_machine, probe_json, probed_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(project_id, execution_machine) DO UPDATE SET "
+                "(project_id, execution_machine, route, probe_json, probed_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(project_id, execution_machine, route) DO UPDATE SET "
                 "probe_json = excluded.probe_json, probed_at = excluded.probed_at",
-                (project_id, probe.execution_machine, probe.model_dump_json(), self.now()),
+                (project_id, probe.execution_machine, route, probe.model_dump_json(), self.now()),
             )
         return probe
 

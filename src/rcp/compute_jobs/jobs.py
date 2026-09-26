@@ -58,6 +58,8 @@ def launch_compute_job(
             f"({context.os_name}). {UNAVAILABLE_BACKEND_GUIDANCE}"
         )
     job_id = uuid.uuid4().hex
+    if probe is None:
+        probe = store.compute_backend_probe(project_id, execution_machine, "helper")
     if probe is not None:
         if not probe.ready:
             raise ValueError("Compute probe does not match the resolved ready backend.")

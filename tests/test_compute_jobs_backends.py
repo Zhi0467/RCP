@@ -50,10 +50,9 @@ def test_registry_and_resolution():
         ("macOS", False, True, "launchd"),
         ("FreeBSD", True, False, None),
     ]:
-        backend = resolve_backend(None, os_name, remote, manager)
-        assert (backend.id if backend else None) == expected
-    # An opted-in scheduler is used directly; it never resolves to a launch wrapper.
-    assert resolve_backend(MachineComputeConfig(job_manager="slurm"), "Linux", False, True) is None
+        for compute in (None, MachineComputeConfig(job_manager="slurm")):
+            backend = resolve_backend(compute, os_name, remote, manager)
+            assert (backend.id if backend else None) == expected
     with pytest.raises(ValueError):
         MachineComputeConfig(backend="ssh_session")
 

@@ -22,6 +22,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from rcp.compute_jobs.models import ComputeBackendProbe
+from rcp.compute_jobs.routes import ComputeRoute
 from rcp.limits import (
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     SERVER_CONTROL_ACCEPT_POLL_INTERVAL_SECONDS,
@@ -40,10 +41,10 @@ from rcp.server_runtime import ServerMetadata, read_server_metadata
 
 logger = logging.getLogger(__name__)
 
-SERVER_CONTROL_PROTOCOL_VERSION = 11
+SERVER_CONTROL_PROTOCOL_VERSION = 12
 # Existing private console operations retain their explicit wire versions.
-# Compute probes require protocol 11; maintenance retains its protocol 10 boundary.
-SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS = (8, 9, 10, SERVER_CONTROL_PROTOCOL_VERSION)
+# Routed compute probes require protocol 12; maintenance retains protocol 10.
+SERVER_CONTROL_COMPATIBLE_PROTOCOL_VERSIONS = (8, 9, 10, 11, SERVER_CONTROL_PROTOCOL_VERSION)
 SERVER_CONTROL_MAX_REQUEST_BYTES = 64 * 1024
 SERVER_CONTROL_MAX_RESPONSE_BYTES = 256 * 1024
 SERVER_CONTROL_SOCKET_MODE = 0o600
@@ -123,6 +124,7 @@ class ServerControlRequest(_StrictModel):
     boundary_sha256: str | None = None
     target_id: str | None = None
     machine_alias: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    compute_route: ComputeRoute | None = Field(default=None, exclude_if=lambda value: value is None)
     proof_path: str | None = None
     proof_sha256: str | None = None
 
@@ -135,8 +137,10 @@ class ServerControlRequest(_StrictModel):
 
     @model_validator(mode="after")
     def validate_ids(self) -> ServerControlRequest:
-        if self.operation != "compute_backend_probe" and self.machine_alias is not None:
-            raise ValueError("only compute backend probes accept a machine alias")
+        if self.operation != "compute_backend_probe" and (
+            self.machine_alias is not None or self.compute_route is not None
+        ):
+            raise ValueError("only compute backend probes accept machine and route selectors")
         if self.operation != "maintenance_verify" and (
             self.proof_path is not None or self.proof_sha256 is not None
         ):
@@ -158,14 +162,17 @@ class ServerControlRequest(_StrictModel):
                 raise ValueError("selector-free control operations cannot carry selector fields")
         elif self.operation == "compute_backend_probe":
             if (
-                self.protocol_version < 11
+                self.protocol_version < 12
                 or self.selector_kind != "project"
                 or self.selector_id is None
                 or not self.machine_alias
+                or self.compute_route is None
                 or self.boundary_sha256 is not None
                 or self.target_id is not None
             ):
-                raise ValueError("compute backend probe requires one project and machine alias")
+                raise ValueError(
+                    "compute backend probe requires one project and machine alias with a route"
+                )
         elif self.operation in {
             "maintenance_enter",
             "maintenance_status",
@@ -446,6 +453,7 @@ class ServerControlComputeProbeResult(_StrictModel):
     selector_kind: Literal["project"]
     selector_id: str
     machine_alias: str
+    compute_route: ComputeRoute
     probe: ComputeBackendProbe
 
     @model_validator(mode="after")
@@ -976,7 +984,9 @@ class ServerControlClient:
             )
         return result
 
-    def probe_compute_backend(self, *, project_id: str, machine_alias: str) -> ComputeBackendProbe:
+    def probe_compute_backend(
+        self, *, project_id: str, machine_alias: str, route: ComputeRoute
+    ) -> ComputeBackendProbe:
         request = ServerControlRequest(
             request_id=str(uuid.uuid4()),
             instance_id=self.metadata.instance_id,
@@ -984,11 +994,13 @@ class ServerControlClient:
             selector_kind="project",
             selector_id=project_id,
             machine_alias=machine_alias,
+            compute_route=route,
         )
         result = self._exchange(request)
         if (
             not isinstance(result, ServerControlComputeProbeResult)
             or result.machine_alias != machine_alias
+            or result.compute_route != route
         ):
             raise ServerControlError("invalid_response", "The service returned another probe.")
         return result.probe
@@ -1638,6 +1650,8 @@ def _validated_control_result(
             or validated_probe.selector_id != request.selector_id
         ):
             raise ValueError("compute backend probe returned another selector")
+        if validated_probe.compute_route != request.compute_route:
+            raise ValueError("compute backend probe returned another route")
         if validated_probe.machine_alias != request.machine_alias:
             raise ValueError("compute backend probe returned another machine")
         return validated_probe

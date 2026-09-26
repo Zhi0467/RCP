@@ -331,26 +331,28 @@ def test_codex_exec_retry_errors_remain_traces_until_turn_failed(tmp_path):
     assert fence.terminal
 
 
-def test_app_server_child_receipt_settles_pending_root_completion(tmp_path):
+def test_app_server_descendant_receipts_settle_pending_root_completion(tmp_path):
     turn, fence = _started_decoder_pair(tmp_path, "codex.app-server-stdio.v1")
+
+    def spawned(parent: str, child: str) -> dict:
+        item = {"type": "subAgentActivity", "kind": "started", "agentThreadId": child}
+        return {"method": "item/started", "params": {"threadId": parent, "item": item}}
+
+    def finished(thread: str) -> dict:
+        turn_value = {"id": f"{thread}-turn", "status": "completed"}
+        return {"method": "turn/completed", "params": {"threadId": thread, "turn": turn_value}}
+
     values = [
-        {
-            "method": "item/started",
-            "params": {
-                "threadId": "fence-thread",
-                "item": {"type": "subAgentActivity", "kind": "started", "agentThreadId": "child"},
-            },
-        },
+        spawned("fence-thread", "child"),
+        spawned("child", "grandchild"),
         {
             "method": "turn/completed",
             "params": {"turn": {"id": "corpus-turn", "status": "completed"}},
         },
-        {
-            "method": "turn/completed",
-            "params": {"threadId": "child", "turn": {"id": "child-turn", "status": "completed"}},
-        },
+        finished("child"),
+        finished("grandchild"),
     ]
     for index, value in enumerate(values):
         step = turn.receive_line(json.dumps(value))
         fence.output(value)
-        assert step.complete == fence.terminal == (index == 2)
+        assert step.complete == fence.terminal == (index == 4)

@@ -27,9 +27,10 @@ def prepare_compute_probe_command(
     if request.command != "server compute probe":
         raise ValueError("compute probe requires the compute probe command")
     assert request.project_id is not None and request.machine_alias is not None
+    assert request.compute_route is not None
     pending = ServerStep(
         number=1,
-        title=f"Probe compute on {request.machine_alias}",
+        title=f"Probe {request.compute_route} on {request.machine_alias}",
         purpose="Verify and store the selected machine's compute backend readiness.",
         performed_by="system",
         target=MachineTarget(host=identity.host, os_account=identity.username),
@@ -49,7 +50,9 @@ def prepare_compute_probe_command(
                 layout.data_dir, expected_server_uid=os.geteuid()
             )
             probe = client.probe_compute_backend(
-                project_id=request.project_id, machine_alias=request.machine_alias
+                project_id=request.project_id,
+                machine_alias=request.machine_alias,
+                route=request.compute_route,
             )
         except ServerControlError as exc:
             emitter.emit_step(pending.model_copy(update={"state": "failed", "message": str(exc)}))
@@ -62,6 +65,7 @@ def prepare_compute_probe_command(
                     "fields": tuple(
                         NonsecretField(name=name, value=value)
                         for name, value in (
+                            ("route", request.compute_route),
                             ("status_label", probe.status_label),
                             ("backend_id", probe.backend_id or "unavailable"),
                             ("containment", probe.containment),

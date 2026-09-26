@@ -1,6 +1,6 @@
 # Turns wait for their own agents, and the helper is always offered
 
-Status on 2026-09-25: slices 1 and 2 implemented; slices 3–5 remain open.
+Status on 2026-09-25: slices 1–3 implemented; slices 4–5 remain open.
 
 - Implemented: shared provider completion, Claude foreground-task environment
   and captured notice handling, Codex retry traces, hook guard and invocation
@@ -8,7 +8,9 @@ Status on 2026-09-25: slices 1 and 2 implemented; slices 3–5 remain open.
   enforcement, durable timeout verdicts and replay, and failed Patch retention
   before owner settlement. Silent streams and detached SSH passes stay bounded;
   an unreachable host during Patch retention keeps the original pass pending.
-- Remains: helper/readiness, services, prompts and the remaining slice 1/3–5
+  The helper is now offered alongside job managers. Scheduler and helper
+  readiness have separate storage, probe, CLI, API, and Settings slots.
+- Remains: services, prompts and the remaining slice 1/4–5
   spec updates and live qualification. Full hook-source
   qualification remains open; unqualified versions emit a warning receipt.
 - Settled (human, 2026-09-25):

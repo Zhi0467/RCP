@@ -517,8 +517,8 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
         status_label="Ready",
         status_tone="ready",
     )
-    store.record_compute_backend_probe(project_id, probe)
-    store.record_compute_backend_probe("other-project", probe)
+    store.record_compute_backend_probe(project_id, probe, "helper")
+    store.record_compute_backend_probe("other-project", probe, "helper")
     client = TestClient(app)
     # Deletion reconciles running rows first; the fence applies to work still alive.
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
@@ -533,7 +533,7 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
         )
         assert store.project(project_id) is not None
         assert len(store.compute_jobs(project_id)) == 2
-        assert store.compute_backend_probe(project_id, "laptop") == probe
+        assert store.compute_backend_probe(project_id, "laptop", "helper") == probe
     else:
         response = client.delete(f"/api/projects/{project_id}")
         assert response.status_code == 200
@@ -541,9 +541,9 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
         assert response.json()["database_records"]["compute_backend_probes"] == 1
         assert store.project(project_id) is None
         assert store.compute_jobs(project_id) == []
-        assert store.compute_backend_probe(project_id, "laptop") is None
+        assert store.compute_backend_probe(project_id, "laptop", "helper") is None
     assert store.compute_job(other.job_id) == other
-    assert store.compute_backend_probe("other-project", "laptop") == probe
+    assert store.compute_backend_probe("other-project", "laptop", "helper") == probe
     assert all((root / "log").read_text() == "preserve compute output" for root in roots)
 
 

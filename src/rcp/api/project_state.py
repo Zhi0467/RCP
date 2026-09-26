@@ -30,6 +30,7 @@ from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.compute_jobs.probe import probe_compute_backend
+from rcp.compute_jobs.routes import ComputeRoute
 from rcp.config import load_manifest
 from rcp.core.attention import project_graph_mutation_availability
 from rcp.core.transition_models import GraphMutationAvailability
@@ -444,6 +445,10 @@ def resolve_project_provider_path(
     return result
 
 
+class ComputeProbeRequest(BaseModel):
+    route: ComputeRoute
+
+
 @router.post(
     "/api/projects/{project_id}/machines/{machine_alias}/compute/probe",
     dependencies=[Depends(require_project_write_admission)],
@@ -452,6 +457,7 @@ def resolve_project_provider_path(
 def probe_project_compute_backend(
     project_id: str,
     machine_alias: str,
+    body: ComputeProbeRequest,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -460,8 +466,10 @@ def probe_project_compute_backend(
     service = get_project_service(catalog, project_id)
     if machine_alias not in service.manifest.machine_map:
         raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
-    probe = probe_compute_backend(service.manifest, machine_alias, data_dir=catalog.data_dir)
-    return store.record_compute_backend_probe(project_id, probe)
+    probe = probe_compute_backend(
+        service.manifest, machine_alias, body.route, data_dir=catalog.data_dir
+    )
+    return store.record_compute_backend_probe(project_id, probe, body.route)
 
 
 @router.get("/api/projects/{project_id}/sources")

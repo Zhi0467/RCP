@@ -47,8 +47,9 @@ class TurnCompletion:
     def observe_codex_task(self, method: object, params: dict, root_thread: str | None) -> None:
         thread_id = params.get("threadId")
         item = params.get("item")
+        # A child may delegate too: its activity names the child's thread, not the root's.
         if (
-            thread_id == root_thread
+            (thread_id == root_thread or thread_id in self._codex_children)
             and method in {"item/started", "item/completed"}
             and isinstance(item, dict)
             and item.get("type") == "subAgentActivity"

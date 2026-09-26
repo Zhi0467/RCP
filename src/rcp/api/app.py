@@ -438,7 +438,7 @@ def create_app(
                             for operation in SERVER_CONTROL_OPERATIONS
                             if (request.protocol_version >= 10 or operation not in root_operations)
                             and (
-                                request.protocol_version >= 11
+                                request.protocol_version >= 12
                                 or operation != "compute_backend_probe"
                             )
                         ),
@@ -462,6 +462,7 @@ def create_app(
                     )
                 case "compute_backend_probe":
                     assert request.selector_id is not None and request.machine_alias is not None
+                    assert request.compute_route is not None
                     record = store.project(request.selector_id)
                     if record is None or record.home_space_id != store.space_id:
                         raise ServerControlError("operation_refused", "Project not found.")
@@ -472,7 +473,7 @@ def create_app(
                     except (OSError, ValueError) as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
                     probe = probe_compute_backend(
-                        manifest, request.machine_alias, data_dir=app_data
+                        manifest, request.machine_alias, request.compute_route, data_dir=app_data
                     )
                     return ServerControlComputeProbeResult(
                         instance_id=identity.instance_id,
@@ -482,7 +483,10 @@ def create_app(
                         selector_kind="project",
                         selector_id=record.project_id,
                         machine_alias=request.machine_alias,
-                        probe=store.record_compute_backend_probe(record.project_id, probe),
+                        compute_route=request.compute_route,
+                        probe=store.record_compute_backend_probe(
+                            record.project_id, probe, request.compute_route
+                        ),
                     )
                 case "provider_readiness_plan":
                     assert provider_readiness_coordinator is not None

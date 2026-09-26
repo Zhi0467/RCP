@@ -654,7 +654,14 @@ test("Project Settings supports legacy profiles without an ontology authoring su
           run_on: "local",
           default_run_truth_scope: ["repo"],
           repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
-          machines: [{ alias: "local", host: "", provider_paths: { codex: "codex" } }],
+          machines: [
+            {
+              alias: "local",
+              host: "",
+              provider_paths: { codex: "codex" },
+              compute_probes: { scheduler: null, helper: null },
+            },
+          ],
           agent_profiles: {
             seed: profile,
             refresh: { ...profile, model: "legacy-refresh" },

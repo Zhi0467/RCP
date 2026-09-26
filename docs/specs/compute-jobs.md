@@ -9,12 +9,17 @@ watcher contract and human job controls.
 ## Execution route
 
 An optional `machines[].compute` block contains `job_manager` and `jobs_root`.
-`job_manager = "slurm"` opts into direct scheduler submission. An unset manager
-selects `systemd_user` on Linux with a reachable user manager and `launchd` on
-macOS. Linux without a user manager refuses helper launches before creating job
-files, with guidance to use a supported machine or direct scheduler submission.
-There is no detached-process or SSH-session fallback. A selected scheduler does
-not silently fall back to the helper.
+`job_manager = "slurm"` opts into direct scheduler submission. The helper resolves
+`systemd_user` on Linux with a reachable user manager and `launchd` on macOS,
+whatever the job manager says. Linux without a user manager refuses helper
+launches before creating job files. There is no detached-process or SSH-session
+fallback.
+
+Each job manager registers one profile with its instructions and readiness hook.
+Its instructions add to the helper instructions. Slurm comes first for compute
+jobs. The helper also owns non-compute processes, such as a dashboard or local
+server. The agent chooses the route. RCP never reroutes a Slurm submission to
+the helper.
 
 On Linux, Cancel stops the whole systemd cgroup. macOS has an explicit ownership
 exception: Cancel stops the launchd service, which is the job's main process and
@@ -60,16 +65,24 @@ preserves configured machine choices. Selecting Slurm is a setup choice; the
 probe executes as the actual execution account, including the `rcp` service
 account for server-local work.
 
-`rcp server compute probe --project <project_id> <machine_alias>` uses the
+`rcp server compute probe --project <project_id> --route <scheduler|helper> <machine_alias>` uses the
 installed-service control socket. The matching API is
 `POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe`.
-Both store the current readiness result; the CLI exits zero only when ready.
+The API requires a JSON `route` of `scheduler` or `helper`.
+Both store the requested route's result. The CLI exits zero only when that route
+is ready.
 Settings accepts `machine_compute`, a partial alias-to-config map: omission
 preserves a machine, null removes its optional block. A changed block invalidates
-its stored probe. Machine projections include configuration and readiness.
+both stored probes. Machine projections include configuration and two fixed
+readiness slots: `scheduler` and `helper`. Each slot holds its own backend
+identity and result, or null when unprobed. A failed helper probe cannot change
+scheduler readiness, and a failed scheduler probe cannot change helper readiness.
+The storage migration places each old probe in the slot named by its recorded
+backend: Slurm in `scheduler`, systemd or launchd in `helper`. The other slot
+starts unprobed.
 
 Episode starts and reauthorization are not gated on compute readiness.
-The helper probes when invoked, and Settings shows each machine's stored probe.
+The helper probes only its own route when invoked. Settings shows both slots.
 
 ## Generic launch helper
 

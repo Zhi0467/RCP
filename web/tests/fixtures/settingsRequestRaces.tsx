@@ -42,7 +42,13 @@ function projectFor(id: string): ProjectSnapshot {
     default_auto_research_invocation_ceiling: 10,
     state_repository: "repo",
     machines: [
-      { alias: "local", host: null, provider_paths: { codex: `/${id}/codex` }, compute: null },
+      {
+        alias: "local",
+        host: null,
+        provider_paths: { codex: `/${id}/codex` },
+        compute: null,
+        compute_probes: { scheduler: null, helper: null },
+      },
     ],
     compute_connections: [
       { id: "local", name: `${id} compute`, kind: "local", ssh_target: "", access_hint: "" },

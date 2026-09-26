@@ -97,6 +97,7 @@ def commands(tmp_path, manifest, monkeypatch):
 
     backend = Backend()
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
+    monkeypatch.setattr(compute_commands, "resolve_context", lambda *_: (context, backend))
     monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", backend)
     probe = ComputeBackendProbe(
         execution_machine="laptop",
@@ -265,8 +266,8 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
     monkeypatch.setattr(
         compute_commands,
         "probe_compute_backend",
-        lambda manifest, alias, **kwargs: probe_module.probe_compute_backend(
-            manifest, alias, runner=runner, **kwargs
+        lambda manifest, alias, route, **kwargs: probe_module.probe_compute_backend(
+            manifest, alias, route, runner=runner, **kwargs
         ),
     )
     resolutions = 0
@@ -375,7 +376,7 @@ def test_compute_launch_key_survives_diagnostic_retention(commands):
 
 
 def test_each_new_helper_launch_checks_current_readiness(commands, monkeypatch):
-    commands.store.record_compute_backend_probe("project", commands.probe)
+    commands.store.record_compute_backend_probe("project", commands.probe, "helper")
     unavailable = commands.probe.model_copy(
         update={
             "ready": False,
@@ -392,7 +393,7 @@ def test_each_new_helper_launch_checks_current_readiness(commands, monkeypatch):
     assert not commands.backend.starts
     monkeypatch.setattr(compute_commands, "probe_compute_backend", lambda *a, **kw: commands.probe)
     assert commands.launch("second").status == "ok"
-    assert commands.store.compute_backend_probe("project", "laptop").ready
+    assert commands.store.compute_backend_probe("project", "laptop", "helper").ready
 
 
 @pytest.mark.parametrize("target", ["outside", "symlink", "protected", "missing"])
@@ -481,19 +482,33 @@ def test_compute_uncertain_launch_never_repeats_backend_submission(commands, mon
     assert len(roots) == 1 and (roots[0] / "command.json").is_file()
 
 
-def test_slurm_rejects_helper_submission_without_launching(commands):
+def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
+    from rcp.compute_jobs.job_managers import JOB_MANAGERS
     from rcp.config import MachineComputeConfig
 
     manifest = commands.handler.manifest.model_copy(deep=True)
     manifest.machine_map["laptop"].compute = MachineComputeConfig(job_manager="slurm")
+    scheduler = commands.probe.model_copy(update={"backend_id": "slurm"})
+    commands.store.record_compute_backend_probe("project", scheduler, "scheduler")
     handler = replace(commands.handler, manifest=manifest)
-    assert not handler.allowed_verbs
-    prose = handler.execution_instructions("secret-helper-command")
-    assert "secret-helper-command" not in prose
+    assert handler.allowed_verbs == {"launch"}
+    prose = handler.execution_instructions("helper-command")
+    assert "helper-command" in prose
+    assert JOB_MANAGERS["slurm"].instructions in prose
     response = handler(
         _request("launch", "key", cwd=str(commands.workspace), argv=["true"]), commands.identity
     )
-    assert response.status == "invalid"
+    assert response.status == "ok"
+    assert commands.probe_calls[0][0][2] == "helper"
+    assert commands.store.compute_backend_probe("project", "laptop", "scheduler") == scheduler
+    assert commands.store.compute_backend_probe("project", "laptop", "helper") == commands.probe
+
+
+def test_missing_helper_owner_disables_only_helper_verb(commands, monkeypatch):
+    monkeypatch.setattr(compute_commands, "resolve_context", lambda *_: (None, None))
+    assert commands.handler.allowed_verbs == frozenset()
+    assert "helper-command" in commands.handler.execution_instructions("helper-command")
+    assert commands.launch().status == "invalid"
     assert not commands.probe_calls and not commands.backend.starts
 
 

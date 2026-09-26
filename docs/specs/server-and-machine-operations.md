@@ -133,16 +133,17 @@ ordinary graph, task, chat, or project-member actions.
 
 ### Compute backend probe
 
-`rcp server compute probe --project <project_id> <machine_alias>` uses the
+`rcp server compute probe --project <project_id> <machine_alias> --route <scheduler|helper>` uses the
 installed-service control socket, entered as the service account, to run
 `probe_compute_backend` against the registered project manifest and store the
 `ComputeBackendProbe`, returned inside `ServerControlComputeProbeResult` with
-service, project, and machine identity. It prints the status label, backend id, containment,
-diagnostic, and any required action; it exits 0 when ready and 1 otherwise.
+service, project, machine, and route identity. It prints the route, status label,
+backend id, containment, diagnostic, and any required action. It exits 0 only
+when the requested route is ready, and 1 otherwise.
 The probe executes inside the running service. Generic helper readiness checks
-local cgroup separation against the server itself. With `job_manager = "slurm"`,
-it instead checks scheduler tool availability and queue access through the
-execution account's bounded login shell, without submitting a job or changing
+local cgroup separation against the server itself. The scheduler route checks
+the configured job manager. Slurm checks tool availability and queue access
+through the execution account's bounded login shell, without submitting a job or changing
 scheduler configuration. Slurm validates permission and resources when the agent
 submits its actual command. The diagnostic names missing prerequisites and asks
 an administrator to repair them. This is the only compute CLI verb.
@@ -1504,9 +1505,10 @@ Provider-native login remains separate from data restoration.
 The private installed-service control socket retains probe, provider plan/check,
 project provisioning and transfer operations, online SQLite capture, and member
 removal. Protocol version 10 adds root-authenticated maintenance enter/status,
-verify and release. Protocol version 11 adds the compute backend probe while
-retaining versions 8, 9, and 10; older clients do not receive the new operation
-in their advertised operation list. It contains no update or restore coordinator.
+verify and release. Protocol version 12 requires an explicit compute probe route
+while retaining versions 8 through 11 for other operations. Older clients do not
+receive the probe operation in their advertised operation list. It contains no
+update or restore coordinator.
 Legacy source adoption is an explicit stopped-data path and does not pretend an older process
 supports this maintenance protocol.
 

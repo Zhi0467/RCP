@@ -101,6 +101,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # Agent task list indexes on graph_runs, fresh and upgraded in place.
         "8ea330738b081a038f99313df5387d73b93437a11c3f90f8f18b8765f6cff9c5",
         "6060e34cbafc7686da7b7bc0b3c2c20d7635568530bb08108b455c2f2bcfa8bb",
+        # Separate scheduler/helper probe keys, fresh and upgraded in place.
+        "f2ea827430563c4baf89aaa64b62df5bc56aca98fed98843c0581ad64698c4b9",
+        "a740aa10daaf191482999132a03617f16429f47b8b923ef9a4976f6619dd3fa4",
     }
 )
 

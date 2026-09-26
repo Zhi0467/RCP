@@ -1771,8 +1771,10 @@ export interface Machine {
   os_account: string;
   provider_paths: Record<ProviderId, string>;
   compute: MachineComputeConfig | null;
-  compute_probe: ComputeBackendProbe | null;
+  compute_probes: Record<ComputeRoute, ComputeBackendProbe | null>;
 }
+
+export type ComputeRoute = "scheduler" | "helper";
 
 export type ComputeContainment = "mirrored" | "cooperative";
 

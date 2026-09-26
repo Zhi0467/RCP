@@ -51,6 +51,7 @@ import type {
   CacheMetric,
   ComputeConnection,
   ComputeBackendProbe,
+  ComputeRoute,
   MachineComputeConfig,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
@@ -499,16 +500,19 @@ export function ProjectSettings({
     }
   };
 
-  const probeMachine = async (alias: string) => {
+  const probeMachine = async (alias: string, route: ComputeRoute) => {
     if (probingMachine || saving || writesDisabled) return;
-    setProbingMachine(alias);
+    setProbingMachine(`${alias}:${route}`);
     setStatus(null);
     try {
-      const probe = await probeMachineCompute(apiBase, alias);
+      const probe = await probeMachineCompute(apiBase, alias, route);
       if (!requestIsCurrent()) return;
       setMachineProbes((currentProbes) => ({
         ...currentProbes,
-        [alias]: { configuration: machineComputeProbeKey(machineByAlias[alias]), probe },
+        [`${alias}:${route}`]: {
+          configuration: machineComputeProbeKey(machineByAlias[alias]),
+          probe,
+        },
       }));
     } catch (caught) {
       if (!requestIsCurrent()) return;
@@ -747,13 +751,6 @@ export function ProjectSettings({
                 { [machine.alias]: machineCompute[machine.alias] ?? null },
               ),
             );
-            const latestProbe = machineProbes[machine.alias];
-            const probe = needsSave
-              ? null
-              : latestProbe?.configuration === machineComputeProbeKey(machine)
-                ? latestProbe.probe
-                : machine.compute_probe;
-            const presentation = computeProbePresentation(probe);
             const computeDisabled = writesDisabled || saving || probingMachine !== null;
             return (
               <article className="provider-machine" key={machine.alias}>
@@ -845,25 +842,38 @@ export function ProjectSettings({
                       Reset compute
                     </button>
                   </div>
-                  <div className={`compute-probe ${presentation.tone}`}>
-                    <span className="compute-probe-dot" aria-hidden="true" />
-                    <span>{presentation.label}</span>
-                    {probe?.backend_id && <span>{probe.backend_id}</span>}
-                    {probe?.diagnostic && <span>{probe.diagnostic}</span>}
-                    {probe?.required_action && <em>{probe.required_action}</em>}
-                    <button
-                      className="button secondary compact"
-                      type="button"
-                      disabled={needsSave}
-                      onClick={() => void probeMachine(machine.alias)}
-                    >
-                      {probingMachine === machine.alias
-                        ? "Probing…"
-                        : needsSave
-                          ? "Save before probing"
-                          : "Probe"}
-                    </button>
-                  </div>
+                  {(["scheduler", "helper"] as const).map((route) => {
+                    const probeKey = `${machine.alias}:${route}`;
+                    const latestProbe = machineProbes[probeKey];
+                    const probe = needsSave
+                      ? null
+                      : latestProbe?.configuration === machineComputeProbeKey(machine)
+                        ? latestProbe.probe
+                        : machine.compute_probes[route];
+                    const presentation = computeProbePresentation(probe);
+                    return (
+                      <div className={`compute-probe ${presentation.tone}`} key={route}>
+                        <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
+                        <span className="compute-probe-dot" aria-hidden="true" />
+                        <span>{presentation.label}</span>
+                        {probe?.backend_id && <span>{probe.backend_id}</span>}
+                        {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+                        {probe?.required_action && <em>{probe.required_action}</em>}
+                        <button
+                          className="button secondary compact"
+                          type="button"
+                          disabled={needsSave}
+                          onClick={() => void probeMachine(machine.alias, route)}
+                        >
+                          {probingMachine === probeKey
+                            ? "Probing…"
+                            : needsSave
+                              ? "Save before probing"
+                              : "Probe"}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </fieldset>
               </article>
             );
