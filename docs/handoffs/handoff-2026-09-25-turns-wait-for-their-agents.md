@@ -1,9 +1,13 @@
 # Turns wait for their own agents, and the helper is always offered
 
-Status on 2026-09-25: design only. Nothing is implemented.
+Status on 2026-09-25: slice 1 implemented; later slices remain open.
 
-- Implemented: nothing.
-- Remains: every change below, on one pull request.
+- Implemented: shared provider completion, Claude foreground-task environment
+  and captured notice handling, Codex retry traces, hook guard and invocation
+  fence with local and execution-host wiring.
+- Remains: delegation deadline enforcement, journal/replay verdicts, owner
+  settlement, helper/readiness, services, prompts and specs. Full hook-source
+  qualification remains open; unqualified versions emit a warning receipt.
 - Settled (human, 2026-09-25):
   - A turn waits for the subagents it started. Subagents never outlive the
     turn.

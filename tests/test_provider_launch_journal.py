@@ -11,6 +11,8 @@ import pytest
 from rcp.__main__ import _configure_logging
 from rcp.agents import AgentLauncher, ProviderReadiness
 
+pytestmark = pytest.mark.usefixtures("fake_codex_hook_control")
+
 _TOKEN_SHAPED = "sk-ant-oat01-SECRETSECRETSECRETSECRET"
 _LAUNCHER_LOGGER = "rcp.agents.launcher"
 
@@ -107,3 +109,46 @@ def test_serve_attaches_one_stderr_handler_to_the_package_logger() -> None:
         package.setLevel(logging.NOTSET)
         for handler in before:
             package.addHandler(handler)
+
+
+@pytest.mark.asyncio
+async def test_codex_missing_start_marker_never_releases_answer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    launcher = _codex_exec_launcher(monkeypatch, exit_code=0)
+    monkeypatch.setattr(
+        launcher,
+        "_prepare_codex_control",
+        lambda **kwargs: {
+            "hooks": {},
+            "marker": str(tmp_path / "absent"),
+            "receipt": {"warning_codes": []},
+        },
+    )
+    events = await _drain(launcher, tmp_path)
+    assert not any(event.event in {"answer", "done"} for event in events)
+    errors = [event for event in events if event.event == "error"]
+    assert len(errors) == 1
+    assert json.loads(errors[0].text.splitlines()[0])["code"] == "codex_hook_start_missing"
+
+
+@pytest.mark.asyncio
+async def test_exec_nonzero_exit_retains_last_retry_error(tmp_path, monkeypatch):
+    launcher = _codex_exec_launcher(monkeypatch, exit_code=7)
+    messages = ["retry-1", "retry-2"]
+    script = (
+        "import sys\nsys.stdin.read()\n"
+        + "\n".join(
+            f"print({json.dumps({'type': 'error', 'message': message})!r}, flush=True)"
+            for message in messages
+        )
+        + "\nraise SystemExit(7)\n"
+    )
+    monkeypatch.setattr(
+        launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
+    )
+    events = await _drain(launcher, tmp_path)
+    assert [event.text for event in events if event.event == "message"] == messages
+    assert [event.text for event in events if event.event == "error"] == messages[-1:]
+    assert not any(event.event == "done" for event in events)

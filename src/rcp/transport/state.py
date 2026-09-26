@@ -142,7 +142,16 @@ def _remote_turn_supervisor_script() -> str:
         .joinpath("remote_turn_fence.py")
         .read_text(encoding="utf-8")
     )
-    return f"{fence}\n{_remote_script('remote_turn_supervisor.py')}"
+    completion = (
+        importlib.resources.files("rcp.agents")
+        .joinpath("turn_completion.py")
+        .read_text(encoding="utf-8")
+    )
+    return (
+        f"exec(compile({completion!r}, 'turn_completion.py', 'exec'))\n"
+        f"exec(compile({fence!r}, 'remote_turn_fence.py', 'exec'))\n"
+        f"{_remote_script('remote_turn_supervisor.py')}"
+    )
 
 
 def remote_turn_supervisor_input_label() -> str:

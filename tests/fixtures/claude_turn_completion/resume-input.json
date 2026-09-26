@@ -1,0 +1,10 @@
+{
+  "type": "user",
+  "uuid": "2cdb04db-6831-4c8f-ac8e-b19d85c23df1",
+  "message": {
+    "role": "user",
+    "content": "Reply RESUME_DONE only. Do not use tools."
+  },
+  "parent_tool_use_id": null,
+  "session_id": ""
+}

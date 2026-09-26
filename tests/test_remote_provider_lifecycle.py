@@ -13,6 +13,8 @@ import pytest
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 
+pytestmark = pytest.mark.usefixtures("fake_codex_hook_control")
+
 
 @pytest.mark.skipif(
     sys.platform != "linux" or shutil.which("setsid") is None,

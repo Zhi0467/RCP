@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,6 +139,7 @@ class ProviderTurnRequest:
     capability: AgentCapability
     provider_version: str | None
     legacy_command: list[str] | None = None
+    codex_hooks: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,7 @@ class ProviderTurn:
     close_input_after_initial: bool = True
     requires_protocol_completion: bool = False
     initial_input_delivers_prompt: bool = True
+    last_error: str = ""
 
     def initial_input(self) -> bytes:
         raise NotImplementedError
@@ -237,6 +240,9 @@ class _JsonlProviderTurn(ProviderTurn):
         profile: ProviderProfile,
         request: ProviderTurnRequest,
     ) -> None:
+        from rcp.agents.turn_completion import TurnCompletion
+
+        self._completion = TurnCompletion()
         self._profile = profile
         self._prompt = request.prompt
         self.command = request.legacy_command or profile.command(
@@ -251,7 +257,12 @@ class _JsonlProviderTurn(ProviderTurn):
             write_scope=request.write_scope,
             capability=request.capability,
             provider_version=request.provider_version,
+            **({"codex_hooks": request.codex_hooks} if request.codex_hooks is not None else {}),
         )
+
+    @property
+    def open_work_since(self) -> float | None:
+        return self._completion.open_work_since
 
     def initial_input(self) -> bytes:
         return self._prompt.encode("utf-8")
@@ -269,10 +280,16 @@ class _JsonlProviderTurn(ProviderTurn):
             event = ProviderStreamEvent(event="raw", text=line)
             return ProviderRuntimeStep(events=(event,))
         event = self._profile.decode_event(value, line)
+        if isinstance(value, dict) and value.get("type") == "error":
+            self.last_error = event.text
         terminal = event.event == "error" or (
             isinstance(value, dict)
             and value.get("type") in {"turn.completed", "turn.failed", "result"}
         )
+        if terminal:
+            terminal = self._completion.verdict(
+                failed=event.event == "error", now=time.monotonic()
+            ).terminal
         return ProviderRuntimeStep(events=(event,), complete=terminal, explicit_terminal=terminal)
 
 
@@ -288,6 +305,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         self._turn_id = str(uuid.uuid4())
         self._ready = False
         self._completed = False
+        self._pending_result: str | None = None
         self._pending: set[str] = set()
         self._generated: set[str] = {self._turn_id}
         self._outstanding: set[str] = set()
@@ -351,6 +369,10 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         except json.JSONDecodeError:
             return super().receive_line(line)
         if isinstance(value, dict):
+            self._completion.observe_claude_task(value)
+            if self._pending_result is not None and not self._completion.open_work:
+                pending, self._pending_result = self._pending_result, None
+                return self.receive_line(pending)
             if value.get("type") == "command_lifecycle":
                 message_id = value.get("command_uuid")
                 if not isinstance(message_id, str) or message_id not in self._generated:
@@ -371,24 +393,29 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             if value.get("type") == "user" and value.get("isReplay") is True:
                 return ProviderRuntimeStep()
             if value.get("type") == "result":
-                message_ids = value.get("user_message_uuids")
-                finished = (
-                    {item for item in message_ids if isinstance(item, str) and item.strip()}
-                    if isinstance(message_ids, list)
-                    else set()
-                )
-                if not finished:
-                    message_id = value.get("user_message_uuid")
-                    if isinstance(message_id, str) and message_id.strip():
-                        finished.add(message_id)
+                from rcp.agents.turn_completion import attributed_ids
+
+                finished = attributed_ids(value)
                 self._outstanding.difference_update(finished)
                 event = self._profile.decode_event(value, line)
-                # A failing result ends the invocation even with a follow-up
-                # accepted: the task engine stops at the first error anyway, so
-                # continuing would only run a turn whose task has already
-                # failed. Ending here keeps the error path terminal, which is
-                # what the launcher's stderr drain and stop assume.
-                if finished and self._outstanding and event.event != "error":
+                origin = value.get("origin")
+                verdict = self._completion.verdict(
+                    failed=event.event == "error",
+                    sent_ids=self._generated,
+                    finished_ids=finished,
+                    outstanding_inputs=self._outstanding,
+                    task_notification=(
+                        value.get("subtype") == "success"
+                        and isinstance(origin, dict)
+                        and origin.get("kind") == "task-notification"
+                    ),
+                    now=time.monotonic(),
+                )
+                if verdict.code == "open_work":
+                    self._pending_result = line
+                if verdict.code in {"injected_notice", "open_work"}:
+                    event = ProviderStreamEvent(event="raw", text=line, usage=event.usage)
+                if not verdict.terminal:
                     return ProviderRuntimeStep(events=(event,))
                 self._completed = True
                 receipts = tuple(
@@ -705,6 +732,7 @@ class CodexProfile(ProviderProfile):
             if isinstance(value, dict) and (
                 "error" in value
                 or value.get("method") == "error"
+                or value.get("type") == "error"
                 or self.decode_event(value, line).event == "error"
             ):
                 diagnostics.append(line)
@@ -853,6 +881,7 @@ class CodexProfile(ProviderProfile):
         write_scope: ProjectWriteScope | None,
         capability: AgentCapability,
         provider_version: str | None,
+        codex_hooks: dict[str, object] | None = None,
     ) -> list[str]:
         del prompt, read_dirs
         command = [binary, "exec"]
@@ -865,6 +894,10 @@ class CodexProfile(ProviderProfile):
         command.extend(
             ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"]
         )
+        if codex_hooks is not None:
+            from rcp.agents.codex_turn_hooks import hook_cli_args
+
+            command.extend(hook_cli_args(codex_hooks))
         # Live retrieval is a provider tool, independent of whether command
         # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])
@@ -922,7 +955,11 @@ class CodexProfile(ProviderProfile):
                 detail = error.get("message") or json.dumps(error, ensure_ascii=False)
             else:
                 detail = error or value.get("message") or "Codex turn failed."
-            return ProviderStreamEvent(event="error", text=str(detail), usage=usage)
+            return ProviderStreamEvent(
+                event="error" if event_type == "turn.failed" else "message",
+                text=str(detail),
+                usage=usage,
+            )
         item = value.get("item", {})
         if not isinstance(item, dict):
             item = {}

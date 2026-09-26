@@ -248,3 +248,109 @@ def test_the_fence_publishes_no_verdict(tmp_path):
 
     assert completed.terminal is failed.terminal is True
     assert not hasattr(completed, "complete")
+
+
+def test_captured_claude_notice_does_not_finish_or_answer(tmp_path):
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures" / "claude_turn_completion"
+    sent = json.loads((fixtures / "resume-input.json").read_text())
+    turn, fence = _started_decoder_pair(tmp_path, "claude.stream-json.v1")
+    turn.adopt_recorded_inputs([sent["uuid"]], {})
+    fence.input(sent)
+    steps = []
+    for line in (fixtures / "resume.jsonl").read_text().splitlines():
+        value = json.loads(line)
+        step = turn.receive_line(line)
+        fence.output(value)
+        assert step.explicit_terminal == fence.terminal
+        steps.append((value, step))
+    notice = next(step for value, step in steps if value.get("origin"))
+    assert not notice.complete
+    assert all(event.event != "answer" for event in notice.events)
+    own_result = {"type": "result", "subtype": "success", "user_message_uuid": sent["uuid"]}
+    assert turn.receive_line(json.dumps(own_result)).complete
+    fence.output(own_result)
+    assert fence.terminal
+
+
+@pytest.mark.parametrize("variant", ["sent", "failed", "unattributed", "foreign"])
+def test_claude_notice_origin_and_own_input_control_completion(tmp_path, variant):
+    turn, fence = _started_decoder_pair(tmp_path, "claude.stream-json.v1")
+    sent = json.loads(turn.initial_input())
+    fence.input(sent)
+    result = {"type": "result", "subtype": "success", "origin": {"kind": "task-notification"}}
+    if variant == "sent":
+        result["user_message_uuid"] = sent["uuid"]
+    elif variant == "failed":
+        result["is_error"] = True
+    elif variant == "unattributed":
+        result.pop("origin")
+    else:
+        result["user_message_uuid"] = "foreign"
+    step = turn.receive_line(json.dumps(result))
+    fence.output(result)
+    assert step.complete == fence.terminal == (variant != "foreign")
+
+
+def test_claude_open_task_blocks_result_and_records_first_wait(tmp_path):
+    turn, fence = _started_decoder_pair(tmp_path, "claude.stream-json.v1")
+    result = {"type": "result", "subtype": "success"}
+    for value in ({"type": "system", "subtype": "task_started", "task_id": "child"}, result):
+        assert not turn.receive_line(json.dumps(value)).complete
+        fence.output(value)
+        assert not fence.terminal
+    since = fence.completion.open_work_since
+    assert since is not None
+    fence.output(result)
+    assert fence.completion.open_work_since == since
+    stopped = {"type": "system", "subtype": "task_notification", "task_id": "child"}
+    assert turn.receive_line(json.dumps(stopped)).complete
+    fence.output(stopped)
+    assert fence.terminal
+
+
+def test_codex_exec_retry_errors_remain_traces_until_turn_failed(tmp_path):
+    turn, fence = _started_decoder_pair(tmp_path, "codex.exec-json.v1")
+    for index in range(2):
+        notice = {"type": "item.completed", "item": {"type": "error", "message": str(index)}}
+        step = turn.receive_line(json.dumps(notice))
+        fence.output(notice)
+        assert not step.complete and not fence.terminal
+        assert step.events[0].event not in {"answer", "error"}
+    for attempt in (2, 3):
+        retry = {"type": "error", "message": f"Reconnecting... {attempt}/5 (...)"}
+        step = turn.receive_line(json.dumps(retry))
+        fence.output(retry)
+        assert not step.complete and not fence.terminal
+        assert step.events[0].event == "message"
+        assert turn.last_error == fence.last_error == retry["message"]
+    failure = {"type": "turn.failed", "error": {"message": "retry budget exhausted"}}
+    assert turn.receive_line(json.dumps(failure)).complete
+    fence.output(failure)
+    assert fence.terminal
+
+
+def test_app_server_child_receipt_settles_pending_root_completion(tmp_path):
+    turn, fence = _started_decoder_pair(tmp_path, "codex.app-server-stdio.v1")
+    values = [
+        {
+            "method": "item/started",
+            "params": {
+                "threadId": "fence-thread",
+                "item": {"type": "subAgentActivity", "kind": "started", "agentThreadId": "child"},
+            },
+        },
+        {
+            "method": "turn/completed",
+            "params": {"turn": {"id": "corpus-turn", "status": "completed"}},
+        },
+        {
+            "method": "turn/completed",
+            "params": {"threadId": "child", "turn": {"id": "child-turn", "status": "completed"}},
+        },
+    ]
+    for index, value in enumerate(values):
+        step = turn.receive_line(json.dumps(value))
+        fence.output(value)
+        assert step.complete == fence.terminal == (index == 2)

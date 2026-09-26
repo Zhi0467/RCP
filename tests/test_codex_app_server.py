@@ -11,6 +11,8 @@ from rcp.agents.codex_app_server import CodexAppServerRuntime
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.providers import ProviderTurnRequest
 
+pytestmark = pytest.mark.usefixtures("fake_codex_hook_control")
+
 
 def _fake_app_server(
     tmp_path: Path,
@@ -213,7 +215,8 @@ async def test_app_server_runtime_normalizes_one_fresh_local_turn(tmp_path: Path
         item for item in transcript["messages"] if item.get("method") == "thread/start"
     )
     assert thread_start["params"]["config"]["mcp_servers"]["github"] == {"enabled": False}
-    assert thread_start["params"]["config"]["hooks"]["Stop"] == []
+    assert thread_start["params"]["config"]["hooks"]["Stop"][0]["hooks"][0]["type"] == "command"
+    assert thread_start["params"]["config"]["bypass_hook_trust"] is True
     assert thread_start["params"]["config"]["project_doc_max_bytes"] == 0
 
 
@@ -672,3 +675,57 @@ def test_child_interactive_request_is_rejected_without_stopping_parent(tmp_path:
     )
     assert ending.complete
     assert ending.events[0].usage.processed_input_tokens == 300
+
+
+def test_parent_completion_waits_for_known_child(tmp_path: Path):
+    turn = _accounting_turn(tmp_path, resumed=False)
+    turn.receive_line(json.dumps({"id": 4, "result": {"turn": {"id": "active-turn"}}}))
+    turn.receive_line(
+        json.dumps(
+            {
+                "method": "item/completed",
+                "params": {
+                    "threadId": "accounting-thread",
+                    "turnId": "active-turn",
+                    "item": {
+                        "type": "subAgentActivity",
+                        "agentThreadId": "child",
+                        "kind": "started",
+                    },
+                },
+            }
+        )
+    )
+    step = turn.receive_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "accounting-thread",
+                    "turn": {
+                        "id": "active-turn",
+                        "status": "completed",
+                    },
+                },
+            }
+        )
+    )
+    assert not step.complete
+    assert turn.completion.open_work == {"child"}
+    assert turn.completion.open_work_since is not None
+    step = turn.receive_line(
+        json.dumps(
+            {
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "child",
+                    "turn": {
+                        "id": "child-turn",
+                        "status": "completed",
+                    },
+                },
+            }
+        )
+    )
+    assert step.complete
+    assert turn.completion.open_work == set()

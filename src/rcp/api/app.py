@@ -621,7 +621,7 @@ def create_app(
     launcher = (
         AcceptanceAgentLauncher(accounts=provider_accounts)
         if acceptance_agent
-        else AgentLauncher(accounts=provider_accounts, readiness_snapshots=store)
+        else AgentLauncher(accounts=provider_accounts, readiness_snapshots=store, data_dir=app_data)
     )
     # A restored data directory carries login state but no token: the backup
     # excludes `providers`; reset accounts whose implementation requires a
