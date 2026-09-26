@@ -228,7 +228,10 @@ enforces it, so a version bump changes all of them.
 
 Apple signing is not planned. It needs a paid Apple Developer account, and a
 locally built app is never gatekept, so it would only spare prebuilt-app users
-the one-time Open Anyway approval. Without a signing identity the Keychain
+the one-time Open Anyway approval. The release build is ad-hoc signed, without
+the hardened runtime: an unsealed bundle makes macOS call the downloaded app
+damaged instead of offering Open Anyway, and the hardened runtime stops the
+backend from loading its unpacked Python library. Without a signing identity the Keychain
 cannot bind credentials to the app, so the prebuilt app keeps the source build's
 Keychain storage. The Tauri updater stays disabled: nothing sets
 `RCP_UPDATE_ENDPOINT` or `RCP_UPDATE_PUBKEY`, so every build reports
