@@ -3842,37 +3842,3 @@ def test_shutdown_waits_for_a_reattempt_that_is_already_admitting(
     # A reattempt that arrives once shutdown has begun stands down instead.
     tasks._run_transport_retry("dropped", attempt=0)
     assert observed == [False]
-
-
-def test_delegation_failure_keeps_its_type_and_wait_receipt(tmp_path, monkeypatch):
-    store = _store(tmp_path)
-
-    async def stream(_project, _kind, _request, _execution):
-        yield _sse(
-            AgentEvent(
-                event="delegation_wait",
-                text=json.dumps(
-                    {
-                        "code": "open_work",
-                        "source": "codex_stop",
-                        "open_work_since": 1.0,
-                    }
-                ),
-            )
-        )
-        yield _sse(
-            AgentEvent(
-                event="error",
-                text="Connection lost while waiting for a child.",
-                failure_kind="delegation_unfinished",
-            )
-        )
-
-    tasks = BackgroundAgentTasks(store, stream)
-    monkeypatch.setattr(tasks, "_failure_kind", lambda *_args: pytest.fail("reclassified"))
-    task = _admitted_launch_task(store, operation_id="delegation-expired")
-    tasks.launch_admitted(task.operation_id)
-    finished = wait_for_task(store, task.operation_id, expect="failed")
-    assert finished.failure_kind == "delegation_unfinished"
-    assert store.agent_task_has_receipt(task.operation_id, "delegation_wait")
-    tasks.shutdown(timeout=0.5)

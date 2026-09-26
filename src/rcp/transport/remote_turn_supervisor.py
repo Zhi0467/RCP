@@ -8,8 +8,7 @@ Stdin stays the live control channel and is never persisted. Stdout is drained
 and journalled whether or not the uplink is still there, under explicit storage
 and memory ceilings.
 
-Provider semantics remain with the decoder. The supervisor seals its own
-delegation deadline failure; otherwise `outcome.json` records
+Nothing here judges the turn. The journal is evidence; `outcome.json` records
 mechanical facts about the pass -- what exited, what was fenced, what was
 truncated -- and RCP's own decoder reads `events.jsonl` to decide what the turn
 was worth.
@@ -119,36 +118,6 @@ def _deliverable_snapshot(source, destination, limit):
     return True, hashlib.sha256(content).hexdigest()
 
 
-def _kill_provider_group(poll_seconds):
-    """Keep the journal writer alive while killing every remaining group member."""
-    group = os.getpgrp()
-    while True:
-        inventory = subprocess.Popen(
-            ["ps", "-eo", "pid=,pgid=,stat="], stdout=subprocess.PIPE, text=True
-        )
-        listing, _ = inventory.communicate()
-        if inventory.returncode:
-            raise RuntimeError("Could not confirm the provider process group stopped.")
-        members = []
-        for line in listing.splitlines():
-            pid, pgid, state = line.split()
-            if (
-                int(pgid) == group
-                and int(pid) not in {os.getpid(), inventory.pid}
-                and not state.startswith("Z")
-            ):
-                members.append(int(pid))
-        if not members:
-            return
-        for pid in members:
-            try:
-                if os.getpgid(pid) == group:
-                    os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        time.sleep(poll_seconds)
-
-
 def run(args):
     if os.getpid() != os.getpgrp():
         raise ValueError("The turn supervisor requires its own process group.")
@@ -168,16 +137,11 @@ def run(args):
     signalled_at = None
     external_stop = False
     error = None
-    delegation_unfinished = False
-    hook_receipts_read = 0
-    completion_start_recorded = False
     journal_bytes = 0
     stderr_bytes = 0
     stderr_truncated = False
     journal_complete = True
     events_hash = hashlib.sha256()
-    delegation_hash = hashlib.sha256()
-    delegation_bytes = 0
     started = time.monotonic()
 
     def accept():
@@ -216,69 +180,14 @@ def run(args):
     with (
         (directory / "events.jsonl").open("xb") as events,
         (directory / "stderr.txt").open("xb") as errors,
-        (directory / "delegation.jsonl").open("xb") as delegation,
     ):
-
-        def record_wait(receipt):
-            nonlocal delegation_bytes, journal_complete, error
-            data = (json.dumps(receipt) + "\n").encode()
-            if delegation_bytes + len(data) > args.max_journal_bytes:
-                journal_complete = False
-                error = error or "Provider delegation receipts exceeded their storage limit."
-                return
-            delegation.write(data)
-            delegation.flush()
-            os.fsync(delegation.fileno())
-            delegation_hash.update(data)
-            delegation_bytes += len(data)
-
-        def observe_delegation():
-            nonlocal hook_receipts_read, completion_start_recorded
-            since = fence.completion.open_work_since
-            open_work = bool(fence.completion.open_work)
-            if since is not None and not completion_start_recorded:
-                record_wait(
-                    {"code": "open_work", "source": args.runtime_id, "open_work_since": since}
-                )
-                completion_start_recorded = True
-            if args.codex_state_path:
-                state_path = Path(args.codex_state_path)
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-                hook_since = state.get("open_work_since")
-                if hook_since is not None and state.get("open_agents"):
-                    since = min(since, hook_since) if since is not None else hook_since
-                    open_work = True
-                receipts_path = state_path.with_suffix(".events.jsonl")
-                if receipts_path.exists():
-                    with receipts_path.open("rb") as receipts:
-                        receipts.seek(hook_receipts_read)
-                        data = receipts.read(args.max_journal_bytes + 1)
-                    if len(data) > args.max_journal_bytes:
-                        raise ValueError("Codex Stop receipts exceeded the journal limit.")
-                    for line in data.splitlines(keepends=True):
-                        if not line.endswith(b"\n"):
-                            break
-                        record_wait(json.loads(line))
-                        hook_receipts_read += len(line)
-            return since, open_work
-
         while child_streams or child.poll() is None:
             now = time.monotonic()
-            since, open_work = observe_delegation()
-            if (
-                not external_stop
-                and not error
-                and not fence.terminal
-                and open_work
-                and since is not None
-                and now - since >= args.delegation_wait_limit_seconds
-            ):
-                delegation_unfinished = True
             if fence.terminal and terminal_at is None:
                 terminal_at = now
                 input_pending.clear()
                 child.stdin.close()  # Fence all later input before forwarding completion.
-            if external_stop or error or delegation_unfinished or terminal_at is not None:
+            if external_stop or error or terminal_at is not None:
                 if not child.stdin.closed:
                     child.stdin.close()
                 stdin_open = False
@@ -290,10 +199,7 @@ def run(args):
                     signalled_at = now
                 elif signalled_at is not None and now - signalled_at >= args.stop_grace_seconds:
                     # A stubborn descendant must not outlive the original fence.
-                    if delegation_unfinished:
-                        _kill_provider_group(args.poll_seconds)
-                    else:
-                        os.killpg(os.getpgrp(), signal.SIGKILL)
+                    os.killpg(os.getpgrp(), signal.SIGKILL)
             read_fds = list(child_streams)
             if stdin_open and not detached and len(input_pending) < args.max_event_bytes:
                 read_fds.append(0)
@@ -327,14 +233,13 @@ def run(args):
                 if not data:
                     del child_streams[descriptor]
                     if channel == 1:
-                        if not delegation_unfinished:
-                            outputs.flush()
+                        outputs.flush()
                         # A completion only surfaces here once this channel's
                         # bytes were forwarded, so it travelled with them.
                         terminal_uplinked = terminal_uplinked or (fence.terminal and not detached)
                     continue
                 if channel == 1:
-                    if fence.terminal or delegation_unfinished:
+                    if fence.terminal:
                         continue  # Drain post-turn output without replaying it.
                     consumed = outputs.feed(data, stop_when=lambda: fence.terminal)
                     data = data[:consumed]
@@ -417,9 +322,6 @@ def run(args):
                 > args.max_control_messages
             ):
                 error = error or "Provider control metadata exceeded its storage limit."
-        if delegation_unfinished:
-            _kill_provider_group(args.poll_seconds)
-        observe_delegation()
         events.flush()
         errors.flush()
         os.fsync(events.fileno())
@@ -438,12 +340,7 @@ def run(args):
     watch_sha256 = None
     experiment_watch = {}
     experiment_watch_snapshotted = False
-    if (
-        (fence.terminal or delegation_unfinished)
-        and journal_complete
-        and not error
-        and not external_stop
-    ):
+    if fence.terminal and journal_complete and not error and not external_stop:
         try:
             patch_present, patch_sha256 = _deliverable_snapshot(
                 args.patch_path, directory / "patch.json", args.max_patch_bytes
@@ -517,15 +414,12 @@ def run(args):
                 "provider_version": args.provider_version,
                 "return_code": return_code,
                 "accepted": accepted,
-                "terminal_event": fence.terminal or delegation_unfinished,
-                "verdict": "delegation_unfinished" if delegation_unfinished else None,
-                "failure_kind": "delegation_unfinished" if delegation_unfinished else None,
+                "terminal_event": fence.terminal,
                 "journal_complete": journal_complete,
                 "error": error,
                 "stopped": external_stop,
                 "uplink_detached": detached,
                 "events_sha256": events_hash.hexdigest(),
-                "delegation_sha256": delegation_hash.hexdigest(),
                 "patch_present": patch_present,
                 "patch_sha256": patch_sha256,
                 "watch_present": watch_present,
@@ -543,20 +437,6 @@ def run(args):
             sort_keys=True,
         ).encode(),
     )
-    receipt = b""
-    if delegation_unfinished and not detached:
-        receipt = b'\nRCP_TURN_RECEIPT:{"verdict":"delegation_unfinished","failure_kind":"delegation_unfinished"}\n'
-        deadline = time.monotonic() + args.stop_grace_seconds
-        while receipt and time.monotonic() < deadline:
-            if select.select([], [1], [], args.poll_seconds)[1]:
-                try:
-                    receipt = receipt[os.write(1, receipt) :]
-                except BlockingIOError:
-                    pass
-                except OSError:
-                    break
-    if delegation_unfinished:
-        return 255 if detached or receipt else _exit_status(return_code)
     if bool(error) or external_stop:
         return _exit_status(return_code)
     if fence.terminal:
@@ -587,7 +467,6 @@ def _exit_status(return_code):
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--codex-start-marker")
-    parser.add_argument("--codex-state-path")
     for name in (
         "pid-file",
         "provider",
@@ -609,12 +488,7 @@ def main(argv=None):
         "max-experiment-watch-bytes",
     ):
         parser.add_argument("--" + name, type=int, required=True)
-    for name in (
-        "stop-hold-seconds",
-        "stop-grace-seconds",
-        "poll-seconds",
-        "delegation-wait-limit-seconds",
-    ):
+    for name in ("stop-hold-seconds", "stop-grace-seconds", "poll-seconds"):
         parser.add_argument("--" + name, type=float, required=True)
     parser.add_argument("--close-input-after-initial", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)

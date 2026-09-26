@@ -185,7 +185,7 @@ def absorb_recorded_events(
     for event in verdict.events:
         if event.session_id:
             outcome.session_id = event.session_id
-        if event.event in {"session", "delegation_wait", "provider_exit"}:
+        if event.event == "session":
             frames.append(_sse(event))
             continue
         if event.event == "answer":
@@ -199,7 +199,6 @@ def absorb_recorded_events(
             continue
         if event.event == "error":
             outcome.failed = True
-            outcome.failure_kind = event.failure_kind
             frames.append(_sse(event))
             continue
         if event.usage is not None:

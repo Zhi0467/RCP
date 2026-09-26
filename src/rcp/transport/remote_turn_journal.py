@@ -73,9 +73,6 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
             "accepted": accepted,
             "outcome": outcome,
             "events": read("events.jsonl", max_bytes),
-            "delegation": read("delegation.jsonl", max_bytes)
-            if outcome.get("delegation_sha256")
-            else None,
             "stderr": errors,
             "patch": read("patch.json", max_bytes) if outcome.get("patch_present") else None,
             "watch": read("watch.json", max_bytes) if outcome.get("watch_present") else None,

@@ -39,7 +39,6 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import (
     CODEX_HOOK_GUARD_TIMEOUT_SECONDS,
-    DELEGATION_WAIT_LIMIT_SECONDS,
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
     REMOTE_PROVIDER_KILL_WAIT_SECONDS,
@@ -214,31 +213,16 @@ class AgentEvent(BaseModel):
         # Internal orchestration evidence emitted immediately after the provider
         # process exits. API pumps consume it instead of forwarding it as UI text.
         "provider_exit",
-        "delegation_wait",
     ]
     text: str = ""
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
     usage: ProviderUsage | None = None
-    #: Typed cause the launcher knows: a link lost before startup or an expired
-    #: delegation wait. Other failures use the exit code in `provider_exit` for
-    #: classification. Never inferred from text.
+    #: Typed cause on an `error` the launcher can name itself. Set only for a
+    #: link lost before the provider started; a provider process that exits
+    #: leaves its code in `provider_exit` instead, and classification reads
+    #: that. Never inferred from text.
     failure_kind: AgentFailureKind | None = None
-
-
-def _codex_delegation_receipts(state_path: Path, offset: int) -> tuple[list[str], int]:
-    path = state_path.with_suffix(".events.jsonl")
-    if not path.is_file():
-        return [], offset
-    recorded = []
-    with path.open("rb") as receipts:
-        receipts.seek(offset)
-        for receipt in receipts:
-            if not receipt.endswith(b"\n"):
-                break
-            recorded.append(receipt.decode("utf-8").rstrip())
-            offset += len(receipt)
-    return recorded, offset
 
 
 def _supervised_remote_turn_command(
@@ -292,16 +276,11 @@ def _supervised_remote_turn_command(
         str(PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
         "--stop-grace-seconds",
         str(REMOTE_PROVIDER_TERM_WAIT_SECONDS),
-        "--delegation-wait-limit-seconds",
-        str(DELEGATION_WAIT_LIMIT_SECONDS),
         "--poll-seconds",
         str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
     ]
     if codex_start_marker:
         wrapped.extend(("--codex-start-marker", codex_start_marker))
-        wrapped.extend(
-            ("--codex-state-path", str(Path(codex_start_marker).with_name("state.json")))
-        )
     if provider_version:
         wrapped.extend(("--provider-version", provider_version))
     if close_input_after_initial:
@@ -1641,67 +1620,8 @@ class AgentLauncher:
             explicit_terminal_event = False
             stopped_at_result = False
             completion_stop_failed = False
-            delegation_unfinished = False
-            open_work_since: float | None = None
-            hook_receipt_offset = 0
-            runtime_wait_recorded = False
-            process_wait_task = asyncio.create_task(process.wait())
-            while stdout_task is not None or process.returncode is None:
-                if not host:
-                    runtime_since = getattr(turn, "open_work_since", None)
-                    has_open_work = getattr(turn, "has_open_work", False)
-                    if runtime_since is not None and not runtime_wait_recorded:
-                        runtime_wait_recorded = True
-                        open_work_since = (
-                            runtime_since
-                            if open_work_since is None
-                            else min(open_work_since, runtime_since)
-                        )
-                        yield AgentEvent(
-                            event="delegation_wait",
-                            text=json.dumps(
-                                {
-                                    "code": "open_work",
-                                    "source": runtime.id,
-                                    "open_work_since": runtime_since,
-                                }
-                            ),
-                        )
-                    if codex_control:
-                        state_path = Path(codex_control["marker"]).with_name("state.json")
-                        if state_path.is_file():
-                            hook_state = json.loads(state_path.read_text())
-                            hook_since = hook_state["open_work_since"]
-                            has_open_work = has_open_work or bool(hook_state["open_agents"])
-                            if hook_since is not None:
-                                open_work_since = (
-                                    hook_since
-                                    if open_work_since is None
-                                    else min(open_work_since, hook_since)
-                                )
-                        receipts, hook_receipt_offset = _codex_delegation_receipts(
-                            state_path, hook_receipt_offset
-                        )
-                        for receipt in receipts:
-                            yield AgentEvent(event="delegation_wait", text=receipt)
-                    if (
-                        has_open_work
-                        and open_work_since is not None
-                        and time.monotonic() - open_work_since >= DELEGATION_WAIT_LIMIT_SECONDS
-                        and not (control is not None and control.pause_requested.is_set())
-                    ):
-                        process.stdin.close()
-                        if (remaining := remaining_startup_hold(started_at)) > 0:
-                            await asyncio.sleep(remaining)
-                        if control is not None and control.pause_requested.is_set():
-                            continue
-                        # The leader still owns this group; kill children even if they ignore TERM.
-                        with suppress(ProcessLookupError):
-                            os.killpg(process.pid, signal.SIGKILL)
-                        await process.wait()
-                        delegation_unfinished = True
-                        break
-                monitored: set[asyncio.Task[object]] = {stdout_task or process_wait_task}
+            while stdout_task is not None:
+                monitored: set[asyncio.Task[object]] = {stdout_task}
                 if stdin_pending:
                     monitored.add(stdin_task)
                 if stderr_pending:
@@ -1710,7 +1630,6 @@ class AgentLauncher:
                 done, _ = await asyncio.wait(
                     monitored,
                     return_when=asyncio.FIRST_COMPLETED,
-                    timeout=REMOTE_PROVIDER_STOP_POLL_SECONDS if not host else None,
                 )
                 if stdin_pending and stdin_task in done:
                     await stdin_task
@@ -1718,17 +1637,13 @@ class AgentLauncher:
                 if stderr_pending and stderr_task in done:
                     stderr = await stderr_task
                     stderr_pending = False
-                if stdout_task is None:
-                    if process_wait_task in done:
-                        break
-                    continue
                 if stdout_task not in done:
                     continue
                 try:
                     raw_line, omitted_bytes = stdout_task.result()
                 except StopAsyncIteration:
                     stdout_task = None
-                    continue
+                    break
                 stdout_task = asyncio.create_task(anext(stdout_lines))
                 if omitted_bytes:
                     event = AgentEvent(
@@ -1746,10 +1661,6 @@ class AgentLauncher:
                 assert raw_line is not None
                 line = raw_line.decode("utf-8", errors="replace").rstrip()
                 if not line:
-                    continue
-                if supervise_remote and line.startswith("RCP_TURN_RECEIPT:"):
-                    receipt = json.loads(line.removeprefix("RCP_TURN_RECEIPT:"))
-                    delegation_unfinished = receipt.get("verdict") == "delegation_unfinished"
                     continue
                 if invocation_gate is not None and line == invocation_gate.ready_line:
                     # The broker prints this straight after spawning, before the
@@ -1886,10 +1797,7 @@ class AgentLauncher:
                 stderr = await stderr_task
             stderr = _meaningful_stderr(stderr)
             remote_result_pending = bool(
-                supervise_remote
-                and prompt_delivered
-                and not delegation_unfinished
-                and transport_failure(return_code, host)
+                supervise_remote and prompt_delivered and transport_failure(return_code, host)
             )
             if host and remote_pid_file and not remote_result_pending:
                 remote_stopped = await asyncio.to_thread(
@@ -1946,8 +1854,7 @@ class AgentLauncher:
                 )
             )
             turn_failed = bool(
-                delegation_unfinished
-                or marker_missing
+                marker_missing
                 or completion_stop_failed
                 or provider_failed
                 or (return_code and not stopped_at_result)
@@ -1964,25 +1871,11 @@ class AgentLauncher:
                 if paused or turn_failed
                 else profile.launch_degradation(stderr, requested_reasoning=reasoning)
             )
-            if not host and codex_control:
-                receipts, hook_receipt_offset = _codex_delegation_receipts(
-                    Path(codex_control["marker"]).with_name("state.json"), hook_receipt_offset
-                )
-                for receipt in receipts:
-                    yield AgentEvent(event="delegation_wait", text=receipt)
             yield AgentEvent(
                 event="provider_exit",
                 text=json.dumps(
                     {
                         "return_code": return_code,
-                        **(
-                            {
-                                "verdict": "delegation_unfinished",
-                                "failure_kind": "delegation_unfinished",
-                            }
-                            if delegation_unfinished
-                            else {}
-                        ),
                         "event_counts": event_counts,
                         "explicit_terminal_event": explicit_terminal_event,
                         **(
@@ -2005,12 +1898,6 @@ class AgentLauncher:
                 )
             elif paused:
                 yield AgentEvent(event="paused", text="Provider process paused.")
-            elif delegation_unfinished:
-                yield AgentEvent(
-                    event="error",
-                    text="Delegated work did not finish before the delegation wait limit.",
-                    failure_kind="delegation_unfinished",
-                )
             elif completion_stop_failed:
                 yield AgentEvent(
                     event="error",

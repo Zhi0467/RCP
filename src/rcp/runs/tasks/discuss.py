@@ -861,12 +861,6 @@ async def stream_discuss_run(
                 )
             ) as stream:
                 async for frame in stream:
-                    if execution is not None and outcome.deferred_remote_pid_file is not None:
-                        # Discuss has no deliverable to retain before reporting failure.
-                        execution.store.finish_remote_provider_pass(
-                            execution.operation_id, outcome.deferred_remote_pid_file
-                        )
-                        outcome.deferred_remote_pid_file = None
                     yield frame
         except Exception:
             # Provider launch/runtime exceptions are terminal and Background will

@@ -261,10 +261,6 @@ class _JsonlProviderTurn(ProviderTurn):
         )
 
     @property
-    def has_open_work(self) -> bool:
-        return bool(self._completion.open_work)
-
-    @property
     def open_work_since(self) -> float | None:
         return self._completion.open_work_since
 

@@ -350,13 +350,10 @@ class TaskFailed(RuntimeError):
         message: str,
         messages: list[str],
         artifacts: list[AgentArtifactDescriptor],
-        *,
-        failure_kind: AgentFailureKind | None = None,
     ) -> None:
         super().__init__(message)
         self.messages = messages
         self.artifacts = artifacts
-        self.failure_kind = failure_kind
 
 
 class TaskAwaitingRemoteResult(RuntimeError):
@@ -1821,7 +1818,7 @@ class BackgroundAgentTasks:
             result: dict[str, object] = {"messages": partial}
             if artifacts:
                 result["artifacts"] = [item.model_dump(mode="json") for item in artifacts]
-            if isinstance(exc, TaskFailed) and exc.failure_kind != "delegation_unfinished":
+            if isinstance(exc, TaskFailed):
                 # The one call from the general engine into one job type's
                 # policy, kept on purpose.  It fires after a provider failure
                 # deep inside a running worker, so there is no caller to invert.
@@ -1838,9 +1835,7 @@ class BackgroundAgentTasks:
                 and current.status in {"succeeded", "failed"}
             )
             if not report_already_finalized:
-                failure_kind = (
-                    exc.failure_kind if isinstance(exc, TaskFailed) else None
-                ) or self._failure_kind(operation_id, request, execution, str(exc))
+                failure_kind = self._failure_kind(operation_id, request, execution, str(exc))
                 # The journal's only record that this turn failed. RCP's own
                 # classification and the exception type, never the error text:
                 # that is provider output and can carry token-shaped values.
@@ -2168,7 +2163,6 @@ class BackgroundAgentTasks:
                     str(exc),
                     result=result,
                     remote_pid_file=pid_file,
-                    failure_kind=exc.failure_kind,
                 )
             except Exception as exc:
                 self.store.record_agent_task_receipt(
@@ -2459,14 +2453,6 @@ class BackgroundAgentTasks:
                             },
                             tier="diagnostic",
                         )
-                if event.event == "delegation_wait":
-                    self.store.record_agent_task_receipt(
-                        execution.operation_id,
-                        "delegation_wait",
-                        json.loads(event.text),
-                        tier="diagnostic",
-                    )
-                    continue
                 if event.event == "remote_result_pending":
                     awaiting_remote_result = (
                         event.text
@@ -2474,12 +2460,7 @@ class BackgroundAgentTasks:
                     )
                     continue
                 if event.event == "error":
-                    raise TaskFailed(
-                        event.text or "The agent task failed.",
-                        messages,
-                        artifacts,
-                        failure_kind=event.failure_kind,
-                    )
+                    raise TaskFailed(event.text or "The agent task failed.", messages, artifacts)
                 if event.event == "paused":
                     raise TaskPaused(event.text, messages, artifacts)
                 if event.event == "runtime_fallback":

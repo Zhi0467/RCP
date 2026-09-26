@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 from pydantic import BaseModel
 
 from rcp.agents import AgentEvent, AgentLauncher, ChatContext, PromptFactory, RunContext
-from rcp.agents.failure_kinds import AgentFailureKind
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.config import AgentSurfaceConfig
@@ -732,14 +731,12 @@ class _ProviderOutcome:
     session_id: str | None = None
     completed: bool = False
     failed: bool = False
-    failure_kind: AgentFailureKind | None = None
     paused: bool = False
     answers: list[str] = dataclasses.field(default_factory=list)
     trace_messages: list[str] = dataclasses.field(default_factory=list)
     exit_evidence: dict[str, object] | None = None
     exit_recorded: bool = False
     remote_result_pending: bool = False
-    deferred_remote_pid_file: str | None = None
 
 
 async def _stream_agent_events(
@@ -867,15 +864,9 @@ async def _stream_agent_events(
                     and remote_pid_file is not None
                     and outcome.exit_evidence.get("remote_process_stopped") is True
                 ):
-                    if (
-                        supervise_remote
-                        and outcome.exit_evidence.get("failure_kind") == "delegation_unfinished"
-                    ):
-                        outcome.deferred_remote_pid_file = remote_pid_file
-                    else:
-                        execution.store.finish_remote_provider_pass(
-                            execution.operation_id, remote_pid_file
-                        )
+                    execution.store.finish_remote_provider_pass(
+                        execution.operation_id, remote_pid_file
+                    )
                 continue
             if event.event == "remote_process_start":
                 assert execution is not None and remote_stage is not None
@@ -946,7 +937,6 @@ async def _stream_agent_events(
                 continue
             if event.event == "error":
                 outcome.failed = True
-                outcome.failure_kind = event.failure_kind
                 if event.failure_kind == "transport_lost" and execution is not None:
                     execution.stage_unreachable = True
             if event.event == "done":

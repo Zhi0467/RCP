@@ -275,12 +275,3 @@ def test_the_shipped_reader_separates_bad_evidence_from_an_unreachable_host(tmp_
     )
 
     assert completed.returncode == 3
-
-
-def test_delegation_expiry_routes_to_the_original_owner(waiting):
-    journal = _journal(terminal=False)
-    journal["outcome"].update(verdict="delegation_unfinished", failure_kind="delegation_unfinished")
-    result = _reconcile(waiting, stopped=True, journal=journal)
-    assert result.action == "finalize"
-    assert result.recorded.outcome["failure_kind"] == "delegation_unfinished"
-    assert result.pid_file == "/stage/one.pid"

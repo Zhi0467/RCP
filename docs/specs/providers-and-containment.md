@@ -160,23 +160,6 @@ records the accepted coupling and rejected extractions.
 
 ## Provider runtime selection
 
-A turn waits for the provider to finish RCP's own prompt and for its delegated
-work to finish. There is no general turn timeout. The first blocked Codex Stop,
-Claude result with an open task, or app-server root completion with an open
-child starts `DELEGATION_WAIT_LIMIT_SECONDS` (one hour). The local launcher or
-execution-host supervisor enforces that limit with its own monotonic clock,
-including during silent output and a detached SSH connection. Repeated finish
-attempts do not restart the clock.
-
-Expiry stops the provider process group and seals `delegation_unfinished`
-before emitting the typed failure. Blocked Stops and open-work starts are
-recorded, so replay needs no surviving hook state. Work, Experiment-loop and
-Auto-research child owners retain the failed turn's Patch text in the database
-before reporting its failure; clearing the next turn's mailbox cannot erase
-it. Recorded settlement preserves the failure, exact session, stage, graph
-target and Stop fence. It neither accepts the Patch nor launches a replacement
-session. Human Stop and pause keep their existing semantics.
-
 Each project agent profile selects a provider-owned runtime. An omitted value is
 backward compatible: Codex uses `exec` and Claude uses `stream-json`. Provider
 readiness exports the allowed names and the one an omitted value resolves to;
@@ -940,11 +923,10 @@ the presence of a receipt in RCP's own database, is what says work may have
 begun: a controller that died in that window has no receipt of its own, and its
 silence is not the host's answer.
 
-The supervisor leaves provider results to the same decoder that reads a live
-turn. It also seals the operational `delegation_unfinished` verdict when its
-delegation clock expires; live and recorded settlement preserve that typed
-failure. The supervisor snapshots the turn's deliverables, including a turn
-whose delegation limit expired,
+The supervisor publishes no verdict. It decides only where the turn ends, which a
+persistent server makes unavoidable, and hands over its bytes. What the turn was
+worth is read from those bytes by the same decoder that reads a live one, so the
+two cannot drift apart. The supervisor also snapshots the turn's deliverables
 beside its journal, Patch and watcher handoff alike, each under its own digest.
 A stage is mutable and a recorded pass is not, so every owner restores those
 snapshots before reading any deliverable: what settles is what the host proved,

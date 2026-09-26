@@ -51,10 +51,3 @@ def test_hooks_track_invocation_children_and_block_stop(tmp_path: Path) -> None:
     invoke("SubagentStop", agent_id="child")
     assert invoke("Stop") is None
     assert json.loads((control / "state.json").read_text())["open_agents"] == []
-
-    receipts = [
-        json.loads(line) for line in (control / "state.events.jsonl").read_text().splitlines()
-    ]
-    assert len(receipts) == 2
-    assert all(receipt["code"] == "open_work" for receipt in receipts)
-    assert all(receipt["open_work_since"] == first["open_work_since"] for receipt in receipts)
