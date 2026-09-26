@@ -5,7 +5,7 @@ written for the machine operator who has `sudo` on a disposable or dedicated
 Ubuntu host. The supported host is Ubuntu 22.04 LTS or Ubuntu 24.04 LTS on
 x86-64 with systemd.
 
-The root [README](../README.md#team-server) points here;
+The [install guide](install.md#team-server) points here;
 this document is the single complete server setup and operations procedure.
 
 The `rcp server` CLI is the complete machine workflow and is itself a continuous

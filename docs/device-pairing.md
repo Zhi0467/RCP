@@ -68,7 +68,7 @@ You need sudo on the host and a Tailscale account with **MagicDNS** and
    `server.toml` with the same owner and mode:
 
    ```bash
-   printf 'access_url = "https://wth-gpu-01.tail1234.ts.net"\n' | sudo tee /etc/rcp/team.toml >/dev/null
+   printf 'access_url = "https://lab-gpu-01.tail1234.ts.net"\n' | sudo tee /etc/rcp/team.toml >/dev/null
    sudo chown root:rcp /etc/rcp/team.toml && sudo chmod 0640 /etc/rcp/team.toml
    ```
 
