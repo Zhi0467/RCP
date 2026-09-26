@@ -695,13 +695,6 @@ class ReviewRequest(BaseModel):
     standing: Literal["asserted", "accepted", "contested"]
 
 
-class NodeEditRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    base_updated_rev: int = Field(ge=0)
-    changes: dict[str, Any] = Field(min_length=1)
-
-
 class NodeEditConflict(ValueError):
     pass
 
@@ -2411,64 +2404,6 @@ class ProjectService:
             ).model_dump(mode="json")
             for attempt in node.attempts
         ]
-
-    def edit_node(
-        self,
-        node_id: str,
-        request: NodeEditRequest,
-        *,
-        authorized_by: AuthorizedHuman | None = None,
-    ) -> GraphState:
-        state = self.history.state()
-        self.history.require_writable(state)
-        node = state.nodes.get(node_id)
-        if node is None:
-            raise KeyError(node_id)
-        if request.base_updated_rev != node.updated_rev:
-            raise NodeEditConflict(
-                f"{node_id} changed after this editor opened; reload it before saving."
-            )
-        disallowed = sorted(
-            set(request.changes)
-            - (
-                set(HUMAN_EDITABLE_NODE_FIELDS[node.type])
-                | ({"extension_fields"} if "extension_fields" in request.changes else set())
-            )
-        )
-        if "extension_fields" in request.changes:
-            self._validate_human_extension_fields(state, node, request.changes)
-        if disallowed:
-            raise ValueError(f"Direct edits to {node_id} cannot change: {', '.join(disallowed)}.")
-        current = node.model_dump(mode="python")
-        if all(current[field] == value for field, value in request.changes.items()):
-            raise ValueError("The submitted node wording is unchanged.")
-        candidate = {**current, **request.changes}
-        try:
-            type(node).model_validate(candidate)
-        except ValueError as exc:
-            raise ValueError(f"Invalid wording for {node_id}: {exc}") from exc
-        patch = Patch(
-            kind="approval",
-            author="human",
-            summary=f"Edited wording for “{request.changes.get('title', node.title)}”.",
-            ops=[
-                {
-                    "op": "update_nodes",
-                    "nodes": [
-                        {
-                            "id": node_id,
-                            "base_updated_rev": request.base_updated_rev,
-                            "changes": request.changes,
-                        }
-                    ],
-                }
-            ],
-            change_summary=[
-                f"Updated human-authored wording for “{request.changes.get('title', node.title)}”."
-            ],
-        )
-        _, result = self.history.append(patch, authorized_by=authorized_by)
-        return result.state
 
     @staticmethod
     def _validate_human_extension_fields(

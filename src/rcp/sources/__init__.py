@@ -22,7 +22,6 @@ from rcp.sources.indexer import (
     ConversationIndexer,
     ConversationRecord,
     ConversationSession,
-    ConversationSlice,
     OriginalConversationSource,
 )
 from rcp.sources.preflight import preflight_provider_roots
@@ -40,7 +39,6 @@ __all__ = [
     "ConversationIndexer",
     "ConversationRecord",
     "ConversationSession",
-    "ConversationSlice",
     "OriginalConversationSource",
     "ImportedProviderSourceFile",
     "ImportedProviderSourceInventory",

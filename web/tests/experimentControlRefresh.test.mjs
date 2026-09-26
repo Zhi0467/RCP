@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { withTaskAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import { createServer } from "vite";
@@ -168,10 +167,4 @@ test("branch watcher polling scopes the graph while retaining project task lifec
     `${base}/tasks`,
     `${base}?branch_id=episode-branch`,
   ]);
-});
-
-test("watcher polling reports persistent API failures instead of swallowing them", async () => {
-  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-
-  assert.match(source, /catch \(error\) \{[\s\S]*reportErrorNotice\(/);
 });

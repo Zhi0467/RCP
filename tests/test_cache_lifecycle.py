@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import json
 import os
 import subprocess
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,7 +19,6 @@ from rcp.sources import (
     legacy_shared_cache_roots,
     project_cache_roots,
 )
-from rcp.sources.indexer import _REMOTE_SLICE_SCRIPT
 from rcp.storage import AppStore
 
 
@@ -365,72 +362,3 @@ def test_indexer_records_source_access_explicitly_without_changing_provider_mtim
 
     assert metrics.oldest_accessed_at == clock.now
     assert cached.stat().st_mtime == 0
-
-
-def test_remote_slice_script_emits_only_the_normalized_increment(tmp_path) -> None:
-    source = tmp_path / "remote.jsonl"
-    source.write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "type": "session_meta",
-                        "payload": {"id": "session", "cwd": "/remote/project"},
-                    }
-                ),
-                json.dumps(
-                    {
-                        "type": "response_item",
-                        "payload": {
-                            "id": "cursor",
-                            "type": "message",
-                            "role": "user",
-                            "content": [{"type": "input_text", "text": "already read"}],
-                        },
-                    }
-                ),
-                json.dumps(
-                    {
-                        "type": "response_item",
-                        "payload": {
-                            "id": "terminal",
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [{"type": "output_text", "text": "new evidence"}],
-                        },
-                    }
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    payload = json.dumps(
-        {
-            "path": str(source),
-            "provider": "codex",
-            "record_count": 3,
-            "last_uuid": "terminal",
-            "from_uuid": "cursor",
-            "session_key": "repo/remote/codex/session",
-        }
-    )
-
-    result = subprocess.run(
-        [sys.executable, "-c", _REMOTE_SLICE_SCRIPT, payload],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-    records = [json.loads(line) for line in result.stdout.splitlines()]
-    assert records == [
-        {
-            "uuid": "terminal",
-            "timestamp": None,
-            "role": "assistant",
-            "text": "new evidence",
-            "raw_type": "response_item:message",
-        }
-    ]
-    assert json.loads(result.stderr) == {"cursor_repair": None}

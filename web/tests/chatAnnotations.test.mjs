@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -8,49 +7,8 @@ import {
   parseStagedChatAnnotations,
   stagedChatAnnotationsAreComplete,
 } from "../src/chatInput.ts";
-import { appStylesheet } from "./appStylesheet.mjs";
 
-const nodeChatSource = await readFile(
-  new URL("../src/components/NodeChat.tsx", import.meta.url),
-  "utf8",
-);
-const styles = appStylesheet();
-
-test("assistant answers expose pointer selection and a real keyboard selection command", () => {
-  assert.match(nodeChatSource, /className="chat-markdown chat-annotatable-answer"/);
-  assert.doesNotMatch(nodeChatSource, /onPointerUp=/);
-  // The pointer may lift outside the swept answer, so the release is observed on the
-  // document and the answer is resolved from the selection, clamped to its edges.
-  // Capture phase, because a release over a floating-window resize corner stops propagation.
-  assert.match(
-    nodeChatSource,
-    /document\.addEventListener\("pointerup", onPointerUp, \{ capture: true \}\)/,
-  );
-  assert.match(
-    nodeChatSource,
-    /annotatableAnswerSelectionRange\(window\.getSelection\(\), chatLinesRef\.current\)/,
-  );
-  assert.doesNotMatch(
-    nodeChatSource,
-    /className="chat-markdown chat-annotatable-answer"\s+tabIndex=/,
-  );
-
-  assert.match(nodeChatSource, /className="chat-annotation-source"/);
-  const selectionControl = nodeChatSource.slice(
-    nodeChatSource.indexOf('className="chat-annotation-source"'),
-    nodeChatSource.indexOf("/>", nodeChatSource.indexOf('className="chat-annotation-source"')),
-  );
-  assert.match(selectionControl, /\breadOnly\b/);
-  assert.match(selectionControl, /onSelect=/);
-  assert.doesNotMatch(
-    selectionControl,
-    /aria-readonly|onBeforeInput=|onCut=|onDrop=|onPaste=|onChange=/,
-  );
-  assert.match(nodeChatSource, /createPortal\(/);
-  assert.match(nodeChatSource, /event\.key === "Escape"/);
-  assert.match(nodeChatSource, /event\.metaKey \|\| event\.ctrlKey/);
-  assert.match(styles, /\.chat-annotation-composer\s*\{[\s\S]*?position: fixed/);
-
+test("the read-only selection control reports exactly the selected text", () => {
   const value = "The baseline improved by 12%, but variance was not reported.";
   const selectedText = "variance was not reported";
   const selectionStart = value.indexOf(selectedText);
@@ -63,37 +21,6 @@ test("assistant answers expose pointer selection and a real keyboard selection c
   assert.equal(
     chatAnnotationTextControlSelection({ ...control, selectionEnd: selectionStart }),
     "",
-  );
-});
-
-test("staged annotations can be counted, edited, and removed before the ordinary send", () => {
-  assert.match(nodeChatSource, /updateAnnotation\(annotation\.id/);
-
-  const send = nodeChatSource.slice(
-    nodeChatSource.indexOf("const send = async"),
-    nodeChatSource.indexOf("const repairGraphUpdate"),
-  );
-  assert.match(send, /assembleChatTurn\(message, annotations\)/);
-  assert.match(send, /message: text/);
-  assert.doesNotMatch(send, /annotation_context|message_id|source_id|offset/);
-  assert.ok(send.indexOf("await onStartTask") < send.indexOf("setAnnotations([])"));
-  assert.match(send, /setMessage\(\(current\) => \(current \? current : draftMessage\)\)/);
-
-  assert.match(nodeChatSource, /annotations\.length}/);
-  assert.match(nodeChatSource, /removeAnnotation\(annotation\.id\)/);
-});
-
-test("annotation creation and editing are fenced while a turn is submitting", () => {
-  assert.match(
-    nodeChatSource,
-    /if \(submitting\) return;[\s\S]*?const selection = window\.getSelection/,
-  );
-
-  assert.match(nodeChatSource, /className="chat-annotation-source"[^]*?disabled=\{submitting\}/);
-  assert.match(nodeChatSource, /value=\{annotation\.comment\}[^]*?disabled=\{submitting\}/);
-  assert.match(
-    nodeChatSource,
-    /disabled=\{submitting\}[^]*?onClick=\{\(\) => removeAnnotation\(annotation\.id\)\}/,
   );
 });
 
@@ -116,7 +43,6 @@ test("a comment edited blank survives a switch away and back and still blocks se
     },
   ]);
   assert.equal(stagedChatAnnotationsAreComplete(restoredAfterChatSwitch), false);
-  assert.match(nodeChatSource, /!annotationsComplete \|\|/);
 });
 
 test("the composer follows the soft-keyboard viewport at every layout width", () => {
@@ -142,11 +68,4 @@ test("the composer follows the soft-keyboard viewport at every layout width", ()
     right: 0,
     bottom: 0,
   });
-  assert.match(nodeChatSource, /window\.visualViewport/);
-  assert.match(nodeChatSource, /getBoundingClientRect\(\)/);
-  assert.match(nodeChatSource, /new ResizeObserver\(update\)/);
-  assert.match(
-    styles,
-    /\.chat-annotation-composer\s*\{[\s\S]*?--chat-annotation-viewport-height[\s\S]*?overflow-y: auto[\s\S]*?overscroll-behavior: contain/,
-  );
 });

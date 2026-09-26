@@ -5,6 +5,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from copy import deepcopy
 
 import pytest
 from pydantic import ValidationError
@@ -18,6 +19,27 @@ from rcp.core.transitions import GraphTransitionManager
 from rcp.history import HistoryManager, PatchRejected, ReplayHalted, RevisionConflict
 from rcp.history.manager import ProjectIdentityConflict
 from tests.helpers import refresh_patch, seed_patch, shape_invalid_patch
+
+
+def _seeded_history(manifest) -> HistoryManager:
+    history = HistoryManager(manifest)
+    history.append(seed_patch())
+    return history
+
+
+def _agent_patch(ops) -> Patch:
+    return Patch(
+        kind="refresh",
+        author="agent",
+        summary="Test graph operations.",
+        run_truth_scope=["repo-a"],
+        repositories_read=["repo-a"],
+        ops=ops,
+    )
+
+
+def _approval_patch(ops) -> Patch:
+    return Patch(kind="approval", author="human", summary="Test human review.", ops=ops)
 
 
 def _remove_nodes_patch(
@@ -67,16 +89,7 @@ def _record_experiment(history: HistoryManager, attempt_status: str | None = Non
                 "status": attempt_status,
             }
         ]
-    history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Recorded a bounded experiment.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[{"op": "create_nodes", "nodes": [node]}],
-        )
-    )
+    history.append(_agent_patch([{"op": "create_nodes", "nodes": [node]}]))
     return experiment_id
 
 
@@ -108,17 +121,7 @@ def test_manifest_writes_share_the_append_lock_across_manager_instances(
     def change_scope() -> None:
         calls_ready.wait()
         scope_history.append(
-            Patch(
-                kind="approval",
-                author="human",
-                summary="Removed repo-b from the project truth scope.",
-                ops=[
-                    {
-                        "op": "set_project_truth_scope",
-                        "truth_scope": ["repo-a"],
-                    }
-                ],
-            )
+            _approval_patch([{"op": "set_project_truth_scope", "truth_scope": ["repo-a"]}])
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -169,20 +172,10 @@ def test_successful_patch_materializes_processed_cursors(manifest) -> None:
 
 
 def test_standalone_review_generates_research_md(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     history.append(
-        Patch(
-            kind="approval",
-            author="human",
-            summary="Accepted the primary question.",
-            ops=[
-                {
-                    "op": "set_standing",
-                    "node_id": "rq/learning-after-shift",
-                    "standing": "accepted",
-                }
-            ],
+        _approval_patch(
+            [{"op": "set_standing", "node_id": "rq/learning-after-shift", "standing": "accepted"}]
         )
     )
 
@@ -195,18 +188,12 @@ def test_standalone_review_generates_research_md(manifest) -> None:
 def test_agent_removes_asserted_or_contested_ordinary_node_and_incident_edges(
     manifest, standing: str
 ) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     node_id = "blk/missing-capacity"
     experiment_id = "exp/capacity-check"
     history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Recorded an ordinary blocker and its dependent experiment.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
+        _agent_patch(
+            [
                 {
                     "op": "create_nodes",
                     "nodes": [
@@ -227,24 +214,15 @@ def test_agent_removes_asserted_or_contested_ordinary_node_and_incident_edges(
                 {
                     "op": "create_edges",
                     "edges": [
-                        {
-                            "source": experiment_id,
-                            "target": node_id,
-                            "relation": "blocked_by",
-                        }
+                        {"source": experiment_id, "target": node_id, "relation": "blocked_by"}
                     ],
                 },
-            ],
+            ]
         )
     )
     if standing == "contested":
         history.append(
-            Patch(
-                kind="approval",
-                author="human",
-                summary="Contested the hypothesis before removal.",
-                ops=[{"op": "set_standing", "node_id": node_id, "standing": "contested"}],
-            )
+            _approval_patch([{"op": "set_standing", "node_id": node_id, "standing": "contested"}])
         )
 
     history.append(_remove_nodes_patch(node_id))
@@ -256,8 +234,7 @@ def test_agent_removes_asserted_or_contested_ordinary_node_and_incident_edges(
 
 
 def test_direct_human_remove_nodes_is_a_valid_standalone_approval(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
 
     history.append(
         _remove_nodes_patch(
@@ -271,16 +248,10 @@ def test_direct_human_remove_nodes_is_a_valid_standalone_approval(manifest) -> N
 
 
 def test_accepted_target_rejects_the_entire_remove_nodes_operation(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     accepted_id = "hyp/replanning-restores-plasticity"
     history.append(
-        Patch(
-            kind="approval",
-            author="human",
-            summary="Accepted the hypothesis.",
-            ops=[{"op": "set_standing", "node_id": accepted_id, "standing": "accepted"}],
-        )
+        _approval_patch([{"op": "set_standing", "node_id": accepted_id, "standing": "accepted"}])
     )
 
     with pytest.raises(PatchRejected) as caught:
@@ -295,28 +266,19 @@ def test_accepted_target_rejects_the_entire_remove_nodes_operation(manifest) -> 
 
 
 def test_standing_change_cannot_bypass_accepted_node_removal(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     node_id = "hyp/replanning-restores-plasticity"
     history.append(
-        Patch(
-            kind="approval",
-            author="human",
-            summary="Accepted the hypothesis.",
-            ops=[{"op": "set_standing", "node_id": node_id, "standing": "accepted"}],
-        )
+        _approval_patch([{"op": "set_standing", "node_id": node_id, "standing": "accepted"}])
     )
 
     with pytest.raises(PatchRejected) as caught:
         history.append(
-            Patch(
-                kind="approval",
-                author="human",
-                summary="Tried to clear and remove in one approval patch.",
-                ops=[
+            _approval_patch(
+                [
                     {"op": "set_standing", "node_id": node_id, "standing": "asserted"},
                     {"op": "remove_nodes", "node_ids": [node_id]},
-                ],
+                ]
             )
         )
 
@@ -326,8 +288,7 @@ def test_standing_change_cannot_bypass_accepted_node_removal(manifest) -> None:
 
 
 def test_remove_nodes_rejects_unknown_target(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
 
     with pytest.raises(PatchRejected) as caught:
         history.append(_remove_nodes_patch("rq/missing"))
@@ -346,8 +307,7 @@ def test_remove_nodes_rejects_unknown_target(manifest) -> None:
 def test_malformed_remove_edges_is_rejected_before_history_admission(
     manifest, operation: dict[str, object]
 ) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
 
     with pytest.raises(ValidationError):
         _remove_edges_patch(operation)
@@ -358,8 +318,7 @@ def test_malformed_remove_edges_is_rejected_before_history_admission(
 
 @pytest.mark.parametrize("attempt_status", ["planned", "submitted", "running"])
 def test_remove_nodes_refuses_experiment_with_active_attempt(manifest, attempt_status: str) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     experiment_id = _record_experiment(history, attempt_status)
 
     with pytest.raises(PatchRejected) as caught:
@@ -372,16 +331,10 @@ def test_remove_nodes_refuses_experiment_with_active_attempt(manifest, attempt_s
 
 
 def test_update_to_active_attempt_cannot_bypass_experiment_removal(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     experiment_id = _record_experiment(history)
-    patch = Patch(
-        kind="refresh",
-        author="agent",
-        summary="Tried to start and remove an Experiment in one patch.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[
+    patch = _agent_patch(
+        [
             {
                 "op": "update_nodes",
                 "nodes": [
@@ -401,7 +354,7 @@ def test_update_to_active_attempt_cannot_bypass_experiment_removal(manifest) -> 
                 ],
             },
             {"op": "remove_nodes", "node_ids": [experiment_id]},
-        ],
+        ]
     )
 
     with pytest.raises(PatchRejected) as caught:
@@ -415,8 +368,7 @@ def test_update_to_active_attempt_cannot_bypass_experiment_removal(manifest) -> 
 
 
 def test_experiment_loop_patch_cannot_remove_its_control_node(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     experiment_id = _record_experiment(history)
     patch = _remove_nodes_patch(experiment_id, kind="experiment_loop").model_copy(
         update={"experiment_control_node_id": experiment_id}
@@ -433,79 +385,46 @@ def test_experiment_loop_patch_cannot_remove_its_control_node(manifest) -> None:
 
 @pytest.mark.parametrize("standing", ["asserted", "accepted", "contested"])
 def test_direct_human_prose_edit_preserves_node_standing(manifest, standing) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     if standing != "asserted":
         history.append(
-            Patch(
-                kind="approval",
-                author="human",
-                summary=f"Marked hypothesis {standing}.",
-                ops=[
+            _approval_patch(
+                [
                     {
                         "op": "set_standing",
                         "node_id": "hyp/replanning-restores-plasticity",
                         "standing": standing,
                     }
-                ],
+                ]
             )
         )
     before = history.state().nodes["hyp/replanning-restores-plasticity"]
 
-    patch, result = history.append(
-        Patch(
-            kind="approval",
-            author="human",
-            summary="Clarified the hypothesis wording.",
-            ops=[
-                {
-                    "op": "update_nodes",
-                    "nodes": [
-                        {
-                            "id": before.id,
-                            "base_updated_rev": before.updated_rev,
-                            "changes": {
-                                "title": "Search-time replanning may preserve future learning",
-                                "statement": (
-                                    "Replanning during search may help the learner remain able "
-                                    "to adapt after its task changes."
-                                ),
-                            },
-                        }
-                    ],
-                }
-            ],
-        )
-    )
+    edit = {
+        "op": "update_nodes",
+        "nodes": [
+            {
+                "id": before.id,
+                "base_updated_rev": before.updated_rev,
+                "changes": {
+                    "title": "Search-time replanning may preserve future learning",
+                    "statement": "Replanning during search may help the learner remain able to adapt after its task changes.",
+                },
+            }
+        ],
+    }
+    patch, result = history.append(_approval_patch([deepcopy(edit)]))
 
     edited = result.state.nodes[before.id]
     assert edited.title == "Search-time replanning may preserve future learning"
     assert edited.standing.value == standing
     assert edited.updated_rev == patch.revision
-    assert [operation_dict(operation) for operation in patch.ops] == [
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": before.id,
-                    "base_updated_rev": before.updated_rev,
-                    "changes": {
-                        "title": "Search-time replanning may preserve future learning",
-                        "statement": (
-                            "Replanning during search may help the learner remain able "
-                            "to adapt after its task changes."
-                        ),
-                    },
-                }
-            ],
-        }
-    ]
+    assert [operation_dict(operation) for operation in patch.ops] == [edit]
 
 
 @pytest.mark.parametrize("field", ["status", "source_refs", "standing"])
 def test_direct_human_edit_rejects_non_prose_fields(manifest, field) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     node = history.state().nodes["hyp/replanning-restores-plasticity"]
     value = {
         "status": "active",
@@ -515,11 +434,8 @@ def test_direct_human_edit_rejects_non_prose_fields(manifest, field) -> None:
 
     with pytest.raises(PatchRejected) as caught:
         history.append(
-            Patch(
-                kind="approval",
-                author="human",
-                summary="Tried to bypass direct-edit boundaries.",
-                ops=[
+            _approval_patch(
+                [
                     {
                         "op": "update_nodes",
                         "nodes": [
@@ -530,7 +446,7 @@ def test_direct_human_edit_rejects_non_prose_fields(manifest, field) -> None:
                             }
                         ],
                     }
-                ],
+                ]
             )
         )
 
@@ -603,61 +519,19 @@ def test_direct_human_edit_rejects_non_prose_fields(manifest, field) -> None:
     ],
 )
 def test_malformed_direct_human_edit_shape_is_rejected(manifest, operation, code) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
 
     with pytest.raises(PatchRejected) as caught:
-        history.append(
-            Patch(
-                kind="approval",
-                author="human",
-                summary="Malformed direct edit.",
-                ops=[operation],
-            )
-        )
+        history.append(_approval_patch([operation]))
 
     assert any(message.code == code for message in caught.value.report.messages)
 
 
-def test_agent_cannot_apply_gated_hypothesis_transition(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
-    with pytest.raises(PatchRejected) as caught:
-        history.append(
-            Patch(
-                kind="refresh",
-                author="agent",
-                summary="Changed hypothesis status directly.",
-                run_truth_scope=["repo-a"],
-                repositories_read=["repo-a"],
-                ops=[
-                    {
-                        "op": "update_nodes",
-                        "nodes": [
-                            {
-                                "id": "hyp/replanning-restores-plasticity",
-                                "changes": {"status": "active"},
-                            }
-                        ],
-                    }
-                ],
-            )
-        )
-    assert any(message.code == "graph-action-refused" for message in caught.value.report.messages)
-    assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
-
-
 def test_agent_updates_blocker_lifecycle_directly_and_resets_accepted_standing(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Recorded an operational blocker.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
+        _agent_patch(
+            [
                 {
                     "op": "create_nodes",
                     "nodes": [
@@ -670,42 +544,23 @@ def test_agent_updates_blocker_lifecycle_directly_and_resets_accepted_standing(m
                         }
                     ],
                 }
-            ],
+            ]
         )
     )
     history.append(
-        Patch(
-            kind="approval",
-            author="human",
-            summary="Accepted the blocker.",
-            ops=[
-                {
-                    "op": "set_standing",
-                    "node_id": "blk/missing-capacity",
-                    "standing": "accepted",
-                }
-            ],
+        _approval_patch(
+            [{"op": "set_standing", "node_id": "blk/missing-capacity", "standing": "accepted"}]
         )
     )
 
     appended, result = history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Resolved the operational blocker.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
+        _agent_patch(
+            [
                 {
                     "op": "update_nodes",
-                    "nodes": [
-                        {
-                            "id": "blk/missing-capacity",
-                            "changes": {"status": "resolved"},
-                        }
-                    ],
+                    "nodes": [{"id": "blk/missing-capacity", "changes": {"status": "resolved"}}],
                 }
-            ],
+            ]
         )
     )
 
@@ -717,40 +572,28 @@ def test_agent_updates_blocker_lifecycle_directly_and_resets_accepted_standing(m
 
 
 @pytest.mark.parametrize(
-    "changes",
+    ("changes", "code"),
     [
-        {"standing": "accepted"},
-        {"id": "hyp/renamed-behind-the-index"},
-        {"type": "evidence"},
+        ({"status": "active"}, "graph-action-refused"),
+        ({"standing": "accepted"}, "immutable-node-field"),
+        ({"id": "hyp/renamed-behind-the-index"}, "immutable-node-field"),
+        ({"type": "evidence"}, "immutable-node-field"),
     ],
 )
-def test_node_updates_cannot_change_identity_or_standing(manifest, changes) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
-
+def test_agent_cannot_apply_protected_hypothesis_changes(manifest, changes, code) -> None:
+    history = _seeded_history(manifest)
     with pytest.raises(PatchRejected) as caught:
         history.append(
-            Patch(
-                kind="refresh",
-                author="agent",
-                summary="Tried to change a system-owned node field.",
-                run_truth_scope=["repo-a"],
-                repositories_read=["repo-a"],
-                ops=[
+            _agent_patch(
+                [
                     {
                         "op": "update_nodes",
-                        "nodes": [
-                            {
-                                "id": "hyp/replanning-restores-plasticity",
-                                "changes": changes,
-                            }
-                        ],
+                        "nodes": [{"id": "hyp/replanning-restores-plasticity", "changes": changes}],
                     }
-                ],
+                ]
             )
         )
-
-    assert any(message.code == "immutable-node-field" for message in caught.value.report.messages)
+    assert any(message.code == code for message in caught.value.report.messages)
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
 
 
@@ -782,16 +625,10 @@ def test_node_updates_cannot_change_identity_or_standing(manifest, changes) -> N
     ],
 )
 def test_agent_cannot_supersede_or_merge_a_hypothesis_directly(manifest, operation) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Recorded an alternative hypothesis.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
+        _agent_patch(
+            [
                 {
                     "op": "create_nodes",
                     "nodes": [
@@ -803,21 +640,12 @@ def test_agent_cannot_supersede_or_merge_a_hypothesis_directly(manifest, operati
                         }
                     ],
                 }
-            ],
+            ]
         )
     )
 
     with pytest.raises(PatchRejected) as caught:
-        history.append(
-            Patch(
-                kind="refresh",
-                author="agent",
-                summary="Tried to rewrite accepted graph identity.",
-                run_truth_scope=["repo-a"],
-                repositories_read=["repo-a"],
-                ops=[operation],
-            )
-        )
+        history.append(_agent_patch([operation]))
 
     assert any(message.code == "graph-action-refused" for message in caught.value.report.messages)
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 3
@@ -825,18 +653,12 @@ def test_agent_cannot_supersede_or_merge_a_hypothesis_directly(manifest, operati
 
 @pytest.mark.parametrize("operation", ["supersede_nodes", "merge_nodes"])
 def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operation) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     duplicate_id = "blk/missing-capacity"
     canonical_id = "blk/canonical-capacity"
     history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Recorded two capacity blockers.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[
+        _agent_patch(
+            [
                 {
                     "op": "create_nodes",
                     "nodes": [
@@ -854,22 +676,11 @@ def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operati
                         },
                     ],
                 }
-            ],
+            ]
         )
     )
     history.append(
-        Patch(
-            kind="approval",
-            author="human",
-            summary="Accepted the capacity blocker.",
-            ops=[
-                {
-                    "op": "set_standing",
-                    "node_id": duplicate_id,
-                    "standing": "accepted",
-                }
-            ],
-        )
+        _approval_patch([{"op": "set_standing", "node_id": duplicate_id, "standing": "accepted"}])
     )
     if operation == "supersede_nodes":
         op = {
@@ -892,16 +703,7 @@ def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operati
             ],
         }
 
-    history.append(
-        Patch(
-            kind="refresh",
-            author="agent",
-            summary="Reconciled duplicate capacity blockers.",
-            run_truth_scope=["repo-a"],
-            repositories_read=["repo-a"],
-            ops=[op],
-        )
-    )
+    history.append(_agent_patch([op]))
 
     node = history.state().nodes[duplicate_id]
     assert node.status == "superseded"
@@ -922,34 +724,18 @@ def test_agent_can_reconcile_accepted_nonbelief_nodes_directly(manifest, operati
     ],
 )
 def test_unknown_resolution_target_is_rejected_before_append(manifest, operation) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
 
     with pytest.raises(PatchRejected):
-        history.append(
-            Patch(
-                kind="refresh",
-                author="agent",
-                summary="Malformed resolution.",
-                run_truth_scope=["repo-a"],
-                repositories_read=["repo-a"],
-                ops=[operation],
-            )
-        )
+        history.append(_agent_patch([operation]))
 
     assert len(list((manifest.research_dir / "patches").glob("*.json"))) == 2
 
 
 def test_malformed_agent_patch_is_auditable_without_poisoning_replay(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
-    malformed = Patch(
-        kind="refresh",
-        author="agent",
-        summary="Malformed relation.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[
+    history = _seeded_history(manifest)
+    malformed = _agent_patch(
+        [
             {
                 "op": "create_edges",
                 "edges": [
@@ -960,7 +746,7 @@ def test_malformed_agent_patch_is_auditable_without_poisoning_replay(manifest) -
                     }
                 ],
             }
-        ],
+        ]
     )
 
     appended, result = history.append(malformed, raise_on_reject=False)
@@ -997,8 +783,7 @@ def test_discarded_rejection_does_not_enter_history_or_consume_revision(manifest
 
 
 def test_tampered_accepted_patch_halts_before_it_and_blocks_later_writes(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     history.append(refresh_patch("rq/tampered"))
     history.append(refresh_patch("rq/never-replayed"))
 
@@ -1019,22 +804,12 @@ def test_tampered_accepted_patch_halts_before_it_and_blocks_later_writes(manifes
     with pytest.raises(ReplayHalted):
         history.append(refresh_patch("rq/refused"))
     with pytest.raises(ReplayHalted):
-        history.append_batch(
-            [
-                Patch(
-                    kind="approval",
-                    author="human",
-                    summary="This write must be refused.",
-                    ops=[],
-                )
-            ]
-        )
+        history.append_batch([_approval_patch([])])
     assert not (manifest.research_dir / "patches" / "000004.json").exists()
 
 
 def test_structural_failure_after_invalid_patch_reports_the_earliest_boundary(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     history.append(refresh_patch("rq/semantic-failure"))
     history.append(refresh_patch("rq/schema-failure"))
 
@@ -1064,16 +839,10 @@ def test_patch_failing_part_way_leaks_no_earlier_operation(manifest) -> None:
     `_fork_state` shares node objects between revisions and only copies the
     containers, so this is the property that keeps that sharing safe.
     """
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     before = history.state()
-    partial = Patch(
-        kind="refresh",
-        author="agent",
-        summary="Valid node followed by a malformed relation.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[
+    partial = _agent_patch(
+        [
             {
                 "op": "create_nodes",
                 "nodes": [
@@ -1098,7 +867,7 @@ def test_patch_failing_part_way_leaks_no_earlier_operation(manifest) -> None:
                     }
                 ],
             },
-        ],
+        ]
     )
 
     appended, result = history.append(partial, raise_on_reject=False)
@@ -1111,25 +880,16 @@ def test_patch_failing_part_way_leaks_no_earlier_operation(manifest) -> None:
 
 
 def test_invalid_agent_patch_is_auditable_but_not_materialized(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
-    patch = Patch(
-        kind="refresh",
-        author="agent",
-        summary="Invalid gated transition.",
-        run_truth_scope=["repo-a"],
-        repositories_read=["repo-a"],
-        ops=[
+    history = _seeded_history(manifest)
+    patch = _agent_patch(
+        [
             {
                 "op": "update_nodes",
                 "nodes": [
-                    {
-                        "id": "hyp/replanning-restores-plasticity",
-                        "changes": {"status": "supported"},
-                    }
+                    {"id": "hyp/replanning-restores-plasticity", "changes": {"status": "supported"}}
                 ],
             }
-        ],
+        ]
     )
     appended, result = history.append(patch, raise_on_reject=False)
 
@@ -1150,8 +910,7 @@ def test_append_refuses_a_patch_written_against_a_moved_revision(manifest) -> No
     agent run lock.
     """
 
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     stale = refresh_patch("rq/written-against-revision-1")
 
     history.append(refresh_patch("rq/landed-first"))
@@ -1228,8 +987,7 @@ def test_replay_degrades_without_repairing_missing_scope_provenance(
     manifest,
     write_outputs,
 ) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    history = _seeded_history(manifest)
     scope_base = manifest.research_dir / "scope-base.json"
     scope_base.unlink()
 
@@ -1332,9 +1090,7 @@ def test_foreign_home_refuses_single_batch_and_settings_writes(manifest) -> None
     with pytest.raises(ProjectIdentityConflict):
         foreign.append(seed_patch())
     with pytest.raises(ProjectIdentityConflict):
-        foreign.append_batch(
-            [Patch(kind="approval", author="human", summary="Must not land.", ops=[])]
-        )
+        foreign.append_batch([_approval_patch([])])
     with pytest.raises(ProjectIdentityConflict):
         foreign.update_machine_provider_paths({"laptop": {"codex": "/foreign/codex"}})
 
@@ -1419,8 +1175,7 @@ def test_conflicting_identity_revisions_degrade_identity_and_refuse_writes(manif
 
 
 def test_legacy_patch_without_producer_replays_without_rewriting_history(manifest) -> None:
-    history = HistoryManager(manifest)
-    history.append(seed_patch())
+    _seeded_history(manifest)
     path = manifest.research_dir / "patches" / "000001.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw.pop("producer")

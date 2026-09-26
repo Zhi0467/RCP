@@ -55,6 +55,7 @@ from rcp.storage import (
 )
 
 from .helpers import (
+    async_wait_until,
     fabricated_authorizer,
     record_launched_experiment_turn,
     wait_for_task,
@@ -171,6 +172,62 @@ def _child_experiment_request(episode_id: str, goal: str) -> RunRequest:
     )
 
 
+def _start_auto_episode(tasks, episode_id, operation_id, *, request=None, authorized_by=None):
+    return start_auto_research(
+        tasks,
+        "project",
+        request or _auto_start(),
+        authorized_by=authorized_by or fabricated_authorizer("Researcher"),
+        graph_base_head=GraphHeadRef(revision=0),
+        ensure_graph_target=lambda _episode: None,
+        episode_id=episode_id,
+        operation_id=operation_id,
+    )
+
+
+def _start_child_work(tasks, episode_id, root_id, worker_id, instruction):
+    return start_auto_research_child_work(
+        tasks,
+        episode_id,
+        _spawned_work_request(worker_id, instruction),
+        admitted_by_operation_id=root_id,
+        worker_id=worker_id,
+        instruction=instruction,
+        instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+    )
+
+
+def _child_experiment_route(store, parent_id, root_id, child_id, goal):
+    now = store.now()
+    return AutoResearchChildExperimentRecord(
+        child_episode_id=child_id,
+        auto_research_episode_id=parent_id,
+        project_id="project",
+        control_node_id="exp/child",
+        state="running",
+        request={"goal": goal, "invocation_limit": 2},
+        goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
+        parent_operation_id=root_id,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _work_request(chat_id, *, message="Exercise the admitted launch boundary."):
+    return RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        run_truth_scope=["repo"],
+        chat_scope="project",
+        chat_id=chat_id,
+        message=message,
+        mode="work",
+        patch_kind="work",
+    )
+
+
 def _admitted_launch_task(
     store: AppStore,
     *,
@@ -180,18 +237,7 @@ def _admitted_launch_task(
     record_updates: dict[str, object] | None = None,
     continuation_cause: str = "fresh",
 ) -> AgentTaskRecord:
-    request = request or RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id=f"launch-{operation_id}",
-        message="Exercise the admitted launch boundary.",
-        mode="work",
-        patch_kind="work",
-    )
+    request = request or _work_request(f"launch-{operation_id}")
     authority = resolve_dispatch_authority("project_chat", request)
     assert authority is not None
     now = store.now()
@@ -357,8 +403,7 @@ def test_launch_admitted_is_idempotent_for_live_and_terminal_duplicates(
         execution.checkpoint_stage("", str(stage))
         yield _sse(AgentEvent(event="session", session_id="duplicate-launch-session"))
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -642,15 +687,11 @@ def test_auto_research_root_uses_episode_lineage_and_strict_request_decode(tmp_p
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
+    episode, root = _start_auto_episode(
         tasks,
-        "project",
-        _auto_start(starting_instruction="  Begin with the disputed claim.  "),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-episode",
-        operation_id="auto-root",
+        "auto-episode",
+        "auto-root",
+        request=_auto_start(starting_instruction="  Begin with the disputed claim.  "),
     )
     root = wait_for_task(store, root.operation_id, expect="succeeded")
 
@@ -717,16 +758,7 @@ def test_spawned_child_uses_ordinary_node_work_and_atomically_spends_b(tmp_path:
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-work",
-        operation_id="auto-child-work-root",
-    )
+    episode, root = _start_auto_episode(background, "auto-child-work", "auto-child-work-root")
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000301"
     instruction = "Resolve the runtime blocker, then report the bounded evidence."
@@ -778,20 +810,12 @@ def test_committed_child_dispatch_is_claimed_once_under_concurrent_reconciliatio
             return
         executions += 1
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-dispatch-claim",
-        operation_id="auto-child-dispatch-root",
+    episode, root = _start_auto_episode(
+        background, "auto-child-dispatch-claim", "auto-child-dispatch-root"
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000319"
@@ -803,15 +827,7 @@ def test_committed_child_dispatch_is_claimed_once_under_concurrent_reconciliatio
 
     monkeypatch.setattr(background, "_spawn_record", crash_before_spawn)
     with pytest.raises(RuntimeError, match="after child commit"):
-        start_auto_research_child_work(
-            background,
-            episode.episode_id,
-            _spawned_work_request(worker_id, instruction),
-            admitted_by_operation_id=root.operation_id,
-            worker_id=worker_id,
-            instruction=instruction,
-            instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
-        )
+        _start_child_work(background, episode.episode_id, root.operation_id, worker_id, instruction)
     monkeypatch.setattr(background, "_spawn_record", real_spawn_record)
 
     def ensure() -> str:
@@ -846,15 +862,8 @@ def test_restart_dispatches_committed_fresh_child_work_without_respending_b(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-fresh-restart",
-        operation_id="auto-child-fresh-restart-root",
+    episode, root = _start_auto_episode(
+        background, "auto-child-fresh-restart", "auto-child-fresh-restart-root"
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000351"
@@ -865,15 +874,7 @@ def test_restart_dispatches_committed_fresh_child_work_without_respending_b(
 
     monkeypatch.setattr(background, "_spawn_record", crash_after_commit)
     with pytest.raises(RuntimeError, match="before Work dispatch"):
-        start_auto_research_child_work(
-            background,
-            episode.episode_id,
-            _spawned_work_request(worker_id, instruction),
-            admitted_by_operation_id=root.operation_id,
-            worker_id=worker_id,
-            instruction=instruction,
-            instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
-        )
+        _start_child_work(background, episode.episode_id, root.operation_id, worker_id, instruction)
     before = store.episode_budget_meter(episode.episode_id)
 
     restarted = BackgroundAgentTasks(store, stream)
@@ -918,27 +919,14 @@ def test_restart_dispatches_committed_child_work_resume_without_respending_b(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-resume-restart",
-        operation_id="auto-child-resume-restart-root",
+    episode, root = _start_auto_episode(
+        background, "auto-child-resume-restart", "auto-child-resume-restart-root"
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000352"
     instruction = "Resume this exact paid child allocation after restart."
-    failed = start_auto_research_child_work(
-        background,
-        episode.episode_id,
-        _spawned_work_request(worker_id, instruction),
-        admitted_by_operation_id=root.operation_id,
-        worker_id=worker_id,
-        instruction=instruction,
-        instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+    failed = _start_child_work(
+        background, episode.episode_id, root.operation_id, worker_id, instruction
     )
     wait_for_task(store, failed.operation_id, expect="failed")
     resume_id = "00000000-0000-4000-8000-000000000353"
@@ -1003,27 +991,12 @@ def test_spawned_child_message_wake_reuses_exact_work_session_and_spends_b(tmp_p
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-mail",
-        operation_id="auto-child-mail-root",
-    )
+    episode, root = _start_auto_episode(background, "auto-child-mail", "auto-child-mail-root")
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000321"
     instruction = "Inspect the bounded result and report it."
-    child = start_auto_research_child_work(
-        background,
-        episode.episode_id,
-        _spawned_work_request(worker_id, instruction),
-        admitted_by_operation_id=root.operation_id,
-        worker_id=worker_id,
-        instruction=instruction,
-        instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+    child = _start_child_work(
+        background, episode.episode_id, root.operation_id, worker_id, instruction
     )
     child = wait_for_task(store, child.operation_id, expect="succeeded")
     message_id = "00000000-0000-4000-8000-000000000322"
@@ -1086,27 +1059,12 @@ def test_failed_spawned_child_exact_resume_reuses_checkpoint_and_b_allocation(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-resume",
-        operation_id="auto-child-resume-root",
-    )
+    episode, root = _start_auto_episode(background, "auto-child-resume", "auto-child-resume-root")
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000311"
     instruction = "Diagnose the transient runtime failure."
-    failed = start_auto_research_child_work(
-        background,
-        episode.episode_id,
-        _spawned_work_request(worker_id, instruction),
-        admitted_by_operation_id=root.operation_id,
-        worker_id=worker_id,
-        instruction=instruction,
-        instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+    failed = _start_child_work(
+        background, episode.episode_id, root.operation_id, worker_id, instruction
     )
     wait_for_task(store, failed.operation_id, expect="failed")
     before = store.episode_budget_meter(episode.episode_id).invocations_used
@@ -1146,27 +1104,14 @@ def test_spawned_child_resume_preserves_recovery_when_remote_stage_probe_is_unce
         yield _sse(AgentEvent(event="error", text="Transient network failure."))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-remote-resume",
-        operation_id="auto-child-remote-resume-root",
+    episode, root = _start_auto_episode(
+        background, "auto-child-remote-resume", "auto-child-remote-resume-root"
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000313"
     instruction = "Resume only if the exact remote workspace can be checked."
-    failed = start_auto_research_child_work(
-        background,
-        episode.episode_id,
-        _spawned_work_request(worker_id, instruction),
-        admitted_by_operation_id=root.operation_id,
-        worker_id=worker_id,
-        instruction=instruction,
-        instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+    failed = _start_child_work(
+        background, episode.episode_id, root.operation_id, worker_id, instruction
     )
     wait_for_task(store, failed.operation_id, expect="failed")
     before = store.episode_budget_meter(episode.episode_id).invocations_used
@@ -1216,27 +1161,14 @@ def test_unusable_spawned_child_resume_names_fresh_spawn(tmp_path: Path) -> None
         yield _sse(AgentEvent(event="error", text="You've hit your session limit"))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-unavailable",
-        operation_id="auto-child-unavailable-root",
+    episode, root = _start_auto_episode(
+        background, "auto-child-unavailable", "auto-child-unavailable-root"
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000321"
     instruction = "Continue the bounded probe."
-    failed = start_auto_research_child_work(
-        background,
-        episode.episode_id,
-        _spawned_work_request(worker_id, instruction),
-        admitted_by_operation_id=root.operation_id,
-        worker_id=worker_id,
-        instruction=instruction,
-        instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+    failed = _start_child_work(
+        background, episode.episode_id, root.operation_id, worker_id, instruction
     )
     wait_for_task(store, failed.operation_id, expect="failed")
     before = store.episode_budget_meter(episode.episode_id).invocations_used
@@ -1259,32 +1191,16 @@ def test_routed_worker_pause_and_stop_target_only_its_current_attempt(tmp_path: 
             yield _sse(AgentEvent(event="done"))
             return
         child_started.set()
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _sse(AgentEvent(event="paused", text="Paused at the exact child checkpoint."))
 
     background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-control",
-        operation_id="auto-child-control-root",
-    )
+    episode, root = _start_auto_episode(background, "auto-child-control", "auto-child-control-root")
     wait_for_task(store, root.operation_id, expect="succeeded")
     worker_id = "00000000-0000-4000-8000-000000000325"
     instruction = "Pause this bounded diagnostic when asked."
-    child = start_auto_research_child_work(
-        background,
-        episode.episode_id,
-        _spawned_work_request(worker_id, instruction),
-        admitted_by_operation_id=root.operation_id,
-        worker_id=worker_id,
-        instruction=instruction,
-        instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
+    child = _start_child_work(
+        background, episode.episode_id, root.operation_id, worker_id, instruction
     )
     assert child_started.wait(timeout=2)
 
@@ -1328,32 +1244,15 @@ def test_child_experiment_start_and_exact_resume_spend_e_only_once(tmp_path: Pat
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-experiment-parent",
-        operation_id="auto-child-experiment-root",
+    parent, root = _start_auto_episode(
+        background, "auto-child-experiment-parent", "auto-child-experiment-root"
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     child_episode_id = "00000000-0000-4000-8000-000000000331"
     goal = "Determine whether the repaired runtime survives the bounded probe."
     request = _child_experiment_request(child_episode_id, goal)
-    now = store.now()
-    route = AutoResearchChildExperimentRecord(
-        child_episode_id=child_episode_id,
-        auto_research_episode_id=parent.episode_id,
-        project_id="project",
-        control_node_id="exp/child",
-        state="running",
-        request={"goal": goal, "invocation_limit": 2},
-        goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
-        parent_operation_id=root.operation_id,
-        created_at=now,
-        updated_at=now,
+    route = _child_experiment_route(
+        store, parent.episode_id, root.operation_id, child_episode_id, goal
     )
 
     failed = start_auto_research_child_experiment(background, route, request)
@@ -1396,32 +1295,15 @@ def test_restart_dispatches_committed_fresh_child_experiment_without_respending_
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = start_auto_research(
+    parent, root = _start_auto_episode(
         background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-experiment-fresh-restart",
-        operation_id="auto-child-experiment-fresh-restart-root",
+        "auto-child-experiment-fresh-restart",
+        "auto-child-experiment-fresh-restart-root",
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     child_id = "00000000-0000-4000-8000-000000000354"
     goal = "Run the exact committed child Experiment after restart."
-    now = store.now()
-    route = AutoResearchChildExperimentRecord(
-        child_episode_id=child_id,
-        auto_research_episode_id=parent.episode_id,
-        project_id="project",
-        control_node_id="exp/child",
-        state="running",
-        request={"goal": goal, "invocation_limit": 2},
-        goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
-        parent_operation_id=root.operation_id,
-        created_at=now,
-        updated_at=now,
-    )
+    route = _child_experiment_route(store, parent.episode_id, root.operation_id, child_id, goal)
 
     def crash_after_commit(*_args, **_kwargs):
         raise RuntimeError("simulated process loss before Experiment dispatch")
@@ -1473,32 +1355,15 @@ def test_restart_dispatches_committed_child_experiment_resume_without_respending
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = start_auto_research(
+    parent, root = _start_auto_episode(
         background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-experiment-resume-restart",
-        operation_id="auto-child-experiment-resume-restart-root",
+        "auto-child-experiment-resume-restart",
+        "auto-child-experiment-resume-restart-root",
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     child_id = "00000000-0000-4000-8000-000000000355"
     goal = "Resume the exact child Experiment allocation after restart."
-    now = store.now()
-    route = AutoResearchChildExperimentRecord(
-        child_episode_id=child_id,
-        auto_research_episode_id=parent.episode_id,
-        project_id="project",
-        control_node_id="exp/child",
-        state="running",
-        request={"goal": goal, "invocation_limit": 2},
-        goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
-        parent_operation_id=root.operation_id,
-        created_at=now,
-        updated_at=now,
-    )
+    route = _child_experiment_route(store, parent.episode_id, root.operation_id, child_id, goal)
     failed = start_auto_research_child_experiment(
         background,
         route,
@@ -1582,33 +1447,16 @@ def test_restart_redispatches_committed_child_experiment_graph_repair_exactly_on
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = start_auto_research(
+    parent, root = _start_auto_episode(
         background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-experiment-graph-repair-restart",
-        operation_id="auto-child-experiment-graph-repair-restart-root",
+        "auto-child-experiment-graph-repair-restart",
+        "auto-child-experiment-graph-repair-restart-root",
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     child_id = "00000000-0000-4000-8000-000000000358"
     goal = "Do not turn a graph repair into a full CLI Resume."
     child_request = _child_experiment_request(child_id, goal)
-    now = store.now()
-    route = AutoResearchChildExperimentRecord(
-        child_episode_id=child_id,
-        auto_research_episode_id=parent.episode_id,
-        project_id="project",
-        control_node_id="exp/child",
-        state="running",
-        request={"goal": goal, "invocation_limit": 2},
-        goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
-        parent_operation_id=root.operation_id,
-        created_at=now,
-        updated_at=now,
-    )
+    route = _child_experiment_route(store, parent.episode_id, root.operation_id, child_id, goal)
     rejected = start_auto_research_child_experiment(background, route, child_request)
     rejected = wait_for_task(store, rejected.operation_id, expect="succeeded")
     assert rejected.native_session_id == "graph-repair-session"
@@ -1667,31 +1515,14 @@ def test_child_experiment_resume_preserves_recovery_when_remote_stage_probe_is_u
         yield _sse(AgentEvent(event="error", text="Transient network failure."))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = start_auto_research(
-        background,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-remote-experiment-parent",
-        operation_id="auto-child-remote-experiment-root",
+    parent, root = _start_auto_episode(
+        background, "auto-child-remote-experiment-parent", "auto-child-remote-experiment-root"
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     child_episode_id = "00000000-0000-4000-8000-000000000333"
     goal = "Resume only if the exact remote Experiment workspace can be checked."
-    now = store.now()
-    route = AutoResearchChildExperimentRecord(
-        child_episode_id=child_episode_id,
-        auto_research_episode_id=parent.episode_id,
-        project_id="project",
-        control_node_id="exp/child",
-        state="running",
-        request={"goal": goal, "invocation_limit": 2},
-        goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
-        parent_operation_id=root.operation_id,
-        created_at=now,
-        updated_at=now,
+    route = _child_experiment_route(
+        store, parent.episode_id, root.operation_id, child_episode_id, goal
     )
     failed = start_auto_research_child_experiment(
         background,
@@ -1809,16 +1640,7 @@ def test_auto_research_clean_orchestrator_retry_keeps_paid_allocation(tmp_path: 
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        tasks,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-episode",
-        operation_id="auto-root",
-    )
+    episode, root = _start_auto_episode(tasks, "auto-episode", "auto-root")
     root = wait_for_task(store, root.operation_id, expect="failed")
 
     retried = wait_for_task(store, tasks.retry(root.operation_id).operation_id, expect="succeeded")
@@ -1844,16 +1666,7 @@ def test_auto_research_stop_skips_report_generation(tmp_path: Path) -> None:
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        tasks,
-        "project",
-        _auto_start(),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-episode",
-        operation_id="auto-root",
-    )
+    episode, root = _start_auto_episode(tasks, "auto-episode", "auto-root")
     wait_for_task(store, root.operation_id, expect="succeeded")
 
     stopped = stop_auto_research(tasks, episode.episode_id)
@@ -1875,20 +1688,12 @@ def test_over_ceiling_admission_does_not_fence_an_active_paid_turn(tmp_path: Pat
 
     async def stream(_project_id, _kind, _request, _execution):
         started.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        tasks,
-        "project",
-        _auto_start(invocation_ceiling=1),
-        authorized_by=fabricated_authorizer("Researcher"),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-episode",
-        operation_id="auto-root",
+    episode, root = _start_auto_episode(
+        tasks, "auto-episode", "auto-root", request=_auto_start(invocation_ceiling=1)
     )
     assert started.wait(timeout=2)
     root_request = AutoResearchRunRequest.model_validate(root.request)
@@ -2086,33 +1891,17 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
-    parent, root = start_auto_research(
+    parent, root = _start_auto_episode(
         background,
-        "project",
-        _auto_start(),
+        "auto-child-experiment-watcher-restart",
+        "auto-child-experiment-watcher-restart-root",
         authorized_by=authorizer,
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="auto-child-experiment-watcher-restart",
-        operation_id="auto-child-experiment-watcher-restart-root",
     )
     wait_for_task(store, root.operation_id, expect="succeeded")
     child_id = "00000000-0000-4000-8000-000000000357"
     goal = "Continue the child Experiment when its watcher completes."
     child_request = _child_experiment_request(child_id, goal)
-    now = store.now()
-    route = AutoResearchChildExperimentRecord(
-        child_episode_id=child_id,
-        auto_research_episode_id=parent.episode_id,
-        project_id="project",
-        control_node_id="exp/child",
-        state="running",
-        request={"goal": goal, "invocation_limit": 2},
-        goal_sha256=hashlib.sha256(goal.encode()).hexdigest(),
-        parent_operation_id=root.operation_id,
-        created_at=now,
-        updated_at=now,
-    )
+    route = _child_experiment_route(store, parent.episode_id, root.operation_id, child_id, goal)
     child_root = start_auto_research_child_experiment(background, route, child_request)
     child_root = wait_for_task(store, child_root.operation_id, expect="succeeded")
     store.commit_experiment_episode_turn(
@@ -2434,8 +2223,7 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
         assert kind == "episode_report"
         assert isinstance(request, EpisodeReportRunRequest)
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         store.fail_episode_report_allocation_unlaunchable(
             request.episode_id,
             "The exact report continuation is unavailable.",
@@ -2598,6 +2386,19 @@ def _recorded_turn(pid_file: str) -> RecordedProviderTurn:
         patch=None,
         watch=None,
         accepted=True,
+    )
+
+
+def _finished_remote_pass(monkeypatch, task):
+    from rcp.runs import remote_finalization
+
+    pid_file = f"/stage/{task.operation_id}.pid"
+    monkeypatch.setattr(
+        remote_finalization,
+        "reconcile_remote_pass",
+        lambda *_args, **_kwargs: Reconciliation(
+            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
+        ),
     )
 
 
@@ -2970,13 +2771,17 @@ def test_waiting_task_arriving_during_reconciliation_gets_another_pass(
         tasks.shutdown(timeout=2)
 
 
-def test_lost_connection_is_reattempted_without_a_human(tmp_path: Path, monkeypatch) -> None:
-    """A network change ends a turn for a reason the turn had no part in.
-
-    That is not the human's failure to diagnose, and this is a chat turn:
-    a dropped link is reattempted wherever it lands, not only in an episode.
-    """
-
+@pytest.mark.parametrize(
+    ("kind", "failure_kind", "scheduled_retry"),
+    [
+        ("project_chat", "transport_lost", True),
+        ("node_chat", "transport_lost", True),
+        ("project_chat", "provider_auth", False),
+    ],
+)
+def test_transport_retry_depends_on_failure_not_task_kind(
+    tmp_path: Path, monkeypatch, kind, failure_kind, scheduled_retry
+) -> None:
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
     scheduled: list[tuple[str, float]] = []
@@ -2987,31 +2792,15 @@ def test_lost_connection_is_reattempted_without_a_human(tmp_path: Path, monkeypa
             (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
         ),
     )
-    failed = _transport_failed_task(store, operation_id="dropped")
-
-    tasks._auto_retry_transport_loss(failed)
-
-    assert scheduled == [("dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])]
-    assert store.agent_task_has_receipt("dropped", "transport_auto_retry")
-
-
-def test_a_revoked_login_is_never_reattempted(tmp_path: Path, monkeypatch) -> None:
-    store = _store(tmp_path)
-    tasks = BackgroundAgentTasks(store, _done_stream)
-    scheduled: list[tuple[str, float]] = []
-    monkeypatch.setattr(
-        tasks,
-        "_schedule_transport_retry",
-        lambda operation_id, *, attempt: scheduled.append(
-            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
-        ),
+    failed = _transport_failed_task(
+        store, operation_id="dropped", failure_kind=failure_kind, record_updates={"kind": kind}
     )
-    failed = _transport_failed_task(store, operation_id="revoked", failure_kind="provider_auth")
 
     tasks._auto_retry_transport_loss(failed)
 
-    assert scheduled == []
-    assert not store.agent_task_has_receipt("revoked", "transport_auto_retry")
+    expected = [("dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])] if scheduled_retry else []
+    assert scheduled == expected
+    assert store.agent_task_has_receipt("dropped", "transport_auto_retry") is scheduled_retry
 
 
 def test_reattempts_stop_at_the_limit_and_say_so(tmp_path: Path, monkeypatch) -> None:
@@ -3031,18 +2820,7 @@ def test_reattempts_stop_at_the_limit_and_say_so(tmp_path: Path, monkeypatch) ->
 
     # One lineage means one dispatch authority, so every attempt carries the
     # same request the human authorized.
-    lineage = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id="launch-lineage",
-        message="Exercise the reattempt budget.",
-        mode="work",
-        patch_kind="work",
-    )
+    lineage = _work_request("launch-lineage", message="Exercise the reattempt budget.")
     parent: str | None = None
     for index in range(AGENT_TRANSPORT_RETRY_LIMIT):
         name = f"attempt-{index}"
@@ -3104,36 +2882,6 @@ def test_shutdown_cancels_a_pending_reattempt(tmp_path: Path) -> None:
     assert store.agent_task("pending").status == "failed"
 
 
-def test_an_episode_turn_is_reattempted_on_the_same_terms_as_a_chat(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A dropped link is a transport fact, so the surface it landed on is not one.
-
-    An Experiment episode turn is an ordinary node chat, so this covers the
-    other half of what a lost link can interrupt.
-    """
-
-    store = _store(tmp_path)
-    tasks = BackgroundAgentTasks(store, _done_stream)
-    scheduled: list[tuple[str, float]] = []
-    monkeypatch.setattr(
-        tasks,
-        "_schedule_transport_retry",
-        lambda operation_id, *, attempt: scheduled.append(
-            (operation_id, AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[attempt])
-        ),
-    )
-    failed = _transport_failed_task(
-        store,
-        operation_id="episode-dropped",
-        record_updates={"kind": "node_chat"},
-    )
-
-    tasks._auto_retry_transport_loss(failed)
-
-    assert scheduled == [("episode-dropped", AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS[0])]
-
-
 def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -3148,18 +2896,7 @@ def test_a_reattempt_stands_down_once_a_human_has_recovered_the_turn(
     tasks = BackgroundAgentTasks(store, _done_stream)
     # One request for both attempts: a continuation must keep its parent's
     # dispatch authority, which is derived from the request.
-    shared = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id="launch-supersession",
-        message="Exercise the admitted launch boundary.",
-        mode="work",
-        patch_kind="work",
-    )
+    shared = _work_request("launch-supersession")
     failed = _transport_failed_task(store, operation_id="dropped", request=shared)
     retried: list[str] = []
     monkeypatch.setattr(
@@ -3308,17 +3045,8 @@ def test_a_restart_re_arms_nothing_for_a_turn_already_taken_over(
     monkeypatch.setattr(tasks, "_schedule_transport_retry", lambda _operation, *, attempt: None)
     # One request for both attempts: a continuation must keep its parent's
     # dispatch authority, which is derived from the request.
-    shared = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id="launch-restart-supersession",
-        message="Exercise the reattempt across a restart.",
-        mode="work",
-        patch_kind="work",
+    shared = _work_request(
+        "launch-restart-supersession", message="Exercise the reattempt across a restart."
     )
     failed = _transport_failed_task(store, operation_id="dropped", request=shared)
     tasks._auto_retry_transport_loss(failed)
@@ -3497,19 +3225,11 @@ def test_a_host_that_goes_quiet_mid_finalization_waits_rather_than_fails(
     over a dropped packet.
     """
 
-    from rcp.runs import remote_finalization
     from rcp.transport import StateUnavailable
 
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "host-went-quiet")
-    pid_file = "/stage/host-went-quiet.pid"
-    monkeypatch.setattr(
-        remote_finalization,
-        "reconcile_remote_pass",
-        lambda *_args, **_kwargs: Reconciliation(
-            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
-        ),
-    )
+    _finished_remote_pass(monkeypatch, waiting)
 
     async def unreachable_stage(*_args):
         raise StateUnavailable(
@@ -3541,18 +3261,9 @@ def test_a_stage_that_vanishes_mid_settlement_waits_rather_than_fails(
     drawn about a turn whose stage could not be seen.
     """
 
-    from rcp.runs import remote_finalization
-
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "stage-vanished-mid-settlement")
-    pid_file = "/stage/stage-vanished-mid-settlement.pid"
-    monkeypatch.setattr(
-        remote_finalization,
-        "reconcile_remote_pass",
-        lambda *_args, **_kwargs: Reconciliation(
-            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
-        ),
-    )
+    _finished_remote_pass(monkeypatch, waiting)
 
     async def unreadable_deliverable(_project_id, _kind, _request, execution, _pass):
         # What settlement does when its stage read could not reach the host.
@@ -3577,18 +3288,9 @@ def test_a_removed_stage_still_fails_the_turn_it_belonged_to(
 ) -> None:
     """A stage that is genuinely gone is an answer, not a silence."""
 
-    from rcp.runs import remote_finalization
-
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "stage-removed")
-    pid_file = "/stage/stage-removed.pid"
-    monkeypatch.setattr(
-        remote_finalization,
-        "reconcile_remote_pass",
-        lambda *_args, **_kwargs: Reconciliation(
-            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
-        ),
-    )
+    _finished_remote_pass(monkeypatch, waiting)
 
     async def unreadable_deliverable(*_args):
         yield _sse(
@@ -3612,19 +3314,11 @@ def test_a_real_failure_stands_even_if_the_host_leaves_right_afterwards(
     the read that failed says.
     """
 
-    from rcp.runs import remote_finalization
     from rcp.transport import RemoteRunStage
 
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "verdict-then-silence")
-    pid_file = "/stage/verdict-then-silence.pid"
-    monkeypatch.setattr(
-        remote_finalization,
-        "reconcile_remote_pass",
-        lambda *_args, **_kwargs: Reconciliation(
-            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
-        ),
-    )
+    _finished_remote_pass(monkeypatch, waiting)
     # The host is unreachable by the time anyone could ask, which is exactly the
     # state that used to suppress the verdict below.
     monkeypatch.setattr(RemoteRunStage, "directory_exists", lambda _self, _root: None)
@@ -3686,19 +3380,11 @@ def test_a_stage_the_host_says_is_gone_fails_instead_of_retrying(
     forever would hide a deleted stage behind a permanent wait.
     """
 
-    from rcp.runs import remote_finalization
     from rcp.transport import StateMissing
 
     store = _store(tmp_path)
     waiting = _waiting_remote_work(store, "stage-answered-gone")
-    pid_file = "/stage/stage-answered-gone.pid"
-    monkeypatch.setattr(
-        remote_finalization,
-        "reconcile_remote_pass",
-        lambda *_args, **_kwargs: Reconciliation(
-            "finalize", "Finished", pid_file, _recorded_turn(pid_file)
-        ),
-    )
+    _finished_remote_pass(monkeypatch, waiting)
 
     async def stage_is_gone(*_args):
         raise StateMissing("The saved remote staging directory is unavailable.")
@@ -3754,18 +3440,7 @@ def test_a_second_recovery_of_one_task_is_refused_inside_admission(
 
     store = _store(tmp_path)
     # One request throughout: a continuation must keep its parent's dispatch authority.
-    request = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="project",
-        chat_id="claimed-once",
-        message="Exercise the admitted launch boundary.",
-        mode="work",
-        patch_kind="work",
-    )
+    request = _work_request("claimed-once")
     failed = _transport_failed_task(store, operation_id="dropped", request=request)
     human = _admitted_launch_task(
         store, operation_id="human-retry", parent_operation_id=failed.operation_id, request=request

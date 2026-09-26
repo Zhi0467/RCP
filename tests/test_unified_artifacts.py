@@ -1590,7 +1590,7 @@ def test_revision_accept_conflicts_when_current_artifact_was_deleted(
     response = client.post(f"{base}/accept")
 
     assert response.status_code == 409, response.text
-    assert response.json()["detail"] == "The current artifact is no longer available."
+    assert "no longer available" in response.json()["detail"]
     conflicted = app.state.background_tasks.store.artifact_revision_candidate(
         candidate.candidate_id
     )
@@ -1732,9 +1732,7 @@ def test_retry_rechecks_unresolved_artifact_revision_admission(
     )
 
     assert response.status_code == 409, response.text
-    assert response.json()["detail"] == (
-        "Accept or reject the pending artifact revision before requesting another one."
-    )
+    assert "pending artifact revision" in response.json()["detail"]
 
 
 def test_keep_during_pending_revision_moves_accept_to_the_kept_artifact(

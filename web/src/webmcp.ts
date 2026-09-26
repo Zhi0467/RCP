@@ -578,6 +578,24 @@ export function inspectProjectNode(
   };
 }
 
+// The page shows no project or index content until the backend session is ready,
+// setup is closed, and the open has finished; the WebMCP inventory follows the
+// same gate and names one surface at a time.
+export function webMcpSurface<P extends { id: string }>(gate: {
+  backendSessionReady: boolean;
+  setupOpen: boolean;
+  loading: boolean;
+  projectId: string | null;
+  project: P | null;
+}): { project: P | null; indexAvailable: boolean; key: string | null } {
+  const pageReady = gate.backendSessionReady && !gate.setupOpen && !gate.loading;
+  const project =
+    pageReady && gate.project && gate.project.id === gate.projectId ? gate.project : null;
+  const indexAvailable = pageReady && !gate.projectId;
+  const key = project ? `project:${project.id}` : indexAvailable ? "project-index" : null;
+  return { project, indexAvailable, key };
+}
+
 export function projectReadToolDefinitions(project: ProjectSnapshot): WebMcpToolDefinition[] {
   return [
     {

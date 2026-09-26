@@ -26,11 +26,13 @@ choosing a source.
 - Graph operations, persisted Patch changes, or replay: `docs/specs/graph-history-and-transitions.md`.
 - Provider launches, prompts, skills, or task-engine ownership: `docs/specs/providers-and-containment.md`.
 - Chat, Experiment control, or watcher behavior: `docs/specs/conversations-episodes-and-watchers.md`.
+- Scheduler submission, the launch helper, or job watchers: `docs/specs/compute-jobs.md`.
 - Auto-research or graph-branch scope: `docs/specs/auto-research-and-branch-merge.md` and `docs/decisions/2026-09-08-graph-branch-scope-is-reopened.md`.
 - Task storage or persisted requests: `docs/specs/projects-spaces-and-operations.md`.
 - API, Web, or native contracts: `docs/specs/api-web-and-desktop-projections.md`; visual design: `docs/specs/interface-and-visual-design.md`.
+- Paper, previews, reports, or artifact viewing: `docs/specs/paper-artifacts-and-result-views.md`.
 - Server, deployment, or release work: `docs/specs/server-and-machine-operations.md`, `docs/server.md`, and `docs/release.md`.
-- Use `docs/handoffs/README.md` to find an active handoff when continuing unfinished work.
+- Use `docs/handoffs/README.md` to find an active handoff or an open live check when continuing unfinished work.
 
 ## Working loop
 
@@ -69,7 +71,7 @@ failures, shared-contract changes, or integration uncertainty warrant it.
   human's live data directory.
 - Native changes require rebuilding Tauri and the relevant `docs/desktop.md` checks.
 
-Fresh-clone setup and full-suite commands live in `README.md`; build `web/dist`
+Fresh-clone setup and full-suite commands live in `docs/install.md`; build `web/dist`
 before `uv sync` because the Python wheel includes it. Browser tests require the
 Playwright-managed Chromium installation described there. Run the app with
 `uv run rcp serve --host 127.0.0.1 --port 8421` using disposable data for tests.

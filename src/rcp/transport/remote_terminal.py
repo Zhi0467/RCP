@@ -53,6 +53,10 @@ def stop_unit(unit: str, timeout: float) -> None:
             raise RuntimeError(f"Could not stop terminal unit {unit}: {result.stderr.strip()}")
 
 
+def _default_interrupt() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 def hangup(signum: int, _frame: Any) -> None:
     raise InterruptedError(f"SSH terminal received signal {signum}.")
 
@@ -149,7 +153,16 @@ def run_session(settings: dict[str, Any]) -> int:
                     "-c",
                     "printf '\\036rcp-terminal-ready\\037'; exec /bin/bash --noprofile --norc -i",
                 ]
-            child = subprocess.Popen(command, cwd=repository, env=manager_environment())
+            child = subprocess.Popen(
+                command,
+                cwd=repository,
+                env=manager_environment(),
+                # This wrapper ignores SIGINT, and an ignored signal survives exec:
+                # a cooperative shell started directly would pass that on to every
+                # job, so Ctrl-C could never stop one. systemd starts a mirrored
+                # shell fresh.
+                preexec_fn=None if mirrored else _default_interrupt,
+            )
             status = child.wait()
             status = status if status >= 0 else 128 - status
             # Shell completion remains evidence even if subsequent cleanup fails.

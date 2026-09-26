@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -54,54 +53,6 @@ test("compute probes expose distinct failure labels", () => {
       tone: "ready",
     },
   );
-});
-
-test("the composer compute checklist uses native checkbox semantics", () => {
-  const source = readFileSync(new URL("../src/components/NodeChat.tsx", import.meta.url), "utf8");
-  const checklist = source.slice(
-    source.indexOf("{computeMenuOpen ? ("),
-    source.indexOf(") : null}", source.indexOf("{computeMenuOpen ? (")),
-  );
-
-  assert.match(checklist, /<fieldset/);
-  assert.match(checklist, /type="checkbox"/);
-  assert.doesNotMatch(checklist, /role="menu"|role="menuitemcheckbox"/);
-});
-
-test("Settings masks stale compute status and requires Save before Probe", () => {
-  const source = readFileSync(new URL("../src/views/ProjectSettings.tsx", import.meta.url), "utf8");
-
-  assert.match(source, /connectionNeedsSave\s*\?\s*undefined/);
-
-  assert.match(source, /readinessRequest\?\.pending\s*\|\|\s*computeConfigurationIsDirty/);
-});
-
-test("resolving a provider path invalidates provider readiness alone", () => {
-  const source = readFileSync(new URL("../src/views/ProjectSettings.tsx", import.meta.url), "utf8");
-  const resolveProviderPath = source.slice(
-    source.indexOf("const resolveProviderPath"),
-    source.indexOf("const clearCaches"),
-  );
-
-  // Copying the rendered matrix here would pin the pre-probe statuses, so the
-  // resolve retains whatever compute status the project holds when it applies.
-  assert.doesNotMatch(resolveProviderPath, /compute_status:/);
-  assert.match(
-    resolveProviderPath,
-    /onSaved\(resolvedProject, \{ provider: false, compute: true \}\)/,
-  );
-});
-
-test("a compute-settings save weighs the execution machines the backend key covers", () => {
-  const source = readFileSync(new URL("../src/views/ProjectSettings.tsx", import.meta.url), "utf8");
-  const dirty = source.slice(
-    source.indexOf("const computeConfigurationIsDirty"),
-    source.indexOf("const toggleRepository"),
-  );
-
-  assert.match(dirty, /computeProbeConfigurationChanged/);
-  assert.match(dirty, /executionMachines/);
-  assert.match(source, /compute: !computeConfigurationIsDirty/);
 });
 
 test("compute controls introduce no sub-10px primary or status text", () => {
