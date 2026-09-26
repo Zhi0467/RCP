@@ -268,6 +268,7 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         "revision": initial["revision"],
         "snapshot_freshness": "fresh",
         "last_remote_sync_at": None,
+        "compute_probes_probed_at": None,
     }
     assert probes == 1
 

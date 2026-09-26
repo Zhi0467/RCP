@@ -2501,6 +2501,7 @@ class ProjectDisplayCache:
             }
             for machine in payload["machines"]
         ]
+        payload["compute_probes_probed_at"] = self._store.compute_probes_probed_at(payload["id"])
         return payload
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:

@@ -1718,6 +1718,7 @@ export interface GraphRevisionSnapshot {
   revision: number;
   snapshot_freshness?: ProjectSnapshot["snapshot_freshness"];
   last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
+  compute_probes_probed_at?: ProjectSnapshot["compute_probes_probed_at"];
   graph_mutation?: GraphMutationAvailability;
 }
 
@@ -2661,6 +2662,8 @@ export interface ProjectSnapshot {
   revision: number;
   snapshot_freshness: "fresh" | "reconciling" | "stale";
   last_remote_sync_at: string | null;
+  /** Latest stored compute probe; absent from snapshots cached by older versions. */
+  compute_probes_probed_at?: string | null;
   state_repository: string;
   canonical_state: {
     remote: boolean;

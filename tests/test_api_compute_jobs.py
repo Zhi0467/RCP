@@ -56,6 +56,13 @@ def test_compute_settings_save_checks_every_route_of_the_saved_machine(compute_a
         assert [route for route, probe in probes.items() if probe] == sorted(
             routes, key=["scheduler", "helper"].index
         )
+        # The heartbeat carries the probe time so an open page reloads the results.
+        heartbeat = client.get(f"{url}/cached/revision").json()
+        assert heartbeat["compute_probes_probed_at"] is not None
+        assert (
+            heartbeat["compute_probes_probed_at"]
+            == client.get(url).json()["compute_probes_probed_at"]
+        )
 
 
 def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch):

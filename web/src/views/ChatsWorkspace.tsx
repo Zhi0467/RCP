@@ -218,12 +218,16 @@ export function ChatsWorkspace({
     conversations[0] ??
     null;
 
+  // Each edit's answer is newer than any read started before it; bumping this
+  // lets a late initial read know it would undo an edit.
+  const displayEdits = useRef(0);
   useEffect(() => {
     let current = true;
+    const editsAtStart = displayEdits.current;
     setDisplay(EMPTY_CHAT_DISPLAY);
     loadChatDisplay(apiBase)
       .then((response) => {
-        if (current) setDisplay(response);
+        if (current && displayEdits.current === editsAtStart) setDisplay(response);
       })
       .catch(() => {
         // Archive and names are display choices; an unreadable set shows every
@@ -250,6 +254,7 @@ export function ChatsWorkspace({
   }, [menuChatId]);
 
   const updateDisplay = async (change: () => Promise<ChatDisplay>) => {
+    displayEdits.current += 1;
     setMenuChatId(null);
     setArchiveError(null);
     try {

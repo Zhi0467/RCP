@@ -527,9 +527,13 @@ export function reconcileInactiveProjectSession(
   return next === session ? state : serializeProjectSessionTabState(next);
 }
 
+type HeartbeatMetadata = Partial<
+  Pick<ProjectSnapshot, "snapshot_freshness" | "last_remote_sync_at" | "compute_probes_probed_at">
+>;
+
 export function projectHeartbeatMetadataChanged(
-  observed: Partial<Pick<ProjectSnapshot, "snapshot_freshness" | "last_remote_sync_at">>,
-  rendered: Partial<Pick<ProjectSnapshot, "snapshot_freshness" | "last_remote_sync_at">> | null,
+  observed: HeartbeatMetadata,
+  rendered: HeartbeatMetadata | null,
   graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): boolean {
   return Boolean(
@@ -538,7 +542,10 @@ export function projectHeartbeatMetadataChanged(
     ((observed.snapshot_freshness !== undefined &&
       observed.snapshot_freshness !== rendered.snapshot_freshness) ||
       (observed.last_remote_sync_at !== undefined &&
-        observed.last_remote_sync_at !== rendered.last_remote_sync_at)),
+        observed.last_remote_sync_at !== rendered.last_remote_sync_at) ||
+      // A background compute probe finished, so the rendered results are stale.
+      (observed.compute_probes_probed_at !== undefined &&
+        observed.compute_probes_probed_at !== (rendered.compute_probes_probed_at ?? null))),
   );
 }
 

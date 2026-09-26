@@ -45,6 +45,15 @@ class ComputeJobStoreMixin:
             ).fetchone()
         return ComputeBackendProbe.model_validate_json(row[0]) if row is not None else None
 
+    def compute_probes_probed_at(self, project_id: str) -> str | None:
+        """When any route of this project was last probed, so an open page can notice."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT MAX(probed_at) FROM compute_backend_probes WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+        return row[0] if row is not None else None
+
     def delete_compute_backend_probe(self, project_id: str, execution_machine: str) -> None:
         with self.connection() as connection:
             connection.execute(
