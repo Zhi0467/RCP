@@ -596,18 +596,18 @@ def artifact_viewer_document(
         chat_query["branch_id"] = branch_id
     chat_href = f"/#/projects/{quote(project_id, safe='')}?{urlencode(chat_query)}"
     preview_markup = (
-        f'<iframe id="preview" sandbox="allow-scripts" src={js(preview_url)} '
-        f"title={js(descriptor.name)}></iframe>"
+        f'<iframe id="preview" sandbox="allow-scripts" src="{html.escape(preview_url)}" '
+        f'title="{html.escape(descriptor.name)}"></iframe>'
         if descriptor.media_type == "text/html"
-        else f'<img id="previewImage" src={js(preview_url)} alt={js(descriptor.name)}>'
+        else f'<img id="previewImage" src="{html.escape(preview_url)}" alt="{html.escape(descriptor.name)}">'
         '<div id="boxLayer" aria-hidden="true"></div>'
     )
     if chat_id is None:
         readonly_preview = (
-            f'<iframe id="preview" sandbox="allow-scripts" src={js(preview_url)} '
-            f"title={js(descriptor.name)}></iframe>"
+            f'<iframe id="preview" sandbox="allow-scripts" src="{html.escape(preview_url)}" '
+            f'title="{html.escape(descriptor.name)}"></iframe>'
             if descriptor.media_type == "text/html"
-            else f'<img id="previewImage" src={js(preview_url)} alt={js(descriptor.name)}>'
+            else f'<img id="previewImage" src="{html.escape(preview_url)}" alt="{html.escape(descriptor.name)}">'
         )
         # No originating chat can receive selections: keep ordinary browser gestures and
         # draw no selection rail. Save copy and Keep remain available.

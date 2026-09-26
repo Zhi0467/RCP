@@ -325,6 +325,8 @@ impl TeamTunnelState {
                     .map_err(|error| Box::new(StartTunnelFailure::from(error)))?
             }
         };
+        let expected_host = local_https_host(&route.local_origin)
+            .map_err(|error| Box::new(StartTunnelFailure::from(error)))?;
         let forward_port =
             reserve_forward_port().map_err(|error| Box::new(StartTunnelFailure::from(error)))?;
         let arguments = ssh_arguments(route, forward_port);
@@ -349,6 +351,7 @@ impl TeamTunnelState {
         let proxy_tasks = start_tls_proxies(
             listeners,
             self.tls_config.clone(),
+            expected_host,
             forward_port,
             child.child_exited.clone(),
         );
@@ -649,6 +652,13 @@ fn local_https_port(origin: &str) -> Result<u16, String> {
         .ok_or_else(|| "the saved team origin has no explicit local HTTPS port".to_string())
 }
 
+fn local_https_host(origin: &str) -> Result<String, String> {
+    Url::parse(origin)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .ok_or_else(|| "the saved team origin has no local HTTPS hostname".to_string())
+}
+
 fn bind_local_https(port: u16) -> Result<Vec<TcpListener>, String> {
     let ipv6 = bind_listener(
         SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, port, 0, 0)),
@@ -704,6 +714,7 @@ fn reserve_forward_port() -> Result<u16, String> {
 fn start_tls_proxies(
     listeners: Vec<TcpListener>,
     config: Arc<ServerConfig>,
+    expected_host: String,
     forward_port: u16,
     child_exited: watch::Receiver<bool>,
 ) -> Vec<JoinHandle<()>> {
@@ -713,6 +724,7 @@ fn start_tls_proxies(
             tokio::spawn(run_tls_proxy(
                 listener,
                 config.clone(),
+                expected_host.clone(),
                 forward_port,
                 child_exited.clone(),
             ))
@@ -723,6 +735,7 @@ fn start_tls_proxies(
 async fn run_tls_proxy(
     listener: TcpListener,
     config: Arc<ServerConfig>,
+    expected_host: String,
     forward_port: u16,
     mut child_exited: watch::Receiver<bool>,
 ) {
@@ -738,8 +751,17 @@ async fn run_tls_proxy(
             accepted = listener.accept() => match accepted {
                 Ok((socket, _)) => {
                     let acceptor = acceptor.clone();
+                    let expected_host = expected_host.clone();
                     connections.spawn(async move {
                         let mut downstream = acceptor.accept(socket).await?;
+                        // Every team listener presents the shared *.rcp.localhost
+                        // certificate, and the webview attaches host-bound cookies
+                        // regardless of port. Forward only this team's hostname so
+                        // another team's alias cannot carry its cookie here.
+                        if downstream.get_ref().1.server_name() != Some(expected_host.as_str()) {
+                            eprintln!("[rcp] local HTTPS proxy refused a connection for another hostname");
+                            return Ok(());
+                        }
                         let mut upstream = TcpStream::connect((Ipv4Addr::LOCALHOST, forward_port)).await?;
                         copy_bidirectional(&mut downstream, &mut upstream).await?;
                         Ok::<(), io::Error>(())
@@ -953,7 +975,13 @@ mod tests {
             let listeners = bind_local_https(0).unwrap();
             let proxy_port = listeners[0].local_addr().unwrap().port();
             let (child_exit, child_exited) = watch::channel(false);
-            let proxies = start_tls_proxies(listeners, server_config, upstream_port, child_exited);
+            let proxies = start_tls_proxies(
+                listeners,
+                server_config,
+                HOSTNAME.to_string(),
+                upstream_port,
+                child_exited,
+            );
 
             let mut roots = rustls::RootCertStore::empty();
             roots
@@ -969,17 +997,24 @@ mod tests {
             .with_root_certificates(roots)
             .with_no_client_auth();
             let connector = TlsConnector::from(Arc::new(client_config));
-            let tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, proxy_port))
-                .await
-                .unwrap();
-            // The production WKWebView authenticates the exact pinned leaf for
-            // each generated alias. This ordinary rustls client instead uses
-            // the certificate's exact localhost SAN to exercise termination
-            // and byte forwarding without duplicating that native pin policy.
-            let server_name = rustls::pki_types::ServerName::try_from("localhost")
-                .unwrap()
-                .to_owned();
-            let mut tls = connector.connect(server_name, tcp).await.unwrap();
+            let connect = |host: &'static str| {
+                let connector = connector.clone();
+                async move {
+                    let tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, proxy_port))
+                        .await
+                        .unwrap();
+                    let server_name = rustls::pki_types::ServerName::try_from(host).unwrap();
+                    connector.connect(server_name, tcp).await.unwrap()
+                }
+            };
+            // Another team's alias shares the wildcard certificate but must not
+            // reach this team's upstream; the proxy closes it before forwarding.
+            let mut other = connect("rcp-22222222222242228222222222222222.rcp.localhost").await;
+            other.write_all(b"ping").await.unwrap();
+            let mut closed = Vec::new();
+            other.read_to_end(&mut closed).await.unwrap_or_default();
+            assert!(closed.is_empty());
+            let mut tls = connect(HOSTNAME).await;
             tls.write_all(b"ping").await.unwrap();
             let mut response = [0_u8; 4];
             tls.read_exact(&mut response).await.unwrap();
@@ -1044,7 +1079,7 @@ mod tests {
             let tcp = TcpStream::connect((Ipv4Addr::LOCALHOST, proxy_port))
                 .await
                 .unwrap();
-            let server_name = rustls::pki_types::ServerName::try_from("localhost")
+            let server_name = rustls::pki_types::ServerName::try_from(HOSTNAME)
                 .unwrap()
                 .to_owned();
             let mut tls = connector.connect(server_name, tcp).await.unwrap();
