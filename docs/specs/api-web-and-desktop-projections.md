@@ -193,8 +193,10 @@ Settings stages per-machine `job_manager` and optional helper `jobs_root` beside
 provider paths. **Use Slurm** opts into direct scheduler submission; RCP exposes
 no resource-argument inputs. Only changed aliases are saved. Draft storage keeps
 explicit machine edits, so an unrelated draft cannot restore an older full
-compute configuration. Unsaved machine edits mask readiness and require Save
-before Probe. The response supplies its own label, tone, and diagnostic.
+compute configuration. Unsaved machine edits mask readiness. A save that
+changes a machine's block probes its offered routes in the background; Runs
+offers **Check again** through `POST .../machines/{machine_alias}/compute/check`.
+Each stored probe supplies its own label, tone, and diagnostic.
 
 Chat and Experiment use the existing watcher refreshes to show one external job
 row. It displays the log path, observation state, check diagnostic, and Cancel

@@ -121,8 +121,9 @@ Ordinary Work, Experiment-loop, and child Work serve one keyed helper verb:
 The turn binds the project, execution host, writable roots, operation, and
 episode. The working directory must remain inside the writable scope and
 outside protected paths. The response is
-`{watcher: {check_command, log_path, cwd, cancel_command}}`; the agent copies that
-object into `watch.json` rather than inventing a PID check. Helper-owned observation distinguishes running work, a valid completion receipt, and unknown
+`{watcher: {check_command, log_path, cwd, cancel_command}, startup: {...}}`
+(startup is described below); the agent copies the `watcher` object into
+`watch.json` rather than inventing a PID check. Helper-owned observation distinguishes running work, a valid completion receipt, and unknown
 or missing evidence. Cancellation uses the saved OS handle.
 
 A helper launch runs a fresh readiness probe. After starting the job, RCP waits
