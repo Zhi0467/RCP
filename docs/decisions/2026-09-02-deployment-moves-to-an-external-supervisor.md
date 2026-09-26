@@ -2,9 +2,9 @@
 
 **Status:** accepted by the human on 2026-09-02; clarified on 2026-09-05 to
 retain the private CLI connection for non-deployment operations, and on
-2026-09-06 to require automatic recovery after interruption or reboot. Amends
-[the update-channel decision](2026-08-27-main-is-the-server-update-channel.md)
-and [the install-and-update privilege decision](2026-08-27-source-server-install-and-update-privilege.md)
+2026-09-06 to require automatic recovery after interruption or reboot. Replaces
+the retired 2026-08-27 update-channel decision and amends
+[the install-and-update privilege decision](2026-08-27-source-server-install-and-update-privilege.md)
 as stated at the end of this file. Implementation and normal production adoption
 are complete. Remaining disposable recovery qualification is listed in
 [the open live checks](../handoffs/README.md).
@@ -193,7 +193,7 @@ part of this work and CI already builds the wheel, so that reason has expired.
 - A tag or release per merge: turns ten merges a day into ten releases nobody
   chose; builds are cheap files, releases are decisions.
 - Servers that follow `main` or builds: reintroduces production configuration
-  as development state, which the 2026-08-27 decision already rejected.
+  as development state, rejected on 2026-08-27.
 - A shell-script supervisor: harder to test against a fake service and outside
   the repository's existing fixture and pytest tooling.
 - A separate repository for the supervisor: another release line and another
@@ -203,11 +203,12 @@ part of this work and CI already builds the wheel, so that reason has expired.
 
 ## Amendments to earlier decisions
 
-[The update-channel decision](2026-08-27-main-is-the-server-update-channel.md):
-`main` remains the only development target and the source of every release.
-Servers no longer consume commits from `origin/main`; they consume promoted
-releases built from those commits. Going public moves from "before external
-sharing" into this handoff. Everything else in that decision stands.
+The retired 2026-08-27 update-channel decision: `main` remains the only
+development target and the source of every release, with no permanent `dev`
+branch. Every change, emergencies included, uses a short-lived branch, a pull
+request with CI, and an explicit human merge. Servers no longer consume commits
+from `origin/main`; they consume promoted releases built from those commits.
+Going public moves from "before external sharing" into this work.
 
 [The install-and-update privilege decision](2026-08-27-source-server-install-and-update-privilege.md):
 per-commit source builds at `releases/<commit>/` become per-build artifact
