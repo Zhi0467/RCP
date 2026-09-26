@@ -11,8 +11,7 @@ Run it alone on a Mac, or share one team space with your lab on a Linux server.
 
 - **Agents:** Codex and Claude Code. More to come.
 - **Platforms:** macOS 13+ on Apple Silicon for the desktop app; Ubuntu 22.04
-  or 24.04 LTS on x86-64 for the web app and team server. Other platforms when
-  contributors bring them.
+  or 24.04 LTS on x86-64 for the web app and team server.
 - **Install:** from source, with the steps below. No binaries yet.
 
 ## Set up with your agent
