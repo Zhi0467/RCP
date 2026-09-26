@@ -1049,6 +1049,33 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-row > [role="option"] {
   width: 100%;
 }
+/* Renaming keeps the card's footprint: same box, the title becomes a field. */
+.agent-row-rename {
+  align-items: center;
+  background: var(--sheet);
+  border: 1px solid var(--cobalt);
+  border-radius: 9px;
+  display: grid;
+  gap: 0 8px;
+  grid-template-columns: 16px minmax(0, 1fr);
+  margin-bottom: 6px;
+  min-height: 55px;
+  padding: 0 10px 0 9px;
+}
+.agent-row-rename .agent-row-icon {
+  padding-top: 0;
+}
+.agent-row-rename input {
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--type-md);
+  font-weight: 600;
+  min-width: 0;
+  outline: none;
+  padding: 0;
+}
 .agent-row-menu {
   position: absolute;
   right: 6px;
@@ -2404,7 +2431,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
   .project-tabs > button svg {
     display: none;
   }
-  .project-tabs > button.project-tabs-toggle svg {
+  .project-tabs > button.project-tabs-toggle svg,
+  .project-tabs > button.project-tabs-back svg {
     display: block;
   }
   .trust-filter {

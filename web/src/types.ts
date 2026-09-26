@@ -2518,6 +2518,12 @@ export interface ChatSummary {
   last_message_preview: string;
 }
 
+/** Per-project display choices: archived chats and human-given names. */
+export interface ChatDisplay {
+  archived: string[];
+  titles: Record<string, string>;
+}
+
 export interface ChatSummaryPage {
   items: ChatSummary[];
   total: number;

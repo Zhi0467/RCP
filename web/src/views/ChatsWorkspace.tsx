@@ -6,7 +6,7 @@ import {
   PanelLeft,
   Search,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CONVERSATION_AGENT_GROUPS,
   conversationAgentStatus,
@@ -29,13 +29,14 @@ import {
 } from "../chatLayout";
 import type {
   AgentTask,
+  ChatDisplay,
   ChatTranscript,
   GraphNode,
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
 } from "../types";
-import { loadArchivedChats, setChatArchived } from "../api";
+import { loadChatDisplay, setChatArchived, setChatTitle } from "../api";
 import { NodeChat } from "../components/NodeChat";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
@@ -99,6 +100,8 @@ function readChatListCollapsed(projectId: string): boolean {
 
 type AgentFilter = "all" | "needs_you" | "working" | "archived";
 
+const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {} };
+
 const GROUP_LABELS: Record<ConversationAgentGroup, string> = {
   needs_you: "Needs you",
   working: "Working",
@@ -139,7 +142,7 @@ function agentMeta(status: ConversationAgentStatus): string {
 
 export function ChatsWorkspace({
   project,
-  conversations,
+  conversations: storedConversations,
   selectedChatId,
   nodes,
   glossaryIndex,
@@ -176,8 +179,20 @@ export function ChatsWorkspace({
   );
   const workspace = useRef<HTMLElement>(null);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
-  const [archivedChatIds, setArchivedChatIds] = useState<ReadonlySet<string>>(new Set());
+  const [display, setDisplay] = useState<ChatDisplay>(EMPTY_CHAT_DISPLAY);
+  const archivedChatIds = useMemo(() => new Set(display.archived), [display.archived]);
+  // A human-given name replaces the derived one everywhere in this workspace.
+  const conversations = useMemo(
+    () =>
+      storedConversations.map((conversation) =>
+        display.titles[conversation.chatId]
+          ? { ...conversation, title: display.titles[conversation.chatId] }
+          : conversation,
+      ),
+    [storedConversations, display.titles],
+  );
   const [menuChatId, setMenuChatId] = useState<string | null>(null);
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const showingArchived = filter === "archived";
   const listed = conversations.filter(
@@ -205,13 +220,14 @@ export function ChatsWorkspace({
 
   useEffect(() => {
     let current = true;
-    setArchivedChatIds(new Set());
-    loadArchivedChats(apiBase)
+    setDisplay(EMPTY_CHAT_DISPLAY);
+    loadChatDisplay(apiBase)
       .then((response) => {
-        if (current) setArchivedChatIds(new Set(response.chat_ids));
+        if (current) setDisplay(response);
       })
       .catch(() => {
-        // Archive only hides rows; an unreadable list shows every conversation.
+        // Archive and names are display choices; an unreadable set shows every
+        // conversation under its derived name.
       });
     return () => {
       current = false;
@@ -233,15 +249,20 @@ export function ChatsWorkspace({
     };
   }, [menuChatId]);
 
-  const archive = async (chatId: string, archived: boolean) => {
+  const updateDisplay = async (change: () => Promise<ChatDisplay>) => {
     setMenuChatId(null);
     setArchiveError(null);
     try {
-      const response = await setChatArchived(apiBase, chatId, archived);
-      setArchivedChatIds(new Set(response.chat_ids));
+      setDisplay(await change());
     } catch (failure) {
       setArchiveError(failure instanceof Error ? failure.message : String(failure));
     }
+  };
+  const archive = (chatId: string, archived: boolean) =>
+    updateDisplay(() => setChatArchived(apiBase, chatId, archived));
+  const rename = (chatId: string, title: string) => {
+    setRenamingChatId(null);
+    return updateDisplay(() => setChatTitle(apiBase, chatId, title));
   };
 
   useEffect(() => {
@@ -463,92 +484,135 @@ export function ChatsWorkspace({
                       className={`agent-row${menuOpen ? " menu-open" : ""}`}
                       key={conversation.chatId}
                     >
-                      <button
-                        type="button"
-                        role="option"
-                        aria-selected={selectedConversation}
-                        aria-current={selectedConversation ? "page" : undefined}
-                        aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
-                        className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
-                        data-state={status.state}
-                        title={conversation.title}
-                        onClick={() => {
-                          onSelect(conversation.chatId);
-                          if (narrow) setMobileListOpen(false);
-                        }}
-                      >
-                        <span className="agent-row-icon">
-                          <AgentStateIcon state={status.state} />
-                        </span>
-                        <span className="agent-row-body">
-                          <span className="agent-row-title" title={conversation.title}>
-                            {conversation.title}
+                      {renamingChatId === conversation.chatId ? (
+                        <form
+                          className="agent-row-rename"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            const value = new FormData(event.currentTarget).get("title");
+                            const title = typeof value === "string" ? value.trim() : "";
+                            if (title === conversation.title) setRenamingChatId(null);
+                            else void rename(conversation.chatId, title);
+                          }}
+                        >
+                          <span className="agent-row-icon">
+                            <AgentStateIcon state={status.state} />
                           </span>
-                          {/* One secondary line always, so every card has the same height. */}
-                          {needsHuman(status) && latest ? (
-                            <span className="agent-row-reason">{latest.status_label}</span>
-                          ) : (
-                            <span className="agent-row-meta">{agentMeta(status) || "\u00a0"}</span>
-                          )}
-                        </span>
-                        <time>
-                          {status.state === "working"
-                            ? "live"
-                            : sinceLabel(
-                                latest?.last_activity_at ?? conversation.updatedAt ?? null,
-                                now,
-                              )}
-                        </time>
-                      </button>
-                      <div className="agent-row-menu">
+                          {/* Blank returns the chat to its derived name. */}
+                          <input
+                            name="title"
+                            aria-label="Agent name"
+                            autoFocus
+                            defaultValue={conversation.title}
+                            onFocus={(event) => event.currentTarget.select()}
+                            onBlur={(event) => event.currentTarget.form?.requestSubmit()}
+                            onKeyDown={(event) => {
+                              if (event.key === "Escape") setRenamingChatId(null);
+                            }}
+                          />
+                        </form>
+                      ) : (
                         <button
                           type="button"
-                          className="agent-row-menu-button"
-                          aria-label={`More actions for ${conversation.title}`}
-                          aria-haspopup="menu"
-                          aria-expanded={menuOpen}
-                          onClick={() => setMenuChatId(menuOpen ? null : conversation.chatId)}
+                          role="option"
+                          aria-selected={selectedConversation}
+                          aria-current={selectedConversation ? "page" : undefined}
+                          aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
+                          className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
+                          data-state={status.state}
+                          title={conversation.title}
+                          onClick={() => {
+                            onSelect(conversation.chatId);
+                            if (narrow) setMobileListOpen(false);
+                          }}
                         >
-                          <Ellipsis size={14} />
-                        </button>
-                        {menuOpen && (
-                          <div className="agent-row-menu-list" role="menu">
-                            {draft ? (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                onClick={() => {
-                                  setMenuChatId(null);
-                                  onRemoveDraft(conversation.chatId);
-                                  // Move the selection off the removed draft so the
-                                  // shown chat is the one that loads.
-                                  const next = conversations.find(
-                                    (item) => item.chatId !== conversation.chatId,
-                                  );
-                                  if (selected?.chatId === conversation.chatId && next)
-                                    onSelect(next.chatId);
-                                }}
-                              >
-                                Remove
-                              </button>
+                          <span className="agent-row-icon">
+                            <AgentStateIcon state={status.state} />
+                          </span>
+                          <span className="agent-row-body">
+                            <span className="agent-row-title">{conversation.title}</span>
+                            {/* One secondary line always, so every card has the same height. */}
+                            {needsHuman(status) && latest ? (
+                              <span className="agent-row-reason">{latest.status_label}</span>
                             ) : (
-                              <button
-                                type="button"
-                                role="menuitem"
-                                disabled={!archived && status.state === "working"}
-                                title={
-                                  !archived && status.state === "working"
-                                    ? "Archive after this agent finishes"
-                                    : undefined
-                                }
-                                onClick={() => void archive(conversation.chatId, !archived)}
-                              >
-                                {archived ? "Restore" : "Archive"}
-                              </button>
+                              <span className="agent-row-meta">
+                                {agentMeta(status) || "\u00a0"}
+                              </span>
                             )}
-                          </div>
-                        )}
-                      </div>
+                          </span>
+                          <time>
+                            {status.state === "working"
+                              ? "live"
+                              : sinceLabel(
+                                  latest?.last_activity_at ?? conversation.updatedAt ?? null,
+                                  now,
+                                )}
+                          </time>
+                        </button>
+                      )}
+                      {renamingChatId !== conversation.chatId && (
+                        <div className="agent-row-menu">
+                          <button
+                            type="button"
+                            className="agent-row-menu-button"
+                            aria-label={`More actions for ${conversation.title}`}
+                            aria-haspopup="menu"
+                            aria-expanded={menuOpen}
+                            onClick={() => setMenuChatId(menuOpen ? null : conversation.chatId)}
+                          >
+                            <Ellipsis size={14} />
+                          </button>
+                          {menuOpen && (
+                            <div className="agent-row-menu-list" role="menu">
+                              {draft ? (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setMenuChatId(null);
+                                    onRemoveDraft(conversation.chatId);
+                                    // Move the selection off the removed draft so the
+                                    // shown chat is the one that loads.
+                                    const next = conversations.find(
+                                      (item) => item.chatId !== conversation.chatId,
+                                    );
+                                    if (selected?.chatId === conversation.chatId && next)
+                                      onSelect(next.chatId);
+                                  }}
+                                >
+                                  Remove
+                                </button>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setMenuChatId(null);
+                                      setRenamingChatId(conversation.chatId);
+                                    }}
+                                  >
+                                    Rename
+                                  </button>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    disabled={!archived && status.state === "working"}
+                                    title={
+                                      !archived && status.state === "working"
+                                        ? "Archive after this agent finishes"
+                                        : undefined
+                                    }
+                                    onClick={() => void archive(conversation.chatId, !archived)}
+                                  >
+                                    {archived ? "Restore" : "Archive"}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}

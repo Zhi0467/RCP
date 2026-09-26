@@ -21,6 +21,8 @@ export interface ChatConversation {
   title: string;
   tasks: AgentTask[];
   updatedAt: string;
+  /** The latest message's text from the stored summary, for search. */
+  preview?: string;
 }
 
 export interface DraftConversation {
@@ -218,6 +220,7 @@ export function groupChatConversations(
       title,
       tasks: [],
       updatedAt: summary.updated_at,
+      preview: summary.last_message_preview,
     });
   }
   for (const draft of drafts) {
@@ -300,20 +303,49 @@ export interface ConversationAgentRow {
   status: ConversationAgentStatus;
 }
 
+/**
+ * Everything the browser already holds about a conversation, lower-cased: its
+ * name, node, chat kind, latest message, and each loaded turn's prompt,
+ * provider, model, effort, and repositories. Every search word must appear.
+ */
+export function conversationSearchText(conversation: ChatConversation): string {
+  const parts: (string | null | undefined)[] = [
+    conversation.title,
+    conversation.nodeId,
+    conversation.kind === "project_chat" ? "project chat" : "node chat",
+    conversation.preview,
+  ];
+  for (const task of conversation.tasks) {
+    const request = task.request;
+    parts.push(
+      typeof request.message === "string" ? request.message : null,
+      task.provider_label,
+      request.provider,
+      request.model,
+      request.reasoning,
+      ...(request.run_truth_scope ?? []),
+    );
+  }
+  return parts.filter(Boolean).join("\n").toLocaleLowerCase();
+}
+
 /** Rows grouped Needs you, Working, Recent; each group keeps recency order. */
 export function groupConversationAgents(
   conversations: ChatConversation[],
   unreadTaskIds: ReadonlySet<string>,
   query = "",
 ): Record<ConversationAgentGroup, ConversationAgentRow[]> {
-  const needle = query.trim().toLocaleLowerCase();
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const groups: Record<ConversationAgentGroup, ConversationAgentRow[]> = {
     needs_you: [],
     working: [],
     recent: [],
   };
   for (const conversation of conversations) {
-    if (needle && !conversation.title.toLocaleLowerCase().includes(needle)) continue;
+    if (terms.length) {
+      const text = conversationSearchText(conversation);
+      if (!terms.every((term) => text.includes(term))) continue;
+    }
     const status = conversationAgentStatus(conversation, unreadTaskIds);
     groups[status.group].push({ conversation, status });
   }

@@ -198,7 +198,7 @@ def test_non_main_project_route_does_not_build_project_snapshot(
     assert response.json()["items"] == []
 
 
-def test_archiving_a_chat_hides_it_for_the_project_and_restores_it(manifest, tmp_path) -> None:
+def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     url = f"/api/projects/{app.state.default_project_id}"
@@ -207,10 +207,21 @@ def test_archiving_a_chat_hides_it_for_the_project_and_restores_it(manifest, tmp
     def archive(chat_id, archived):
         return client.post(f"{url}/chats/{chat_id}/archive", json={"archived": archived})
 
-    assert archive(first, True).json() == {"chat_ids": [first]}
-    assert archive(first, True).json() == {"chat_ids": [first]}
+    def rename(chat_id, title):
+        return client.post(f"{url}/chats/{chat_id}/title", json={"title": title})
+
+    assert archive(first, True).json() == {"archived": [first], "titles": {}}
+    assert archive(first, True).json()["archived"] == [first]
     assert archive(second, True).status_code == 200
-    assert set(client.get(f"{url}/chat-archives").json()["chat_ids"]) == {first, second}
-    assert archive(first, False).json() == {"chat_ids": [second]}
+    assert set(client.get(f"{url}/chat-display").json()["archived"]) == {first, second}
+    assert archive(first, False).json()["archived"] == [second]
     assert archive("not-a-uuid", True).status_code == 422
-    assert client.get(f"{url}/chat-archives").json() == {"chat_ids": [second]}
+    # A title survives an archive round trip and clears back to the derived name.
+    assert rename(second, "  Loss   sweep ").json() == {
+        "archived": [second],
+        "titles": {second: "Loss sweep"},
+    }
+    assert archive(second, False).json() == {"archived": [], "titles": {second: "Loss sweep"}}
+    assert rename(second, "x" * 121).status_code == 422
+    assert rename(second, " ").json() == {"archived": [], "titles": {}}
+    assert client.get(f"{url}/chat-display").json() == {"archived": [], "titles": {}}

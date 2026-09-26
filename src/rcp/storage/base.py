@@ -59,7 +59,7 @@ class AppStoreBase:
         (22, "episode_continuations_v1"),
         (23, "agent_task_list_indexes_v1"),
         (24, "compute_probe_routes_v1"),
-        (25, "chat_archives_v1"),
+        (25, "chat_display_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -592,8 +592,8 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection,
             version=25,
-            name="chat_archives_v1",
-            migration=self._migrate_chat_archives,
+            name="chat_display_v1",
+            migration=self._migrate_chat_display,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2038,7 +2038,7 @@ class AppStoreBase:
         self._migrate_episode_continuations(connection)
         self._migrate_agent_task_list_indexes(connection)
         self._migrate_compute_probe_routes(connection)
-        self._migrate_chat_archives(connection)
+        self._migrate_chat_display(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2233,13 +2233,15 @@ class AppStoreBase:
         )
 
     @staticmethod
-    def _migrate_chat_archives(connection: sqlite3.Connection) -> None:
+    def _migrate_chat_display(connection: sqlite3.Connection) -> None:
         connection.execute("""
-            CREATE TABLE IF NOT EXISTS chat_archives (
+            CREATE TABLE IF NOT EXISTS chat_display (
                 project_id TEXT NOT NULL,
                 chat_id TEXT NOT NULL,
-                archived_user_id TEXT NOT NULL,
-                archived_at TEXT NOT NULL,
+                title TEXT,
+                titled_user_id TEXT,
+                archived_user_id TEXT,
+                archived_at TEXT,
                 PRIMARY KEY (project_id, chat_id)
             )
         """)

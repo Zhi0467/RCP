@@ -469,3 +469,28 @@ test("the Agents panel groups each conversation by what its latest turn asks of 
     recent: [],
   });
 });
+
+test("agent search matches every word against what the card already holds", () => {
+  const conversation = {
+    chatId: "chat",
+    kind: "node_chat",
+    nodeId: "exp/loss-sweep",
+    title: "Loss sweep",
+    updatedAt: "2026-07-28T00:00:00Z",
+    preview: "The learning rate diverged at step 400.",
+    tasks: [
+      task({
+        operation_id: "turn",
+        kind: "node_chat",
+        status: "succeeded",
+        provider_label: "Codex",
+        request: { message: "rerun with warmup", model: "gpt-6", run_truth_scope: ["trainer"] },
+      }),
+    ],
+  };
+  const found = (query) =>
+    Object.values(groupConversationAgents([conversation], new Set(), query)).flat().length;
+  for (const query of ["diverged", "WARMUP", "codex trainer", "exp/loss", "node chat"])
+    assert.equal(found(query), 1, query);
+  assert.equal(found("codex claude"), 0);
+});

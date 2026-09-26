@@ -439,12 +439,53 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
   { view: "scientific", label: "Research", icon: <GitBranch size={14} /> },
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
+  // Paper is a sub-panel of Artifacts; its route stays `paper`.
   { view: "artifacts", label: "Artifacts", icon: <Files size={14} /> },
-  { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "terminals", label: "Terminals", icon: <TerminalSquare size={14} /> },
-  { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
   { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
+  { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
 ];
+
+/** A tab stays highlighted while one of its sub-views is open. */
+function navItemActive(item: AppView, view: AppView): boolean {
+  return (
+    view === item ||
+    (item === "scientific" && view === "dag") ||
+    (item === "artifacts" && view === "paper")
+  );
+}
+
+function ArtifactsSubnav({
+  view,
+  paperUnsynced,
+  onChange,
+}: {
+  view: AppView;
+  paperUnsynced: boolean;
+  onChange: (view: AppView) => void;
+}) {
+  return (
+    <div className="artifacts-subnav" role="group" aria-label="Artifacts sections">
+      {(
+        [
+          ["artifacts", "Files"],
+          ["paper", "Paper"],
+        ] as const
+      ).map(([target, label]) => (
+        <button
+          key={target}
+          type="button"
+          aria-pressed={view === target}
+          onClick={() => onChange(target)}
+        >
+          {target === "paper" ? <FileText size={13} /> : <Files size={13} />}
+          {label}
+          {target === "paper" && paperUnsynced && <small>1</small>}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export async function loadGraphRevision(
   fetchJson: <T>(path: string) => Promise<T>,
@@ -4291,14 +4332,8 @@ export default function App() {
           ) : (
             <button
               key={item.view}
-              className={
-                view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
-              }
-              aria-current={
-                view === item.view || (item.view === "scientific" && view === "dag")
-                  ? "page"
-                  : undefined
-              }
+              className={navItemActive(item.view, view) ? "active" : ""}
+              aria-current={navItemActive(item.view, view) ? "page" : undefined}
               onClick={() =>
                 item.view === "chats"
                   ? openChats()
@@ -4312,7 +4347,7 @@ export default function App() {
               {item.view === "attention" && attentionCount > 0 && (
                 <small className="inbox-count">{attentionCount}</small>
               )}
-              {item.view === "paper" && paper.sync_state !== "synced" && <small>1</small>}
+              {item.view === "artifacts" && paper.sync_state !== "synced" && <small>1</small>}
               {item.view === "chats" && chatsIndicator && (
                 <small
                   className={`chats-indicator ${chatsIndicator}`}
@@ -4580,7 +4615,16 @@ export default function App() {
               onSelectNode={openNode}
             />
           )}
-          {view === "artifacts" && <Artifacts key={project.id} projectId={project.id} />}
+          {view === "artifacts" && (
+            <div className="artifacts-shell">
+              <ArtifactsSubnav
+                view={view}
+                paperUnsynced={paper.sync_state !== "synced"}
+                onChange={changeView}
+              />
+              <Artifacts key={project.id} projectId={project.id} />
+            </div>
+          )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
           {view === "execution" && (
             <div className="combined-runs-view">
@@ -4646,15 +4690,22 @@ export default function App() {
             </div>
           )}
           {view === "paper" && (
-            <PaperWorkspace
-              key={project.id}
-              apiBase={apiBase}
-              project={project}
-              initialPaper={paper}
-              tasks={projectTasks}
-              onStartTask={startAgentTask}
-              onPaperChange={updatePaper}
-            />
+            <div className="artifacts-shell">
+              <ArtifactsSubnav
+                view={view}
+                paperUnsynced={paper.sync_state !== "synced"}
+                onChange={changeView}
+              />
+              <PaperWorkspace
+                key={project.id}
+                apiBase={apiBase}
+                project={project}
+                initialPaper={paper}
+                tasks={projectTasks}
+                onStartTask={startAgentTask}
+                onPaperChange={updatePaper}
+              />
+            </div>
           )}
           {view === "settings" && (
             <ProjectSettings

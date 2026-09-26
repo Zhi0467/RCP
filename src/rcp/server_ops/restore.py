@@ -104,9 +104,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # Separate scheduler/helper probe keys, fresh and upgraded in place.
         "f2ea827430563c4baf89aaa64b62df5bc56aca98fed98843c0581ad64698c4b9",
         "a740aa10daaf191482999132a03617f16429f47b8b923ef9a4976f6619dd3fa4",
-        # Chat archives, fresh and upgraded in place.
-        "62e0c360a0c817f1ce7bd6c4640c5bdcdbb08aea2351ae7dd73a8237b71f80b8",
-        "72a1336491e547c6a4e29ec45141e2df266e3e0ad08ee25e920cf7eb79ab90d7",
+        # Chat display (archive and title), fresh and upgraded in place.
+        "ab05d5a356e78f8fac814b2b5d0d73d84fad1880373265878c44ee592f363d0f",
+        "dfa7f6dbaeb5fe3cbe9073f8a62861f4c76fe6da58be5b48daa0ec7eb85478a8",
     }
 )
 

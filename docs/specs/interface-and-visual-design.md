@@ -63,7 +63,10 @@ The shell is intentionally bare: no RCP wordmark, product logo, or revision labe
 beside the project name. Agent tasks and Refresh are icon-only accessible
 controls; project chat is **Ask**. The attention destination is **Inbox** with a
 colored count, and DAG is a subpanel of **Research** rather than a primary
-destination.
+destination. **Paper** is likewise a subpanel of **Artifacts**, reached from a
+Files | Paper switch; its route view stays `paper`, and the paper's unsynced
+badge shows on the Artifacts tab. Destination order ends Terminals, Agents,
+Settings.
 
 Group the header semantically — labeled **Sync / Ask** together, then icon-only
 **History / Refresh** together. Do not space all four as unrelated peers.
@@ -174,12 +177,14 @@ Each agent card leads with a filled dot, one fixed colour per state: needs
 you, paused, working (pulsing), unread result, done, failed, or an unsent
 draft. Cards share one fixed size: a one-line title and one secondary
 line, the attention reason when it needs a human, else the meta. A three-dot menu on
-the card removes an unsent draft, which exists only in the browser, or
-archives a conversation with turns. Archive only hides the card for the
-project (`POST /api/projects/{project_id}/chats/{chat_id}/archive`, listed by
-`GET /api/projects/{project_id}/chat-archives`); an Archived filter appears
-when any exist, counts every archived chat including unloaded pages, and
-offers Restore. Transcripts and tasks are never deleted.
+the card removes an unsent draft, which exists only in the browser, or renames
+or archives a conversation with turns. Both are project display choices in the
+local store (`POST /api/projects/{project_id}/chats/{chat_id}/title` and
+`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`);
+a blank name returns the derived one. Rename edits the title in place on the
+card. An Archived filter appears when any exist, counts every archived chat
+including unloaded pages, and offers Restore. Transcripts and tasks are never
+changed or deleted.
 
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity
@@ -192,11 +197,13 @@ conversations as an agent-hub panel. Conversations are grouped **Needs you**,
 **Working**, and **Recent**, each in recency order, from the backend's answers on
 the latest turn: a paused, failed, or interrupted turn needs the human; a
 queued, running, or pausing turn is working. Each row is a raised card with a
-state icon, a two-line title, the backend status label as its reason when the
-human is needed, and a provider · mode · repository line (the live phase and
-elapsed time while working). Search narrows by title and chips filter to All,
-Needs you, or Working. Above the conversation, a header names the title,
-provider, model, mode, repository, and chat scope; a needs-you turn adds a banner
+state dot, a one-line title, and either the backend status label as its reason
+when the human is needed or a provider · repository line (the live phase and
+elapsed time while working). Search runs in the browser over what each card
+already holds: its name, node, chat kind, latest message, and every loaded
+turn's prompt, provider, model, effort, and repositories; every word must match.
+Chips filter to All, Needs you, or Working. Above the conversation, a header
+names the title, provider, model, effort, repository, and chat scope; a needs-you turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
 At viewport widths of 560px or less, Agents uses a single column. The conversation

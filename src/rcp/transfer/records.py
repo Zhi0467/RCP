@@ -74,8 +74,9 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "_legacy_campaigns_archive",
         "artifact_revision_candidates",
         "chat_session_contexts",
-        # Archive is a local display choice; a moved project shows every chat.
-        "chat_archives",
+        # Archive and rename are local display choices; a moved project shows
+        # every chat under its derived name.
+        "chat_display",
         # Backend handles and job paths remain owned by the source machine.
         "compute_jobs",
         "compute_backend_probes",

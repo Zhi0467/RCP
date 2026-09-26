@@ -116,8 +116,9 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("PUT",), "/api/projects/{project_id}/settings"),
     (("POST",), "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve"),
     (("POST",), "/api/projects/{project_id}/machines/{machine_alias}/compute/check"),
-    (("GET",), "/api/projects/{project_id}/chat-archives"),
+    (("GET",), "/api/projects/{project_id}/chat-display"),
     (("POST",), "/api/projects/{project_id}/chats/{chat_id}/archive"),
+    (("POST",), "/api/projects/{project_id}/chats/{chat_id}/title"),
     (("GET",), "/api/projects/{project_id}/history"),
     (("GET",), "/api/projects/{project_id}/history/summaries"),
     (("GET",), "/api/projects/{project_id}/sources"),
@@ -330,8 +331,9 @@ _HANDLER_MODULE_MAP: dict[str, str] = {
     "update_identity": "src/rcp/api/team.py",
     "update_project_settings": "src/rcp/api/project_state.py",
     "check_machine_compute": "src/rcp/api/project_state.py",
-    "archived_chats": "src/rcp/api/chats.py",
+    "chat_display": "src/rcp/api/chats.py",
     "archive_chat": "src/rcp/api/chats.py",
+    "rename_chat": "src/rcp/api/chats.py",
     "team_space": "src/rcp/api/team.py",
     "update_team_space": "src/rcp/api/team.py",
     "upload_chat_attachment": "src/rcp/api/chats.py",
@@ -370,15 +372,15 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 158
-    assert len(_FROZEN_ROUTE_INVENTORY) == 158
+    assert len(entries) == 159
+    assert len(_FROZEN_ROUTE_INVENTORY) == 159
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 154
+    assert sum(isinstance(route, APIRoute) for route in routes) == 155
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4
 
 
@@ -393,5 +395,5 @@ def test_handler_module_map_is_separate_and_current(route_app: FastAPI) -> None:
         assert source is not None
         observed[endpoint.__name__] = str(Path(source).resolve().relative_to(repository_root))
 
-    assert len(observed) == 146
+    assert len(observed) == 147
     assert observed == _HANDLER_MODULE_MAP
