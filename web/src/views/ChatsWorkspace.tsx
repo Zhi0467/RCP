@@ -265,8 +265,15 @@ export function ChatsWorkspace({
         setArchiveError(failure instanceof Error ? failure.message : String(failure));
     }
   };
-  const archive = (chatId: string, archived: boolean) =>
-    updateDisplay(() => setChatArchived(apiBase, chatId, archived));
+  const archive = (chatId: string, archived: boolean) => {
+    // An archived chat leaves the open list, so it must not stay selected there
+    // where a new turn would run out of sight.
+    const next = conversations.find(
+      (item) => item.chatId !== chatId && !archivedChatIds.has(item.chatId),
+    );
+    if (archived && !showingArchived && selected?.chatId === chatId && next) onSelect(next.chatId);
+    return updateDisplay(() => setChatArchived(apiBase, chatId, archived));
+  };
   const rename = (chatId: string, title: string) => {
     setRenamingChatId(null);
     return updateDisplay(() => setChatTitle(apiBase, chatId, title));
