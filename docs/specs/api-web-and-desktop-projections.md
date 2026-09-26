@@ -482,6 +482,9 @@ evaluation only for `rcp.localhost` and its direct subdomains. This does not
 permit HTTP application navigation: the proxy speaks TLS, navigation still
 requires one exact saved HTTPS origin, and the native handler accepts only the
 pinned leaf after hostname, validity, and server-use evaluation.
+Each team's TLS listener closes any connection whose SNI is not that team's
+alias before opening its upstream, so a shared wildcard leaf never routes one
+team's host-bound cookie to another team's server.
 The tool ACL solves source-rebuild stability; because a same-UID process can
 invoke the same general-purpose Apple tool, it is not same-account read
 isolation. That limitation is accepted only under the current cooperative

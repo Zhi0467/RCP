@@ -5,6 +5,7 @@ import hashlib
 import os
 import subprocess
 from datetime import date
+from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -1205,6 +1206,33 @@ def test_readonly_artifact_viewer_does_not_enable_selection() -> None:
     assert 'id="preview"' in document
     assert 'id="pending"' not in document
     assert "rcp-artifact-selection-enable" not in document
+
+
+@pytest.mark.parametrize("chat_id", ["chat", None])
+@pytest.mark.parametrize("suffix", [".html", ".png"])
+def test_viewer_filename_cannot_add_preview_attributes(chat_id: str | None, suffix: str) -> None:
+    name = f'x" onload="alert(1)" onerror="alert(1){suffix}'
+    document, _csp = artifact_viewer_document(
+        preview_url="/preview",
+        keep_url="/keep",
+        project_id="project",
+        chat_id=chat_id,
+        operation_id="operation",
+        descriptor=descriptor_for("scope", name),
+    )
+
+    class Preview(HTMLParser):
+        attrs: dict[str, str | None] = {}
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag in {"iframe", "img"}:
+                self.attrs = dict(attrs)
+
+    parser = Preview()
+    parser.feed(document)
+    label = "title" if suffix == ".html" else "alt"
+    assert set(parser.attrs) == {"id", "src", label} | ({"sandbox"} if suffix == ".html" else set())
+    assert parser.attrs[label] == name
 
 
 def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> None:
