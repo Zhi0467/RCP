@@ -265,7 +265,8 @@ export function groupChatConversations(
 }
 
 /** What a conversation's latest turn asks of the human, for the Agents panel. */
-export type ConversationAgentState = "needs_you" | "paused" | "working" | "unread" | "idle";
+export type ConversationAgentState =
+  "needs_you" | "paused" | "working" | "unread" | "failed" | "done" | "draft";
 export type ConversationAgentGroup = "needs_you" | "working" | "recent";
 export interface ConversationAgentStatus {
   state: ConversationAgentState;
@@ -287,8 +288,11 @@ export function conversationAgentStatus(
   if (latest?.active) return { state: "working", group: "working", latest };
   if (latest?.paused) return { state: "paused", group: "needs_you", latest };
   if (latest?.awaiting_human) return { state: "needs_you", group: "needs_you", latest };
-  const state = conversationHasUnread(conversation, unreadTaskIds) ? "unread" : "idle";
-  return { state, group: "recent", latest };
+  if (!latest) return { state: "draft", group: "recent", latest };
+  if (conversationHasUnread(conversation, unreadTaskIds)) {
+    return { state: "unread", group: "recent", latest };
+  }
+  return { state: latest.failed ? "failed" : "done", group: "recent", latest };
 }
 
 export interface ConversationAgentRow {

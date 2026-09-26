@@ -437,6 +437,7 @@ test("the Agents panel groups each conversation by what its latest turn asks of 
     conversation("running", "Running audit", ["succeeded", "running"]),
     conversation("unread", "Unread result", ["succeeded"]),
     conversation("idle", "Idle notes", ["succeeded"]),
+    { ...conversation("draft", "Unsent draft", []), updatedAt: "" },
   ];
   const unread = new Set(["unread-0"]);
 
@@ -456,9 +457,10 @@ test("the Agents panel groups each conversation by what its latest turn asks of 
     ],
     working: [["running", "working"]],
     recent: [
-      ["recovered", "idle"],
+      ["recovered", "done"],
       ["unread", "unread"],
-      ["idle", "idle"],
+      ["idle", "done"],
+      ["draft", "draft"],
     ],
   });
   assert.deepEqual(ids(groupConversationAgents(conversations, unread, "  AUDIT ")), {

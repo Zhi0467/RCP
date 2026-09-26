@@ -1,8 +1,10 @@
 import {
   AlertCircle,
   CheckCircle2,
+  CircleDashed,
+  CircleX,
+  Ellipsis,
   ChevronDown,
-  Circle,
   LoaderCircle,
   MessageCircle,
   PanelLeftClose,
@@ -39,6 +41,7 @@ import type {
   StartAgentTask,
   WatcherRecord,
 } from "../types";
+import { loadArchivedChats, setChatArchived } from "../api";
 import { NodeChat } from "../components/NodeChat";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
@@ -68,6 +71,7 @@ interface Props {
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
   onStopWatcher?: (watcherId: string) => void;
   onNewSession: (conversation: ChatConversation) => void;
+  onRemoveDraft: (chatId: string) => void;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -99,7 +103,7 @@ function readChatListCollapsed(projectId: string): boolean {
   }
 }
 
-type AgentFilter = "all" | "needs_you" | "working";
+type AgentFilter = "all" | "needs_you" | "working" | "archived";
 
 const GROUP_LABELS: Record<ConversationAgentGroup, string> = {
   needs_you: "Needs you",
@@ -116,8 +120,9 @@ function AgentStateIcon({ state }: { state: ConversationAgentState }) {
   if (state === "needs_you") return <AlertCircle size={15} aria-hidden="true" />;
   if (state === "paused") return <PauseCircle size={15} aria-hidden="true" />;
   if (state === "working") return <LoaderCircle className="spin" size={15} aria-hidden="true" />;
-  if (state === "unread") return <CheckCircle2 size={15} aria-hidden="true" />;
-  return <Circle size={15} aria-hidden="true" />;
+  if (state === "unread" || state === "done") return <CheckCircle2 size={15} aria-hidden="true" />;
+  if (state === "failed") return <CircleX size={15} aria-hidden="true" />;
+  return <CircleDashed size={15} aria-hidden="true" />;
 }
 
 function sinceLabel(timestamp: string | null | undefined, now: number): string {
@@ -173,6 +178,7 @@ export function ChatsWorkspace({
   onRepairGraphUpdate,
   onStopWatcher,
   onNewSession,
+  onRemoveDraft,
 }: Props) {
   const narrow = useNarrowViewport();
   const [mobileListOpen, setMobileListOpen] = useState(false);
@@ -184,15 +190,74 @@ export function ChatsWorkspace({
     chatListWidthBounds(typeof window === "undefined" ? 1200 : window.innerWidth),
   );
   const workspace = useRef<HTMLElement>(null);
-  const groups = groupConversationAgents(conversations, unreadTaskIds, query);
+  const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const [archivedChatIds, setArchivedChatIds] = useState<ReadonlySet<string>>(new Set());
+  const [menuChatId, setMenuChatId] = useState<string | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const showingArchived = filter === "archived";
+  const listed = conversations.filter(
+    (conversation) => archivedChatIds.has(conversation.chatId) === showingArchived,
+  );
+  const archivedCount = conversations.filter((conversation) =>
+    archivedChatIds.has(conversation.chatId),
+  ).length;
+  const groups = groupConversationAgents(listed, unreadTaskIds, query);
+  const activeGroups = showingArchived
+    ? groupConversationAgents(
+        conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
+        unreadTaskIds,
+        query,
+      )
+    : groups;
   const visibleGroups = CONVERSATION_AGENT_GROUPS.filter(
-    (group) => filter === "all" || group === filter,
+    (group) => filter === "all" || showingArchived || group === filter,
   );
   const now = Date.now();
   const selected =
     conversations.find((conversation) => conversation.chatId === selectedChatId) ??
     conversations[0] ??
     null;
+
+  useEffect(() => {
+    let current = true;
+    setArchivedChatIds(new Set());
+    loadArchivedChats(apiBase)
+      .then((response) => {
+        if (current) setArchivedChatIds(new Set(response.chat_ids));
+      })
+      .catch(() => {
+        // Archive only hides rows; an unreadable list shows every conversation.
+      });
+    return () => {
+      current = false;
+    };
+  }, [apiBase]);
+
+  useEffect(() => {
+    if (menuChatId === null) return;
+    const close = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      if (event.target instanceof Element && event.target.closest(".agent-row-menu")) return;
+      setMenuChatId(null);
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [menuChatId]);
+
+  const archive = async (chatId: string, archived: boolean) => {
+    setMenuChatId(null);
+    setArchiveError(null);
+    try {
+      const response = await setChatArchived(apiBase, chatId, archived);
+      setArchivedChatIds(new Set(response.chat_ids));
+    } catch (failure) {
+      setArchiveError(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
 
   useEffect(() => {
     setListWidth(readChatListWidth(project.id));
@@ -354,11 +419,18 @@ export function ChatsWorkspace({
             />
           </label>
           <div className="agent-list-filters" role="group" aria-label="Filter agents">
-            {(["all", "needs_you", "working"] as const).map((value) => {
+            {(archivedCount > 0 || showingArchived
+              ? (["all", "needs_you", "working", "archived"] as const)
+              : (["all", "needs_you", "working"] as const)
+            ).map((value) => {
               const count =
-                value === "all"
-                  ? groups.needs_you.length + groups.working.length + groups.recent.length
-                  : groups[value].length;
+                value === "archived"
+                  ? archivedCount
+                  : value === "all"
+                    ? activeGroups.needs_you.length +
+                      activeGroups.working.length +
+                      activeGroups.recent.length
+                    : activeGroups[value].length;
               return (
                 <button
                   type="button"
@@ -367,12 +439,22 @@ export function ChatsWorkspace({
                   aria-pressed={filter === value}
                   onClick={() => setFilter(value)}
                 >
-                  {value === "all" ? "All" : GROUP_LABELS[value]} <span>{count}</span>
+                  {value === "all"
+                    ? "All"
+                    : value === "archived"
+                      ? "Archived"
+                      : GROUP_LABELS[value]}{" "}
+                  <span>{count}</span>
                 </button>
               );
             })}
           </div>
         </div>
+        {archiveError && (
+          <p className="agent-list-error" role="alert">
+            {archiveError}
+          </p>
+        )}
         <div role="listbox" aria-label="Conversations">
           {visibleGroups.map((group) =>
             groups[group].length === 0 ? null : (
@@ -391,41 +473,90 @@ export function ChatsWorkspace({
                   const selectedConversation = conversation.chatId === selected?.chatId;
                   const unread = status.state === "unread";
                   const latest = status.latest;
+                  const draft = conversation.tasks.length === 0 && !conversation.updatedAt;
+                  const archived = archivedChatIds.has(conversation.chatId);
+                  const menuOpen = menuChatId === conversation.chatId;
                   return (
-                    <button
-                      type="button"
-                      role="option"
-                      aria-selected={selectedConversation}
-                      aria-current={selectedConversation ? "page" : undefined}
-                      aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
-                      className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
-                      data-state={status.state}
-                      title={conversation.title}
-                      onClick={() => {
-                        onSelect(conversation.chatId);
-                        if (narrow) setMobileListOpen(false);
-                      }}
+                    <div
+                      className={`agent-row${menuOpen ? " menu-open" : ""}`}
                       key={conversation.chatId}
                     >
-                      <span className="agent-row-icon">
-                        <AgentStateIcon state={status.state} />
-                      </span>
-                      <span className="agent-row-body">
-                        <span className="agent-row-title">{conversation.title}</span>
-                        {needsHuman(status) && latest && (
-                          <span className="agent-row-reason">{latest.status_label}</span>
-                        )}
-                        {latest && <span className="agent-row-meta">{agentMeta(status)}</span>}
-                      </span>
-                      <time>
-                        {status.state === "working"
-                          ? "live"
-                          : sinceLabel(
-                              latest?.last_activity_at ?? conversation.updatedAt ?? null,
-                              now,
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selectedConversation}
+                        aria-current={selectedConversation ? "page" : undefined}
+                        aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
+                        className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
+                        data-state={status.state}
+                        title={conversation.title}
+                        onClick={() => {
+                          onSelect(conversation.chatId);
+                          if (narrow) setMobileListOpen(false);
+                        }}
+                      >
+                        <span className="agent-row-icon">
+                          <AgentStateIcon state={status.state} />
+                        </span>
+                        <span className="agent-row-body">
+                          <span className="agent-row-title">{conversation.title}</span>
+                          {needsHuman(status) && latest && (
+                            <span className="agent-row-reason">{latest.status_label}</span>
+                          )}
+                          {latest && <span className="agent-row-meta">{agentMeta(status)}</span>}
+                        </span>
+                        <time>
+                          {status.state === "working"
+                            ? "live"
+                            : sinceLabel(
+                                latest?.last_activity_at ?? conversation.updatedAt ?? null,
+                                now,
+                              )}
+                        </time>
+                      </button>
+                      <div className="agent-row-menu">
+                        <button
+                          type="button"
+                          className="agent-row-menu-button"
+                          aria-label={`More actions for ${conversation.title}`}
+                          aria-haspopup="menu"
+                          aria-expanded={menuOpen}
+                          onClick={() => setMenuChatId(menuOpen ? null : conversation.chatId)}
+                        >
+                          <Ellipsis size={14} />
+                        </button>
+                        {menuOpen && (
+                          <div className="agent-row-menu-list" role="menu">
+                            {draft ? (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setMenuChatId(null);
+                                  onRemoveDraft(conversation.chatId);
+                                }}
+                              >
+                                Remove
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                role="menuitem"
+                                disabled={!archived && status.state === "working"}
+                                title={
+                                  !archived && status.state === "working"
+                                    ? "Archive after this agent finishes"
+                                    : undefined
+                                }
+                                onClick={() => void archive(conversation.chatId, !archived)}
+                              >
+                                {archived ? "Restore" : "Archive"}
+                              </button>
                             )}
-                      </time>
-                    </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
                   );
                 })}
               </div>

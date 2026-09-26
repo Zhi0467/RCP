@@ -196,3 +196,21 @@ def test_non_main_project_route_does_not_build_project_snapshot(
 
     assert response.status_code == 200
     assert response.json()["items"] == []
+
+
+def test_archiving_a_chat_hides_it_for_the_project_and_restores_it(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    url = f"/api/projects/{app.state.default_project_id}"
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+
+    def archive(chat_id, archived):
+        return client.post(f"{url}/chats/{chat_id}/archive", json={"archived": archived})
+
+    assert archive(first, True).json() == {"chat_ids": [first]}
+    assert archive(first, True).json() == {"chat_ids": [first]}
+    assert archive(second, True).status_code == 200
+    assert set(client.get(f"{url}/chat-archives").json()["chat_ids"]) == {first, second}
+    assert archive(first, False).json() == {"chat_ids": [second]}
+    assert archive("not-a-uuid", True).status_code == 422
+    assert client.get(f"{url}/chat-archives").json() == {"chat_ids": [second]}

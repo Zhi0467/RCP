@@ -486,6 +486,21 @@ export function checkMachineCompute(
   });
 }
 
+export function loadArchivedChats(apiBase: string): Promise<{ chat_ids: string[] }> {
+  return api(`${apiBase}/chat-archives`);
+}
+
+export function setChatArchived(
+  apiBase: string,
+  chatId: string,
+  archived: boolean,
+): Promise<{ chat_ids: string[] }> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ archived }),
+  });
+}
+
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {
   return api(`${apiBase}/watchers/${encodeURIComponent(watcherId)}/cancel`, { method: "POST" });
 }

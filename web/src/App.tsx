@@ -1120,6 +1120,7 @@ export default function App() {
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
+    discardDraft,
     ensureConversation,
     refreshChatSummaries,
     loadMoreChatSummaries,
@@ -4727,6 +4728,7 @@ export default function App() {
               onOpenInbox={() => changeView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+              onRemoveDraft={discardDraft}
               onNewSession={(conversation) => {
                 const node = conversation.nodeId
                   ? (presentedGraph.nodes[conversation.nodeId] ?? null)

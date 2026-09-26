@@ -168,6 +168,14 @@ runtime; the task inspector keeps the runtime. The agent list folds from a
 sidebar icon in its header, and a folded list leaves one icon at the band's
 top left rather than a strip.
 
+Each agent card's status icon is colour-coded: needs you, paused, working,
+unread result, done, failed, or an unsent draft (dashed). A three-dot menu on
+the card removes an unsent draft, which exists only in the browser, or
+archives a conversation with turns. Archive only hides the card for the
+project (`POST /api/projects/{project_id}/chats/{chat_id}/archive`, listed by
+`GET /api/projects/{project_id}/chat-archives`); an Archived filter appears
+when any exist and offers Restore. Transcripts and tasks are never deleted.
+
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity
 row when its underlying status can already be inspected, while failures and

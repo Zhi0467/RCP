@@ -1024,6 +1024,98 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .conversation-list [role="option"][data-state="unread"] .agent-row-icon {
   color: var(--teal);
 }
+.conversation-list [role="option"][data-state="done"] .agent-row-icon {
+  color: color-mix(in srgb, var(--teal) 55%, var(--muted));
+}
+.conversation-list [role="option"][data-state="failed"] .agent-row-icon {
+  color: var(--coral);
+}
+.conversation-list [role="option"][data-state="draft"] .agent-row-icon {
+  color: var(--faint);
+}
+.agent-row {
+  position: relative;
+}
+.agent-row-menu {
+  position: absolute;
+  right: 6px;
+  top: 8px;
+}
+.agent-row-menu-button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  height: 24px;
+  justify-content: center;
+  opacity: 0;
+  padding: 0;
+  width: 24px;
+}
+.agent-row-menu-button:hover,
+.agent-row-menu-button:focus-visible,
+.agent-row.menu-open .agent-row-menu-button {
+  background: var(--surface);
+  color: var(--ink);
+}
+.agent-row:hover .agent-row-menu-button,
+.agent-row:focus-within .agent-row-menu-button,
+.agent-row.menu-open .agent-row-menu-button {
+  opacity: 1;
+}
+.agent-row:hover [role="option"] time,
+.agent-row:focus-within [role="option"] time,
+.agent-row.menu-open [role="option"] time {
+  visibility: hidden;
+}
+@media (hover: none) {
+  .agent-row-menu-button {
+    opacity: 1;
+  }
+  .agent-row [role="option"] time {
+    visibility: hidden;
+  }
+}
+.agent-row-menu-list {
+  background: var(--sheet);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--ink) 16%, transparent);
+  display: grid;
+  min-width: 120px;
+  padding: 4px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+}
+.agent-row-menu-list button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: var(--type-xs);
+  padding: 6px 10px;
+  text-align: left;
+}
+.agent-row-menu-list button:hover:not(:disabled),
+.agent-row-menu-list button:focus-visible {
+  background: var(--surface);
+}
+.agent-row-menu-list button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+.agent-list-error {
+  color: var(--coral);
+  font-size: var(--type-xs);
+  margin: 0;
+  padding: 0 14px 6px;
+}
 .agent-row-body {
   display: grid;
   gap: 2px;

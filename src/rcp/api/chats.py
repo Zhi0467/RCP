@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel, ConfigDict
 
 from rcp.api.dependencies import (
     get_attachment_store,
     get_catalog,
     get_graph_service,
+    get_identity_access,
     get_store,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload
 from rcp.conversation_worktrees import (
     ConversationWorktreeResponse,
@@ -30,6 +34,52 @@ router = APIRouter(dependencies=[Depends(require_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 AttachmentStoreDependency = Annotated[ChatAttachmentStore, Depends(get_attachment_store)]
+StoreDependency = Annotated[AppStore, Depends(get_store)]
+IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
+
+
+class ChatArchiveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    archived: bool
+
+
+@router.get("/api/projects/{project_id}/chat-archives")
+def archived_chats(
+    project_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, list[str]]:
+    project_id = catalog.resolve_project_id(project_id)
+    return {"chat_ids": store.archived_chat_ids(project_id)}
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/archive",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def archive_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatArchiveBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> dict[str, list[str]]:
+    """Hide or restore one conversation in the agent list; nothing is deleted."""
+    try:
+        canonical = str(uuid.UUID(chat_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="chat_id must be a UUID") from exc
+    if canonical != chat_id:
+        raise HTTPException(status_code=422, detail="chat_id must be a canonical UUID")
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
+    return {"chat_ids": store.archived_chat_ids(project_id)}
 
 
 @router.post(
@@ -132,6 +182,8 @@ def chat(
 
 
 __all__ = [
+    "archive_chat",
+    "archived_chats",
     "chat",
     "chats",
     "remove_chat_attachment",

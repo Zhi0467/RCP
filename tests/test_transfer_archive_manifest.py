@@ -81,6 +81,7 @@ PROJECT_LINKED_TABLES = {
     "auto_research_lifecycle_notices",
     "auto_research_messages",
     "auto_research_recoveries",
+    "chat_archives",
     "chat_session_contexts",
     "compute_jobs",
     "compute_backend_probes",
