@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -132,12 +131,27 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
             binary="/opt/agents/codex",
         )
         assert entered.wait(timeout=1)
+        # Prove the second caller joined the in-flight probe: without this it can
+        # arrive after release, hit the cache, and pass without coalescing.
+        (in_flight,) = launcher._readiness_probes.values()
+        joined = threading.Event()
+        completed = in_flight.completed
+
+        class _JoinedEvent:
+            def wait(self, timeout=None):
+                joined.set()
+                return completed.wait(timeout)
+
+            def set(self):
+                completed.set()
+
+        in_flight.completed = _JoinedEvent()
         second = executor.submit(
             launcher.readiness,
             "codex",
             binary="/opt/agents/codex",
         )
-        time.sleep(0.05)
+        assert joined.wait(timeout=2)
         release.set()
 
     assert first.result() == second.result()
