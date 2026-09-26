@@ -5,9 +5,8 @@ servers, so a security defect can matter more than an ordinary bug.
 
 ## Reporting a vulnerability
 
-Do not open a public issue. Report privately through GitHub's
-[Report a vulnerability](https://github.com/Zhi0467/RCP/security/advisories/new)
-form on this repository. You will get a reply within seven days.
+Do not open a public issue. Email <wangzhi0467@gmail.com> with a description
+and steps to reproduce. You will get a reply within seven days.
 
 ## Scope
 
