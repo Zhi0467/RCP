@@ -1,7 +1,7 @@
 """Where one provider turn ends, decided on the execution host.
 
-The launcher ships this module and the pure completion module to the execution
-machine; both depend only on the standard library.
+The launcher ships this module and its stateless Claude helpers to the execution
+machine. Both depend only on the standard library.
 
 It answers one question: is this turn over. It deliberately does not answer
 whether the turn succeeded. RCP cannot ship its decoder to a host, so anything
@@ -14,20 +14,15 @@ the one decoder that has always owned it.
 
 from __future__ import annotations
 
-import time
-
-if "TurnCompletion" not in globals():
-    from rcp.agents.turn_completion import TurnCompletion, attributed_ids
+if "attributed_ids" not in globals():
+    from rcp.agents.turn_completion import attributed_ids, is_claude_task_notice
 
 
 class TurnFence:
     """Whether this turn's traffic has reached its own end."""
 
     def __init__(self, runtime_id: str):
-        self.completion = TurnCompletion()
         self.last_error = ""
-        self._pending_completion = False
-        self._pending_claude_result: dict | None = None
         self.runtime_id = runtime_id
         self.requests: dict[object, str] = {}
         # Ordered, because which one arrived first is which one was the
@@ -89,9 +84,7 @@ class TurnFence:
         if kind == "error":
             self.last_error = str(value.get("message") or value.get("error") or "")
         if kind in {"turn.completed", "turn.failed"}:
-            self.terminal = self.completion.verdict(
-                failed=kind == "turn.failed", now=time.monotonic()
-            ).terminal
+            self.terminal = True
 
     def _app_server_output(self, value: dict) -> None:
         result = value.get("result")
@@ -106,13 +99,6 @@ class TurnFence:
             return
         params = value.get("params")
         thread = params.get("threadId") if isinstance(params, dict) else None
-        if isinstance(params, dict):
-            self.completion.observe_codex_task(
-                value.get("method"), params, self.thread_id or self.requested_thread_id
-            )
-            if self._pending_completion and not self.completion.open_work:
-                self.terminal = True
-                return
         # A resumed server can speak for another of its threads before it replies
         # to this one. The canonical decoder answers such a request knowing the
         # thread it asked to resume; this fence has to know it too, or the check
@@ -149,18 +135,9 @@ class TurnFence:
             and isinstance(turn, dict)
             and (self.turn_id is None or turn.get("id") == self.turn_id)
         ):
-            verdict = self.completion.verdict(
-                failed=turn.get("status") in {"failed", "interrupted"}, now=time.monotonic()
-            )
-            self.terminal = verdict.terminal
-            self._pending_completion = verdict.code == "open_work"
+            self.terminal = True
 
     def _claude_output(self, value: dict, kind: object) -> None:
-        self.completion.observe_claude_task(value)
-        if self._pending_claude_result is not None and not self.completion.open_work:
-            pending, self._pending_claude_result = self._pending_claude_result, None
-            self._claude_output(pending, "result")
-            return
         identifier = value.get("command_uuid")
         if kind == "command_lifecycle" and identifier in self.message_ids:
             if value.get("state") in {"queued", "started"}:
@@ -173,23 +150,15 @@ class TurnFence:
         if kind != "result":
             return
         finished = attributed_ids(value)
+        if is_claude_task_notice(value, set(self.message_ids), finished):
+            return
         self.outstanding.difference_update(finished)
+        # A failure ends the turn even with inputs still out: nothing is coming
+        # back for them. This is the one place a boundary needs to know that a
+        # result went badly, and it still says nothing about what to report.
         failed = (
             value.get("is_error") is True or "error" in str(value.get("subtype") or "").casefold()
         )
-        origin = value.get("origin")
-        verdict = self.completion.verdict(
-            failed=failed,
-            sent_ids=set(self.message_ids),
-            finished_ids=finished,
-            outstanding_inputs=self.outstanding,
-            task_notification=(
-                value.get("subtype") == "success"
-                and isinstance(origin, dict)
-                and origin.get("kind") == "task-notification"
-            ),
-            now=time.monotonic(),
-        )
-        self.terminal = verdict.terminal
-        if verdict.code == "open_work":
-            self._pending_claude_result = value
+        if finished and self.outstanding and not failed:
+            return
+        self.terminal = True

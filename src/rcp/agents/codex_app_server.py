@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
-from rcp.agents.turn_completion import TurnCompletion
 from rcp.providers import (
     ProviderRuntime,
     ProviderRuntimeStep,
@@ -24,6 +22,19 @@ _INITIALIZE_ID = 1
 _CONFIG_READ_ID = 2
 _THREAD_ID = 3
 _TURN_ID = 4
+_HOOK_EVENTS = (
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+)
 
 
 class CodexAppServerRuntime(ProviderRuntime):
@@ -47,8 +58,6 @@ class _CodexAppServerTurn(ProviderTurn):
             actual=request.provider_version,
             minimum=(0, 149, 0),
         )
-        self.completion = TurnCompletion()
-        self._root_completed = False
         self._request = request
         self._phase = "initialize"
         self._thread_id: str | None = None
@@ -226,8 +235,6 @@ class _CodexAppServerTurn(ProviderTurn):
                 return self._protocol_error("Codex app-server config arrived out of order.")
             try:
                 config = _containment_config(result.get("config"))
-                config["hooks"] = self._request.codex_hooks or {}
-                config["bypass_hook_trust"] = bool(self._request.codex_hooks)
             except ValueError as exc:
                 return self._protocol_error(str(exc))
             self._phase = "thread"
@@ -340,14 +347,9 @@ class _CodexAppServerTurn(ProviderTurn):
     ) -> ProviderRuntimeStep:
         # App-server multiplexes native subagents on the same connection. Only
         # the addressed root thread may answer or terminate this RCP turn.
-        self.completion.observe_codex_task(
-            method, params, self._thread_id or self._request.session_id
-        )
         thread_id = params.get("threadId")
         expected_thread = self._thread_id or self._request.session_id
         if isinstance(thread_id, str) and thread_id != expected_thread:
-            if self._root_completed and not self.completion.open_work:
-                return self._complete_root()
             return ProviderRuntimeStep()
         if (
             self._turn_id is not None
@@ -374,8 +376,6 @@ class _CodexAppServerTurn(ProviderTurn):
             elif self._phase == "running" and turn_id == self._turn_id:
                 self._usage = _usage_event(usage, turn_id, self._usage_baseline)
             return ProviderRuntimeStep()
-        if self._root_completed and not self.completion.open_work:
-            return self._complete_root()
         if method == "item/completed":
             item = params.get("item")
             if not isinstance(item, dict):
@@ -405,19 +405,11 @@ class _CodexAppServerTurn(ProviderTurn):
         if status != "completed":
             detail = _error_text(turn.get("error")) or f"Codex turn ended with status {status!r}."
             return self._protocol_error(detail)
-        self._root_completed = True
-        return self._complete_root()
-
-    def _complete_root(self) -> ProviderRuntimeStep:
         events = (
             (ProviderStreamEvent(event="raw", usage=self._usage),)
             if self._usage is not None
             else ()
         )
-        verdict = self.completion.verdict(now=time.monotonic())
-        if not verdict.terminal:
-            return ProviderRuntimeStep()
-        self._root_completed = False
         self._phase = "completed"
         return ProviderRuntimeStep(
             events=events,
@@ -498,7 +490,7 @@ def _containment_config(value: object) -> dict[str, object]:
         # ends, and the environment policy injects variables into every command.
         "notify": [],
         "shell_environment_policy": {},
-        "hooks": {},
+        "hooks": _disabled_hooks(value.get("hooks")),
     }
     for key in ("apps", "mcp_servers", "plugins"):
         configured = value.get(key)
@@ -531,6 +523,18 @@ def _native_agents(configured: object) -> dict[str, object]:
             if isinstance(role, dict):
                 agents[name] = {"config_file": None, "description": ""}
     return agents
+
+
+def _disabled_hooks(configured: object) -> dict[str, object]:
+    """Empty every hook list, including an event name this RCP does not know."""
+
+    hooks: dict[str, object] = {event: [] for event in _HOOK_EVENTS}
+    if isinstance(configured, dict):
+        for event, entries in configured.items():
+            # `hooks.state` is Codex trust bookkeeping, not a hook list.
+            if isinstance(event, str) and isinstance(entries, list):
+                hooks[event] = []
+    return hooks
 
 
 def _sandbox_policy(cwd: Path, *, read_only: bool) -> dict[str, object]:

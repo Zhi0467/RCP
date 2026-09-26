@@ -327,13 +327,6 @@ def run(args):
         os.fsync(events.fileno())
         os.fsync(errors.fileno())
     return_code = child.wait()
-    if args.codex_start_marker and not Path(args.codex_start_marker).is_file():
-        error = error or json.dumps(
-            {
-                "code": "codex_hook_start_missing",
-                "files": [args.codex_start_marker],
-            }
-        )
     patch_present = False
     patch_sha256 = None
     watch_present = False
@@ -466,7 +459,6 @@ def _exit_status(return_code):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--codex-start-marker")
     for name in (
         "pid-file",
         "provider",

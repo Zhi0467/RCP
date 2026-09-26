@@ -83,6 +83,15 @@ class RecordedProviderTurn:
         )
 
     @property
+    def exec_failed_exit(self) -> bool:
+        return_code = self.outcome.get("return_code")
+        return (
+            self.runtime_id == "codex.exec-json.v1"
+            and isinstance(return_code, int)
+            and return_code != 0
+        )
+
+    @property
     def observed_lines(self) -> list[str]:
         """The journal lines a live pipe would have decoded, in order.
 
@@ -267,4 +276,14 @@ def decode_recorded_turn(
         complete = complete or step.complete
         if step.explicit_terminal:
             break
+    if recorded.exec_failed_exit and not complete:
+        events.append(
+            AgentEvent(
+                event="error",
+                text=turn.last_error
+                or recorded.stderr
+                or f"codex exited with code {recorded.outcome['return_code']}.",
+            )
+        )
+        complete = True
     return RecordedVerdict(complete=complete and recorded.intact, events=tuple(events))

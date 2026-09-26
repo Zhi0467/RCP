@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.resources
 import json
 import logging
 import os
@@ -14,7 +13,6 @@ import stat
 import subprocess
 import threading
 import time
-import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import Future
 from contextlib import aclosing, suppress
@@ -26,7 +24,6 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field, model_validator
 
-from rcp.agents.codex_hook_guard import CodexHookGuardError
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
 from rcp.agents.failure_kinds import AgentFailureKind, transport_failure
 from rcp.agents.git_access import ProviderGitAccess
@@ -38,7 +35,6 @@ from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.limits import (
-    CODEX_HOOK_GUARD_TIMEOUT_SECONDS,
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
     REMOTE_PROVIDER_KILL_WAIT_SECONDS,
@@ -237,7 +233,6 @@ def _supervised_remote_turn_command(
     watch_path: str,
     experiment_watch_glob: str,
     close_input_after_initial: bool,
-    codex_start_marker: str | None = None,
 ) -> list[str]:
     """Wrap one remote provider pass in the execution-host journal."""
 
@@ -279,8 +274,6 @@ def _supervised_remote_turn_command(
         "--poll-seconds",
         str(REMOTE_PROVIDER_STOP_POLL_SECONDS),
     ]
-    if codex_start_marker:
-        wrapped.extend(("--codex-start-marker", codex_start_marker))
     if provider_version:
         wrapped.extend(("--provider-version", provider_version))
     if close_input_after_initial:
@@ -687,7 +680,6 @@ class AgentLauncher:
         credentials: ProviderCredentialStore | None = None,
         readiness_snapshots: ProviderReadinessSnapshots | None = None,
         accounts: ProviderAccounts | None = None,
-        data_dir: Path | None = None,
     ) -> None:
         #: The account owner shared with sign-in and skill probing. Given, it
         #: answers refusals and classifies failures; without it the launcher
@@ -700,9 +692,6 @@ class AgentLauncher:
         #: Where a Claude setup token lives; None means every provider inherits
         #: RCP's own environment, as before a token was ever pasted.
         self.credentials = credentials
-        #: Where local Codex turn-control directories live. Codex launches
-        #: refuse without it rather than guess a data directory.
-        self.data_dir = data_dir
         #: Durable credential-touching readiness answers, keyed by exact
         #: executable and version, so a restart re-probes nothing unchanged.
         self.readiness_snapshots = readiness_snapshots
@@ -725,71 +714,6 @@ class AgentLauncher:
                 else environment
             )
         return profile_for(provider).authentication.process_environment(self.credentials, host)
-
-    def _prepare_codex_control(
-        self,
-        *,
-        binary: str,
-        runtime_id: str,
-        cwd: Path,
-        host: str,
-        writable_roots: list[str],
-        include_temporary_roots: bool,
-        operation_id: str | None,
-        environment: ProviderProcessEnvironment,
-    ) -> dict:
-        from rcp.transport.remote_codex_control import prepare
-
-        operation = operation_id or uuid.uuid4().hex
-        if Path(operation).name != operation or operation in {".", ".."}:
-            raise CodexHookGuardError("codex_hook_invalid_operation", [])
-        if not host and self.data_dir is None:
-            raise CodexHookGuardError("codex_hook_control_root_unset", [])
-        root = Path("~/.rcp") if host else self.data_dir.expanduser().absolute()
-        payload = {
-            "binary": binary,
-            "runtime_id": runtime_id,
-            "cwd": str(cwd),
-            "control_dir": str(root / "turn-control" / operation / uuid.uuid4().hex),
-            "writable_roots": writable_roots,
-            "include_temporary_roots": include_temporary_roots,
-            "timeout": CODEX_HOOK_GUARD_TIMEOUT_SECONDS,
-            "sources": {
-                name: importlib.resources.files("rcp.agents").joinpath(name + ".py").read_text()
-                for name in ("codex_hook_guard", "codex_turn_hooks")
-            },
-        }
-        if not host:
-            return prepare(payload, env=environment.local_env)
-        result = self._probe(
-            host,
-            ["python3", "-c", _remote_script("remote_codex_control.py"), json.dumps(payload)],
-            environment=environment,
-            timeout=CODEX_HOOK_GUARD_TIMEOUT_SECONDS,
-        )
-        try:
-            value = json.loads(result.stdout)
-        except ValueError as exc:
-            raise CodexHookGuardError("codex_hook_inventory_failed", []) from exc
-        if result.returncode:
-            raise CodexHookGuardError(
-                value.get("code", "codex_hook_inventory_failed"), value.get("files", [])
-            )
-        return value
-
-    def _codex_marker_exists(self, marker: str, host: str) -> bool:
-        if not host:
-            return Path(marker).is_file()
-        result = self._probe(
-            host,
-            [
-                "python3",
-                "-c",
-                _remote_script("remote_codex_control.py"),
-                json.dumps({"marker": marker}),
-            ],
-        )
-        return result.returncode == 0 and result.stdout.strip() == "true"
 
     def _login_refusal(self, provider: str, host: str) -> str | None:
         if self.accounts is not None:
@@ -1351,43 +1275,6 @@ class AgentLauncher:
             return
         runtime = profile.runtime(runtime_id)
         resolved_binary = getattr(readiness, "binary_path", None) or binary or provider
-        environment = self.process_environment(provider, host)
-        codex_control = None
-        if provider == "codex":
-            writable_roots = (
-                write_scope.writable_roots
-                if write_scope is not None
-                else (
-                    []
-                    if capability == "paper_readonly"
-                    else [str(cwd), *(str(path) for path in write_dirs or [])]
-                )
-            )
-            try:
-                codex_control = await asyncio.to_thread(
-                    self._prepare_codex_control,
-                    binary=resolved_binary,
-                    runtime_id=runtime.id,
-                    cwd=cwd,
-                    host=host,
-                    writable_roots=writable_roots,
-                    include_temporary_roots=write_scope is None and capability != "paper_readonly",
-                    operation_id=operation_id,
-                    environment=environment,
-                )
-            except (CodexHookGuardError, OSError, RuntimeError) as exc:
-                yield AgentEvent(
-                    event="error",
-                    text=json.dumps(
-                        {
-                            "code": getattr(exc, "code", "codex_hook_inventory_failed"),
-                            "files": getattr(exc, "files", []),
-                        }
-                    ),
-                )
-                return
-            if codex_control["receipt"]["warning_codes"]:
-                yield AgentEvent(event="message", text=json.dumps(codex_control["receipt"]))
         legacy_command = (
             self._command(
                 provider,
@@ -1402,7 +1289,6 @@ class AgentLauncher:
                 write_scope=write_scope,
                 capability=capability,
                 provider_version=getattr(readiness, "version", None),
-                codex_hooks=codex_control["hooks"] if codex_control else None,
             )
             if runtime.id == profile.legacy_runtime_id
             else None
@@ -1422,13 +1308,11 @@ class AgentLauncher:
                     capability=capability,
                     provider_version=getattr(readiness, "version", None),
                     legacy_command=legacy_command,
-                    codex_hooks=codex_control["hooks"] if codex_control else None,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
             raise _PrePromptRuntimeFailure(str(exc)) from exc
         command = turn.command
-        codex_marker_verified = False
         if invocation_gate is not None:
             command = invocation_gate.wrap_command(command)
         if supervise_remote:
@@ -1447,7 +1331,6 @@ class AgentLauncher:
                 watch_path=str(cwd / "watch.json"),
                 experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
                 close_input_after_initial=turn.close_input_after_initial,
-                codex_start_marker=codex_control["marker"] if codex_control else None,
             )
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
@@ -1716,20 +1599,6 @@ class AgentLauncher:
                         session_id=decoded.session_id,
                         usage=decoded.usage,
                     )
-                    if event.event == "answer" and codex_control and not codex_marker_verified:
-                        codex_marker_verified = await asyncio.to_thread(
-                            self._codex_marker_exists, codex_control["marker"], host
-                        )
-                        if not codex_marker_verified:
-                            event = AgentEvent(
-                                event="error",
-                                text=json.dumps(
-                                    {
-                                        "code": "codex_hook_start_missing",
-                                        "files": [codex_control["marker"]],
-                                    }
-                                ),
-                            )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1
                     if event.event == "error":
                         # Consumers stop at the first error. Capture the diagnostic
@@ -1842,20 +1711,8 @@ class AgentLauncher:
                     return
                 raise _PrePromptRuntimeFailure(detail)
             paused = control is not None and control.pause_requested.is_set()
-            marker_missing = bool(
-                codex_control
-                and not codex_marker_verified
-                and not paused
-                and not provider_failed
-                and not return_code
-                and not remote_result_pending
-                and not await asyncio.to_thread(
-                    self._codex_marker_exists, codex_control["marker"], host
-                )
-            )
             turn_failed = bool(
-                marker_missing
-                or completion_stop_failed
+                completion_stop_failed
                 or provider_failed
                 or (return_code and not stopped_at_result)
                 or (turn.requires_protocol_completion and not protocol_complete)
@@ -1902,16 +1759,6 @@ class AgentLauncher:
                 yield AgentEvent(
                     event="error",
                     text="RCP could not confirm that the remote provider process stopped. Recovery is blocked until its process state can be verified.",
-                )
-            elif marker_missing:
-                yield AgentEvent(
-                    event="error",
-                    text=json.dumps(
-                        {
-                            "code": "codex_hook_start_missing",
-                            "files": [codex_control["marker"]],
-                        }
-                    ),
                 )
             elif provider_failed:
                 # The first error already includes stderr. A forced stop must
@@ -1995,7 +1842,6 @@ class AgentLauncher:
         write_scope: ProjectWriteScope | None = None,
         capability: AgentCapability,
         provider_version: str | None = None,
-        codex_hooks: dict[str, object] | None = None,
     ) -> list[str]:
         return profile_for(provider).command(
             prompt,
@@ -2009,7 +1855,6 @@ class AgentLauncher:
             write_scope=write_scope,
             capability=capability,
             provider_version=provider_version,
-            **({"codex_hooks": codex_hooks} if codex_hooks is not None else {}),
         )
 
     @staticmethod

@@ -22,8 +22,6 @@ from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderRuntimeStep, ProviderTurnRequest, profile_for
 
-pytestmark = pytest.mark.usefixtures("fake_codex_hook_control")
-
 
 def _decoded_step(provider: str, line: str) -> ProviderRuntimeStep:
     """Decode one JSONL line through the runtime the launcher actually runs."""

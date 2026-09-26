@@ -27,8 +27,6 @@ from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
 
-pytestmark = pytest.mark.usefixtures("fake_codex_hook_control")
-
 
 @pytest.fixture
 def prompt_minimum(monkeypatch: pytest.MonkeyPatch) -> None:

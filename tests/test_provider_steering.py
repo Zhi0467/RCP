@@ -15,8 +15,6 @@ from rcp.agents.steering import LiveProviderSteering
 from rcp.providers import ProviderTurnRequest, profile_for
 from tests.helpers import async_wait_until
 
-pytestmark = pytest.mark.usefixtures("fake_codex_hook_control")
-
 
 def _turn(tmp_path: Path, provider: str, *, ready: bool = True):
     profile = profile_for(provider)

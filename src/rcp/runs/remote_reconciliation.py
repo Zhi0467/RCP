@@ -147,7 +147,9 @@ def reconcile_remote_pass(
         return Reconciliation(
             "fail", "The provider never took this turn's prompt.", pid_file, recorded
         )
-    if not recorded.intact or not recorded.outcome.get("terminal_event"):
+    if not recorded.intact or not (
+        recorded.outcome.get("terminal_event") or recorded.exec_failed_exit
+    ):
         return Reconciliation(
             "fail",
             "The provider stopped before its turn reached an end.",

@@ -93,6 +93,31 @@ def test_a_provider_that_stopped_mid_turn_fails_that_same_task(waiting) -> None:
     assert "before its turn reached an end" in result.reason
 
 
+@pytest.mark.parametrize("return_code", [None, 0, 7])
+@pytest.mark.parametrize("intact", [True, False])
+def test_exec_retry_failure_replays_after_a_nonzero_exit(
+    waiting, tmp_path, return_code, intact
+) -> None:
+    from rcp.runs.recorded_turn import decode_recorded_turn
+
+    from .test_recorded_turn import _request
+
+    messages = ["Reconnecting... 1/5", "Reconnecting... 2/5: connection reset"]
+    events = "".join(json.dumps({"type": "error", "message": text}) + "\n" for text in messages)
+    journal = _journal(terminal=False, intact=intact, events=events)
+    journal["outcome"]["return_code"] = return_code
+
+    result = _reconcile(waiting, stopped=True, journal=journal)
+
+    assert result.action == ("finalize" if intact and return_code else "fail")
+    assert result.recorded is not None
+    verdict = decode_recorded_turn(result.recorded, _request(tmp_path))
+    assert verdict.complete is bool(intact and return_code)
+    assert [event.text for event in verdict.events if event.event == "error"] == (
+        [messages[-1]] if return_code else []
+    )
+
+
 def test_a_pass_that_never_took_the_prompt_says_so(waiting) -> None:
     """The one state where nothing ran, and so the one where a retry is safe."""
 

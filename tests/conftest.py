@@ -180,26 +180,3 @@ default_reasoning = "medium"
         encoding="utf-8",
     )
     return load_manifest(path)
-
-
-@pytest.fixture
-def fake_codex_hook_control(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Protocol-only fake binaries do not implement Codex's hook discovery/runtime."""
-    from rcp.agents.codex_turn_hooks import hook_config
-
-    def prepare(self, **kwargs):
-        control = tmp_path / "fake-hook-control"
-        control.mkdir(exist_ok=True)
-        marker = control / "started"
-        marker.write_text("started\n")
-        return {
-            "hooks": hook_config(control),
-            "marker": str(marker),
-            "receipt": {"warning_codes": []},
-        }
-
-    monkeypatch.setattr("rcp.agents.launcher.AgentLauncher._prepare_codex_control", prepare)
-    monkeypatch.setattr(
-        "rcp.agents.launcher.AgentLauncher._codex_marker_exists",
-        lambda self, marker, host: Path(marker).is_file(),
-    )

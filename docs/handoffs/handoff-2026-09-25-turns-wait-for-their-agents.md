@@ -1,17 +1,15 @@
 # Turns wait for their own agents, and the helper is always offered
 
-Status on 2026-09-25: rescoped to a simpler design after a size review.
+Status on 2026-09-25: the simpler design is implemented; live qualification remains.
 
-- Implemented on this branch: the helper beside job managers with split
-  scheduler/helper readiness (section 4). Earlier commits on this branch also
-  built a Codex hook fence, a foreign-hook guard and a delegation wait limit.
-  Those are removed by this rescope; see [Removed](#removed).
-- Remains: sections 1–3 and 5, and removing the fence machinery.
+- Implemented on this branch: sections 1–5, including recorded retry failures.
+  The hook fence and completion tracker are removed. Specs carry the design.
+- Remains: the two live journeys in [Verification](#verification), then human
+  review and merge. Local checks pass with disposable data and fake providers.
 - Settled (human, 2026-09-25):
   - Turns should not lose subagents, but RCP enforces this only where it is
     cheap: Claude runs subagents in the foreground; Codex is told to wait.
-  - No Codex hooks, no `--dangerously-bypass-hook-trust`, no delegation wait
-    limit, no service watcher kind.
+  - No Codex hooks, no delegation wait limit, no service watcher kind.
   - The launch helper is offered by default wherever an OS process owner
     exists. A job manager such as Slurm adds its own rules. See
     [the decision record](../decisions/2026-09-25-job-managers-add-rules-never-remove-the-helper.md).
@@ -118,11 +116,10 @@ instructions say so. There is no service launch kind.
 Built earlier on this branch and removed by the rescope, because together
 they were about two thirds of the pull request for a partial guarantee:
 
-- the Codex hook fence (`SubagentStart`/`SubagentStop`/`Stop` hooks), the
-  per-runtime foreign-hook guard, turn-control directories and start marker,
-  and `--dangerously-bypass-hook-trust`;
+- the Codex hook fence, the per-runtime foreign-hook guard, turn-control
+  directories, start marker, and hook-trust bypass;
 - the delegation wait limit, its launcher and host-supervisor enforcement,
-  journal and replay verdicts, and `delegation_unfinished`;
+  and journal and replay verdicts;
 - holding a Claude or app-server turn open while delegated work is open,
   and the shared completion tracker behind it.
 
@@ -141,9 +138,9 @@ The probes behind these remain in the table above and in Git history.
 - Live, disposable server on the Linux host: a helper `launch` on the Slurm
   machine survives the turn and stops on Cancel.
 
-## Spec changes on completion
+## Updated specs
 
 - `docs/specs/providers-and-containment.md`: the Claude env var, the notice
   rule, Codex retry traces, and the subagent contract fact.
-- `docs/specs/compute-jobs.md`: done for the helper and split readiness; add
-  that long-lived processes use plain `launch`.
+- `docs/specs/compute-jobs.md`: the helper, split readiness, and long-lived
+  processes using plain `launch`.

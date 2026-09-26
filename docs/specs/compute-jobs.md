@@ -21,6 +21,9 @@ jobs. The helper also owns non-compute processes, such as a dashboard or local
 server. The agent chooses the route. RCP never reroutes a Slurm submission to
 the helper.
 
+A long-lived process such as a dashboard uses ordinary helper `launch` and its
+watcher. The human stops it with Cancel.
+
 On Linux, Cancel stops the whole systemd cgroup. macOS has an explicit ownership
 exception: Cancel stops the launchd service, which is the job's main process and
 its process group; a descendant that deliberately starts its own session can

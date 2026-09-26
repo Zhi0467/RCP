@@ -250,21 +250,27 @@ def test_the_fence_publishes_no_verdict(tmp_path):
     assert not hasattr(completed, "complete")
 
 
-def test_captured_claude_notice_does_not_finish_or_answer(tmp_path):
+@pytest.mark.parametrize("capture", ["initial", "resume"])
+def test_captured_claude_results_follow_input_attribution(tmp_path, capture):
     from pathlib import Path
 
     fixtures = Path(__file__).parent / "fixtures" / "claude_turn_completion"
-    sent = json.loads((fixtures / "resume-input.json").read_text())
+    sent = json.loads((fixtures / f"{capture}-input.json").read_text())
     turn, fence = _started_decoder_pair(tmp_path, "claude.stream-json.v1")
     turn.adopt_recorded_inputs([sent["uuid"]], {})
     fence.input(sent)
     steps = []
-    for line in (fixtures / "resume.jsonl").read_text().splitlines():
+    for line in (fixtures / f"{capture}.jsonl").read_text().splitlines():
         value = json.loads(line)
         step = turn.receive_line(line)
         fence.output(value)
         assert step.explicit_terminal == fence.terminal
         steps.append((value, step))
+    if capture == "initial":
+        assert steps[-1][0]["type"] == "result"
+        assert steps[-1][1].complete
+        assert fence.terminal
+        return
     notice = next(step for value, step in steps if value.get("origin"))
     assert not notice.complete
     assert all(event.event != "answer" for event in notice.events)
@@ -293,23 +299,6 @@ def test_claude_notice_origin_and_own_input_control_completion(tmp_path, variant
     assert step.complete == fence.terminal == (variant != "foreign")
 
 
-def test_claude_open_task_blocks_result_and_records_first_wait(tmp_path):
-    turn, fence = _started_decoder_pair(tmp_path, "claude.stream-json.v1")
-    result = {"type": "result", "subtype": "success"}
-    for value in ({"type": "system", "subtype": "task_started", "task_id": "child"}, result):
-        assert not turn.receive_line(json.dumps(value)).complete
-        fence.output(value)
-        assert not fence.terminal
-    since = fence.completion.open_work_since
-    assert since is not None
-    fence.output(result)
-    assert fence.completion.open_work_since == since
-    stopped = {"type": "system", "subtype": "task_notification", "task_id": "child"}
-    assert turn.receive_line(json.dumps(stopped)).complete
-    fence.output(stopped)
-    assert fence.terminal
-
-
 def test_codex_exec_retry_errors_remain_traces_until_turn_failed(tmp_path):
     turn, fence = _started_decoder_pair(tmp_path, "codex.exec-json.v1")
     for index in range(2):
@@ -329,30 +318,3 @@ def test_codex_exec_retry_errors_remain_traces_until_turn_failed(tmp_path):
     assert turn.receive_line(json.dumps(failure)).complete
     fence.output(failure)
     assert fence.terminal
-
-
-def test_app_server_descendant_receipts_settle_pending_root_completion(tmp_path):
-    turn, fence = _started_decoder_pair(tmp_path, "codex.app-server-stdio.v1")
-
-    def spawned(parent: str, child: str) -> dict:
-        item = {"type": "subAgentActivity", "kind": "started", "agentThreadId": child}
-        return {"method": "item/started", "params": {"threadId": parent, "item": item}}
-
-    def finished(thread: str) -> dict:
-        turn_value = {"id": f"{thread}-turn", "status": "completed"}
-        return {"method": "turn/completed", "params": {"threadId": thread, "turn": turn_value}}
-
-    values = [
-        spawned("fence-thread", "child"),
-        spawned("child", "grandchild"),
-        {
-            "method": "turn/completed",
-            "params": {"turn": {"id": "corpus-turn", "status": "completed"}},
-        },
-        finished("child"),
-        finished("grandchild"),
-    ]
-    for index, value in enumerate(values):
-        step = turn.receive_line(json.dumps(value))
-        fence.output(value)
-        assert step.complete == fence.terminal == (index == 4)

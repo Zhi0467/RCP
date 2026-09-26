@@ -45,7 +45,6 @@ def _supervise(
     experiment_watch_files: int = 64,
     experiment_watch_bytes: int = 100000,
     close_input_after_initial: bool = True,
-    codex_start_marker: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -91,8 +90,6 @@ def _supervise(
         "--poll-seconds",
         "0.02",
     ]
-    if codex_start_marker is not None:
-        argv.extend(["--codex-start-marker", str(codex_start_marker)])
     if close_input_after_initial:
         argv.append("--close-input-after-initial")
     argv += ["--", sys.executable, "-c", provider]
@@ -445,15 +442,3 @@ def test_supervised_launch_ships_the_supervisor_as_a_staged_file():
     assert "/stage/inputs/rcp-turn-supervisor-0123456789abcdef.py" in command
     assert not any(source in argument for argument in command)
     assert len(" ".join(command)) < len(source)
-
-
-def test_missing_codex_start_marker_refuses_deliverable_snapshot(tmp_path: Path) -> None:
-    result, journal = _supervise(
-        tmp_path,
-        json.dumps({"emit": [{"type": "turn.completed"}], "exit": 0}) + "\n",
-        codex_start_marker=tmp_path / "missing-marker",
-    )
-    assert result.returncode != 0
-    outcome = json.loads((journal / "outcome.json").read_text())
-    assert json.loads(outcome["error"])["code"] == "codex_hook_start_missing"
-    assert outcome["patch_present"] is False

@@ -194,6 +194,21 @@ parent's answer or end its turn. Codex usage totals cover the parent agent only;
 neither runtime's parent summary includes descendant usage. RCP does not crawl
 Codex's private transcript/database formats to reconstruct that missing total.
 
+Every provider contract carries one shared fact: provider-native subagents must
+finish inside the turn. Wait for their results before replying. Only helper and
+scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle.
+RCP does not track descendants or hold a completed turn for them.
+
+Every local and remote Claude launch sets
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Claude subagents run in the foreground.
+Parallel Agent calls still work.
+
+Codex exec `error` events are retry traces. `turn.failed` or a non-zero exit
+ends a failed turn. Without `turn.failed`, the last retry error supplies the
+failure text on non-zero exit. The live decoder, host fence, and recorded replay
+use this rule. Recovery accepts an intact exec journal with a non-zero exit
+even when it has no terminal event.
+
 The preferred runtime is chosen anew from the current project profile for every
 RCP task invocation, including a continuation of an existing native session. A
 native session is not permanently bound to the runtime that created it. RCP
@@ -572,7 +587,10 @@ accepted follow-up remains, RCP yields that result's answer and usage and lets
 the same process run the next turn. Otherwise it completes and stops the
 process, refusing any unacknowledged follow-ups. A result without usable command
 UUIDs fails closed to the same stop behavior. `queued_turn_count` is not used.
-Without a follow-up, the first result still ends the invocation.
+Without a follow-up, the first result still ends the invocation, with one
+exception: a successful result with `origin.kind` equal to `task-notification`
+and no message id sent by RCP stays a trace. It does not end the turn. Both the
+local decoder and the host fence apply this notice rule.
 
 The provider turns share one native session, capability, write scope, and task
 stage. Their answers are joined with a blank line into one assistant chat

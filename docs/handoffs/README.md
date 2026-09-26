@@ -3,11 +3,11 @@
 Active:
 
 - [Turns wait for their own agents, and the helper is always offered](handoff-2026-09-25-turns-wait-for-their-agents.md)
-  — rescoped 2026-09-25 to a simpler design. Claude runs subagents in the
+  — simpler design implemented 2026-09-25. Claude runs subagents in the
   foreground and skips the resume notice result; Codex exec retry notices
   become traces; Codex is told to wait for its subagents; the launch helper
-  is offered beside job managers with split readiness (implemented). The
-  earlier hook fence and wait limit are removed.
+  is offered beside job managers with split readiness. The earlier hook fence
+  and wait limit are removed. Real-provider and remote helper qualification remain.
 
 - [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
   — implemented 2026-09-25 on one pull request and verified on copied

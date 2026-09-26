@@ -13,8 +13,6 @@ import pytest
 from rcp.agents import AgentLauncher, ProviderReadiness
 from rcp.providers import PROVIDER_IDS, ClaudeProfile, CodexProfile, profile_for, runtime_label
 
-pytestmark = pytest.mark.usefixtures("fake_codex_hook_control")
-
 
 def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess([], returncode, stdout, "")

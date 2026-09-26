@@ -9,6 +9,7 @@ from rcp.agents.prompts import (
     _EXTERNAL_WATCHER_FORMS,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
+    PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     _invoked_package_section,
     _patch_validator_rules,
@@ -166,6 +167,8 @@ Explicit same-episode provider-switch recovery:
     )
 
     return f"""# RCP Experiment-loop task contract
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 {_WHAT_IS_RCP_CONVERSATION}
 
@@ -577,6 +580,8 @@ def experiment_loop_continuation_contract(
     )
     return f"""# RCP Experiment-loop {mode} contract
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 {action}
 
 - Original immutable Experiment-loop contract: `{original_contract_path}`
@@ -640,6 +645,8 @@ def experiment_loop_watcher_correction_contract(
         raise ValueError(f"Experiment-loop watcher correction is missing {', '.join(missing)}.")
     return f"""# RCP Experiment-loop watcher correction
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 Correct only the mandatory watcher handoff in the same native Work session.
 
 - Original immutable Experiment-loop contract: `{original_contract_path}`
@@ -698,6 +705,8 @@ def experiment_watcher_maintenance_correction_contract(
         )
     return f"""# RCP Experiment watcher maintenance correction
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 Correct only the retained node-attached Experiment watcher maintenance handoff in this same native
 Work session.
 
@@ -733,6 +742,8 @@ def experiment_loop_patch_correction_contract(
     """Repair a loop Patch after handoff validation without repeating operational work."""
 
     return f"""# RCP Experiment-loop Patch correction
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 Correct only the retained semantic Patch in the same native Work session.
 
