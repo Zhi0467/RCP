@@ -4,8 +4,8 @@ Status on 2026-09-25: the simpler design is implemented; live qualification rema
 
 - Implemented on this branch: sections 1–5, including recorded retry failures.
   The hook fence and completion tracker are removed. Specs carry the design.
-- Remains: the two live journeys in [Verification](#verification), then human
-  review and merge. Local checks pass with disposable data and fake providers.
+- Remains: the local Claude journey in [Verification](#verification), then
+  human review and merge. Local checks pass with disposable data and fake providers.
 - Settled (human, 2026-09-25):
   - Turns should not lose subagents, but RCP enforces this only where it is
     cheap: Claude runs subagents in the foreground; Codex is told to wait.
@@ -136,7 +136,11 @@ The probes behind these remain in the table above and in Git history.
 - Live, local real providers: a Claude turn whose subagent runs 60 seconds
   replies after the child finishes.
 - Live, disposable server on the Linux host: a helper `launch` on the Slurm
-  machine survives the turn and stops on Cancel.
+  machine survives the turn and stops on Cancel (done 2026-09-26, Codex exec
+  Work turn: both readiness slots probed ready; the agent chose the helper
+  over Slurm for a local HTTP server; it kept serving after the turn under
+  its systemd user unit; Cancel stopped the unit and the watcher completed
+  on its next check).
 
 ## Updated specs
 
