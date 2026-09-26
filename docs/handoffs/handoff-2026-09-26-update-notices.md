@@ -5,8 +5,7 @@ Status on 2026-09-26: design confirmed by the human. Nothing is implemented.
 - Implemented: nothing yet.
 - Remains: changes 1–7 below, on one pull request.
 - Settled (human, 2026-09-26):
-  - Local source installs (the desktop app and the local Web app) follow
-    promoted releases, not `main`. See
+  - Desktop and local Web installs follow promoted releases, not `main`. See
     [the decision record](../decisions/2026-09-26-desktop-installs-follow-releases.md).
   - No Apple signing and no paid Apple account.
   - Every promoted release also publishes an unsigned prebuilt macOS app. It
