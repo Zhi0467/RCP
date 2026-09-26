@@ -120,7 +120,8 @@ or missing evidence. Cancellation uses the saved OS handle.
 
 A helper launch runs a fresh readiness probe. After starting the job, RCP waits
 `COMPUTE_JOB_STARTUP_CHECK_SECONDS`, refreshes it once, and returns a `startup`
-object: `running`, or the ended status with its exit code and log tail. RCP
+object: `running`, `unknown` with a diagnostic when the refresh could not
+observe the job, or the ended status with its exit code and log tail. RCP
 reads this outside the agent sandbox, where the returned check command may not
 run, so a startup failure such as a port already in use reaches the agent in
 the launch response. Before a turn ends, settlement

@@ -229,9 +229,13 @@ def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
 
 def helper_startup_state(manifest: Manifest | None, job: ComputeJobRecord) -> dict[str, object]:
     """The job's state just after launch, read by RCP outside any agent sandbox."""
-    state: dict[str, object] = {"status": job.status}
     if job.status == "running":
-        return state
+        # A fresh job's running record carries a diagnostic only when the refresh
+        # could not observe it; that is not evidence the job survived startup.
+        if job.diagnostic:
+            return {"status": "unknown", "diagnostic": job.diagnostic}
+        return {"status": "running"}
+    state: dict[str, object] = {"status": job.status}
     state["exit_status"] = job.exit_status
     state["diagnostic"] = job.diagnostic
     try:

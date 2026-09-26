@@ -386,6 +386,16 @@ def test_helper_launch_reports_a_job_that_ended_at_startup(commands, monkeypatch
     commands.handler.validate_handoff(set())
 
 
+def test_helper_launch_does_not_call_an_unobserved_startup_running(commands, monkeypatch):
+    def unobservable(handle, context):
+        raise OSError("owner status timed out")
+
+    monkeypatch.setattr(commands.backend, "alive", unobservable)
+    startup = commands.launch().result["startup"]
+    assert startup["status"] == "unknown"
+    assert startup["diagnostic"]
+
+
 def test_compute_launch_key_survives_diagnostic_retention(commands):
     from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 
