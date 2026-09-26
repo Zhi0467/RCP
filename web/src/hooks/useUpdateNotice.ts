@@ -14,6 +14,29 @@ interface PollClock {
   setTimeout(callback: () => void, delay: number): number;
   clearTimeout(id: number): void;
 }
+const STATUSES = new Set<UpdateNotice["status"]>([
+  "update_available",
+  "current",
+  "pinned",
+  "unchecked",
+  "failed",
+  "off",
+  "unknown",
+]);
+
+// An older server without this route, or an error page, must not reach the
+// notice or the Settings rows as if it were one.
+export function isUpdateNotice(value: unknown): value is UpdateNotice {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const notice = value as Record<string, unknown>;
+  return (
+    (notice.space === "team" || notice.space === "personal") &&
+    STATUSES.has(notice.status as UpdateNotice["status"]) &&
+    typeof notice.companion_ready === "boolean" &&
+    typeof notice.source_checkout === "boolean"
+  );
+}
+
 export function startUpdateNoticePolling(
   load: () => Promise<UpdateNotice>,
   receive: (notice: UpdateNotice) => void,
@@ -29,9 +52,11 @@ export function startUpdateNoticePolling(
     if (stopped || pending || visibility.visibilityState !== "visible") return;
     pending = true;
     try {
-      const notice = await load();
-      status = notice.status;
-      if (!stopped) receive(notice);
+      const notice: unknown = await load();
+      if (isUpdateNotice(notice)) {
+        status = notice.status;
+        if (!stopped) receive(notice);
+      }
     } catch {
       // The server's own endpoint failed, not the release check: keep the last
       // notice and retry on the next tick.

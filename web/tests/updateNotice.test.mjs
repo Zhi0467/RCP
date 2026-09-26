@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 
@@ -20,6 +23,9 @@ test("release notice transitions, actions, visibility, and storage through a ser
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
+    // A private optimizer cache: this server re-crawls after reloads and must
+    // not rewrite the shared cache that parallel browser tests are serving from.
+    cacheDir: mkdtempSync(join(tmpdir(), "rcp-update-notice-vite-")),
     server: { host: "127.0.0.1", port: 0 },
   });
   let browser;
@@ -165,7 +171,6 @@ test("release notice transitions, actions, visibility, and storage through a ser
       });
       await refresh();
     });
-    await page.screenshot({ path: "/tmp/rcp-update-notice.png" });
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
@@ -179,6 +184,7 @@ test("poll scheduling follows cache status and stops on cleanup", async () => {
     configFile: false,
     logLevel: "silent",
     server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true },
   });
   try {
     const { startUpdateNoticePolling, UPDATE_NOTICE_UNCHECKED_POLL_MS, UPDATE_NOTICE_POLL_MS } =
@@ -209,6 +215,11 @@ test("poll scheduling follows cache status and stops on cleanup", async () => {
     scheduled.callback();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(scheduled.delay, UPDATE_NOTICE_POLL_MS);
+    assert.equal(received.length, 2);
+    // A route answered by an older server or an error body is not a notice.
+    data = [];
+    scheduled.callback();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.equal(received.length, 2);
     stop();
     assert.equal(scheduled, null);
