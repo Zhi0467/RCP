@@ -1,7 +1,9 @@
 # Active implementation handoffs
 
-None. Every handoff opened before 2026-09-26 shipped its code and was closed
-on that date; Git history holds their full text.
+None. On 2026-09-26 every open handoff was closed: ten had shipped their code,
+and the refusal-explains-itself handoff (a refused dispatch or Apply reported
+where the human clicked, with no task row) was closed unbuilt because the human
+chose not to pursue it. Git history holds their full text.
 
 ## Open live checks
 
