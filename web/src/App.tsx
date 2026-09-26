@@ -4583,6 +4583,8 @@ export default function App() {
               <ExecutionView
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
+                machines={project.machines}
+                onOpenSettings={() => changeView("settings")}
                 graph={presentedGraph}
                 episodes={episodes}
                 episodeAction={episodeAction}

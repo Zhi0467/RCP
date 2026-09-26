@@ -75,6 +75,19 @@ def unconfigured_local_providers(
 
 
 @pytest.fixture(autouse=True)
+def unprobed_compute_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep app startup from launching real helper and scheduler probe jobs.
+
+    A lifespan and a compute settings save check compute routes, and a helper
+    probe starts a real launchd or systemd job. A test of the refresh restores
+    the real function and stubs the probe itself.
+    """
+
+    for owner in ("rcp.api.app", "rcp.api.project_state"):
+        monkeypatch.setattr(f"{owner}.refresh_compute_probes", lambda *args, **kwargs: None)
+
+
+@pytest.fixture(autouse=True)
 def terminated_background_tasks(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Stop every provider worker a test started, whether or not it ran a lifespan.
 

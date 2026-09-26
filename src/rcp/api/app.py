@@ -78,7 +78,7 @@ from rcp.background import (
     BackgroundAgentTasks,
     StartupEffectFence,
 )
-from rcp.compute_jobs.probe import probe_compute_backend
+from rcp.compute_jobs.probe import probe_compute_backend, refresh_compute_probes
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
@@ -1440,6 +1440,27 @@ def create_app(
             except Exception:
                 logger.exception("Could not reconcile compute jobs for project %s", project_id)
 
+    async def probe_compute_routes() -> None:
+        # Readiness is checked here rather than on request, so a route that
+        # cannot run (no user manager, unreachable Slurm) is already reported
+        # with its fix when someone opens Runs or Settings.
+        for record in store.projects():
+            if record.home_space_id != store.space_id:
+                continue
+            try:
+                manifest = await asyncio.to_thread(load_manifest, record.locator)
+                await asyncio.to_thread(
+                    refresh_compute_probes,
+                    store,
+                    manifest,
+                    record.project_id,
+                    data_dir=app_data,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not check compute routes for project %s: %s", record.project_id, exc
+                )
+
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
 
@@ -1627,6 +1648,7 @@ def create_app(
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
+                startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()

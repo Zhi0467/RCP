@@ -163,15 +163,14 @@ available with its ordinary read-only capability.
 
 ## Compute setup and job APIs
 
-Project machine entries expose the manifest `compute` block and a live
-`compute_probe`, serialized as `ComputeBackendProbe` or null. The latter is
+Project machine entries expose the manifest `compute` block and live
+`compute_probes`, one `ComputeBackendProbe` or null per route. The latter is
 read from storage even when the graph snapshot is cached. Settings updates
 accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
 removes a block, omission preserves it. Validation and TOML persistence belong
-to the machine configuration owner. A changed block invalidates its stored probe.
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe` uses
-project write admission, stores a fresh probe, and returns that same model with
-its backend-owned label and tone.
+to the machine configuration owner. A changed block invalidates its stored
+probes and schedules a fresh background check of that machine; there is no
+browser probe request.
 
 `GET /api/projects/{project_id}/watchers` supplies the external job rows for both
 scheduler and helper work. Every external row includes its required shell check,

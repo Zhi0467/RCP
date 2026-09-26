@@ -68,12 +68,15 @@ preserves configured machine choices. Selecting Slurm is a setup choice; the
 probe executes as the actual execution account, including the `rcp` service
 account for server-local work.
 
-`rcp server compute probe --project <project_id> --route <scheduler|helper> <machine_alias>` uses the
-installed-service control socket. The matching API is
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe`.
-The API requires a JSON `route` of `scheduler` or `helper`.
-Both store the requested route's result. The CLI exits zero only when that route
-is ready.
+RCP checks readiness itself, so nobody has to ask. At startup it probes every
+route each home project's machines offer: the helper always, the scheduler only
+when a job manager is set. A Settings save that changes a machine's compute
+block probes that machine again in the background. Runs shows one notice per
+checked route that is not ready, with its diagnostic, required action, and a
+link to Settings. Operators can still run
+`rcp server compute probe --project <project_id> --route <scheduler|helper> <machine_alias>`
+through the installed-service control socket; it stores the result and exits
+zero only when that route is ready.
 Settings accepts `machine_compute`, a partial alias-to-config map: omission
 preserves a machine, null removes its optional block. A changed block invalidates
 both stored probes. Machine projections include configuration and two fixed
@@ -85,7 +88,8 @@ backend: Slurm in `scheduler`, systemd or launchd in `helper`. The other slot
 starts unprobed.
 
 Episode starts and reauthorization are not gated on compute readiness.
-The helper probes only its own route when invoked. Settings shows both slots.
+A helper launch probes only its own route. Settings shows the helper slot, and
+the scheduler slot only when a job manager is set; it has no probe button.
 
 ## Generic launch helper
 

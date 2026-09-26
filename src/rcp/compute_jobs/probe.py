@@ -5,6 +5,7 @@ import time
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from rcp.compute_jobs.backend_context import (
     BackendContext,
@@ -22,12 +23,15 @@ from rcp.compute_jobs.files import (
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
 from rcp.compute_jobs.routes import ComputeRoute
-from rcp.config import Manifest
+from rcp.config import MachineConfig, Manifest
 from rcp.limits import (
     COMPUTE_JOB_POLL_INTERVAL_SECONDS,
     COMPUTE_PROBE_JOB_SECONDS,
     COMPUTE_PROBE_TIMEOUT_SECONDS,
 )
+
+if TYPE_CHECKING:
+    from rcp.storage import AppStore
 
 
 class _CgroupIsolationError(RuntimeError):
@@ -233,3 +237,25 @@ def probe_compute_backend(
             cgroup_isolated=False if isinstance(exc, _CgroupIsolationError) else None,
         )
     return result
+
+
+def machine_compute_routes(machine: MachineConfig) -> tuple[ComputeRoute, ...]:
+    """The helper is always offered; a job manager adds the scheduler route."""
+    if machine.compute and machine.compute.job_manager:
+        return ("scheduler", "helper")
+    return ("helper",)
+
+
+def refresh_compute_probes(
+    store: AppStore,
+    manifest: Manifest,
+    project_id: str,
+    *,
+    data_dir: Path,
+    machines: list[str] | None = None,
+) -> None:
+    """Probe and record every route the machines offer, so nobody has to ask."""
+    for alias in manifest.machine_map if machines is None else machines:
+        for route in machine_compute_routes(manifest.machine_map[alias]):
+            probe = probe_compute_backend(manifest, alias, route, data_dir=data_dir)
+            store.record_compute_backend_probe(project_id, probe, route)

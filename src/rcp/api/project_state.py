@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -28,9 +28,7 @@ from rcp.api.graph_changes import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
-from rcp.compute_jobs.models import ComputeBackendProbe
-from rcp.compute_jobs.probe import probe_compute_backend
-from rcp.compute_jobs.routes import ComputeRoute
+from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
 from rcp.core.attention import project_graph_mutation_availability
 from rcp.core.transition_models import GraphMutationAvailability
@@ -408,7 +406,10 @@ def preview_repository_file(
 def update_project_settings(
     project_id: str,
     body: ProjectSettingsRequest,
+    background: BackgroundTasks,
     *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
     try:
@@ -417,7 +418,25 @@ def update_project_settings(
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.machine_compute:
+        # The save cleared these machines' readiness; check them again now.
+        background.add_task(
+            _refresh_machine_compute_probes, catalog, store, project_id, list(body.machine_compute)
+        )
     return snapshot
+
+
+def _refresh_machine_compute_probes(
+    catalog: ProjectCatalog, store: AppStore, project_id: str, machines: list[str]
+) -> None:
+    project_id = catalog.resolve_project_id(project_id)
+    try:
+        manifest = get_project_service(catalog, project_id).manifest
+        refresh_compute_probes(
+            store, manifest, project_id, data_dir=catalog.data_dir, machines=machines
+        )
+    except Exception as exc:
+        logger.warning("Could not check compute routes for project %s: %s", project_id, exc)
 
 
 @router.post(
@@ -443,33 +462,6 @@ def resolve_project_provider_path(
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return result
-
-
-class ComputeProbeRequest(BaseModel):
-    route: ComputeRoute
-
-
-@router.post(
-    "/api/projects/{project_id}/machines/{machine_alias}/compute/probe",
-    dependencies=[Depends(require_project_write_admission)],
-    response_model=ComputeBackendProbe,
-)
-def probe_project_compute_backend(
-    project_id: str,
-    machine_alias: str,
-    body: ComputeProbeRequest,
-    *,
-    catalog: CatalogDependency,
-    store: StoreDependency,
-) -> ComputeBackendProbe:
-    project_id = catalog.resolve_project_id(project_id)
-    service = get_project_service(catalog, project_id)
-    if machine_alias not in service.manifest.machine_map:
-        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
-    probe = probe_compute_backend(
-        service.manifest, machine_alias, body.route, data_dir=catalog.data_dir
-    )
-    return store.record_compute_backend_probe(project_id, probe, body.route)
 
 
 @router.get("/api/projects/{project_id}/sources")

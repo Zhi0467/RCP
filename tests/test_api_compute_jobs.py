@@ -25,41 +25,37 @@ def settings_body(snapshot):
     }
 
 
-@pytest.mark.parametrize("route,backend_id", [("helper", "systemd_user"), ("scheduler", "slurm")])
-def test_compute_probe_route_stores_and_updates_cached_project(
-    compute_api, monkeypatch, route, backend_id
-):
+def test_compute_settings_save_checks_every_route_of_the_saved_machine(compute_api, monkeypatch):
+    from rcp.compute_jobs import probe as probe_module
+
     app, client, url = compute_api
-    before = client.get(url).json()
-    assert before["machines"][0]["compute_probes"] == {"helper": None, "scheduler": None}
-    probe = _result("laptop", backend_id, "ready", "Passed.")
     calls = []
 
-    def run(manifest, machine, selected_route, *, data_dir):
-        calls.append((machine, selected_route, data_dir))
-        return probe
+    def run(manifest, machine, route, *, data_dir):
+        calls.append((machine, route, data_dir))
+        return _result(
+            machine, {"helper": "systemd_user", "scheduler": "slurm"}[route], "ready", ""
+        )
 
-    monkeypatch.setattr("rcp.api.project_state.probe_compute_backend", run)
-    response = client.post(f"{url}/machines/laptop/compute/probe", json={"route": route})
-    assert response.status_code == 200
-    assert response.json() == probe.model_dump(mode="json")
-    assert calls == [("laptop", route, app.state.catalog.data_dir)]
-    assert (
-        app.state.services.store.compute_backend_probe(
-            app.state.default_project_id, "laptop", route
-        )
-        == probe
+    monkeypatch.setattr(probe_module, "probe_compute_backend", run)
+    monkeypatch.setattr(
+        "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
     )
-    for suffix in ("", "/cached"):
-        assert (
-            client.get(url + suffix).json()["machines"][0]["compute_probes"][route]
-            == response.json()
+    body = settings_body(client.get(url).json())
+    for compute, routes in (
+        ({"job_manager": "slurm"}, ["scheduler", "helper"]),
+        (None, ["helper"]),
+    ):
+        calls.clear()
+        response = client.put(
+            f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}}
         )
-    assert (
-        client.post(f"{url}/machines/missing/compute/probe", json={"route": route}).status_code
-        == 422
-    )
-    assert len(calls) == 1
+        assert response.status_code == 200, response.text
+        assert calls == [("laptop", route, app.state.catalog.data_dir) for route in routes]
+        probes = client.get(url).json()["machines"][0]["compute_probes"]
+        assert [route for route, probe in probes.items() if probe] == sorted(
+            routes, key=["scheduler", "helper"].index
+        )
 
 
 def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_api, manifest):
@@ -143,13 +139,3 @@ def test_invalid_machine_compute_settings_do_not_write(compute_api, manifest, co
     response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}})
     assert response.status_code == 422
     assert manifest.path.read_text() == before
-
-
-@pytest.mark.parametrize("body", [None, {}, {"route": "slurm"}])
-def test_compute_probe_requires_a_fixed_route(compute_api, monkeypatch, body):
-    _, client, url = compute_api
-    monkeypatch.setattr(
-        "rcp.api.project_state.probe_compute_backend",
-        lambda *_args, **_kwargs: pytest.fail("invalid route must not probe"),
-    )
-    assert client.post(f"{url}/machines/laptop/compute/probe", json=body).status_code == 422

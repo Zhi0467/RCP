@@ -100,7 +100,9 @@ finalizing would delete the stage copy.
 - `resolve_backend` resolves the OS owner whatever `job_manager` says.
 - Scheduler and helper readiness are two fixed slots per machine through
   probing, storage (migration 24 sorts retained probes by backend), API, CLI
-  and Settings. A helper launch uses only the helper slot.
+  and Settings. A helper launch uses only the helper slot. RCP probes both
+  at startup and after a compute save; Settings has no probe button, and Runs
+  warns about a route that is not ready.
 - `execution_instructions` always renders the helper text; each job manager
   adds its own paragraph from one profile. Slurm's says: Slurm first for
   compute jobs; the helper for processes that are not compute, such as a
