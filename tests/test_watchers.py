@@ -44,6 +44,11 @@ from rcp.watchers import (
 from .helpers import wait_until
 
 
+@pytest.fixture
+def store(tmp_path) -> AppStore:
+    return AppStore(tmp_path / "rcp.sqlite3")
+
+
 def _continuation() -> WatcherContinuation:
     return WatcherContinuation(
         provider="codex",
@@ -81,6 +86,7 @@ def _record(
     *,
     origin: str = "origin",
     status: str = "active",
+    continuation: WatcherContinuation | None = None,
 ) -> WatcherRecord:
     return WatcherRecord(
         watcher_id=watcher_id,
@@ -92,10 +98,20 @@ def _record(
         check_command="true",
         log_path=f"/tmp/{watcher_id}.log",
         cwd="/tmp",
-        continuation=_continuation(),
+        continuation=continuation or _continuation(),
         status=status,
         created_at="2026-08-01T00:00:00+00:00",
         completed_at=("2026-08-01T00:01:00+00:00" if status == "completed" else None),
+    )
+
+
+def _group_record(watcher_id, continuation, group_id, *, origin="origin", status="active"):
+    return _record(watcher_id, origin=origin, status=status).model_copy(
+        update={
+            "continuation": continuation,
+            "group_id": group_id,
+            "group_label": "eval-shards",
+        }
     )
 
 
@@ -248,15 +264,22 @@ def test_experiment_watch_json_accepts_external_maintenance_and_graph_conditions
         )
 
 
-def _loop_continuation(episode_id: str, *, invocation: int = 1) -> WatcherContinuation:
+def _loop_continuation(
+    episode_id: str,
+    *,
+    invocation: int = 1,
+    ceiling: int = 3,
+    revision: int | None = 0,
+    node_id: str = "exp-one",
+) -> WatcherContinuation:
     return _continuation().model_copy(
         update={
             "patch_kind": "experiment_loop",
-            "control_node_id": "exp-one",
-            "control_revision": 0,
+            "control_node_id": node_id,
+            "control_revision": revision,
             "control_episode_id": episode_id,
             "control_invocation": invocation,
-            "control_invocation_ceiling": 3,
+            "control_invocation_ceiling": ceiling,
             "control_decision_bundle": [],
             "control_completion_criteria": [],
         }
@@ -325,13 +348,8 @@ def _maintenance_task(
     )
 
 
-def test_watcher_admission_is_node_scoped_not_conversation_provider_or_machine(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "maintenance"))
-    resource = store.experiment_watcher_resources("project")[0]
-    binding = WatcherBinding(
+def _maintenance_binding(resource) -> WatcherBinding:
+    return WatcherBinding(
         project_id="project",
         origin_operation_id="maintenance",
         origin_task_kind="project_chat",
@@ -340,6 +358,14 @@ def test_watcher_admission_is_node_scoped_not_conversation_provider_or_machine(t
         execution_host=resource.execution_host,
         continuation=resource.continuation,
     )
+
+
+def test_watcher_admission_is_node_scoped_not_conversation_provider_or_machine(store) -> None:
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "maintenance"))
+    resource = store.experiment_watcher_resources("project")[0]
+    binding = _maintenance_binding(resource)
 
     assert store.admit_experiment_watcher_maintenance(binding) == resource
     assert resource.wake_chat_id == "chat"
@@ -376,25 +402,17 @@ def test_watcher_admission_is_node_scoped_not_conversation_provider_or_machine(t
         )
 
 
-def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+@pytest.mark.parametrize("observation_errors", [0, 2])
+def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(
+    store, observation_errors
+) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     store.create_agent_task(_maintenance_task(store, "maintenance"))
-    old = _record("old", origin="loop-root").model_copy(
-        update={"continuation": _loop_continuation(episode_id)}
-    )
+    old = _record("old", origin="loop-root", continuation=_loop_continuation(episode_id))
     store.create_watchers([old])
     resource = store.experiment_watcher_resources("project")[0]
-    binding = WatcherBinding(
-        project_id="project",
-        origin_operation_id="maintenance",
-        origin_task_kind="project_chat",
-        chat_id="maintenance-chat",
-        node_id="exp-one",
-        execution_host=resource.execution_host,
-        continuation=resource.continuation,
-    )
+    binding = _maintenance_binding(resource)
     replacement = _record("replacement", origin="maintenance").model_copy(
         update={
             "origin_task_kind": "project_chat",
@@ -404,6 +422,10 @@ def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(t
         }
     )
     before = store.experiment_episode(episode_id)
+    for _ in range(observation_errors):
+        store.record_watcher_check(
+            "old", status="degraded", exit_code=127, error="squeue: command not found"
+        )
 
     stored = store.persist_experiment_watchers_idempotently(
         [replacement],
@@ -419,16 +441,16 @@ def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(t
     assert stored[0].episode_id == episode_id
     assert stored[0].execution_host == resource.execution_host
     assert stored[0].continuation.provider == "codex"
+    assert store.watcher("old").status == "stopped"
     assert store.watcher("old").stop_operation_id == "maintenance"
     assert store.experiment_episode(episode_id) == before
 
 
-def test_episode_origin_cannot_arm_a_watcher_for_another_episode(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_episode_origin_cannot_arm_a_watcher_for_another_episode(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
-    mismatched = _record("mismatched-episode", origin="loop-root").model_copy(
-        update={"continuation": _loop_continuation(str(uuid.uuid4()))}
+    mismatched = _record(
+        "mismatched-episode", origin="loop-root", continuation=_loop_continuation(str(uuid.uuid4()))
     )
 
     with pytest.raises(ValueError, match="cannot change its origin task graph binding"):
@@ -436,9 +458,8 @@ def test_episode_origin_cannot_arm_a_watcher_for_another_episode(tmp_path) -> No
 
 
 def test_concurrent_maintenance_cannot_commit_against_a_stale_watcher_snapshot(
-    tmp_path,
+    store,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     store.create_agent_task(_maintenance_task(store, "first-maintenance"))
@@ -489,82 +510,16 @@ def test_concurrent_maintenance_cannot_commit_against_a_stale_watcher_snapshot(
     assert store.watcher("second-replacement") is None
 
 
-def test_observing_a_degraded_watcher_does_not_invalidate_maintenance(tmp_path) -> None:
-    """Polling is not a claim.
-
-    The motivating repair targets a degraded observer, and S84 re-checks one every
-    few minutes, so a maintenance turn that fingerprinted observation would be
-    rejected by the very watcher it exists to fix.
-    """
-
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    episode_id = str(uuid.uuid4())
-    _bound_episode(store, episode_id)
-    store.create_agent_task(_maintenance_task(store, "maintenance"))
-    old = _record("old", origin="loop-root").model_copy(
-        update={"continuation": _loop_continuation(episode_id)}
-    )
-    store.create_watchers([old])
-    resource = store.experiment_watcher_resources("project")[0]
-
-    # While the agent inspects the scheduler, the poller observes the broken check.
-    store.record_watcher_check(
-        "old", status="degraded", exit_code=127, error="squeue: command not found"
-    )
-    store.record_watcher_check(
-        "old", status="degraded", exit_code=127, error="squeue: command not found"
-    )
-
-    binding = WatcherBinding(
-        project_id="project",
-        origin_operation_id="maintenance",
-        origin_task_kind="project_chat",
-        chat_id="maintenance-chat",
-        node_id="exp-one",
-        execution_host=resource.execution_host,
-        continuation=resource.continuation,
-    )
-    replacement = _record("replacement", origin="maintenance").model_copy(
-        update={
-            "origin_task_kind": "project_chat",
-            "chat_id": "maintenance-chat",
-            "episode_id": episode_id,
-            "continuation": resource.continuation,
-        }
-    )
-
-    stored = store.persist_experiment_watchers_idempotently(
-        [replacement],
-        stops=[WatcherStopRequest(stop_watcher_id="old", reason="Replaced degraded observer")],
-        binding=binding,
-        expected_watcher_snapshot_token=resource.watcher_snapshot_token,
-    )
-
-    assert [item.watcher_id for item in stored] == ["replacement"]
-    assert store.watcher("old").status == "stopped"
-
-
-def test_a_retirement_another_turn_already_won_is_refused_per_item(tmp_path) -> None:
+def test_a_retirement_another_turn_already_won_is_refused_per_item(store) -> None:
     """Membership is the fence; a resolved stop is caught by its own compare-and-swap."""
 
-    store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     store.create_agent_task(_maintenance_task(store, "maintenance"))
-    old = _record("old", origin="loop-root").model_copy(
-        update={"continuation": _loop_continuation(episode_id)}
-    )
+    old = _record("old", origin="loop-root", continuation=_loop_continuation(episode_id))
     store.create_watchers([old])
     resource = store.experiment_watcher_resources("project")[0]
-    binding = WatcherBinding(
-        project_id="project",
-        origin_operation_id="maintenance",
-        origin_task_kind="project_chat",
-        chat_id="maintenance-chat",
-        node_id="exp-one",
-        execution_host=resource.execution_host,
-        continuation=resource.continuation,
-    )
+    binding = _maintenance_binding(resource)
 
     # Another turn retires the same observer first. Retirement keeps the row, so
     # membership is unchanged and the fingerprint still matches.
@@ -579,21 +534,12 @@ def test_a_retirement_another_turn_already_won_is_refused_per_item(tmp_path) -> 
         )
 
 
-def test_watcher_admission_fails_closed_after_stop_or_stale_episode(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_watcher_admission_fails_closed_after_stop_or_stale_episode(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     store.create_agent_task(_maintenance_task(store, "maintenance"))
     resource = store.experiment_watcher_resources("project")[0]
-    binding = WatcherBinding(
-        project_id="project",
-        origin_operation_id="maintenance",
-        origin_task_kind="project_chat",
-        chat_id="maintenance-chat",
-        node_id="exp-one",
-        execution_host=resource.execution_host,
-        continuation=resource.continuation,
-    )
+    binding = _maintenance_binding(resource)
 
     stale = binding.model_copy(
         update={
@@ -615,9 +561,7 @@ def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) 
     path = tmp_path / "legacy.sqlite3"
     store = AppStore(path)
     episode_id = str(uuid.uuid4())
-    store.create_watchers(
-        [_record("legacy-loop").model_copy(update={"continuation": _loop_continuation(episode_id)})]
-    )
+    store.create_watchers([_record("legacy-loop", continuation=_loop_continuation(episode_id))])
     with sqlite3.connect(path) as connection:
         connection.execute("DROP INDEX watchers_episode")
         connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
@@ -659,19 +603,14 @@ def test_graph_condition_column_migrates_before_its_index_is_created(tmp_path) -
     assert "watchers_graph_conditions" in indexes
 
 
-def test_agent_stop_is_atomic_idempotent_and_scoped_to_the_bound_episode(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_agent_stop_is_atomic_idempotent_and_scoped_to_the_bound_episode(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     continuation = _loop_continuation(episode_id)
     binding = _binding("loop-root").model_copy(update={"continuation": continuation})
-    old = _record("old-observer", origin="loop-root").model_copy(
-        update={"continuation": continuation}
-    )
+    old = _record("old-observer", origin="loop-root", continuation=continuation)
     store.create_watchers([old])
-    replacement = _record("replacement", origin="loop-root").model_copy(
-        update={"continuation": continuation}
-    )
+    replacement = _record("replacement", origin="loop-root", continuation=continuation)
 
     armed = store.persist_experiment_watchers_idempotently(
         [replacement],
@@ -711,26 +650,19 @@ def test_agent_stop_is_atomic_idempotent_and_scoped_to_the_bound_episode(tmp_pat
 
     with pytest.raises(ValueError, match="unknown staged"):
         store.persist_experiment_watchers_idempotently(
-            [
-                _record("must-not-arm", origin="loop-root").model_copy(
-                    update={"continuation": continuation}
-                )
-            ],
+            [_record("must-not-arm", origin="loop-root", continuation=continuation)],
             stops=[WatcherStopRequest(stop_watcher_id="missing", reason="No longer useful")],
             binding=binding,
         )
     assert store.watcher("must-not-arm") is None
 
 
-def test_stop_loop_absorbs_the_running_turn_s_own_watcher_retirement(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_stop_loop_absorbs_the_running_turn_s_own_watcher_retirement(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     continuation = _loop_continuation(episode_id)
     binding = _binding("loop-root").model_copy(update={"continuation": continuation})
-    observer = _record("observer", origin="loop-root").model_copy(
-        update={"continuation": continuation}
-    )
+    observer = _record("observer", origin="loop-root", continuation=continuation)
     store.create_watchers([observer])
 
     store.request_experiment_loop_stop("project", "exp-one")
@@ -739,9 +671,7 @@ def test_stop_loop_absorbs_the_running_turn_s_own_watcher_retirement(tmp_path) -
 
     stops = [WatcherStopRequest(stop_watcher_id="observer", reason="Cancelled the job")]
     store.validate_experiment_agent_watcher_stops(binding, stops)
-    replacement = _record("replacement", origin="loop-root").model_copy(
-        update={"continuation": continuation}
-    )
+    replacement = _record("replacement", origin="loop-root", continuation=continuation)
     armed = store.persist_experiment_watchers_idempotently(
         [replacement], stops=stops, binding=binding
     )
@@ -753,8 +683,7 @@ def test_stop_loop_absorbs_the_running_turn_s_own_watcher_retirement(tmp_path) -
     assert store.pollable_watchers() == []
 
 
-def test_watcher_schedule_persists_backoff_and_resets_after_a_healthy_check(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_watcher_schedule_persists_backoff_and_resets_after_a_healthy_check(store) -> None:
     created_at = "2026-08-01T00:00:00+00:00"
     armed_due_times = {
         watcher_next_check_at(f"watcher-{index}", created_at, 0) for index in range(20)
@@ -894,25 +823,14 @@ def test_terminal_watcher_check_winner_cannot_be_reverted_by_a_waiting_error(tmp
     assert stored.last_error is None
 
 
-def test_grouped_watchers_wait_for_all_members_then_claim_once(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_grouped_watchers_wait_for_all_members_then_claim_once(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     continuation = _loop_continuation(episode_id)
-    first = _record("shard-a", origin="loop-root", status="completed").model_copy(
-        update={
-            "continuation": continuation,
-            "group_id": "eval-group",
-            "group_label": "eval-shards",
-        }
+    first = _group_record(
+        "shard-a", continuation, "eval-group", origin="loop-root", status="completed"
     )
-    second = _record("shard-b", origin="loop-root").model_copy(
-        update={
-            "continuation": continuation,
-            "group_id": "eval-group",
-            "group_label": "eval-shards",
-        }
-    )
+    second = _group_record("shard-b", continuation, "eval-group", origin="loop-root")
     store.create_watchers([first, second])
     assert store.completed_watcher_groups() == []
 
@@ -946,8 +864,7 @@ def test_grouped_watchers_wait_for_all_members_then_claim_once(tmp_path) -> None
     assert store.completed_watcher_groups() == []
 
 
-def test_agent_stopped_group_members_neither_block_nor_trigger_delivery(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_agent_stopped_group_members_neither_block_nor_trigger_delivery(store) -> None:
     continuation = _loop_continuation(str(uuid.uuid4()))
 
     def group_member(watcher_id: str, group_id: str, status: str) -> WatcherRecord:
@@ -981,25 +898,14 @@ def test_agent_stopped_group_members_neither_block_nor_trigger_delivery(tmp_path
     ]
 
 
-def test_fifth_group_observation_error_is_ready_but_remains_degraded(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_fifth_group_observation_error_is_ready_but_remains_degraded(store) -> None:
     episode_id = str(uuid.uuid4())
-    completed = _record("shard-complete", status="completed").model_copy(
-        update={
-            "continuation": _loop_continuation(episode_id),
-            "group_id": "diagnostic-group",
-            "group_label": "eval-shards",
-        }
+    completed = _group_record(
+        "shard-complete", _loop_continuation(episode_id), "diagnostic-group", status="completed"
     )
-    degraded = _record("shard-unknown", status="degraded").model_copy(
-        update={
-            "continuation": _loop_continuation(episode_id),
-            "group_id": "diagnostic-group",
-            "group_label": "eval-shards",
-            "consecutive_error_count": 5,
-            "last_error": "SSH unavailable",
-        }
-    )
+    degraded = _group_record(
+        "shard-unknown", _loop_continuation(episode_id), "diagnostic-group", status="degraded"
+    ).model_copy(update={"consecutive_error_count": 5, "last_error": "SSH unavailable"})
     store.create_watchers([completed, degraded])
 
     groups = store.completed_watcher_groups()
@@ -1013,26 +919,23 @@ def test_fifth_group_observation_error_is_ready_but_remains_degraded(tmp_path) -
     assert unknown.consecutive_error_count == 5
 
 
-def test_claimed_diagnostic_group_remains_history_not_live_work(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_claimed_diagnostic_group_remains_history_not_live_work(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
-    completed = _record("shard-complete", origin="loop-root", status="completed").model_copy(
-        update={
-            "continuation": _loop_continuation(episode_id),
-            "group_id": "diagnostic-group",
-            "group_label": "eval-shards",
-        }
+    completed = _group_record(
+        "shard-complete",
+        _loop_continuation(episode_id),
+        "diagnostic-group",
+        origin="loop-root",
+        status="completed",
     )
-    degraded = _record("shard-unknown", origin="loop-root", status="degraded").model_copy(
-        update={
-            "continuation": _loop_continuation(episode_id),
-            "group_id": "diagnostic-group",
-            "group_label": "eval-shards",
-            "consecutive_error_count": 5,
-            "last_error": "SSH unavailable",
-        }
-    )
+    degraded = _group_record(
+        "shard-unknown",
+        _loop_continuation(episode_id),
+        "diagnostic-group",
+        origin="loop-root",
+        status="degraded",
+    ).model_copy(update={"consecutive_error_count": 5, "last_error": "SSH unavailable"})
     store.create_watchers([completed, degraded])
     wake = _loop_task(
         store,
@@ -1212,13 +1115,12 @@ def test_timeout_kills_check_children_without_stopping_observed_job(tmp_path, mo
                     os.kill(child_pid, signal.SIGKILL)
 
 
-def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     continuation = _loop_continuation(episode_id)
     binding = _binding(origin="loop-root").model_copy(update={"continuation": continuation})
-    first = _record("first", origin="loop-root").model_copy(update={"continuation": continuation})
+    first = _record("first", origin="loop-root", continuation=continuation)
     store.persist_experiment_watchers_idempotently([first], binding=binding)
 
     # A later turn repeating that check observes one job twice, and jitter keeps
@@ -1255,13 +1157,12 @@ def test_repeating_a_live_observer_is_refused_so_one_job_wakes_the_episode_once(
     assert store.watcher("first").status == "stopped"
 
 
-def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(store) -> None:
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     continuation = _loop_continuation(episode_id)
     binding = _binding(origin="loop-root").model_copy(update={"continuation": continuation})
-    live = _record("live", origin="loop-root").model_copy(update={"continuation": continuation})
+    live = _record("live", origin="loop-root", continuation=continuation)
     store.persist_experiment_watchers_idempotently([live], binding=binding)
     spec = ExperimentWatchSpec(
         check_command=live.check_command,
@@ -1298,8 +1199,7 @@ def test_duplicate_observers_fail_validation_while_the_turn_can_still_fix_it(tmp
         )
 
 
-def test_initial_error_arms_none_then_corrected_list_persists_atomically(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_initial_error_arms_none_then_corrected_list_persists_atomically(store) -> None:
     specs = [
         WatchSpec(check_command="one", log_path="/tmp/one.log", cwd="/tmp"),
         WatchSpec(check_command="two", log_path="/tmp/two.log", cwd="/tmp"),
@@ -1338,8 +1238,7 @@ def test_initial_error_arms_none_then_corrected_list_persists_atomically(tmp_pat
     }
 
 
-def test_runtime_error_degrades_only_that_watcher_and_later_clears(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_runtime_error_degrades_only_that_watcher_and_later_clears(store) -> None:
     store.create_watchers([_record("bad"), _record("done")])
 
     def first(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
@@ -1372,8 +1271,7 @@ def test_runtime_error_degrades_only_that_watcher_and_later_clears(tmp_path) -> 
     assert store.watcher("bad").last_error is None
 
 
-def test_manual_check_bypasses_backoff_and_keeps_healthy_scheduling(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_manual_check_bypasses_backoff_and_keeps_healthy_scheduling(store) -> None:
     record = _record("manual").model_copy(update={"execution_host": "gpu.example"})
     store.create_watchers([record])
     degraded = store.record_watcher_check(
@@ -1412,8 +1310,7 @@ def test_manual_check_bypasses_backoff_and_keeps_healthy_scheduling(tmp_path) ->
     assert calls == [("gpu.example", 7)]
 
 
-def test_manual_completion_runs_the_ordinary_delivery_callback_once(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_manual_completion_runs_the_ordinary_delivery_callback_once(store) -> None:
     store.create_watchers([_record("manual-complete", status="degraded")])
     delivered: list[list[str]] = []
 
@@ -1435,8 +1332,7 @@ def test_manual_completion_runs_the_ordinary_delivery_callback_once(tmp_path) ->
     assert delivered == [["manual-complete"]]
 
 
-def test_manual_error_advances_backoff_from_the_new_check_time(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_manual_error_advances_backoff_from_the_new_check_time(store) -> None:
     store.create_watchers([_record("manual-error", status="degraded")])
 
     def still_broken(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
@@ -1456,8 +1352,7 @@ def test_manual_error_advances_backoff_from_the_new_check_time(tmp_path) -> None
     )
 
 
-def test_manual_check_waits_for_a_scheduled_check_of_the_same_watcher(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_manual_check_waits_for_a_scheduled_check_of_the_same_watcher(store) -> None:
     store.create_watchers([_record("serialized", status="degraded")])
     first_started = threading.Event()
     release_first = threading.Event()
@@ -1511,8 +1406,7 @@ def test_manual_check_waits_for_a_scheduled_check_of_the_same_watcher(tmp_path) 
     assert calls == 2
 
 
-def test_manual_check_rejects_missing_graph_and_ineligible_watchers(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_manual_check_rejects_missing_graph_and_ineligible_watchers(store) -> None:
     store.create_watchers(
         [
             _record("active"),
@@ -1552,21 +1446,12 @@ def test_manual_check_rejects_missing_graph_and_ineligible_watchers(tmp_path) ->
         poller.check_now("project", "already-notified")
 
 
-def test_completed_groups_do_not_merge_different_origin_policies(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_completed_groups_do_not_merge_different_origin_policies(store) -> None:
     store.create_watchers([_record("one", status="completed")])
-    different_policy = _record("two", status="completed").model_copy(
-        update={
-            "continuation": _continuation().model_copy(
-                update={
-                    "patch_kind": "experiment_loop",
-                    "control_node_id": "exp-one",
-                    "control_episode_id": str(uuid.uuid4()),
-                    "control_invocation": 1,
-                    "control_invocation_ceiling": 2,
-                }
-            )
-        }
+    different_policy = _record(
+        "two",
+        status="completed",
+        continuation=_loop_continuation(str(uuid.uuid4()), revision=None, ceiling=2),
     )
     store.create_watchers([different_policy])
 
@@ -1575,8 +1460,7 @@ def test_completed_groups_do_not_merge_different_origin_policies(tmp_path) -> No
     assert {tuple(item.watcher_id for item in group) for group in groups} == {("one",), ("two",)}
 
 
-def test_completed_groups_merge_compatible_watchers_from_different_work_turns(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_completed_groups_merge_compatible_watchers_from_different_work_turns(store) -> None:
     store.create_watchers([_record("one", origin="work-one", status="completed")])
     store.create_watchers([_record("two", origin="work-two", status="completed")])
 
@@ -1590,8 +1474,7 @@ def test_completed_groups_merge_compatible_watchers_from_different_work_turns(tm
     assert all(item.notified for item in store.watchers("project"))
 
 
-def test_queue_and_notified_ledger_are_atomic_and_wait_behind_live_task(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_queue_and_notified_ledger_are_atomic_and_wait_behind_live_task(store) -> None:
     store.create_watchers([_record("one", status="completed"), _record("two", status="completed")])
     live = _task(store, "human-turn", [])
     store.create_agent_task(live)
@@ -1620,8 +1503,7 @@ def test_queue_and_notified_ledger_are_atomic_and_wait_behind_live_task(tmp_path
     }
 
 
-def test_a_human_release_takes_a_watcher_out_of_the_polling_set(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_a_human_release_takes_a_watcher_out_of_the_polling_set(store) -> None:
     store.create_watchers([_record("watch-live"), _record("watch-degraded")])
     store.record_watcher_check(
         "watch-degraded",
@@ -1640,19 +1522,12 @@ def test_a_human_release_takes_a_watcher_out_of_the_polling_set(tmp_path) -> Non
     assert store.completed_watcher_groups() == []
 
 
-def test_experiment_watchers_are_found_by_the_loop_that_armed_them(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_experiment_watchers_are_found_by_the_loop_that_armed_them(store) -> None:
     bound = _record("watch-bound")
     bound = bound.model_copy(
         update={
-            "continuation": bound.continuation.model_copy(
-                update={
-                    "patch_kind": "experiment_loop",
-                    "control_node_id": "exp/one",
-                    "control_episode_id": str(uuid.uuid4()),
-                    "control_invocation": 1,
-                    "control_invocation_ceiling": 2,
-                }
+            "continuation": _loop_continuation(
+                str(uuid.uuid4()), node_id="exp/one", revision=None, ceiling=2
             )
         }
     )
@@ -1666,8 +1541,7 @@ def test_experiment_watchers_are_found_by_the_loop_that_armed_them(tmp_path) -> 
     assert store.experiment_watcher_ids("project", "exp/one") == []
 
 
-def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(store) -> None:
     episode_id = str(uuid.uuid4())
     first = _loop_task(store, "first", episode_id=episode_id, invocation=1, ceiling=4)
     store.create_experiment_episode_with_invocation(first)
@@ -1705,24 +1579,15 @@ def test_loop_root_invocations_are_sequential_and_recovery_preserves_binding(tmp
         store.create_experiment_watcher_invocation(skipped, [])
 
 
-def test_ceiling_refuses_wake_without_consuming_pending_completion(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_ceiling_refuses_wake_without_consuming_pending_completion(store) -> None:
     old_episode = str(uuid.uuid4())
     first = _loop_task(store, "first", episode_id=old_episode, invocation=1, ceiling=1)
     store.create_experiment_episode_with_invocation(first)
     store.complete_agent_task("first", applied_revision=None, result={})
-    watcher = _record("done", status="completed").model_copy(
-        update={
-            "continuation": _continuation().model_copy(
-                update={
-                    "patch_kind": "experiment_loop",
-                    "control_node_id": "exp-one",
-                    "control_episode_id": old_episode,
-                    "control_invocation": 1,
-                    "control_invocation_ceiling": 1,
-                }
-            )
-        }
+    watcher = _record(
+        "done",
+        status="completed",
+        continuation=_loop_continuation(old_episode, revision=None, ceiling=1),
     )
     store.create_watchers([watcher])
 
@@ -1740,25 +1605,14 @@ def test_ceiling_refuses_wake_without_consuming_pending_completion(tmp_path) -> 
 
 
 def test_runtime_distinguishes_detached_work_from_a_pending_completion_at_ceiling(
-    tmp_path,
+    store,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     first = _loop_task(store, "first", episode_id=episode_id, invocation=1, ceiling=1)
     store.create_experiment_episode_with_invocation(first)
     store.complete_agent_task("first", applied_revision=None, result={})
-    watcher = _record("bounded-work").model_copy(
-        update={
-            "continuation": _continuation().model_copy(
-                update={
-                    "patch_kind": "experiment_loop",
-                    "control_node_id": "exp-one",
-                    "control_episode_id": episode_id,
-                    "control_invocation": 1,
-                    "control_invocation_ceiling": 1,
-                }
-            )
-        }
+    watcher = _record(
+        "bounded-work", continuation=_loop_continuation(episode_id, revision=None, ceiling=1)
     )
     store.create_watchers([watcher])
 
@@ -1779,22 +1633,10 @@ def test_runtime_distinguishes_detached_work_from_a_pending_completion_at_ceilin
     assert completed.paused is True
 
 
-def test_new_episode_adopts_remaining_watchers_without_mutating_their_origin(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_new_episode_adopts_remaining_watchers_without_mutating_their_origin(store) -> None:
     old_episode = str(uuid.uuid4())
-    watcher = _record("still-running").model_copy(
-        update={
-            "continuation": _continuation().model_copy(
-                update={
-                    "patch_kind": "experiment_loop",
-                    "control_node_id": "exp-one",
-                    "control_revision": 1,
-                    "control_episode_id": old_episode,
-                    "control_invocation": 1,
-                    "control_invocation_ceiling": 1,
-                }
-            )
-        }
+    watcher = _record(
+        "still-running", continuation=_loop_continuation(old_episode, revision=1, ceiling=1)
     )
     store.create_watchers([watcher])
     new_episode = str(uuid.uuid4())
@@ -1816,8 +1658,7 @@ def test_new_episode_adopts_remaining_watchers_without_mutating_their_origin(tmp
     assert store.watcher("still-running").continuation.control_episode_id == old_episode
 
 
-def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(store) -> None:
     episode_id = str(uuid.uuid4())
     root = _loop_task(store, "root", episode_id=episode_id, invocation=1, ceiling=3)
     store.create_experiment_episode_with_invocation(root)
@@ -1837,20 +1678,7 @@ def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(tmp_path) -
         "experiment_loop_exit",
         {"episode_id": episode_id, "invocation": 1},
     )
-    watcher = _record("pending", status="completed").model_copy(
-        update={
-            "continuation": _continuation().model_copy(
-                update={
-                    "patch_kind": "experiment_loop",
-                    "control_node_id": "exp-one",
-                    "control_revision": 0,
-                    "control_episode_id": episode_id,
-                    "control_invocation": 1,
-                    "control_invocation_ceiling": 3,
-                }
-            )
-        }
-    )
+    watcher = _record("pending", status="completed", continuation=_loop_continuation(episode_id))
     store.create_watchers([watcher])
 
     runtime = store.experiment_loop_runtime("project", "exp-one")
@@ -1860,8 +1688,7 @@ def test_exit_receipt_on_recovery_child_requires_a_new_human_episode(tmp_path) -
     assert runtime.paused is False
 
 
-def test_operational_recovery_rejects_siblings_and_successful_tasks(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_operational_recovery_rejects_siblings_and_successful_tasks(tmp_path, store) -> None:
     episode_id = str(uuid.uuid4())
     root = _loop_task(store, "root", episode_id=episode_id, invocation=1, ceiling=3)
     store.create_experiment_episode_with_invocation(root)
@@ -1904,8 +1731,7 @@ def test_operational_recovery_rejects_siblings_and_successful_tasks(tmp_path) ->
         successful_store.create_experiment_recovery_task(invalid_retry)
 
 
-def test_patch_only_graph_repair_is_not_treated_as_operational_recovery(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_patch_only_graph_repair_is_not_treated_as_operational_recovery(store) -> None:
     episode_id = str(uuid.uuid4())
     root = _loop_task(store, "root", episode_id=episode_id, invocation=1)
     store.create_experiment_episode_with_invocation(root)
@@ -1933,8 +1759,7 @@ def test_patch_only_graph_repair_is_not_treated_as_operational_recovery(tmp_path
     assert stored.request["control_invocation"] == 1
 
 
-def test_experiment_groups_coalesce_across_origin_episode_provenance(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_experiment_groups_coalesce_across_origin_episode_provenance(store) -> None:
     records = []
     for watcher_id, revision, invocation, ceiling in (
         ("old", 1, 1, 2),
@@ -1944,15 +1769,8 @@ def test_experiment_groups_coalesce_across_origin_episode_provenance(tmp_path) -
         records.append(
             record.model_copy(
                 update={
-                    "continuation": record.continuation.model_copy(
-                        update={
-                            "patch_kind": "experiment_loop",
-                            "control_node_id": "exp-one",
-                            "control_revision": revision,
-                            "control_episode_id": str(uuid.uuid4()),
-                            "control_invocation": invocation,
-                            "control_invocation_ceiling": ceiling,
-                        }
+                    "continuation": _loop_continuation(
+                        str(uuid.uuid4()), revision=revision, invocation=invocation, ceiling=ceiling
                     )
                 }
             )
@@ -1965,8 +1783,7 @@ def test_experiment_groups_coalesce_across_origin_episode_provenance(tmp_path) -
     assert [[item.watcher_id for item in group] for group in groups] == [["new", "old"]]
 
 
-def test_notification_claim_rejects_forged_scope_without_consuming_watchers(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_notification_claim_rejects_forged_scope_without_consuming_watchers(store) -> None:
     store.create_watchers([_record("done", status="completed")])
     forged = _task(store, "forged", ["done"])
     forged.request["provider"] = "claude"
@@ -1978,8 +1795,7 @@ def test_notification_claim_rejects_forged_scope_without_consuming_watchers(tmp_
     assert store.agent_task("forged") is None
 
 
-def test_stop_acknowledges_pending_completion_and_conflicts_after_claim(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_stop_acknowledges_pending_completion_and_conflicts_after_claim(store) -> None:
     store.create_watchers([_record("pending", status="completed")])
 
     stopped = store.stop_watchers("project", ["pending"])
@@ -1997,9 +1813,8 @@ def test_stop_acknowledges_pending_completion_and_conflicts_after_claim(tmp_path
 
 
 def test_legacy_delivery_terminalizes_watchers_and_episode_diagnostic_atomically(
-    tmp_path,
+    store,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
     _bound_episode(store, episode_id)
     with store.connection() as connection:
@@ -2036,8 +1851,7 @@ def test_legacy_delivery_terminalizes_watchers_and_episode_diagnostic_atomically
     assert store.completed_watcher_groups() == []
 
 
-def test_authorizer_terminalization_loses_cleanly_to_notification_claim(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_authorizer_terminalization_loses_cleanly_to_notification_claim(store) -> None:
     store.create_watchers([_record("claimed-first", status="completed")])
     assert store.create_watcher_notification_task(
         _task(store, "delivery-first", ["claimed-first"]),
@@ -2056,11 +1870,12 @@ def test_authorizer_terminalization_loses_cleanly_to_notification_claim(tmp_path
     assert claimed.stop_reason is None
 
 
-def test_poller_isolates_completion_callback_failures_between_groups(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_poller_isolates_completion_callback_failures_between_groups(store) -> None:
     first = _record("first", status="completed")
-    second = _record("second", status="completed").model_copy(
-        update={"continuation": _continuation().model_copy(update={"model": "other"})}
+    second = _record(
+        "second",
+        status="completed",
+        continuation=_continuation().model_copy(update={"model": "other"}),
     )
     store.create_watchers([first])
     store.create_watchers([second])

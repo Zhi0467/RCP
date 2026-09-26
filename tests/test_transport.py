@@ -59,6 +59,58 @@ _ARCHIVE_BRANCH_ID = "11111111-1111-4111-8111-111111111111"
 _ARCHIVE_MERGE_ID = "a" * 64
 
 
+def _successful_process(arguments, **_kwargs):
+    return subprocess.CompletedProcess(arguments, 0, "", "")
+
+
+def _run_remote_python_locally(arguments, **_kwargs):
+    return subprocess.run(
+        [sys.executable, *arguments[1:]],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@contextmanager
+def _uncontended_remote_lock(path, **_kwargs):
+    yield RunLockLease(str(path))
+
+
+def _publication_files(root, *paths, content="{}"):
+    for relative in paths:
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+
+@pytest.fixture
+def local_remote_stage(monkeypatch):
+    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+    stage = RemoteRunStage("research.example")
+    stage.root = PurePosixPath(str(root))
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
+    )
+    monkeypatch.setattr(
+        stage,
+        "_ssh_bytes",
+        lambda arguments, *, input_data=None: subprocess.run(
+            arguments,
+            capture_output=True,
+            input=input_data,
+            check=False,
+        ),
+    )
+    try:
+        yield stage
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
+
+
 def _retained_branch(root: Path) -> Path:
     branch = root / "branches" / _ARCHIVE_BRANCH_ID
     (branch / "patches").mkdir(parents=True)
@@ -656,7 +708,7 @@ def test_remote_transaction_waits_past_handshake_timeout_after_contended(
     monkeypatch.setattr(
         workspace,
         "_ssh",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+        _successful_process,
     )
     monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: False)
     monkeypatch.setattr(
@@ -683,7 +735,7 @@ def test_refresh_gives_up_on_a_lock_another_run_keeps(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(
         workspace,
         "_ssh",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+        _successful_process,
     )
     monkeypatch.setattr(workspace, "_remote_manifest_exists", lambda: True)
     monkeypatch.setattr(
@@ -1094,26 +1146,17 @@ def test_owned_holder_command_applies_staged_commit_and_files(tmp_path) -> None:
 
 
 @pytest.mark.parametrize("name", [".agent-run.lock", ".refresh.lock"])
-def test_process_advisory_lock_ignores_unowned_regular_file(name, tmp_path) -> None:
+@pytest.mark.parametrize("legacy_directory", [False, True], ids=["unowned-file", "empty-directory"])
+def test_process_advisory_lock_reclaims_unowned_path(name, tmp_path, legacy_directory) -> None:
     path = tmp_path / name
-    path.write_text("previous holder\n", encoding="utf-8")
-
-    with _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)):
-        assert path.read_text(encoding="utf-8") == "previous holder\n"
-
-    assert path.is_file()
-
-
-@pytest.mark.parametrize("name", [".agent-run.lock", ".refresh.lock"])
-def test_process_advisory_lock_reclaims_an_empty_legacy_directory(name, tmp_path) -> None:
-    """A crashed mkdir-era run leaves an empty directory; clearing it is RCP's job."""
-
-    path = tmp_path / name
-    path.mkdir()
-
+    if legacy_directory:
+        path.mkdir()
+    else:
+        path.write_text("previous holder\n", encoding="utf-8")
     with _process_advisory_lock(_local_advisory_lock_arguments(path), str(path)):
         assert path.is_file()
-
+        if not legacy_directory:
+            assert path.read_text(encoding="utf-8") == "previous holder\n"
     assert path.is_file()
 
 
@@ -1184,21 +1227,9 @@ def test_remote_archive_renames_canonical_tree_then_clears_only_stale_mirror(
     unrelated_cache.write_text("unrelated cache\n", encoding="utf-8")
     workspace = SSHStateWorkspace(mirror, "research.example", str(remote_repository))
 
-    @contextmanager
-    def fake_remote_lock(path, **_kwargs):
-        yield RunLockLease(str(path))
-
-    def run_remote_command_locally(arguments, **_kwargs):
-        return subprocess.run(
-            [sys.executable, *arguments[1:]],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
     monkeypatch.setattr("rcp.transport.state._archive_timestamp", lambda: timestamp)
-    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
-    monkeypatch.setattr(workspace, "_ssh", run_remote_command_locally)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_ssh", _run_remote_python_locally)
 
     archive_location = workspace.archive_research()
 
@@ -1226,11 +1257,7 @@ def test_remote_archive_failure_preserves_canonical_tree_and_local_mirror(
     stale_patch.write_text("stale mirror patch\n", encoding="utf-8")
     workspace = SSHStateWorkspace(mirror, "research.example", str(remote_repository))
 
-    @contextmanager
-    def fake_remote_lock(path, **_kwargs):
-        yield RunLockLease(str(path))
-
-    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
     monkeypatch.setattr(
         workspace,
         "_ssh",
@@ -1272,12 +1299,7 @@ def test_remote_archive_rechecks_reviewed_history_while_refresh_lock_is_held(
 
     def run_remote_command_locally(arguments, **_kwargs):
         assert lock_held is True
-        return subprocess.run(
-            [sys.executable, *arguments[1:]],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        return _run_remote_python_locally(arguments)
 
     monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(workspace, "_ssh", run_remote_command_locally)
@@ -1311,20 +1333,8 @@ def test_remote_archive_token_detects_late_branch_truth(
     reviewed = workspace.retained_history_fingerprint()
     (remote_branch / late_relative).write_text("late remote branch truth\n", encoding="utf-8")
 
-    @contextmanager
-    def fake_remote_lock(path, **_kwargs):
-        yield RunLockLease(str(path))
-
-    def run_remote_command_locally(arguments, **_kwargs):
-        return subprocess.run(
-            [sys.executable, *arguments[1:]],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
-    monkeypatch.setattr(workspace, "_ssh", run_remote_command_locally)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", _uncontended_remote_lock)
+    monkeypatch.setattr(workspace, "_ssh", _run_remote_python_locally)
 
     with pytest.raises(StateUnavailable):
         workspace.archive_research(expected_history_fingerprint=reviewed)
@@ -1541,28 +1551,25 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
     assert ".publish/files-" in str(commands[0]["stage"])
 
 
-def test_remote_batch_publication_stages_then_commits_directory_last(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("is_batch", [False, True], ids=["patch", "batch"])
+def test_remote_publication_stages_then_commits_history_before_outputs(
+    tmp_path, monkeypatch, is_batch
+) -> None:
     root = tmp_path / ".research"
-    batch = Path("patches/batch-000002-000003-test")
-    for relative, content in (
-        (batch / "000002.json", "{}"),
-        (batch / "000003.json", "{}"),
-        (Path("graph.json"), "{}"),
-        (Path("research.md"), "accepted"),
-    ):
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+    commit = Path("patches/batch-000002-000003-test" if is_batch else "patches/000001.json")
+    paths = (
+        [commit / "000002.json", commit / "000003.json", Path("graph.json"), Path("research.md")]
+        if is_batch
+        else [commit, Path("graph.json")]
+    )
+    _publication_files(root, *paths)
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
     rsync_calls = []
-    commands: list[dict[str, object]] = []
-
-    def fake_ssh(_arguments):
-        return subprocess.CompletedProcess([], 0, "", "")
+    commands = []
 
     def fake_run(arguments, **kwargs):
         rsync_calls.append((arguments, kwargs))
-        return subprocess.CompletedProcess(arguments, 0, "", "")
+        return _successful_process(arguments)
 
     @contextmanager
     def fake_remote_lock(path, **_kwargs):
@@ -1572,99 +1579,45 @@ def test_remote_batch_publication_stages_then_commits_directory_last(tmp_path, m
 
         yield _command_lease(str(path), command)
 
-    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_ssh", _successful_process)
     monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(subprocess, "run", fake_run)
-
-    workspace.publish_committed_batch(
-        [batch / "000002.json", batch / "000003.json", "graph.json", "research.md"],
-        batch,
-    )
+    publish = workspace.publish_committed_batch if is_batch else workspace.publish_committed_patch
+    publish(paths, commit)
 
     assert len(rsync_calls) == 1
-    assert ".publish/batch-000002-000003-test" in rsync_calls[0][0][-1]
+    stage_name = commit.name if is_batch else f"patch-{commit.name}"
+    assert f".publish/{stage_name}" in rsync_calls[0][0][-1]
     assert len(commands) == 1
-    assert commands[0]["commit"] == batch.as_posix()
-    assert commands[0]["commit_is_directory"] is True
+    assert commands[0]["commit"] == commit.as_posix()
+    assert commands[0]["commit_is_directory"] is is_batch
     assert workspace.reachable is True
 
 
-def test_remote_patch_publication_commits_file_before_derived_outputs(
-    tmp_path, monkeypatch
-) -> None:
+@pytest.mark.parametrize("is_batch", [False, True], ids=["patch", "batch"])
+def test_remote_publication_retries_outputs_after_commit(tmp_path, monkeypatch, is_batch) -> None:
     root = tmp_path / ".research"
-    patch = Path("patches/000001.json")
-    for relative in (patch, Path("graph.json")):
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("{}", encoding="utf-8")
+    commit = Path("patches/batch-000001-000001-test" if is_batch else "patches/000001.json")
+    patch = commit / "000001.json" if is_batch else commit
+    _publication_files(root, patch, Path("graph.json"))
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
-    rsync_calls: list[tuple[list[str], dict]] = []
-    commands: list[dict[str, object]] = []
-
-    def fake_ssh(_arguments):
-        return subprocess.CompletedProcess([], 0, "", "")
-
-    def fake_run(arguments, **kwargs):
-        rsync_calls.append((arguments, kwargs))
-        return subprocess.CompletedProcess(arguments, 0, "", "")
-
-    @contextmanager
-    def fake_remote_lock(path, **_kwargs):
-        def command(payload):
-            commands.append(payload)
-            return {"ok": True, "commit_status": "present"}
-
-        yield _command_lease(str(path), command)
-
-    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
-    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    workspace.publish_committed_patch([patch, "graph.json"], patch)
-
-    assert len(rsync_calls) == 1
-    assert ".publish/patch-000001.json" in rsync_calls[0][0][-1]
-    assert commands[0]["commit"] == patch.as_posix()
-    assert commands[0]["commit_is_directory"] is False
-
-
-def test_remote_patch_publish_probes_commit_and_repairs_idempotently(tmp_path, monkeypatch) -> None:
-    root = tmp_path / ".research"
-    patch = Path("patches/000001.json")
-    for relative in (patch, Path("graph.json")):
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("{}", encoding="utf-8")
-    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
-    commands: list[dict[str, object]] = []
-
-    def fake_ssh(_arguments):
-        return subprocess.CompletedProcess([], 0, "", "")
+    commands = []
 
     @contextmanager
     def fake_remote_lock(path, **_kwargs):
         def command(payload):
             commands.append(payload)
             if len(commands) == 1:
-                return {
-                    "ok": False,
-                    "commit_status": "present",
-                    "error": "derived output failed",
-                }
+                return {"ok": False, "commit_status": "present", "error": "derived output failed"}
             return {"ok": True, "commit_status": "present"}
 
         yield _command_lease(str(path), command)
 
-    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_ssh", _successful_process)
     monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
-    )
-
-    workspace.publish_committed_patch([patch, "graph.json"], patch)
+    monkeypatch.setattr(subprocess, "run", _successful_process)
+    publish = workspace.publish_committed_batch if is_batch else workspace.publish_committed_patch
+    publish([patch, "graph.json"], commit)
 
     assert len(commands) == 2
     assert workspace.reachable is True
@@ -1675,10 +1628,7 @@ def test_remote_patch_publish_reports_unknown_when_commit_probe_fails(
 ) -> None:
     root = tmp_path / ".research"
     patch = Path("patches/000001.json")
-    for relative in (patch, Path("graph.json")):
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("{}", encoding="utf-8")
+    _publication_files(root, patch, Path("graph.json"))
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
 
     def fake_ssh(arguments):
@@ -1698,7 +1648,7 @@ def test_remote_patch_publish_reports_unknown_when_commit_probe_fails(
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+        _successful_process,
     )
 
     with pytest.raises(BatchPublishFailed) as caught:
@@ -1712,10 +1662,7 @@ def test_holder_death_after_staging_cannot_apply_commit_unfenced(tmp_path, monke
     cache_root = tmp_path / "cache" / ".research"
     remote_root = tmp_path / "remote-project" / ".research"
     patch = Path("patches/000001.json")
-    for relative in (patch, Path("graph.json")):
-        source = cache_root / relative
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text("{}\n", encoding="utf-8")
+    _publication_files(cache_root, patch, Path("graph.json"), content="{}\n")
     workspace = SSHStateWorkspace(cache_root, "research.example", str(remote_root.parent))
     ssh_calls: list[list[str]] = []
     holders: list[subprocess.Popen[str]] = []
@@ -1777,10 +1724,7 @@ def test_commit_channel_loss_reconciles_present_commit(tmp_path, monkeypatch) ->
     cache_root = tmp_path / "cache" / ".research"
     remote_root = tmp_path / "remote-project" / ".research"
     patch = Path("patches/000001.json")
-    for relative in (patch, Path("graph.json")):
-        source = cache_root / relative
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text("{}\n", encoding="utf-8")
+    _publication_files(cache_root, patch, Path("graph.json"), content="{}\n")
     workspace = SSHStateWorkspace(cache_root, "research.example", str(remote_root.parent))
 
     def fake_ssh(arguments):
@@ -1821,10 +1765,7 @@ def test_absent_commit_probe_waits_for_old_holder_before_classifying(tmp_path, m
     cache_root = tmp_path / "cache" / ".research"
     remote_root = tmp_path / "remote-project" / ".research"
     patch = Path("patches/000001.json")
-    for relative in (patch, Path("graph.json")):
-        source = cache_root / relative
-        source.parent.mkdir(parents=True, exist_ok=True)
-        source.write_text("{}\n", encoding="utf-8")
+    _publication_files(cache_root, patch, Path("graph.json"), content="{}\n")
     workspace = SSHStateWorkspace(cache_root, "research.example", str(remote_root.parent))
     lock_entries = 0
     probes: list[int] = []
@@ -1855,7 +1796,7 @@ def test_absent_commit_probe_waits_for_old_holder_before_classifying(tmp_path, m
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
+        _successful_process,
     )
 
     with pytest.raises(BatchPublishFailed) as caught:
@@ -1873,9 +1814,6 @@ def test_ordinary_publish_channel_loss_requires_full_restage(tmp_path, monkeypat
     workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
     rsync_calls: list[list[str]] = []
 
-    def fake_ssh(arguments):
-        return subprocess.CompletedProcess(arguments, 0, "", "")
-
     def fake_rsync(arguments, **_kwargs):
         rsync_calls.append(arguments)
         return subprocess.CompletedProcess(arguments, 0, "", "")
@@ -1887,7 +1825,7 @@ def test_ordinary_publish_channel_loss_requires_full_restage(tmp_path, monkeypat
 
         yield _command_lease(str(path), command)
 
-    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
+    monkeypatch.setattr(workspace, "_ssh", _successful_process)
     monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
     monkeypatch.setattr(subprocess, "run", fake_rsync)
 
@@ -2003,20 +1941,7 @@ def test_failed_remote_transition_publish_rolls_the_local_mirror_back(manifest) 
 
     with pytest.raises(StateUnavailable):
         history.append_batch(
-            [
-                Patch(
-                    kind="approval",
-                    author="human",
-                    summary="Accept the research question.",
-                    ops=[
-                        {
-                            "op": "set_standing",
-                            "node_id": "rq/learning-after-shift",
-                            "standing": "accepted",
-                        }
-                    ],
-                )
-            ],
+            [_accept_question_patch()],
             expected_revision=1,
         )
 
@@ -2038,20 +1963,7 @@ def test_confirmed_remote_transition_commit_is_not_rolled_back(manifest) -> None
     workspace.publish_committed_patch = fail_after_commit
 
     history.append_batch(
-        [
-            Patch(
-                kind="approval",
-                author="human",
-                summary="Accept the research question.",
-                ops=[
-                    {
-                        "op": "set_standing",
-                        "node_id": "rq/learning-after-shift",
-                        "standing": "accepted",
-                    }
-                ],
-            )
-        ],
+        [_accept_question_patch()],
         expected_revision=1,
     )
 
@@ -2071,43 +1983,6 @@ def test_confirmed_remote_transition_commit_is_not_rolled_back(manifest) -> None
     workspace.publish = publish
     assert history.state().nodes["rq/learning-after-shift"].standing == "accepted"
     assert workspace.materialization_repair_required is False
-
-
-def test_remote_batch_retries_remaining_outputs_after_commit_point(tmp_path, monkeypatch) -> None:
-    root = tmp_path / ".research"
-    batch = Path("patches/batch-000001-000001-test")
-    for relative in (batch / "000001.json", Path("graph.json")):
-        target = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("{}", encoding="utf-8")
-    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
-    commands: list[dict[str, object]] = []
-
-    def fake_ssh(_arguments):
-        return subprocess.CompletedProcess([], 0, "", "")
-
-    @contextmanager
-    def fake_remote_lock(path, **_kwargs):
-        def command(payload):
-            commands.append(payload)
-            if len(commands) == 1:
-                return {"ok": False, "commit_status": "present", "error": "partial apply"}
-            return {"ok": True, "commit_status": "present"}
-
-        yield _command_lease(str(path), command)
-
-    monkeypatch.setattr(workspace, "_ssh", fake_ssh)
-    monkeypatch.setattr(workspace, "_remote_advisory_lock", fake_remote_lock)
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(arguments, 0, "", ""),
-    )
-
-    workspace.publish_committed_batch([batch / "000001.json", "graph.json"], batch)
-
-    assert len(commands) == 2
-    assert workspace.reachable is True
 
 
 def test_local_repository_pointer_has_no_host() -> None:
@@ -2391,8 +2266,9 @@ def test_remote_stage_failed_finalize_cleans_local_pending_inputs(tmp_path, monk
     assert not pending.exists()
 
 
-def test_remote_stage_lists_workspace_files(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+def test_remote_stage_lists_workspace_files(local_remote_stage) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     workspace = root / "workspace"
     workspace.mkdir()
     (workspace / "patch.json").write_text("{}", encoding="utf-8")
@@ -2400,21 +2276,14 @@ def test_remote_stage_lists_workspace_files(monkeypatch) -> None:
     (workspace / "linked.json").symlink_to(workspace / "patch.json")
     (workspace / "nested").mkdir()
     (workspace / "nested" / "deep.json").write_text("{}", encoding="utf-8")
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
-    monkeypatch.setattr(
-        stage,
-        "_ssh",
-        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
-    )
-    try:
-        assert stage.list_workspace_files() == ["notes.md", "patch.json"]
-    finally:
-        shutil.rmtree(root)
+    assert stage.list_workspace_files() == ["notes.md", "patch.json"]
 
 
-def test_remote_stage_workspace_mailbox_round_trip_is_atomic(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+def test_remote_stage_workspace_mailbox_round_trip_is_atomic(
+    monkeypatch, local_remote_stage
+) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     workspace = root / "workspace"
     inputs = root / "inputs"
     workspace.mkdir()
@@ -2424,8 +2293,6 @@ def test_remote_stage_workspace_mailbox_round_trip_is_atomic(monkeypatch) -> Non
     immutable_input.chmod(0o400)
     target = workspace / "validator-response-01.json"
     target.write_text("old response", encoding="utf-8")
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
     calls: list[tuple[list[str], bytes | None]] = []
 
     def fake_ssh_bytes(arguments, *, input_data=None):
@@ -2462,67 +2329,35 @@ def test_remote_stage_workspace_mailbox_round_trip_is_atomic(monkeypatch) -> Non
         assert len(calls) == call_count
     finally:
         immutable_input.chmod(0o600)
-        shutil.rmtree(root)
 
 
-def test_remote_stage_workspace_mailbox_rejects_symlinks(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+def test_remote_stage_workspace_mailbox_rejects_symlinks(local_remote_stage) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     workspace = root / "workspace"
     workspace.mkdir()
     outside = root / "outside.json"
     outside.write_text("outside", encoding="utf-8")
     linked = workspace / "validator-request.json"
     linked.symlink_to(outside)
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
 
-    def fake_ssh_bytes(arguments, *, input_data=None):
-        return subprocess.run(
-            arguments,
-            capture_output=True,
-            input=input_data,
-            check=False,
-        )
-
-    monkeypatch.setattr(stage, "_ssh_bytes", fake_ssh_bytes)
-    try:
-        with pytest.raises(ValueError, match="readable regular file"):
-            stage.read_workspace_text("validator-request.json")
-        with pytest.raises(ValueError, match="target is not a regular file"):
-            stage.write_workspace_text("validator-request.json", "replacement")
-
-        assert linked.is_symlink()
-        assert outside.read_text(encoding="utf-8") == "outside"
-    finally:
-        shutil.rmtree(root)
+    with pytest.raises(ValueError, match="readable regular file"):
+        stage.read_workspace_text("validator-request.json")
+    with pytest.raises(ValueError, match="target is not a regular file"):
+        stage.write_workspace_text("validator-request.json", "replacement")
+    assert linked.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "outside"
 
 
-def test_remote_stage_absent_mailbox_file_is_not_an_unreachable_workspace(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+def test_remote_stage_absent_mailbox_file_is_not_an_unreachable_workspace(
+    local_remote_stage,
+) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     (root / "workspace").mkdir()
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
-    monkeypatch.setattr(
-        stage,
-        "_ssh",
-        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
-    )
-    monkeypatch.setattr(
-        stage,
-        "_ssh_bytes",
-        lambda arguments, *, input_data=None: subprocess.run(
-            arguments,
-            capture_output=True,
-            input=input_data,
-            check=False,
-        ),
-    )
-    try:
-        assert stage.list_workspace_files() == []
-        with pytest.raises(FileNotFoundError):
-            stage.read_workspace_text("validator-request.json")
-    finally:
-        shutil.rmtree(root)
+    assert stage.list_workspace_files() == []
+    with pytest.raises(FileNotFoundError):
+        stage.read_workspace_text("validator-request.json")
 
 
 def test_remote_stage_workspace_operations_fail_closed(monkeypatch) -> None:
@@ -2553,43 +2388,37 @@ def test_remote_stage_workspace_operations_fail_closed(monkeypatch) -> None:
         stage.remove_workspace_file("patch.json")
 
 
-def test_remote_stage_close_removes_read_only_trees_and_verifies_absence(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+def test_remote_stage_close_removes_read_only_trees_and_verifies_absence(
+    local_remote_stage,
+) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     projection = root / "inputs" / "conversations"
     projection.mkdir(parents=True)
     copied = projection / "conversation-0000.jsonl"
     copied.write_text("large transcript", encoding="utf-8")
     copied.chmod(0o400)
     projection.chmod(0o500)
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
-    monkeypatch.setattr(
-        stage,
-        "_ssh",
-        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
-    )
 
     assert stage.close() is True
     assert not root.exists()
     assert stage.root is None
 
 
-def test_remote_stage_close_keeps_root_when_deletion_failed(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
+def test_remote_stage_close_keeps_root_when_deletion_failed(
+    monkeypatch, local_remote_stage
+) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     monkeypatch.setattr(
         stage,
         "_ssh",
         lambda _arguments: subprocess.CompletedProcess([], 1, "", "still present"),
     )
 
-    try:
-        assert stage.close() is False
-        assert root.exists()
-        assert stage.root == PurePosixPath(str(root))
-    finally:
-        shutil.rmtree(root)
+    assert stage.close() is False
+    assert root.exists()
+    assert stage.root == PurePosixPath(str(root))
 
 
 def test_remote_stage_sweeper_uses_read_only_tree_cleanup(monkeypatch) -> None:
@@ -2618,80 +2447,57 @@ def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:
         stage.sweep(protected_roots=["/tmp/not-an-rcp-stage"])
 
 
-def test_remote_stage_artifact_operations_are_exact_and_binary(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+def test_remote_stage_artifact_operations_are_exact_and_binary(
+    monkeypatch, local_remote_stage
+) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     (root / "workspace").mkdir()
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
-    monkeypatch.setattr(
-        stage,
-        "_ssh",
-        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
-    )
+    directory = Path(str(stage.prepare_artifact_directory("logical-turn", reuse=False)))
+    payload = b"\x89PNG\r\n\x1a\n\x00\xffbinary"
+    (directory / "plot.png").write_bytes(payload)
+    (directory / "linked.png").symlink_to(directory / "plot.png")
+    (directory / "nested").mkdir()
+    (directory / "nested" / "hidden.png").write_bytes(payload)
+    assert stage.list_artifact_files("logical-turn") == [("plot.png", len(payload))]
+    assert stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024) == payload
+    with pytest.raises(ValueError, match="bounded regular file"):
+        stage.read_artifact_bytes("logical-turn", "linked.png", max_bytes=1024)
+    with pytest.raises(FileNotFoundError):
+        stage.read_artifact_bytes("logical-turn", "missing.png", max_bytes=1024)
+    with pytest.raises(ValueError, match="plain base name"):
+        stage.read_artifact_bytes("logical-turn", "../plot.png", max_bytes=1024)
     monkeypatch.setattr(
         stage,
         "_ssh_bytes",
-        lambda arguments: subprocess.run(arguments, capture_output=True, check=False),
+        lambda _arguments, **_kwargs: subprocess.CompletedProcess([], 46, b"", b"EIO"),
     )
-    try:
-        directory = Path(str(stage.prepare_artifact_directory("logical-turn", reuse=False)))
-        payload = b"\x89PNG\r\n\x1a\n\x00\xffbinary"
-        (directory / "plot.png").write_bytes(payload)
-        (directory / "linked.png").symlink_to(directory / "plot.png")
-        (directory / "nested").mkdir()
-        (directory / "nested" / "hidden.png").write_bytes(payload)
-
-        assert stage.list_artifact_files("logical-turn") == [("plot.png", len(payload))]
-        assert stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024) == payload
-        with pytest.raises(ValueError, match="bounded regular file"):
-            stage.read_artifact_bytes("logical-turn", "linked.png", max_bytes=1024)
-        with pytest.raises(FileNotFoundError):
-            stage.read_artifact_bytes("logical-turn", "missing.png", max_bytes=1024)
-        with pytest.raises(ValueError, match="plain base name"):
-            stage.read_artifact_bytes("logical-turn", "../plot.png", max_bytes=1024)
-
-        monkeypatch.setattr(
-            stage,
-            "_ssh_bytes",
-            lambda _arguments, **_kwargs: subprocess.CompletedProcess([], 46, b"", b"EIO"),
+    with pytest.raises(StateUnavailable, match="EIO"):
+        stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
+    monkeypatch.setattr(
+        stage,
+        "_ssh_bytes",
+        lambda _arguments, **_kwargs: subprocess.CompletedProcess(
+            [], 47, b"", b"artifact source is missing"
+        ),
+    )
+    with pytest.raises(ArtifactReplacementConflict):
+        stage.replace_artifact_bytes(
+            "logical-turn",
+            "plot.png",
+            payload,
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
         )
-        with pytest.raises(StateUnavailable, match="EIO"):
-            stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
-        monkeypatch.setattr(
-            stage,
-            "_ssh_bytes",
-            lambda _arguments, **_kwargs: subprocess.CompletedProcess(
-                [], 47, b"", b"artifact source is missing"
-            ),
-        )
-        with pytest.raises(ArtifactReplacementConflict):
-            stage.replace_artifact_bytes(
-                "logical-turn",
-                "plot.png",
-                payload,
-                expected_sha256=hashlib.sha256(payload).hexdigest(),
-            )
-    finally:
-        shutil.rmtree(root)
 
 
-def test_remote_stage_resume_rejects_symlinked_artifact_scope(monkeypatch) -> None:
-    root = Path(tempfile.mkdtemp(prefix="rcp-run.", dir="/tmp"))
+def test_remote_stage_resume_rejects_symlinked_artifact_scope(local_remote_stage) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
     workspace = root / "workspace"
     turns = workspace / "turns"
     outside = root / "outside"
     turns.mkdir(parents=True)
     (outside / "artifacts").mkdir(parents=True)
     (turns / "logical-turn").symlink_to(outside, target_is_directory=True)
-    stage = RemoteRunStage("research.example")
-    stage.root = PurePosixPath(str(root))
-    monkeypatch.setattr(
-        stage,
-        "_ssh",
-        lambda arguments: subprocess.run(arguments, capture_output=True, text=True, check=False),
-    )
-    try:
-        with pytest.raises(StateUnavailable):
-            stage.prepare_artifact_directory("logical-turn", reuse=True)
-    finally:
-        shutil.rmtree(root)
+    with pytest.raises(StateUnavailable):
+        stage.prepare_artifact_directory("logical-turn", reuse=True)

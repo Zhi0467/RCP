@@ -12,6 +12,45 @@ from rcp.history import HistoryManager
 from tests.helpers import seed_patch
 
 
+def _update_node(node_id, changes, *, intent=None, cause=None):
+    node = {"id": node_id, "changes": changes}
+    if cause is not None:
+        node["cause"] = cause
+    operation = {"op": "update_nodes", "nodes": [node]}
+    if intent is not None:
+        operation["intent"] = intent
+    return operation
+
+
+def _create_edge(source, target, relation, *, intent=None, **fields):
+    operation = {
+        "op": "create_edges",
+        "edges": [{"source": source, "target": target, "relation": relation, **fields}],
+    }
+    if intent is not None:
+        operation["intent"] = intent
+    return operation
+
+
+def _lifecycle_operation(intent, target, **fields):
+    if intent == "supersede":
+        return {
+            "op": "supersede_nodes",
+            "intent": intent,
+            "nodes": [
+                {"id": "hyp/replanning-restores-plasticity", "superseded_by": target, **fields}
+            ],
+        }
+    assert intent == "merge"
+    return {
+        "op": "merge_nodes",
+        "intent": intent,
+        "merges": [
+            {"duplicate": "hyp/replanning-restores-plasticity", "canonical": target, **fields}
+        ],
+    }
+
+
 def _agent_patch(*ops: dict) -> Patch:
     return Patch(
         kind="refresh",
@@ -178,15 +217,9 @@ def test_ordinary_agent_cannot_edit_an_existing_research_question_directly(manif
     )
 
     patch = _agent_patch(
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": "rq/learning-after-shift",
-                    "changes": {"motivation": "Repeated shifts make this question urgent."},
-                }
-            ],
-        }
+        _update_node(
+            "rq/learning-after-shift", {"motivation": "Repeated shifts make this question urgent."}
+        )
     )
     report = validate_patch(history.state(), patch, ["repo-a"])
 
@@ -205,15 +238,7 @@ def test_agent_cannot_decide_directly_or_by_proposal(manifest) -> None:
     direct_report = validate_patch(
         state,
         _agent_patch(
-            {
-                "op": "update_nodes",
-                "nodes": [
-                    {
-                        "id": "dec/evaluation-rule",
-                        "changes": {"status": "decided", "selected_option": "matched"},
-                    }
-                ],
-            }
+            _update_node("dec/evaluation-rule", {"status": "decided", "selected_option": "matched"})
         ),
         ["repo-a", "repo-b"],
     )
@@ -264,70 +289,43 @@ def test_every_declared_protected_intent_is_admitted_as_one_human_question(manif
     state = _state_with_second_hypothesis(manifest)
     edge_id = "rq/learning-after-shift::has_hypothesis::hyp/replanning-restores-plasticity"
     operations = {
-        "content": {
-            "op": "update_nodes",
-            "intent": "content_change",
-            "nodes": [
-                {
-                    "id": "rq/learning-after-shift",
-                    "changes": {"question": "Can adaptation remain plastic after repeated shifts?"},
-                }
-            ],
-        },
+        "content": _update_node(
+            "rq/learning-after-shift",
+            {"question": "Can adaptation remain plastic after repeated shifts?"},
+            intent="content_change",
+        ),
         "removal": {
             "op": "remove_nodes",
             "intent": "removal",
             "node_ids": ["hyp/replanning-restores-plasticity"],
         },
-        "supersede": {
-            "op": "supersede_nodes",
-            "intent": "supersede",
-            "nodes": [
-                {
-                    "id": "hyp/replanning-restores-plasticity",
-                    "superseded_by": "hyp/alternative-mechanism",
-                    "explanation": "The alternative states the mechanism more precisely.",
-                }
-            ],
-        },
-        "merge": {
-            "op": "merge_nodes",
-            "intent": "merge",
-            "merges": [
-                {
-                    "duplicate": "hyp/replanning-restores-plasticity",
-                    "canonical": "hyp/alternative-mechanism",
-                    "explanation": "Both records state the same mechanism.",
-                }
-            ],
-        },
-        "protected-create": {
-            "op": "create_edges",
-            "intent": "protected_relation_change",
-            "edges": [
-                {
-                    "source": "rq/learning-after-shift",
-                    "target": "hyp/alternative-mechanism",
-                    "relation": "has_hypothesis",
-                }
-            ],
-        },
+        "supersede": _lifecycle_operation(
+            "supersede",
+            "hyp/alternative-mechanism",
+            explanation="The alternative states the mechanism more precisely.",
+        ),
+        "merge": _lifecycle_operation(
+            "merge",
+            "hyp/alternative-mechanism",
+            explanation="Both records state the same mechanism.",
+        ),
+        "protected-create": _create_edge(
+            "rq/learning-after-shift",
+            "hyp/alternative-mechanism",
+            "has_hypothesis",
+            intent="protected_relation_change",
+        ),
         "protected-remove": {
             "op": "remove_edges",
             "intent": "protected_relation_change",
             "edge_ids": [edge_id],
         },
-        "status": {
-            "op": "update_nodes",
-            "intent": "status_change",
-            "nodes": [
-                {
-                    "id": "hyp/replanning-restores-plasticity",
-                    "changes": {"status": "active"},
-                    "cause": {"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
-                }
-            ],
-        },
+        "status": _update_node(
+            "hyp/replanning-restores-plasticity",
+            {"status": "active"},
+            intent="status_change",
+            cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
+        ),
     }
 
     for suffix, operation in operations.items():
@@ -347,16 +345,9 @@ def test_research_question_lifecycle_uses_content_change_without_evidence(manife
     state = _state_with_decision(manifest)
     proposal = _intent_proposal(
         proposal_id="prop/answer-question",
-        operation={
-            "op": "update_nodes",
-            "intent": "content_change",
-            "nodes": [
-                {
-                    "id": "rq/learning-after-shift",
-                    "changes": {"status": "answered"},
-                }
-            ],
-        },
+        operation=_update_node(
+            "rq/learning-after-shift", {"status": "answered"}, intent="content_change"
+        ),
         base_rev=state.revision,
     )
 
@@ -368,15 +359,9 @@ def test_research_question_lifecycle_uses_content_change_without_evidence(manife
 @pytest.mark.parametrize(
     "operation",
     [
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": "rq/learning-after-shift",
-                    "changes": {"question": "Can plasticity persist after repeated shifts?"},
-                }
-            ],
-        },
+        _update_node(
+            "rq/learning-after-shift", {"question": "Can plasticity persist after repeated shifts?"}
+        ),
         {
             "op": "remove_nodes",
             "intent": "removal",
@@ -399,17 +384,12 @@ def test_research_question_lifecycle_uses_content_change_without_evidence(manife
                 },
             ],
         },
-        {
-            "op": "create_edges",
-            "intent": "protected_relation_change",
-            "edges": [
-                {
-                    "source": "ev/evaluation-result",
-                    "target": "hyp/replanning-restores-plasticity",
-                    "relation": "supports",
-                }
-            ],
-        },
+        _create_edge(
+            "ev/evaluation-result",
+            "hyp/replanning-restores-plasticity",
+            "supports",
+            intent="protected_relation_change",
+        ),
     ],
 )
 def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, operation) -> None:
@@ -434,15 +414,9 @@ def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, o
 @pytest.mark.parametrize(
     "operation",
     [
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": "rq/learning-after-shift",
-                    "changes": {"question": "Can plasticity persist after repeated shifts?"},
-                }
-            ],
-        },
+        _update_node(
+            "rq/learning-after-shift", {"question": "Can plasticity persist after repeated shifts?"}
+        ),
         {
             "op": "remove_nodes",
             "node_ids": ["hyp/replanning-restores-plasticity"],
@@ -465,16 +439,7 @@ def test_agent_proposal_rejects_missing_mismatched_or_bundled_intent(manifest, o
                 }
             ],
         },
-        {
-            "op": "create_edges",
-            "edges": [
-                {
-                    "source": "rq/learning-after-shift",
-                    "target": "hyp/alternative-mechanism",
-                    "relation": "has_hypothesis",
-                }
-            ],
-        },
+        _create_edge("rq/learning-after-shift", "hyp/alternative-mechanism", "has_hypothesis"),
         {
             "op": "remove_edges",
             "edge_ids": [
@@ -500,22 +465,17 @@ def test_direct_agent_changes_to_existing_beliefs_are_refused_at_apply(manifest,
 def test_attaching_evidence_to_an_existing_hypothesis_stays_direct(manifest) -> None:
     state = _state_with_decision(manifest)
     patch = _agent_patch(
-        {
-            "op": "create_edges",
-            "edges": [
-                {
-                    "source": "ev/evaluation-result",
-                    "target": "hyp/replanning-restores-plasticity",
-                    "relation": "weakens",
-                    "explanation": "The alternative evaluation narrows the claim.",
-                    "assessment": {
-                        "relevance": "direct",
-                        "weight": "limited",
-                        "scope": "The alternative evaluation condition.",
-                    },
-                }
-            ],
-        }
+        _create_edge(
+            "ev/evaluation-result",
+            "hyp/replanning-restores-plasticity",
+            "weakens",
+            explanation="The alternative evaluation narrows the claim.",
+            assessment={
+                "relevance": "direct",
+                "weight": "limited",
+                "scope": "The alternative evaluation condition.",
+            },
+        )
     )
 
     report = validate_patch(state, patch, ["repo-a", "repo-b"])
@@ -593,17 +553,12 @@ def test_replay_does_not_add_expected_absence_to_legacy_relation_proposals(manif
                     "title": "Legacy relation proposal",
                     "card": {"decision_needed": "Approve the historical relation."},
                     "ops": [
-                        {
-                            "op": "create_edges",
-                            "edges": [
-                                {
-                                    "id": edge_id,
-                                    "source": "rq/learning-after-shift",
-                                    "target": "hyp/replanning-restores-plasticity",
-                                    "relation": "has_hypothesis",
-                                }
-                            ],
-                        }
+                        _create_edge(
+                            "rq/learning-after-shift",
+                            "hyp/replanning-restores-plasticity",
+                            "has_hypothesis",
+                            id=edge_id,
+                        )
                     ],
                     "base_rev": state.revision,
                     "raised_rev": state.revision,
@@ -627,17 +582,9 @@ def test_same_patch_edge_recreation_stales_a_new_proposal_but_remains_replayable
             cause={"kind": "evidence_edge", "ref_id": edge_id},
         ),
         {"op": "remove_edges", "edge_ids": [edge_id]},
-        {
-            "op": "create_edges",
-            "edges": [
-                {
-                    "id": edge_id,
-                    "source": "ev/evaluation-result",
-                    "target": "hyp/replanning-restores-plasticity",
-                    "relation": "supports",
-                }
-            ],
-        },
+        _create_edge(
+            "ev/evaluation-result", "hyp/replanning-restores-plasticity", "supports", id=edge_id
+        ),
     )
 
     admission = validate_patch(state, patch, ["repo-a", "repo-b"])
@@ -658,15 +605,10 @@ def test_replay_does_not_recheck_protected_action_permission(manifest) -> None:
     history.append(seed_patch())
     state = history.state()
     patch = _agent_patch(
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": "rq/learning-after-shift",
-                    "changes": {"motivation": "Historical agent wording remains replayable."},
-                }
-            ],
-        }
+        _update_node(
+            "rq/learning-after-shift",
+            {"motivation": "Historical agent wording remains replayable."},
+        )
     ).model_copy(update={"revision": state.revision + 1})
 
     admission = validate_patch(state, patch, ["repo-a", "repo-b"])
@@ -731,33 +673,15 @@ def test_removal_proposal_snapshots_exact_incident_edges_and_stales_on_set_chang
     )
 
     unrelated = _agent_patch(
-        {
-            "op": "create_edges",
-            "edges": [
-                {
-                    "id": "edge/unrelated-informs",
-                    "source": "ev/evaluation-result",
-                    "target": "dec/evaluation-rule",
-                    "relation": "informs",
-                }
-            ],
-        }
+        _create_edge(
+            "ev/evaluation-result", "dec/evaluation-rule", "informs", id="edge/unrelated-informs"
+        )
     ).model_copy(update={"revision": proposed.revision + 1})
     with_unrelated = apply_valid_patch(proposed, unrelated)
     assert not proposal_is_stale(with_unrelated, proposal)
 
     incident = _agent_patch(
-        {
-            "op": "create_edges",
-            "edges": [
-                {
-                    "id": "edge/new-incident-evidence",
-                    "source": "ev/evaluation-result",
-                    "target": target_id,
-                    "relation": "weakens",
-                }
-            ],
-        }
+        _create_edge("ev/evaluation-result", target_id, "weakens", id="edge/new-incident-evidence")
     ).model_copy(update={"revision": proposed.revision + 1})
     with_incident = apply_valid_patch(proposed, incident)
     assert proposal_is_stale(with_incident, proposal)
@@ -796,26 +720,8 @@ def test_removal_proposal_stales_when_a_snapshotted_incident_edge_is_removed_or_
 @pytest.mark.parametrize(
     "operation",
     [
-        {
-            "op": "supersede_nodes",
-            "intent": "supersede",
-            "nodes": [
-                {
-                    "id": "hyp/replanning-restores-plasticity",
-                    "superseded_by": "rq/learning-after-shift",
-                }
-            ],
-        },
-        {
-            "op": "merge_nodes",
-            "intent": "merge",
-            "merges": [
-                {
-                    "duplicate": "hyp/replanning-restores-plasticity",
-                    "canonical": "rq/learning-after-shift",
-                }
-            ],
-        },
+        _lifecycle_operation("supersede", "rq/learning-after-shift"),
+        _lifecycle_operation("merge", "rq/learning-after-shift"),
     ],
 )
 def test_supersede_and_merge_intents_require_matching_protected_belief_types(
@@ -854,17 +760,12 @@ def test_protected_relation_intent_cannot_bypass_lifecycle_intent_rules(
     state = _state_with_decision(manifest)
     proposal = _intent_proposal(
         proposal_id=f"prop/bypass-{relation}",
-        operation={
-            "op": "create_edges",
-            "intent": "protected_relation_change",
-            "edges": [
-                {
-                    "source": "hyp/replanning-restores-plasticity",
-                    "target": target_id,
-                    "relation": relation,
-                }
-            ],
-        },
+        operation=_create_edge(
+            "hyp/replanning-restores-plasticity",
+            target_id,
+            relation,
+            intent="protected_relation_change",
+        ),
         base_rev=state.revision,
     )
 
@@ -885,29 +786,7 @@ def test_lifecycle_proposal_may_forward_reference_its_new_same_type_target(
 ) -> None:
     state = _state_with_decision(manifest)
     target_id = "hyp/forward-lifecycle-target"
-    operation = (
-        {
-            "op": "supersede_nodes",
-            "intent": "supersede",
-            "nodes": [
-                {
-                    "id": "hyp/replanning-restores-plasticity",
-                    "superseded_by": target_id,
-                }
-            ],
-        }
-        if intent == "supersede"
-        else {
-            "op": "merge_nodes",
-            "intent": "merge",
-            "merges": [
-                {
-                    "duplicate": "hyp/replanning-restores-plasticity",
-                    "canonical": target_id,
-                }
-            ],
-        }
-    )
+    operation = _lifecycle_operation(intent, target_id)
     patch = _agent_patch(
         _intent_proposal(
             proposal_id=f"prop/forward-{intent}",
@@ -940,44 +819,17 @@ def test_later_update_of_lifecycle_target_stales_new_proposal_but_replay_is_tole
     intent: str,
 ) -> None:
     state = _state_with_second_hypothesis(manifest)
-    operation = (
-        {
-            "op": "supersede_nodes",
-            "intent": "supersede",
-            "nodes": [
-                {
-                    "id": "hyp/replanning-restores-plasticity",
-                    "superseded_by": "hyp/alternative-mechanism",
-                }
-            ],
-        }
-        if intent == "supersede"
-        else {
-            "op": "merge_nodes",
-            "intent": "merge",
-            "merges": [
-                {
-                    "duplicate": "hyp/replanning-restores-plasticity",
-                    "canonical": "hyp/alternative-mechanism",
-                }
-            ],
-        }
-    )
+    operation = _lifecycle_operation(intent, "hyp/alternative-mechanism")
     patch = _agent_patch(
         _intent_proposal(
             proposal_id=f"prop/moving-{intent}-target",
             operation=operation,
             base_rev=state.revision,
         ),
-        {
-            "op": "update_nodes",
-            "nodes": [
-                {
-                    "id": "hyp/alternative-mechanism",
-                    "changes": {"statement": "A later operation replaced the judged wording."},
-                }
-            ],
-        },
+        _update_node(
+            "hyp/alternative-mechanism",
+            {"statement": "A later operation replaced the judged wording."},
+        ),
     ).model_copy(update={"revision": state.revision + 1})
 
     admission = validate_patch(state, patch, ["repo-a", "repo-b"])
@@ -995,16 +847,11 @@ def test_later_node_removal_and_recreation_stales_new_proposal_but_replay_is_tol
     patch = _agent_patch(
         _intent_proposal(
             proposal_id="prop/replaced-question",
-            operation={
-                "op": "update_nodes",
-                "intent": "content_change",
-                "nodes": [
-                    {
-                        "id": node_id,
-                        "changes": {"question": "Does the replacement retain plasticity?"},
-                    }
-                ],
-            },
+            operation=_update_node(
+                node_id,
+                {"question": "Does the replacement retain plasticity?"},
+                intent="content_change",
+            ),
             base_rev=state.revision,
         ),
         {"op": "remove_nodes", "node_ids": [node_id]},
@@ -1046,28 +893,23 @@ def test_content_proposal_source_refs_retain_originating_agent_scope(
     state = _state_with_decision(manifest)
     proposal = _intent_proposal(
         proposal_id=f"prop/source-scope-{expected_code}",
-        operation={
-            "op": "update_nodes",
-            "intent": "content_change",
-            "nodes": [
-                {
-                    "id": "rq/learning-after-shift",
-                    "changes": {
-                        "source_refs": [
-                            {
-                                "machine": "laptop",
-                                "truth_repository": "repo-b",
-                                "source": "codex",
-                                "session_id": "session-source-scope",
-                                "record_uuid": "record-source-scope",
-                                "timestamp": "2026-08-12T00:00:00Z",
-                                "excerpt": "This source belongs to repo-b.",
-                            }
-                        ]
-                    },
-                }
-            ],
-        },
+        operation=_update_node(
+            "rq/learning-after-shift",
+            {
+                "source_refs": [
+                    {
+                        "machine": "laptop",
+                        "truth_repository": "repo-b",
+                        "source": "codex",
+                        "session_id": "session-source-scope",
+                        "record_uuid": "record-source-scope",
+                        "timestamp": "2026-08-12T00:00:00Z",
+                        "excerpt": "This source belongs to repo-b.",
+                    }
+                ]
+            },
+            intent="content_change",
+        ),
         base_rev=state.revision,
     )
     patch = _agent_patch(proposal).model_copy(
@@ -1083,24 +925,8 @@ def test_content_proposal_source_refs_retain_originating_agent_scope(
         assert any(message.code == expected_code for message in report.messages)
 
 
-def test_duplicate_proposal_ids_in_one_create_operation_are_rejected(manifest) -> None:
-    state = _state_with_decision(manifest)
-    operation = _proposal(
-        proposal_id="prop/duplicate-id",
-        node_id="hyp/replanning-restores-plasticity",
-        changes={"status": "active"},
-        cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
-    )
-    duplicate = dict(operation["proposals"][0])
-    operation["proposals"].append(duplicate)
-
-    report = validate_patch(state, _agent_patch(operation), ["repo-a", "repo-b"])
-
-    assert report.rejected
-    assert any(message.code == "duplicate-proposal-id" for message in report.messages)
-
-
-def test_legacy_duplicate_proposal_ids_remain_replayable(manifest) -> None:
+@pytest.mark.parametrize("mode", ["admission", "replay"])
+def test_duplicate_proposal_ids_are_rejected_only_at_admission(manifest, mode) -> None:
     state = _state_with_decision(manifest)
     operation = _proposal(
         proposal_id="prop/duplicate-id",
@@ -1109,16 +935,15 @@ def test_legacy_duplicate_proposal_ids_remain_replayable(manifest) -> None:
         cause={"kind": "evidence_edge", "ref_id": "edge/evaluation-support"},
     )
     operation["proposals"].append(dict(operation["proposals"][0]))
-    historical = _agent_patch(operation).model_copy(update={"revision": state.revision + 1})
-
-    report = validate_patch(
-        state,
-        historical,
-        ["repo-a", "repo-b"],
-        mode="replay",
-    )
-
-    assert not report.rejected
+    patch = _agent_patch(operation)
+    if mode == "replay":
+        patch = patch.model_copy(update={"revision": state.revision + 1})
+    report = validate_patch(state, patch, ["repo-a", "repo-b"], mode=mode)
+    if mode == "admission":
+        assert report.rejected
+        assert any(message.code == "duplicate-proposal-id" for message in report.messages)
+    else:
+        assert not report.rejected
 
 
 def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest) -> None:
@@ -1139,16 +964,7 @@ def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest)
     same_patch_governed = validate_patch(
         state,
         _agent_patch(
-            {
-                "op": "create_edges",
-                "edges": [
-                    {
-                        "source": "exp/evaluation",
-                        "target": "dec/evaluation-rule",
-                        "relation": "governed_by",
-                    }
-                ],
-            },
+            _create_edge("exp/evaluation", "dec/evaluation-rule", "governed_by"),
             proposal,
         ),
         ["repo-a", "repo-b"],
@@ -1156,16 +972,7 @@ def test_new_decision_proposal_is_refused_regardless_of_governing_edge(manifest)
     same_patch_experiment = validate_patch(
         state,
         _agent_patch(
-            {
-                "op": "create_edges",
-                "edges": [
-                    {
-                        "source": "exp/same-patch",
-                        "target": "dec/evaluation-rule",
-                        "relation": "governed_by",
-                    }
-                ],
-            },
+            _create_edge("exp/same-patch", "dec/evaluation-rule", "governed_by"),
             {
                 "op": "create_nodes",
                 "nodes": [
@@ -1247,17 +1054,7 @@ def test_legacy_decision_selection_approval_adds_implied_decided_status(manifest
                     "id": "prop/legacy-selection",
                     "title": "Choose matched evaluation",
                     "card": {"decision_needed": "Choose matched evaluation?"},
-                    "ops": [
-                        {
-                            "op": "update_nodes",
-                            "nodes": [
-                                {
-                                    "id": "dec/evaluation-rule",
-                                    "changes": {"selected_option": "matched"},
-                                }
-                            ],
-                        }
-                    ],
+                    "ops": [_update_node("dec/evaluation-rule", {"selected_option": "matched"})],
                     "related_node_ids": ["dec/evaluation-rule"],
                     "base_rev": state.revision,
                     "raised_rev": state.revision,
@@ -1335,14 +1132,7 @@ def test_legacy_decided_proposal_without_a_listed_selection_is_refused(manifest)
                     "id": "prop/legacy-missing-selection",
                     "title": "Mark the evaluation decided",
                     "card": {"decision_needed": "Mark it decided?"},
-                    "ops": [
-                        {
-                            "op": "update_nodes",
-                            "nodes": [
-                                {"id": "dec/evaluation-rule", "changes": {"status": "decided"}}
-                            ],
-                        }
-                    ],
+                    "ops": [_update_node("dec/evaluation-rule", {"status": "decided"})],
                     "related_node_ids": ["dec/evaluation-rule"],
                     "base_rev": state.revision,
                     "raised_rev": state.revision,
@@ -1406,17 +1196,12 @@ def test_agent_proposal_rejects_a_third_shape(manifest) -> None:
                 "title": "Add an ordinary edge",
                 "card": {"decision_needed": "Approve the edge?"},
                 "ops": [
-                    {
-                        "op": "create_edges",
-                        "intent": "protected_relation_change",
-                        "edges": [
-                            {
-                                "source": "rq/learning-after-shift",
-                                "target": "dec/evaluation-rule",
-                                "relation": "has_decision",
-                            }
-                        ],
-                    }
+                    _create_edge(
+                        "rq/learning-after-shift",
+                        "dec/evaluation-rule",
+                        "has_decision",
+                        intent="protected_relation_change",
+                    )
                 ],
                 "related_node_ids": ["rq/learning-after-shift", "dec/evaluation-rule"],
                 "base_rev": 2,

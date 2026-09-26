@@ -23,6 +23,31 @@ from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderRuntimeStep, ProviderTurnRequest, profile_for
 
 
+def _command(
+    provider, prompt, *, model=None, reasoning=None, session_id=None, read_dirs=(), **kwargs
+):
+    return AgentLauncher._command(
+        provider,
+        prompt,
+        model=model,
+        reasoning=reasoning,
+        session_id=session_id,
+        read_dirs=list(read_dirs),
+        **kwargs,
+    )
+
+
+def _scripted_launcher(monkeypatch, script):
+    launcher = AgentLauncher()
+    launcher.readiness = lambda provider, host="": type(
+        "Readiness", (), {"installed": True, "authenticated": True, "path_state": "resolved"}
+    )()
+    monkeypatch.setattr(
+        launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
+    )
+    return launcher
+
+
 def _decoded_step(provider: str, line: str) -> ProviderRuntimeStep:
     """Decode one JSONL line through the runtime the launcher actually runs."""
 
@@ -223,17 +248,7 @@ async def test_campaign_broker_wraps_provider_and_preserves_exact_prompt(
         "json.dumps({'prompt':prompt,'code':result.returncode,'output':result.stdout})}}),flush=True)\n"
         "print(json.dumps({'type':'turn.completed'}),flush=True)\n"
     )
-    launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
-        "Readiness",
-        (),
-        {"installed": True, "authenticated": True, "path_state": "resolved"},
-    )()
-    monkeypatch.setattr(
-        launcher,
-        "_command",
-        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
-    )
+    launcher = _scripted_launcher(monkeypatch, provider_script)
     stop = asyncio.Event()
     server = asyncio.create_task(
         serve_command_mailbox(
@@ -283,17 +298,7 @@ async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
     assert staged.invocation_gate is not None
     launched = tmp_path / "provider-launched"
     provider_script = f"from pathlib import Path; Path({str(launched)!r}).write_text('bad')"
-    launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
-        "Readiness",
-        (),
-        {"installed": True, "authenticated": True, "path_state": "resolved"},
-    )()
-    monkeypatch.setattr(
-        launcher,
-        "_command",
-        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
-    )
+    launcher = _scripted_launcher(monkeypatch, provider_script)
     occupied = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     occupied.bind(staged.invocation_gate.socket_path)
     try:
@@ -342,17 +347,7 @@ async def test_campaign_broker_peer_inspection_failure_prevents_provider_prompt_
     gate = replace(staged.invocation_gate, broker_path=str(unsupported_broker))
     launched = tmp_path / "provider-launched"
     provider_script = f"from pathlib import Path; Path({str(launched)!r}).write_text('bad')"
-    launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
-        "Readiness",
-        (),
-        {"installed": True, "authenticated": True, "path_state": "resolved"},
-    )()
-    monkeypatch.setattr(
-        launcher,
-        "_command",
-        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
-    )
+    launcher = _scripted_launcher(monkeypatch, provider_script)
 
     try:
         events = [
@@ -481,15 +476,7 @@ async def test_stream_drains_large_output_while_feeding_large_prompt(
         '{"text": f"received={len(prompt)}"}}), flush=True)\n'
         "print(json.dumps({'type':'turn.completed'}), flush=True)\n"
     )
-    launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
-        "Readiness", (), {"installed": True, "authenticated": True}
-    )()
-    monkeypatch.setattr(
-        launcher,
-        "_command",
-        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
-    )
+    launcher = _scripted_launcher(monkeypatch, provider_script)
     prompt = "p" * (2 * 1024 * 1024)
 
     async def collect_events():
@@ -564,15 +551,7 @@ async def test_stream_reports_only_an_effort_the_provider_says_it_ignored(
             ),
         )
     )
-    launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
-        "Readiness", (), {"installed": True, "authenticated": True}
-    )()
-    monkeypatch.setattr(
-        launcher,
-        "_command",
-        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
-    )
+    launcher = _scripted_launcher(monkeypatch, provider_script)
 
     events = [
         event
@@ -598,15 +577,7 @@ async def test_stream_records_explicit_terminal_provider_event(
     provider_script = (
         'import json\nprint(json.dumps({"type": "result", "result": "Finished."}), flush=True)\n'
     )
-    launcher = AgentLauncher()
-    launcher.readiness = lambda provider, host="": type(
-        "Readiness", (), {"installed": True, "authenticated": True}
-    )()
-    monkeypatch.setattr(
-        launcher,
-        "_command",
-        lambda *args, **kwargs: [sys.executable, "-c", provider_script],
-    )
+    launcher = _scripted_launcher(monkeypatch, provider_script)
 
     events = [
         event
@@ -894,7 +865,7 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     A resumed run still owes RCP a patch file, so the mode travels as config.
     """
 
-    command = AgentLauncher._command(
+    command = _command(
         "codex",
         "reread current pointers",
         cwd=Path("/project/.research"),
@@ -916,22 +887,21 @@ def test_codex_resume_keeps_the_write_permission_its_surface_was_given() -> None
     assert command[-2:] == ["019f0000-0000-7000-8000-000000000000", "-"]
 
 
-def test_codex_new_session_writes_only_into_its_scratch_folder() -> None:
-    scratch = Path("/data/run-stage/operation")
-    command = AgentLauncher._command(
+@pytest.mark.parametrize(
+    ("capability", "scratch"),
+    [("scratch_patch", "/data/run-stage/operation"), ("discuss", "/data/conversations/chat-1")],
+)
+def test_codex_new_session_writes_only_into_its_scratch_folder(capability, scratch) -> None:
+    command = _command(
         "codex",
         "write patch.json",
-        cwd=scratch,
-        model=None,
-        reasoning=None,
-        session_id=None,
+        cwd=Path(scratch),
         read_dirs=[Path("/project/repo-a"), Path("/project/repo-b")],
-        capability="scratch_patch",
+        capability=capability,
     )
-
     assert command[:3] == ["codex", "exec", "--json"]
     assert command[command.index("--sandbox") + 1] == "workspace-write"
-    assert command[command.index("--cd") + 1] == str(scratch)
+    assert command[command.index("--cd") + 1] == scratch
     assert "--ignore-user-config" in command
     assert "--ignore-rules" in command
     assert 'web_search="live"' in command
@@ -939,43 +909,16 @@ def test_codex_new_session_writes_only_into_its_scratch_folder() -> None:
     assert 'approval_policy="never"' in command
     assert "--output-schema" not in command
     assert command[-1] == "-"
-    # Truth repositories are pointers the agent reads; none of them may become a
-    # writable sandbox root.
     assert "--add-dir" not in command
     assert not any("/project/repo-" in argument for argument in command)
 
 
-def test_codex_discuss_keeps_networked_writes_inside_conversation_scratch() -> None:
-    scratch = Path("/data/conversations/chat-1")
-    command = AgentLauncher._command(
-        "codex",
-        "answer the question",
-        cwd=scratch,
-        model=None,
-        reasoning=None,
-        session_id=None,
-        read_dirs=[Path("/project/repo-a")],
-        capability="discuss",
-    )
-
-    assert command[command.index("--sandbox") + 1] == "workspace-write"
-    assert command[command.index("--cd") + 1] == str(scratch)
-    assert 'approval_policy="never"' in command
-    assert 'web_search="live"' in command
-    assert "sandbox_workspace_write.network_access=true" in command
-    assert "--add-dir" not in command
-    assert not any("/project/repo-a" in argument for argument in command)
-
-
 def test_codex_new_read_only_session_has_no_workspace_write_config() -> None:
     research_dir = Path("/project/.research")
-    command = AgentLauncher._command(
+    command = _command(
         "codex",
         "review the paper introduction",
         cwd=research_dir,
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path("/project/repo-a")],
         capability="paper_readonly",
     )
@@ -987,22 +930,30 @@ def test_codex_new_read_only_session_has_no_workspace_write_config() -> None:
     assert 'approval_policy="never"' in command
 
 
-def test_codex_work_uses_exact_project_permission_profile() -> None:
+@pytest.mark.parametrize(
+    ("session_id", "read_dirs", "write_dirs"),
+    [
+        (None, [Path("/data/chat-stage/inputs")], [Path("/project/repo-a")] * 2),
+        ("019f0000-0000-7000-8000-000000000002", [], [Path("/project/repo-a")]),
+    ],
+    ids=["new", "resume"],
+)
+def test_codex_work_uses_exact_project_permission_profile(
+    session_id, read_dirs, write_dirs
+) -> None:
     stage = "/data/chat-stage"
     scope = _project_write_scope(
         capability="work_auto",
         stage=stage,
         repository_paths=["/project/repo-a"],
     )
-    command = AgentLauncher._command(
+    command = _command(
         "codex",
         "run the experiment",
         cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=None,
-        read_dirs=[Path("/data/chat-stage/inputs")],
-        write_dirs=[Path("/project/repo-a"), Path("/project/repo-a")],
+        read_dirs=read_dirs,
+        session_id=session_id,
+        write_dirs=write_dirs,
         write_scope=scope,
         capability="work_auto",
         provider_version="0.147.0",
@@ -1021,7 +972,12 @@ def test_codex_work_uses_exact_project_permission_profile() -> None:
         '{"."="write",".git"="write",".research"="read"},'
         '"/project/repo-a/.research"="read"},network={enabled=true}}}'
     ) in command
-    assert command[command.index("--cd") + 1] == stage
+    if session_id:
+        assert command[:4] == ["codex", "exec", "resume", "--json"]
+        assert "--cd" not in command
+        assert command[-2:] == [session_id, "-"]
+    else:
+        assert command[command.index("--cd") + 1] == stage
     assert "--add-dir" not in command
     assert command[-1] == "-"
 
@@ -1041,14 +997,10 @@ def test_codex_profile_keeps_staged_canonical_state_readable() -> None:
         stage="/data/chat-stage",
         repository_paths=[state_repository],
     )
-    command = AgentLauncher._command(
+    command = _command(
         "codex",
         "run the experiment",
         cwd=Path("/data/chat-stage"),
-        model=None,
-        reasoning=None,
-        session_id=None,
-        read_dirs=[],
         write_dirs=[Path(state_repository)],
         write_scope=scope,
         capability="work_auto",
@@ -1071,13 +1023,10 @@ def test_codex_orchestrate_uses_only_its_resolved_project_roots() -> None:
         stage=stage,
         repository_paths=["/project/repo-b"],
     )
-    command = AgentLauncher._command(
+    command = _command(
         "codex",
         "orchestrate the campaign",
         cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path("/project/repo-a")],
         write_dirs=[Path("/project/repo-b")],
         write_scope=scope,
@@ -1106,13 +1055,10 @@ def test_codex_graph_only_orchestrate_accepts_no_repository_write_roots() -> Non
         stage=stage,
         repository_paths=[],
     )
-    command = AgentLauncher._command(
+    command = _command(
         "codex",
         "merge the graph branch",
         cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path("/data/branch-merge-stage/inputs")],
         write_dirs=[],
         write_scope=scope,
@@ -1127,44 +1073,6 @@ def test_codex_graph_only_orchestrate_accepts_no_repository_write_roots() -> Non
     assert "--add-dir" not in command
 
 
-def test_codex_work_resume_keeps_the_exact_project_permission_profile() -> None:
-    session_id = "019f0000-0000-7000-8000-000000000002"
-    stage = "/data/chat-stage"
-    scope = _project_write_scope(
-        capability="work_auto",
-        stage=stage,
-        repository_paths=["/project/repo-a"],
-    )
-    command = AgentLauncher._command(
-        "codex",
-        "continue the operational turn",
-        cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=session_id,
-        read_dirs=[],
-        write_dirs=[Path("/project/repo-a")],
-        write_scope=scope,
-        capability="work_auto",
-        provider_version="0.147.0",
-    )
-
-    assert command[:4] == ["codex", "exec", "resume", "--json"]
-    assert "--sandbox" not in command
-    assert not any(item.startswith("sandbox_mode=") for item in command)
-    assert "--dangerously-bypass-approvals-and-sandbox" not in command
-    assert 'web_search="live"' in command
-    assert not any(item.startswith("approval_policy=") for item in command)
-    assert not any(item.startswith("approvals_reviewer=") for item in command)
-    assert 'default_permissions="rcp_project"' in command
-    permission_profile = next(item for item in command if item.startswith("permissions={"))
-    assert '"/data/chat-stage"=true' in permission_profile
-    assert '"/project/repo-a"=true' in permission_profile
-    assert '".research"="read"' in permission_profile
-    assert "--cd" not in command
-    assert command[-2:] == [session_id, "-"]
-
-
 @pytest.mark.parametrize("provider", ["codex", "claude"])
 @pytest.mark.parametrize("capability", ["work_auto", "orchestrate"])
 def test_work_like_provider_commands_require_a_resolved_project_scope(
@@ -1175,14 +1083,10 @@ def test_work_like_provider_commands_require_a_resolved_project_scope(
         ValueError,
         match=rf"^{capability} launch requires a resolved project write scope$",
     ):
-        AgentLauncher._command(
+        _command(
             provider,
             "operate on the project",
             cwd=Path("/data/task-stage"),
-            model=None,
-            reasoning=None,
-            session_id=None,
-            read_dirs=[],
             write_dirs=[Path("/project/repo-a")],
             capability=capability,
             provider_version="99.0.0",
@@ -1216,14 +1120,10 @@ def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
             rf"{required_version} or newer$"
         ),
     ):
-        AgentLauncher._command(
+        _command(
             provider,
             "operate on the project",
             cwd=Path("/data/task-stage"),
-            model=None,
-            reasoning=None,
-            session_id=None,
-            read_dirs=[],
             write_dirs=[Path("/project/repo-a")],
             write_scope=scope,
             capability="work_auto",
@@ -1233,14 +1133,11 @@ def test_work_like_provider_commands_reject_versions_without_scope_enforcement(
 
 def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
     session_id = "019f0000-0000-7000-8000-000000000001"
-    command = AgentLauncher._command(
+    command = _command(
         "codex",
         "continue reviewing the introduction",
         cwd=Path("/project/.research"),
-        model=None,
-        reasoning=None,
         session_id=session_id,
-        read_dirs=[],
         capability="paper_readonly",
     )
 
@@ -1254,13 +1151,12 @@ def test_codex_read_only_resume_relies_on_pinned_native_session() -> None:
 
 
 def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
-    command = AgentLauncher._command(
+    command = _command(
         "claude",
         "write patch.json",
         cwd=Path("/data/run-stage/operation"),
         model="claude-test",
         reasoning="high",
-        session_id=None,
         read_dirs=[
             Path("/project/repo-a"),
             Path("/project/repo-a"),
@@ -1284,12 +1180,10 @@ def test_claude_scratch_patch_preauthorizes_only_native_web_retrieval() -> None:
 
 
 def test_claude_read_only_command_keeps_plan_permission_mode() -> None:
-    command = AgentLauncher._command(
+    command = _command(
         "claude",
         "review the paper introduction",
         cwd=Path("/project/.research"),
-        model=None,
-        reasoning=None,
         session_id="paper-session",
         read_dirs=[Path("/project/.research")],
         capability="paper_readonly",
@@ -1302,22 +1196,28 @@ def test_claude_read_only_command_keeps_plan_permission_mode() -> None:
     assert command[command.index("--resume") + 1] == "paper-session"
 
 
-def test_claude_work_uses_exact_sandbox_and_tool_allowlists() -> None:
+@pytest.mark.parametrize(
+    ("session_id", "write_dirs"),
+    [
+        (None, [Path("/project/repo-a")] * 2),
+        ("claude-experiment-episode-session", [Path("/project/repo-a")]),
+    ],
+    ids=["new", "resume"],
+)
+def test_claude_work_uses_exact_sandbox_and_tool_allowlists(session_id, write_dirs) -> None:
     stage = "/data/chat-stage"
     scope = _project_write_scope(
         capability="work_auto",
         stage=stage,
         repository_paths=["/project/repo-a"],
     )
-    command = AgentLauncher._command(
+    command = _command(
         "claude",
         "run the experiment",
         cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path("/data/chat-stage/inputs")],
-        write_dirs=[Path("/project/repo-a"), Path("/project/repo-a")],
+        session_id=session_id,
+        write_dirs=write_dirs,
         write_scope=scope,
         capability="work_auto",
         provider_version="2.1.233",
@@ -1348,6 +1248,8 @@ def test_claude_work_uses_exact_sandbox_and_tool_allowlists() -> None:
     assert command[command.index("--mcp-config") + 1] == '{"mcpServers":{}}'
     add_dirs = [command[index + 1] for index, item in enumerate(command) if item == "--add-dir"]
     assert add_dirs == ["/data/chat-stage/inputs", "/project/repo-a"]
+    if session_id:
+        assert command[command.index("--resume") + 1] == session_id
 
 
 def test_claude_split_chat_reads_outer_inputs_without_write_authority() -> None:
@@ -1370,13 +1272,10 @@ def test_claude_split_chat_reads_outer_inputs_without_write_authority() -> None:
         protected_write_paths=["/project/repo-a/.research"],
     )
 
-    command = AgentLauncher._command(
+    command = _command(
         "claude",
         "run the experiment",
         cwd=Path(workspace),
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path(inputs)],
         write_dirs=[Path(repository.path)],
         write_scope=scope,
@@ -1401,13 +1300,10 @@ def test_claude_orchestrate_allows_only_its_resolved_project_roots() -> None:
         stage=stage,
         repository_paths=["/project/repo-b"],
     )
-    command = AgentLauncher._command(
+    command = _command(
         "claude",
         "orchestrate the campaign",
         cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path("/project/repo-a")],
         write_dirs=[Path("/project/repo-b")],
         write_scope=scope,
@@ -1437,13 +1333,10 @@ def test_claude_graph_only_orchestrate_accepts_no_repository_write_roots() -> No
         stage=stage,
         repository_paths=[],
     )
-    command = AgentLauncher._command(
+    command = _command(
         "claude",
         "merge the graph branch",
         cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path(inputs)],
         write_dirs=[],
         write_scope=scope,
@@ -1458,48 +1351,11 @@ def test_claude_graph_only_orchestrate_accepts_no_repository_write_roots() -> No
     assert add_dirs == [inputs]
 
 
-def test_claude_work_resume_keeps_the_native_session_and_exact_scope() -> None:
-    session_id = "claude-experiment-episode-session"
-    stage = "/data/chat-stage"
-    scope = _project_write_scope(
-        capability="work_auto",
-        stage=stage,
-        repository_paths=["/project/repo-a"],
-    )
-    command = AgentLauncher._command(
-        "claude",
-        "continue the bounded experiment turn",
-        cwd=Path(stage),
-        model=None,
-        reasoning=None,
-        session_id=session_id,
-        read_dirs=[Path("/data/chat-stage/inputs")],
-        write_dirs=[Path("/project/repo-a")],
-        write_scope=scope,
-        capability="work_auto",
-        provider_version="2.1.233",
-    )
-
-    assert command[command.index("--permission-mode") + 1] == "dontAsk"
-    assert "bypassPermissions" not in command
-    assert "--allowedTools" not in command
-    settings = json.loads(command[command.index("--settings") + 1])
-    assert settings["permissions"]["allow"][3:] == [
-        "Edit(//data/chat-stage/**)",
-        "Edit(//project/repo-a/**)",
-    ]
-    assert settings["permissions"]["deny"] == ["Edit(//project/repo-a/.research/**)"]
-    assert command[command.index("--resume") + 1] == session_id
-
-
 def test_claude_discuss_keeps_scratch_writable_without_auto_mode() -> None:
-    command = AgentLauncher._command(
+    command = _command(
         "claude",
         "answer the question",
         cwd=Path("/data/chat-stage"),
-        model=None,
-        reasoning=None,
-        session_id=None,
         read_dirs=[Path("/data/chat-stage/inputs")],
         capability="discuss",
     )
@@ -1517,15 +1373,11 @@ def test_remote_provider_command_uses_login_shell_path() -> None:
 
 
 def test_remote_provider_launch_keeps_the_recorded_absolute_argv_zero() -> None:
-    provider_command = AgentLauncher._command(
+    provider_command = _command(
         "claude",
         "prompt",
         binary="/opt/agents/claude",
         cwd=Path("/srv/project/.research"),
-        model=None,
-        reasoning=None,
-        session_id=None,
-        read_dirs=[],
         capability="scratch_patch",
     )
     command = AgentLauncher._remote_login_command(
@@ -1537,45 +1389,27 @@ def test_remote_provider_launch_keeps_the_recorded_absolute_argv_zero() -> None:
     assert "cd /srv/project/.research" in shlex.split(command)[2]
 
 
+@pytest.mark.parametrize(
+    ("exists", "error"),
+    [(False, "does not exist"), (True, "not executable")],
+    ids=["missing", "denied"],
+)
 @pytest.mark.asyncio
-async def test_stream_refuses_a_stale_recorded_path_before_subprocess_launch(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    async def unexpected_launch(*_args, **_kwargs):
-        raise AssertionError("a stale provider path must fail before launch")
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", unexpected_launch)
-
-    events = [
-        event
-        async for event in AgentLauncher().stream(
-            "codex",
-            "prompt",
-            cwd=tmp_path,
-            binary="/missing/recorded/codex",
-            capability="scratch_patch",
-        )
-    ]
-
-    assert [event.event for event in events] == ["error"]
-    assert "does not exist" in events[0].text
-
-
-@pytest.mark.asyncio
-async def test_stream_refuses_a_denied_recorded_path_before_subprocess_launch(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+async def test_stream_refuses_an_unusable_recorded_path_before_subprocess_launch(
+    monkeypatch,
+    tmp_path,
+    exists,
+    error,
 ) -> None:
     binary = tmp_path / "codex"
-    binary.write_text("#!/bin/sh\n", encoding="utf-8")
-    binary.chmod(0o644)
+    if exists:
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o644)
 
     async def unexpected_launch(*_args, **_kwargs):
-        raise AssertionError("a denied provider path must fail before launch")
+        raise AssertionError("an unusable provider path must fail before launch")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", unexpected_launch)
-
     events = [
         event
         async for event in AgentLauncher().stream(
@@ -1586,9 +1420,8 @@ async def test_stream_refuses_a_denied_recorded_path_before_subprocess_launch(
             capability="scratch_patch",
         )
     ]
-
     assert [event.event for event in events] == ["error"]
-    assert "not executable" in events[0].text
+    assert error in events[0].text
 
 
 def test_remote_provider_command_records_a_killable_process_group() -> None:

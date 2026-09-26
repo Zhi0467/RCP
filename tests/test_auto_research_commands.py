@@ -66,6 +66,14 @@ _SPAWN_INSTRUCTION_FILE = "worker-task.md"
 _SPAWN_INSTRUCTION = "Inspect everything needed to settle the seat."
 
 
+def _request(request_type, **kwargs):
+    return request_type(mailbox_id=MAILBOX_ID, credential=CREDENTIAL, **kwargs)
+
+
+def _effect_id(episode_id: str, verb: str, key: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:auto_research:{episode_id}:{verb}:{key}"))
+
+
 def _auto_research_authority(episode_id: str, role: str) -> AgentDispatchAuthority:
     return AgentDispatchAuthority(
         profile="orchestrator" if role == "orchestrator" else "ordinary",
@@ -395,10 +403,9 @@ def _spawn_request(
     key: str | None,
     seat_node_id: str = "exp/check",
 ) -> SpawnCommandRequest:
-    return SpawnCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    return _request(
+        SpawnCommandRequest,
         request_id=request_id,
-        credential=CREDENTIAL,
         verb="spawn",
         idempotency_key=key,
         arguments={
@@ -416,10 +423,9 @@ def _remaining_idempotent_request(
     worker_id: str,
 ) -> MessageCommandRequest | WatchGraphCommandRequest | InboxCommandRequest:
     if kind == "message":
-        return MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        return _request(
+            MessageCommandRequest,
             request_id=request_id,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key=key,
             arguments={
@@ -428,10 +434,9 @@ def _remaining_idempotent_request(
             },
         )
     if kind == "watch_graph":
-        return WatchGraphCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        return _request(
+            WatchGraphCommandRequest,
             request_id=request_id,
-            credential=CREDENTIAL,
             verb="watch_graph",
             idempotency_key=key,
             arguments={
@@ -440,10 +445,9 @@ def _remaining_idempotent_request(
             },
         )
     assert kind == "inbox"
-    return InboxCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    return _request(
+        InboxCommandRequest,
         request_id=request_id,
-        credential=CREDENTIAL,
         verb="inbox",
         idempotency_key=key,
         arguments={"action": "harvest"},
@@ -534,12 +538,7 @@ def _record_interrupted_spawn(
     arguments: SpawnArguments,
     instruction: str,
 ) -> str:
-    planned_worker_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:spawn:{key}",
-        )
-    )
+    planned_worker_id = _effect_id(auto_research.episode_id, "spawn", key)
     now = store.now()
     digest = hashlib.sha256(instruction.encode()).hexdigest()
     store.start_agent_command(
@@ -631,10 +630,9 @@ def test_transient_apply_snapshot_read_leaves_key_and_apply_slot_for_exact_retry
         command_file_reader=read_patch,
     )
     key = "apply-after-snapshot-read-recovers"
-    request = ApplyCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        ApplyCommandRequest,
         request_id="4" * 32,
-        credential=CREDENTIAL,
         verb="apply",
         idempotency_key=key,
         arguments={"patch_file": "patch.json"},
@@ -668,12 +666,7 @@ def test_transient_apply_snapshot_read_leaves_key_and_apply_slot_for_exact_retry
         ),
     )
 
-    expected_apply_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:apply:{key}",
-        )
-    )
+    expected_apply_id = _effect_id(auto_research.episode_id, "apply", key)
     assert recovered.status == replayed.status == "ok"
     assert mismatched.status == "invalid"
     assert "different command arguments" in (mismatched.message or "")
@@ -709,12 +702,7 @@ def test_transient_spawn_snapshot_read_leaves_key_for_one_successful_admission(
     )
     key = "spawn-after-snapshot-read-recovers"
     request = _spawn_request("8" * 32, key=key)
-    expected_worker_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:spawn:{key}",
-        )
-    )
+    expected_worker_id = _effect_id(auto_research.episode_id, "spawn", key)
 
     unavailable = dispatcher.dispatch(root.operation_id, request)
 
@@ -806,10 +794,9 @@ def test_transient_goal_snapshot_read_leaves_kickoff_key_for_exact_retry(tmp_pat
         command_file_reader=read_goal,
     )
     key = "experiment-after-goal-read-recovers"
-    request = EpisodeCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        EpisodeCommandRequest,
         request_id="c" * 32,
-        credential=CREDENTIAL,
         verb="episode",
         idempotency_key=key,
         arguments={
@@ -819,12 +806,7 @@ def test_transient_goal_snapshot_read_leaves_kickoff_key_for_exact_retry(tmp_pat
             "invocation_limit": 3,
         },
     )
-    expected_episode_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:episode:{key}",
-        )
-    )
+    expected_episode_id = _effect_id(auto_research.episode_id, "episode", key)
 
     unavailable = dispatcher.dispatch(root.operation_id, request)
 
@@ -880,22 +862,20 @@ def test_apply_limit_refuses_before_reading_another_patch_file(tmp_path) -> None
     admitted = [
         dispatcher.dispatch(
             root.operation_id,
-            ApplyCommandRequest(
+            _request(
+                ApplyCommandRequest,
                 verb="apply",
-                mailbox_id=MAILBOX_ID,
                 request_id=uuid.uuid4().hex,
-                credential=CREDENTIAL,
                 idempotency_key=f"unavailable-apply-{index}",
                 arguments=ApplyArguments(patch_file="patch.json"),
             ),
         )
         for index in range(AUTO_RESEARCH_APPLY_MAX_PER_TURN)
     ]
-    request = ApplyCommandRequest(
+    request = _request(
+        ApplyCommandRequest,
         verb="apply",
-        mailbox_id=MAILBOX_ID,
         request_id="f" * 32,
-        credential=CREDENTIAL,
         idempotency_key="apply-over-limit",
         arguments=ApplyArguments(patch_file="patch.json"),
     )
@@ -952,11 +932,10 @@ def test_concurrent_apply_admission_reads_only_the_single_remaining_patch(tmp_pa
         for _ in range(2)
     ]
     requests = [
-        ApplyCommandRequest(
+        _request(
+            ApplyCommandRequest,
             verb="apply",
-            mailbox_id=MAILBOX_ID,
             request_id=str(index + 1) * 32,
-            credential=CREDENTIAL,
             idempotency_key=f"concurrent-apply-key-{index}",
             arguments=ApplyArguments(patch_file="patch.json"),
         )
@@ -1016,10 +995,9 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
         arguments=unknown_request.arguments,
         instruction=_SPAWN_INSTRUCTION,
     )
-    request = FinishCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        FinishCommandRequest,
         request_id="f" * 32,
-        credential=CREDENTIAL,
         verb="finish",
         idempotency_key="finish-once",
     )
@@ -1045,10 +1023,9 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
         ),
         dispatcher.dispatch(
             root.operation_id,
-            MessageCommandRequest(
-                mailbox_id=MAILBOX_ID,
+            _request(
+                MessageCommandRequest,
                 request_id="d" * 32,
-                credential=CREDENTIAL,
                 verb="message",
                 idempotency_key="message-after-finish",
                 arguments={
@@ -1059,10 +1036,9 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
         ),
         dispatcher.dispatch(
             root.operation_id,
-            WatchGraphCommandRequest(
-                mailbox_id=MAILBOX_ID,
+            _request(
+                WatchGraphCommandRequest,
                 request_id="e" * 32,
-                credential=CREDENTIAL,
                 verb="watch_graph",
                 idempotency_key="watch-after-finish",
                 arguments={
@@ -1074,19 +1050,17 @@ def test_finish_is_orchestrator_only_idempotent_and_fences_later_work(tmp_path) 
     ]
     status = dispatcher.dispatch(
         root.operation_id,
-        StatusCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            StatusCommandRequest,
             request_id="1" * 32,
-            credential=CREDENTIAL,
             verb="status",
         ),
     )
     validation = dispatcher.dispatch(
         root.operation_id,
-        ValidateCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            ValidateCommandRequest,
             request_id="2" * 32,
-            credential=CREDENTIAL,
             verb="validate",
             arguments={"patch": '{"summary":"read only","ops":[]}'},
         ),
@@ -1254,10 +1228,9 @@ def test_large_validation_records_patch_identity_instead_of_patch_bytes(tmp_path
 
     response = dispatcher.dispatch(
         root.operation_id,
-        ValidateCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            ValidateCommandRequest,
             request_id="9" * 32,
-            credential=CREDENTIAL,
             verb="validate",
             arguments={"patch": patch},
         ),
@@ -1278,10 +1251,9 @@ def test_command_result_must_fit_the_durable_event_ledger() -> None:
 
 
 def test_status_worker_id_is_normalized_and_bounded_before_durable_start(tmp_path) -> None:
-    request = StatusCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        StatusCommandRequest,
         request_id="8" * 32,
-        credential=CREDENTIAL,
         verb="status",
         arguments={"worker_id": "  worker  "},
     )
@@ -1290,10 +1262,9 @@ def test_status_worker_id_is_normalized_and_bounded_before_durable_start(tmp_pat
     store, auto_research, root = _setup_auto_research(tmp_path)
     dispatcher = _dispatcher(store, _Effects(store, auto_research, root).bundle())
     with pytest.raises(ValueError, match="at most 200 characters"):
-        oversized = StatusCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        oversized = _request(
+            StatusCommandRequest,
             request_id="7" * 32,
-            credential=CREDENTIAL,
             verb="status",
             arguments={"worker_id": "x" * 201},
         )
@@ -1367,10 +1338,9 @@ def test_interrupted_successful_spawn_reconciles_existing_worker_without_restart
 
     response = dispatcher.dispatch(
         root.operation_id,
-        SpawnCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            SpawnCommandRequest,
             request_id=retry_request_id,
-            credential=CREDENTIAL,
             verb="spawn",
             idempotency_key=key,
             arguments=arguments,
@@ -1429,10 +1399,9 @@ def test_interrupted_spawn_rejects_an_existing_worker_with_another_instruction(
 
     response = dispatcher.dispatch(
         root.operation_id,
-        SpawnCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            SpawnCommandRequest,
             request_id=retry_id,
-            credential=CREDENTIAL,
             verb="spawn",
             idempotency_key=key,
             arguments=arguments,
@@ -1519,10 +1488,9 @@ def test_message_and_watch_graph_persist_and_pass_their_planned_effect_ids(tmp_p
 
     message = dispatcher.dispatch(
         root.operation_id,
-        MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            MessageCommandRequest,
             request_id=message_command_id,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key=message_key,
             arguments={
@@ -1533,10 +1501,9 @@ def test_message_and_watch_graph_persist_and_pass_their_planned_effect_ids(tmp_p
     )
     watch = dispatcher.dispatch(
         root.operation_id,
-        WatchGraphCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            WatchGraphCommandRequest,
             request_id=watcher_command_id,
-            credential=CREDENTIAL,
             verb="watch_graph",
             idempotency_key=watcher_key,
             arguments={
@@ -1546,18 +1513,8 @@ def test_message_and_watch_graph_persist_and_pass_their_planned_effect_ids(tmp_p
         ),
     )
 
-    expected_message_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:message:{message_key}",
-        )
-    )
-    expected_watcher_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:watch_graph:{watcher_key}",
-        )
-    )
+    expected_message_id = _effect_id(auto_research.episode_id, "message", message_key)
+    expected_watcher_id = _effect_id(auto_research.episode_id, "watch_graph", watcher_key)
     assert message.status == "ok"
     assert watch.status == "ok"
     assert effects.planned_message_ids == [expected_message_id]
@@ -1583,12 +1540,7 @@ def test_unknown_message_reexecutes_with_its_original_deterministic_effect_id(
         recipient_task_id=worker.operation_id,
         body="Carry this instruction exactly once.",
     )
-    planned_message_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:message:{key}",
-        )
-    )
+    planned_message_id = _effect_id(auto_research.episode_id, "message", key)
     store.start_agent_command(
         operation_id=root.operation_id,
         command_id=first_request_id,
@@ -1604,10 +1556,9 @@ def test_unknown_message_reexecutes_with_its_original_deterministic_effect_id(
 
     response = dispatcher.dispatch(
         root.operation_id,
-        MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            MessageCommandRequest,
             request_id="1" * 32,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key=key,
             arguments=arguments,
@@ -1649,10 +1600,9 @@ def test_completed_unavailable_apply_retries_the_original_snapshot_and_effect_id
         command_file_reader=read_patch,
     )
     key = "apply-after-transient-unavailable"
-    request = ApplyCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        ApplyCommandRequest,
         request_id="8" * 32,
-        credential=CREDENTIAL,
         verb="apply",
         idempotency_key=key,
         arguments={"patch_file": "patch.json"},
@@ -1664,12 +1614,7 @@ def test_completed_unavailable_apply_retries_the_original_snapshot_and_effect_id
         request.model_copy(update={"request_id": "9" * 32}),
     )
 
-    expected_apply_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:apply:{key}",
-        )
-    )
+    expected_apply_id = _effect_id(auto_research.episode_id, "apply", key)
     expected_digest = hashlib.sha256(patch.encode()).hexdigest()
     assert unavailable.status == "unavailable"
     assert recovered.status == "ok"
@@ -1707,12 +1652,7 @@ def test_completed_unavailable_spawn_keeps_and_reflects_its_original_admission(t
     dispatcher = _dispatcher(store, replace(effects.bundle(), spawn=spawn))
     key = "spawn-after-transient-unavailable"
     request = _spawn_request("0" * 32, key=key)
-    expected_worker_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:spawn:{key}",
-        )
-    )
+    expected_worker_id = _effect_id(auto_research.episode_id, "spawn", key)
 
     unavailable = dispatcher.dispatch(root.operation_id, request)
     accepted = store.auto_research_child_admission(expected_worker_id)
@@ -1773,10 +1713,9 @@ def test_completed_unavailable_experiment_kickoff_keeps_and_reflects_admission(
 
     dispatcher = _dispatcher(store, replace(effects.bundle(), episode=episode))
     key = "experiment-after-transient-unavailable"
-    request = EpisodeCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        EpisodeCommandRequest,
         request_id="2" * 32,
-        credential=CREDENTIAL,
         verb="episode",
         idempotency_key=key,
         arguments={
@@ -1784,12 +1723,7 @@ def test_completed_unavailable_experiment_kickoff_keeps_and_reflects_admission(
             "node_id": "exp/check",
         },
     )
-    expected_episode_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:episode:{key}",
-        )
-    )
+    expected_episode_id = _effect_id(auto_research.episode_id, "episode", key)
 
     unavailable = dispatcher.dispatch(root.operation_id, request)
     accepted = store.auto_research_child_admission(expected_episode_id)
@@ -1827,12 +1761,7 @@ def test_semantically_invalid_spawn_cancels_its_child_admission(tmp_path) -> Non
         root.operation_id,
         _spawn_request("4" * 32, key=key),
     )
-    expected_worker_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:spawn:{key}",
-        )
-    )
+    expected_worker_id = _effect_id(auto_research.episode_id, "spawn", key)
 
     assert response.status == "invalid"
     admission = store.auto_research_child_admission(expected_worker_id)
@@ -1859,10 +1788,9 @@ def test_completed_unavailable_worker_resume_reuses_the_planned_operation_id(tmp
 
     dispatcher = _dispatcher(store, replace(effects.bundle(), resume=resume))
     key = "resume-worker-after-transient-unavailable"
-    request = ResumeCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        ResumeCommandRequest,
         request_id="b" * 32,
-        credential=CREDENTIAL,
         verb="resume",
         idempotency_key=key,
         arguments={"worker_id": worker.operation_id},
@@ -1885,12 +1813,7 @@ def test_completed_unavailable_worker_resume_reuses_the_planned_operation_id(tmp
         request.model_copy(update={"request_id": "a" * 32}),
     )
 
-    expected_operation_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:resume:{key}",
-        )
-    )
+    expected_operation_id = _effect_id(auto_research.episode_id, "resume", key)
     assert unavailable.status == "unavailable"
     assert mismatched.status == "invalid"
     assert "different command arguments" in (mismatched.message or "")
@@ -1922,10 +1845,9 @@ def test_completed_unavailable_experiment_resume_reuses_the_planned_operation_id
 
     dispatcher = _dispatcher(store, replace(effects.bundle(), episode=episode))
     key = "resume-experiment-after-transient-unavailable"
-    request = EpisodeCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    request = _request(
+        EpisodeCommandRequest,
         request_id="d" * 32,
-        credential=CREDENTIAL,
         verb="episode",
         idempotency_key=key,
         arguments={
@@ -1940,12 +1862,7 @@ def test_completed_unavailable_experiment_resume_reuses_the_planned_operation_id
         request.model_copy(update={"request_id": "e" * 32}),
     )
 
-    expected_operation_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:episode:{key}",
-        )
-    )
+    expected_operation_id = _effect_id(auto_research.episode_id, "episode", key)
     assert unavailable.status == "unavailable"
     assert recovered.status == "ok"
     assert recovered.result["operation_id"] == expected_operation_id
@@ -1956,13 +1873,20 @@ def test_completed_unavailable_experiment_resume_reuses_the_planned_operation_id
 
 
 @pytest.mark.parametrize("effect_name", ["message", "watch_graph", "inbox"])
-def test_completed_unavailable_idempotent_effect_reexecutes_with_recorded_id(
-    tmp_path,
-    effect_name,
+@pytest.mark.parametrize("committed", [False, True])
+def test_completed_unavailable_idempotent_effect_recovers_with_recorded_id(
+    tmp_path, effect_name, committed
 ) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     worker = _worker(store, auto_research, root, "worker")
-    effects = _Effects(store, auto_research, root)
+    effects = _Effects(
+        store,
+        auto_research,
+        root,
+        reconcile_result=AutoResearchCommandEffectResult(result={"disposition": "existing"})
+        if committed
+        else None,
+    )
     effect_attempts: list[str] = []
 
     def transient_effect(_context, _arguments, planned_effect_id):
@@ -1973,10 +1897,7 @@ def test_completed_unavailable_idempotent_effect_reexecutes_with_recorded_id(
             result={"effect_id": planned_effect_id, "disposition": "created"}
         )
 
-    dispatcher = _dispatcher(
-        store,
-        replace(effects.bundle(), **{effect_name: transient_effect}),
-    )
+    dispatcher = _dispatcher(store, replace(effects.bundle(), **{effect_name: transient_effect}))
     key = f"{effect_name}-after-transient-unavailable"
     request = _remaining_idempotent_request(
         effect_name,
@@ -1984,76 +1905,21 @@ def test_completed_unavailable_idempotent_effect_reexecutes_with_recorded_id(
         key=key,
         worker_id=worker.operation_id,
     )
-
     unavailable = dispatcher.dispatch(root.operation_id, request)
     recovered = dispatcher.dispatch(
         root.operation_id,
         request.model_copy(update={"request_id": "6" * 32}),
     )
 
-    expected_effect_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:{effect_name}:{key}",
-        )
-    )
+    expected_effect_id = _effect_id(auto_research.episode_id, effect_name, key)
     assert unavailable.status == "unavailable"
     assert recovered.status == "ok"
-    assert recovered.result == {
-        "effect_id": expected_effect_id,
-        "disposition": "created",
-    }
-    assert effect_attempts == [expected_effect_id, expected_effect_id]
-    assert effects.reconcile_calls == [effect_name]
-    assert effects.reconcile_planned_effect_ids == [expected_effect_id]
-
-
-@pytest.mark.parametrize("effect_name", ["message", "watch_graph", "inbox"])
-def test_completed_unavailable_idempotent_effect_returns_reconciled_commit(
-    tmp_path,
-    effect_name,
-) -> None:
-    store, auto_research, root = _setup_auto_research(tmp_path)
-    worker = _worker(store, auto_research, root, "worker")
-    reconciled = AutoResearchCommandEffectResult(
-        message="The durable effect already exists.",
-        result={"disposition": "existing"},
+    assert recovered.result == (
+        {"disposition": "existing"}
+        if committed
+        else {"effect_id": expected_effect_id, "disposition": "created"}
     )
-    effects = _Effects(store, auto_research, root, reconcile_result=reconciled)
-    effect_attempts: list[str] = []
-
-    def committed_then_unavailable(_context, _arguments, planned_effect_id):
-        effect_attempts.append(planned_effect_id)
-        raise AutoResearchCommandUnavailable("The response transport was interrupted.")
-
-    dispatcher = _dispatcher(
-        store,
-        replace(effects.bundle(), **{effect_name: committed_then_unavailable}),
-    )
-    key = f"{effect_name}-committed-before-unavailable"
-    request = _remaining_idempotent_request(
-        effect_name,
-        request_id="7" * 32,
-        key=key,
-        worker_id=worker.operation_id,
-    )
-
-    unavailable = dispatcher.dispatch(root.operation_id, request)
-    recovered = dispatcher.dispatch(
-        root.operation_id,
-        request.model_copy(update={"request_id": "8" * 32}),
-    )
-
-    expected_effect_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:{effect_name}:{key}",
-        )
-    )
-    assert unavailable.status == "unavailable"
-    assert recovered.status == "ok"
-    assert recovered.result == {"disposition": "existing"}
-    assert effect_attempts == [expected_effect_id]
+    assert effect_attempts == [expected_effect_id] * (1 if committed else 2)
     assert effects.reconcile_calls == [effect_name]
     assert effects.reconcile_planned_effect_ids == [expected_effect_id]
 
@@ -2067,12 +1933,7 @@ def test_unknown_worker_resume_reexecutes_with_the_original_deterministic_operat
     dispatcher = _dispatcher(store, effects.bundle())
     key = "resume-worker-once"
     original_request_id = "2" * 32
-    planned_operation_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:resume:{key}",
-        )
-    )
+    planned_operation_id = _effect_id(auto_research.episode_id, "resume", key)
     arguments = {"worker_id": worker.operation_id}
     store.start_agent_command(
         operation_id=root.operation_id,
@@ -2089,10 +1950,9 @@ def test_unknown_worker_resume_reexecutes_with_the_original_deterministic_operat
 
     response = dispatcher.dispatch(
         root.operation_id,
-        ResumeCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            ResumeCommandRequest,
             request_id="3" * 32,
-            credential=CREDENTIAL,
             verb="resume",
             idempotency_key=key,
             arguments=arguments,
@@ -2107,22 +1967,19 @@ def test_unknown_worker_resume_reexecutes_with_the_original_deterministic_operat
     assert original is not None and original.exited_at is not None
 
 
-def test_unknown_experiment_resume_reexecutes_with_the_original_deterministic_operation_id(
+@pytest.mark.parametrize("action", ["resume", "stop"])
+def test_unknown_experiment_control_reuses_the_original_deterministic_operation_id(
     tmp_path,
+    action,
 ) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     effects = _Effects(store, auto_research, root)
     dispatcher = _dispatcher(store, effects.bundle())
-    key = "resume-experiment-once"
+    key = f"{action}-experiment-once"
     original_request_id = "4" * 32
-    planned_operation_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:episode:{key}",
-        )
-    )
+    planned_operation_id = _effect_id(auto_research.episode_id, "episode", key)
     arguments = {
-        "action": "resume",
+        "action": action,
         "episode_id": "00000000-0000-4000-8000-000000000999",
     }
     store.start_agent_command(
@@ -2140,10 +1997,9 @@ def test_unknown_experiment_resume_reexecutes_with_the_original_deterministic_op
 
     response = dispatcher.dispatch(
         root.operation_id,
-        EpisodeCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            EpisodeCommandRequest,
             request_id="5" * 32,
-            credential=CREDENTIAL,
             verb="episode",
             idempotency_key=key,
             arguments=arguments,
@@ -2152,6 +2008,7 @@ def test_unknown_experiment_resume_reexecutes_with_the_original_deterministic_op
 
     assert response.status == "ok"
     assert response.result["operation_id"] == planned_operation_id
+    assert effects.reconcile_calls == ["episode"]
     assert effects.reconcile_planned_effect_ids == [planned_operation_id]
     assert effects.episode_effect_ids == [planned_operation_id]
     original = store.agent_command(original_request_id)
@@ -2189,10 +2046,9 @@ def test_unknown_worker_control_reissues_only_the_idempotent_pause_or_stop(
 
     response = dispatcher.dispatch(
         root.operation_id,
-        request_type(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            request_type,
             request_id="7" * 32,
-            credential=CREDENTIAL,
             verb=verb,
             idempotency_key=key,
             arguments=arguments,
@@ -2202,52 +2058,6 @@ def test_unknown_worker_control_reissues_only_the_idempotent_pause_or_stop(
     assert response.status == "ok"
     assert effects.reconcile_calls == [verb]
     assert getattr(effects, call_field) == [worker.operation_id]
-
-
-def test_unknown_experiment_stop_reissues_the_monotonic_stop_path(tmp_path) -> None:
-    store, auto_research, root = _setup_auto_research(tmp_path)
-    effects = _Effects(store, auto_research, root)
-    dispatcher = _dispatcher(store, effects.bundle())
-    key = "stop-experiment-once"
-    original_request_id = "8" * 32
-    arguments = {
-        "action": "stop",
-        "episode_id": "00000000-0000-4000-8000-000000000998",
-    }
-    planned_effect_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:episode:{key}",
-        )
-    )
-    store.start_agent_command(
-        operation_id=root.operation_id,
-        command_id=original_request_id,
-        episode_id=auto_research.episode_id,
-        verb="episode",
-        idempotency_key=key,
-        payload={
-            "request_id": original_request_id,
-            "arguments": arguments,
-            "planned_episode_effect_id": planned_effect_id,
-        },
-    )
-
-    response = dispatcher.dispatch(
-        root.operation_id,
-        EpisodeCommandRequest(
-            mailbox_id=MAILBOX_ID,
-            request_id="9" * 32,
-            credential=CREDENTIAL,
-            verb="episode",
-            idempotency_key=key,
-            arguments=arguments,
-        ),
-    )
-
-    assert response.status == "ok"
-    assert effects.reconcile_calls == ["episode"]
-    assert effects.episode_effect_ids == [planned_effect_id]
 
 
 def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
@@ -2263,10 +2073,9 @@ def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
     dispatcher = _dispatcher(store, effects.bundle())
     key = "watch-once"
     original_request_id = "4" * 32
-    arguments = WatchGraphCommandRequest(
-        mailbox_id=MAILBOX_ID,
+    arguments = _request(
+        WatchGraphCommandRequest,
         request_id=original_request_id,
-        credential=CREDENTIAL,
         verb="watch_graph",
         idempotency_key=key,
         arguments={
@@ -2274,12 +2083,7 @@ def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
             "reason": "Wait for the original watcher.",
         },
     ).arguments
-    planned_watcher_id = str(
-        uuid.uuid5(
-            uuid.NAMESPACE_URL,
-            f"rcp:auto_research:{auto_research.episode_id}:watch_graph:{key}",
-        )
-    )
+    planned_watcher_id = _effect_id(auto_research.episode_id, "watch_graph", key)
     store.start_agent_command(
         operation_id=root.operation_id,
         command_id=original_request_id,
@@ -2295,10 +2099,9 @@ def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
 
     response = dispatcher.dispatch(
         root.operation_id,
-        WatchGraphCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            WatchGraphCommandRequest,
             request_id="5" * 32,
-            credential=CREDENTIAL,
             verb="watch_graph",
             idempotency_key=key,
             arguments=arguments,
@@ -2331,10 +2134,9 @@ def test_unknown_watch_retry_uses_and_validates_the_original_planned_watcher_id(
     )
     refused = dispatcher.dispatch(
         root.operation_id,
-        WatchGraphCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            WatchGraphCommandRequest,
             request_id="7" * 32,
-            credential=CREDENTIAL,
             verb="watch_graph",
             idempotency_key=key,
             arguments=arguments,
@@ -2376,10 +2178,9 @@ def test_orchestrator_messages_spawned_child_work_by_stable_worker_id(tmp_path) 
     )
     response = dispatcher.dispatch(
         root.operation_id,
-        MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            MessageCommandRequest,
             request_id="2" * 32,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key="message-child",
             arguments=arguments,
@@ -2449,10 +2250,9 @@ def test_unknown_message_recipient_has_readable_diagnostic(tmp_path, missing_bin
     before = store.episode_budget_meter(episode.episode_id)
     response = dispatcher.dispatch(
         root.operation_id,
-        MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            MessageCommandRequest,
             request_id="2" * 32,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key="unknown-worker",
             arguments={"recipient_task_id": unknown_id, "body": "Inspect the result."},
@@ -2480,10 +2280,9 @@ def test_orchestrator_message_requires_the_stable_worker_actor_id_before_effect_
 
     accepted = dispatcher.dispatch(
         root.operation_id,
-        MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            MessageCommandRequest,
             request_id="2" * 32,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key="message-stable-worker",
             arguments={
@@ -2529,10 +2328,9 @@ def test_orchestrator_message_requires_the_stable_worker_actor_id_before_effect_
 
     refused = dispatcher.dispatch(
         root.operation_id,
-        MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            MessageCommandRequest,
             request_id="3" * 32,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key="message-worker-continuation",
             arguments={
@@ -2689,12 +2487,7 @@ def test_worker_cannot_replay_an_orchestrator_idempotency_key(
         original = dispatcher.dispatch(root.operation_id, request)
         assert original.status == "ok"
     else:
-        planned_worker_id = str(
-            uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"rcp:auto_research:{auto_research.episode_id}:spawn:{key}",
-            )
-        )
+        planned_worker_id = _effect_id(auto_research.episode_id, "spawn", key)
         store.start_agent_command(
             operation_id=root.operation_id,
             command_id=first_request_id,
@@ -2734,10 +2527,9 @@ def test_worker_may_reply_only_by_message_while_other_mutations_remain_orchestra
 
     reply = dispatcher.dispatch(
         worker.operation_id,
-        MessageCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            MessageCommandRequest,
             request_id="8" * 32,
-            credential=CREDENTIAL,
             verb="message",
             idempotency_key="worker-reply",
             arguments={
@@ -2755,10 +2547,9 @@ def test_worker_may_reply_only_by_message_while_other_mutations_remain_orchestra
     ]
 
     forbidden = [
-        SpawnCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            SpawnCommandRequest,
             request_id="9" * 32,
-            credential=CREDENTIAL,
             verb="spawn",
             idempotency_key="worker-spawn",
             arguments={
@@ -2766,34 +2557,30 @@ def test_worker_may_reply_only_by_message_while_other_mutations_remain_orchestra
                 "instruction_file": _SPAWN_INSTRUCTION_FILE,
             },
         ),
-        PauseCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            PauseCommandRequest,
             request_id="a" * 32,
-            credential=CREDENTIAL,
             verb="pause",
             idempotency_key="worker-pause",
             arguments={"worker_id": worker.operation_id},
         ),
-        ResumeCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            ResumeCommandRequest,
             request_id="b" * 32,
-            credential=CREDENTIAL,
             verb="resume",
             idempotency_key="worker-resume",
             arguments={"worker_id": worker.operation_id},
         ),
-        StopCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            StopCommandRequest,
             request_id="c" * 32,
-            credential=CREDENTIAL,
             verb="stop",
             idempotency_key="worker-stop",
             arguments={"worker_id": worker.operation_id},
         ),
-        WatchGraphCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            WatchGraphCommandRequest,
             request_id="d" * 32,
-            credential=CREDENTIAL,
             verb="watch_graph",
             idempotency_key="worker-watch",
             arguments={
@@ -2801,10 +2588,9 @@ def test_worker_may_reply_only_by_message_while_other_mutations_remain_orchestra
                 "reason": "Wait for the belief transition.",
             },
         ),
-        FinishCommandRequest(
-            mailbox_id=MAILBOX_ID,
+        _request(
+            FinishCommandRequest,
             request_id="e" * 32,
-            credential=CREDENTIAL,
             verb="finish",
             idempotency_key="worker-finish",
         ),

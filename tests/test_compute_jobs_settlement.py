@@ -109,12 +109,7 @@ async def test_work_settlement_corrects_only_unobserved_running_compute(
         run_truth_scope=["repo-a"],
         mode="work",
     )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="compute-settlement",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "compute-settlement")
     monkeypatch.setattr(
         work, "arm_watchers", partial(work.arm_watchers, check_runner=commands.check_runner)
     )
@@ -275,12 +270,7 @@ async def test_missing_helper_watcher_fails_and_retains_recovery(
         run_truth_scope=["repo-a"],
         mode="work",
     )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="missing-compute-handoff",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "missing-compute-handoff")
     staged_turns = _capture_commands(monkeypatch, work)
 
     class Launcher:

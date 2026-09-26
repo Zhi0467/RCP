@@ -61,12 +61,7 @@ async def test_initial_validator_preserves_setup_failure_over_serve_and_cleanup_
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="work-mailbox-initial-failure",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "work-mailbox-initial-failure")
     staged_mailboxes: list[StagedCommandMailbox] = []
     started: list[str] = []
     finished: list[str] = []
@@ -127,12 +122,7 @@ async def test_correction_validator_closes_when_post_stage_receipt_fails(
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="work-mailbox-correction-failure",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "work-mailbox-correction-failure")
     invalid = shape_invalid_patch().model_copy(update={"kind": "work"})
     staged_mailboxes: list[StagedCommandMailbox] = []
     started: list[str] = []
@@ -211,12 +201,7 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     request = _request().model_copy(
         update={"message": None, "session_id": "manual-repair-native-session"}
     )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="work-mailbox-manual-repair-failure",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "work-mailbox-manual-repair-failure")
     stage = tmp_path / "data" / "run-stage" / "chat-manual-repair-failure"
     stage.mkdir(parents=True)
     (stage / "workspace").mkdir()
@@ -327,12 +312,7 @@ async def test_local_work_keeps_rcp_inputs_outside_provider_workspace(manifest, 
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="work-contained-inputs",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "work-contained-inputs")
     launcher = ScriptedLauncher([{}], message="The local Work turn completed.")
 
     frames = [
@@ -373,12 +353,7 @@ async def test_work_watcher_binding_keeps_originating_episode_lineage(
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="work-episode-watcher-binding",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "work-episode-watcher-binding")
     episode_id = "auto-research-episode"
     original_agent_task = execution.store.agent_task
 
@@ -525,12 +500,7 @@ async def test_operational_continuation_renders_current_launch_client(
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="current-launch-turn",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "current-launch-turn")
     previous_stage = tmp_path / "previous-stage"
     previous_stage.mkdir()
     previous = stage_patch_validation_mailbox(
@@ -758,12 +728,7 @@ def _one_result_app(root: Path):
         mode="work",
     )
     store = app.state.background_tasks.store
-    execution = _chat_task_execution(
-        store,
-        operation_id="work-one-result",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "work-one-result")
     # A real dispatch leaves this behind, and the stage a second staging attaches
     # to is validated against it. The fixture builds its execution directly, so
     # it has to leave the same trace a launch would.
