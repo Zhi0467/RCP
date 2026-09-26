@@ -172,7 +172,11 @@ follows invariant 8: an OS lock, not a path's existence, proves a live owner.
    and reopen it; otherwise rerun `uv run rcp serve`.
 
 It stops at the first failed step and names it. After a failure past step 5 it
-prints the exact command that returns to the recorded start.
+returns to the recorded start by itself: it checks that revision out again,
+rebuilds `web/dist`, and runs `uv sync` there, so old code never runs against
+the new release's frontend or dependencies. It never replaced the app in
+`/Applications`, so the running app is unchanged. If that restore fails too, it
+prints each remaining command.
 
 `docs/install.md` changes from "clone `main`" to "clone, then check out the
 latest release", and gains an "Update a source checkout" section.
@@ -182,9 +186,11 @@ latest release", and gains an "Update a source checkout" section.
 - `team_session.rs` tells a desktop that is too old to rebuild "from current
   origin/main". The new message depends on the native build kind, which the
   shell knows before any team space opens. A prebuilt app never sees the
-  script. It is pointed to the download when the personal backend's cached
-  notice confirms the companion release, and is otherwise told the app build
-  is not published yet. The download URL is built from the validated tag. A
+  script. When the personal backend's cached notice confirms the companion
+  release, it is pointed to that download. When the check succeeded but found
+  no companion, it is told the app build is not published yet. When the check
+  is `off`, `failed`, `unchecked`, or `unknown`, availability is unknown: it is
+  pointed to the fixed releases page instead. Both URLs are built locally. A
   source build is pointed to the script.
 - Compatibility is decided by protocol overlap. The message says to install a
   compatible release, not that the latest one always fixes it.
@@ -202,11 +208,16 @@ latest release", and gains an "Update a source checkout" section.
   rerun on its own for the same tag. It never touches `vX.Y.Z`.
 - It reads the exact commit of the published `vX.Y.Z` release and builds that
   commit on an Apple Silicon macOS runner.
-- Version stamp before building: `web/package.json` and the root version in
-  `web/package-lock.json`, the package version in `Cargo.toml` and its
-  `Cargo.lock` entry. Tauri keeps reading `package.json`. The Python version is
-  stamped by `release_build.py` with the promoted build number and commit, not
-  this workflow's run number.
+- One version everywhere: the repository keeps `web/package.json`, the root
+  version in `web/package-lock.json`, `Cargo.toml`, and its `Cargo.lock` entry
+  equal to `src/rcp/__init__.py`. A test enforces it, and a version bump
+  changes all of them. So a source app built from a release tag reports that
+  release's version, and the native identity is correct without stamping.
+  They move from `0.3.2` to the current version in this pull request. Tauri
+  keeps reading `package.json`.
+- Before building, the workflow checks that those versions equal the tag and
+  stops if not. The Python version is stamped by `release_build.py` with the
+  promoted build number and commit, not this workflow's run number.
 - It runs `npm --prefix web run desktop:build`, then
   `packaging/smoke-backend.py` against that exact bundle, then zips it with
   `ditto` so macOS metadata survives, and writes a SHA-256 checksum.
@@ -265,12 +276,15 @@ latest release", and gains an "Update a source checkout" section.
 - Script: on a throwaway clone, from an older tag, a detached commit, a local
   branch, and a branch named like the tag. It ends on the new tag with a built
   `web/dist`, refuses a dirty tree, refuses while either of two backends with
-  different data directories is running, and after an injected failure
-  following checkout prints the way back. With `--desktop` and no Rust it stops
+  different data directories is running, and after an injected failure in
+  `uv sync` ends back on the start revision with that revision's `web/dist`. With `--desktop` and no Rust it stops
   before changing anything.
 - Native: rebuild Tauri; the build kind is reported; the `team_session`
   mismatch message for a prebuilt app with the companion ready, a prebuilt app
-  without it, and a source build.
+  whose successful check found none, a prebuilt app whose check is `off` or
+  `failed`, and a source build.
+- Versions: the test that the four native version fields equal
+  `src/rcp/__init__.py`.
 - Prebuilt app: run `publish-desktop.yml` for a throwaway tag, including a
   rerun after an injected upload failure. On a Mac, download the zip, approve
   it once, open it: the project index opens, the Download button opens the
