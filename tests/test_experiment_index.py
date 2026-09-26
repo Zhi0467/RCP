@@ -5,6 +5,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import traceback
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -1203,7 +1204,10 @@ def test_branch_created_child_experiment_is_indexed_without_entering_main_cache(
         refresh_bounds: list[float] = []
 
         def recorded_refresh(max_age_seconds: float) -> bool:
-            refresh_bounds.append(max_age_seconds)
+            # The seeded Experiment-loop task runs on the background worker and
+            # reads this workspace too; count only the index route's reads.
+            if any(frame.name == "experiment_episodes" for frame in traceback.extract_stack()):
+                refresh_bounds.append(max_age_seconds)
             return refresh_if_stale(max_age_seconds)
 
         @contextmanager
