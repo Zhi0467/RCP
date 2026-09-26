@@ -316,6 +316,23 @@ export function groupConversationAgents(
   return groups;
 }
 
+/** A draft nobody has sent a turn in; opening a new chat reuses it. */
+export function unsentConversation(
+  conversations: ChatConversation[],
+  kind: ChatKind,
+  nodeId: string | null = null,
+): ChatConversation | null {
+  return (
+    conversations.find(
+      (conversation) =>
+        conversation.kind === kind &&
+        conversation.nodeId === nodeId &&
+        conversation.tasks.length === 0 &&
+        !conversation.updatedAt,
+    ) ?? null
+  );
+}
+
 export function latestConversation(
   conversations: ChatConversation[],
   kind: ChatKind,

@@ -20,6 +20,7 @@ import {
   parseConversationMode,
   startConversationTurn,
   toggleConversationMode,
+  unsentConversation,
 } from "../src/chatWorkspace.ts";
 
 function task(overrides) {
@@ -79,6 +80,35 @@ test("conversations group by chat id rather than latest node", () => {
   assert.equal(conversations.find((item) => item.chatId === "chat-a")?.title, "Node A");
   assert.equal(latestConversation(conversations, "node_chat", "node/a")?.chatId, "chat-b");
   assert.equal(chatIdForTask(tasks[2]), "chat-p");
+});
+
+test("opening a new chat reuses an unsent draft of the same kind and node only", () => {
+  const draft = (chatId, kind = "project_chat", nodeId = null) => ({
+    chatId,
+    kind,
+    nodeId,
+    title: "Project",
+  });
+  const sent = task({
+    operation_id: "sent",
+    kind: "project_chat",
+    request: { chat_id: "sent-draft" },
+  });
+  const conversations = groupChatConversations([], [sent], {}, "Project", [
+    draft("sent-draft"),
+    draft("empty"),
+    draft("node-empty", "node_chat", "node/a"),
+  ]);
+  assert.equal(unsentConversation(conversations, "project_chat")?.chatId, "empty");
+  assert.equal(unsentConversation(conversations, "node_chat", "node/a")?.chatId, "node-empty");
+  assert.equal(unsentConversation(conversations, "node_chat", "node/b"), null);
+  assert.equal(
+    unsentConversation(
+      groupChatConversations([], [sent], {}, "Project", [draft("sent-draft")]),
+      "project_chat",
+    ),
+    null,
+  );
 });
 
 test("draft conversations survive without tasks and indicators distinguish active and unread", () => {

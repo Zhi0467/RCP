@@ -53,6 +53,7 @@ import {
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
+  unsentConversation,
   type ChatKind,
   type ConversationTurnSubmission,
 } from "./chatWorkspace";
@@ -4188,7 +4189,9 @@ export default function App() {
                 className="button secondary"
                 disabled={projectReconciliation !== "authoritative"}
                 onClick={() => {
-                  const chatId = startConversation("project_chat", null, project.name);
+                  const chatId =
+                    unsentConversation(conversations, "project_chat")?.chatId ??
+                    startConversation("project_chat", null, project.name);
                   openChats(chatId);
                 }}
               >
@@ -4728,7 +4731,10 @@ export default function App() {
                 const node = conversation.nodeId
                   ? (presentedGraph.nodes[conversation.nodeId] ?? null)
                   : null;
-                selectChat(startConversation(conversation.kind, node, project.name));
+                selectChat(
+                  unsentConversation(conversations, conversation.kind, conversation.nodeId)
+                    ?.chatId ?? startConversation(conversation.kind, node, project.name),
+                );
               }}
             />
           )}
@@ -4861,7 +4867,9 @@ export default function App() {
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onNewSession={() => {
                 const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
-                const chatId = startConversation("node_chat", node, project.name);
+                const chatId =
+                  unsentConversation(conversations, "node_chat", floatingChat.nodeId)?.chatId ??
+                  startConversation("node_chat", node, project.name);
                 selectChat(chatId);
                 setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
               }}
