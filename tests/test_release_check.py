@@ -123,7 +123,9 @@ def test_failure_preserves_last_success_without_retry(github, code):
 def test_bounded_invalid_transport(github, monkeypatch, payload):
     github[0]["/latest"] = (200, payload)
     monkeypatch.setattr(limits, "RELEASE_CHECK_MAX_BYTES", 1024)
-    monkeypatch.setattr(limits, "RELEASE_CHECK_DEADLINE_SECONDS", 0.1)
+    if payload == "stall":
+        # Only the stall needs a short deadline; the others must reach the server.
+        monkeypatch.setattr(limits, "RELEASE_CHECK_DEADLINE_SECONDS", 0.1)
     assert ReleaseCheck("personal", "0.4.9").check().status == "failed"
     assert github[1] == ["/latest"]
 
