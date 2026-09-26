@@ -65,8 +65,12 @@ The script refuses a running backend or missing build tools before changing the
 checkout. It records the starting branch or commit, fetches the exact tag, checks
 it out detached, installs Web dependencies, builds `web/dist`, and runs `uv sync`.
 With `--desktop`, it also builds the development app and requires Rust and the
-Xcode command-line tools. A failed step stops the update; a failure after checkout
-prints the command to return to the recorded start. No local branch is reset.
+Xcode command-line tools. A failed step stops the update. After a failure past
+the checkout, the script restores the recorded start by itself: it checks that
+revision out again, reinstalls Web dependencies, rebuilds `web/dist`, and runs
+`uv sync`. Only if that restore also fails does it print the remaining commands to
+run by hand. The app in `/Applications` is never replaced, and no local branch is
+reset.
 
 For the Web app, restart with `uv run rcp serve`. For the desktop app, replace
 `/Applications/RCP.app` with `web/src-tauri/target/debug/bundle/macos/RCP.app` and
