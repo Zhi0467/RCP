@@ -44,8 +44,6 @@ access, then send:
 - **Artifacts with a reply path.** Inspect generated artifacts in the built-in
   viewer, annotate text or image regions, and send the annotation back to the
   agent that made it.
-- **A paper from approved research.** Build the introduction from
-  human-approved nodes while agents keep gathering evidence.
 - **Your machines, your subscriptions.** Codex or Claude Code, locally or over
   SSH, with provider, runtime, and model settings per agent role. A team space
   on your own Linux server adds shared projects, member attribution, central
