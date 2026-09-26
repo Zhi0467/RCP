@@ -1046,6 +1046,9 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-row {
   position: relative;
 }
+.agent-row > [role="option"] {
+  width: 100%;
+}
 .agent-row-menu {
   position: absolute;
   right: 6px;
