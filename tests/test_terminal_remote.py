@@ -315,6 +315,8 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
     )
     os.close(slave)
     output = bytearray()
+    # Bash's default prompt ends in "# " for root and "$ " otherwise.
+    PROMPTS = (b"$ ", b"# ")
 
     def read_until(marker, seconds=10, start=0):
         markers = marker if isinstance(marker, tuple) else (marker,)
@@ -348,13 +350,13 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
         """
         mark = len(output)
         os.write(master, b"\x03")
-        assert read_until((b"^C", b"$ "), 5, mark), output.decode(errors="replace")
+        assert read_until((b"^C", *PROMPTS), 5, mark), output.decode(errors="replace")
 
     try:
         require(profile._READY_MARKER)
         # The marker is printed just before bash starts. Type nothing until bash
         # prompts: CI once lost the whole session to an interrupt sent in that gap.
-        assert read_until(b"$ ", 10, output.index(profile._READY_MARKER)), output.decode(
+        assert read_until(PROMPTS, 10, output.index(profile._READY_MARKER)), output.decode(
             errors="replace"
         )
         os.write(master, b"sleep 30\n")
