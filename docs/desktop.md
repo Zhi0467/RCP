@@ -140,8 +140,9 @@ through `/usr/bin/security`, whose ACL remains stable across ad-hoc rebuilds.
 That ACL authorizes the Apple tool, not the calling RCP process: it prevents
 rebuild churn and keeps secrets out of argv/page/log state, but it does not
 protect them from another process deliberately invoking the tool as the same
-macOS user. The current cooperative provider model accepts that source-mode
-limitation; a future public signed build must use app-bound credential access.
+macOS user. The current cooperative provider model accepts that limitation for
+source builds and the unsigned prebuilt app alike; app-bound credential access
+is later work.
 Permanent team member tokens use the same bounded helper under service
 `app.researchcontrolpanel.rcp.team-member-token.source-v1`, with one
 `team-connection/<uuid>` account per saved connection.

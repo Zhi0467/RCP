@@ -487,9 +487,11 @@ alias before opening its upstream, so a shared wildcard leaf never routes one
 team's host-bound cookie to another team's server.
 The tool ACL solves source-rebuild stability; because a same-UID process can
 invoke the same general-purpose Apple tool, it is not same-account read
-isolation. That limitation is accepted only under the current cooperative
-provider model and must be replaced by app-bound credential access for wider
-public distribution. Team tokens use the versioned service
+isolation. That limitation is accepted under the current cooperative provider
+model for source builds and for the unsigned prebuilt app alike: an unsigned
+app has no stable signing identity to bind access to, and neither kind of build
+is more exposed than the other. App-bound credential access is later work.
+Team tokens use the versioned service
 `app.researchcontrolpanel.rcp.team-member-token.source-v1` and a distinct
 connection account. The immediately preceding D4 checkpoint never created a
 saved team registry or a token in its unversioned pre-live namespace, so this

@@ -5,8 +5,6 @@ Codex xhigh design review and the GitHub review. Nothing is implemented.
 
 - Implemented: nothing yet.
 - Remains: changes 1–7 below, on one pull request.
-- Open decision: how the prebuilt app treats stored credentials (change 7,
-  "Credentials"). Implementation waits for it.
 - Settled (human, 2026-09-26):
   - Desktop and local Web installs follow promoted releases, not `main`. See
     [the decision record](../decisions/2026-09-26-desktop-installs-follow-releases.md).
@@ -17,6 +15,9 @@ Codex xhigh design review and the GitHub review. Nothing is implemented.
   - Notify only. There is no one-click update. Each notice has a Copy command
     or Download button.
   - The notice is app-wide, not only in Settings.
+  - The prebuilt app keeps today's Keychain storage. The spec now accepts the
+    same same-user exposure for it as for source builds. App-bound credential
+    access is later work.
 - Closure: the pull request merges, the checks in
   [Verification](#verification) pass, the spec sentences are added, and this
   handoff is deleted.
@@ -200,13 +201,12 @@ latest release", and gains an "Update a source checkout" section.
 - The README leads with the download and explains the one-time approval: the
   first launch is blocked, then System Settings → Privacy & Security → Open
   Anyway. A manually downloaded update may ask again.
-- **Credentials (open decision).** The desktop keeps team member tokens and the
-  local HTTPS key in the Keychain with access granted to `/usr/bin/security`
-  (`keychain.rs`), so any process running as the same macOS user can read
-  them. The spec accepts this only for source builds and requires app-bound
-  access for wider public distribution. The prebuilt app is that distribution.
-  The human chooses: add app-bound storage and migration here, or amend the
-  spec to accept the same exposure for unsigned prebuilt apps.
+- Credentials: the desktop keeps team member tokens and the local HTTPS key in
+  the Keychain with access granted to `/usr/bin/security` (`keychain.rs`), so
+  any process running as the same macOS user can read them. The prebuilt app
+  keeps this unchanged. This pull request amends the spec, which had required
+  app-bound access before wider distribution, to accept the same exposure for
+  the unsigned prebuilt app.
 
 ## Out of scope
 
@@ -217,6 +217,9 @@ latest release", and gains an "Update a source checkout" section.
   but whether it works without Apple signing is unverified. Revisit after the
   prebuilt app has shipped.
 - Apple signing.
+- App-bound credential access. Without signing, macOS ties Keychain access to
+  each build's hash, so every app update would ask the user to allow access
+  again.
 
 ## Verification
 

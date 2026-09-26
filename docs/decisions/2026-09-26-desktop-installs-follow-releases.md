@@ -39,5 +39,9 @@ update is out, but does not apply it.
   update notice.
 - Each manual update of the unsigned app asks for approval again. The Tauri
   updater might avoid that, and is the first thing to revisit.
-- If RCP ever pays for signing, the prebuilt app and the updater change
-  together.
+- The prebuilt app keeps the source build's Keychain storage, which any
+  process running as the same user can read. The spec now accepts that for both
+  kinds of build; app-bound access is later work, and easier once the app has
+  a stable signing identity.
+- If RCP ever pays for signing, the prebuilt app, the updater, and app-bound
+  credentials change together.
