@@ -4,9 +4,10 @@ Active:
 
 - [Turns wait for their own agents, and the helper is always offered](handoff-2026-09-25-turns-wait-for-their-agents.md)
   — design confirmed 2026-09-25, not implemented. One turn-end rule: the
-  provider finished RCP's own prompt and has no unfinished subagents. Claude
-  runs subagents in the foreground; Codex exec and app-server use an RCP hook
-  fence. Codex exec retry notices become traces. The launch helper stays
+  provider finished RCP's own prompt and has no unfinished subagents, on local,
+  SSH and replayed turns. Claude runs subagents in the foreground; Codex uses
+  an RCP hook fence behind a guard against other hooks. Codex exec retry
+  notices become traces. The launch helper stays
   offered on Slurm machines, and `launch --service` runs until a human
   cancels it.
 

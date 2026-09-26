@@ -26,4 +26,5 @@ instructions; RCP never reroutes a Slurm submission to the helper.
 
 - Linux machines set to Slurm now need a reachable user manager for helper
   launches. Install already enables linger for the service account.
-- Readiness reports both routes per machine.
+- Scheduler and helper readiness are probed, stored and shown separately.
+  One route being unavailable never marks the other unready.
