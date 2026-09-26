@@ -1135,13 +1135,12 @@ details[open] > .view-disclosure-summary > svg:last-child {
   min-width: 0;
 }
 .agent-row-title {
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  display: -webkit-box;
   font-size: var(--type-md);
   font-weight: 600;
   line-height: 1.3;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .conversation-list [role="option"].unread .agent-row-title {
   color: var(--oxblood-dark);
@@ -1150,6 +1149,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-row-reason,
 .agent-row-meta {
   font-size: var(--type-2xs);
+  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -481,11 +481,15 @@ export function ChatsWorkspace({
                           <AgentStateIcon state={status.state} />
                         </span>
                         <span className="agent-row-body">
-                          <span className="agent-row-title">{conversation.title}</span>
-                          {needsHuman(status) && latest && (
+                          <span className="agent-row-title" title={conversation.title}>
+                            {conversation.title}
+                          </span>
+                          {/* One secondary line always, so every card has the same height. */}
+                          {needsHuman(status) && latest ? (
                             <span className="agent-row-reason">{latest.status_label}</span>
+                          ) : (
+                            <span className="agent-row-meta">{agentMeta(status) || "\u00a0"}</span>
                           )}
-                          {latest && <span className="agent-row-meta">{agentMeta(status)}</span>}
                         </span>
                         <time>
                           {status.state === "working"

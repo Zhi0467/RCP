@@ -172,7 +172,8 @@ icon at the chat band's top left, and a hairline separates list from chat.
 
 Each agent card leads with a filled dot, one fixed colour per state: needs
 you, paused, working (pulsing), unread result, done, failed, or an unsent
-draft. A three-dot menu on
+draft. Cards share one fixed size: a one-line title and one secondary
+line, the attention reason when it needs a human, else the meta. A three-dot menu on
 the card removes an unsent draft, which exists only in the browser, or
 archives a conversation with turns. Archive only hides the card for the
 project (`POST /api/projects/{project_id}/chats/{chat_id}/archive`, listed by
