@@ -4584,6 +4584,7 @@ export default function App() {
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
                 machines={project.machines}
+                computeApiBase={apiBase}
                 onOpenSettings={() => changeView("settings")}
                 graph={presentedGraph}
                 episodes={episodes}

@@ -1103,6 +1103,7 @@ interface ExecutionProps {
   providerLogins?: ProviderLoginState[];
   onProviderLoginVerified?: () => void;
   machines?: Machine[];
+  computeApiBase?: string;
   onOpenSettings?: () => void;
   mutationsDisabled?: boolean;
   experimentStartsDisabled?: boolean;
@@ -1149,6 +1150,7 @@ export function ExecutionView({
   providerLogins = [],
   onProviderLoginVerified,
   machines = [],
+  computeApiBase = "",
   onOpenSettings,
   mutationsDisabled = false,
   experimentStartsDisabled = false,
@@ -1340,7 +1342,13 @@ export function ExecutionView({
   return (
     <section className="view-panel runs-view" aria-label="Runs">
       <ProviderLoginNotice states={providerLogins} onVerified={onProviderLoginVerified} />
-      {onOpenSettings && <ComputeRouteNotice machines={machines} onOpenSettings={onOpenSettings} />}
+      {onOpenSettings && (
+        <ComputeRouteNotice
+          apiBase={computeApiBase}
+          machines={machines}
+          onOpenSettings={onOpenSettings}
+        />
+      )}
       <div className="runs-view-controls">
         <label className="show-archived-runs">
           <input

@@ -1,4 +1,5 @@
 import type {
+  Machine,
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
   ChatMessage,
@@ -474,6 +475,15 @@ export function steerChatTurn(
     { method: "POST", body: JSON.stringify(request) },
     { retryIdentity: false },
   );
+}
+
+export function checkMachineCompute(
+  apiBase: string,
+  alias: string,
+): Promise<Machine["compute_probes"]> {
+  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/check`, {
+    method: "POST",
+  });
 }
 
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {

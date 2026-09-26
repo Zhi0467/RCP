@@ -925,3 +925,8 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+.provider-login-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

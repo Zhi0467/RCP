@@ -464,6 +464,32 @@ def resolve_project_provider_path(
     return result
 
 
+@router.post(
+    "/api/projects/{project_id}/machines/{machine_alias}/compute/check",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def check_machine_compute(
+    project_id: str,
+    machine_alias: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    """Re-check every route of one machine after a human fixed what a notice named."""
+    project_id = catalog.resolve_project_id(project_id)
+    manifest = get_project_service(catalog, project_id).manifest
+    if machine_alias not in manifest.machine_map:
+        raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
+    refresh_compute_probes(
+        store, manifest, project_id, data_dir=catalog.data_dir, machines=[machine_alias]
+    )
+    return {
+        route: probe.model_dump(mode="json") if probe else None
+        for route in ("scheduler", "helper")
+        for probe in [store.compute_backend_probe(project_id, machine_alias, route)]
+    }
+
+
 @router.get("/api/projects/{project_id}/sources")
 def sources(
     project_id: str,

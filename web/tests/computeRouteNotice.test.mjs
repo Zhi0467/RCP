@@ -24,7 +24,11 @@ test("Runs warns once per checked route that cannot run jobs, only for offered r
     });
     const render = (machines) =>
       renderToStaticMarkup(
-        React.createElement(ComputeRouteNotice, { machines, onOpenSettings: () => {} }),
+        React.createElement(ComputeRouteNotice, {
+          apiBase: "",
+          machines,
+          onOpenSettings: () => {},
+        }),
       );
     const notices = (markup) => markup.match(/role="status"/g)?.length ?? 0;
 

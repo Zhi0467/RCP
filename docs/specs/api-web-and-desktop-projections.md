@@ -169,8 +169,10 @@ read from storage even when the graph snapshot is cached. Settings updates
 accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
 removes a block, omission preserves it. Validation and TOML persistence belong
 to the machine configuration owner. A changed block invalidates its stored
-probes and schedules a fresh background check of that machine; there is no
-browser probe request.
+probes and schedules a fresh background check of that machine.
+`POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
+project write admission, re-probes every route that machine offers, and
+returns both route slots.
 
 `GET /api/projects/{project_id}/watchers` supplies the external job rows for both
 scheduler and helper work. Every external row includes its required shell check,

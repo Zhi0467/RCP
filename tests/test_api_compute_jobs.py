@@ -58,6 +58,27 @@ def test_compute_settings_save_checks_every_route_of_the_saved_machine(compute_a
         )
 
 
+def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch):
+    from rcp.compute_jobs import probe as probe_module
+
+    app, client, url = compute_api
+    calls = []
+
+    def run(manifest, machine, route, *, data_dir):
+        calls.append((machine, route))
+        return _result(machine, "launchd", "ready", "")
+
+    monkeypatch.setattr(probe_module, "probe_compute_backend", run)
+    monkeypatch.setattr(
+        "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
+    )
+    response = client.post(f"{url}/machines/laptop/compute/check")
+    assert response.status_code == 200, response.text
+    assert calls == [("laptop", "helper")]
+    assert response.json()["scheduler"] is None and response.json()["helper"]["ready"]
+    assert client.post(f"{url}/machines/missing/compute/check").status_code == 422
+
+
 def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_api, manifest):
     app, client, url = compute_api
     store = app.state.services.store
