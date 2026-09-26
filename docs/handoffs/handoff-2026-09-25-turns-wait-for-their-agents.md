@@ -22,6 +22,8 @@ Status on 2026-09-25: design only. Nothing is implemented.
   - Codex uses an RCP hook fence behind a hook guard that refuses a launch
     when any other hook would load (human choice over an app-server-only
     route).
+- Open: the policy for a Codex version whose hook sources are not yet
+  qualified (see [Open question](#open-question)).
 - Closure: the pull request merges, the checks in
   [Verification](#verification) pass, and the specs carry the new sentences.
 
@@ -63,7 +65,7 @@ the helper or a scheduler can own a process past that point.
 
 ## Design
 
-Revised after a Codex xhigh design review on 2026-09-25. Its five findings
+Revised after two Codex xhigh design reviews on 2026-09-25. Their findings
 are folded in below.
 
 ### 1. One rule for when a turn ends
@@ -80,12 +82,28 @@ and recorded replay (`rcp/runs/recorded_turn.py`). The module ships to the
 host from its source. Today the host fence repeats both bugs on its own, so
 fixing only the local decoder would leave SSH turns broken.
 
+The module stays pure: it takes input identities, outstanding work, a
+deadline and returns a verdict. Launchers own clocks and processes; each
+task owner keeps its own deliverables.
+
 RCP has no general turn timeout, and this change does not add one. It adds
-one bound, the **delegation wait limit** in `limits.py`, for the time a turn
-may spend waiting on children after it tried to finish. Reaching it fails
-the turn with a typed failure kind, `delegation_unfinished`. That is never a
-success: no Patch applies, and the scratch and patch text are kept
-(invariant 9). Human Stop and pause keep their current meaning.
+one bound, the **delegation wait limit** in `limits.py`.
+
+- The clock starts the first time a turn tries to finish with work still
+  open: a blocked Codex `Stop`, or a Claude `result` with a task still open.
+- The local launcher, or the execution-host supervisor for SSH turns,
+  enforces it. The supervisor enforces it while SSH is detached too. The
+  hook never has to be called again for the limit to hold.
+- On expiry the launcher stops the process group and seals the verdict
+  `delegation_unfinished` in the turn's journal before reporting it.
+- The owner then retains the patch text in the database before the failure
+  is reported, as it already does for a validation failure. The next chat
+  turn clearing the mailbox (invariant 10c) therefore loses nothing
+  (invariant 9).
+- Live and recorded settlement both carry the typed verdict. Recovery keeps
+  the exact session, stage, graph target and Stop fence (invariant 10g). It
+  never becomes a success or a fresh-session retry.
+- Human Stop and pause keep their current meaning.
 
 **Claude** (`_ClaudeStreamTurn`):
 
@@ -102,8 +120,10 @@ success: no Patch applies, and the scratch and patch text are kept
   confirm its `result` carries that id. Resuming a session whose background
   agent was killed reproduces it locally. If the id is absent, stop and
   bring the design back.
+- A skipped notice `result` stays a trace. It never enters the human answer.
 - Backstop: the turn tracks `task_started` / `task_notification` ids. A
-  `result` with a task still open records a diagnostic receipt.
+  `result` with a task still open starts the delegation clock like any other
+  open work; it is not diagnostic only.
 
 **Codex, both runtimes:** an RCP-owned hook fence, behind a hook guard.
 
@@ -112,14 +132,23 @@ success: no Patch applies, and the scratch and patch text are kept
   reads hook trust only from the user config layer, and RCP ignores that
   layer on purpose. Probed on Codex 0.157.0 with RCP's exact flags: with the
   bypass flag, the account's `~/.codex/hooks.json` runs; hooks in the turn's
-  cwd do not load; without the flag, nothing runs, RCP's hook included. So
-  before every Codex launch, RCP lists the hooks that launch would load
-  (app-server `hooks/list`, with the same cwd, flags and execution host).
-  If anything other than RCP's own session hooks is enabled, the launch is
-  refused. The refusal is a typed failure that names each hook's source
-  file. The guard runs on the execution host, shipped from its source
-  module. The leftover risk is the moment between the check and Codex
-  starting.
+  cwd do not load; without the flag, nothing runs, RCP's hook included.
+  App-server's `hooks/list` cannot stand in for exec: app-server has no
+  `--ignore-user-config`, so it lists different layers.
+  - The guard inspects the hook sources exec loads under RCP's flags, as
+    files, on the execution host, as the execution account, with the launch's
+    own binary, environment and `CODEX_HOME`. Today that list is the
+    account's `hooks.json` plus the managed and system layers. Any foreign
+    hook refuses the launch with a typed failure that names each file.
+  - That source list is qualified per Codex version by an acceptance probe:
+    plant a hook in each source (user, project, managed, plugin) and check the
+    guard's inventory against what exec actually runs, for both runtimes.
+    RCP records the qualified versions. Policy for an unqualified version:
+    see [Open question](#open-question).
+  - Positive evidence: RCP's own `SessionStart` hook writes a start marker.
+    No marker means the fence is not running, and the turn fails closed.
+  - The guard ships from its source module. The leftover risk is the moment
+    between the check and Codex starting.
 - **Fence.** One hook script, shipped from its source module, handles
   `SubagentStart`, `SubagentStop` and `Stop`. Its state is scoped to one
   invocation: a file named by operation id and attempt, created fresh at
@@ -127,17 +156,20 @@ success: no Patch applies, and the scratch and patch text are kept
   ids minus stopped ids. Nested children count the same way. Children from
   an earlier invocation of a resumed session are already dead and never
   appear.
-- **Location.** RCP passes the script and state paths to the hook explicitly.
-  They sit in the task stage, outside every writable root. Hooks run outside
-  the sandbox (verified on Linux below), so they can write there, and the
-  agent cannot. Paths are never derived from cwd: Paper's cwd is the
-  research directory, not its stage.
+- **Location.** Script, state and marker live in an RCP control directory
+  outside every task stage: `<data_dir>/turn-control/<operation>/<attempt>`
+  locally, and the matching directory under the execution account's RCP root
+  remotely. A stage is not safe: local ingestion and older chat stages use
+  the stage itself as the writable workspace. Before launch, RCP checks the
+  script, the state file and every replaceable parent against the resolved
+  writable roots, and refuses on overlap. RCP passes the paths to the hook
+  explicitly, never derived from cwd. Hooks run outside the sandbox
+  (verified on Linux below), so they can write there, and the agent cannot.
 - **Blocking.** `Stop` with an unfinished child prints
   `{"decision":"block","reason":...}`, rendered from the same object the
-  script checks. Each block and the final verdict go into the turn's
-  journal, so replay reaches the same verdict without reading the hook's
-  state. Past the delegation wait limit, the hook stops blocking, and RCP
-  fails the turn as `delegation_unfinished`.
+  script checks. Each block goes into the turn's journal, so replay reaches
+  the same verdict without reading the hook's state. The first block starts
+  the delegation clock.
 - **exec** passes the hooks with `-c hooks.<Event>=...` and the bypass flag.
   Codex prints two `item.completed` items of type `error` about the flag.
   They stay traces.
@@ -170,11 +202,18 @@ Test fixtures come from the outage stream captured on 2026-09-25.
 ### 3. The helper is always offered
 
 - `resolve_backend` resolves the OS owner whatever `job_manager` says.
-- Scheduler readiness and helper readiness are separate, end to end:
-  probing (`rcp/compute_jobs/probe.py`), storage (one row per machine and
-  route), API, CLI and Settings. A helper launch uses only the helper's
-  probe. An unavailable user manager never marks a working Slurm route
-  unready, and the reverse.
+- Scheduler readiness and helper readiness are separate, end to end, as two
+  fixed slots per machine, `scheduler` and `helper`, each holding its own
+  backend identity:
+  - probing (`rcp/compute_jobs/probe.py`) takes the route;
+  - storage gets a new migration: the key becomes project, machine and route;
+    each retained row moves to the slot its recorded backend names; the other
+    slot starts unprobed;
+  - the probe API and CLI take the route; the CLI exits zero only when that
+    route is ready; Settings shows both slots; a changed compute block
+    invalidates both.
+  A helper launch uses only the helper slot. An unavailable user manager
+  never marks a working Slurm route unready, and the reverse.
 - `allowed_verbs` includes `launch` wherever a helper owner resolves.
 - `execution_instructions` always renders the helper text. Each configured
   job manager adds its own paragraph from one profile per manager. Slurm's
@@ -188,17 +227,37 @@ Test fixtures come from the outage stream captured on 2026-09-25.
 - `launch --service --key K --cwd <path> -- <argv...>` uses the same helper,
   owner, keys and receipts as a job launch. Work, Experiment loop and child
   Work may use it, like `launch`.
-- RCP arms the service's watcher itself, from the helper's own
-  `check_command` and `cancel_command`. The watcher is marked as a service:
-  it never wakes an agent and starts no continuation. The agent hands off
-  nothing, and settlement accepts the running service.
-- The service therefore shows in the existing project job list, with the
-  existing attributed, once-only human Cancel. The watcher settles when the
-  process exits.
-- A service's cwd must be outside the task stage, so stage retention cannot
-  delete its files. Its helper job root is already outside stage retention.
+- The job record stores service intent. RCP arms one watcher per service
+  job, from the helper's own `check_command` and `cancel_command`. The watcher
+  carries `kind = service` and a unique link to its job. Job and watcher are
+  written in one transaction where the stores allow it. Startup
+  reconciliation creates any missing service watcher from the job record,
+  so a crash between the two cannot hide a running service.
+- A service watcher keeps being polled, but it is outside every wake and
+  episode rule: no wake claim, no continuation, not counted as pending
+  Experiment work or waiting child Work, not adopted, and not retired by
+  episode Stop or ending. It shows in the existing job list with the
+  existing attributed, once-only Cancel. When the process exits it shows
+  as finished, never "Pending delivery".
+- The agent hands off nothing, and settlement accepts the running service.
+- A service's cwd, code and assets must live outside the task stage, so
+  stage retention cannot delete them. The launch refuses a cwd inside the
+  stage; the instructions state the rest. Its helper job root is already
+  outside stage retention.
 - A service survives its turn. It is not restarted if it exits (launchd runs
   with `KeepAlive=false`, systemd without restart).
+
+## Open question
+
+Codex updates often: the laptop moved from 0.156.1 to 0.157.0 during this
+design. When the execution host runs a Codex version the hook-source probe
+has not qualified:
+
+- Option A, recommended: launch anyway with the file guard, and show a
+  visible warning on the turn and in Settings naming the unqualified version
+  until the probe is rerun.
+- Option B: refuse Codex launches on that host until the probe qualifies the
+  version.
 
 ## Verification
 
@@ -209,9 +268,15 @@ Test fixtures come from the outage stream captured on 2026-09-25.
   - Codex exec retry `error` events, then `turn.failed`; and then a
     non-zero exit with no `turn.failed`;
   - the hook script run directly: start, block, stop, the wait limit;
-  - the hook guard refusing a stray user `hooks.json`;
+  - the hook guard refusing a stray user `hooks.json`, and a turn failing
+    closed without the start marker;
+  - the delegation limit firing with no further hook call, retaining the
+    patch text, on a live and a recorded turn;
+  - the readiness migration on a copied database holding a ready Slurm probe;
   - split readiness, `allowed_verbs` and instructions on a Slurm machine;
-  - a service launch arms a service watcher that never wakes the agent.
+  - a service launch arms a service watcher that never wakes the agent,
+    survives episode Stop, and is recreated by reconciliation.
+- The per-version hook-source acceptance probe, run on the current Codex.
 - Live, local real providers: a Claude turn, and Codex exec and app-server
   turns, that each spawn a 60-second subagent. Each reply arrives after the
   child's result and uses it.
