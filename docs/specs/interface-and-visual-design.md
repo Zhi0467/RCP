@@ -164,9 +164,9 @@ current composer setting.
 In the Agents workspace, a conversation has one header band: title and meta on
 the left, New session and repository scope on the right. The meta names the
 umbrella provider (`provider_label`, such as Claude or Codex), never its
-runtime; the task inspector keeps the runtime. The agent list folds from a
-sidebar icon in its header, and a folded list leaves one icon at the band's
-top left rather than a strip.
+runtime; the task inspector keeps the runtime. The agent list has no title
+band: a sidebar icon beside its search folds it, a folded list leaves that
+icon at the chat band's top left, and a hairline separates list from chat.
 
 Each agent card's status icon is colour-coded: needs you, paused, working,
 unread result, done, failed, or an unsent draft (dashed). A three-dot menu on

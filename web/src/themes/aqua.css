@@ -152,8 +152,7 @@
     .node-window-dock,
     .detail-drawer > header,
     .chat-dock > header,
-    .paper-toolbar,
-    .conversation-list > header
+    .paper-toolbar
   ) {
   background: var(--aqua-toolbar);
   box-shadow:

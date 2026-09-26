@@ -807,7 +807,7 @@ export function ProjectSettings({
                     : (["helper"] as const)
                   ).map((route) => {
                     // RCP checks each route at startup and after a compute save.
-                    const probe = needsSave ? null : machine.compute_probes[route];
+                    const probe = needsSave ? null : (machine.compute_probes?.[route] ?? null);
                     const presentation = probe
                       ? computeProbePresentation(probe)
                       : {

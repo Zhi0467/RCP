@@ -10,8 +10,14 @@ interface Props {
 
 /** One notice per compute route that RCP checked and found unable to run jobs. */
 export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props) {
-  // A check answers before the next project refresh; its result wins until then.
-  const [checked, setChecked] = useState<Record<string, Machine["compute_probes"]>>({});
+  // A check answers before the next project refresh. Its result applies only
+  // to the project and probe snapshot it was taken against.
+  const [checked, setChecked] = useState<
+    Record<
+      string,
+      { apiBase: string; basis: Machine["compute_probes"]; probes: Machine["compute_probes"] }
+    >
+  >({});
   const [checking, setChecking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const failures = machines.flatMap((machine) =>
@@ -19,16 +25,25 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
       .map((route) => ({
         machine,
         route,
-        probe: (checked[machine.alias] ?? machine.compute_probes)[route],
+        // A project cached by an older version has no split probes.
+        probe: currentProbes(machine)?.[route],
       }))
       .filter(({ probe }) => probe && !probe.ready),
   );
-  async function check(alias: string) {
+  function currentProbes(machine: Machine) {
+    const override = checked[machine.alias];
+    return override?.apiBase === apiBase && override.basis === machine.compute_probes
+      ? override.probes
+      : machine.compute_probes;
+  }
+  async function check(machine: Machine) {
+    const alias = machine.alias;
+    const basis = machine.compute_probes;
     setChecking(alias);
     setError(null);
     try {
       const probes = await checkMachineCompute(apiBase, alias);
-      setChecked((current) => ({ ...current, [alias]: probes }));
+      setChecked((current) => ({ ...current, [alias]: { apiBase, basis, probes } }));
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
     } finally {
@@ -52,7 +67,7 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
               className="button secondary compact"
               type="button"
               disabled={checking !== null}
-              onClick={() => void check(machine.alias)}
+              onClick={() => void check(machine)}
             >
               {checking === machine.alias ? "Checking…" : "Fixed it? Check again"}
             </button>

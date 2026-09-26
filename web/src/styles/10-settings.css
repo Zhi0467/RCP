@@ -957,15 +957,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   min-height: 0;
   overflow: auto;
 }
-.conversation-list > header {
-  align-items: center;
-  border-bottom: 1px solid var(--line);
-  display: flex;
-  gap: 8px;
-  min-height: 52px;
-  padding: 0 14px;
-  font-size: var(--type-base);
-}
 .conversation-list > div {
   display: grid;
   padding: 7px;
@@ -1154,9 +1145,15 @@ details[open] > .view-disclosure-summary > svg:last-child {
   gap: 8px;
   padding: 10px 10px 4px;
 }
+.agent-list-top {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
 .agent-list-search {
   color: var(--muted);
   display: block;
+  flex: 1 1 auto;
   position: relative;
 }
 .agent-list-search svg {
@@ -1289,7 +1286,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   color: color-mix(in srgb, var(--mustard) 55%, var(--ink));
 }
 .conversation-divider {
-  background: transparent;
+  background: var(--line);
   grid-column: 2;
   min-height: 0;
   position: relative;
@@ -1299,16 +1296,14 @@ details[open] > .view-disclosure-summary > svg:last-child {
   background: transparent;
   border: 0;
   cursor: col-resize;
-  height: 100%;
-  inset: 0;
+  inset: 0 -4px;
   padding: 0;
   position: absolute;
   touch-action: none;
-  width: 100%;
-  z-index: 0;
+  z-index: 1;
 }
-.conversation-divider:hover,
-.conversation-divider:focus-within {
+.conversation-resize-handle:hover,
+.conversation-resize-handle:focus-visible {
   background: color-mix(in srgb, var(--teal) 22%, transparent);
 }
 .conversation-resize-handle:active {
@@ -1323,8 +1318,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
   cursor: pointer;
   display: flex;
   height: 28px;
+  flex: none;
   justify-content: center;
-  margin-left: auto;
   padding: 0;
   width: 28px;
 }
@@ -2614,7 +2609,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
     height: auto;
     max-height: 35vh;
   }
-  .conversation-list > header,
+  .conversation-list-fold,
   .conversation-divider {
     display: none;
   }

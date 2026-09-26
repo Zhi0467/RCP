@@ -1771,7 +1771,8 @@ export interface Machine {
   os_account: string;
   provider_paths: Record<ProviderId, string>;
   compute: MachineComputeConfig | null;
-  compute_probes: Record<ComputeRoute, ComputeBackendProbe | null>;
+  // Absent from a project cached by a version before split readiness.
+  compute_probes?: Record<ComputeRoute, ComputeBackendProbe | null>;
 }
 
 export type ComputeRoute = "scheduler" | "helper";

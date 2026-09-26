@@ -391,33 +391,31 @@ export function ChatsWorkspace({
         hidden={narrow ? !mobileListOpen : listCollapsed}
         id="conversation-list-panel"
       >
-        <header>
-          <MessageCircle size={16} />
-          <strong>Agents</strong>
-          <button
-            aria-controls="conversation-list-panel"
-            aria-expanded
-            aria-keyshortcuts="Meta+B"
-            aria-label="Collapse conversation list"
-            className="conversation-list-fold"
-            onClick={() => setListCollapsed(true)}
-            title="Collapse conversation list"
-            type="button"
-          >
-            <PanelLeftClose size={15} />
-          </button>
-        </header>
         <div className="agent-list-tools">
-          <label className="agent-list-search">
-            <Search size={13} aria-hidden="true" />
-            <input
-              type="search"
-              aria-label="Search agents"
-              placeholder="Search agents"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
+          <div className="agent-list-top">
+            <button
+              aria-controls="conversation-list-panel"
+              aria-expanded
+              aria-keyshortcuts="Meta+B"
+              aria-label="Collapse conversation list"
+              className="conversation-list-fold"
+              onClick={() => setListCollapsed(true)}
+              title="Collapse conversation list"
+              type="button"
+            >
+              <PanelLeftClose size={15} />
+            </button>
+            <label className="agent-list-search">
+              <Search size={13} aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="Search agents"
+                placeholder="Search agents"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+          </div>
           <div className="agent-list-filters" role="group" aria-label="Filter agents">
             {(archivedCount > 0 || showingArchived
               ? (["all", "needs_you", "working", "archived"] as const)
