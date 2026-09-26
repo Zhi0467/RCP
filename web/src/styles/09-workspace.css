@@ -432,6 +432,9 @@
 .project-tabs-project-dock .project-dock-tab {
   height: 46px;
 }
+.project-tabs-back + .project-tabs-toggle {
+  margin: 0 4px;
+}
 .project-tabs-toggle:hover {
   color: var(--ink);
 }

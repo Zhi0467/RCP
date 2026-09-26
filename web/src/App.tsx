@@ -4292,23 +4292,15 @@ export default function App() {
 
       <nav className="project-tabs" aria-label="Project panels">
         {projectHeaderCollapsed && (
-          <>
-            <button
-              className="project-tabs-back project-back"
-              onClick={returnToProjects}
-              aria-label="All projects"
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <ProjectDock
-              className="project-tabs-project-dock"
-              tabs={openProjectTabs}
-              activeProjectId={projectId}
-              onActivate={activateProjectTab}
-              onClose={closeDockedProject}
-            />
-          </>
+          <button
+            className="project-tabs-back project-back"
+            onClick={returnToProjects}
+            aria-label="All projects"
+          >
+            <ArrowLeft size={16} />
+          </button>
         )}
+        {/* Folded, the expand control sits beside the back arrow it came from. */}
         <button
           aria-expanded={!projectHeaderCollapsed}
           aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
@@ -4319,6 +4311,15 @@ export default function App() {
         >
           {projectHeaderCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
         </button>
+        {projectHeaderCollapsed && (
+          <ProjectDock
+            className="project-tabs-project-dock"
+            tabs={openProjectTabs}
+            activeProjectId={projectId}
+            onActivate={activateProjectTab}
+            onClose={closeDockedProject}
+          />
+        )}
         {navItems.map((item) =>
           item.view === "terminals" ? (
             <TerminalTab
