@@ -269,6 +269,7 @@ export function ChatsWorkspace({
     setListWidth(readChatListWidth(project.id));
     setListCollapsed(readChatListCollapsed(project.id));
     setQuery("");
+    setFilter("all");
   }, [project.id]);
 
   useEffect(() => {

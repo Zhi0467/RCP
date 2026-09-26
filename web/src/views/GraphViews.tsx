@@ -1344,6 +1344,9 @@ export function ExecutionView({
       <ProviderLoginNotice states={providerLogins} onVerified={onProviderLoginVerified} />
       {onOpenSettings && (
         <ComputeRouteNotice
+          // One instance per project, so a check's result or error never
+          // outlives the project it was made for.
+          key={computeApiBase}
           apiBase={computeApiBase}
           machines={machines}
           onOpenSettings={onOpenSettings}
