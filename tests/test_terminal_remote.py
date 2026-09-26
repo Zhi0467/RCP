@@ -359,20 +359,14 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
         assert read_until(PROMPTS, 10, output.index(profile._READY_MARKER)), output.decode(
             errors="replace"
         )
-        os.write(master, b"sleep 30\n")
-        require(b"sleep 30\r\n")
+        # Interrupt a job that is already running: it prints only once the shell
+        # has forked it into the foreground, so the interrupt cannot race the fork.
+        os.write(master, b"sh -c 'printf \"job-%s\\n\" started; exec sleep 30'\n")
+        require(b"job-started\r\n")
         interrupt()
-        # An interrupt delivered while the shell is still forking its job can
-        # arrive before that job exists, leaving it running and swallowing what
-        # follows. Ask again, interrupting once more, until the shell answers.
-        deadline = time.monotonic() + 30
-        while True:
-            mark = len(output)
-            os.write(master, b"printf 'job-%s\\n' control\n")
-            if read_until(b"job-control\r\n", 3, mark):
-                break
-            assert time.monotonic() < deadline, output.decode(errors="replace")
-            interrupt()
+        # The shell survived the interrupt and still runs commands.
+        os.write(master, b"printf 'job-%s\\n' control\n")
+        require(b"job-control\r\n")
         assert b"no job control" not in output
         os.close(master)
         master = -1
