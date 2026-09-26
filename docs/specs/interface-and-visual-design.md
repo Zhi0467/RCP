@@ -251,8 +251,10 @@ machine. **Use Slurm** opts into direct scheduler submission; **Jobs root**
 configures helper storage. RCP exposes no scheduler resource settings. **Reset
 compute** removes the optional block through the normal Settings **Save**.
 Readiness uses the same label, tone, and pending presentation as compute
-connections. Editing masks the saved result and requires Save before Probe;
-probe and save cannot overlap.
+connections, with one row per offered route (scheduler and helper). There is
+no Probe control: a save that changes the block checks it in the background,
+and editing masks the saved result until then. A route that is not ready
+shows on Runs with its fix and **Check again**.
 
 Chat and Experiment show one external job row per shell watcher. Its log path,
 observation status, last check, and diagnostic remain visible with Cancel
@@ -277,7 +279,7 @@ lists; a watcher that becomes active again is visible regardless of the preferen
 ## Terminals
 
 **Terminals** is a project destination beside Overview, Inbox, Research, Runs,
-Artifacts, Paper, Settings, and Agents when at least one project machine can host
+Artifacts, Agents, and Settings when at least one project machine can host
 a session. Remote pending and failed probes also keep it visible so their
 status and recovery control remain reachable. It is hidden for empty projects
 or only unavailable local machines. Settings has no terminal control. The empty

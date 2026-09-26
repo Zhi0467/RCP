@@ -19,7 +19,7 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
     >
   >({});
   const [checking, setChecking] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ alias: string; message: string } | null>(null);
   const failures = machines.flatMap((machine) =>
     (machine.compute?.job_manager ? (["scheduler", "helper"] as const) : (["helper"] as const))
       .map((route) => ({
@@ -45,7 +45,7 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
       const probes = await checkMachineCompute(apiBase, alias);
       setChecked((current) => ({ ...current, [alias]: { apiBase, basis, probes } }));
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError({ alias, message: failure instanceof Error ? failure.message : String(failure) });
     } finally {
       setChecking(null);
     }
@@ -72,7 +72,7 @@ export function ComputeRouteNotice({ apiBase, machines, onOpenSettings }: Props)
               {checking === machine.alias ? "Checking…" : "Fixed it? Check again"}
             </button>
           </div>
-          {error && <p role="alert">{error}</p>}
+          {error?.alias === machine.alias && <p role="alert">{error.message}</p>}
         </div>
       ))}
     </>
