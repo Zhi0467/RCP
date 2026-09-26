@@ -218,16 +218,16 @@ export function ChatsWorkspace({
     conversations[0] ??
     null;
 
-  // Each edit's answer is newer than any read started before it; bumping this
-  // lets a late initial read know it would undo an edit.
-  const displayEdits = useRef(0);
+  // Every read or edit of the display set returns the whole set, so only the
+  // latest request's answer may apply; a project switch starts a new request.
+  const displayRequest = useRef(0);
   useEffect(() => {
     let current = true;
-    const editsAtStart = displayEdits.current;
+    const request = ++displayRequest.current;
     setDisplay(EMPTY_CHAT_DISPLAY);
     loadChatDisplay(apiBase)
       .then((response) => {
-        if (current && displayEdits.current === editsAtStart) setDisplay(response);
+        if (current && displayRequest.current === request) setDisplay(response);
       })
       .catch(() => {
         // Archive and names are display choices; an unreadable set shows every
@@ -254,13 +254,15 @@ export function ChatsWorkspace({
   }, [menuChatId]);
 
   const updateDisplay = async (change: () => Promise<ChatDisplay>) => {
-    displayEdits.current += 1;
+    const request = ++displayRequest.current;
     setMenuChatId(null);
     setArchiveError(null);
     try {
-      setDisplay(await change());
+      const response = await change();
+      if (displayRequest.current === request) setDisplay(response);
     } catch (failure) {
-      setArchiveError(failure instanceof Error ? failure.message : String(failure));
+      if (displayRequest.current === request)
+        setArchiveError(failure instanceof Error ? failure.message : String(failure));
     }
   };
   const archive = (chatId: string, archived: boolean) =>
