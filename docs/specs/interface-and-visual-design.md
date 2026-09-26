@@ -63,7 +63,10 @@ The shell is intentionally bare: no RCP wordmark, product logo, or revision labe
 beside the project name. Agent tasks and Refresh are icon-only accessible
 controls; project chat is **Ask**. The attention destination is **Inbox** with a
 colored count, and DAG is a subpanel of **Research** rather than a primary
-destination.
+destination. **Paper** is likewise a subpanel of **Artifacts**, reached from a
+Files | Paper switch; its route view stays `paper`, and the paper's unsynced
+badge shows on the Artifacts tab. Destination order ends Terminals, Agents,
+Settings.
 
 Group the header semantically — labeled **Sync / Ask** together, then icon-only
 **History / Refresh** together. Do not space all four as unrelated peers.
@@ -161,6 +164,28 @@ and is not addressing a running attempt, and every sent turn keeps an immutable
 visible mode label. A resumed task keeps its original mode regardless of the
 current composer setting.
 
+In the Agents workspace, a conversation has one header band: title and meta on
+the left, New session and repository scope on the right. The meta names the
+umbrella provider (`provider_label`, such as Claude or Codex), never its
+runtime; the task inspector keeps the runtime. It shows the latest turn's
+model and effort, and the chat kind. Neither the header nor an agent card
+names Discuss or Work; each turn's own label already carries it. The agent list has no title
+band: a sidebar icon beside its search folds it, a folded list leaves that
+icon at the chat band's top left, and a hairline separates list from chat.
+
+Each agent card leads with a filled dot, one fixed colour per state: needs
+you, paused, working (pulsing), unread result, done, failed, or an unsent
+draft. Cards share one fixed size: a one-line title and one secondary
+line, the attention reason when it needs a human, else the meta. A three-dot menu on
+the card removes an unsent draft, which exists only in the browser, or renames
+or archives a conversation with turns. Both are project display choices in the
+local store (`POST /api/projects/{project_id}/chats/{chat_id}/title` and
+`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`);
+a blank name returns the derived one. Rename edits the title in place on the
+card. An Archived filter appears when any exist, counts every archived chat
+including unloaded pages, and offers Restore. Transcripts and tasks are never
+changed or deleted.
+
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity
 row when its underlying status can already be inspected, while failures and
@@ -172,11 +197,13 @@ conversations as an agent-hub panel. Conversations are grouped **Needs you**,
 **Working**, and **Recent**, each in recency order, from the backend's answers on
 the latest turn: a paused, failed, or interrupted turn needs the human; a
 queued, running, or pausing turn is working. Each row is a raised card with a
-state icon, a two-line title, the backend status label as its reason when the
-human is needed, and a provider · mode · repository line (the live phase and
-elapsed time while working). Search narrows by title and chips filter to All,
-Needs you, or Working. Above the conversation, a header names the title,
-provider, model, mode, repository, and chat scope; a needs-you turn adds a banner
+state dot, a one-line title, and either the backend status label as its reason
+when the human is needed or a provider · repository line (the live phase and
+elapsed time while working). Search runs in the browser over what each card
+already holds: its name, node, chat kind, latest message, and every loaded
+turn's prompt, provider, model, effort, and repositories; every word must match.
+Chips filter to All, Needs you, or Working. Above the conversation, a header
+names the title, provider, model, effort, repository, and chat scope; a needs-you turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
 At viewport widths of 560px or less, Agents uses a single column. The conversation
@@ -224,8 +251,10 @@ machine. **Use Slurm** opts into direct scheduler submission; **Jobs root**
 configures helper storage. RCP exposes no scheduler resource settings. **Reset
 compute** removes the optional block through the normal Settings **Save**.
 Readiness uses the same label, tone, and pending presentation as compute
-connections. Editing masks the saved result and requires Save before Probe;
-probe and save cannot overlap.
+connections, with one row per offered route (scheduler and helper). There is
+no Probe control: a save that changes the block checks it in the background,
+and editing masks the saved result until then. A route that is not ready
+shows on Runs with its fix and **Check again**.
 
 Chat and Experiment show one external job row per shell watcher. Its log path,
 observation status, last check, and diagnostic remain visible with Cancel
@@ -250,7 +279,7 @@ lists; a watcher that becomes active again is visible regardless of the preferen
 ## Terminals
 
 **Terminals** is a project destination beside Overview, Inbox, Research, Runs,
-Artifacts, Paper, Settings, and Agents when at least one project machine can host
+Artifacts, Agents, and Settings when at least one project machine can host
 a session. Remote pending and failed probes also keep it visible so their
 status and recovery control remain reachable. It is hidden for empty projects
 or only unavailable local machines. Settings has no terminal control. The empty

@@ -900,3 +900,71 @@ def test_experiment_continuation_preserves_current_paths_and_execution_instructi
     assert "/stage/current/research.md" in contract
     assert "/stage/turn-2/artifacts" in contract
     assert "/repo-a/.research" in contract
+
+
+def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
+    import inspect
+
+    from rcp.agents import auto_research_prompt as auto
+    from rcp.agents import branch_merge_prompt as merge
+    from rcp.agents import experiment_loop_prompt as experiment
+    from rcp.agents.episode_report_prompt import episode_report_task_contract
+    from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
+
+    builders = [
+        PromptFactory.graph_task_contract,
+        PromptFactory.discuss_task_contract,
+        PromptFactory.work_task_contract,
+        PromptFactory.chat_master_context,
+        PromptFactory.paper_coach_task_contract,
+        PromptFactory.continuation_task_contract,
+        PromptFactory.retry_handoff_task_contract,
+        auto.auto_research_orchestrator_task_contract,
+        auto.auto_research_worker_task_contract,
+        auto.auto_research_orchestrator_continuation_contract,
+        auto.auto_research_worker_continuation_contract,
+        experiment.experiment_loop_task_contract,
+        experiment.experiment_loop_continuation_contract,
+        experiment.experiment_loop_watcher_correction_contract,
+        experiment.experiment_watcher_maintenance_correction_contract,
+        experiment.experiment_loop_patch_correction_contract,
+        merge.branch_merge_task_contract,
+        merge.branch_merge_correction_contract,
+        merge.branch_merge_rebase_contract,
+        episode_report_task_contract,
+    ]
+    inputs = dict(
+        kind="seed",
+        project_name="Example",
+        repositories=[],
+        ontology_extensions=False,
+        provider_log_roots={},
+        ingestion_watermark=None,
+        graph_revision=1,
+        focused_node_id=None,
+        focused_experiment_id="exp/example",
+        validator_command="validate-patch",
+        execution_instructions="launch-command",
+        mode="resume",
+        write_scope=_work_write_scope(),
+        command_client="rcp-command",
+        reply_command="rcp-reply",
+        seat_node_type="hypothesis",
+        seat_node_id="hyp/example",
+        seat_difficulty="standard",
+        context_id="a" * 64,
+        previous_context_id="b" * 64,
+        review_contract_json="{}",
+        residue_block="No residue.",
+        ending="completed",
+        partial=False,
+        receipt_sha256="c" * 64,
+    )
+    for builder in builders:
+        # Each builder receives its own required inputs; paths are distinct staged pointers.
+        arguments = {
+            name: f"/stage/{name}" if name.endswith("_path") else inputs[name]
+            for name, parameter in inspect.signature(builder).parameters.items()
+            if parameter.default is inspect.Parameter.empty
+        }
+        assert PROVIDER_NATIVE_SUBAGENT_LIFETIME in builder(**arguments), builder.__name__

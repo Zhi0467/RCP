@@ -173,6 +173,7 @@ class ProviderTurn:
     close_input_after_initial: bool = True
     requires_protocol_completion: bool = False
     initial_input_delivers_prompt: bool = True
+    last_error: str = ""
 
     def initial_input(self) -> bytes:
         raise NotImplementedError
@@ -269,6 +270,8 @@ class _JsonlProviderTurn(ProviderTurn):
             event = ProviderStreamEvent(event="raw", text=line)
             return ProviderRuntimeStep(events=(event,))
         event = self._profile.decode_event(value, line)
+        if isinstance(value, dict) and value.get("type") == "error":
+            self.last_error = event.text
         terminal = event.event == "error" or (
             isinstance(value, dict)
             and value.get("type") in {"turn.completed", "turn.failed", "result"}
@@ -371,18 +374,15 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             if value.get("type") == "user" and value.get("isReplay") is True:
                 return ProviderRuntimeStep()
             if value.get("type") == "result":
-                message_ids = value.get("user_message_uuids")
-                finished = (
-                    {item for item in message_ids if isinstance(item, str) and item.strip()}
-                    if isinstance(message_ids, list)
-                    else set()
-                )
-                if not finished:
-                    message_id = value.get("user_message_uuid")
-                    if isinstance(message_id, str) and message_id.strip():
-                        finished.add(message_id)
+                from rcp.agents.turn_completion import attributed_ids, is_claude_task_notice
+
+                finished = attributed_ids(value)
                 self._outstanding.difference_update(finished)
                 event = self._profile.decode_event(value, line)
+                if is_claude_task_notice(value, self._generated, finished):
+                    return ProviderRuntimeStep(
+                        events=(ProviderStreamEvent(event="raw", text=line, usage=event.usage),)
+                    )
                 # A failing result ends the invocation even with a follow-up
                 # accepted: the task engine stops at the first error anyway, so
                 # continuing would only run a turn whose task has already
@@ -705,6 +705,7 @@ class CodexProfile(ProviderProfile):
             if isinstance(value, dict) and (
                 "error" in value
                 or value.get("method") == "error"
+                or value.get("type") == "error"
                 or self.decode_event(value, line).event == "error"
             ):
                 diagnostics.append(line)
@@ -922,7 +923,11 @@ class CodexProfile(ProviderProfile):
                 detail = error.get("message") or json.dumps(error, ensure_ascii=False)
             else:
                 detail = error or value.get("message") or "Codex turn failed."
-            return ProviderStreamEvent(event="error", text=str(detail), usage=usage)
+            return ProviderStreamEvent(
+                event="error" if event_type == "turn.failed" else "message",
+                text=str(detail),
+                usage=usage,
+            )
         item = value.get("item", {})
         if not isinstance(item, dict):
             item = {}

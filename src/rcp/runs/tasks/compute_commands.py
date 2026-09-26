@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import time
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path, PurePosixPath
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
@@ -15,8 +18,14 @@ from rcp.agents.command_protocol import (
 )
 from rcp.agents.write_scope import ProjectWriteScope, _canonical_directories
 from rcp.background import AgentTaskExecution
-from rcp.compute_jobs.backend_context import ComputeProbeStaleError
+from rcp.compute_jobs.backend_context import (
+    ComputeBackendProfile,
+    ComputeProbeStaleError,
+    resolve_context,
+)
+from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.compute_jobs.jobs import (
+    helper_startup_state,
     helper_watch_spec,
     launch_compute_job,
     refresh_compute_job,
@@ -25,6 +34,7 @@ from rcp.compute_jobs.models import ComputeBackendProbe, ComputeLaunchRequest
 from rcp.compute_jobs.probe import probe_compute_backend
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
+from rcp.limits import COMPUTE_JOB_STARTUP_CHECK_SECONDS
 from rcp.transport import RemoteRunStage
 
 
@@ -129,14 +139,17 @@ class WorkComputeCommands:
         )
         return response
 
+    @cached_property
+    def helper_backend(self) -> ComputeBackendProfile | None:
+        try:
+            _context, backend = resolve_context(self.manifest, self.write_scope.execution_machine)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            return None
+        return backend
+
     @property
     def allowed_verbs(self) -> frozenset[str]:
-        machine = self.manifest.machine_map[self.write_scope.execution_machine]
-        return (
-            frozenset()
-            if machine.compute and machine.compute.job_manager
-            else frozenset({"launch"})
-        )
+        return frozenset({"launch"}) if self.helper_backend is not None else frozenset()
 
     def execution_instructions(self, launch_command: str) -> str:
         waiting = (
@@ -144,22 +157,32 @@ class WorkComputeCommands:
             "(roughly over 10 minutes), hand off waiting with watch.json instead of repeatedly polling. "
             "This is planning guidance, not an enforced time limit. "
         )
-        if not self.allowed_verbs:
-            return waiting + (
-                "This machine uses Slurm. Submit directly with your own commands or scripts; "
-                "choose the job's resources and submission arguments yourself. Slurm owns the "
-                "detached job. Supply a shell check_command, log_path and cwd in watch.json, "
-                "and a cancel_command such as scancel for the exact submitted job if human Cancel "
-                "should be available. Queued jobs are still active. RCP checks account prerequisites "
-                "but does not submit, size, or interpret scheduler jobs."
-            )
-        return waiting + (
+        helper = (
+            "A long-lived process such as a dashboard uses the ordinary launch and its watcher; "
+            "the human stops it with Cancel. "
             "For work that must outlive this agent turn, use the process launch helper: "
             f"`{launch_command}`. Copy its returned watcher object into watch.json's external list "
             "before ending the turn while that work is running. The helper provides check_command, "
-            "log_path, cwd and cancel_command. A repeated launch must use the same idempotency key "
+            "log_path, cwd and cancel_command; check_command is for RCP's watcher and may not run "
+            "inside your sandbox. The launch response's startup object reports the job a moment "
+            "after start: running means RCP saw it alive, unknown means RCP could not check it "
+            "(see diagnostic), and any other status means it already ended and log_tail says why. "
+            "Confirm success from startup, not from a port or URL another process could answer. A repeated launch must use the same idempotency key "
             "and arguments. If submission is uncertain, inspect the retained receipt; do not submit "
             "again under a new key. RCP refuses helper launches without reliable process ownership."
+        )
+
+        availability = (
+            f"Helper owner: {self.helper_backend.id}."
+            if "launch" in self.allowed_verbs
+            else "No helper owner resolves on this machine; launch is unavailable."
+        )
+        machine = self.manifest.machine_map[self.write_scope.execution_machine]
+        manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
+        return "\n\n".join(
+            part
+            for part in (waiting + helper, availability, manager.instructions if manager else "")
+            if part
         )
 
     def _execute(self, request: LaunchCommandRequest) -> CommandResponse:
@@ -182,13 +205,17 @@ class WorkComputeCommands:
             raise ValueError("Compute cwd is a protected write path.")
         launch = launch.model_copy(update={"cwd": str(cwd)})
         machine = self.write_scope.execution_machine
-        probe = probe_compute_backend(self.manifest, machine, data_dir=self.data_dir)
-        self.execution.store.record_compute_backend_probe(self.write_scope.project_id, probe)
+        probe = probe_compute_backend(self.manifest, machine, "helper", data_dir=self.data_dir)
+        self.execution.store.record_compute_backend_probe(
+            self.write_scope.project_id, probe, "helper"
+        )
         try:
             return self._launch(request, launch, probe)
         except ComputeProbeStaleError:
-            probe = probe_compute_backend(self.manifest, machine, data_dir=self.data_dir)
-            self.execution.store.record_compute_backend_probe(self.write_scope.project_id, probe)
+            probe = probe_compute_backend(self.manifest, machine, "helper", data_dir=self.data_dir)
+            self.execution.store.record_compute_backend_probe(
+                self.write_scope.project_id, probe, "helper"
+            )
             return self._launch(request, launch, probe)
 
     def _launch(
@@ -220,7 +247,14 @@ class WorkComputeCommands:
             protected_paths=self.write_scope.protected_write_paths,
             probe=probe,
         )
-        result = {"watcher": helper_watch_spec(job)}
+        time.sleep(COMPUTE_JOB_STARTUP_CHECK_SECONDS)
+        job = refresh_compute_job(
+            self.execution.store, self.manifest, job.job_id, data_dir=self.data_dir
+        )
+        result = {
+            "watcher": helper_watch_spec(job),
+            "startup": helper_startup_state(self.manifest, job),
+        }
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
     def validate_handoff(self, observed_check_commands: set[str]) -> None:

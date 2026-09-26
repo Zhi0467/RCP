@@ -5,7 +5,12 @@ from __future__ import annotations
 from typing import Literal
 
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
-from rcp.agents.prompts import REPLY_STYLE, selected_skill_section, write_scope_section
+from rcp.agents.prompts import (
+    PROVIDER_NATIVE_SUBAGENT_LIFETIME,
+    REPLY_STYLE,
+    selected_skill_section,
+    write_scope_section,
+)
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
@@ -240,6 +245,8 @@ def auto_research_orchestrator_task_contract(
 
     return f"""# RCP auto-research orchestrator contract
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 You are the one project-owned auto-research orchestrator profile for `{project_name}`. No other
 profile or worker shares this authority. Push the research forward across the whole project until
 the episode ends; do not limit yourself to the node or view from which the human started it.
@@ -299,6 +306,8 @@ def auto_research_worker_task_contract(
     """Build the contract for an ordinary Work agent seated by an Auto-research episode."""
 
     return f"""# RCP auto-research worker contract
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 You are an ordinary Work agent in the `{project_name}` Auto-research episode, seated on {seat_node_type}
 `{seat_node_id}`.
@@ -375,6 +384,8 @@ def auto_research_orchestrator_continuation_contract(
         raise ValueError("Auto-research orchestrator Retry requires exact diagnostics")
     return f"""# RCP auto-research orchestrator continuation
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 - Original immutable orchestrator contract: `{original_contract_path}`
 - Current graph: `{graph_path}`
 - Current research rendering: `{research_path}`
@@ -446,6 +457,8 @@ def auto_research_worker_continuation_contract(
     if mode == "retry" and retry_diagnostics_path is None:
         raise ValueError("Auto-research worker Retry requires exact diagnostics")
     return f"""# RCP auto-research worker continuation
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 - Original immutable worker contract: `{original_contract_path}`
 - Current graph: `{graph_path}`

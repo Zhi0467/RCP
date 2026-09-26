@@ -46,7 +46,10 @@ REPLY_STYLE = """Writing the reply:
   structure, and the turn names an artifact directory, draw it as a figure there and link it.
   Prefer one clear figure to a table of numbers."""
 
-CHAT_MASTER_CONTEXT_VERSION = 12
+PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
+Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
+
+CHAT_MASTER_CONTEXT_VERSION = 13
 
 
 def chat_master_contract_key() -> str:
@@ -827,6 +830,8 @@ Turn protocol:
         )
         return f"""# RCP {kind} task contract
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 {_WHAT_IS_RCP}
 
 Your task:
@@ -959,6 +964,8 @@ Output contract:
         )
         return _tidy(f"""# RCP Discuss task contract
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 Your task:
 Answer the human's question. Keep to what was asked; do not sweep the corpus or re-derive the graph.
 
@@ -1095,6 +1102,8 @@ Optional watcher handoff:
         validator_rules = _patch_validator_rules(validator_command)
         return _tidy(f"""# RCP Work task contract
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 Your task:
 Complete the human's requested outcome, including the investigation, execution, verification, and
 repair needed to achieve it. Inspect results and iterate on failures or incomplete outcomes while
@@ -1175,6 +1184,8 @@ Graph Patch (optional):
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
     ) -> str:
         return f"""# RCP paper-coach task contract
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 {_WHAT_IS_RCP_CONVERSATION}
 
@@ -1406,6 +1417,8 @@ Resume authority:
         )
         return _tidy(f"""# RCP {mode.replace("_", " ")} contract
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 {f"This is a {turn_mode.capitalize()} turn." if turn_mode else ""}
 {action}
 
@@ -1454,6 +1467,8 @@ Resume authority:
         ontology_extensions: bool,
     ) -> str:
         return f"""# RCP {kind} retry handoff
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 {_TASK_AUTHORITY_BOUNDARY}
 

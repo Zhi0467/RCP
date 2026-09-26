@@ -18,6 +18,10 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     const errors = [];
     const requests = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    page.on("requestfailed", (request) => errors.push(request.failure()?.errorText));
     page.on("request", (request) => {
       if (request.url().includes("/api/")) requests.push(request.url());
     });
@@ -118,29 +122,54 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     assert.equal(await page.getByText("Slurm account", { exact: true }).count(), 0);
     assert.equal(await page.getByText("Slurm partition", { exact: true }).count(), 0);
 
-    await page.route("**/machines/local/compute/probe", (route) =>
-      route.fulfill({
-        json: {
-          backend_id: "systemd_user",
-          ready: false,
-          state: "failed",
-          status_label: "Failed",
-          status_tone: "error",
-          diagnostic: "User manager is unavailable",
-          required_action: "Enable linger for the rcp account",
-        },
-      }),
-    );
-    await local.getByRole("button", { name: "Probe", exact: true }).click();
-    await local.getByText("User manager is unavailable").waitFor();
+    const scheduler = cluster
+      .locator(".compute-probe")
+      .filter({ has: page.locator("strong", { hasText: /^Scheduler$/ }) });
+    const helper = cluster
+      .locator(".compute-probe")
+      .filter({ has: page.locator("strong", { hasText: /^Helper$/ }) });
     await page.evaluate(() => {
       const { project, setProject } = window.jobFixture;
       setProject({
         ...project,
-        machines: project.machines.map((machine) => ({ ...machine, compute_probe: null })),
+        machines: project.machines.map((machine) =>
+          machine.alias === "cluster"
+            ? {
+                ...machine,
+                compute_probes: {
+                  scheduler: {
+                    backend_id: "slurm",
+                    ready: true,
+                    state: "ready",
+                    status_label: "Ready",
+                    status_tone: "ready",
+                    diagnostic: "Scheduler reachable",
+                  },
+                  helper: {
+                    backend_id: "systemd_user",
+                    ready: false,
+                    state: "failed",
+                    status_label: "Failed",
+                    status_tone: "error",
+                    diagnostic: "User manager is unavailable",
+                    required_action: "Enable linger for the rcp account",
+                  },
+                },
+              }
+            : machine,
+        ),
       });
     });
-    await local.getByText("User manager is unavailable").waitFor();
+    await scheduler.getByText("Scheduler reachable").waitFor();
+    await helper.getByText("Enable linger for the rcp account").waitFor();
+    assert.equal(await scheduler.getAttribute("class"), "compute-probe ready");
+    assert.equal(await helper.getAttribute("class"), "compute-probe error");
+    assert.equal(await cluster.getByRole("button", { name: "Probe", exact: true }).count(), 0);
+    assert.deepEqual(
+      await local.locator(".compute-probe strong").allTextContents(),
+      ["Helper"],
+      "A machine without a job manager offers only the helper route",
+    );
 
     assert.deepEqual(errors, []);
   } finally {

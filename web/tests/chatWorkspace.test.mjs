@@ -20,6 +20,7 @@ import {
   parseConversationMode,
   startConversationTurn,
   toggleConversationMode,
+  unsentConversation,
 } from "../src/chatWorkspace.ts";
 
 function task(overrides) {
@@ -79,6 +80,35 @@ test("conversations group by chat id rather than latest node", () => {
   assert.equal(conversations.find((item) => item.chatId === "chat-a")?.title, "Node A");
   assert.equal(latestConversation(conversations, "node_chat", "node/a")?.chatId, "chat-b");
   assert.equal(chatIdForTask(tasks[2]), "chat-p");
+});
+
+test("opening a new chat reuses an unsent draft of the same kind and node only", () => {
+  const draft = (chatId, kind = "project_chat", nodeId = null) => ({
+    chatId,
+    kind,
+    nodeId,
+    title: "Project",
+  });
+  const sent = task({
+    operation_id: "sent",
+    kind: "project_chat",
+    request: { chat_id: "sent-draft" },
+  });
+  const conversations = groupChatConversations([], [sent], {}, "Project", [
+    draft("sent-draft"),
+    draft("empty"),
+    draft("node-empty", "node_chat", "node/a"),
+  ]);
+  assert.equal(unsentConversation(conversations, "project_chat")?.chatId, "empty");
+  assert.equal(unsentConversation(conversations, "node_chat", "node/a")?.chatId, "node-empty");
+  assert.equal(unsentConversation(conversations, "node_chat", "node/b"), null);
+  assert.equal(
+    unsentConversation(
+      groupChatConversations([], [sent], {}, "Project", [draft("sent-draft")]),
+      "project_chat",
+    ),
+    null,
+  );
 });
 
 test("draft conversations survive without tasks and indicators distinguish active and unread", () => {
@@ -407,6 +437,7 @@ test("the Agents panel groups each conversation by what its latest turn asks of 
     conversation("running", "Running audit", ["succeeded", "running"]),
     conversation("unread", "Unread result", ["succeeded"]),
     conversation("idle", "Idle notes", ["succeeded"]),
+    { ...conversation("draft", "Unsent draft", []), updatedAt: "" },
   ];
   const unread = new Set(["unread-0"]);
 
@@ -426,9 +457,10 @@ test("the Agents panel groups each conversation by what its latest turn asks of 
     ],
     working: [["running", "working"]],
     recent: [
-      ["recovered", "idle"],
+      ["recovered", "done"],
       ["unread", "unread"],
-      ["idle", "idle"],
+      ["idle", "done"],
+      ["draft", "draft"],
     ],
   });
   assert.deepEqual(ids(groupConversationAgents(conversations, unread, "  AUDIT ")), {
@@ -436,4 +468,29 @@ test("the Agents panel groups each conversation by what its latest turn asks of 
     working: [["running", "working"]],
     recent: [],
   });
+});
+
+test("agent search matches every word against what the card already holds", () => {
+  const conversation = {
+    chatId: "chat",
+    kind: "node_chat",
+    nodeId: "exp/loss-sweep",
+    title: "Loss sweep",
+    updatedAt: "2026-07-28T00:00:00Z",
+    preview: "The learning rate diverged at step 400.",
+    tasks: [
+      task({
+        operation_id: "turn",
+        kind: "node_chat",
+        status: "succeeded",
+        provider_label: "Codex",
+        request: { message: "rerun with warmup", model: "gpt-6", run_truth_scope: ["trainer"] },
+      }),
+    ],
+  };
+  const found = (query) =>
+    Object.values(groupConversationAgents([conversation], new Set(), query)).flat().length;
+  for (const query of ["diverged", "WARMUP", "codex trainer", "exp/loss", "node chat"])
+    assert.equal(found(query), 1, query);
+  assert.equal(found("codex claude"), 0);
 });

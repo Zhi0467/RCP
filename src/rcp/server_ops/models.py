@@ -17,6 +17,7 @@ from pydantic import (
     model_validator,
 )
 
+from rcp.compute_jobs.routes import ComputeRoute
 from rcp.server_ops._local_primitives import canonical_uuid4
 from rcp.server_ops._local_primitives import normalized_absolute_path as absolute_path
 
@@ -160,6 +161,7 @@ class ServerCommandRequest(_StrictModel):
     request_id: str | None = None
     project_id: str | None = None
     machine_alias: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
+    compute_route: ComputeRoute | None = Field(default=None, exclude_if=lambda value: value is None)
     provider_update_provider: Literal["codex", "claude"] | None = None
     member_id: str | None = None
     member_confirmed_boundary: str | None = None
@@ -264,6 +266,7 @@ class ServerCommandRequest(_StrictModel):
             "request_id": self.request_id,
             "project_id": self.project_id,
             "machine_alias": self.machine_alias,
+            "compute_route": self.compute_route,
             "provider_update_provider": self.provider_update_provider,
             "member_id": self.member_id,
             "member_confirmed_boundary": self.member_confirmed_boundary,
@@ -289,7 +292,7 @@ class ServerCommandRequest(_StrictModel):
                 raise ValueError("provider check requires exactly one request or project selector")
             expected = {"request_id" if self.request_id is not None else "project_id"}
         elif self.command == "server compute probe":
-            expected = {"project_id", "machine_alias"}
+            expected = {"project_id", "machine_alias", "compute_route"}
         elif self.command == "server provider update":
             expected = {"provider_update_provider"}
         elif self.command in {

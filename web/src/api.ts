@@ -1,7 +1,8 @@
 import type {
-  ComputeBackendProbe,
+  Machine,
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
+  ChatDisplay,
   ChatMessage,
   SteerRequest,
   ArtifactRevisionCandidate,
@@ -477,8 +478,36 @@ export function steerChatTurn(
   );
 }
 
-export function probeMachineCompute(apiBase: string, alias: string): Promise<ComputeBackendProbe> {
-  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/probe`, { method: "POST" });
+export function checkMachineCompute(
+  apiBase: string,
+  alias: string,
+): Promise<Machine["compute_probes"]> {
+  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/check`, {
+    method: "POST",
+  });
+}
+
+export function loadChatDisplay(apiBase: string): Promise<ChatDisplay> {
+  return api(`${apiBase}/chat-display`);
+}
+
+export function setChatArchived(
+  apiBase: string,
+  chatId: string,
+  archived: boolean,
+): Promise<ChatDisplay> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ archived }),
+  });
+}
+
+/** A blank title returns the chat to its derived name. */
+export function setChatTitle(apiBase: string, chatId: string, title: string): Promise<ChatDisplay> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/title`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
 }
 
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {

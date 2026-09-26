@@ -423,14 +423,17 @@
   padding: 0;
   width: 28px;
 }
+/* A folded header shares its row with the panels, so its dock stays compact. */
 .project-tabs-project-dock {
-  flex: 0 1 46vw;
+  flex: 0 1 320px;
   margin-right: 6px;
-  max-width: 620px;
   min-width: 150px;
 }
 .project-tabs-project-dock .project-dock-tab {
   height: 46px;
+}
+.project-tabs-back + .project-tabs-toggle {
+  margin: 0 6px 0 2px;
 }
 .project-tabs-toggle:hover {
   color: var(--ink);
@@ -524,8 +527,21 @@
   margin-bottom: -1px;
   padding: 0 14px;
 }
-.project-tabs > button.project-tabs-toggle {
+/* Folded, back and expand are one pair of plain 28px icons, like the header's back. */
+.project-tabs > button.project-tabs-toggle,
+.project-tabs > button.project-tabs-back {
+  align-self: center;
+  border: 0;
+  border-radius: 5px;
+  height: 28px;
+  margin-block: 0;
+  justify-content: center;
   padding: 0;
+  width: 28px;
+}
+.project-tabs > button.project-tabs-toggle:hover,
+.project-tabs > button.project-tabs-back:hover {
+  background: var(--surface-cool);
 }
 .project-tabs > button:hover {
   color: var(--ink);
@@ -613,6 +629,47 @@
 }
 .project-panel.paper {
   overflow: hidden;
+}
+.artifacts-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.project-panel.paper > .artifacts-shell {
+  height: 100%;
+}
+.artifacts-shell > :last-child {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.artifacts-shell > .paper-workspace {
+  height: auto;
+}
+.artifacts-subnav {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  padding: 10px 16px 0;
+}
+.artifacts-subnav button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  display: flex;
+  font-size: var(--type-xs);
+  gap: 5px;
+  padding: 4px 11px;
+}
+.artifacts-subnav button[aria-pressed="true"] {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.artifacts-subnav small {
+  color: var(--coral);
+  font-weight: 700;
 }
 .project-view-loading {
   align-items: center;

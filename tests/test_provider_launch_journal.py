@@ -107,3 +107,24 @@ def test_serve_attaches_one_stderr_handler_to_the_package_logger() -> None:
         package.setLevel(logging.NOTSET)
         for handler in before:
             package.addHandler(handler)
+
+
+@pytest.mark.asyncio
+async def test_exec_nonzero_exit_retains_last_retry_error(tmp_path, monkeypatch):
+    launcher = _codex_exec_launcher(monkeypatch, exit_code=7)
+    messages = ["retry-1", "retry-2"]
+    script = (
+        "import sys\nsys.stdin.read()\n"
+        + "\n".join(
+            f"print({json.dumps({'type': 'error', 'message': message})!r}, flush=True)"
+            for message in messages
+        )
+        + "\nraise SystemExit(7)\n"
+    )
+    monkeypatch.setattr(
+        launcher, "_command", lambda *args, **kwargs: [sys.executable, "-c", script]
+    )
+    events = await _drain(launcher, tmp_path)
+    assert [event.text for event in events if event.event == "message"] == messages
+    assert [event.text for event in events if event.event == "error"] == messages[-1:]
+    assert not any(event.event == "done" for event in events)

@@ -163,15 +163,16 @@ available with its ordinary read-only capability.
 
 ## Compute setup and job APIs
 
-Project machine entries expose the manifest `compute` block and a live
-`compute_probe`, serialized as `ComputeBackendProbe` or null. The latter is
+Project machine entries expose the manifest `compute` block and live
+`compute_probes`, one `ComputeBackendProbe` or null per route. The latter is
 read from storage even when the graph snapshot is cached. Settings updates
 accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
 removes a block, omission preserves it. Validation and TOML persistence belong
-to the machine configuration owner. A changed block invalidates its stored probe.
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe` uses
-project write admission, stores a fresh probe, and returns that same model with
-its backend-owned label and tone.
+to the machine configuration owner. A changed block invalidates its stored
+probes and schedules a fresh background check of that machine.
+`POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
+project write admission, re-probes every route that machine offers, and
+returns both route slots.
 
 `GET /api/projects/{project_id}/watchers` supplies the external job rows for both
 scheduler and helper work. Every external row includes its required shell check,
@@ -192,8 +193,10 @@ Settings stages per-machine `job_manager` and optional helper `jobs_root` beside
 provider paths. **Use Slurm** opts into direct scheduler submission; RCP exposes
 no resource-argument inputs. Only changed aliases are saved. Draft storage keeps
 explicit machine edits, so an unrelated draft cannot restore an older full
-compute configuration. Unsaved machine edits mask readiness and require Save
-before Probe. The response supplies its own label, tone, and diagnostic.
+compute configuration. Unsaved machine edits mask readiness. A save that
+changes a machine's block probes its offered routes in the background; Runs
+offers **Check again** through `POST .../machines/{machine_alias}/compute/check`.
+Each stored probe supplies its own label, tone, and diagnostic.
 
 Chat and Experiment use the existing watcher refreshes to show one external job
 row. It displays the log path, observation state, check diagnostic, and Cancel

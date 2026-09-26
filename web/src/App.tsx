@@ -53,6 +53,7 @@ import {
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
+  unsentConversation,
   type ChatKind,
   type ConversationTurnSubmission,
 } from "./chatWorkspace";
@@ -438,12 +439,53 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
   { view: "scientific", label: "Research", icon: <GitBranch size={14} /> },
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
+  // Paper is a sub-panel of Artifacts; its route stays `paper`.
   { view: "artifacts", label: "Artifacts", icon: <Files size={14} /> },
-  { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "terminals", label: "Terminals", icon: <TerminalSquare size={14} /> },
-  { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
   { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
+  { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
 ];
+
+/** A tab stays highlighted while one of its sub-views is open. */
+function navItemActive(item: AppView, view: AppView): boolean {
+  return (
+    view === item ||
+    (item === "scientific" && view === "dag") ||
+    (item === "artifacts" && view === "paper")
+  );
+}
+
+function ArtifactsSubnav({
+  view,
+  paperUnsynced,
+  onChange,
+}: {
+  view: AppView;
+  paperUnsynced: boolean;
+  onChange: (view: AppView) => void;
+}) {
+  return (
+    <div className="artifacts-subnav" role="group" aria-label="Artifacts sections">
+      {(
+        [
+          ["artifacts", "Files"],
+          ["paper", "Paper"],
+        ] as const
+      ).map(([target, label]) => (
+        <button
+          key={target}
+          type="button"
+          aria-pressed={view === target}
+          onClick={() => onChange(target)}
+        >
+          {target === "paper" ? <FileText size={13} /> : <Files size={13} />}
+          {label}
+          {target === "paper" && paperUnsynced && <small>1</small>}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export async function loadGraphRevision(
   fetchJson: <T>(path: string) => Promise<T>,
@@ -1119,6 +1161,7 @@ export default function App() {
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
+    discardDraft,
     ensureConversation,
     refreshChatSummaries,
     loadMoreChatSummaries,
@@ -4188,7 +4231,9 @@ export default function App() {
                 className="button secondary"
                 disabled={projectReconciliation !== "authoritative"}
                 onClick={() => {
-                  const chatId = startConversation("project_chat", null, project.name);
+                  const chatId =
+                    unsentConversation(conversations, "project_chat")?.chatId ??
+                    startConversation("project_chat", null, project.name);
                   openChats(chatId);
                 }}
               >
@@ -4247,23 +4292,15 @@ export default function App() {
 
       <nav className="project-tabs" aria-label="Project panels">
         {projectHeaderCollapsed && (
-          <>
-            <button
-              className="project-tabs-back project-back"
-              onClick={returnToProjects}
-              aria-label="All projects"
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <ProjectDock
-              className="project-tabs-project-dock"
-              tabs={openProjectTabs}
-              activeProjectId={projectId}
-              onActivate={activateProjectTab}
-              onClose={closeDockedProject}
-            />
-          </>
+          <button
+            className="project-tabs-back project-back"
+            onClick={returnToProjects}
+            aria-label="All projects"
+          >
+            <ArrowLeft size={16} />
+          </button>
         )}
+        {/* Folded, the expand control sits beside the back arrow it came from. */}
         <button
           aria-expanded={!projectHeaderCollapsed}
           aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
@@ -4274,6 +4311,15 @@ export default function App() {
         >
           {projectHeaderCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
         </button>
+        {projectHeaderCollapsed && (
+          <ProjectDock
+            className="project-tabs-project-dock"
+            tabs={openProjectTabs}
+            activeProjectId={projectId}
+            onActivate={activateProjectTab}
+            onClose={closeDockedProject}
+          />
+        )}
         {navItems.map((item) =>
           item.view === "terminals" ? (
             <TerminalTab
@@ -4287,14 +4333,8 @@ export default function App() {
           ) : (
             <button
               key={item.view}
-              className={
-                view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
-              }
-              aria-current={
-                view === item.view || (item.view === "scientific" && view === "dag")
-                  ? "page"
-                  : undefined
-              }
+              className={navItemActive(item.view, view) ? "active" : ""}
+              aria-current={navItemActive(item.view, view) ? "page" : undefined}
               onClick={() =>
                 item.view === "chats"
                   ? openChats()
@@ -4308,7 +4348,7 @@ export default function App() {
               {item.view === "attention" && attentionCount > 0 && (
                 <small className="inbox-count">{attentionCount}</small>
               )}
-              {item.view === "paper" && paper.sync_state !== "synced" && <small>1</small>}
+              {item.view === "artifacts" && paper.sync_state !== "synced" && <small>1</small>}
               {item.view === "chats" && chatsIndicator && (
                 <small
                   className={`chats-indicator ${chatsIndicator}`}
@@ -4576,13 +4616,25 @@ export default function App() {
               onSelectNode={openNode}
             />
           )}
-          {view === "artifacts" && <Artifacts key={project.id} projectId={project.id} />}
+          {view === "artifacts" && (
+            <div className="artifacts-shell">
+              <ArtifactsSubnav
+                view={view}
+                paperUnsynced={paper.sync_state !== "synced"}
+                onChange={changeView}
+              />
+              <Artifacts key={project.id} projectId={project.id} />
+            </div>
+          )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
           {view === "execution" && (
             <div className="combined-runs-view">
               <ExecutionView
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
+                machines={project.machines}
+                computeApiBase={apiBase}
+                onOpenSettings={() => changeView("settings")}
                 graph={presentedGraph}
                 episodes={episodes}
                 episodeAction={episodeAction}
@@ -4639,15 +4691,22 @@ export default function App() {
             </div>
           )}
           {view === "paper" && (
-            <PaperWorkspace
-              key={project.id}
-              apiBase={apiBase}
-              project={project}
-              initialPaper={paper}
-              tasks={projectTasks}
-              onStartTask={startAgentTask}
-              onPaperChange={updatePaper}
-            />
+            <div className="artifacts-shell">
+              <ArtifactsSubnav
+                view={view}
+                paperUnsynced={paper.sync_state !== "synced"}
+                onChange={changeView}
+              />
+              <PaperWorkspace
+                key={project.id}
+                apiBase={apiBase}
+                project={project}
+                initialPaper={paper}
+                tasks={projectTasks}
+                onStartTask={startAgentTask}
+                onPaperChange={updatePaper}
+              />
+            </div>
           )}
           {view === "settings" && (
             <ProjectSettings
@@ -4721,11 +4780,15 @@ export default function App() {
               onOpenInbox={() => changeView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+              onRemoveDraft={discardDraft}
               onNewSession={(conversation) => {
                 const node = conversation.nodeId
                   ? (presentedGraph.nodes[conversation.nodeId] ?? null)
                   : null;
-                selectChat(startConversation(conversation.kind, node, project.name));
+                selectChat(
+                  unsentConversation(conversations, conversation.kind, conversation.nodeId)
+                    ?.chatId ?? startConversation(conversation.kind, node, project.name),
+                );
               }}
             />
           )}
@@ -4858,7 +4921,9 @@ export default function App() {
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onNewSession={() => {
                 const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
-                const chatId = startConversation("node_chat", node, project.name);
+                const chatId =
+                  unsentConversation(conversations, "node_chat", floatingChat.nodeId)?.chatId ??
+                  startConversation("node_chat", node, project.name);
                 selectChat(chatId);
                 setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
               }}

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import (
     get_attachment_store,
     get_catalog,
     get_graph_service,
+    get_identity_access,
     get_store,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload
 from rcp.conversation_worktrees import (
     ConversationWorktreeResponse,
@@ -20,7 +24,7 @@ from rcp.conversation_worktrees import (
     project_conversation_worktree,
     remove_conversation_worktree,
 )
-from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
+from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT, CHAT_TITLE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import ChatSummaryPage, ChatTranscript, RunRequest
@@ -30,6 +34,94 @@ router = APIRouter(dependencies=[Depends(require_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 AttachmentStoreDependency = Annotated[ChatAttachmentStore, Depends(get_attachment_store)]
+StoreDependency = Annotated[AppStore, Depends(get_store)]
+IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
+
+
+class ChatArchiveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    archived: bool
+
+
+class ChatTitleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # None or blank returns the conversation to its derived name.
+    title: str | None = Field(default=None, max_length=CHAT_TITLE_MAX_CHARS)
+
+
+class ChatDisplay(BaseModel):
+    archived: list[str]
+    titles: dict[str, str]
+
+
+def _canonical_chat_id(chat_id: str) -> str:
+    try:
+        canonical = str(uuid.UUID(chat_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="chat_id must be a UUID") from exc
+    if canonical != chat_id:
+        raise HTTPException(status_code=422, detail="chat_id must be a canonical UUID")
+    return canonical
+
+
+@router.get("/api/projects/{project_id}/chat-display", response_model=ChatDisplay)
+def chat_display(
+    project_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> ChatDisplay:
+    project_id = catalog.resolve_project_id(project_id)
+    return ChatDisplay(**store.chat_display(project_id))
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/archive",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatDisplay,
+)
+def archive_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatArchiveBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    """Hide or restore one conversation in the agent list; nothing is deleted."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
+    return ChatDisplay(**store.chat_display(project_id))
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/title",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatDisplay,
+)
+def rename_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatTitleBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    """Name a conversation in the agent list; its transcript is unchanged."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    title = " ".join((body.title or "").split()) or None
+    store.set_chat_title(project_id, chat_id, user.user_id, title)
+    return ChatDisplay(**store.chat_display(project_id))
 
 
 @router.post(
@@ -132,8 +224,11 @@ def chat(
 
 
 __all__ = [
+    "archive_chat",
     "chat",
+    "chat_display",
     "chats",
+    "rename_chat",
     "remove_chat_attachment",
     "router",
     "upload_chat_attachment",

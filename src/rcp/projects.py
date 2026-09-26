@@ -2491,11 +2491,17 @@ class ProjectDisplayCache:
             {
                 **machine,
                 "compute": machine.get("compute"),
-                "compute_probe": (probe.model_dump(mode="json") if probe is not None else None),
+                "compute_probes": {
+                    route: probe.model_dump(mode="json") if probe is not None else None
+                    for route in ("scheduler", "helper")
+                    for probe in [
+                        self._store.compute_backend_probe(payload["id"], machine["alias"], route)
+                    ]
+                },
             }
             for machine in payload["machines"]
-            for probe in [self._store.compute_backend_probe(payload["id"], machine["alias"])]
         ]
+        payload["compute_probes_probed_at"] = self._store.compute_probes_probed_at(payload["id"])
         return payload
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:

@@ -21,6 +21,8 @@ export interface ChatConversation {
   title: string;
   tasks: AgentTask[];
   updatedAt: string;
+  /** The latest message's text from the stored summary, for search. */
+  preview?: string;
 }
 
 export interface DraftConversation {
@@ -218,6 +220,7 @@ export function groupChatConversations(
       title,
       tasks: [],
       updatedAt: summary.updated_at,
+      preview: summary.last_message_preview,
     });
   }
   for (const draft of drafts) {
@@ -265,7 +268,8 @@ export function groupChatConversations(
 }
 
 /** What a conversation's latest turn asks of the human, for the Agents panel. */
-export type ConversationAgentState = "needs_you" | "paused" | "working" | "unread" | "idle";
+export type ConversationAgentState =
+  "needs_you" | "paused" | "working" | "unread" | "failed" | "done" | "draft";
 export type ConversationAgentGroup = "needs_you" | "working" | "recent";
 export interface ConversationAgentStatus {
   state: ConversationAgentState;
@@ -287,13 +291,42 @@ export function conversationAgentStatus(
   if (latest?.active) return { state: "working", group: "working", latest };
   if (latest?.paused) return { state: "paused", group: "needs_you", latest };
   if (latest?.awaiting_human) return { state: "needs_you", group: "needs_you", latest };
-  const state = conversationHasUnread(conversation, unreadTaskIds) ? "unread" : "idle";
-  return { state, group: "recent", latest };
+  if (!latest) return { state: "draft", group: "recent", latest };
+  if (conversationHasUnread(conversation, unreadTaskIds)) {
+    return { state: "unread", group: "recent", latest };
+  }
+  return { state: latest.failed ? "failed" : "done", group: "recent", latest };
 }
 
 export interface ConversationAgentRow {
   conversation: ChatConversation;
   status: ConversationAgentStatus;
+}
+
+/**
+ * Everything the browser already holds about a conversation, lower-cased: its
+ * name, node, chat kind, latest message, and each loaded turn's prompt,
+ * provider, model, effort, and repositories. Every search word must appear.
+ */
+export function conversationSearchText(conversation: ChatConversation): string {
+  const parts: (string | null | undefined)[] = [
+    conversation.title,
+    conversation.nodeId,
+    conversation.kind === "project_chat" ? "project chat" : "node chat",
+    conversation.preview,
+  ];
+  for (const task of conversation.tasks) {
+    const request = task.request;
+    parts.push(
+      typeof request.message === "string" ? request.message : null,
+      task.provider_label,
+      request.provider,
+      request.model,
+      request.reasoning,
+      ...(request.run_truth_scope ?? []),
+    );
+  }
+  return parts.filter(Boolean).join("\n").toLocaleLowerCase();
 }
 
 /** Rows grouped Needs you, Working, Recent; each group keeps recency order. */
@@ -302,18 +335,38 @@ export function groupConversationAgents(
   unreadTaskIds: ReadonlySet<string>,
   query = "",
 ): Record<ConversationAgentGroup, ConversationAgentRow[]> {
-  const needle = query.trim().toLocaleLowerCase();
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const groups: Record<ConversationAgentGroup, ConversationAgentRow[]> = {
     needs_you: [],
     working: [],
     recent: [],
   };
   for (const conversation of conversations) {
-    if (needle && !conversation.title.toLocaleLowerCase().includes(needle)) continue;
+    if (terms.length) {
+      const text = conversationSearchText(conversation);
+      if (!terms.every((term) => text.includes(term))) continue;
+    }
     const status = conversationAgentStatus(conversation, unreadTaskIds);
     groups[status.group].push({ conversation, status });
   }
   return groups;
+}
+
+/** A draft nobody has sent a turn in; opening a new chat reuses it. */
+export function unsentConversation(
+  conversations: ChatConversation[],
+  kind: ChatKind,
+  nodeId: string | null = null,
+): ChatConversation | null {
+  return (
+    conversations.find(
+      (conversation) =>
+        conversation.kind === kind &&
+        conversation.nodeId === nodeId &&
+        conversation.tasks.length === 0 &&
+        !conversation.updatedAt,
+    ) ?? null
+  );
 }
 
 export function latestConversation(

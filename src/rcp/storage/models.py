@@ -52,6 +52,7 @@ from rcp.providers import (
     ProviderId,
     ProviderSkill,
     legacy_runtime_id,
+    profile_for,
     require_runtime_id,
     runtime_label,
 )
@@ -2156,6 +2157,8 @@ class AgentTaskRecord(BaseModel):
     #: How that runtime is named to a human. Derived here so a surface reporting
     #: what actually ran never maps a durable id back to the registry itself.
     runtime_label: str = ""
+    #: The umbrella provider name surfaces show; the runtime is a detail.
+    provider_label: str = ""
     native_session_id: str | None = None
     history_only: bool = False
     stage_host: str | None = None
@@ -2205,6 +2208,7 @@ class AgentTaskRecord(BaseModel):
             self.runtime_id = legacy
         require_runtime_id(provider, self.runtime_id)
         self.runtime_label = runtime_label(provider, self.runtime_id)
+        self.provider_label = profile_for(provider).label
         return self
 
 

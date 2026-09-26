@@ -1,7 +1,7 @@
 """Where one provider turn ends, decided on the execution host.
 
-The launcher ships this module's source to the execution machine, so it holds
-to the standard library and imports nothing from RCP.
+The launcher ships this module and its stateless Claude helpers to the execution
+machine. Both depend only on the standard library.
 
 It answers one question: is this turn over. It deliberately does not answer
 whether the turn succeeded. RCP cannot ship its decoder to a host, so anything
@@ -14,11 +14,15 @@ the one decoder that has always owned it.
 
 from __future__ import annotations
 
+if "attributed_ids" not in globals():
+    from rcp.agents.turn_completion import attributed_ids, is_claude_task_notice
+
 
 class TurnFence:
     """Whether this turn's traffic has reached its own end."""
 
     def __init__(self, runtime_id: str):
+        self.last_error = ""
         self.runtime_id = runtime_id
         self.requests: dict[object, str] = {}
         # Ordered, because which one arrived first is which one was the
@@ -77,7 +81,9 @@ class TurnFence:
         if self.runtime_id == "claude.stream-json.v1":
             self._claude_output(value, kind)
             return
-        if kind in {"turn.completed", "turn.failed", "error"}:
+        if kind == "error":
+            self.last_error = str(value.get("message") or value.get("error") or "")
+        if kind in {"turn.completed", "turn.failed"}:
             self.terminal = True
 
     def _app_server_output(self, value: dict) -> None:
@@ -143,15 +149,9 @@ class TurnFence:
             return
         if kind != "result":
             return
-        identifiers = value.get("user_message_uuids")
-        finished = (
-            {item for item in identifiers if isinstance(item, str) and item.strip()}
-            if isinstance(identifiers, list)
-            else set()
-        )
-        identifier = value.get("user_message_uuid")
-        if not finished and isinstance(identifier, str) and identifier.strip():
-            finished.add(identifier)
+        finished = attributed_ids(value)
+        if is_claude_task_notice(value, set(self.message_ids), finished):
+            return
         self.outstanding.difference_update(finished)
         # A failure ends the turn even with inputs still out: nothing is coming
         # back for them. This is the one place a boundary needs to know that a

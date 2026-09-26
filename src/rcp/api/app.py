@@ -78,7 +78,7 @@ from rcp.background import (
     BackgroundAgentTasks,
     StartupEffectFence,
 )
-from rcp.compute_jobs.probe import probe_compute_backend
+from rcp.compute_jobs.probe import probe_compute_backend, refresh_compute_probes
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
@@ -438,7 +438,7 @@ def create_app(
                             for operation in SERVER_CONTROL_OPERATIONS
                             if (request.protocol_version >= 10 or operation not in root_operations)
                             and (
-                                request.protocol_version >= 11
+                                request.protocol_version >= 12
                                 or operation != "compute_backend_probe"
                             )
                         ),
@@ -462,6 +462,7 @@ def create_app(
                     )
                 case "compute_backend_probe":
                     assert request.selector_id is not None and request.machine_alias is not None
+                    assert request.compute_route is not None
                     record = store.project(request.selector_id)
                     if record is None or record.home_space_id != store.space_id:
                         raise ServerControlError("operation_refused", "Project not found.")
@@ -472,7 +473,7 @@ def create_app(
                     except (OSError, ValueError) as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
                     probe = probe_compute_backend(
-                        manifest, request.machine_alias, data_dir=app_data
+                        manifest, request.machine_alias, request.compute_route, data_dir=app_data
                     )
                     return ServerControlComputeProbeResult(
                         instance_id=identity.instance_id,
@@ -482,7 +483,10 @@ def create_app(
                         selector_kind="project",
                         selector_id=record.project_id,
                         machine_alias=request.machine_alias,
-                        probe=store.record_compute_backend_probe(record.project_id, probe),
+                        compute_route=request.compute_route,
+                        probe=store.record_compute_backend_probe(
+                            record.project_id, probe, request.compute_route
+                        ),
                     )
                 case "provider_readiness_plan":
                     assert provider_readiness_coordinator is not None
@@ -1436,6 +1440,27 @@ def create_app(
             except Exception:
                 logger.exception("Could not reconcile compute jobs for project %s", project_id)
 
+    async def probe_compute_routes() -> None:
+        # Readiness is checked here rather than on request, so a route that
+        # cannot run (no user manager, unreachable Slurm) is already reported
+        # with its fix when someone opens Runs or Settings.
+        for record in store.projects():
+            if record.home_space_id != store.space_id:
+                continue
+            try:
+                manifest = await asyncio.to_thread(load_manifest, record.locator)
+                await asyncio.to_thread(
+                    refresh_compute_probes,
+                    store,
+                    manifest,
+                    record.project_id,
+                    data_dir=app_data,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not check compute routes for project %s: %s", record.project_id, exc
+                )
+
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
 
@@ -1623,6 +1648,7 @@ def create_app(
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
+                startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()

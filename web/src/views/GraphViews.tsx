@@ -1,3 +1,4 @@
+import { ComputeRouteNotice } from "../components/ComputeRouteNotice";
 import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "../branchGraph";
 import { graphSessionKey } from "../graphTarget";
@@ -84,6 +85,7 @@ import {
 } from "../experimentBoard";
 import type {
   ProviderLoginState,
+  Machine,
   AgentTask,
   Edge,
   Episode,
@@ -1100,6 +1102,9 @@ interface ExecutionProps {
   providerLabels?: Record<string, string>;
   providerLogins?: ProviderLoginState[];
   onProviderLoginVerified?: () => void;
+  machines?: Machine[];
+  computeApiBase?: string;
+  onOpenSettings?: () => void;
   mutationsDisabled?: boolean;
   experimentStartsDisabled?: boolean;
   onInspectTask: (operationId: string) => void;
@@ -1144,6 +1149,9 @@ export function ExecutionView({
   providerLabels = {},
   providerLogins = [],
   onProviderLoginVerified,
+  machines = [],
+  computeApiBase = "",
+  onOpenSettings,
   mutationsDisabled = false,
   experimentStartsDisabled = false,
   onInspectTask,
@@ -1334,6 +1342,16 @@ export function ExecutionView({
   return (
     <section className="view-panel runs-view" aria-label="Runs">
       <ProviderLoginNotice states={providerLogins} onVerified={onProviderLoginVerified} />
+      {onOpenSettings && (
+        <ComputeRouteNotice
+          // One instance per project, so a check's result or error never
+          // outlives the project it was made for.
+          key={computeApiBase}
+          apiBase={computeApiBase}
+          machines={machines}
+          onOpenSettings={onOpenSettings}
+        />
+      )}
       <div className="runs-view-controls">
         <label className="show-archived-runs">
           <input

@@ -58,6 +58,8 @@ class AppStoreBase:
         (21, "provider_readiness_snapshots_v1"),
         (22, "episode_continuations_v1"),
         (23, "agent_task_list_indexes_v1"),
+        (24, "compute_probe_routes_v1"),
+        (25, "chat_display_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -580,6 +582,18 @@ class AppStoreBase:
             version=23,
             name="agent_task_list_indexes_v1",
             migration=self._migrate_agent_task_list_indexes,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=24,
+            name="compute_probe_routes_v1",
+            migration=self._migrate_compute_probe_routes,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=25,
+            name="chat_display_v1",
+            migration=self._migrate_chat_display,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2023,6 +2037,8 @@ class AppStoreBase:
         self._migrate_provider_readiness_snapshots(connection)
         self._migrate_episode_continuations(connection)
         self._migrate_agent_task_list_indexes(connection)
+        self._migrate_compute_probe_routes(connection)
+        self._migrate_chat_display(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2215,6 +2231,48 @@ class AppStoreBase:
             )
             """
         )
+
+    @staticmethod
+    def _migrate_chat_display(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS chat_display (
+                project_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                title TEXT,
+                titled_user_id TEXT,
+                archived_user_id TEXT,
+                archived_at TEXT,
+                PRIMARY KEY (project_id, chat_id)
+            )
+        """)
+
+    @staticmethod
+    def _migrate_compute_probe_routes(connection: sqlite3.Connection) -> None:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(compute_backend_probes)")
+        }
+        if "route" in columns:
+            return
+        connection.execute(
+            "ALTER TABLE compute_backend_probes "
+            "RENAME TO _storage_migration_old_compute_backend_probes"
+        )
+        connection.execute(
+            "CREATE TABLE compute_backend_probes ("
+            "project_id TEXT NOT NULL, execution_machine TEXT NOT NULL, "
+            "route TEXT NOT NULL CHECK(route IN ('scheduler', 'helper')), "
+            "probe_json TEXT NOT NULL, probed_at TEXT NOT NULL, "
+            "PRIMARY KEY (project_id, execution_machine, route))"
+        )
+        connection.execute(
+            "INSERT INTO compute_backend_probes "
+            "SELECT project_id, execution_machine, "
+            "CASE json_extract(probe_json, '$.backend_id') "
+            "WHEN 'slurm' THEN 'scheduler' ELSE 'helper' END, probe_json, probed_at "
+            "FROM _storage_migration_old_compute_backend_probes "
+            "WHERE json_extract(probe_json, '$.backend_id') IN ('slurm', 'systemd_user', 'launchd')"
+        )
+        connection.execute("DROP TABLE _storage_migration_old_compute_backend_probes")
 
     @classmethod
     def _migrate_external_watcher_actions(cls, connection: sqlite3.Connection) -> None:

@@ -97,6 +97,7 @@ def commands(tmp_path, manifest, monkeypatch):
 
     backend = Backend()
     monkeypatch.setattr(jobs, "resolve_context", lambda *_: (context, backend))
+    monkeypatch.setattr(compute_commands, "resolve_context", lambda *_: (context, backend))
     monkeypatch.setitem(jobs.COMPUTE_BACKENDS, "systemd_user", backend)
     probe = ComputeBackendProbe(
         execution_machine="laptop",
@@ -115,6 +116,7 @@ def commands(tmp_path, manifest, monkeypatch):
         return probe
 
     monkeypatch.setattr(compute_commands, "probe_compute_backend", probe_backend)
+    monkeypatch.setattr(compute_commands, "COMPUTE_JOB_STARTUP_CHECK_SECONDS", 0)
     execution = AgentTaskExecution(
         operation_id="work-turn",
         store=store,
@@ -174,7 +176,10 @@ def test_helper_launch_replays_its_shell_handoff_after_store_reopen(commands):
     first = commands.launch()
     assert first.status == "ok", first.message
     job = commands.job_for(first)
-    assert first.result == {"watcher": jobs.helper_watch_spec(job)}
+    assert first.result == {
+        "watcher": jobs.helper_watch_spec(job),
+        "startup": {"status": "running"},
+    }
     assert set(first.result["watcher"]) == {"check_command", "cancel_command", "cwd", "log_path"}
     assert job.origin_operation_id == "work-turn"
     assert commands.backend.starts[0][1] == (str(commands.workspace), job.job_root)
@@ -265,8 +270,8 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
     monkeypatch.setattr(
         compute_commands,
         "probe_compute_backend",
-        lambda manifest, alias, **kwargs: probe_module.probe_compute_backend(
-            manifest, alias, runner=runner, **kwargs
+        lambda manifest, alias, route, **kwargs: probe_module.probe_compute_backend(
+            manifest, alias, route, runner=runner, **kwargs
         ),
     )
     resolutions = 0
@@ -362,6 +367,35 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
     staged.cleanup()
 
 
+def test_helper_launch_reports_a_job_that_ended_at_startup(commands, monkeypatch):
+    start = commands.backend.start
+
+    def start_and_fail(root, wrapper, request, context):
+        handle = start(root, wrapper, request, context)
+        commands.backend.alive_handles.discard(handle)
+        (Path(root) / "log").write_text("OSError: [Errno 98] Address already in use\n")
+        (Path(root) / "exit").write_text("1 101\n")
+        return handle
+
+    monkeypatch.setattr(commands.backend, "start", start_and_fail)
+    response = commands.launch()
+    assert response.status == "ok", response.message
+    startup = response.result["startup"]
+    assert (startup["status"], startup["exit_status"]) == ("exited", 1)
+    assert "Errno 98" in startup["log_tail"]
+    commands.handler.validate_handoff(set())
+
+
+def test_helper_launch_does_not_call_an_unobserved_startup_running(commands, monkeypatch):
+    def unobservable(handle, context):
+        raise OSError("owner status timed out")
+
+    monkeypatch.setattr(commands.backend, "alive", unobservable)
+    startup = commands.launch().result["startup"]
+    assert startup["status"] == "unknown"
+    assert startup["diagnostic"]
+
+
 def test_compute_launch_key_survives_diagnostic_retention(commands):
     from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 
@@ -375,7 +409,7 @@ def test_compute_launch_key_survives_diagnostic_retention(commands):
 
 
 def test_each_new_helper_launch_checks_current_readiness(commands, monkeypatch):
-    commands.store.record_compute_backend_probe("project", commands.probe)
+    commands.store.record_compute_backend_probe("project", commands.probe, "helper")
     unavailable = commands.probe.model_copy(
         update={
             "ready": False,
@@ -392,7 +426,7 @@ def test_each_new_helper_launch_checks_current_readiness(commands, monkeypatch):
     assert not commands.backend.starts
     monkeypatch.setattr(compute_commands, "probe_compute_backend", lambda *a, **kw: commands.probe)
     assert commands.launch("second").status == "ok"
-    assert commands.store.compute_backend_probe("project", "laptop").ready
+    assert commands.store.compute_backend_probe("project", "laptop", "helper").ready
 
 
 @pytest.mark.parametrize("target", ["outside", "symlink", "protected", "missing"])
@@ -481,19 +515,33 @@ def test_compute_uncertain_launch_never_repeats_backend_submission(commands, mon
     assert len(roots) == 1 and (roots[0] / "command.json").is_file()
 
 
-def test_slurm_rejects_helper_submission_without_launching(commands):
+def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
+    from rcp.compute_jobs.job_managers import JOB_MANAGERS
     from rcp.config import MachineComputeConfig
 
     manifest = commands.handler.manifest.model_copy(deep=True)
     manifest.machine_map["laptop"].compute = MachineComputeConfig(job_manager="slurm")
+    scheduler = commands.probe.model_copy(update={"backend_id": "slurm"})
+    commands.store.record_compute_backend_probe("project", scheduler, "scheduler")
     handler = replace(commands.handler, manifest=manifest)
-    assert not handler.allowed_verbs
-    prose = handler.execution_instructions("secret-helper-command")
-    assert "secret-helper-command" not in prose
+    assert handler.allowed_verbs == {"launch"}
+    prose = handler.execution_instructions("helper-command")
+    assert "helper-command" in prose
+    assert JOB_MANAGERS["slurm"].instructions in prose
     response = handler(
         _request("launch", "key", cwd=str(commands.workspace), argv=["true"]), commands.identity
     )
-    assert response.status == "invalid"
+    assert response.status == "ok"
+    assert commands.probe_calls[0][0][2] == "helper"
+    assert commands.store.compute_backend_probe("project", "laptop", "scheduler") == scheduler
+    assert commands.store.compute_backend_probe("project", "laptop", "helper") == commands.probe
+
+
+def test_missing_helper_owner_disables_only_helper_verb(commands, monkeypatch):
+    monkeypatch.setattr(compute_commands, "resolve_context", lambda *_: (None, None))
+    assert commands.handler.allowed_verbs == frozenset()
+    assert "helper-command" in commands.handler.execution_instructions("helper-command")
+    assert commands.launch().status == "invalid"
     assert not commands.probe_calls and not commands.backend.starts
 
 

@@ -844,6 +844,15 @@ test("heartbeat metadata detects same-revision reconnection without requiring a 
   );
   assert.equal(projectHeartbeatMetadataChanged(fresh, fresh), false);
   assert.equal(projectHeartbeatMetadataChanged({}, fresh), false);
+  // A background compute probe finishing is a change; an older snapshot without
+  // the field counts as never probed.
+  const probed = { ...fresh, compute_probes_probed_at: "2026-09-01T12:02:00Z" };
+  assert.equal(projectHeartbeatMetadataChanged(probed, fresh), true);
+  assert.equal(projectHeartbeatMetadataChanged(probed, probed), false);
+  assert.equal(
+    projectHeartbeatMetadataChanged({ ...fresh, compute_probes_probed_at: null }, fresh),
+    false,
+  );
   for (const renderedRevision of [7, 8]) {
     assert.deepEqual(
       projectHeartbeatSnapshotDisposition({

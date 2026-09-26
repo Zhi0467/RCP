@@ -324,6 +324,15 @@ export function useChatState({
     [],
   );
 
+  /** An unsent draft lives only here, so removing it deletes nothing on the server. */
+  const discardDraft = useCallback(
+    (chatId: string) => {
+      setDraftConversations((current) => current.filter((draft) => draft.chatId !== chatId));
+      if (selectedChatIdRef.current === chatId) selectChat(null);
+    },
+    [selectChat],
+  );
+
   const ensureConversation = useCallback(
     (
       conversations: ChatConversation[],
@@ -571,6 +580,7 @@ export function useChatState({
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
+    discardDraft,
     ensureConversation,
     refreshChatSummaries,
     loadMoreChatSummaries,

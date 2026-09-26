@@ -484,11 +484,13 @@ history.
 ## Opt into Slurm for long-running work
 
 After creating the project, open **Project Settings → Long-running jobs** for
-its execution machine, enable **Use Slurm**, and Save. Run **Probe**, or use the
-installed-service check from the server operator session:
+its execution machine, enable **Use Slurm**, and Save. RCP checks the scheduler
+and helper routes right after the save, and again at every startup; a route
+that is not ready shows a notice on **Runs** with its fix and a **Check again**
+control. An operator can run the same check from the server operator session:
 
 ```bash
-sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias>
+sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias> --route scheduler
 ```
 
 The check runs through the actual execution account: `rcp` for server-local

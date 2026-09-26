@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
+from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
 
 
 def branch_merge_task_contract(
@@ -21,6 +22,8 @@ def branch_merge_task_contract(
 
     _require_inputs(context_path, context_id, patch_path, validator_command)
     return f"""# RCP graph-branch merge
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 You are the dedicated graph-only merge agent for one human-dispatched Auto-research branch
 merge. This task carries orchestrator graph authority, but it carries no repository authority
@@ -122,6 +125,8 @@ def branch_merge_correction_contract(
         raise ValueError("branch merge correction requires exact contract and diagnostic paths")
     return f"""# RCP graph-branch merge Patch correction
 
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
 Continue the exact native session and scratch stage from `{original_contract_path}`.
 
 Exact current inputs:
@@ -163,6 +168,8 @@ def branch_merge_rebase_contract(
     if previous_context_id == context_id:
         raise ValueError("branch merge rebase requires a newly resolved main context")
     return f"""# RCP graph-branch merge rebase
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 Continue the exact native session and scratch stage from `{original_contract_path}`. RCP
 discarded the previous candidate because main advanced; nothing from that candidate was

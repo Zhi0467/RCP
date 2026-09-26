@@ -38,7 +38,7 @@ const initialProject = {
       os_account: "rcp",
       provider_paths: {},
       compute: { job_manager: null, jobs_root: "/old" },
-      compute_probe: null,
+      compute_probes: { scheduler: null, helper: null },
     },
     {
       alias: "cluster",
@@ -46,7 +46,7 @@ const initialProject = {
       os_account: "rcp",
       provider_paths: {},
       compute: { job_manager: null, jobs_root: "/cluster" },
-      compute_probe: null,
+      compute_probes: { scheduler: null, helper: null },
     },
   ],
   agent_profiles: Object.fromEntries(

@@ -1718,6 +1718,7 @@ export interface GraphRevisionSnapshot {
   revision: number;
   snapshot_freshness?: ProjectSnapshot["snapshot_freshness"];
   last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
+  compute_probes_probed_at?: ProjectSnapshot["compute_probes_probed_at"];
   graph_mutation?: GraphMutationAvailability;
 }
 
@@ -1771,8 +1772,11 @@ export interface Machine {
   os_account: string;
   provider_paths: Record<ProviderId, string>;
   compute: MachineComputeConfig | null;
-  compute_probe: ComputeBackendProbe | null;
+  // Absent from a project cached by a version before split readiness.
+  compute_probes?: Record<ComputeRoute, ComputeBackendProbe | null>;
 }
+
+export type ComputeRoute = "scheduler" | "helper";
 
 export type ComputeContainment = "mirrored" | "cooperative";
 
@@ -2162,6 +2166,7 @@ export interface AgentTask {
   episode_id?: string | null;
   runtime_id: string;
   runtime_label: string;
+  provider_label: string;
   native_session_id?: string | null;
   history_only: boolean;
   stage_host?: string | null;
@@ -2514,6 +2519,12 @@ export interface ChatSummary {
   last_message_preview: string;
 }
 
+/** Per-project display choices: archived chats and human-given names. */
+export interface ChatDisplay {
+  archived: string[];
+  titles: Record<string, string>;
+}
+
 export interface ChatSummaryPage {
   items: ChatSummary[];
   total: number;
@@ -2651,6 +2662,8 @@ export interface ProjectSnapshot {
   revision: number;
   snapshot_freshness: "fresh" | "reconciling" | "stale";
   last_remote_sync_at: string | null;
+  /** Latest stored compute probe; absent from snapshots cached by older versions. */
+  compute_probes_probed_at?: string | null;
   state_repository: string;
   canonical_state: {
     remote: boolean;
@@ -2867,6 +2880,7 @@ export interface WritingSession {
   provider: ProviderId;
   runtime_id: string;
   runtime_label: string;
+  provider_label: string;
   native_session_id: string;
   execution_machine: string;
   project_id: string;

@@ -17,7 +17,7 @@ import {
   Type,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, clearAllProjectCaches, clearProjectCaches, probeMachineCompute } from "../api";
+import { api, clearAllProjectCaches, clearProjectCaches } from "../api";
 import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
 import { ProviderLogins } from "../components/ProviderLogins";
@@ -50,7 +50,6 @@ import type {
   AgentUsageSnapshot,
   CacheMetric,
   ComputeConnection,
-  ComputeBackendProbe,
   MachineComputeConfig,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
@@ -138,15 +137,6 @@ function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
   return project.skill_catalog ?? [];
 }
 
-function machineComputeProbeKey(machine: ProjectSnapshot["machines"][number]): string {
-  return settingsFingerprint({
-    alias: machine.alias,
-    host: machine.host,
-    os_account: machine.os_account,
-    compute: machine.compute ?? null,
-  });
-}
-
 /** The staged edits for this project, or the manifest's values when none exist. */
 function stagedOrSaved(project: ProjectSnapshot) {
   const saved = {
@@ -221,10 +211,6 @@ export function ProjectSettings({
   const currentRequestOwner = useRef<typeof requestOwner | null>(requestOwner);
   currentRequestOwner.current = requestOwner;
   const requestIsCurrent = () => currentRequestOwner.current === requestOwner;
-  const [probingMachine, setProbingMachine] = useState<string | null>(null);
-  const [machineProbes, setMachineProbes] = useState<
-    Record<string, { configuration: string; probe: ComputeBackendProbe }>
-  >({});
   const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
     () => restoredSettings.skillDefaults,
   );
@@ -257,8 +243,6 @@ export function ProjectSettings({
     setProfiles(restoredSettings.profiles);
     setProviderPaths(restoredSettings.providerPaths);
     setMachineComputeEdits(restoredSettings.machineComputeEdits);
-    setMachineProbes({});
-    setProbingMachine(null);
     setSkillDefaults(restoredSettings.skillDefaults);
     setComputeConnections(restoredSettings.computeConnections);
     setSaving(false);
@@ -436,7 +420,6 @@ export function ProjectSettings({
     if (
       !dirty ||
       saving ||
-      probingMachine !== null ||
       writesDisabled ||
       !autoResearchInvocationCeilingIsValid ||
       !computeConnectionsAreValid
@@ -496,25 +479,6 @@ export function ProjectSettings({
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
     } finally {
       if (requestIsCurrent()) setSaving(false);
-    }
-  };
-
-  const probeMachine = async (alias: string) => {
-    if (probingMachine || saving || writesDisabled) return;
-    setProbingMachine(alias);
-    setStatus(null);
-    try {
-      const probe = await probeMachineCompute(apiBase, alias);
-      if (!requestIsCurrent()) return;
-      setMachineProbes((currentProbes) => ({
-        ...currentProbes,
-        [alias]: { configuration: machineComputeProbeKey(machineByAlias[alias]), probe },
-      }));
-    } catch (caught) {
-      if (!requestIsCurrent()) return;
-      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    } finally {
-      if (requestIsCurrent()) setProbingMachine(null);
     }
   };
 
@@ -747,14 +711,7 @@ export function ProjectSettings({
                 { [machine.alias]: machineCompute[machine.alias] ?? null },
               ),
             );
-            const latestProbe = machineProbes[machine.alias];
-            const probe = needsSave
-              ? null
-              : latestProbe?.configuration === machineComputeProbeKey(machine)
-                ? latestProbe.probe
-                : machine.compute_probe;
-            const presentation = computeProbePresentation(probe);
-            const computeDisabled = writesDisabled || saving || probingMachine !== null;
+            const computeDisabled = writesDisabled || saving;
             return (
               <article className="provider-machine" key={machine.alias}>
                 <header>
@@ -845,25 +802,29 @@ export function ProjectSettings({
                       Reset compute
                     </button>
                   </div>
-                  <div className={`compute-probe ${presentation.tone}`}>
-                    <span className="compute-probe-dot" aria-hidden="true" />
-                    <span>{presentation.label}</span>
-                    {probe?.backend_id && <span>{probe.backend_id}</span>}
-                    {probe?.diagnostic && <span>{probe.diagnostic}</span>}
-                    {probe?.required_action && <em>{probe.required_action}</em>}
-                    <button
-                      className="button secondary compact"
-                      type="button"
-                      disabled={needsSave}
-                      onClick={() => void probeMachine(machine.alias)}
-                    >
-                      {probingMachine === machine.alias
-                        ? "Probing…"
-                        : needsSave
-                          ? "Save before probing"
-                          : "Probe"}
-                    </button>
-                  </div>
+                  {(machine.compute?.job_manager
+                    ? (["scheduler", "helper"] as const)
+                    : (["helper"] as const)
+                  ).map((route) => {
+                    // RCP checks each route at startup and after a compute save.
+                    const probe = needsSave ? null : (machine.compute_probes?.[route] ?? null);
+                    const presentation = probe
+                      ? computeProbePresentation(probe)
+                      : {
+                          label: needsSave ? "Checked after save" : "Not checked yet",
+                          tone: "pending" as const,
+                        };
+                    return (
+                      <div className={`compute-probe ${presentation.tone}`} key={route}>
+                        <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
+                        <span className="compute-probe-dot" aria-hidden="true" />
+                        <span>{presentation.label}</span>
+                        {probe?.backend_id && <span>{probe.backend_id}</span>}
+                        {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+                        {probe?.required_action && <em>{probe.required_action}</em>}
+                      </div>
+                    );
+                  })}
                 </fieldset>
               </article>
             );
@@ -871,7 +832,11 @@ export function ProjectSettings({
         </div>
       </section>
 
-      <ProviderLogins spaceKind={spaceKind} writesDisabled={writesDisabled} />
+      <ProviderLogins
+        spaceKind={spaceKind}
+        writesDisabled={writesDisabled}
+        onLoginChanged={() => void onRefreshReadiness().catch(() => {})}
+      />
 
       <section className="settings-section compute-settings">
         <header>
@@ -1283,11 +1248,7 @@ export function ProjectSettings({
               (dirty ? "Unsaved manifest changes" : "Manifest matches these defaults")}
           </span>
         </div>
-        <button
-          className="button secondary"
-          disabled={!dirty || saving || probingMachine !== null}
-          onClick={reset}
-        >
+        <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
           <RotateCcw size={14} /> Reset
         </button>
         <button
@@ -1296,7 +1257,6 @@ export function ProjectSettings({
             writesDisabled ||
             !dirty ||
             saving ||
-            probingMachine !== null ||
             !autoResearchInvocationCeilingIsValid ||
             !computeConnectionsAreValid
           }

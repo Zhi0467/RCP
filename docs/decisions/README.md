@@ -1,5 +1,9 @@
 # Active decision records
 
+- [Job managers add rules, never remove the helper](2026-09-25-job-managers-add-rules-never-remove-the-helper.md)
+  records why the launch helper stays offered on machines set to Slurm, and
+  why each job manager adds its own instructions instead of replacing it.
+
 - [Graph rules render from the model](2026-09-23-graph-rules-render-from-the-model.md)
   records why agents learn field and relation meaning from descriptions in code
   rendered into every graph contract, why authority stays with each call site,
