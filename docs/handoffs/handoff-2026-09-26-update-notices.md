@@ -126,9 +126,13 @@ numbered releases while desktop apps run whatever commit the checkout is on.
 - Source checkout: "RCP v0.4.3 is out. This app is built from v0.4.2." Then
   `scripts/update-from-source v0.4.3`, run in the checkout, and a Copy command
   button.
-- The client refetches after startup, while the status is `unchecked`, and
-  when the window becomes visible again, so a late check or a late companion
-  release still shows up.
+- The client polls `/api/update-notice` while the window is visible: every
+  30 seconds while the status is `unchecked`, then every 10 minutes, and once
+  more whenever the window becomes visible again. The endpoint reads only the
+  cache, so polling costs no GitHub calls. A first check that lands after the
+  page opened, or a companion release that becomes ready later, updates an
+  open notice without a reload. Both intervals live beside the client's other
+  poll timings.
 - Dismissal hides the notice for that release. It is saved in `localStorage`
   and falls back to memory for the session when storage is unavailable. A
   newer release shows the notice again.
@@ -165,8 +169,11 @@ latest release", and gains an "Update a source checkout" section.
 ### 6. Version-mismatch messages
 
 - `team_session.rs` tells a desktop that is too old to rebuild "from current
-  origin/main". The new message depends on the build kind. A prebuilt app is
-  pointed to the download, or told the app build is not published yet. A
+  origin/main". The new message depends on the native build kind, which the
+  shell knows before any team space opens. A prebuilt app never sees the
+  script. It is pointed to the download when the personal backend's cached
+  notice confirms the companion release, and is otherwise told the app build
+  is not published yet. The download URL is built from the validated tag. A
   source build is pointed to the script.
 - Compatibility is decided by protocol overlap. The message says to install a
   compatible release, not that the latest one always fixes it.
@@ -236,8 +243,9 @@ latest release", and gains an "Update a source checkout" section.
   against a fake GitHub that also holds a companion pre-release. They accept
   `vX.Y.Z`, ignore the companion, and still reject a sixth asset in
   `vX.Y.Z`. The existing installed-upgrade CI journey keeps passing.
-- Web: each notice kind and status, refetch while `unchecked` and on
-  visibility, dismissal per release, dismissal without `localStorage`, the
+- Web: each notice kind and status; without a reload, an open page moves from
+  `unchecked` to `update_available`, and a prebuilt notice gains its Download
+  button when the companion becomes ready; refetch on visibility; dismissal per release, dismissal without `localStorage`, the
   copy button, and the notice on the index, setup, and project views.
 - Served app: a team fixture one release behind with a fake GitHub server
   shows the notice everywhere, and Settings agrees. A personal space shows the
@@ -246,8 +254,9 @@ latest release", and gains an "Update a source checkout" section.
   branch, and a branch named like the tag. It ends on the new tag with a built
   `web/dist`, refuses a dirty tree and a running backend, and after an injected
   failure following checkout prints the way back.
-- Native: rebuild Tauri; the build kind is reported; the message change; the
-  `team_session` tests.
+- Native: rebuild Tauri; the build kind is reported; the `team_session`
+  mismatch message for a prebuilt app with the companion ready, a prebuilt app
+  without it, and a source build.
 - Prebuilt app: run `publish-desktop.yml` for a throwaway tag, including a
   rerun after an injected upload failure. On a Mac, download the zip, approve
   it once, open it: the project index opens, the Download button opens the
