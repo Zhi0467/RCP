@@ -9,7 +9,7 @@ for the authoritative platform settings and `web/package.json` for the available
 
 ## Prerequisites
 
-Start with the source installation in the [README](../README.md#install-from-source). Desktop work
+Start with the source installation in the [install guide](install.md#install-from-source). Desktop work
 also requires the Rust toolchain from [rustup](https://rustup.rs). rustup installs `cargo`
 under `~/.cargo/bin` and offers to add that directory to your shell's PATH. If you declined,
 or a `desktop:*` command fails with `failed to run 'cargo metadata' command ... No such file

@@ -26,12 +26,12 @@ reopened accidentally, not a second backlog or a claim that proposed features sh
   domain connectors may be future extensions. Do not impose a research-field
   allowlist or claim supported domains from speculative rankings; describe actual
   capabilities and complement external specialized tools.
-- **Live steering:** retain the modest provider-call extension settled in
-  [the steering handoff](../handoffs/handoff-2026-09-08-claude-queued-follow-up.md),
-  not a persistent session daemon. The
+- **Live steering:** retain the modest provider-call extension, not a
+  persistent session daemon. The
   [current provider contract](../specs/providers-and-containment.md#live-human-steering)
   bounds delivery to one ordinary human chat attempt and preserves authority and
-  recovery. Its handoff retains the unverified live work.
+  recovery. The unverified live drive is listed in
+  [the open live checks](../handoffs/README.md).
 - **Peer mail:** no cross-episode/worker-to-worker mail. Preserve the existing
   orchestrator/worker star topology and recipient budget/authority boundaries.
 - **Restore:** add no client rollback detector. Preserve the existing restore
