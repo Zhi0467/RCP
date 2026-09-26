@@ -98,9 +98,9 @@ jobs:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Stamp the promoted desktop and Python versions
+      - name: Check the desktop version and stamp the Python build
         run: |
-          uv run --no-project python packaging/release_build.py stamp-desktop "${RELEASE_TAG#v}"
+          uv run --no-project python packaging/release_build.py check-desktop-version "${RELEASE_TAG#v}"
           uv run --no-project python packaging/release_build.py stamp-version \
             --run-number "$BUILD_NUMBER" --sha "$TARGET_COMMIT"
       - run: npm --prefix web ci
