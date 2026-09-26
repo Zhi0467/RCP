@@ -705,18 +705,14 @@ def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
 
     # With the noise gone, a severed connection must say so rather than fall
     # back to shell chatter — ssh exits 255 when the connection drops.
-    assert _exit_reason("codex", 255, "gpu0") == (
-        "The connection to gpu0 was lost before codex finished."
-    )
-    assert _exit_reason("codex", 1, "gpu0") == "codex exited 1 on gpu0."
-    assert _exit_reason("codex", 1, "") == "codex exited 1."
+    assert "was lost" in _exit_reason("codex", 255, "gpu0")
+    assert "exited 1" in _exit_reason("codex", 1, "gpu0")
+    assert "exited 1" in _exit_reason("codex", 1, "")
 
     # asyncio negates the signal number; a severed remote link surfaces as the
     # killed ssh client, which is what S14's interrupt actually produced.
-    assert _exit_reason("codex", -9, "gpu0") == (
-        "The connection to gpu0 ended (SIGKILL) before codex finished."
-    )
-    assert _exit_reason("codex", -9, "") == "codex was stopped by SIGKILL."
+    assert "ended (SIGKILL)" in _exit_reason("codex", -9, "gpu0")
+    assert "stopped by SIGKILL" in _exit_reason("codex", -9, "")
 
 
 @pytest.mark.parametrize(

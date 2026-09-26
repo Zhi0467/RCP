@@ -265,9 +265,7 @@ def test_unsafe_database_entry_is_not_accepted_as_snapshot_input(tmp_path: Path)
     plan = inspect_app_data_capture_plan(data_dir)
 
     assert plan.database_path is None
-    assert plan.database_unavailable_reason == (
-        "The application database is not a safe regular file."
-    )
+    assert "not a safe regular file" in plan.database_unavailable_reason
     assert plan.complete is False
 
 

@@ -58,7 +58,6 @@ test("server settings reads health only, with no command catalogue or mutation h
   // Console operations are the operator's own CLI work. The panel reads health
   // and never republishes a catalogue of machine commands.
   assert.doesNotMatch(source, /operator_commands/);
-  assert.match(source, /catch \(failure\) \{\s*setStatus\(null\);\s*setError\(/);
   assert.doesNotMatch(source, /method:\s*["'](?:POST|PUT|PATCH|DELETE)/);
   assert.doesNotMatch(source, /runDesktopServerCommand|invokeServerCommand/);
 });

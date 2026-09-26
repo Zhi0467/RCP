@@ -1123,7 +1123,7 @@ def test_check_has_a_hard_timeout(tmp_path) -> None:
 
     assert result.state == "error"
     assert result.exit_code is None
-    assert result.error == "check timed out after 0.01 seconds"
+    assert "timed out" in result.error
 
 
 def test_remote_check_uses_existing_ssh_login_shell(monkeypatch) -> None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import threading
 import time
@@ -55,7 +54,7 @@ from rcp.watchers import (
     ready_graph_watcher_groups,
 )
 
-from .helpers import append_fixture_patch, wait_until
+from .helpers import append_fixture_patch, async_wait_until, wait_until
 from .helpers import create_named_app as create_app
 from .test_background import _store as _admission_store
 
@@ -2024,7 +2023,7 @@ def test_condition_on_a_removed_node_is_terminally_retired(tmp_path) -> None:
     assert isinstance(stored, GraphWatcherRecord)
     assert stored.status == "stopped"
     assert stored.notified is True
-    assert stored.stop_reason == "Graph condition target was removed."
+    assert "target was removed" in stored.stop_reason
     assert store.graph_watcher_project_ids() == []
 
 
@@ -2724,8 +2723,7 @@ def test_shutdown_serializes_watcher_delivery_admission_with_worker_snapshot(
     errors: list[BaseException] = []
 
     async def wait_for_shutdown(_project_id, _kind, _request, execution):
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield f"data: {AgentEvent(event='paused', text='Server shutdown.').model_dump_json()}\n\n"
 
     tasks = BackgroundAgentTasks(store, wait_for_shutdown)

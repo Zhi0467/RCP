@@ -55,6 +55,7 @@ from rcp.storage import (
 )
 
 from .helpers import (
+    async_wait_until,
     fabricated_authorizer,
     record_launched_experiment_turn,
     wait_for_task,
@@ -357,8 +358,7 @@ def test_launch_admitted_is_idempotent_for_live_and_terminal_duplicates(
         execution.checkpoint_stage("", str(stage))
         yield _sse(AgentEvent(event="session", session_id="duplicate-launch-session"))
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -778,8 +778,7 @@ def test_committed_child_dispatch_is_claimed_once_under_concurrent_reconciliatio
             return
         executions += 1
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     background = BackgroundAgentTasks(store, stream)
@@ -1259,8 +1258,7 @@ def test_routed_worker_pause_and_stop_target_only_its_current_attempt(tmp_path: 
             yield _sse(AgentEvent(event="done"))
             return
         child_started.set()
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _sse(AgentEvent(event="paused", text="Paused at the exact child checkpoint."))
 
     background = BackgroundAgentTasks(store, stream)
@@ -1875,8 +1873,7 @@ def test_over_ceiling_admission_does_not_fence_an_active_paid_turn(tmp_path: Pat
 
     async def stream(_project_id, _kind, _request, _execution):
         started.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -2434,8 +2431,7 @@ def test_report_runner_terminal_error_is_not_generically_retried_or_resettled(
         assert kind == "episode_report"
         assert isinstance(request, EpisodeReportRunRequest)
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         store.fail_episode_report_allocation_unlaunchable(
             request.episode_id,
             "The exact report continuation is unavailable.",

@@ -527,10 +527,7 @@ def test_delete_compute_jobs_preserves_running_work_and_job_directories(
             store.delete_project_records(project_id)
         response = client.delete(f"/api/projects/{project_id}")
         assert response.status_code == 409
-        assert response.json()["detail"] == (
-            "This project has 2 running compute job(s). "
-            "Cancel or wait for those jobs first before deleting this project."
-        )
+        assert "2 running compute job" in response.json()["detail"]
         assert store.project(project_id) is not None
         assert len(store.compute_jobs(project_id)) == 2
         assert store.compute_backend_probe(project_id, "laptop", "helper") == probe

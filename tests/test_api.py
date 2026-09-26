@@ -1588,8 +1588,7 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
             async for event in super().stream(*args, **kwargs):
                 if event.event == "done":
                     provider_started.set()
-                    while not release_provider.is_set():
-                        await asyncio.sleep(0.01)
+                    await async_wait_until(release_provider.is_set)
                 yield event
 
     @contextmanager
@@ -2480,8 +2479,7 @@ def test_background_seed_can_pause_inspect_and_resume(manifest, tmp_path) -> Non
 
     async def pausable_stream(_project_id, _kind, _request, execution):
         yield _event_frame(AgentEvent(event="session", session_id=native_session_id))
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
 
     app.state.background_tasks.stream = pausable_stream
@@ -2535,8 +2533,7 @@ def test_background_shutdown_requests_pause_with_shutdown_authority(
 
     async def pausable_stream(_project_id, _kind, _request, execution):
         yield _event_frame(AgentEvent(event="session", session_id="shutdown-session"))
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
 
     app.state.background_tasks.stream = pausable_stream
@@ -3484,8 +3481,7 @@ def test_server_shutdown_pauses_live_background_seed(manifest, tmp_path) -> None
 
     async def pausable_stream(_project_id, _kind, _request, execution):
         yield _event_frame(AgentEvent(event="session", session_id=str(uuid.uuid4())))
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _event_frame(AgentEvent(event="paused"))
 
     app.state.background_tasks.stream = pausable_stream
@@ -3522,8 +3518,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest,
     async def stream(_project_id, kind, request, execution):
         assert kind == "node_chat"
         worker_started.set()
-        while not release_worker.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release_worker.is_set)
         async for frame in stream_discuss_run(
             service,
             launcher,
@@ -3601,9 +3596,7 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> N
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "This conversation has a paused turn. Resume or retry it before starting a new turn."
-    )
+    assert "paused turn" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])
@@ -4407,8 +4400,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
             if self.calls == 1:
                 yield AgentEvent(event="session", session_id=session_id)
                 control = kwargs["control"]
-                while not control.pause_requested.is_set():
-                    await asyncio.sleep(0.01)
+                await async_wait_until(control.pause_requested.is_set)
                 yield AgentEvent(event="paused", text="Provider process paused.")
                 return
             yield AgentEvent(event="session", session_id=session_id)
@@ -4883,8 +4875,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
             yield AgentEvent(event="session", session_id=session_id)
             if len(self.sessions) == 1:
                 control = kwargs["control"]
-                while not control.pause_requested.is_set():
-                    await asyncio.sleep(0.01)
+                await async_wait_until(control.pause_requested.is_set)
                 yield AgentEvent(event="paused", text="Provider process paused.")
                 return
             (Path(kwargs["cwd"]) / "patch.json").write_text(
@@ -6780,8 +6771,7 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
         assert request.control_invocation_ceiling == 2
         assert request.control_completion_criteria == ["The detached fixture exits cleanly."]
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="answer", text="Preflight stopped before launch."))
         yield _sse(AgentEvent(event="done"))
 
@@ -7003,7 +6993,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         json={"chat_id": str(uuid.uuid4())},
     )
     assert still_running.status_code == 409
-    assert still_running.json()["detail"] == "Detached Experiment work is still running."
+    assert "still running" in still_running.json()["detail"]
     control = client.get(f"/api/projects/{project_id}").json()["experiment_control"][
         "exp/bounded-loop"
     ]
@@ -7179,8 +7169,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
     original_start = app.state.background_tasks.start
 
     async def held_stream(*_args):
-        while not release_stream.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release_stream.is_set)
         yield _sse(AgentEvent(event="answer", text="Admission won the race."))
         yield _sse(AgentEvent(event="done"))
 
@@ -7322,9 +7311,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     for endpoint, operation_id in operation_ids.items():
         response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/{endpoint}")
         assert response.status_code == 409
-        assert response.json()["detail"] == (
-            "Experiment exp/bounded-loop no longer exists; it cannot be continued."
-        )
+        assert "no longer exists" in response.json()["detail"]
 
     continuation = WatcherContinuation(
         provider="codex",

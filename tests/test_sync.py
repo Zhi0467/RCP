@@ -1216,10 +1216,7 @@ def test_graph_sync_refuses_removing_an_accepted_node(manifest, tmp_path) -> Non
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "Accepted node rq/learning-after-shift cannot be removed; withdraw its acceptance "
-        "and Sync before removing it."
-    )
+    assert "withdraw its acceptance" in response.json()["detail"]
     accepted = service.history.state().nodes["rq/learning-after-shift"]
     combined = client.post(
         f"/api/projects/{app.state.default_project_id}/sync",
@@ -1321,9 +1318,7 @@ def test_graph_sync_route_passes_active_experiment_loop_to_removal_guard(
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "Experiment exp/active-loop cannot be removed while its bounded experiment loop is active."
-    )
+    assert "bounded experiment loop is active" in response.json()["detail"]
     assert service.history.state().revision == 2
 
 

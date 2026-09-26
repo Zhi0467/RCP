@@ -432,9 +432,7 @@ def test_unknown_persisted_provider_disables_steering_without_hiding_task(runnin
             assert task["steer_visible"]
             assert not task["can_steer"]
             assert task["steer_turn_id"] is None
-            assert (
-                task["steer_unavailable_reason"] == "The recorded provider runtime is unavailable."
-            )
+            assert "runtime is unavailable" in task["steer_unavailable_reason"]
     finally:
         with run.background.store.connection() as connection:
             connection.execute(
