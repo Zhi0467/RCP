@@ -108,16 +108,17 @@ one bound, the **delegation wait limit** in `limits.py`.
 - Every Claude launch sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so
   subagents and background shells run in the foreground. Parallel subagents
   still work: Claude runs several Agent calls from one message concurrently.
-- A successful `result` that attributes **only message ids RCP did not
-  send** does not end the turn. This fixes failure 1: Claude Code's injected
-  notice is replayed as a user message RCP did not send, and its `result`
-  names only that message. Every other case keeps today's behaviour. A
-  failing `result` still ends the turn. A `result` with no usable ids still
-  stops the process (the 2026-09-08 fence).
-- First implementation step: capture a real stream of the injected notice to
-  confirm its `result` carries that id. Resuming a session whose background
-  agent was killed reproduces it locally. If the id is absent, stop and
-  bring the design back.
+- A successful `result` whose `origin.kind` is `task-notification` does not
+  end the turn. This fixes failure 1. Captured on Claude Code 2.1.283
+  (fixtures under `tests/fixtures/claude_turn_completion/`): on resume after
+  a killed background agent, Claude emits `system/task_notification`, then a
+  `result` with `origin: {"kind": "task-notification"}`, `num_turns: 0`, zero
+  usage and **no** `user_message_uuid(s)`, before it reads RCP's prompt. The
+  skip needs all of: success, that origin, and no id RCP sent. Every other
+  case keeps today's behaviour. A failing `result` still ends the turn. A
+  `result` with no usable ids and no such origin still stops the process
+  (the 2026-09-08 fence). With the env var set, new turns start no
+  background agents, so this mainly protects sessions that already carry one.
 - A skipped notice `result` stays a trace. It never enters the human answer.
 - Backstop: the turn tracks `task_started` / `task_notification` ids. A
   `result` with a task still open starts the delegation clock like any other
