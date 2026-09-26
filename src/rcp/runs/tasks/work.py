@@ -142,6 +142,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     _WorkValidatorMailboxLifecycle,
     apply_work_patch,
     read_correction_patch,
+    retain_failed_delegation_patch,
     settle_graph_repair_patch,
     start_work_validator_mailbox,
     validate_work_patch_live,
@@ -1640,6 +1641,10 @@ async def _settle_patch_deliverable(
             async for frame in stream:
                 event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                 if event.event == "error":
+                    if event.failure_kind == "delegation_unfinished":
+                        settled.stop = True
+                        yield frame
+                        return
                     correction_error = event.text or "Patch correction failed."
                     continue
                 yield frame
@@ -1826,6 +1831,10 @@ async def _settle_watch_deliverable(
                 async for frame in stream:
                     event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                     if event.event == "error":
+                        if event.failure_kind == "delegation_unfinished":
+                            settled.stop = True
+                            yield frame
+                            return
                         correction_error = event.text or "Watcher correction failed."
                         continue
                     if event.event not in {"answer", "done"}:
@@ -2075,6 +2084,8 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
         or "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
     )
     if not turn.outcome.completed:
+        if turn.outcome.failure_kind == "delegation_unfinished":
+            retain_failed_delegation_patch(turn.execution, turn.workspace, turn.remote_stage)
         if turn.outcome.failed or turn.outcome.paused:
             return []
         turn.outcome.failed = True

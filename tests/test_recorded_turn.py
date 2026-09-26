@@ -40,6 +40,7 @@ def _journal_from_disk(directory: Path) -> dict[str, object]:
         "accepted": json.loads(marker.read_text(encoding="utf-8")) if marker.exists() else None,
         "outcome": outcome,
         "events": (directory / "events.jsonl").read_text(encoding="utf-8"),
+        "delegation": (directory / "delegation.jsonl").read_text(encoding="utf-8"),
         "stderr": (directory / "stderr.txt").read_text(encoding="utf-8"),
         "patch": (
             (directory / "patch.json").read_text(encoding="utf-8")
@@ -222,3 +223,55 @@ def test_a_steered_turn_replays_the_reply_it_actually_finished_with(tmp_path) ->
 
     assert recorded.input_message_ids == [_CLAUDE_PROMPT, _CLAUDE_STEER]
     assert any(event.text == "the real answer" for event in verdict.events)
+
+
+def test_detached_deadline_replay_keeps_typed_failure_without_hook_state(tmp_path):
+    provider = (
+        "import json,sys,time\n"
+        "sys.stdin.readline()\n"
+        "print(json.dumps({'type':'system','subtype':'task_started','task_id':'child'}),flush=True)\n"
+        "print(json.dumps({'type':'result','subtype':'success','result':'parent'}),flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    patch = tmp_path / "patch.json"
+    patch.write_text('{"ops": []}')
+    completed, directory = _supervise(
+        tmp_path,
+        json.dumps(
+            {"type": "user", "uuid": "input", "message": {"role": "user", "content": "work"}}
+        )
+        + "\n",
+        runtime_id="claude.stream-json.v1",
+        provider=provider,
+        patch_path=str(patch),
+        delegation_wait_limit=0.1,
+        stop_grace=0.05,
+        detached=True,
+    )
+    assert completed.returncode != 0
+    recorded = recorded_provider_turn(
+        str(directory)[: -len(".turn")], _journal_from_disk(directory)
+    )
+    assert completed.returncode == 255
+    assert recorded.outcome["uplink_detached"] is True
+    assert recorded.patch == patch.read_text()
+    verdict = decode_recorded_turn(recorded, _request(tmp_path))
+    assert verdict.complete is True
+    assert any(event.event == "delegation_wait" for event in verdict.events)
+    assert [event.failure_kind for event in verdict.events if event.event == "error"] == [
+        "delegation_unfinished"
+    ]
+
+
+def test_journal_reader_keeps_pre_deadline_journals_replayable(tmp_path):
+    from rcp.transport.remote_turn_journal import read_journal
+
+    recorded, directory = _recorded(tmp_path, [{"type": "turn.completed"}])
+    outcome = dict(recorded.outcome)
+    outcome.pop("delegation_sha256")
+    (directory / "outcome.json").write_text(json.dumps(outcome))
+    (directory / "delegation.jsonl").unlink()
+    journal = read_journal(recorded.pid_file, 1_000_000)
+    old_record = recorded_provider_turn(recorded.pid_file, journal)
+    assert old_record.delegation == ""
+    assert decode_recorded_turn(old_record, _request(tmp_path)).complete

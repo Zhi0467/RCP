@@ -59,6 +59,14 @@ class _CodexAppServerTurn(ProviderTurn):
         self._work_like = request.capability in {"work_auto", "orchestrate"}
         self.command = self._command(request)
 
+    @property
+    def has_open_work(self) -> bool:
+        return bool(self.completion.open_work)
+
+    @property
+    def open_work_since(self) -> float | None:
+        return self.completion.open_work_since
+
     @staticmethod
     def _command(request: ProviderTurnRequest) -> list[str]:
         command = [

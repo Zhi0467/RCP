@@ -22,11 +22,12 @@ from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
+    _sse,
     _stage_json_task_input,
     _stage_task_contract,
     _stream_agent_events,
 )
-from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
+from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session, settle_failed_delegation
 from rcp.service import ProjectService, RunRequest
 from rcp.transport import RemoteRunStage
 from rcp.watchers import (
@@ -344,6 +345,12 @@ async def _process_experiment_watcher_maintenance(
                 async for frame in stream:
                     event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                     if event.event == "error":
+                        if event.failure_kind == "delegation_unfinished":
+                            pending = settle_failed_delegation(
+                                execution, workspace, remote_stage, correction_outcome
+                            )
+                            frames.append(_sse(pending) if pending is not None else frame)
+                            return frames, correction_outcome.session_id or native_session_id, True
                         correction_error = event.text or "Watcher maintenance correction failed."
                     elif event.event not in {"answer", "done"}:
                         frames.append(frame)

@@ -150,6 +150,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     _PreparedWorkPatch,
     apply_work_patch,
     read_correction_patch,
+    retain_failed_delegation_patch,
     settle_graph_repair_patch,
     start_work_validator_mailbox,
     validate_work_patch_live,
@@ -1305,6 +1306,10 @@ async def _settle_watch_deliverable(
             async for frame in stream:
                 event = AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
                 if event.event == "error":
+                    if event.failure_kind == "delegation_unfinished":
+                        settled.stop = True
+                        yield frame
+                        return
                     correction_error = event.text or "Watcher correction failed."
                     continue
                 if event.event not in {"answer", "done"}:
@@ -1592,7 +1597,11 @@ async def _apply_experiment_loop_turn(
                 async for frame in stream:
                     yield frame
             applied.native_session_id = correction_outcome.session_id or applied.native_session_id
-            if correction_outcome.paused or correction_outcome.remote_result_pending:
+            if (
+                correction_outcome.paused
+                or correction_outcome.remote_result_pending
+                or correction_outcome.failure_kind == "delegation_unfinished"
+            ):
                 applied.stop = True
                 return
             if not correction_outcome.completed:
@@ -1879,6 +1888,8 @@ def _settle_experiment_loop_outcome(
         or "\n\n".join(item.strip() for item in turn.outcome.answers if item.strip()).strip()
     )
     if not turn.outcome.completed:
+        if turn.outcome.failure_kind == "delegation_unfinished":
+            retain_failed_delegation_patch(turn.execution, turn.workspace, turn.remote_stage)
         if turn.outcome.failed or turn.outcome.paused:
             return frames
         turn.outcome.failed = True

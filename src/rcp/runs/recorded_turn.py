@@ -1,10 +1,8 @@
 """One provider pass as its execution host recorded it.
 
-The journal is evidence, not authority: it says what crossed the wire, and
-nothing about what the turn was worth. That verdict is read here, by the same
-runtime object the live pipe drives, so a turn recovered from a record and the
-same turn delivered over a link are judged by one decoder rather than two that
-must be kept in agreement.
+The journal records provider traffic and execution-host deadline failures.
+Provider semantics are read here by the same runtime object the live pipe
+drives; a sealed delegation deadline remains a typed failure during replay.
 """
 
 from __future__ import annotations
@@ -51,6 +49,9 @@ class RecordedProviderTurn:
     #: Derived only from the host's own `accepted.json`, never from the copy the
     #: end-of-pass outcome carries. One linearization point, one fact.
     accepted: bool
+
+    #: Execution-host receipts, separate from provider bytes so partial lines stay intact.
+    delegation: str = ""
 
     #: Whether the host snapshotted the watcher handoff at all. A journal written
     #: before supervisors did so says nothing about watch.json, which is not the
@@ -195,6 +196,11 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         raise ValueError("The provider journal states no digest for its events.")
     if hashlib.sha256(events.encode("utf-8", "surrogateescape")).hexdigest() != digest:
         raise ValueError("The provider journal's events do not match the digest it recorded.")
+    delegation = None
+    if "delegation_sha256" in outcome:
+        delegation = _verified_deliverable(journal, outcome, "delegation")
+        if delegation is None:
+            raise ValueError("The provider journal is missing its delegation receipts.")
     patch = _verified_deliverable(journal, outcome, "patch")
     watch = _verified_deliverable(journal, outcome, "watch")
     experiment_watch = _verified_experiment_watch(journal, outcome)
@@ -221,6 +227,7 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         events=events,
         stderr=str(journal.get("stderr") or ""),
         patch=patch,
+        delegation=delegation or "",
         watch=watch,
         watch_snapshotted="watch_present" in outcome,
         experiment_watch=experiment_watch,
@@ -234,9 +241,8 @@ def decode_recorded_turn(
 ) -> RecordedVerdict:
     """Replay a recorded pass through the runtime the live pipe would have driven.
 
-    This is the whole reason the host publishes no verdict. One decoder reads the
-    wire, whether the bytes arrived down a live link or off a disk hours later,
-    so there is no second opinion to keep in agreement with this one.
+    Provider semantics use the same decoder as live traffic. A sealed host
+    deadline is an operational failure, retained independently of provider output.
     """
 
     request = dataclasses.replace(request, provider_version=recorded.provider_version)
@@ -246,6 +252,11 @@ def decode_recorded_turn(
     # cannot recognise the answers to them.
     turn.adopt_recorded_inputs(recorded.input_message_ids, recorded.steer_requests)
     events: list[AgentEvent] = [AgentEvent(event="runtime", text=recorded.runtime_id)]
+    events.extend(
+        AgentEvent(event="delegation_wait", text=line)
+        for line in recorded.delegation.splitlines()
+        if line
+    )
     complete = False
     for line in recorded.observed_lines:
         if line.startswith("RCP_COMMAND_BROKER_READY:"):
@@ -260,11 +271,32 @@ def decode_recorded_turn(
         step = turn.receive_line(line)
         events.extend(
             AgentEvent(
-                event=item.event, text=item.text, session_id=item.session_id, usage=item.usage
+                event=item.event,
+                text=item.text,
+                session_id=item.session_id,
+                usage=item.usage,
+                failure_kind=getattr(item, "failure_kind", None),
             )
             for item in step.events
         )
         complete = complete or step.complete
         if step.explicit_terminal:
             break
+    if recorded.outcome.get("verdict") == "delegation_unfinished":
+        complete = True
+        events.append(
+            AgentEvent(
+                event="provider_exit",
+                text=json.dumps(
+                    {"verdict": "delegation_unfinished", "failure_kind": "delegation_unfinished"}
+                ),
+            )
+        )
+        events.append(
+            AgentEvent(
+                event="error",
+                text="Delegated work did not finish before the wait limit.",
+                failure_kind="delegation_unfinished",
+            )
+        )
     return RecordedVerdict(complete=complete and recorded.intact, events=tuple(events))

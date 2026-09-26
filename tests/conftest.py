@@ -192,6 +192,7 @@ def fake_codex_hook_control(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         control.mkdir(exist_ok=True)
         marker = control / "started"
         marker.write_text("started\n")
+        (control / "state.json").write_text('{"open_agents":[],"open_work_since":null}\n')
         return {
             "hooks": hook_config(control),
             "marker": str(marker),

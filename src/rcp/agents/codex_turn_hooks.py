@@ -104,6 +104,20 @@ def apply_hook(
             state["open_work_since"] = time.monotonic()
         _write_state(state_path, state)
         if blocked:
+            with state_path.with_suffix(".events.jsonl").open("a", encoding="utf-8") as journal:
+                journal.write(
+                    json.dumps(
+                        {
+                            "code": "open_work",
+                            "source": "codex_stop",
+                            "open_work_since": state["open_work_since"],
+                            "open_agents": sorted(open_agents),
+                        }
+                    )
+                    + "\n"
+                )
+                journal.flush()
+                os.fsync(journal.fileno())
             return {
                 "decision": "block",
                 "reason": "Wait for these delegated agents to finish: "

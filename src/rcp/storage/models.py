@@ -1942,7 +1942,7 @@ AgentTaskReceiptTier = Literal["summary", "diagnostic", "trace"]
 # Why a turn failed, when that changes what recovery should offer. A failure
 # with nothing to name is NULL rather than a member, so every value here is
 # one a recovery owner acts on.
-AgentFailureKind = Literal["transport_lost", "provider_auth"]
+AgentFailureKind = Literal["transport_lost", "provider_auth", "delegation_unfinished"]
 
 
 class ProviderExit(NamedTuple):

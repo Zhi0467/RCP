@@ -12,11 +12,11 @@ from rcp.agents import AgentEvent, AgentLauncher
 from rcp.agents.command_mailbox import CommandHandler, StagedCommandMailbox
 from rcp.agents.context import ChatContext
 from rcp.agents.write_scope import ProjectWriteScope
-from rcp.background import AgentTaskContinuation, AgentTaskExecution
+from rcp.background import AgentTaskContinuation, AgentTaskExecution, _event_from_sse
 from rcp.config import AgentSurface
 from rcp.core.models import Patch
 from rcp.history import PatchRejected, ReplayHalted
-from rcp.runs.chat import _ChatPatchInputs
+from rcp.runs.chat import _ChatPatchInputs, _read_chat_patch
 from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
@@ -415,6 +415,12 @@ async def stream_work_agent_events(
             )
         ) as stream:
             async for frame in stream:
+                event = _event_from_sse(frame)
+                if event.event == "error" and event.failure_kind == "delegation_unfinished":
+                    pending = settle_failed_delegation(execution, workspace, remote_stage, outcome)
+                    if pending is not None:
+                        yield _sse(pending)
+                        return
                 yield frame
     except BaseException as exc:
         primary_error = exc
@@ -569,6 +575,57 @@ def validate_work_patch_live(
     )
 
 
+def settle_failed_delegation(
+    execution: AgentTaskExecution | None,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+    outcome: _ProviderOutcome,
+) -> AgentEvent | None:
+    """A failed Work pass is settled only once its patch is durably retained."""
+
+    try:
+        retain_failed_delegation_patch(execution, workspace, remote_stage)
+    except StateUnavailable:
+        if outcome.deferred_remote_pid_file is None:
+            raise
+        outcome.remote_result_pending = True
+        return AgentEvent(
+            event="remote_result_pending",
+            text="Waiting to retain the failed turn's patch from its host journal.",
+        )
+    if execution is not None and outcome.deferred_remote_pid_file is not None:
+        execution.store.finish_remote_provider_pass(
+            execution.operation_id, outcome.deferred_remote_pid_file
+        )
+        outcome.deferred_remote_pid_file = None
+    return None
+
+
+def retain_work_patch(execution: AgentTaskExecution | None, patch_text: str) -> None:
+    """Keep a candidate in durable task storage before reporting its outcome."""
+
+    if execution is not None:
+        execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "patch_retained",
+            {"byte_length": len(patch_text.encode("utf-8")), "file_name": "patch.json"},
+            tier="diagnostic",
+        )
+
+
+def retain_failed_delegation_patch(
+    execution: AgentTaskExecution | None,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    if execution is None:
+        return
+    patch_text = _read_chat_patch(workspace, remote_stage)
+    if patch_text is not None:
+        retain_work_patch(execution, patch_text)
+
+
 def apply_work_patch(
     service: ProjectService,
     execution: AgentTaskExecution | None,
@@ -587,14 +644,7 @@ def apply_work_patch(
 ) -> tuple[GraphUpdateResult | None, DeliverableFailure | None]:
     """Validate and atomically commit one candidate prepared by its concrete owner."""
 
-    if execution is not None:
-        execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
-        execution.store.record_agent_task_receipt(
-            execution.operation_id,
-            "patch_retained",
-            {"byte_length": len(patch_text.encode("utf-8")), "file_name": "patch.json"},
-            tier="diagnostic",
-        )
+    retain_work_patch(execution, patch_text)
     change_summary: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
     canonical_patch: Patch | None = None

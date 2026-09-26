@@ -1,12 +1,15 @@
 # Turns wait for their own agents, and the helper is always offered
 
-Status on 2026-09-25: slice 1 implemented; later slices remain open.
+Status on 2026-09-25: slices 1 and 2 implemented; slices 3–5 remain open.
 
 - Implemented: shared provider completion, Claude foreground-task environment
   and captured notice handling, Codex retry traces, hook guard and invocation
-  fence with local and execution-host wiring.
-- Remains: delegation deadline enforcement, journal/replay verdicts, owner
-  settlement, helper/readiness, services, prompts and specs. Full hook-source
+  fence with local and execution-host wiring; one-hour delegation deadline
+  enforcement, durable timeout verdicts and replay, and failed Patch retention
+  before owner settlement. Silent streams and detached SSH passes stay bounded;
+  an unreachable host during Patch retention keeps the original pass pending.
+- Remains: helper/readiness, services, prompts and the remaining slice 1/3–5
+  spec updates and live qualification. Full hook-source
   qualification remains open; unqualified versions emit a warning receipt.
 - Settled (human, 2026-09-25):
   - A turn waits for the subagents it started. Subagents never outlive the

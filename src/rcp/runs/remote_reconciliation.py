@@ -147,6 +147,13 @@ def reconcile_remote_pass(
         return Reconciliation(
             "fail", "The provider never took this turn's prompt.", pid_file, recorded
         )
+    if recorded.outcome.get("verdict") == "delegation_unfinished":
+        return Reconciliation(
+            "finalize",
+            "The delegation wait limit expired on the execution host.",
+            pid_file,
+            recorded,
+        )
     if not recorded.intact or not recorded.outcome.get("terminal_event"):
         return Reconciliation(
             "fail",

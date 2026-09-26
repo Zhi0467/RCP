@@ -46,6 +46,10 @@ def _supervise(
     experiment_watch_bytes: int = 100000,
     close_input_after_initial: bool = True,
     codex_start_marker: Path | None = None,
+    codex_state_path: Path | None = None,
+    delegation_wait_limit: float = 3600,
+    stop_grace: float = 5,
+    detached: bool = False,
 ) -> tuple[subprocess.CompletedProcess, Path]:
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -57,7 +61,7 @@ def _supervise(
         "--pid-file",
         str(pid_file),
         "--provider",
-        "codex",
+        "claude" if runtime_id.startswith("claude.") else "codex",
         "--runtime-id",
         runtime_id,
         "--patch-path",
@@ -87,18 +91,36 @@ def _supervise(
         "--stop-hold-seconds",
         "0",
         "--stop-grace-seconds",
-        "5",
+        str(stop_grace),
+        "--delegation-wait-limit-seconds",
+        str(delegation_wait_limit),
         "--poll-seconds",
         "0.02",
     ]
     if codex_start_marker is not None:
         argv.extend(["--codex-start-marker", str(codex_start_marker)])
+    if codex_state_path is not None:
+        argv.extend(["--codex-state-path", str(codex_state_path)])
     if close_input_after_initial:
         argv.append("--close-input-after-initial")
     argv += ["--", sys.executable, "-c", provider]
-    completed = subprocess.run(
-        argv, input=stdin, capture_output=True, text=True, start_new_session=True, timeout=60
-    )
+    if detached:
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        process.stdout.close()
+        process.stdout = None
+        _, stderr = process.communicate(stdin, timeout=60)
+        completed = subprocess.CompletedProcess(argv, process.returncode, "", stderr)
+    else:
+        completed = subprocess.run(
+            argv, input=stdin, capture_output=True, text=True, start_new_session=True, timeout=60
+        )
     return completed, Path(str(pid_file) + ".turn")
 
 
@@ -457,3 +479,127 @@ def test_missing_codex_start_marker_refuses_deliverable_snapshot(tmp_path: Path)
     outcome = json.loads((journal / "outcome.json").read_text())
     assert json.loads(outcome["error"])["code"] == "codex_hook_start_missing"
     assert outcome["patch_present"] is False
+
+
+@pytest.mark.parametrize(
+    "runtime", ["codex.exec-json.v1", "claude.stream-json.v1", "codex.app-server-stdio.v1"]
+)
+def test_delegation_deadline_stops_a_silent_provider_and_seals_patch(tmp_path, runtime):
+    import time
+
+    state_path = None
+    if runtime == "codex.exec-json.v1":
+        from rcp.agents.codex_turn_hooks import apply_hook, prepare_control
+
+        control = tmp_path / "control"
+        prepare_control(control, [])
+        state_path = control / "state.json"
+        apply_hook("SubagentStart", {"agent_id": "child"}, state_path, control / "started")
+        apply_hook("Stop", {}, state_path, control / "started")
+        apply_hook("Stop", {}, state_path, control / "started")
+        events = [{"type": "thread.started", "thread_id": "root"}]
+        request = {"prompt": "work"}
+    elif runtime == "claude.stream-json.v1":
+        events = [
+            {"type": "system", "subtype": "task_started", "task_id": "child"},
+            {"type": "result", "subtype": "success", "result": "parent answer"},
+        ]
+        request = {"type": "user", "uuid": "input", "message": {"role": "user", "content": "work"}}
+    else:
+        events = [
+            {"id": 1, "result": {"thread": {"id": "root"}}},
+            {
+                "method": "item/started",
+                "params": {
+                    "threadId": "root",
+                    "item": {
+                        "type": "subAgentActivity",
+                        "agentThreadId": "child",
+                        "kind": "started",
+                    },
+                },
+            },
+            {
+                "method": "turn/completed",
+                "params": {"threadId": "root", "turn": {"id": "turn", "status": "completed"}},
+            },
+        ]
+        request = {"id": 1, "method": "thread/start", "params": {}}
+    patch = tmp_path / "patch.json"
+    patch.write_text('{"ops": []}')
+    provider = (
+        "import sys, json, time, signal\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "sys.stdin.readline()\n"
+        f"events = {events!r}\n"
+        "for event in events: print(json.dumps(event), flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    started = time.monotonic()
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(request) + "\n",
+        runtime_id=runtime,
+        provider=provider,
+        patch_path=str(patch),
+        codex_state_path=state_path,
+        delegation_wait_limit=0.15,
+        stop_grace=0.05,
+    )
+    assert time.monotonic() - started < 10
+    assert completed.returncode != 0
+    assert (journal / "outcome.json").exists(), completed.stderr
+    outcome = _journal(journal)
+    assert outcome["verdict"] == outcome["failure_kind"] == "delegation_unfinished"
+    assert outcome["error"] is None
+    assert (journal / "patch.json").read_text() == patch.read_text()
+    receipts = (journal / "delegation.jsonl").read_text().splitlines()
+    assert len(receipts) == (2 if state_path else 1)
+    assert "RCP_TURN_RECEIPT:" in completed.stdout
+
+
+def test_timeout_fences_shutdown_output_and_kills_a_child_that_closed_its_pipes(tmp_path):
+    provider = (
+        "import json,os,signal,sys,time\n"
+        "sys.stdin.readline()\n"
+        "child = os.fork()\n"
+        "if child == 0:\n"
+        "    signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+        "    os.close(0); os.close(1); os.close(2)\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
+        f"open({str(tmp_path / 'child.pid')!r},'w').write(str(child))\n"
+        "def stop(sig,frame):\n"
+        "    print(json.dumps({'type':'result','subtype':'error','is_error':True}),flush=True)\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM,stop)\n"
+        "print(json.dumps({'type':'system','subtype':'task_started','task_id':'child'}),flush=True)\n"
+        "print(json.dumps({'type':'result','subtype':'success'}),flush=True)\n"
+        "sys.stdout.write('{'); sys.stdout.flush()\n"
+        "time.sleep(30)\n"
+    )
+    completed, journal = _supervise(
+        tmp_path,
+        json.dumps(
+            {"type": "user", "uuid": "input", "message": {"role": "user", "content": "work"}}
+        )
+        + "\n",
+        runtime_id="claude.stream-json.v1",
+        provider=provider,
+        delegation_wait_limit=0.15,
+        stop_grace=0.05,
+    )
+    assert _journal(journal)["verdict"] == "delegation_unfinished"
+    assert '"is_error"' not in completed.stdout
+    assert "\nRCP_TURN_RECEIPT:" in completed.stdout
+    assert '"is_error"' not in (journal / "events.jsonl").read_text()
+    child_status = subprocess.run(
+        ["ps", "-o", "stat=", "-p", (tmp_path / "child.pid").read_text()],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert child_status.returncode in {0, 1} and not child_status.stderr
+    child_state = child_status.stdout.strip()
+    # Some execution hosts leave an orphan zombie until their init reaps it.
+    assert not child_state or child_state.startswith("Z")
