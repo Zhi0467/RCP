@@ -53,9 +53,8 @@ access, then send:
 
 ## Install and run
 
-Everything is built from source. The full steps, the desktop app build, and the
-checks that verify a checkout are in [docs/install.md](docs/install.md); the
-short version:
+You need Git, Node.js, [`uv`](https://docs.astral.sh/uv/), and Codex CLI or
+Claude Code signed in. Build the web app and run it in your browser:
 
 ```bash
 git clone https://github.com/Zhi0467/RCP.git
@@ -64,6 +63,17 @@ npm --prefix web ci && npm --prefix web run build
 uv sync
 uv run rcp open
 ```
+
+For the macOS app, also install [Rust](https://rustup.rs) and the Xcode
+command-line tools, then build and open it:
+
+```bash
+npm --prefix web run desktop:build-dev
+open web/src-tauri/target/debug/bundle/macos/RCP.app
+```
+
+Development runs, verification, and updating an installed copy are in
+[docs/install.md](docs/install.md).
 
 A shared team space on your own Ubuntu server is set up through the
 [team server guide](docs/server.md). Design and behavior live in
