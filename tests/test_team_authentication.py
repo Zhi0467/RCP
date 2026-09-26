@@ -1397,12 +1397,12 @@ def test_the_access_address_is_operator_set_read_only_and_links_codes(
     )
     (tmp_path / "team.toml").write_text(
         render_team_access_config(
-            ServerTeamConfig(access_url="https://WTH-gpu-01.tail1234.ts.net/")
+            ServerTeamConfig(access_url="https://Lab-Gpu-01.tail1234.ts.net/")
         )
     )
     (tmp_path / "team.toml").chmod(0o640)
     assert desktop.get("/api/team/space").json()["access_url"] == (
-        "https://wth-gpu-01.tail1234.ts.net"
+        "https://lab-gpu-01.tail1234.ts.net"
     )
     (tmp_path / "team.toml").write_text("access_url = 'ftp://nope'\n")
     assert desktop.get("/api/team/space").json()["access_url"] is None

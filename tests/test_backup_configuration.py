@@ -911,13 +911,13 @@ def test_team_address_file_is_its_own_document_beside_server_toml(
     assert load_team_access_config(team_path) is None
 
     text = render_team_access_config(
-        ServerTeamConfig(access_url="https://WTH-gpu-01.tail1234.ts.net/")
+        ServerTeamConfig(access_url="https://Lab-Gpu-01.tail1234.ts.net/")
     )
-    assert tomllib.loads(text) == {"access_url": "https://wth-gpu-01.tail1234.ts.net"}
+    assert tomllib.loads(text) == {"access_url": "https://lab-gpu-01.tail1234.ts.net"}
     team_path.write_text(text)
     team_path.chmod(0o640)
     assert load_team_access_config(team_path) == ServerTeamConfig(
-        access_url="https://wth-gpu-01.tail1234.ts.net"
+        access_url="https://lab-gpu-01.tail1234.ts.net"
     )
     bracketed = ServerTeamConfig(access_url="https://[2001:db8::1]:8443")
     assert parse_team_access_config(render_team_access_config(bracketed)) == bracketed

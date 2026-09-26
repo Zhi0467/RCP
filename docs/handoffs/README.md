@@ -1,102 +1,31 @@
 # Active implementation handoffs
 
-Active:
+None. Every handoff opened before 2026-09-26 shipped its code and was closed
+on that date; Git history holds their full text.
 
-- [Runs load without waiting](handoff-2026-09-25-runs-load-without-waiting.md)
-  — implemented 2026-09-25 on one pull request and verified on copied
-  team-server data. A tab return shows the kept Runs list at once, one list
-  never has two requests in flight, the Experiment index opens branches
-  read-only, and display reads of SSH-hosted state may use a mirror up to
-  10 s old. Remaining: the team-server measurement after release, and first
-  open still at 3.5 s against a 2 s target.
+## Open live checks
 
-- [The phone works, and Chats shows every agent at a glance](handoff-2026-09-25-phone-ui-and-agents-panel.md)
-  — design confirmed 2026-09-25 and revised after an xhigh review;
-  implemented, with the real-iPhone journey and a screenshot review remaining. One pull request: a mechanical stylesheet split, size tokens
-  with named phone and tablet widths, a phone pass on Inbox, Runs, Chat, and
-  Settings, and an agent-hub Chats panel whose task list keeps every chat
-  that still needs a human. Runs and the composer are unchanged.
+These are manual drives the closed handoffs left unexecuted. Each needs real
+hardware, a real provider login, or a disposable server, so no unit test
+stands in for it. Run one on disposable data, then delete its line here.
 
-- [Agents and terminals can push to their repositories](handoff-2026-09-24-agents-and-terminals-can-push.md)
-  — confirmed and implemented 2026-09-24; the live team-space push run and
-  real remote-machine SSH remain. The deploy key is the default push
-  credential for the terminal, Discuss, and Work, with no per-member Git
-  setting. RCP supplies a default commit identity that any Git config
-  overrides.
-
-- [A human stop says what to do, and where to run it](handoff-2026-09-19-operator-action-says-where-to-run-it.md)
-  — design confirmed 2026-09-19 against a rendered mockup and implemented the
-  same day. A command action names the shell it runs in, a pause is titled for
-  the human's task, and the stop renders as an ordered list of single actions
-  with copy controls in the desktop and transfer panels and a matching label in
-  the CLI wizard. Python, web, browser, and native checks pass against a stop
-  from the real builder, and a step now declares each action's name, its one
-  requirement, and whether a value is pasted or only compared. Driving the
-  panel from the desktop app, so the sign-in line comes from a real saved
-  operator route rather than its fixture, remains.
-- [A terminal in a project, fenced to its repositories](handoff-2026-09-19-a-terminal-fenced-to-its-project.md)
-  — design confirmed 2026-09-19; the manager, routes, WebSocket, Terminals
-  destination, per-machine capability, PTY-over-SSH, and their tests are
-  implemented on one pull request. Its trust boundary is settled in
-  [a decision record](../decisions/2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md):
-  the terminal inherits the Work turn's boundary rather than isolating from the
-  service account, so it must never describe itself as containment, and
-  canonical state stays refused wherever the OS can refuse it. The Linux merge
-  qualification passed on 2026-09-20: real mounts, interactive Git with the
-  account's key, PTY resize, orphan cleanup, and a restart with an
-  unreachable-host record. Remaining: the closure journey driven from the
-  Terminals destination, and one team-space run where Git uses the deploy key.
-
-- [Episodes settle honestly, logins stay alive, reauthorization continues the work](handoff-2026-09-14-episode-lifecycle-and-provider-login.md)
-  — design confirmed 2026-09-14 and revised after an xhigh review; all six
-  slices implemented and driven against a copy of the production data;
-  provider-dependent team-server and desktop checks remain: ending
-  receipts compact and wrap-up failures settle visibly;
-  an exhaustive health table; login failures stop retries and block launches;
-  Codex per turn under a hardened gate, Claude on a static token, sign-in from
-  the UI; reauthorization as a continuation episode on the same branch and
-  session; a branch merges on branch facts; wake provenance and mail harvest;
-  a typed episode timeline. Six slices on one pull request, none optional.
-
-- [External job and watcher simplification](handoff-2026-09-06-external-job-simplification.md)
-  — direct Slurm submission, one shell-watcher contract, human Cancel, and an
-  OS-owned helper for ordinary processes. Integrated checks and the real
-  team-server/Codex journey remain.
-
-- [Claude queued follow-up](handoff-2026-09-08-claude-queued-follow-up.md) — queued provider turns, honest errors, and sandbox readiness implemented; integrated local/SSH verification remains open.
-
-- [Worktree execution](handoff-2026-09-05-worktree-execution.md)
-  — implemented and merged; local API/Git, Codex Work/merge, and browser-component checks verified; the full live journey remains open.
-
-- [A refusal explains itself](handoff-2026-09-09-refusal-explains-itself.md)
-  — human-confirmed on 2026-08-15 and not yet implemented: a refused Apply
-  gets a terminal `refused` state and a plain-language explanation.
-
-- [Remaining disposable supervisor qualification](handoff-2026-09-06-disposable-supervisor-qualification.md)
-  — production adoption, promoted release, complete backup, and doctor are
-  verified. The separate controller fix and unfinished Ubuntu reboot/restore
-  cases remain.
-
-This directory contains only human-confirmed work that is ready to implement and
-not yet complete. A handoff is an execution contract, not a chronological diary.
-Its opening status must state:
-
-- what is already implemented and verified;
-- what remains;
-- which decisions are settled; and
-- the exact condition for closure.
-
-Update status and decisions in the same change that alters the implementation
-plan. Work that was measured and rejected is closed, not “not done.” Never retain
-contradictory old and new plans as simultaneous active instructions.
-
-Delete a handoff in the same change that completes, rejects, supersedes, or
-abandons its work. If a later effort materially changes scope, delete the
-predecessor and create a new handoff rather than appending a second plan. Git
-history is the record; rationale that must outlive the work belongs in a
-decision record.
-
-The closed backend structural-refactor rationale is recorded in
-[the active decision record](../decisions/2026-08-20-backend-structural-refactor-closure.md).
-Current behavior remains owned by [`../design.md`](../design.md) and the applicable
-file under [`../specs/`](../specs/).
+- Worktree execution: two chats editing one repository, native session
+  continuation and app restart finding the same worktree, the same over SSH,
+  and each Integrate option's refusal and success.
+- Supervisor recovery: the `supervisor-recovery-live` workflow on disposable
+  Ubuntu 22.04 and 24.04 guests, covering reboot recovery, repeated rollback,
+  protected restore, and offline update.
+- Compute jobs: a long-running job through real Codex and a disposable Slurm
+  queue, with provider exit, RCP restart, watcher wake, child Stop, and Cancel.
+- Live steering: same-session Claude follow-ups and Codex injection through the
+  served UI with real local and SSH providers, including transport loss and
+  restart with an unacknowledged message.
+- Episode lifecycle: device-code sign-in, the Claude token journey, and an
+  "Add N turns" continuation on a team server with a real login.
+- Project terminals: a conflicted `git rebase -i` in the Terminals destination,
+  including after navigating away and back.
+- Operator stops: the deploy-key stop panel driven from the desktop app against
+  a real saved operator route.
+- Pushes: the live team-space push run and real remote-machine SSH.
+- Phone UI: the real-iPhone journey and its screenshot review.
+- Runs loading: the team-server measurement of first open against the 2 s target.

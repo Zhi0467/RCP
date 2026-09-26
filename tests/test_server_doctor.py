@@ -564,7 +564,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
             layout,
             config_loader=config_loader,
             team_loader=lambda path: (
-                ServerTeamConfig(access_url="https://wth-gpu-01.tail1234.ts.net")
+                ServerTeamConfig(access_url="https://lab-gpu-01.tail1234.ts.net")
                 if path == layout.team_config_path
                 else None
             ),
@@ -603,7 +603,7 @@ def test_linux_doctor_reads_a_healthy_installed_layout_without_mutating_it(
     assert broken_report.overall_state == "problems"
     assert broken_report.problems == ("team address file is unreadable or invalid",)
     assert broken_report.team_access_url is None
-    assert report.team_access_url == "https://wth-gpu-01.tail1234.ts.net"
+    assert report.team_access_url == "https://lab-gpu-01.tail1234.ts.net"
     assert report.overall_state == "healthy", report.problems
     assert report.problems == ()
     assert report.current_commit == report.running_commit == report.managed_main_head == COMMIT
