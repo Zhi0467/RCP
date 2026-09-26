@@ -20,13 +20,16 @@ stands in for it. Run one on disposable data, then delete its line here.
   Ubuntu 22.04 and 24.04 guests, covering reboot recovery, repeated rollback,
   protected restore, and offline update.
 - Compute jobs: a long-running job through real Codex and a disposable Slurm
-  queue, with provider exit, RCP restart, watcher wake, child Stop, and Cancel;
-  plus the child-Work handoff and wake, missing-handoff correction, Cancel of a
+  queue, with provider exit, RCP restart, watcher wake, native-session
+  continuation, child budget, child Stop, and Cancel; plus the Experiment-loop
+  and child-Work handoffs and wakes, missing-handoff correction, Cancel of a
   stopped watcher, degradation when work is unobservable, the served-browser
   drive, and the slow staged-command deadline.
 - Live steering: same-session Claude follow-ups and Codex injection through the
   served UI with real local and SSH providers, including transport loss and
-  restart with an unacknowledged message.
+  restart with an unacknowledged message, Work containment, and on the
+  execution host both a working sandbox and the missing-sandbox readiness
+  diagnostic.
 - Episode lifecycle: device-code sign-in, the Claude token journey, an
   "Add N turns" continuation, a branch merge that runs to completion, and wake
   suppression (mail that arrived mid-turn or a child login failure spends no
