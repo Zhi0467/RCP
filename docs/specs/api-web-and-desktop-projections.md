@@ -1070,6 +1070,23 @@ and may therefore appear in the Codex Desktop task list. RCP uses that as an
 inspection surface only. Sidebar ordering, loading, takeover, and concurrency
 remain Codex Desktop behavior rather than RCP product state.
 
+### Update notice
+
+`GET /api/update-notice` returns the cached release check: space, status
+(`update_available`, `current`, `pinned`, `unchecked`, `failed`, `off`,
+`unknown`), current and latest versions, check times, companion readiness, a
+locally built download URL, and the update command. The one update surface,
+shown on the project index, setup screens, and every project view, renders it:
+a team space shows `sudo rcp server update`; a source checkout shows
+`scripts/update-from-source vX.Y.Z` (with `--desktop` from a source app); a
+prebuilt app shows a Download button only once the companion is confirmed.
+The native shell reports its build kind, version, and checkout through
+`desktop_build_identity`, because a desktop may reuse a backend of the other
+kind. A visible page polls the endpoint (30 s while `unchecked`, then 10 min,
+and on becoming visible); dismissal is per release. A protocol mismatch names
+the confirmed download, the releases page when the check is unavailable, or the
+update script for a source build.
+
 ## Frontend trust boundary
 
 Provider naming is a backend answer. Readiness exports each provider's runtime

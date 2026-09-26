@@ -1,10 +1,19 @@
 # Tell people when an update is out
 
-Status on 2026-09-26: design confirmed by the human, then revised after a
-Codex xhigh design review and the GitHub review. Nothing is implemented.
+Status on 2026-09-26: design confirmed by the human, revised after a Codex
+xhigh design review and the GitHub review, and implemented on this pull request.
 
-- Implemented: nothing yet.
-- Remains: changes 1–7 below, on one pull request.
+- Implemented and verified: changes 1–7. Python, web, and Rust suites pass,
+  and a served personal space with a fake GitHub showed the source notice on
+  the index, persisted its dismissal across a reload, and logged no errors.
+- Remains, all live checks:
+  - Run `publish-desktop.yml` for a throwaway tag, including a rerun after a
+    failed upload, and confirm `/releases/latest` still returns `vX.Y.Z`.
+  - Download that app on a Mac, approve it once, and drive the Download
+    button, quit and reopen, and a team connection.
+  - The team-space notice on a served team fixture one release behind.
+  - Historical supervisors (`b65422dd`, `94f37f43`) fetching `stable` against
+    a fake GitHub that holds a companion; only the current one is unit-tested.
 - Settled (human, 2026-09-26):
   - Desktop and local Web installs follow promoted releases, not `main`. See
     [the decision record](../decisions/2026-09-26-desktop-installs-follow-releases.md).

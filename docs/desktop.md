@@ -209,31 +209,28 @@ disposable Rust build output:
 cargo clean --manifest-path web/src-tauri/Cargo.toml
 ```
 
-## Publish a GitHub preview release
+## Publish the desktop companion release
 
-GitHub preview releases may distribute the current unsigned, unnotarized app while RCP is
-still stabilizing. Before publishing one:
+Each promotion ends by calling `.github/workflows/publish-desktop.yml`, which
+can also be run by hand for the same tag. It builds the exact commit of the
+published `vX.Y.Z` release on an Apple Silicon runner, checks that the native
+versions equal the tag (`packaging/release_build.py check-desktop-version`),
+smoke-tests the bundled backend, and uploads `RCP-vX.Y.Z-macos-arm64.zip` and
+its `.sha256` to a draft `desktop-vX.Y.Z` release. It downloads both back,
+verifies them, and only then publishes the draft as a pre-release that is not
+latest. The app cannot live in `vX.Y.Z` itself: installed supervisors accept a
+server release only with exactly its five files. A failed run leaves the server
+release unchanged and can be rerun; a published companion is never replaced.
 
-1. Choose an intentional version and tag a clean, tested commit.
-2. Build and test the exact application bundle that will be uploaded.
-3. Archive `RCP.app` without discarding its macOS metadata, and publish a SHA-256 checksum.
-4. Mark the GitHub release as a pre-release.
-5. State prominently that the build supports Apple Silicon, is not Apple-notarized, may
-   require explicit approval from macOS, and must be updated manually.
+The native versions in `web/package.json`, `web/package-lock.json`, and
+`web/src-tauri/Cargo.toml`/`Cargo.lock` must equal `src/rcp/__init__.py`; a test
+enforces it, so a version bump changes all of them.
 
-Do not create Tauri updater artifacts for an unsigned preview. Automatic updates remain
-disabled until an updater signing key, HTTPS endpoint, and published manifest exist.
-Nothing in the repository sets `RCP_UPDATE_ENDPOINT` or `RCP_UPDATE_PUBKEY`, so every
-build anyone makes today reports `enabled: false`. That is the expected state of a
-source build and the app says nothing about it; only a check that actually fails —
-including a build that set exactly one of the two variables — reaches the screen.
-
-## Publish a signed macOS release
-
-Apple signing is the later stable-distribution gate. In addition to the tested GitHub
-artifact above, it requires Apple Developer ID signing, notarization and stapling, and a
-downloaded-artifact Gatekeeper check on a clean macOS account.
-
-`npm --prefix web run desktop:build-signed` asks Tauri to create updater artifacts, but it
-does not provide the Apple signing identity, notarization credentials, updater key,
-endpoint configuration, or publishing infrastructure.
+Apple signing is not planned. It needs a paid Apple Developer account, and a
+locally built app is never gatekept, so it would only spare prebuilt-app users
+the one-time Open Anyway approval. Without a signing identity the Keychain
+cannot bind credentials to the app, so the prebuilt app keeps the source build's
+Keychain storage. The Tauri updater stays disabled: nothing sets
+`RCP_UPDATE_ENDPOINT` or `RCP_UPDATE_PUBKEY`, so every build reports
+`enabled: false` and the app says nothing about it. Update notices come from the
+release check instead.

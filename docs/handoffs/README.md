@@ -3,7 +3,8 @@
 Active:
 
 - [Tell people when an update is out](handoff-2026-09-26-update-notices.md)
-  — design confirmed 2026-09-26, not implemented. One cached release check in
+  — design confirmed and implemented 2026-09-26; live release, Mac download,
+  and team-space checks remain. One cached release check in
   `rcp serve` drives an app-wide banner with a Copy command button: team
   spaces compare the installed release, local installs compare the checkout.
   Every release also ships an unsigned prebuilt macOS app in a companion
