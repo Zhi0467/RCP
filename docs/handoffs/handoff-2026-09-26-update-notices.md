@@ -45,6 +45,12 @@ and uv, and a build of several minutes.
 - It runs inside `rcp serve`, for personal and team spaces alike. The first
   check runs shortly after startup, then every 6 hours. The result is cached
   in memory. The interval and timeout live in `limits.py`.
+- A second lookup, `/releases/tags/desktop-vX.Y.Z`, runs only when the install
+  is a prebuilt app and a newer `vX.Y.Z` exists. It confirms that the
+  companion desktop release is published, not a draft, and holds the app zip.
+  Its answer is cached with the main result. A missing companion release is
+  rechecked on the next cycle, so a late desktop job shows the Download button
+  within 6 hours of publishing.
 - It is advisory. It never downloads or installs anything. The supervisor
   keeps its own verified download path.
 - It does not import the supervisor's code. The supervisor is a separate wheel
@@ -86,8 +92,10 @@ and uv, and a build of several minutes.
   server operator updates it with:", the command `sudo rcp server update`, and
   a Copy command button.
 - Prebuilt app: "RCP v0.4.3 is out. This app is v0.4.2." Then a Download
-  v0.4.3 button that opens the desktop release page in the browser. It shows
-  only once that release exists (change 7); until then the banner waits.
+  v0.4.3 button that opens the desktop release page in the browser. The button
+  shows only after the companion lookup in change 1 has confirmed
+  `desktop-vX.Y.Z`. Until then the banner says the app build is not published
+  yet and offers no link.
 - Source checkout: "RCP v0.4.3 is out. This app is built from v0.4.2." Then the
   command `scripts/update-from-source v0.4.3`, run in the checkout, and a Copy
   command button.
@@ -114,8 +122,9 @@ New checked-in script `scripts/update-from-source <tag>`. It:
 The user runs it in a terminal; it is not a button. It stops at the first
 failed step and names that step.
 
-The README's source-install section changes from "clone `main`" to "clone,
-then check out the latest release", and points to this script for updates.
+`docs/install.md` changes from "clone `main`" to "clone, then check out the
+latest release", and gains an "Update a source checkout" section that points to
+this script.
 
 ### 6. Align the version-mismatch messages
 
@@ -146,8 +155,9 @@ then check out the latest release", and points to this script for updates.
 - The release notes and the README explain the one-time approval: the first
   launch is blocked, then System Settings → Privacy & Security → Open Anyway.
   A manually downloaded update asks again.
-- The README's desktop section leads with the download. The source build moves
-  below it, for developers.
+- The README's install line says "from source, no binaries yet". It changes to
+  lead with the app download. `docs/install.md` keeps the source build, for
+  developers.
 
 ## Out of scope
 
@@ -162,7 +172,8 @@ then check out the latest release", and points to this script for updates.
 ## Verification
 
 - Python: `release_check` against a fake GitHub server: newer, equal, older,
-  pre-release, malformed, timeout, and `off`. The comparison for a team
+  pre-release, malformed, timeout, and `off`. The companion lookup: missing,
+  draft, no zip asset, then published on a later cycle. The comparison for a team
   server, a pinned server, and a local install. The endpoint's shape. The
   GitHub base URL is overridable only for tests.
 - Web: the banner for each status, dismissal per release, and the copy button.

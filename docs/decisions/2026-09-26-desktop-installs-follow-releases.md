@@ -33,8 +33,8 @@ update is out, but does not apply it.
 
 ## Consequences
 
-- The README leads with the app download. A source install checks out the
-  latest release tag, not `main`.
+- The README leads with the app download. A source install, described in
+  `docs/install.md`, checks out the latest release tag, not `main`.
 - A development build from `main` that is ahead of the latest release sees no
   update notice.
 - Each manual update of the unsigned app asks for approval again. The Tauri
