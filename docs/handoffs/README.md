@@ -11,23 +11,32 @@ These are manual drives the closed handoffs left unexecuted. Each needs real
 hardware, a real provider login, or a disposable server, so no unit test
 stands in for it. Run one on disposable data, then delete its line here.
 
-- Worktree execution: two chats editing one repository, native session
-  continuation and app restart finding the same worktree, the same over SSH,
-  and each Integrate option's refusal and success.
+- Worktree execution: two chats editing one repository; Discuss in the bound
+  chat seeing the worktree's edits; native session continuation, Pause,
+  Resume, Retry, and app restart finding the same worktree; the same over SSH;
+  each Integrate option's refusal and success; a rejected integration and
+  Remove without losing unmerged commits.
 - Supervisor recovery: the `supervisor-recovery-live` workflow on disposable
   Ubuntu 22.04 and 24.04 guests, covering reboot recovery, repeated rollback,
   protected restore, and offline update.
 - Compute jobs: a long-running job through real Codex and a disposable Slurm
-  queue, with provider exit, RCP restart, watcher wake, child Stop, and Cancel.
+  queue, with provider exit, RCP restart, watcher wake, child Stop, and Cancel;
+  plus the child-Work handoff and wake, missing-handoff correction, Cancel of a
+  stopped watcher, degradation when work is unobservable, the served-browser
+  drive, and the slow staged-command deadline.
 - Live steering: same-session Claude follow-ups and Codex injection through the
   served UI with real local and SSH providers, including transport loss and
   restart with an unacknowledged message.
-- Episode lifecycle: device-code sign-in, the Claude token journey, and an
-  "Add N turns" continuation on a team server with a real login.
+- Episode lifecycle: device-code sign-in, the Claude token journey, an
+  "Add N turns" continuation, a branch merge that runs to completion, and wake
+  suppression (mail that arrived mid-turn or a child login failure spends no
+  wake) on a team server with a real login.
 - Project terminals: a conflicted `git rebase -i` in the Terminals destination,
   including after navigating away and back.
 - Operator stops: the deploy-key stop panel driven from the desktop app against
-  a real saved operator route.
+  a real saved operator route. Known gap: **Copy server command** copies the
+  bare `operator_argv` with no statement of where it runs; giving it an
+  execution context is a separate contract change.
 - Pushes: the live team-space push run and real remote-machine SSH.
 - Phone UI: the real-iPhone journey and its screenshot review.
 - Runs loading: the team-server measurement of first open against the 2 s target.
