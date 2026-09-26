@@ -1,11 +1,10 @@
 # Turns wait for their own agents, and the helper is always offered
 
-Status on 2026-09-25: the simpler design is implemented; live qualification remains.
+Status on 2026-09-26: the simpler design is implemented and both live journeys passed.
 
 - Implemented on this branch: sections 1–5.
   The hook fence and completion tracker are removed. Specs carry the design.
-- Remains: the local Claude journey in [Verification](#verification), then
-  human review and merge. Local checks pass with disposable data and fake providers.
+- Remains: human review and merge. Local checks pass with disposable data and fake providers.
 - Settled (human, 2026-09-25):
   - Turns should not lose subagents, but RCP enforces this only where it is
     cheap: Claude runs subagents in the foreground; Codex is told to wait.
@@ -136,7 +135,9 @@ The probes behind these remain in the table above and in Git history.
   and a non-zero exit with no `turn.failed`; the contract fact is present on
   every provider contract; split readiness and instructions on a Slurm machine (done).
 - Live, local real providers: a Claude turn whose subagent runs 60 seconds
-  replies after the child finishes.
+  replies after the child finishes (done 2026-09-26, Claude Code 2.1.283 Work
+  turn: the subagent printed its time 65 seconds in, and the reply came
+  after it).
 - Live, disposable server on the Linux host: a helper `launch` on the Slurm
   machine survives the turn and stops on Cancel (done 2026-09-26, Codex exec
   Work turn: both readiness slots probed ready; the agent chose the helper
