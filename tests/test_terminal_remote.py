@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import inspect
 import json
 import os
@@ -314,46 +315,58 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
     )
     os.close(slave)
     output = bytearray()
+    # Bash's default prompt ends in "# " for root and "$ " otherwise.
+    PROMPTS = (b"$ ", b"# ")
 
     def read_until(marker, seconds=10, start=0):
+        markers = marker if isinstance(marker, tuple) else (marker,)
         deadline = time.monotonic() + seconds
-        while marker not in output[start:]:
+        while not any(each in output[start:] for each in markers):
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
                 return False
-            output.extend(os.read(master, 4096))
+            try:
+                chunk = os.read(master, 4096)
+            except OSError as error:
+                # EIO: the session hung up. Report it through the caller's
+                # assertion, which prints everything the shell wrote.
+                if error.errno != errno.EIO:
+                    raise
+                return False
+            output.extend(chunk)
         return True
 
     def require(marker, seconds=10):
         assert read_until(marker, seconds), output.decode(errors="replace")
 
     def interrupt():
-        """Send INTR and wait for its own echo before anything else is typed.
+        """Send INTR and wait until it is handled before anything else is typed.
 
         The tty flushes its input queue while processing INTR, so a command
-        written before that echo loses its leading characters — which reads as
-        `bash: rintf: command not found` rather than as a lost interrupt.
+        written before then loses its leading characters — which reads as
+        `bash: rintf: command not found` rather than as a lost interrupt. The
+        tty echoes `^C` while a job runs; at the prompt, bash 3.2's readline
+        prints only a fresh prompt.
         """
         mark = len(output)
         os.write(master, b"\x03")
-        assert read_until(b"^C", 5, mark), output.decode(errors="replace")
+        assert read_until((b"^C", *PROMPTS), 5, mark), output.decode(errors="replace")
 
     try:
         require(profile._READY_MARKER)
-        os.write(master, b"sleep 30\n")
-        require(b"sleep 30\r\n")
+        # The marker is printed just before bash starts. Type nothing until bash
+        # prompts: CI once lost the whole session to an interrupt sent in that gap.
+        assert read_until(PROMPTS, 10, output.index(profile._READY_MARKER)), output.decode(
+            errors="replace"
+        )
+        # Interrupt a job that is already running: it prints only once the shell
+        # has forked it into the foreground, so the interrupt cannot race the fork.
+        os.write(master, b"sh -c 'printf \"job-%s\\n\" started; exec sleep 30'\n")
+        require(b"job-started\r\n")
         interrupt()
-        # An interrupt delivered while the shell is still forking its job can
-        # arrive before that job exists, leaving it running and swallowing what
-        # follows. Ask again, interrupting once more, until the shell answers.
-        deadline = time.monotonic() + 30
-        while True:
-            mark = len(output)
-            os.write(master, b"printf 'job-%s\\n' control\n")
-            if read_until(b"job-control\r\n", 3, mark):
-                break
-            assert time.monotonic() < deadline, output.decode(errors="replace")
-            interrupt()
+        # The shell survived the interrupt and still runs commands.
+        os.write(master, b"printf 'job-%s\\n' control\n")
+        require(b"job-control\r\n")
         assert b"no job control" not in output
         os.close(master)
         master = -1

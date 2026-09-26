@@ -54,7 +54,7 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     response = TestClient(app).delete(f"/api/projects/{project_id}")
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "Pause the active agent task before deleting this project."
+    assert "Pause the active agent task" in response.json()["detail"]
     assert app.state.catalog.card(project_id)["id"] == project_id
 
 

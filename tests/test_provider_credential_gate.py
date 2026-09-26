@@ -27,6 +27,8 @@ from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.provider_skills import ProviderSkillInventoryManager
 
+from .helpers import wait_until
+
 
 @pytest.fixture
 def prompt_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -714,11 +716,10 @@ def test_a_restarted_minimum_holds_the_credential_from_the_provider_start() -> N
     lock = threading.Lock()
     lock.acquire()
     hold = CredentialStartupHold(lock, minimum=0)
-    hold.restart_minimum(0.3)
+    hold.restart_minimum(1.0)
     hold.release()
     assert lock.locked(), "the restarted stagger did not delay the release"
-    time.sleep(0.5)
-    assert not lock.locked()
+    wait_until(lambda: not lock.locked(), detail="the delayed release never happened")
 
 
 @pytest.mark.asyncio

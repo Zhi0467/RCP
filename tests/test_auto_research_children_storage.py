@@ -37,6 +37,15 @@ from rcp.storage.auto_research_children import (
 )
 
 
+def _worker_notice(store: AppStore, episode_id: str, **fields):
+    return AutoResearchLifecycleNoticeRecord(
+        episode_id=episode_id,
+        source_kind="worker",
+        created_at=fields.pop("created_at", store.now()),
+        **fields,
+    )
+
+
 def _insert_unbounded_legacy_lifecycle_notice(
     store: AppStore,
     record: AutoResearchLifecycleNoticeRecord,
@@ -154,6 +163,13 @@ def _auto_parent(
     assert stored_episode.graph_target == stored_root.graph_target == graph_target
     assert stored_episode.graph_base_head == GraphHeadRef(revision=0)
     return stored_episode, stored_root
+
+
+def _setup_parent(tmp_path, *, ceiling: int = 4):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    parent, root = _auto_parent(store, ceiling=ceiling)
+    return store, parent, root
 
 
 def _work_pair(
@@ -328,25 +344,11 @@ def _admission(
     )
 
 
-def _orchestrator_wake(
-    store: AppStore,
-    parent: EpisodeRecord,
-    predecessor: AgentTaskRecord,
-    *,
-    operation_id: str | None = None,
-) -> AgentTaskRecord:
+def _queued_attempt(store, predecessor, request, *, operation_id, attempt, parent_operation_id):
     now = store.now()
-    request = dict(predecessor.request)
-    request.update(
-        {
-            "role": "orchestrator",
-            "actor_operation_id": parent.root_operation_id,
-            "wake_cause": "lifecycle",
-        }
-    )
     return predecessor.model_copy(
         update={
-            "operation_id": operation_id or str(uuid.uuid4()),
+            "operation_id": operation_id,
             "status": "queued",
             "request": request,
             "created_at": now,
@@ -355,9 +357,34 @@ def _orchestrator_wake(
             "finished_at": None,
             "status_message": "Queued",
             "error": None,
-            "attempt": 1,
-            "parent_operation_id": predecessor.operation_id,
+            "attempt": attempt,
+            "parent_operation_id": parent_operation_id,
         }
+    )
+
+
+def _orchestrator_wake(
+    store: AppStore,
+    parent: EpisodeRecord,
+    predecessor: AgentTaskRecord,
+    *,
+    operation_id: str | None = None,
+) -> AgentTaskRecord:
+    request = dict(predecessor.request)
+    request.update(
+        {
+            "role": "orchestrator",
+            "actor_operation_id": parent.root_operation_id,
+            "wake_cause": "lifecycle",
+        }
+    )
+    return _queued_attempt(
+        store,
+        predecessor,
+        request,
+        operation_id=operation_id or str(uuid.uuid4()),
+        attempt=1,
+        parent_operation_id=predecessor.operation_id,
     )
 
 
@@ -367,7 +394,6 @@ def _child_work_mail_wake(
     *,
     operation_id: str | None = None,
 ) -> AgentTaskRecord:
-    now = store.now()
     assert current.native_session_id is not None and current.stage_root is not None
     request = dict(current.request)
     request.update(
@@ -379,20 +405,13 @@ def _child_work_mail_wake(
             "result_view": None,
         }
     )
-    return current.model_copy(
-        update={
-            "operation_id": operation_id or str(uuid.uuid4()),
-            "status": "queued",
-            "request": request,
-            "created_at": now,
-            "updated_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "status_message": "Queued",
-            "error": None,
-            "attempt": current.attempt + 1,
-            "parent_operation_id": current.operation_id,
-        }
+    return _queued_attempt(
+        store,
+        current,
+        request,
+        operation_id=operation_id or str(uuid.uuid4()),
+        attempt=current.attempt + 1,
+        parent_operation_id=current.operation_id,
     )
 
 
@@ -447,9 +466,7 @@ def _completed_child_project_rows(
 
 
 def test_child_work_admission_spends_b_and_reflects_route_atomically(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    episode, root = _auto_parent(store, ceiling=2)
+    store, episode, root = _setup_parent(tmp_path, ceiling=2)
     route, task = _work_pair(store, episode, root, worker_id="worker-one")
     admission = store.record_auto_research_child_admission(
         _admission(
@@ -484,9 +501,7 @@ def test_child_work_admission_spends_b_and_reflects_route_atomically(tmp_path) -
 
 
 def test_concurrent_child_work_admission_cannot_overspend_b(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    episode, root = _auto_parent(store, ceiling=2)
+    store, episode, root = _setup_parent(tmp_path, ceiling=2)
     pairs = [_work_pair(store, episode, root, worker_id=f"worker-{index}") for index in range(2)]
 
     def admit(pair: tuple[AutoResearchChildWorkRecord, AgentTaskRecord]) -> str:
@@ -505,9 +520,7 @@ def test_concurrent_child_work_admission_cannot_overspend_b(tmp_path) -> None:
 
 
 def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    episode, root = _auto_parent(store, ceiling=3)
+    store, episode, root = _setup_parent(tmp_path, ceiling=3)
     route, task = _work_pair(store, episode, root, worker_id="worker-one")
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
@@ -521,23 +534,15 @@ def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path) -> No
     failure_notice = store.auto_research_lifecycle_notices(episode.episode_id)[0]
     assert failure_notice.source_event == "failed"
     assert failure_notice.payload["resume_available"] is True
-    now = store.now()
     recovery_request = dict(current.request)
     recovery_request["session_id"] = "saved-session"
-    recovery = current.model_copy(
-        update={
-            "operation_id": str(uuid.uuid4()),
-            "status": "queued",
-            "request": recovery_request,
-            "created_at": now,
-            "updated_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "status_message": "Queued",
-            "error": None,
-            "attempt": 2,
-            "parent_operation_id": task.operation_id,
-        }
+    recovery = _queued_attempt(
+        store,
+        current,
+        recovery_request,
+        operation_id=str(uuid.uuid4()),
+        attempt=2,
+        parent_operation_id=task.operation_id,
     )
 
     recovered_route, recovered = store.create_auto_research_child_work_recovery(
@@ -562,9 +567,7 @@ def test_exact_child_work_recovery_reuses_allocation_and_binding(tmp_path) -> No
 
 
 def test_child_work_recovery_inherits_a_message_wake_allocation(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    episode, root = _auto_parent(store, ceiling=4)
+    store, episode, root = _setup_parent(tmp_path, ceiling=4)
     route, task = _work_pair(store, episode, root, worker_id="worker-mail-recovery")
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
@@ -599,21 +602,13 @@ def test_child_work_recovery_inherits_a_message_wake_allocation(tmp_path) -> Non
     assert failed is not None
     recovery_request = dict(failed.request)
     recovery_request["session_id"] = "saved-session"
-    now = store.now()
-    recovery = failed.model_copy(
-        update={
-            "operation_id": str(uuid.uuid4()),
-            "status": "queued",
-            "request": recovery_request,
-            "created_at": now,
-            "updated_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "status_message": "Queued",
-            "error": None,
-            "attempt": failed.attempt + 1,
-            "parent_operation_id": failed.operation_id,
-        }
+    recovery = _queued_attempt(
+        store,
+        failed,
+        recovery_request,
+        operation_id=str(uuid.uuid4()),
+        attempt=failed.attempt + 1,
+        parent_operation_id=failed.operation_id,
     )
 
     store.create_auto_research_child_work_recovery(route.worker_id, recovery)
@@ -633,9 +628,7 @@ def test_child_work_recovery_inherits_a_message_wake_allocation(tmp_path) -> Non
 def test_session_limit_notice_requires_replacement_even_with_a_saved_checkpoint(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    episode, root = _auto_parent(store, ceiling=2)
+    store, episode, root = _setup_parent(tmp_path, ceiling=2)
     route, task = _work_pair(store, episode, root, worker_id="worker-session-limit")
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
@@ -657,9 +650,7 @@ def test_session_limit_notice_requires_replacement_even_with_a_saved_checkpoint(
 
 
 def test_ordinary_child_work_mail_preserves_parent_worker_star_topology(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=5)
+    store, parent, root = _setup_parent(tmp_path, ceiling=5)
     first_route, first_task = _work_pair(store, parent, root, worker_id="worker-one")
     second_route, second_task = _work_pair(store, parent, root, worker_id="worker-two")
     store.create_auto_research_child_work(first_route, first_task)
@@ -715,9 +706,7 @@ def test_ordinary_child_work_mail_preserves_parent_worker_star_topology(tmp_path
 def test_child_work_mail_wake_spends_b_updates_route_and_claims_exact_prefix(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=5)
+    store, parent, root = _setup_parent(tmp_path, ceiling=5)
     route, task = _work_pair(store, parent, root, worker_id="worker-mail")
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
@@ -798,9 +787,7 @@ def test_child_work_mail_wake_spends_b_updates_route_and_claims_exact_prefix(
 def test_child_work_mail_wake_lineage_failure_leaves_mail_and_budget_unchanged(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=4)
+    store, parent, root = _setup_parent(tmp_path, ceiling=4)
     route, task = _work_pair(store, parent, root, worker_id="worker-lineage")
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
@@ -841,9 +828,7 @@ def test_child_work_mail_wake_lineage_failure_leaves_mail_and_budget_unchanged(
 
 
 def test_concurrent_child_work_mail_wakes_claim_once_and_admit_one_lineage(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=4)
+    store, parent, root = _setup_parent(tmp_path, ceiling=4)
     route, task = _work_pair(store, parent, root, worker_id="worker-race")
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
@@ -893,9 +878,7 @@ def test_concurrent_child_work_mail_wakes_claim_once_and_admit_one_lineage(tmp_p
 
 
 def test_child_experiments_share_atomic_five_times_b_allowance(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=1)
+    store, parent, root = _setup_parent(tmp_path, ceiling=1)
 
     child_ids: list[str] = []
     for index in range(5):
@@ -936,21 +919,18 @@ def test_child_experiments_share_atomic_five_times_b_allowance(tmp_path) -> None
 
 
 def test_child_transition_and_lifecycle_notice_roll_back_together(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     route, task = _work_pair(store, parent, root, worker_id="worker-atomic")
     store.create_auto_research_child_work(route, task)
     store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="conflicting-notice",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id=route.worker_id,
             source_event="succeeded",
             source_attempt=1,
             payload={"conflict": True},
-            created_at=store.now(),
         )
     )
 
@@ -961,9 +941,7 @@ def test_child_transition_and_lifecycle_notice_roll_back_together(tmp_path) -> N
 
 
 def test_gracefully_stopped_child_work_notifies_the_sleeping_orchestrator(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     route, task = _work_pair(store, parent, root, worker_id="worker-stopped")
     store.create_auto_research_child_work(route, task)
     store.checkpoint_agent_task(
@@ -985,9 +963,7 @@ def test_gracefully_stopped_child_work_notifies_the_sleeping_orchestrator(tmp_pa
 
 
 def test_exact_experiment_recovery_does_not_spend_e_again(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     child_id = str(uuid.uuid4())
     task = _experiment_task(store, child_id, parent.authorized_by, node_id="exp/one")
     route = _experiment_route(store, parent, root, task)
@@ -1020,9 +996,7 @@ def test_exact_experiment_recovery_does_not_spend_e_again(tmp_path) -> None:
 
 
 def test_stopping_child_experiment_pause_keeps_exact_resume_available(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     child_id = str(uuid.uuid4())
     task = _experiment_task(store, child_id, parent.authorized_by, node_id="exp/stopping")
     route = _experiment_route(store, parent, root, task)
@@ -1050,9 +1024,7 @@ def test_stopping_child_experiment_pause_keeps_exact_resume_available(tmp_path) 
 def test_stopped_child_experiment_terminalizes_route_and_notifies_parent(
     tmp_path, initiated_by, suppressed
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     child_id = str(uuid.uuid4())
     task = _experiment_task(store, child_id, parent.authorized_by, node_id="exp/stop")
     route = _experiment_route(store, parent, root, task)
@@ -1099,14 +1071,12 @@ def test_stopped_child_experiment_terminalizes_route_and_notifies_parent(
 
 
 def test_lifecycle_notice_dedup_harvest_clear_and_delivery_are_durable(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     now = store.now()
-    first = AutoResearchLifecycleNoticeRecord(
+    first = _worker_notice(
+        store,
+        parent.episode_id,
         notice_id="notice-one",
-        episode_id=parent.episode_id,
-        source_kind="worker",
         source_id="worker-one",
         source_event="failed",
         source_attempt=1,
@@ -1185,19 +1155,16 @@ def test_lifecycle_notice_dedup_harvest_clear_and_delivery_are_durable(tmp_path)
 def test_keyed_inbox_receipt_replays_empty_snapshot_without_clearing_later_notice(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
 
     already_delivered = store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="already-delivered",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-delivered",
             source_event="settled",
             payload={"status": "failed"},
-            created_at=store.now(),
         )
     )
     claimed = store.claim_auto_research_lifecycle_notices(
@@ -1219,14 +1186,13 @@ def test_keyed_inbox_receipt_replays_empty_snapshot_without_clearing_later_notic
     assert delivered_record.state == "delivered"
     assert delivered_record.acknowledged_at is None
 
-    late = AutoResearchLifecycleNoticeRecord(
+    late = _worker_notice(
+        store,
+        parent.episode_id,
         notice_id="late-after-empty",
-        episode_id=parent.episode_id,
-        source_kind="worker",
         source_id="worker-late",
         source_event="failed",
         payload={"diagnostic": "network"},
-        created_at=store.now(),
     )
     store.record_auto_research_lifecycle_notice(late)
     replay = store.process_auto_research_lifecycle_inbox(
@@ -1253,30 +1219,26 @@ def test_keyed_inbox_receipt_replays_empty_snapshot_without_clearing_later_notic
 
 
 def test_keyed_inbox_bounds_the_exact_prefix_before_acknowledging_it(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, _ = _auto_parent(store)
+    store, parent, _ = _setup_parent(tmp_path)
     small = store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="notice-small",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-small",
             source_event="settled",
             payload={"status": "succeeded"},
-            created_at=store.now(),
         )
     )
     oversized = _insert_unbounded_legacy_lifecycle_notice(
         store,
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="notice-oversized",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-large",
             source_event="failed",
             payload={"diagnostic": "x" * 40_000},
-            created_at=store.now(),
         ),
     )
 
@@ -1301,15 +1263,13 @@ def test_keyed_inbox_bounds_the_exact_prefix_before_acknowledging_it(tmp_path) -
 
 
 def test_keyed_inbox_refuses_an_oversized_first_harvest_without_a_receipt(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, _ = _auto_parent(store)
+    store, parent, _ = _setup_parent(tmp_path)
     oversized = _insert_unbounded_legacy_lifecycle_notice(
         store,
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="notice-oversized-first",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-large",
             source_event="failed",
             payload={"diagnostic": "x" * 40_000},
@@ -1317,10 +1277,10 @@ def test_keyed_inbox_refuses_an_oversized_first_harvest_without_a_receipt(tmp_pa
         ),
     )
     small = store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="notice-small-second",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-small",
             source_event="settled",
             payload={"status": "succeeded"},
@@ -1348,18 +1308,15 @@ def test_keyed_inbox_refuses_an_oversized_first_harvest_without_a_receipt(tmp_pa
 
 
 def test_new_lifecycle_notices_truncate_diagnostics_to_remain_harvestable(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, _ = _auto_parent(store)
+    store, parent, _ = _setup_parent(tmp_path)
 
-    original = AutoResearchLifecycleNoticeRecord(
+    original = _worker_notice(
+        store,
+        parent.episode_id,
         notice_id="bounded-new-notice",
-        episode_id=parent.episode_id,
-        source_kind="worker",
         source_id="worker-large",
         source_event="failed",
         payload={"diagnostic": "x" * 40_000},
-        created_at=store.now(),
     )
     stored = store.record_auto_research_lifecycle_notice(original)
 
@@ -1381,15 +1338,13 @@ def test_new_lifecycle_notices_truncate_diagnostics_to_remain_harvestable(tmp_pa
 def test_oversized_harvest_does_not_recommend_clear_when_the_full_clear_cannot_fit(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, _ = _auto_parent(store)
+    store, parent, _ = _setup_parent(tmp_path)
     _insert_unbounded_legacy_lifecycle_notice(
         store,
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="000-oversized-body",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-large",
             source_event="failed",
             payload={"diagnostic": "x" * 40_000},
@@ -1399,10 +1354,10 @@ def test_oversized_harvest_does_not_recommend_clear_when_the_full_clear_cannot_f
     for index in range(36):
         _insert_unbounded_legacy_lifecycle_notice(
             store,
-            AutoResearchLifecycleNoticeRecord(
+            _worker_notice(
+                store,
+                parent.episode_id,
                 notice_id=f"{index + 1:03d}-" + ("n" * 1_024),
-                episode_id=parent.episode_id,
-                source_kind="worker",
                 source_id=f"worker-{index}",
                 source_event="settled",
                 payload={"status": "succeeded"},
@@ -1428,19 +1383,16 @@ def test_oversized_harvest_does_not_recommend_clear_when_the_full_clear_cannot_f
 def test_lifecycle_wake_spends_once_and_atomically_claims_notice_and_root_mail(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=3)
+    store, parent, root = _setup_parent(tmp_path, ceiling=3)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     notice = store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="wake-notice",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-one",
             source_event="failed",
             payload={"resume_available": True},
-            created_at=store.now(),
         )
     )
     message = store.record_auto_research_message(
@@ -1494,19 +1446,16 @@ def test_lifecycle_wake_spends_once_and_atomically_claims_notice_and_root_mail(
     ["missing", "delivered_notice", "delivered_mail", "foreign_notice", "foreign_mail"],
 )
 def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_input) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     notice = store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="notice",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker",
             source_event="succeeded",
             payload={},
-            created_at=store.now(),
         )
     )
     mail = store.record_auto_research_message(
@@ -1647,9 +1596,7 @@ def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_inp
 def test_non_root_watcher_wake_refuses_even_empty_root_claims(
     tmp_path, kind, role, claim_argument
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     record = root.model_copy(
         update={
             "kind": kind,
@@ -1669,10 +1616,10 @@ def test_lifecycle_wake_busy_or_exhausted_rolls_back_notice_claim(tmp_path) -> N
     _project(busy_store)
     parent, root = _auto_parent(busy_store, ceiling=2)
     notice = busy_store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            busy_store,
+            parent.episode_id,
             notice_id="busy-notice",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-busy",
             source_event="failed",
             payload={},
@@ -1716,9 +1663,7 @@ def test_lifecycle_wake_busy_or_exhausted_rolls_back_notice_claim(tmp_path) -> N
 
 
 def test_command_start_and_exact_file_snapshot_commit_once_on_key_replay(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     command_id = "original-command"
     content = '{"operations":[]}'
     snapshot = AutoResearchCommandFileRecord(
@@ -1764,9 +1709,7 @@ def test_command_start_and_exact_file_snapshot_commit_once_on_key_replay(tmp_pat
 
 
 def test_concurrent_apply_starts_atomically_admit_only_one_remaining_slot(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     for index in range(AUTO_RESEARCH_APPLY_MAX_PER_TURN - 1):
         store.start_agent_command(
             operation_id=root.operation_id,
@@ -1821,9 +1764,7 @@ def test_concurrent_apply_starts_atomically_admit_only_one_remaining_slot(tmp_pa
 
 
 def test_apply_results_are_immutable_and_ordered_per_turn(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     records = [
         AutoResearchApplyResultRecord(
             apply_id=f"apply-{index}",
@@ -1858,9 +1799,7 @@ def test_apply_results_are_immutable_and_ordered_per_turn(tmp_path) -> None:
 
 
 def test_pending_experiment_replacement_terminal_outcomes_notify_atomically(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     cancelled_task = _experiment_task(
         store,
         str(uuid.uuid4()),
@@ -1927,9 +1866,7 @@ def test_pending_experiment_replacement_activation_notifies_atomically(
     tmp_path,
     monkeypatch,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     direct_task = _experiment_task(
         store,
         str(uuid.uuid4()),
@@ -2013,9 +1950,7 @@ def test_pending_experiment_replacement_activation_notifies_atomically(
 
 
 def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=3)
+    store, parent, root = _setup_parent(tmp_path, ceiling=3)
     work_route, work_task = _work_pair(store, parent, root, worker_id="worker-one")
     store.create_auto_research_child_work(work_route, work_task)
 
@@ -2043,14 +1978,13 @@ def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) 
         replaces_episode_id="prior-episode",
     )
     store.reserve_auto_research_experiment_replacement(pending_route)
-    notice = AutoResearchLifecycleNoticeRecord(
+    notice = _worker_notice(
+        store,
+        parent.episode_id,
         notice_id="notice-one",
-        episode_id=parent.episode_id,
-        source_kind="worker",
         source_id="worker-old",
         source_event="settled",
         payload={"status": "failed"},
-        created_at=store.now(),
     )
     store.record_auto_research_lifecycle_notice(notice)
     delivered = store.claim_auto_research_lifecycle_notices(
@@ -2060,14 +1994,13 @@ def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) 
     assert [item.notice_id for item in delivered] == [notice.notice_id]
     assert delivered[0].state == "delivered"
     pending_notice = store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="notice-pending",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-new",
             source_event="settled",
             payload={"status": "failed"},
-            created_at=store.now(),
         )
     )
     admission = _admission(
@@ -2115,18 +2048,15 @@ def test_finish_blocker_query_reports_all_categories_without_mutation(tmp_path) 
 def test_guarded_finish_receipt_replays_exact_snapshot_and_new_key_sees_live_state(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     notice = store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="notice-exact-snapshot",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id="worker-one",
             source_event="settled",
             payload={"status": "failed"},
-            created_at=store.now(),
         )
     )
     first_id = str(uuid.uuid4())
@@ -2177,9 +2107,7 @@ def test_guarded_finish_receipt_replays_exact_snapshot_and_new_key_sees_live_sta
 
 
 def test_guarded_finish_and_child_admission_are_one_serializable_decision(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     route, task = _work_pair(store, parent, root, worker_id="racing-worker")
     barrier = threading.Barrier(2)
 
@@ -2221,9 +2149,7 @@ def test_guarded_finish_and_child_admission_are_one_serializable_decision(tmp_pa
 def test_guarded_finish_and_command_start_admission_are_one_serializable_decision(
     tmp_path,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     admission = _admission(
         store,
         parent,
@@ -2287,9 +2213,7 @@ def test_guarded_finish_and_command_start_admission_are_one_serializable_decisio
 
 @pytest.mark.parametrize("ending", ["stop", "exhausted", "failed", "human_pause"])
 def test_routed_experiment_recovery_settles_paid_turn_behind_parent_fence(tmp_path, ending) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     child_id = str(uuid.uuid4())
     task = _experiment_task(store, child_id, parent.authorized_by, node_id="exp/recovery")
     route = _experiment_route(store, parent, root, task)
@@ -2323,9 +2247,7 @@ def test_routed_experiment_recovery_settles_paid_turn_behind_parent_fence(tmp_pa
 
 
 def test_project_deletion_removes_every_auto_research_child_registry(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=3)
+    store, parent, root = _setup_parent(tmp_path, ceiling=3)
     work_route, work_task = _work_pair(store, parent, root, worker_id="worker-delete")
     store.create_auto_research_child_work(work_route, work_task)
     store.complete_agent_task(work_task.operation_id, applied_revision=None, result={})
@@ -2371,14 +2293,13 @@ def test_project_deletion_removes_every_auto_research_child_registry(tmp_path) -
         )
     )
     store.record_auto_research_lifecycle_notice(
-        AutoResearchLifecycleNoticeRecord(
+        _worker_notice(
+            store,
+            parent.episode_id,
             notice_id="delete-notice",
-            episode_id=parent.episode_id,
-            source_kind="worker",
             source_id=work_route.worker_id,
             source_event="settled",
             payload={"status": "succeeded"},
-            created_at=store.now(),
         )
     )
     apply_record = AutoResearchApplyResultRecord(
@@ -2528,9 +2449,7 @@ def test_legacy_project_data_migration_moves_child_registries_idempotently(tmp_p
 
 @pytest.mark.parametrize("child_kind", ["worker", "experiment"])
 def test_provider_auth_task_notice_is_suppressed(tmp_path, child_kind) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store)
+    store, parent, root = _setup_parent(tmp_path)
     if child_kind == "worker":
         route, task = _work_pair(store, parent, root, worker_id="auth-worker")
         store.create_auto_research_child_work(route, task)
@@ -2549,9 +2468,7 @@ def test_provider_auth_task_notice_is_suppressed(tmp_path, child_kind) -> None:
 
 
 def test_suppressed_notice_never_blocks_finish(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    _project(store)
-    parent, root = _auto_parent(store, ceiling=2)
+    store, parent, root = _setup_parent(tmp_path, ceiling=2)
     for notice_id, suppressed in (("self-caused", "self_caused"), ("ordinary", None)):
         store.record_auto_research_lifecycle_notice(
             AutoResearchLifecycleNoticeRecord(

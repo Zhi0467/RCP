@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import threading
 import uuid
@@ -42,6 +41,7 @@ from rcp.storage import (
 from rcp.storage.models import _required_timestamp
 
 from .helpers import (
+    async_wait_until,
     fabricated_authorizer,
     record_launched_experiment_turn,
     store_test_claude_token,
@@ -427,8 +427,7 @@ def test_exhausted_allowance_does_not_reserve_or_stop_an_active_predecessor(
     async def child_stream(_project_id, _kind, request, _execution):
         if request.control_episode_id == HUMAN_PREDECESSOR:
             predecessor_started.set()
-            while not release_predecessor.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release_predecessor.is_set)
         yield _sse(AgentEvent(event="done"))
 
     service, store, background, coordinator, parent_id, root_id = _setup(
@@ -502,8 +501,7 @@ def test_allowance_is_rechecked_after_waiting_for_experiment_operation_lock(
     async def child_stream(_project_id, _kind, request, _execution):
         if request.control_episode_id == HUMAN_PREDECESSOR:
             predecessor_started.set()
-            while not release_predecessor.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release_predecessor.is_set)
         yield _sse(AgentEvent(event="done"))
 
     service, store, background, _, parent_id, root_id = _setup(
@@ -1015,8 +1013,7 @@ def test_active_predecessor_is_gracefully_stopped_and_pending_replacement_can_ca
     async def child_stream(_project_id, _kind, request, _execution):
         if request.control_episode_id == HUMAN_PREDECESSOR:
             predecessor_started.set()
-            while not release.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     service, store, background, coordinator, parent_id, root_id = _setup(
@@ -1085,8 +1082,7 @@ def test_restart_reconciliation_reissues_stop_after_durable_replacement_reservat
     async def child_stream(_project_id, _kind, request, _execution):
         if request.control_episode_id == RESTART_PREDECESSOR:
             predecessor_started.set()
-            while not release.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     service, store, background, coordinator, parent_id, root_id = _setup(
@@ -1165,14 +1161,12 @@ def test_restart_recovers_the_stopped_predecessor_before_starting_its_replacemen
                 execution.checkpoint_stage("", str(stage))
                 yield _sse(AgentEvent(event="session", session_id="stopped-predecessor-session"))
                 predecessor_started.set()
-                while not pause_predecessor.is_set():
-                    await asyncio.sleep(0.01)
+                await async_wait_until(pause_predecessor.is_set)
                 yield _sse(AgentEvent(event="paused", text="Provider paused during Stop."))
                 return
             assert request.session_id == "stopped-predecessor-session"
             recovery_started.set()
-            while not finish_recovery.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(finish_recovery.is_set)
             yield _sse(AgentEvent(event="done"))
             return
         if request.control_episode_id == STOP_RECOVERY_REPLACEMENT:
@@ -1351,8 +1345,7 @@ def test_pending_replacement_waits_for_temporary_readiness_and_retries_same_inte
     async def child_stream(_project_id, _kind, request, _execution):
         if request.control_episode_id == READINESS_PREDECESSOR:
             predecessor_started.set()
-            while not release.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="done"))
 
     service, store, background, coordinator, parent_id, root_id = _setup(

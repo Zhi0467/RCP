@@ -253,6 +253,7 @@ import {
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
   type WebMcpToolRegistry,
+  webMcpSurface,
 } from "./webmcp";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
@@ -3604,12 +3605,11 @@ export default function App() {
       ),
     [],
   );
-  // The page shows no project or index content until the backend identity is
-  // verified, the actor is known, any team login is complete, setup is closed,
-  // and the open has finished; the WebMCP inventory follows the same gate.
-  const webMcpPageReady = backendSessionReady && !setupOpen && !loading;
-  const projectIndexWebMcpAvailable = webMcpPageReady && !projectId;
-  const webMcpProject = webMcpPageReady && project && project.id === projectId ? project : null;
+  const {
+    project: webMcpProject,
+    indexAvailable: projectIndexWebMcpAvailable,
+    key: webMcpSurfaceKey,
+  } = webMcpSurface({ backendSessionReady, setupOpen, loading, projectId, project });
   const webMcpTools = useMemo(() => {
     if (webMcpProject) {
       const project = webMcpProject;
@@ -3678,11 +3678,6 @@ export default function App() {
     webMcpExperimentStartProjectId,
     webMcpProject,
   ]);
-  const webMcpSurfaceKey = webMcpProject
-    ? `project:${webMcpProject.id}`
-    : projectIndexWebMcpAvailable
-      ? "project-index"
-      : null;
   const webMcpRegistryRef = useRef<{
     surfaceKey: string;
     registry: WebMcpToolRegistry;

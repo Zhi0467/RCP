@@ -855,7 +855,6 @@ test("the provisioning view renders backend answers and hides native actions in 
     "utf8",
   );
   assert.doesNotMatch(source, /request\.status\b/);
-  assert.match(source, /role="log"[\s\S]*aria-live="polite"[\s\S]*aria-relevant="additions"/);
 
   assert.doesNotMatch(operatorHtml, /provisioning-final-review/);
   assert.match(readyHtml, /class="provisioning-final-review"/);

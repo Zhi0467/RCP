@@ -6,7 +6,6 @@ import json
 import os
 import posixpath
 import shlex
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -95,12 +94,6 @@ class ConversationSession(BaseModel):
     remote_source_path: str | None = None
     source_path_is_remote: bool = False
     local_source_identity: LocalSourceIdentity | None = None
-
-
-class ConversationSlice(BaseModel):
-    path: str
-    record_count: int
-    content_sha256: str
 
 
 class ConversationIndex(BaseModel):
@@ -456,103 +449,6 @@ class ConversationIndexer:
             return None
         return match
 
-    def materialize_slice(
-        self,
-        session: ConversationSession,
-        *,
-        from_uuid: str | None = None,
-        active_paths: Iterable[str | Path] = (),
-        pin_artifact: Callable[[Path], None] | None = None,
-    ) -> ConversationSlice:
-        root = self._slice_root()
-        root.mkdir(parents=True, exist_ok=True)
-        declared_active = tuple(Path(path) for path in active_paths)
-        if pin_artifact is not None:
-            # A cached provider source is part of the task too. Pin it before
-            # the first sweep/read; local originals fall outside both cache roots.
-            pin_artifact(Path(session.path))
-        self._session_slice_cache.sweep(active_paths=declared_active)
-        temporary = Path(tempfile.mkdtemp(prefix=".slice-", dir=root))
-        temporary_path = temporary / "records.jsonl"
-        content_digest = hashlib.sha256()
-        record_count = 0
-        try:
-            remote_slice = (
-                session.remote_source_host
-                and session.remote_source_path
-                and (session.source_path_is_remote or not Path(session.path).is_file())
-            )
-            if remote_slice:
-                remote_records = temporary / "remote-records.jsonl"
-                repaired = self._write_remote_slice(session, from_uuid, remote_records)
-                if repaired is not None:
-                    self.cursor_repairs[session.key] = repaired
-                with remote_records.open("rb") as source, temporary_path.open("wb") as handle:
-                    for raw_line in source:
-                        if not raw_line.strip():
-                            continue
-                        record = ConversationRecord.model_validate_json(raw_line)
-                        line = (record.model_dump_json() + "\n").encode("utf-8")
-                        handle.write(line)
-                        content_digest.update(line)
-                        record_count += 1
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                remote_records.unlink()
-            else:
-                with temporary_path.open("wb") as handle:
-                    for record in self.read_records(session, from_uuid=from_uuid):
-                        line = (record.model_dump_json() + "\n").encode("utf-8")
-                        handle.write(line)
-                        content_digest.update(line)
-                        record_count += 1
-                    handle.flush()
-                    os.fsync(handle.fileno())
-            content_sha256 = content_digest.hexdigest()
-            identity = json.dumps(
-                {
-                    "session": session.key,
-                    "after": from_uuid,
-                    "through": session.last_uuid,
-                    "content_sha256": content_sha256,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            slice_id = hashlib.sha256(identity).hexdigest()
-            destination = root / slice_id
-            final_path = destination / temporary_path.name
-            if pin_artifact is not None:
-                # Pin the final identity before making it visible so another
-                # project's concurrent sweep cannot observe an unpinned entry.
-                pin_artifact(final_path)
-            temporary_path.chmod(0o444)
-            temporary.chmod(0o555)
-            try:
-                temporary.rename(destination)
-            except OSError:
-                if not destination.is_dir():
-                    raise
-                _remove_temporary_slice(temporary)
-            if not final_path.is_file() or _file_sha256(final_path) != content_sha256:
-                raise ValueError(f"Immutable session slice cache is corrupt for {session.key!r}.")
-            self._session_slice_cache.touch(final_path)
-            self._session_slice_cache.sweep(active_paths=(*declared_active, final_path))
-            return ConversationSlice(
-                path=str(final_path),
-                record_count=record_count,
-                content_sha256=content_sha256,
-            )
-        except (OSError, json.JSONDecodeError) as exc:
-            _remove_temporary_slice(temporary)
-            raise ValueError(
-                f"Could not materialize the indexed evidence slice for {session.key!r}: {exc}"
-            ) from exc
-        except Exception:
-            _remove_temporary_slice(temporary)
-            raise
-
     def _slice_root(self) -> Path:
         if self.cache_root is not None:
             return self.cache_root.parent / "session-slices"
@@ -720,57 +616,6 @@ class ConversationIndexer:
             raise OSError(
                 result.stderr.strip() or f"remote conversation source is unavailable: {remote_path}"
             )
-
-    @staticmethod
-    def _write_remote_slice(
-        session: ConversationSession,
-        from_uuid: str | None,
-        destination: Path,
-    ) -> str | None:
-        assert session.remote_source_host is not None
-        assert session.remote_source_path is not None
-        payload = json.dumps(
-            {
-                "path": session.remote_source_path,
-                "provider": session.provider,
-                "record_count": session.record_count,
-                "last_uuid": session.last_uuid,
-                "from_uuid": from_uuid,
-                "session_key": session.key,
-            }
-        )
-        command = f"python3 -c {shlex.quote(_REMOTE_SLICE_SCRIPT)} {shlex.quote(payload)}"
-        try:
-            with destination.open("w", encoding="utf-8") as handle:
-                result = subprocess.run(
-                    ssh_arguments(session.remote_source_host, command),
-                    stdout=handle,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
-                    check=False,
-                )
-                handle.flush()
-                os.fsync(handle.fileno())
-        except subprocess.TimeoutExpired as exc:
-            raise OSError(
-                "remote conversation slicing timed out after "
-                f"{REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS} seconds"
-            ) from exc
-        status: dict[str, Any] = {}
-        for line in reversed(result.stderr.splitlines()):
-            try:
-                candidate = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(candidate, dict):
-                status = candidate
-                break
-        if result.returncode:
-            detail = status.get("error")
-            raise OSError(detail or result.stderr.strip() or "remote conversation slicing failed")
-        repaired = status.get("cursor_repair")
-        return repaired if isinstance(repaired, str) and repaired else None
 
     def _match_repository(self, cwd: str) -> RepositoryConfig | None:
         candidates = [
@@ -1043,15 +888,6 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _remove_temporary_slice(path: Path) -> None:
-    if not path.exists():
-        return
-    path.chmod(0o700)
-    for child in path.iterdir():
-        child.chmod(0o600)
-    shutil.rmtree(path)
-
-
 def _parse_datetime(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -1185,117 +1021,4 @@ print(json.dumps({
 """
 
 
-_REMOTE_SLICE_DRIVER = r"""
-import json
-import sys
-from pathlib import Path
-
-request = json.loads(sys.argv[1])
-path = Path(request["path"])
-provider = request["provider"]
-expected_count = int(request["record_count"])
-expected_terminal = request.get("last_uuid")
-requested_cursor = request.get("from_uuid")
-session_key = request["session_key"]
-
-
-def fail(message):
-    print(json.dumps({"error": message}), file=sys.stderr)
-    raise SystemExit(1)
-
-
-if expected_count == 0:
-    if expected_terminal is not None:
-        fail(f"Session {session_key!r} has an inconsistent empty source index.")
-    if requested_cursor is not None:
-        fail(
-            f"Stored cursor {requested_cursor!r} for session {session_key!r} is missing "
-            "from its empty indexed source; reseed this session explicitly."
-        )
-    print("{}", file=sys.stderr)
-    raise SystemExit(0)
-if expected_terminal is None:
-    fail(f"Session {session_key!r} has no indexed terminal record.")
-
-indexed = 0
-cursor_seen = requested_cursor is None
-digest_matches = []
-cursor_digest = (
-    requested_cursor.rpartition("-")[2]
-    if isinstance(requested_cursor, str) and requested_cursor.startswith("line-")
-    else None
-)
-try:
-    with path.open(encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            indexed += 1
-            if indexed > expected_count:
-                break
-            record = normalize_record(json.loads(line), provider, line_number)
-            record_id = record["uuid"]
-            if record_id == requested_cursor:
-                cursor_seen = True
-            if (
-                cursor_digest
-                and record_id.startswith("line-")
-                and record_id.rpartition("-")[2] == cursor_digest
-            ):
-                digest_matches.append(record_id)
-            if indexed == expected_count:
-                if record_id != expected_terminal:
-                    fail(
-                        f"Conversation source for {session_key!r} changed before its indexed "
-                        "terminal record; rebuild the source index and retry."
-                    )
-                break
-except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-    fail(f"Could not read remote conversation source for {session_key!r}: {exc}")
-
-if indexed < expected_count:
-    fail(
-        f"Conversation source for {session_key!r} ended before its indexed terminal "
-        "record; rebuild the source index and retry."
-    )
-
-resolved_cursor = requested_cursor
-cursor_repair = None
-if not cursor_seen:
-    if cursor_digest and len(digest_matches) == 1:
-        resolved_cursor = digest_matches[0]
-        cursor_repair = resolved_cursor
-    else:
-        fail(
-            f"Stored cursor {requested_cursor!r} for session {session_key!r} is missing before "
-            f"the indexed terminal record {expected_terminal!r}; reseed this session explicitly "
-            "instead of silently rereading it."
-        )
-
-seen = resolved_cursor is None
-indexed = 0
-try:
-    with path.open(encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            indexed += 1
-            if indexed > expected_count:
-                break
-            record = normalize_record(json.loads(line), provider, line_number)
-            if not seen:
-                if record["uuid"] == resolved_cursor:
-                    seen = True
-            else:
-                print(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
-            if indexed == expected_count:
-                break
-except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-    fail(f"Could not materialize remote conversation slice for {session_key!r}: {exc}")
-
-print(json.dumps({"cursor_repair": cursor_repair}), file=sys.stderr)
-"""
-
-
 _REMOTE_INDEX_SCRIPT = _remote_program(_REMOTE_INDEX_DRIVER)
-_REMOTE_SLICE_SCRIPT = _remote_program(_REMOTE_SLICE_DRIVER)
