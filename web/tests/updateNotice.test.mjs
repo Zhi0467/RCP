@@ -60,6 +60,9 @@ test("release notice transitions, actions, visibility, and storage through a ser
         await refresh();
         await page.locator('[data-kind="prebuilt"]').waitFor();
         assert.equal(await page.locator("[data-kind] a").count(), 0);
+        // Dismissing before the download exists must not hide the later download.
+        await page.locator(".desktop-update-dismiss").click();
+        await page.locator('[data-kind="prebuilt"]').waitFor({ state: "detached" });
         data = {
           ...fixture,
           companion_ready: true,

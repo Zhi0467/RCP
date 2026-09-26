@@ -22,7 +22,7 @@ export function UpdateNotice({
   if (
     (desktop && !identity && notice?.space !== "team") ||
     !release ||
-    isReleaseDismissed(release.release)
+    isReleaseDismissed(release.dismissKey)
   )
     return null;
   const copy = async () => {
@@ -65,7 +65,7 @@ export function UpdateNotice({
         className="desktop-update-dismiss"
         type="button"
         onClick={() => {
-          dismissRelease(release.release);
+          dismissRelease(release.dismissKey);
           rerender((value) => value + 1);
         }}
       >

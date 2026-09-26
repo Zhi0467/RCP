@@ -144,7 +144,8 @@ numbered releases while desktop apps run whatever commit the checkout is on.
   page opened, or a companion release that becomes ready later, updates an
   open notice without a reload. Both intervals live beside the client's other
   poll timings.
-- Dismissal hides the notice for that release. It is saved in `localStorage`
+- Dismissal hides the notice for that release. A prebuilt notice dismissed
+  before its download existed shows again once the Download button is ready. It is saved in `localStorage`
   and falls back to memory for the session when storage is unavailable. A
   newer release shows the notice again.
 - Every team member sees the team notice. Team spaces have no operator role,
@@ -175,14 +176,14 @@ follows invariant 8: an OS lock, not a path's existence, proves a live owner.
 4. Records where the checkout started (branch or commit) and prints it.
 5. Checks out the tag, detached. Local branches and detached commits stay
    reachable; nothing is reset or cleaned.
-6. Builds `web/dist`, then runs `uv sync`. With `--desktop` it then runs
+6. Runs `npm --prefix web ci`, builds `web/dist`, then runs `uv sync`. With `--desktop` it then runs
    `desktop:build-dev`, and a failed app build fails the script.
 7. Prints how to restart: with `--desktop`, replace `/Applications/RCP.app`
    and reopen it; otherwise rerun `uv run rcp serve`.
 
 It stops at the first failed step and names it. After a failure past step 5 it
 returns to the recorded start by itself: it checks that revision out again,
-rebuilds `web/dist`, and runs `uv sync` there, so old code never runs against
+runs `npm --prefix web ci`, rebuilds `web/dist`, and runs `uv sync` there, so old code never runs against
 the new release's frontend or dependencies. It never replaced the app in
 `/Applications`, so the running app is unchanged. If that restore fails too, it
 prints each remaining command.

@@ -19,10 +19,15 @@ export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuil
   if (!difference || difference < 0) return null;
   const kind =
     notice.space === "team" ? "team" : identity?.kind === "prebuilt" ? "prebuilt" : "source";
+  const download = kind === "prebuilt" && notice.companion_ready ? notice.download_url : null;
   return {
     kind,
     current,
     release: notice.latest_version,
+    // Dismissing a prebuilt notice before its download exists must not hide the
+    // later Download action for the same release.
+    dismissKey:
+      kind === "prebuilt" && !download ? `${notice.latest_version}:pending` : notice.latest_version,
     command:
       kind === "prebuilt"
         ? null
@@ -30,7 +35,7 @@ export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuil
           ? notice.update_command +
             (kind === "source" && identity?.kind === "source" ? " --desktop" : "")
           : null,
-    download: kind === "prebuilt" && notice.companion_ready ? notice.download_url : null,
+    download,
   };
 }
 
