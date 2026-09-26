@@ -1,38 +1,25 @@
 # Turns wait for their own agents, and the helper is always offered
 
-Status on 2026-09-25: slices 1–3 implemented; slices 4–5 remain open.
+Status on 2026-09-25: rescoped to a simpler design after a size review.
 
-- Implemented: shared provider completion, Claude foreground-task environment
-  and captured notice handling, Codex retry traces, hook guard and invocation
-  fence with local and execution-host wiring; one-hour delegation deadline
-  enforcement, durable timeout verdicts and replay, and failed Patch retention
-  before owner settlement. Silent streams and detached SSH passes stay bounded;
-  an unreachable host during Patch retention keeps the original pass pending.
-  The helper is now offered alongside job managers. Scheduler and helper
-  readiness have separate storage, probe, CLI, API, and Settings slots.
-- Remains: services, prompts and the remaining slice 1/4–5
-  spec updates and live qualification. Full hook-source
-  qualification remains open; unqualified versions emit a warning receipt.
+- Implemented on this branch: the helper beside job managers with split
+  scheduler/helper readiness (section 4). Earlier commits on this branch also
+  built a Codex hook fence, a foreign-hook guard and a delegation wait limit.
+  Those are removed by this rescope; see [Removed](#removed).
+- Remains: sections 1–3 and 5, and removing the fence machinery.
 - Settled (human, 2026-09-25):
-  - A turn waits for the subagents it started. Subagents never outlive the
-    turn.
-  - One shared rule decides when a turn ends. Each provider runtime feeds it
-    through its own wiring.
+  - Turns should not lose subagents, but RCP enforces this only where it is
+    cheap: Claude runs subagents in the foreground; Codex is told to wait.
+  - No Codex hooks, no `--dangerously-bypass-hook-trust`, no delegation wait
+    limit, no service watcher kind.
   - The launch helper is offered by default wherever an OS process owner
-    exists. A job manager such as Slurm adds its own rules to the
-    instructions. It never removes the helper. See
+    exists. A job manager such as Slurm adds its own rules. See
     [the decision record](../decisions/2026-09-25-job-managers-add-rules-never-remove-the-helper.md).
   - The Codex exec retry-notice fix ships in the same pull request.
   - The live server needs no hotfix: the 2026-09-25 failures came from an
     OpenAI Codex outage.
-  - `launch --service` starts a process that outlives its turn. RCP arms a
-    service watcher for it, so it lists and cancels like any job, and never
-    wakes an agent.
-  - Codex uses an RCP hook fence behind a hook guard that refuses a launch
-    when any other hook would load (human choice over an app-server-only
-    route).
-- Closure: the pull request merges, the checks in
-  [Verification](#verification) pass, and the specs carry the new sentences.
+- Closure: the pull request merges, [Verification](#verification) passes,
+  and the specs carry the new sentences.
 
 ## What went wrong
 
@@ -72,231 +59,90 @@ the helper or a scheduler can own a process past that point.
 
 ## Design
 
-Revised after two Codex xhigh design reviews on 2026-09-25. Their findings
-are folded in below.
+### 1. Claude subagents run in the foreground
 
-### 1. One rule for when a turn ends
-
-A turn ends when both are true:
-
-- The provider has finished **RCP's own prompt**.
-- The provider reports **no unfinished delegated work**.
-
-The rule lives in one small module. Three readers use it: each runtime's
-`receive_line` in `rcp/providers.py` and `rcp/agents/codex_app_server.py`,
-the host-side `TurnFence` in `rcp/agents/remote_turn_fence.py` (SSH turns),
-and recorded replay (`rcp/runs/recorded_turn.py`). The module ships to the
-host from its source. Today the host fence repeats both bugs on its own, so
-fixing only the local decoder would leave SSH turns broken.
-
-The module stays pure: it takes input identities, outstanding work, a
-deadline and returns a verdict. Launchers own clocks and processes; each
-task owner keeps its own deliverables.
-
-RCP has no general turn timeout, and this change does not add one. It adds
-one bound, the **delegation wait limit** in `limits.py`.
-
-- The clock starts the first time a turn tries to finish with work still
-  open: a blocked Codex `Stop`, or a Claude `result` with a task still open.
-- The local launcher, or the execution-host supervisor for SSH turns,
-  enforces it. The supervisor enforces it while SSH is detached too. The
-  hook never has to be called again for the limit to hold.
-- On expiry the launcher stops the process group and seals the verdict
-  `delegation_unfinished` in the turn's journal before reporting it.
-- The owner then retains the patch text in the database before the failure
-  is reported, as it already does for a validation failure. The next chat
-  turn clearing the mailbox (invariant 10c) therefore loses nothing
-  (invariant 9).
-- Live and recorded settlement both carry the typed verdict. Recovery keeps
-  the exact session, stage, graph target and Stop fence (invariant 10g). It
-  never becomes a success or a fresh-session retry.
-- Human Stop and pause keep their current meaning.
-
-**Claude** (`_ClaudeStreamTurn`):
-
-- Every Claude launch sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so
-  subagents and background shells run in the foreground. Parallel subagents
-  still work: Claude runs several Agent calls from one message concurrently.
-- A successful `result` whose `origin.kind` is `task-notification` does not
-  end the turn. This fixes failure 1. Captured on Claude Code 2.1.283
-  (fixtures under `tests/fixtures/claude_turn_completion/`): on resume after
-  a killed background agent, Claude emits `system/task_notification`, then a
-  `result` with `origin: {"kind": "task-notification"}`, `num_turns: 0`, zero
-  usage and **no** `user_message_uuid(s)`, before it reads RCP's prompt. The
-  skip needs all of: success, that origin, and no id RCP sent. Every other
-  case keeps today's behaviour. A failing `result` still ends the turn. A
-  `result` with no usable ids and no such origin still stops the process
-  (the 2026-09-08 fence). With the env var set, new turns start no
-  background agents, so this mainly protects sessions that already carry one.
-- A skipped notice `result` stays a trace. It never enters the human answer.
-- Backstop: the turn tracks `task_started` / `task_notification` ids. A
-  `result` with a task still open starts the delegation clock like any other
-  open work; it is not diagnostic only.
-
-**Codex, both runtimes:** an RCP-owned hook fence, behind a hook guard.
-
-- **Hook guard.** `--dangerously-bypass-hook-trust` runs every enabled hook
-  outside the sandbox. It is the only way to run RCP's hook, because Codex
-  reads hook trust only from the user config layer, and RCP ignores that
-  layer on purpose. Probed on Codex 0.157.0 with RCP's exact flags: with the
-  bypass flag, the account's `~/.codex/hooks.json` runs; hooks in the turn's
-  cwd do not load; without the flag, nothing runs, RCP's hook included.
-  App-server's `hooks/list` cannot stand in for exec: app-server has no
-  `--ignore-user-config`, so it lists different layers.
-  - The guard inspects, as files, the hook sources the chosen runtime loads
-    under its resolved launch configuration. It runs on the execution host,
-    as the execution account, with the launch's own binary, environment and
-    `CODEX_HOME`. The inventory is per runtime, because the loaders differ:
-    - exec, under `--ignore-user-config`: the account's `hooks.json`, and
-      the managed and system layers;
-    - app-server, which cannot ignore user configuration: additionally the
-      account's inline `[hooks]` in `config.toml`, every trusted project
-      layer for the cwd (`hooks.json` and inline), and enabled plugin hooks.
-    Both file forms count in every layer. Any foreign hook refuses the
-    launch, before the bypass is enabled, with a typed failure that names
-    each file.
-  - That source list is qualified per Codex version by an acceptance probe:
-    plant a hook in each source and form (user `hooks.json`, user inline,
-    trusted project, managed, plugin) and check the guard's inventory against
-    what each runtime actually runs.
-    RCP records the qualified versions. On an unqualified version the launch
-    proceeds with the file guard and shows a visible warning on the turn and
-    in Settings until the probe is rerun (human, 2026-09-25: Codex updates
-    are usually benign; nothing blocks on them).
-  - Positive evidence: RCP's own `SessionStart` hook writes a start marker.
-    No marker means the fence is not running, and the turn fails closed.
-  - The guard ships from its source module. The leftover risk is the moment
-    between the check and Codex starting.
-- **Fence.** One hook script, shipped from its source module, handles
-  `SubagentStart`, `SubagentStop` and `Stop`. Its state is scoped to one
-  invocation: a file named by operation id and attempt, created fresh at
-  launch, updated atomically under a lock, and holding the set of started
-  ids minus stopped ids. Nested children count the same way. Children from
-  an earlier invocation of a resumed session are already dead and never
-  appear.
-- **Location.** Script, state and marker live in an RCP control directory
-  outside every task stage: `<data_dir>/turn-control/<operation>/<attempt>`
-  locally, and the matching directory under the execution account's RCP root
-  remotely. A stage is not safe: local ingestion and older chat stages use
-  the stage itself as the writable workspace. Before launch, RCP checks the
-  script, the state file and every replaceable parent against the resolved
-  writable roots, and refuses on overlap. RCP passes the paths to the hook
-  explicitly, never derived from cwd. Hooks run outside the sandbox
-  (verified on Linux below), so they can write there, and the agent cannot.
-- **Blocking.** `Stop` with an unfinished child prints
-  `{"decision":"block","reason":...}`, rendered from the same object the
-  script checks. Each block goes into the turn's journal, so replay reaches
-  the same verdict without reading the hook's state. The first block starts
-  the delegation clock.
-- **exec** passes the hooks with `-c hooks.<Event>=...` and the bypass flag.
-  Codex prints two `item.completed` items of type `error` about the flag.
-  They stay traces.
-- **app-server** replaces `_disabled_hooks` with RCP's fence hooks and the
-  thread's `bypass_hook_trust` override. The child-thread notifications it
-  drops today feed the same backstop receipt as Claude's task events.
-- **Linux**, verified 2026-09-25 on the team-server host with RCP's exact
-  Work permission profile (Codex 0.152.0, own account): the fence blocked,
-  the child ran inside the sandbox's own PID namespace and finished, and the
-  turn completed at 55 s. Hooks ran in the host PID namespace and wrote
-  outside the writable roots.
-
-**Every Codex and Claude surface** uses this: Discuss, Work, Experiment loop,
-Auto-research child Work, Paper, ingestion and graph repair. Their
-capabilities do not change.
-
-**Prompt data:** one rendered fact in every contract. Subagents must finish
-inside the turn. Only helper and scheduler jobs outlive it. Tests check that
-the data is present, never its wording.
+- Every Claude launch, local and remote, sets
+  `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Subagents and background shells
+  then finish inside the turn. Parallel subagents still work: Claude runs
+  several Agent calls from one message concurrently.
+- A successful `result` whose `origin.kind` is `task-notification`, and that
+  names no message id RCP sent, does not end the turn and stays a trace.
+  Claude Code emits it on resume after a background agent was killed
+  (captured on 2.1.283, fixtures under
+  `tests/fixtures/claude_turn_completion/`): `system/task_notification`, then
+  a zero-turn, zero-usage `result` with that origin and no
+  `user_message_uuid(s)`, before it reads RCP's prompt. Every other result
+  keeps today's behaviour, including the 2026-09-08 follow-up fence.
+- The same rule applies in `_ClaudeStreamTurn` and in the host `TurnFence`
+  for SSH turns.
 
 ### 2. Codex exec retry notices are traces
 
-`CodexProfile.decode_event` and the host fence: an exec `error` event is a
-trace. `turn.failed` or a non-zero exit ends the turn. The last `error` text
-is kept. If the process exits non-zero without `turn.failed`, that text is
-the failure message and feeds the failure-kind classifier (`stale_session`,
-`session_limit`). Recorded replay uses the recorded exit code the same way.
-Test fixtures come from the outage stream captured on 2026-09-25.
+An exec `error` event is a trace. `turn.failed` or a non-zero exit ends the
+turn. The last `error` text is kept and becomes the failure message when the
+process exits non-zero without `turn.failed`, so the failure-kind classifier
+still works. Same in the host `TurnFence` and in recorded replay.
 
-### 3. The helper is always offered
+### 3. Codex is told to wait for its subagents
+
+- One rendered fact in every provider contract: subagents must finish inside
+  the turn; wait for their results before replying; only helper and scheduler
+  jobs outlive a turn. It comes from one constant, and tests check that it is
+  present, never its wording.
+- App-server already sees child threads. When the root turn completes while
+  a child is still running, RCP records a diagnostic receipt. It does not
+  hold the turn open.
+- A Codex agent that ignores the instruction still loses its subagents. The
+  receipt makes that visible on app-server; exec cannot see it.
+
+### 4. The helper is always offered (implemented)
 
 - `resolve_backend` resolves the OS owner whatever `job_manager` says.
-- Scheduler readiness and helper readiness are separate, end to end, as two
-  fixed slots per machine, `scheduler` and `helper`, each holding its own
-  backend identity:
-  - probing (`rcp/compute_jobs/probe.py`) takes the route;
-  - storage gets a new migration: the key becomes project, machine and route;
-    each retained row moves to the slot its recorded backend names; the other
-    slot starts unprobed;
-  - the probe API and CLI take the route; the CLI exits zero only when that
-    route is ready; Settings shows both slots; a changed compute block
-    invalidates both.
-  A helper launch uses only the helper slot. An unavailable user manager
-  never marks a working Slurm route unready, and the reverse.
-- `allowed_verbs` includes `launch` wherever a helper owner resolves.
-- `execution_instructions` always renders the helper text. Each configured
-  job manager adds its own paragraph from one profile per manager. Slurm's
-  says: use Slurm first for compute jobs; use the helper for processes that
-  are not compute, such as a dashboard or a local server.
-- No silent fallback: RCP never reroutes a Slurm submission to the helper.
-- Discuss still has no helper (invariant 4).
+- Scheduler and helper readiness are two fixed slots per machine through
+  probing, storage (migration 24 sorts retained probes by backend), API, CLI
+  and Settings. A helper launch uses only the helper slot.
+- `execution_instructions` always renders the helper text; each job manager
+  adds its own paragraph from one profile. Slurm's says: Slurm first for
+  compute jobs; the helper for processes that are not compute, such as a
+  dashboard or a local server.
+- No silent fallback. Discuss still has no helper.
 
-### 4. Service launches reuse the watcher
+### 5. Long-lived processes use plain `launch`
 
-- `launch --service --key K --cwd <path> -- <argv...>` uses the same helper,
-  owner, keys and receipts as a job launch. Work, Experiment loop and child
-  Work may use it, like `launch`.
-- The job record stores service intent. RCP arms one watcher per service
-  job, from the helper's own `check_command` and `cancel_command`. The watcher
-  carries `kind = service` and a unique link to its job. Job and watcher are
-  written in one transaction where the stores allow it. Startup
-  reconciliation creates any missing service watcher from the job record,
-  so a crash between the two cannot hide a running service.
-- A service watcher keeps being polled, but it is outside every wake and
-  episode rule: no wake claim, no continuation, not counted as pending
-  Experiment work or waiting child Work, not adopted, and not retired by
-  episode Stop or ending. It shows in the existing job list with the
-  existing attributed, once-only Cancel. When the process exits it shows
-  as finished, never "Pending delivery".
-- The agent hands off nothing, and settlement accepts the running service.
-- A service's cwd, code and assets must live outside the task stage, so
-  stage retention cannot delete them. The launch refuses a cwd inside the
-  stage; the instructions state the rest. Its helper job root is already
-  outside stage retention.
-- A service survives its turn. It is not restarted if it exits (launchd runs
-  with `KeepAlive=false`, systemd without restart).
+A dashboard or local server uses the ordinary helper `launch` and hands off
+its watcher, like any job. The human stops it with the existing Cancel. The
+instructions say so. There is no service launch kind.
+
+## Removed
+
+Built earlier on this branch and removed by the rescope, because together
+they were about two thirds of the pull request for a partial guarantee:
+
+- the Codex hook fence (`SubagentStart`/`SubagentStop`/`Stop` hooks), the
+  per-runtime foreign-hook guard, turn-control directories and start marker,
+  and `--dangerously-bypass-hook-trust`;
+- the delegation wait limit, its launcher and host-supervisor enforcement,
+  journal and replay verdicts, and `delegation_unfinished`;
+- holding a Claude or app-server turn open while delegated work is open.
+
+The probes behind these remain in the table above and in Git history.
 
 ## Verification
 
-- Python, focused. One test per rule:
-  - the captured Claude injected-notice stream, through the local decoder
-    and the host fence;
-  - the Claude launch env carries the variable;
-  - Codex exec retry `error` events, then `turn.failed`; and then a
-    non-zero exit with no `turn.failed`;
-  - the hook script run directly: start, block, stop, the wait limit;
-  - the hook guard refusing a stray user `hooks.json`, and a turn failing
-    closed without the start marker;
-  - the delegation limit firing with no further hook call, retaining the
-    patch text, on a live and a recorded turn;
-  - the readiness migration on a copied database holding a ready Slurm probe;
-  - split readiness, `allowed_verbs` and instructions on a Slurm machine;
-  - a service launch arms a service watcher that never wakes the agent,
-    survives episode Stop, and is recreated by reconciliation.
-- The per-version hook-source acceptance probe, run on the current Codex.
-- Live, local real providers: a Claude turn, and Codex exec and app-server
-  turns, that each spawn a 60-second subagent. Each reply arrives after the
-  child's result and uses it.
-- Live, disposable server on the Linux host, as `rcp` with its Codex
-  0.156.1: one Codex Work turn with a subagent under the real sandbox, one
-  SSH turn with a subagent, and a service on the Slurm machine that survives
-  the turn and stops on Cancel.
+- Python, focused, one test per rule: the captured Claude notice stream
+  through the local decoder and the host fence; the Claude launch env
+  carries the variable; Codex exec retry `error` events, then `turn.failed`,
+  and a non-zero exit with no `turn.failed`; the contract fact is present on
+  every provider contract; the app-server receipt when a child outlives the
+  root; split readiness and instructions on a Slurm machine (done).
+- Live, local real providers: a Claude turn whose subagent runs 60 seconds
+  replies after the child finishes.
+- Live, disposable server on the Linux host: a helper `launch` on the Slurm
+  machine survives the turn and stops on Cancel.
 
 ## Spec changes on completion
 
-- `docs/specs/providers-and-containment.md`: the turn-end rule, the Claude
-  env var, the Codex hook guard and fence, and the delegation wait limit.
-- `docs/specs/compute-jobs.md`: replace the mutually exclusive route
-  description with the job-manager profile rule, split readiness, and
-  service launches.
-- `docs/specs/conversations-episodes-and-watchers.md`: the prompt fact about
-  what outlives a turn.
+- `docs/specs/providers-and-containment.md`: the Claude env var, the notice
+  rule, Codex retry traces, and the subagent contract fact.
+- `docs/specs/compute-jobs.md`: done for the helper and split readiness; add
+  that long-lived processes use plain `launch`.
