@@ -164,17 +164,21 @@ current composer setting.
 In the Agents workspace, a conversation has one header band: title and meta on
 the left, New session and repository scope on the right. The meta names the
 umbrella provider (`provider_label`, such as Claude or Codex), never its
-runtime; the task inspector keeps the runtime. The agent list has no title
+runtime; the task inspector keeps the runtime. It shows the latest turn's
+model and effort, and the chat kind. Neither the header nor an agent card
+names Discuss or Work; each turn's own label already carries it. The agent list has no title
 band: a sidebar icon beside its search folds it, a folded list leaves that
 icon at the chat band's top left, and a hairline separates list from chat.
 
-Each agent card's status icon is colour-coded: needs you, paused, working,
-unread result, done, failed, or an unsent draft (dashed). A three-dot menu on
+Each agent card leads with a filled dot, one fixed colour per state: needs
+you, paused, working (pulsing), unread result, done, failed, or an unsent
+draft. A three-dot menu on
 the card removes an unsent draft, which exists only in the browser, or
 archives a conversation with turns. Archive only hides the card for the
 project (`POST /api/projects/{project_id}/chats/{chat_id}/archive`, listed by
 `GET /api/projects/{project_id}/chat-archives`); an Archived filter appears
-when any exist and offers Restore. Transcripts and tasks are never deleted.
+when any exist, counts every archived chat including unloaded pages, and
+offers Restore. Transcripts and tasks are never deleted.
 
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity

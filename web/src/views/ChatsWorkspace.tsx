@@ -1,15 +1,9 @@
 import {
-  AlertCircle,
-  CheckCircle2,
-  CircleDashed,
-  CircleX,
   Ellipsis,
   ChevronDown,
   LoaderCircle,
   MessageCircle,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PauseCircle,
+  PanelLeft,
   Search,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -116,13 +110,9 @@ function needsHuman(status: ConversationAgentStatus): boolean {
   return status.group === "needs_you";
 }
 
+/** A filled dot whose colour names the agent's state; working pulses. */
 function AgentStateIcon({ state }: { state: ConversationAgentState }) {
-  if (state === "needs_you") return <AlertCircle size={15} aria-hidden="true" />;
-  if (state === "paused") return <PauseCircle size={15} aria-hidden="true" />;
-  if (state === "working") return <LoaderCircle className="spin" size={15} aria-hidden="true" />;
-  if (state === "unread" || state === "done") return <CheckCircle2 size={15} aria-hidden="true" />;
-  if (state === "failed") return <CircleX size={15} aria-hidden="true" />;
-  return <CircleDashed size={15} aria-hidden="true" />;
+  return <span className="agent-state-dot" data-state={state} aria-hidden="true" />;
 }
 
 function sinceLabel(timestamp: string | null | undefined, now: number): string {
@@ -135,15 +125,10 @@ function sinceLabel(timestamp: string | null | undefined, now: number): string {
   return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function modeLabel(status: ConversationAgentStatus): string | null {
-  const mode = status.latest?.request.mode;
-  return mode === "work" ? "Work" : mode === "discuss" ? "Discuss" : null;
-}
-
 function agentMeta(status: ConversationAgentStatus): string {
   const latest = status.latest;
   if (!latest) return "";
-  const parts: (string | null | undefined)[] = [latest.provider_label, modeLabel(status)];
+  const parts: (string | null | undefined)[] = [latest.provider_label];
   if (status.state === "working") {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
@@ -198,9 +183,9 @@ export function ChatsWorkspace({
   const listed = conversations.filter(
     (conversation) => archivedChatIds.has(conversation.chatId) === showingArchived,
   );
-  const archivedCount = conversations.filter((conversation) =>
-    archivedChatIds.has(conversation.chatId),
-  ).length;
+  // Count every archived chat, including ones on pages not loaded yet; the
+  // Archived view pages through them with Load more.
+  const archivedCount = archivedChatIds.size;
   const groups = groupConversationAgents(listed, unreadTaskIds, query);
   const activeGroups = showingArchived
     ? groupConversationAgents(
@@ -329,7 +314,7 @@ export function ChatsWorkspace({
             selectedLatest?.provider_label ??
               project.providers?.[project.agent_profiles?.[selected.kind]?.provider]?.label,
             selectedLatest?.request.model,
-            modeLabel(selectedStatus),
+            selectedLatest?.request.reasoning,
             selectedLatest?.request.run_truth_scope?.join(", "),
             selected.kind === "project_chat" ? "Project chat" : "Node chat",
           ]
@@ -403,14 +388,13 @@ export function ChatsWorkspace({
               title="Collapse conversation list"
               type="button"
             >
-              <PanelLeftClose size={15} />
+              <PanelLeft size={15} />
             </button>
             <label className="agent-list-search">
               <Search size={13} aria-hidden="true" />
               <input
                 type="search"
                 aria-label="Search agents"
-                placeholder="Search agents"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
@@ -631,7 +615,7 @@ export function ChatsWorkspace({
             title="Expand conversation list"
             type="button"
           >
-            <PanelLeftOpen size={15} />
+            <PanelLeft size={15} />
           </button>
         )}
         {selected ? (

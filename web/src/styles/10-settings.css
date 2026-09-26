@@ -996,33 +996,52 @@ details[open] > .view-disclosure-summary > svg:last-child {
   box-shadow: var(--aqua-raised);
 }
 .agent-row-icon {
-  color: var(--muted);
   display: flex;
-  padding-top: 1px;
+  padding-top: 4px;
 }
-.conversation-list [role="option"][data-state="needs_you"] .agent-row-icon,
 .agent-row-reason {
   color: var(--coral);
 }
-.conversation-list [role="option"][data-state="paused"] .agent-row-icon,
 .conversation-list [role="option"][data-state="paused"] .agent-row-reason {
   color: var(--mustard);
 }
-.conversation-list [role="option"][data-state="working"] .agent-row-icon,
 .conversation-list [role="option"][data-state="working"] time {
-  color: var(--oxblood);
+  color: var(--slate);
 }
-.conversation-list [role="option"][data-state="unread"] .agent-row-icon {
-  color: var(--teal);
+.agent-state-dot {
+  background: var(--state-colour, var(--faint));
+  border-radius: 50%;
+  height: 9px;
+  width: 9px;
 }
-.conversation-list [role="option"][data-state="done"] .agent-row-icon {
-  color: color-mix(in srgb, var(--teal) 55%, var(--muted));
+.agent-state-dot[data-state="needs_you"] {
+  --state-colour: var(--coral);
 }
-.conversation-list [role="option"][data-state="failed"] .agent-row-icon {
-  color: var(--coral);
+.agent-state-dot[data-state="paused"] {
+  --state-colour: var(--mustard);
 }
-.conversation-list [role="option"][data-state="draft"] .agent-row-icon {
-  color: var(--faint);
+.agent-state-dot[data-state="working"] {
+  --state-colour: var(--slate);
+  animation: agent-state-pulse 1.4s ease-in-out infinite;
+}
+.agent-state-dot[data-state="unread"] {
+  --state-colour: var(--teal);
+}
+.agent-state-dot[data-state="done"] {
+  --state-colour: color-mix(in srgb, var(--teal) 45%, var(--muted));
+}
+.agent-state-dot[data-state="failed"] {
+  --state-colour: var(--oxblood);
+}
+@keyframes agent-state-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-state-dot[data-state="working"] {
+    animation: none;
+  }
 }
 .agent-row {
   position: relative;
