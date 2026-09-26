@@ -433,7 +433,7 @@
   height: 46px;
 }
 .project-tabs-back + .project-tabs-toggle {
-  margin: 0 4px;
+  margin: 0 6px 0 2px;
 }
 .project-tabs-toggle:hover {
   color: var(--ink);
@@ -527,10 +527,21 @@
   margin-bottom: -1px;
   padding: 0 14px;
 }
+/* Folded, back and expand are one pair of plain 28px icons, like the header's back. */
 .project-tabs > button.project-tabs-toggle,
 .project-tabs > button.project-tabs-back {
+  align-self: center;
+  border: 0;
+  border-radius: 5px;
+  height: 28px;
+  margin-block: 0;
   justify-content: center;
   padding: 0;
+  width: 28px;
+}
+.project-tabs > button.project-tabs-toggle:hover,
+.project-tabs > button.project-tabs-back:hover {
+  background: var(--surface-cool);
 }
 .project-tabs > button:hover {
   color: var(--ink);
