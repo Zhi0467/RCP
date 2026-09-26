@@ -161,6 +161,13 @@ and is not addressing a running attempt, and every sent turn keeps an immutable
 visible mode label. A resumed task keeps its original mode regardless of the
 current composer setting.
 
+In the Agents workspace, a conversation has one header band: title and meta on
+the left, New session and repository scope on the right. The meta names the
+umbrella provider (`provider_label`, such as Claude or Codex), never its
+runtime; the task inspector keeps the runtime. The agent list folds from a
+sidebar icon in its header, and a folded list leaves one icon at the band's
+top left rather than a strip.
+
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity
 row when its underlying status can already be inspected, while failures and

@@ -1152,13 +1152,25 @@ details[open] > .view-disclosure-summary > svg:last-child {
   height: auto;
 }
 .conversation-header {
+  align-items: center;
   border-bottom: 1px solid var(--line);
-  display: grid;
+  display: flex;
   flex: none;
-  gap: 2px;
-  padding: 10px 16px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px 8px 16px;
 }
-.conversation-header > strong {
+.conversation-heading {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+.conversation-header > .chat-context-controls {
+  border-bottom: 0;
+  padding: 0;
+}
+.conversation-heading > strong {
   font-size: var(--type-base);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1236,7 +1248,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   top: 12px;
   z-index: 2;
 }
-.conversation-list-fold.is-floating + .conversation-header,
 .conversation-list-fold.is-floating + .chat-dock > header {
   padding-left: 48px;
 }

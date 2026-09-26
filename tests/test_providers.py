@@ -391,6 +391,23 @@ def test_a_durable_runtime_id_is_named_for_the_surface_that_reports_it() -> None
     assert runtime_label("codex", "codex.retired.v1") == "codex.retired.v1"
 
 
+def test_a_task_names_its_umbrella_provider_apart_from_the_runtime() -> None:
+    from rcp.storage import AgentTaskRecord
+
+    for provider in PROVIDER_IDS:
+        task = AgentTaskRecord(
+            operation_id="task",
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request={"provider": provider},
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+            status_message="Running",
+        )
+        assert task.provider_label == profile_for(provider).label
+
+
 def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -> None:
     from rcp.config import MachineConfig
 

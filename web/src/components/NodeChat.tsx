@@ -30,6 +30,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -143,6 +144,9 @@ interface Props {
   nodes?: Readonly<Record<string, GraphNode>>;
   glossaryIndex?: GlossaryIndex;
   conversationTitle?: string;
+  /** Workspace title and status; shares one row with the chat controls. */
+  header?: ReactNode;
+  headerState?: string;
   runScope: string[];
   tasks: AgentTask[];
   watchers?: WatcherRecord[];
@@ -459,6 +463,8 @@ export function NodeChat({
   nodes = {},
   glossaryIndex,
   conversationTitle,
+  header,
+  headerState,
   runScope,
   tasks,
   watchers = EMPTY_WATCHERS,
@@ -1718,6 +1724,40 @@ export function NodeChat({
     </button>
   );
 
+  const contextControls = (showProvider: boolean) => (
+    <div className="chat-context-controls">
+      {showProvider && (
+        <div
+          className="agent-provider-label"
+          aria-busy={readiness === undefined}
+          aria-label={`Chat provider: ${readiness?.label || config.provider}`}
+        >
+          {readiness?.label || config.provider}
+          {readiness === undefined && (
+            <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
+          )}
+        </div>
+      )}
+      {!fixedConversation && !readOnly && (
+        <button className="chat-new-session" type="button" onClick={onNewSession}>
+          <MessageCirclePlus size={13} /> New session
+        </button>
+      )}
+      {presentation === "workspace" && watcherToggle}
+      {!readOnly && (
+        <div className="chat-scope-control">
+          <RepositoryScope
+            repositories={project.repositories}
+            projectScope={project.project_truth_scope}
+            stateRepository={project.state_repository}
+            selected={scope}
+            onChange={relatedActive || reviewPending ? () => undefined : setScope}
+          />
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div
       className={`chat-dock ${presentation}`}
@@ -1741,35 +1781,14 @@ export function NodeChat({
           </button>
         </header>
       )}
-      <div className="chat-context-controls">
-        <div
-          className="agent-provider-label"
-          aria-busy={readiness === undefined}
-          aria-label={`Chat provider: ${readiness?.label || config.provider}`}
-        >
-          {readiness?.label || config.provider}
-          {readiness === undefined && (
-            <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
-          )}
-        </div>
-        {!fixedConversation && !readOnly && (
-          <button className="chat-new-session" type="button" onClick={onNewSession}>
-            <MessageCirclePlus size={13} /> New session
-          </button>
-        )}
-        {presentation === "workspace" && watcherToggle}
-        {!readOnly && (
-          <div className="chat-scope-control">
-            <RepositoryScope
-              repositories={project.repositories}
-              projectScope={project.project_truth_scope}
-              stateRepository={project.state_repository}
-              selected={scope}
-              onChange={relatedActive || reviewPending ? () => undefined : setScope}
-            />
-          </div>
-        )}
-      </div>
+      {header ? (
+        <header className="conversation-header" data-state={headerState}>
+          <div className="conversation-heading">{header}</div>
+          {contextControls(false)}
+        </header>
+      ) : (
+        contextControls(true)
+      )}
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
           {watcherVisibility.error && <p role="alert">{watcherVisibility.error}</p>}

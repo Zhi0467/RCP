@@ -2164,6 +2164,7 @@ export interface AgentTask {
   episode_id?: string | null;
   runtime_id: string;
   runtime_label: string;
+  provider_label: string;
   native_session_id?: string | null;
   history_only: boolean;
   stage_host?: string | null;
@@ -2869,6 +2870,7 @@ export interface WritingSession {
   provider: ProviderId;
   runtime_id: string;
   runtime_label: string;
+  provider_label: string;
   native_session_id: string;
   execution_machine: string;
   project_id: string;

@@ -138,7 +138,7 @@ function modeLabel(status: ConversationAgentStatus): string | null {
 function agentMeta(status: ConversationAgentStatus): string {
   const latest = status.latest;
   if (!latest) return "";
-  const parts: (string | null | undefined)[] = [latest.runtime_label, modeLabel(status)];
+  const parts: (string | null | undefined)[] = [latest.provider_label, modeLabel(status)];
   if (status.state === "working") {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
@@ -254,6 +254,48 @@ export function ChatsWorkspace({
     if (!bounds) return;
     setListWidth(clampChatListWidth(clientX - bounds.left, widthBounds));
   };
+
+  const conversationHeading =
+    selected && selectedStatus ? (
+      <>
+        <strong>{selected.title}</strong>
+        <span className="conversation-header-meta">
+          {[
+            selectedLatest?.provider_label ??
+              project.providers?.[project.agent_profiles?.[selected.kind]?.provider]?.label,
+            selectedLatest?.request.model,
+            modeLabel(selectedStatus),
+            selectedLatest?.request.run_truth_scope?.join(", "),
+            selected.kind === "project_chat" ? "Project chat" : "Node chat",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+        {needsHuman(selectedStatus) && selectedLatest && (
+          <div className="conversation-header-banner" role="status">
+            <span>{selectedLatest.status_label}</span>
+            {selectedLatest.can_resume && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onResumeTask(selectedLatest)}
+              >
+                Resume
+              </button>
+            )}
+            {!selectedLatest.can_resume && selectedLatest.can_retry && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onRetryTask(selectedLatest)}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+      </>
+    ) : null;
 
   return (
     <section
@@ -463,45 +505,6 @@ export function ChatsWorkspace({
             <PanelLeftOpen size={15} />
           </button>
         )}
-        {selected && selectedStatus && (
-          <header className="conversation-header" data-state={selectedStatus.state}>
-            <strong>{selected.title}</strong>
-            <span className="conversation-header-meta">
-              {[
-                selectedLatest?.runtime_label,
-                selectedLatest?.request.model,
-                modeLabel(selectedStatus),
-                selectedLatest?.request.run_truth_scope?.join(", "),
-                selected.kind === "project_chat" ? "Project chat" : "Node chat",
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </span>
-            {needsHuman(selectedStatus) && selectedLatest && (
-              <div className="conversation-header-banner" role="status">
-                <span>{selectedLatest.status_label}</span>
-                {selectedLatest.can_resume && (
-                  <button
-                    className="button compact"
-                    type="button"
-                    onClick={() => onResumeTask(selectedLatest)}
-                  >
-                    Resume
-                  </button>
-                )}
-                {!selectedLatest.can_resume && selectedLatest.can_retry && (
-                  <button
-                    className="button compact"
-                    type="button"
-                    onClick={() => onRetryTask(selectedLatest)}
-                  >
-                    Retry
-                  </button>
-                )}
-              </div>
-            )}
-          </header>
-        )}
         {selected ? (
           <NodeChat
             key={selected.chatId}
@@ -510,6 +513,8 @@ export function ChatsWorkspace({
             nodes={nodes}
             glossaryIndex={glossaryIndex}
             conversationTitle={selected.kind === "node_chat" ? selected.title : undefined}
+            header={conversationHeading}
+            headerState={selectedStatus?.state}
             runScope={runScope}
             tasks={tasks}
             watchers={watchers}
