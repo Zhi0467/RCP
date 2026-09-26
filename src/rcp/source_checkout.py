@@ -22,7 +22,14 @@ def source_checkout_lock() -> Iterator[None]:
         yield
         return
     with (root / ".rcp-serve.lock").open("a") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        # Never wait: a server that queued behind an update would resume with
+        # the old modules it already imported against the new build.
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SystemExit(
+                f"An update of {root} is running; start RCP again when it finishes."
+            ) from exc
         try:
             yield
         finally:

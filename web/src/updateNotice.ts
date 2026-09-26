@@ -26,8 +26,9 @@ export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuil
     release: notice.latest_version,
     // Dismissing a prebuilt notice before its download exists must not hide the
     // later Download action for the same release.
-    dismissKey:
-      kind === "prebuilt" && !download ? `${notice.latest_version}:pending` : notice.latest_version,
+    // Each installation owns its own dismissal: a team server and this app update
+    // separately even for the same release.
+    dismissKey: `${kind}:${notice.latest_version}${kind === "prebuilt" && !download ? ":pending" : ""}`,
     command:
       kind === "prebuilt"
         ? null

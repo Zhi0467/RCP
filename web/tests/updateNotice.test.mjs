@@ -124,7 +124,7 @@ test("release notice transitions, actions, visibility, and storage through a ser
       await page.locator(".desktop-update-dismiss").click();
       assert.equal(await page.locator("[data-kind]").count(), 0);
       assert.equal(
-        await page.evaluate(() => localStorage.getItem("rcp:update-dismissed:0.4.3")),
+        await page.evaluate(() => localStorage.getItem("rcp:update-dismissed:source:0.4.3")),
         "1",
       );
       await page.reload();

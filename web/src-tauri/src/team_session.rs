@@ -1533,16 +1533,18 @@ struct DesktopUpdateNotice {
 
 fn desktop_update_action(kind: &str, notice: Option<&DesktopUpdateNotice>) -> String {
     if kind == "prebuilt" {
+        // A companion confirmed by an earlier cycle stays cached; offer it only
+        // when the current check succeeded.
+        let checked = notice
+            .is_some_and(|notice| matches!(notice.status.as_str(), "update_available" | "current"));
         if let Some(url) = notice
-            .filter(|notice| notice.companion_ready)
+            .filter(|notice| checked && notice.companion_ready)
             .and_then(|notice| notice.download_url.as_deref())
         {
             return format!("Download a compatible release: {url}.");
         }
         // Only a check that succeeded can say the companion is missing; an
         // unavailable check leaves the manual releases page.
-        let checked = notice
-            .is_some_and(|notice| matches!(notice.status.as_str(), "update_available" | "current"));
         if checked {
             return "The app build for the latest release is not published yet.".into();
         }
@@ -1930,6 +1932,7 @@ mod tests {
         let pending = desktop_update_action("prebuilt", Some(&notice));
         assert!(!pending.contains("https://"));
         assert!(!pending.contains("scripts/update-from-source"));
+        notice.companion_ready = true;
         for status in ["off", "failed", "unchecked", "unknown"] {
             notice.status = status.into();
             assert!(desktop_update_action("prebuilt", Some(&notice)).contains(RELEASES_PAGE));

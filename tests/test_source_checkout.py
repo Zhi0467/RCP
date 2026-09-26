@@ -26,3 +26,11 @@ def test_shared_checkout_owners_both_exclude_updates_until_exit(tmp_path, monkey
             with pytest.raises(BlockingIOError):
                 fcntl.flock(updater, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(updater, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_server_refuses_instead_of_waiting_behind_an_update(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(source_checkout, "source_checkout_root", lambda: tmp_path)
+    with (tmp_path / ".rcp-serve.lock").open("a") as updater:
+        fcntl.flock(updater, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(SystemExit), source_checkout.source_checkout_lock():
+            pass
