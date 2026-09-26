@@ -520,6 +520,13 @@ export function ChatsWorkspace({
                                 onClick={() => {
                                   setMenuChatId(null);
                                   onRemoveDraft(conversation.chatId);
+                                  // Move the selection off the removed draft so the
+                                  // shown chat is the one that loads.
+                                  const next = conversations.find(
+                                    (item) => item.chatId !== conversation.chatId,
+                                  );
+                                  if (selected?.chatId === conversation.chatId && next)
+                                    onSelect(next.chatId);
                                 }}
                               >
                                 Remove
