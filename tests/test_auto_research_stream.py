@@ -404,6 +404,16 @@ def _contract(prompt: str) -> str:
     return prompt
 
 
+def _with_opened_master(prompt: str) -> str:
+    """A continuation plus the master it opens now, which is what the agent then reads."""
+
+    opener = SECTIONS["master_bootstrap"].split("{path}")[0]
+    if opener not in prompt:
+        return prompt
+    path = Path(prompt.partition(opener)[2].splitlines()[0].strip())
+    return f"{prompt}\n\n{path.read_text(encoding='utf-8')}"
+
+
 def _command_argv(contract: str, *, verb: str | None = None) -> list[str]:
     for code in contract.split("`")[1::2]:
         if "--workspace" not in code or "--broker" not in code:
@@ -2293,9 +2303,11 @@ async def test_worker_continuation_replaces_original_repository_pointers(
     retry = _recovery_task(store, auto_research, worker)
 
     def writer(contract_text, _workspace):
-        assert str(manifest.repository_map["repo-a"].path) in contract_text
-        assert "retired.example" not in contract_text
-        assert "/retired/repo-a" not in contract_text
+        read = _with_opened_master(contract_text)
+        assert read != contract_text
+        assert str(manifest.repository_map["repo-a"].path) in read
+        assert "retired.example" not in read
+        assert "/retired/repo-a" not in read
 
     events = await _worker_events(
         service,
@@ -2626,7 +2638,11 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
     )
 
     async def writer(contract_text, _workspace):
-        argv = [*_command_argv(contract_text, verb="message"), "Recovered worker result"]
+        read = _with_opened_master(contract_text)
+        (reply_key,) = [
+            line.split("`")[1] for line in read.splitlines() if line.startswith("- Reply key: `")
+        ]
+        argv = [*_command_argv(read), "message", "--key", reply_key, "Recovered worker result"]
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
@@ -2690,9 +2706,9 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
                 encoding="utf-8",
             )
             return
-        validate_argv = _command_argv(contract_text, verb="validate")
-        assert validate_argv[-2:] == ["validate", str(workspace / "patch.json")]
-        prefix = validate_argv[:-2]
+        prefix = _command_argv(contract_text)
+        assert f"- command_prefix: `{shlex.join(prefix)}`" in contract_text.splitlines()
+        validate_argv = [*prefix, "validate", str(workspace / "patch.json")]
         message = await asyncio.create_subprocess_exec(
             *prefix,
             "message",
@@ -2936,9 +2952,10 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
 
 def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     from rcp.agents.auto_research_prompt import (
-        auto_research_orchestrator_continuation_parts,
         auto_research_orchestrator_task_contract,
+        auto_research_prompt_values,
     )
+    from rcp.agents.continuation_prompt import MasterRef, changed_since_master
     from rcp.agents.write_scope import ProjectWriteScope
 
     package_path = "/stage/inputs/bundle/graph-audit"
@@ -2957,7 +2974,6 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         research_path="/s/research.md",
         patch_path="/s/patch.json",
         output_schema_path="/s/schema.json",
-        validator_command="/stage/rcp-agent validate",
         command_client="/stage/rcp-agent",
         write_scope=ProjectWriteScope.create(
             project_id="project",
@@ -2970,16 +2986,26 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
             protected_write_paths=["/stage/inputs"],
         ),
         repositories=[],
-        skill_pointers=pointers,
     )
-    fresh = auto_research_orchestrator_task_contract(project_name="project", **common)
-    continuation = "\n\n".join(
-        auto_research_orchestrator_continuation_parts(mode="continuation", **common)
+    fresh = auto_research_orchestrator_task_contract(
+        project_name="project", skill_pointers=pointers, **common
     )
     assert package_path in fresh
-    assert package_path in continuation
-    rules = graph_rules(edits=True, ontology_extensions=False)
-    assert rules in fresh and rules not in continuation
+    assert graph_rules(edits=True, ontology_extensions=False) in fresh
+    # A continuation sends the packages again only when one of them changed.
+    master = MasterRef(
+        path="/stage/inputs/master.md",
+        bootstrap=False,
+        values=auto_research_prompt_values(skill_pointers=pointers, **common),
+    )
+    unchanged = auto_research_prompt_values(skill_pointers=pointers, **common)
+    upgraded = auto_research_prompt_values(
+        skill_pointers=[{**pointers[0], "version": "1.1.0"}], **common
+    )
+    assert changed_since_master(master, unchanged) is None
+    assert changed_since_master(master, upgraded) == {
+        "skills": {"graph-audit": {"version": "1.1.0"}}
+    }
 
 
 def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:

@@ -309,8 +309,7 @@ def test_acceptance_campaign_continuation_never_takes_its_command_from_the_maste
     stage.mkdir()
     master = stage / "master.md"
     master.write_text(
-        "# RCP auto-research orchestrator contract\n\n"
-        "- Command prefix for this turn: `/expired/rcp-agent`\n",
+        "# RCP auto-research orchestrator contract\n\n- Command prefix: `/expired/rcp-agent`\n",
         encoding="utf-8",
     )
     (stage / ".rcp-acceptance-agent.json").write_text(
@@ -408,7 +407,7 @@ def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates
 
 - starting instruction: `{instruction}`
 - graph: `{graph}`
-- Command prefix for this turn: `{staged.client_command()}`
+- Command prefix: `{staged.client_command()}`
 """
             return await _events(
                 AcceptanceAgentLauncher(),
@@ -534,7 +533,7 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
 
 - starting instruction: `{instruction}`
 - graph: `{graph}`
-- Command prefix for this turn: `{staged.client_command()}`
+- Command prefix: `{staged.client_command()}`
 """
             with pytest.raises(AutoResearchOrchestratorTerminalFailure):
                 async for event in AcceptanceAgentLauncher().stream(
