@@ -1035,15 +1035,12 @@ details[open] > .view-disclosure-summary > svg:last-child {
     animation: none;
   }
 }
+/* Unread outranks selection: a solid accent bar and a stronger tint, so the two never read alike. */
 .conversation-list [role="option"].unread,
 :root[data-theme="aqua"] .conversation-list [role="option"].unread {
-  background: color-mix(in srgb, var(--agent-new) 14%, var(--sheet));
+  background: color-mix(in srgb, var(--agent-new) 22%, var(--sheet));
   border: 1.5px solid var(--agent-new);
-}
-.conversation-list [role="option"].active,
-:root[data-theme="aqua"] .conversation-list [role="option"].active {
-  outline: 2px solid var(--agent-new);
-  outline-offset: 1px;
+  box-shadow: inset 4px 0 0 var(--agent-new);
 }
 .agent-new-pill {
   background: var(--agent-new);

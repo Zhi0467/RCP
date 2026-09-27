@@ -139,12 +139,10 @@ function agentMeta(status: ConversationAgentStatus): string {
   const parts: (string | null | undefined)[] = [latest.provider_label];
   if (status.state === "working") {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
-  } else if (status.state === "failed") {
-    if (latest.can_retry) parts.push("Retry");
-  } else if (status.state === "stopped") {
-    if (latest.can_resume) parts.push("Resume");
   } else {
     parts.push(latest.request.run_truth_scope?.join(", "));
+    if (status.state === "failed" && latest.can_retry) parts.push("Retry");
+    if (status.state === "stopped" && latest.can_resume) parts.push("Resume");
   }
   return parts.filter(Boolean).join(" · ");
 }
