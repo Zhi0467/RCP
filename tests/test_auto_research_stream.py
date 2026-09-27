@@ -1529,9 +1529,7 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
         writer=inspect_recovery,
     )
     # A recovery on a session an episode report used re-opens the operational master.
-    monkeypatch.setattr(
-        auto_research_stream_module, "report_rebootstrap_pending", lambda *_a, **_k: True
-    )
+    monkeypatch.setattr(store, "episode_report_rebootstrap_pending", lambda *_a, **_k: True)
     retry_events = await _orchestrator_events(
         service, retry_launcher, store, retry, data_dir, continuation="retry"
     )

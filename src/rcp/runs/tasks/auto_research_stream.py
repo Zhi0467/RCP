@@ -106,7 +106,6 @@ from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AgentTaskRecord,
-    AppStore,
     AutoResearchActorBinding,
     AutoResearchMessageRecord,
 )
@@ -1281,24 +1280,6 @@ def _worker_reply_key(turn: _CanonicalWorkerTurn) -> str:
     return f"worker-reply-{digest[:32]}"
 
 
-def report_rebootstrap_pending(
-    store: AppStore,
-    *,
-    project_id: str,
-    native_session_id: str,
-    stage_host: str | None,
-    stage_root: str,
-) -> bool:
-    """Whether an episode report ran on this exact session since its last operational success.
-
-    STUB for the lead: wire this to slice B's durable "report bootstrap pending" predicate at
-    merge. Until then no session is ever pending.
-    """
-
-    del store, project_id, native_session_id, stage_host, stage_root
-    return False
-
-
 def _continuation_mode(
     execution: AgentTaskExecution,
 ) -> Literal["resume", "retry", "continuation"]:
@@ -1502,9 +1483,8 @@ def _orchestrator_prompt(
         render_master=render_master,
         start_contract=start_contract,
         continuation_parts=continuation_parts,
-        report_pending=lambda session_id: report_rebootstrap_pending(
-            execution.store,
-            project_id=turn.task.project_id,
+        report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
+            turn.task.project_id,
             native_session_id=session_id,
             stage_host=turn.binding.stage_host,
             stage_root=turn.binding.stage_root or "",
