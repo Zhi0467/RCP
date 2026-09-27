@@ -17,8 +17,10 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import MessageCommandRequest
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.prompts import PromptFactory
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import (
@@ -45,6 +47,7 @@ from rcp.runs.auto_research_mail import (
     auto_research_mail_delivery,
     parse_auto_research_mail_delivery,
 )
+from rcp.runs.session_master import session_master_label
 from rcp.runs.tasks import auto_research_stream as auto_research_stream_module
 from rcp.runs.tasks.auto_research_stream import (
     _HANDOFFS_CLEARED_RECEIPT,
@@ -393,8 +396,12 @@ def _dispatcher(store: AppStore, replies: list[str] | None = None) -> AutoResear
 
 
 def _contract(prompt: str) -> str:
-    path = next(Path(line) for line in prompt.splitlines() if line.startswith("/"))
-    return path.read_text(encoding="utf-8")
+    """A session start is read from its staged file; a continuation is the prompt itself."""
+
+    lines = prompt.splitlines()
+    if lines[0] == PromptFactory.launch_prompt("").splitlines()[0]:
+        return Path(lines[1]).read_text(encoding="utf-8")
+    return prompt
 
 
 def _command_argv(contract: str, *, verb: str | None = None) -> list[str]:
@@ -1421,6 +1428,7 @@ async def test_orchestrator_stream_rejects_direct_existing_belief_change(
 async def test_orchestrator_continuation_preserves_actor_session_stage_and_handoff_fence(
     manifest,
     tmp_path,
+    monkeypatch,
 ) -> None:
     service = _service(manifest, tmp_path)
     store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
@@ -1475,6 +1483,23 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     fresh_prefix = _command_argv(fresh_contract)
     continuation_prefix = _command_argv(continuation_contract)
     assert continuation_prefix != fresh_prefix
+    # The session start is the master; the continuation carries only current parts and a
+    # pointer to the master restored from its durable record.
+    assert store.agent_task_contract(root.operation_id, "session_master") == fresh_contract
+    master_file = (
+        stage / "inputs" / session_master_label("auto_research-orchestrator-master", fresh_contract)
+    )
+    assert continuation_contract.endswith(SECTIONS["master_pointer"].format(path=str(master_file)))
+    assert master_file.read_text(encoding="utf-8") == fresh_contract
+    rules = graph_rules(edits=True, ontology_extensions=False)
+    assert rules not in continuation_contract
+    assert fresh_contract.partition("\n")[0] not in continuation_contract
+    assert (
+        store.agent_task_contract(
+            continuation.operation_id, "auto_research_orchestrator_auto_research_continuation"
+        )
+        == continuation_contract
+    )
     assert all(
         not (stage / name).exists() for name in ("patch.json", "watch.json", "messages.json")
     )
@@ -1503,11 +1528,28 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
         session_id="orchestrator-session",
         writer=inspect_recovery,
     )
+    # A recovery on a session an episode report used re-opens the operational master.
+    monkeypatch.setattr(
+        auto_research_stream_module, "report_rebootstrap_pending", lambda *_a, **_k: True
+    )
     retry_events = await _orchestrator_events(
         service, retry_launcher, store, retry, data_dir, continuation="retry"
     )
     assert retry_events[-1].event == "done"
     assert retry_launcher.requested_session_ids == ["orchestrator-session"]
+    retry_contract = retry_launcher.contracts[0]
+    rebootstrapped = store.agent_task_contract(retry.operation_id, "session_master")
+    assert rebootstrapped is not None and rules in rebootstrapped
+    report_rebootstrap = SECTIONS["report_rebootstrap"].format(
+        path=str(
+            stage
+            / "inputs"
+            / session_master_label("auto_research-orchestrator-master", rebootstrapped)
+        )
+    )
+    assert retry_contract.endswith(report_rebootstrap)
+    assert SECTIONS["master_pointer"].split("{path}")[0] not in retry_contract
+    assert rules not in retry_contract
     reused_stage_gates = [
         fresh_launcher.invocation_gates[0],
         continuation_launcher.invocation_gates[0],
@@ -2684,6 +2726,17 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
 
     assert launcher.requested_session_ids == ["worker-session", "worker-session"]
     _assert_fresh_matching_invocation_gates(served_gates, launcher.invocation_gates)
+    # The session predates master records, so the retry bootstraps one explicitly; the
+    # correction then points to it and carries only its own validate-only authority.
+    master = store.agent_task_contract(retry.operation_id, "session_master")
+    assert master is not None
+    master_file = stage / "inputs" / session_master_label("auto_research-worker-master", master)
+    recovery_prompt, correction_prompt = launcher.contracts
+    assert recovery_prompt.endswith(SECTIONS["master_bootstrap"].format(path=str(master_file)))
+    assert correction_prompt.endswith(SECTIONS["master_pointer"].format(path=str(master_file)))
+    rules = graph_rules(edits=True, ontology_extensions=False)
+    assert rules in master
+    assert rules not in recovery_prompt and rules not in correction_prompt
     assert replies == []
     assert command_results[0][1]["status"] == "invalid"
     assert "validation only" in str(command_results[0][1]["message"])
@@ -2885,7 +2938,7 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
 
 def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     from rcp.agents.auto_research_prompt import (
-        auto_research_orchestrator_continuation_contract,
+        auto_research_orchestrator_continuation_parts,
         auto_research_orchestrator_task_contract,
     )
     from rcp.agents.write_scope import ProjectWriteScope
@@ -2922,15 +2975,13 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         skill_pointers=pointers,
     )
     fresh = auto_research_orchestrator_task_contract(project_name="project", **common)
-    continuation = auto_research_orchestrator_continuation_contract(
-        original_contract_path="/s/original.md",
-        mode="continuation",
-        **common,
+    continuation = "\n\n".join(
+        auto_research_orchestrator_continuation_parts(mode="continuation", **common)
     )
     assert package_path in fresh
     assert package_path in continuation
     rules = graph_rules(edits=True, ontology_extensions=False)
-    assert rules in fresh and rules in continuation
+    assert rules in fresh and rules not in continuation
 
 
 def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:

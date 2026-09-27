@@ -921,7 +921,6 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         auto.auto_research_orchestrator_task_contract,
         auto.auto_research_worker_task_contract,
         auto.auto_research_orchestrator_continuation_contract,
-        auto.auto_research_worker_continuation_contract,
         experiment.experiment_loop_task_contract,
         experiment.experiment_loop_continuation_contract,
         experiment.experiment_loop_watcher_correction_contract,
