@@ -42,8 +42,9 @@ class _ChatLauncher:
         session = kwargs.get("session_id") or str(uuid.uuid4())
         self.sessions[request.chat_id] = session
         scope = kwargs.get("write_scope")
-        contract = Path(next(re.finditer(r"/[^\n]+\.md", prompt)).group())
-        inputs = "\n".join(path.read_text() for path in contract.parent.glob("*.md"))
+        # The master may be named anywhere in the prompt; read every staged input it names.
+        folders = {Path(match).parent for match in re.findall(r"/[^\s`]+\.md", prompt)}
+        inputs = "\n".join(path.read_text() for folder in folders for path in folder.glob("*.md"))
         root = self.harness.repository
         binding = self.harness.store.conversation_worktree(self.harness.project_id, request.chat_id)
         if binding:
