@@ -8,6 +8,7 @@ import {
   chatIdForTask,
   chatIndicator,
   chatEntryConversationId,
+  chatReadThrough,
   chatModeStorageKey,
   conversationTurnRequest,
   conversationHasUnread,
@@ -17,10 +18,11 @@ import {
   latestConversation,
   latestPersistedChatConfig,
   latestPersistedConversationMode,
-  newlyUnreadChatTaskIds,
+  newlyFinishedChatTaskIds,
   parseConversationMode,
   startConversationTurn,
   toggleConversationMode,
+  unreadTaskIdsFromReads,
   unsentConversation,
 } from "../src/chatWorkspace.ts";
 
@@ -206,14 +208,38 @@ test("entry preserves the previous chat before routing active or unread work", (
   );
 });
 
-test("a completion is unread unless its exact conversation is selected and visible", () => {
+test("a turn is unread when it ended after the viewer's marker for its chat", () => {
   const completed = task({
     operation_id: "done",
     request: { chat_id: "chat-b", node_id: "node/b" },
+    finished: true,
+    finished_at: "2026-09-27T12:00:00.500000+00:00",
   });
-  const previous = new Map([["done", "running"]]);
-  assert.deepEqual(newlyUnreadChatTaskIds([completed], previous, "chat-a"), ["done"]);
-  assert.deepEqual(newlyUnreadChatTaskIds([completed], previous, "chat-b"), []);
+  const older = task({
+    operation_id: "older",
+    request: { chat_id: "chat-b", node_id: "node/b" },
+    finished: true,
+    finished_at: "2026-09-27T08:00:00+00:00",
+  });
+  const baseline = "2026-09-27T10:00:00+00:00";
+  // Seen finishing or not, only the marker decides: this is what survives a reload.
+  assert.deepEqual(
+    [...unreadTaskIdsFromReads([completed, older], { baseline, reads: {} })],
+    ["done"],
+  );
+  assert.deepEqual(
+    [
+      ...unreadTaskIdsFromReads([completed], {
+        baseline,
+        reads: { "chat-b": completed.finished_at },
+      }),
+    ],
+    [],
+  );
+  assert.deepEqual([...unreadTaskIdsFromReads([completed], null)], []);
+  assert.equal(chatReadThrough([older, completed], "chat-b"), completed.finished_at);
+  assert.equal(chatReadThrough([completed], "chat-a"), null);
+  assert.deepEqual(newlyFinishedChatTaskIds([completed], new Map([["done", "running"]])), ["done"]);
   const conversations = groupChatConversations(
     [
       {

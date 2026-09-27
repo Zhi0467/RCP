@@ -51,6 +51,7 @@ import { loadChatTranscript } from "./chatApi";
 import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
 import {
   chatIndicator,
+  unreadTaskIdsFromReads,
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
@@ -1188,7 +1189,7 @@ export default function App() {
     floatingChat,
     draftConversations,
     selectedChatId,
-    unreadChatTaskIds,
+    chatReads,
     chatSummaryTotal,
     chatSummaryNextOffset,
     chatTranscripts,
@@ -2546,6 +2547,10 @@ export default function App() {
     transitionManifest,
     transitionRulesetTag,
   ]);
+  const unreadChatTaskIds = useMemo(
+    () => unreadTaskIdsFromReads(tasks, chatReads),
+    [chatReads, tasks],
+  );
   const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
@@ -2643,8 +2648,7 @@ export default function App() {
   }, [mutationsDisabled]);
 
   useEffect(() => {
-    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
-    if (recordTaskUpdates(tasks, visibleChatId)) {
+    if (recordTaskUpdates(tasks)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
           setNotice({
@@ -2654,22 +2658,12 @@ export default function App() {
         });
       }
     }
-  }, [
-    apiBase,
-    graphPath,
-    isActiveGraph,
-    projectId,
-    refreshChatSummaries,
-    selectedChatId,
-    selectedExperimentChatId,
-    tasks,
-    view,
-  ]);
+  }, [apiBase, graphPath, isActiveGraph, projectId, refreshChatSummaries, tasks]);
 
   useEffect(() => {
     const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
     markVisibleChatRead(tasks, visibleChatId);
-  }, [selectedChatId, selectedExperimentChatId, tasks, view]);
+  }, [markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
     if (!projectId || !hasActiveTasks) return;

@@ -195,7 +195,8 @@ conversations as an agent-hub panel. Each conversation belongs to exactly one
 group, and each group lists its conversations in recency order. The groups come
 from the backend's answers on the latest loaded turn, in this order:
 
-- **New reply**: the turn succeeded and the human has not read it.
+- **New reply**: the turn succeeded after the human last viewed this
+  conversation (the read markers in `api-web-and-desktop-projections.md`).
 - **Failed**: the turn failed.
 - **Stopped**: the turn was paused or interrupted. Both resume the same way.
 - **Working**: the turn is queued, running, or pausing.

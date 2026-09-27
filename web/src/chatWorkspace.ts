@@ -5,6 +5,7 @@ import type {
   AgentTaskStatus,
   ArtifactContextRequest,
   ChatMessage,
+  ChatReads,
   ChatSummary,
   ConversationMode,
   SkillDefaults,
@@ -424,18 +425,46 @@ export function chatEntryConversationId(
   return conversations[0]?.chatId ?? null;
 }
 
-export function newlyUnreadChatTaskIds(
+/** Chat turns this page saw change into a settled state; their summaries are stale. */
+export function newlyFinishedChatTaskIds(
   tasks: AgentTask[],
   previousStatuses: ReadonlyMap<string, AgentTaskStatus>,
-  visibleChatId: string | null,
 ): string[] {
   return tasks.flatMap((task) => {
     const chatId = chatIdForTask(task);
     const previous = previousStatuses.get(task.operation_id);
     const becameTerminal =
       previous !== undefined && previous !== task.status && !chatTaskNeedsAttention(task);
-    return chatId && chatId !== visibleChatId && becameTerminal ? [task.operation_id] : [];
+    return chatId && becameTerminal ? [task.operation_id] : [];
   });
+}
+
+/** A turn that ended after the viewer's marker for its chat is unread. */
+export function unreadTaskIdsFromReads(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads | null,
+): Set<string> {
+  if (!chatReads) return new Set();
+  return new Set(
+    tasks.flatMap((task) => {
+      const chatId = chatIdForTask(task);
+      if (!chatId || !task.finished || !task.finished_at || chatTaskNeedsAttention(task)) return [];
+      const readThrough = chatReads.reads[chatId] ?? chatReads.baseline;
+      return Date.parse(task.finished_at) > Date.parse(readThrough) ? [task.operation_id] : [];
+    }),
+  );
+}
+
+/** The newest finish time among a chat's turns, which is what reading it marks. */
+export function chatReadThrough(tasks: readonly AgentTask[], chatId: string): string | null {
+  let latest: string | null = null;
+  for (const task of tasks) {
+    if (chatIdForTask(task) !== chatId || !task.finished || !task.finished_at) continue;
+    if (latest === null || Date.parse(task.finished_at) > Date.parse(latest)) {
+      latest = task.finished_at;
+    }
+  }
+  return latest;
 }
 
 export function conversationHasUnread(

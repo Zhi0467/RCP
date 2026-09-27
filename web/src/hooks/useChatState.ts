@@ -1,7 +1,7 @@
 import { MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError } from "../api";
+import { api, ApiError, loadChatReads, markChatRead } from "../api";
 import {
   loadChatSummaryPage,
   loadChatTranscript,
@@ -11,8 +11,9 @@ import {
 } from "../chatApi";
 import {
   chatIdForTask,
+  chatReadThrough,
   latestConversation,
-  newlyUnreadChatTaskIds,
+  newlyFinishedChatTaskIds,
   type ChatConversation,
   type ChatKind,
   type DraftConversation,
@@ -20,6 +21,7 @@ import {
 import type {
   AgentTask,
   AppView,
+  ChatReads,
   ChatSummary,
   ChatTranscript,
   ExperimentOperationalState,
@@ -41,7 +43,7 @@ export interface ChatStateSnapshot {
   floatingChat: FloatingChat | null;
   draftConversations: DraftConversation[];
   selectedChatId: string | null;
-  unreadChatTaskIds: Set<string>;
+  chatReads: ChatReads | null;
   chatSummaries: ChatSummary[];
   chatSummaryTotal: number;
   chatSummaryNextOffset: number;
@@ -67,7 +69,6 @@ export function cloneChatStateSnapshot(snapshot: ChatStateSnapshot): ChatStateSn
     ...snapshot,
     floatingChat: snapshot.floatingChat ? { ...snapshot.floatingChat } : null,
     draftConversations: [...snapshot.draftConversations],
-    unreadChatTaskIds: new Set(snapshot.unreadChatTaskIds),
     chatSummaries: [...snapshot.chatSummaries],
     chatTranscripts: new Map(snapshot.chatTranscripts),
     chatTaskStatuses: new Map(snapshot.chatTaskStatuses),
@@ -167,7 +168,7 @@ export function useChatState({
   const [floatingChat, setFloatingChatState] = useState<FloatingChat | null>(null);
   const [draftConversations, setDraftConversations] = useState<DraftConversation[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  const [unreadChatTaskIds, setUnreadChatTaskIds] = useState<Set<string>>(() => new Set());
+  const [chatReads, setChatReadsState] = useState<ChatReads | null>(null);
   const [chatSummaries, setChatSummaries] = useState<ChatSummary[]>([]);
   const [chatSummaryTotal, setChatSummaryTotal] = useState(0);
   const [chatSummaryNextOffset, setChatSummaryNextOffset] = useState(0);
@@ -181,6 +182,11 @@ export function useChatState({
   const selectedChatIdRef = useRef<string | null>(null);
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
   const chatSummaryRefreshGeneration = useRef(0);
+  const chatReadsRef = useRef<ChatReads | null>(null);
+  const setChatReads = useCallback((next: ChatReads | null) => {
+    chatReadsRef.current = next;
+    setChatReadsState(next);
+  }, []);
 
   const visibleChatSummaries = useMemo(
     () =>
@@ -351,7 +357,10 @@ export function useChatState({
       const generation = ++chatSummaryRefreshGeneration.current;
       setChatSummariesLoading(true);
       try {
-        const page = await loadChatSummaryPage(base, 0, api, graphTarget);
+        const [page, reads] = await Promise.all([
+          loadChatSummaryPage(base, 0, api, graphTarget),
+          loadChatReads(base),
+        ]);
         if (
           !isActiveProject(requestedProjectId) ||
           generation !== chatSummaryRefreshGeneration.current
@@ -383,6 +392,7 @@ export function useChatState({
         )
           return;
         const nextSummaries = mergeChatSummaryPage([], page.items, "refresh");
+        setChatReads(reads);
         chatSummariesRef.current = nextSummaries;
         setChatSummaries(nextSummaries);
         setChatSummaryTotal(page.total);
@@ -421,7 +431,7 @@ export function useChatState({
         }
       }
     },
-    [graphTarget, isActiveProject],
+    [graphTarget, isActiveProject, setChatReads],
   );
 
   const loadMoreChatSummaries = useCallback(async () => {
@@ -469,19 +479,15 @@ export function useChatState({
     projectId,
   ]);
 
-  const recordTaskUpdates = useCallback((tasks: AgentTask[], visibleChatId: string | null) => {
+  const recordTaskUpdates = useCallback((tasks: AgentTask[]) => {
     const previousStatuses = chatTaskStatuses.current;
     const nextStatuses = new Map(previousStatuses);
-    const newlyTerminal = newlyUnreadChatTaskIds(tasks, previousStatuses, visibleChatId);
-    const completedChatTasks = newlyUnreadChatTaskIds(tasks, previousStatuses, null);
+    const completedChatTasks = newlyFinishedChatTaskIds(tasks, previousStatuses);
     for (const task of tasks) {
       if (!chatIdForTask(task)) continue;
       nextStatuses.set(task.operation_id, task.status);
     }
     chatTaskStatuses.current = nextStatuses;
-    if (newlyTerminal.length) {
-      setUnreadChatTaskIds((current) => new Set([...current, ...newlyTerminal]));
-    }
     return completedChatTasks.length > 0;
   }, []);
 
@@ -492,37 +498,37 @@ export function useChatState({
         !chatTaskStatuses.current.has(task.operation_id) &&
         task.finished,
     );
-    if (unseen.length > 0) {
-      setUnreadChatTaskIds(
-        (current) =>
-          new Set([
-            ...current,
-            ...unseen.flatMap((task) => {
-              const chatId = chatIdForTask(task);
-              return chatId && chatId !== selectedChatIdRef.current ? [task.operation_id] : [];
-            }),
-          ]),
-      );
-    }
     return unseen.length > 0;
   }, []);
 
-  const markVisibleChatRead = useCallback((tasks: AgentTask[], visibleChatId: string | null) => {
-    if (!visibleChatId) return;
-    setUnreadChatTaskIds((current) => {
-      const next = new Set(current);
-      tasks.forEach((task) => {
-        if (task.request.chat_id === visibleChatId) next.delete(task.operation_id);
-      });
-      return next.size === current.size ? current : next;
-    });
-  }, []);
+  // Reading moves the marker at once; the server's answer then replaces it.
+  const markVisibleChatRead = useCallback(
+    (tasks: AgentTask[], visibleChatId: string | null) => {
+      const current = chatReadsRef.current;
+      if (!visibleChatId || !current || !projectId || !apiBase) return;
+      const readThrough = chatReadThrough(tasks, visibleChatId);
+      const marker = current.reads[visibleChatId] ?? current.baseline;
+      if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
+      setChatReads({ ...current, reads: { ...current.reads, [visibleChatId]: readThrough } });
+      const requestedProjectId = projectId;
+      void markChatRead(apiBase, visibleChatId, readThrough)
+        .then((reads) => {
+          if (isActiveProject(requestedProjectId)) setChatReads(reads);
+        })
+        .catch((error) => {
+          reportError(
+            `Chat could not be marked read: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+    },
+    [apiBase, isActiveProject, projectId, reportError, setChatReads],
+  );
 
   const resetProjectChats = useCallback(() => {
     setFloatingChatState(null);
     setDraftConversations([]);
     selectChat(null);
-    setUnreadChatTaskIds(new Set());
+    setChatReads(null);
     chatSummaryRefreshGeneration.current += 1;
     chatSummariesRef.current = [];
     setChatSummaries([]);
@@ -531,7 +537,7 @@ export function useChatState({
     setChatSummariesLoading(false);
     setChatTranscripts(new Map());
     chatTaskStatuses.current = new Map();
-  }, [selectChat]);
+  }, [selectChat, setChatReads]);
 
   const restoreProjectChats = useCallback(
     (snapshot: ChatStateSnapshot, nodes: Record<string, GraphNode>) => {
@@ -542,7 +548,7 @@ export function useChatState({
       );
       setDraftConversations([...snapshot.draftConversations]);
       selectChat(snapshot.selectedChatId);
-      setUnreadChatTaskIds(new Set(snapshot.unreadChatTaskIds));
+      setChatReads(snapshot.chatReads);
       chatSummaryRefreshGeneration.current += 1;
       chatSummariesRef.current = [...snapshot.chatSummaries];
       setChatSummaries([...snapshot.chatSummaries]);
@@ -554,14 +560,14 @@ export function useChatState({
       setSelectedCanonicalChat(snapshot.selectedCanonicalChat);
       chatTaskStatuses.current = new Map(snapshot.chatTaskStatuses);
     },
-    [selectChat],
+    [selectChat, setChatReads],
   );
 
   const snapshot: ChatStateSnapshot = {
     floatingChat,
     draftConversations,
     selectedChatId,
-    unreadChatTaskIds,
+    chatReads,
     chatSummaries,
     chatSummaryTotal,
     chatSummaryNextOffset,

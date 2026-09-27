@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import (
     get_attachment_store,
@@ -54,6 +55,20 @@ class ChatTitleBody(BaseModel):
 class ChatDisplay(BaseModel):
     archived: list[str]
     titles: dict[str, str]
+
+
+class ChatReadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The finish time of the newest turn the reader saw, as the server reported it.
+    read_through: AwareDatetime
+
+
+class ChatReads(BaseModel):
+    """The acting user's read markers; a chat without one is read through `baseline`."""
+
+    baseline: str
+    reads: dict[str, str]
 
 
 def _canonical_chat_id(chat_id: str) -> str:
@@ -122,6 +137,40 @@ def rename_chat(
     title = " ".join((body.title or "").split()) or None
     store.set_chat_title(project_id, chat_id, user.user_id, title)
     return ChatDisplay(**store.chat_display(project_id))
+
+
+@router.get("/api/projects/{project_id}/chat-reads", response_model=ChatReads)
+def chat_reads(
+    project_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatReads:
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    return ChatReads(**store.chat_reads(project_id, user.user_id))
+
+
+# A viewer's own marker, not project work, so it skips the write-admission fence.
+@router.post("/api/projects/{project_id}/chats/{chat_id}/read", response_model=ChatReads)
+def mark_chat_read(
+    project_id: str,
+    chat_id: str,
+    body: ChatReadBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatReads:
+    """Record that the acting user has seen this conversation's turns up to a time."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    store.mark_chat_read(project_id, chat_id, user.user_id, body.read_through.astimezone(UTC))
+    return ChatReads(**store.chat_reads(project_id, user.user_id))
 
 
 @router.post(
@@ -227,7 +276,9 @@ __all__ = [
     "archive_chat",
     "chat",
     "chat_display",
+    "chat_reads",
     "chats",
+    "mark_chat_read",
     "rename_chat",
     "remove_chat_attachment",
     "router",

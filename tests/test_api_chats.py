@@ -225,3 +225,27 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
     assert rename(second, "x" * 121).status_code == 422
     assert rename(second, " ").json() == {"archived": [], "titles": {}}
     assert client.get(f"{url}/chat-display").json() == {"archived": [], "titles": {}}
+
+
+def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    url = f"/api/projects/{app.state.default_project_id}"
+    chat_id = str(uuid.uuid4())
+
+    def mark(read_through):
+        return client.post(f"{url}/chats/{chat_id}/read", json={"read_through": read_through})
+
+    initial = client.get(f"{url}/chat-reads").json()
+    assert initial["reads"] == {} and initial["baseline"]
+    later, earlier = "2026-09-27T12:00:00+00:00", "2026-09-27T09:00:00-02:00"
+    assert mark(later).json()["reads"] == {chat_id: later}
+    # 09:00-02:00 is 11:00 UTC, older than the marker, so it is ignored.
+    assert mark(earlier).json()["reads"] == {chat_id: later}
+    assert mark("2026-09-27T13:00:00+01:00").json()["reads"] == {chat_id: later}
+    assert mark("2026-09-27T12:30:00Z").json()["reads"] == {chat_id: "2026-09-27T12:30:00+00:00"}
+    assert mark("2026-09-27T12:30:00").status_code == 422
+    assert (
+        client.post(f"{url}/chats/not-a-uuid/read", json={"read_through": later}).status_code == 422
+    )
+    assert client.get(f"{url}/chat-reads").json()["baseline"] == initial["baseline"]

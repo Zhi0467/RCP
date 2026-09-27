@@ -2525,6 +2525,12 @@ export interface ChatDisplay {
   titles: Record<string, string>;
 }
 
+/** The viewer's read markers; a chat without one is read through `baseline`. */
+export interface ChatReads {
+  baseline: string;
+  reads: Record<string, string>;
+}
+
 export interface ChatSummaryPage {
   items: ChatSummary[];
   total: number;

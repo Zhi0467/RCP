@@ -4,6 +4,7 @@ import type {
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
   ChatDisplay,
+  ChatReads,
   ChatMessage,
   SteerRequest,
   ArtifactRevisionCandidate,
@@ -504,6 +505,22 @@ export function setChatArchived(
   return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/archive`, {
     method: "POST",
     body: JSON.stringify({ archived }),
+  });
+}
+
+export function loadChatReads(apiBase: string): Promise<ChatReads> {
+  return api(`${apiBase}/chat-reads`);
+}
+
+/** `readThrough` is a turn's server-reported finish time; the marker never moves back. */
+export function markChatRead(
+  apiBase: string,
+  chatId: string,
+  readThrough: string,
+): Promise<ChatReads> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/read`, {
+    method: "POST",
+    body: JSON.stringify({ read_through: readThrough }),
   });
 }
 
