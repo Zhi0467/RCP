@@ -15,6 +15,7 @@ import rcp.runs.tasks.auto_research_child_work as child_module
 import rcp.runs.tasks.experiment_loop as loop_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
+from rcp.agents.continuation_prompt import MasterRef
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
@@ -524,7 +525,8 @@ async def test_operational_continuation_renders_current_launch_client(
     original = previous_stage / "original.md"
     original.write_text(previous_command)
     previous.cleanup()
-    monkeypatch.setattr(owner, "_parent_task_contract_path", lambda *_args: str(original))
+    if owner is not loop_module:
+        monkeypatch.setattr(owner, "_parent_task_contract_path", lambda *_args: str(original))
     turn, staged = await work_module._stage_work_turn(
         service,
         work_module._resolve_work_execution(service, request, execution),
@@ -551,6 +553,7 @@ async def test_operational_continuation_renders_current_launch_client(
                     "control_node_id": "exp/one",
                     "control_invocation": 1,
                     "control_invocation_ceiling": 3,
+                    "session_id": "native-session",
                 }
             )
             prepared = SimpleNamespace(
@@ -560,16 +563,17 @@ async def test_operational_continuation_renders_current_launch_client(
                 context_replacement=None,
                 wake_episode=SimpleNamespace(last_graph_result="applied", last_watcher_ids=[]),
             )
+            # The master holds the expired command; the continuation must not repeat it.
             monkeypatch.setattr(
-                owner, "_experiment_session_contract_path", lambda _turn: str(original)
-            )
-            compose = getattr(
                 owner,
-                "_compose_wake_prompt"
-                if continuation == "watcher_wake"
-                else f"_compose_{continuation}_prompt",
+                "_experiment_master",
+                lambda *_args, **_kwargs: MasterRef(path=str(original), bootstrap=False),
             )
-            composed = compose(turn, staged, prepared)
+            monkeypatch.setattr(owner, "_report_rebootstrap_pending", lambda _turn: False)
+            if continuation == "watcher_wake":
+                composed = owner._compose_wake_prompt(turn, staged, prepared)
+            else:
+                composed = owner._compose_recovery_prompt(turn, staged, prepared, continuation)
         else:
             compose = getattr(
                 owner,

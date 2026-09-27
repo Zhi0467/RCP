@@ -7,7 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents import AgentEvent, AgentProcessControl, PromptFactory
+from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman, Patch
@@ -37,6 +39,7 @@ from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    EpisodeWrapupRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
@@ -45,6 +48,7 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from rcp.storage.episodes import compact_episode_receipt
 
 from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
@@ -261,6 +265,7 @@ def _execution(
     stage_root: str | None = None,
     parent_operation_id: str | None = None,
     retry_feedback: tuple[str, ...] = (),
+    continues_episode_id: str | None = None,
 ) -> AgentTaskExecution:
     now = store.now()
     dispatch_authority = resolve_dispatch_authority("node_chat", request)
@@ -299,7 +304,9 @@ def _execution(
         stored = store.create_experiment_watcher_invocation(record, request.watcher_ids)
         assert stored is not None
     else:
-        store.create_experiment_episode_with_invocation(record, request.watcher_ids)
+        store.create_experiment_episode_with_invocation(
+            record, request.watcher_ids, continues_episode_id=continues_episode_id
+        )
     store.mark_agent_task_running(operation_id)
     store.record_agent_task_receipt(
         operation_id,
@@ -333,6 +340,15 @@ def _graph_update_from_events(events: list[AgentEvent]) -> dict[str, object]:
     raise AssertionError("The Experiment-loop stream emitted no graph update.")
 
 
+def _launch_text(prompt: str) -> str:
+    """A session start points to its contract file; a continuation is its own text."""
+
+    lines = prompt.splitlines()
+    if lines[0] == PromptFactory.launch_prompt("").splitlines()[0]:
+        return Path(lines[1]).read_text(encoding="utf-8")
+    return prompt
+
+
 class _LoopLauncher:
     def __init__(self, native_session_id: str, watcher_cwd: Path, *, write_handoff: bool) -> None:
         self.native_session_id = native_session_id
@@ -346,8 +362,7 @@ class _LoopLauncher:
         self.read_dirs: list[list[Path]] = []
 
     async def stream(self, _provider, prompt, **kwargs):
-        contract_path = Path(prompt.splitlines()[1])
-        self.contracts.append(contract_path.read_text(encoding="utf-8"))
+        self.contracts.append(_launch_text(prompt))
         self.sessions.append(kwargs.get("session_id"))
         workspace = Path(kwargs["cwd"])
         self.workspaces.append(workspace)
@@ -655,8 +670,7 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
             self.diagnostics: list[str] = []
 
         async def stream(self, _provider, prompt, **kwargs):
-            contract_path = Path(prompt.splitlines()[1])
-            contract = contract_path.read_text(encoding="utf-8")
+            contract = _launch_text(prompt)
             self.contracts.append(contract)
             for line in contract.splitlines():
                 if "Exact watcher diagnostic" in line:
@@ -733,8 +747,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
             self.contracts: list[str] = []
 
         async def stream(self, _provider, prompt, **kwargs):
-            contract_path = Path(prompt.splitlines()[1])
-            contract = contract_path.read_text(encoding="utf-8")
+            contract = _launch_text(prompt)
             self.contracts.append(contract)
             workspace = Path(kwargs["cwd"])
             (workspace / "watch.json").write_text('{"external":[],"graph":[]}\n', encoding="utf-8")
@@ -1130,9 +1143,14 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert not [event for event in wake_events if event.event == "error"]
     assert launcher.sessions[:2] == [None, native_session_id]
     wake_contract = launcher.contracts[1]
-    experiment_contract_path = next((initial_stage / "inputs").glob("experiment-contract-*.md"))
-    assert str(experiment_contract_path) in wake_contract
-    assert experiment_contract_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    # The wake is inline and points to the exact master the session started from, which
+    # it never repeats, rules block included.
+    assert store.agent_task_contract("loop-wake", "experiment_loop_wake") == wake_contract
+    master_path = next((initial_stage / "inputs").glob("experiment-master-*.md"))
+    assert master_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    assert wake_contract.endswith(SECTIONS["master_pointer"].format(path=master_path))
+    assert graph_rules(edits=True, ontology_extensions=False) not in wake_contract
+    assert graph_rules(edits=True, ontology_extensions=False) in launcher.contracts[0]
     replacement_values, _ = json.JSONDecoder().raw_decode(
         wake_contract[wake_contract.index("\n{") + 1 :]
     )
@@ -1206,6 +1224,226 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert unchanged.context_baseline == initial_baseline
 
 
+class _UndeliveredLauncher:
+    """A provider link that drops before the session receives the prompt."""
+
+    def __init__(self) -> None:
+        self.contracts: list[str] = []
+
+    async def stream(self, _provider, prompt, **_kwargs):
+        self.contracts.append(_launch_text(prompt))
+        yield AgentEvent(event="error", text="The provider link dropped before delivery.")
+
+
+def _record_report_attempt(
+    store: AppStore,
+    project_id: str,
+    episode_id: str,
+    session_id: str,
+    stage_root: str,
+    concluding_operation_id: str,
+) -> None:
+    now = store.now()
+    # The hidden report allocation, as a wrap-up admits it on the operational session.
+    report = AgentTaskRecord(
+        operation_id="report-allocation",
+        project_id=project_id,
+        episode_id=episode_id,
+        kind="episode_report",
+        status="succeeded",
+        request={},
+        created_at=now,
+        updated_at=now,
+        status_message="Report written.",
+        parent_operation_id=concluding_operation_id,
+        native_session_id=session_id,
+        stage_root=stage_root,
+        visible=False,
+    )
+    with store.connection() as connection:
+        store._insert_agent_task(connection, report, continuation_cause="fresh")
+        connection.execute(
+            """
+            INSERT INTO episode_report_attempts (
+                attempt_id, episode_id, attempt_number, allocation_operation_id,
+                status, created_at, updated_at
+            ) VALUES ('report-attempt', ?, 1, 'report-allocation', 'succeeded', ?, ?)
+            """,
+            (episode_id, now, now),
+        )
+
+
+@pytest.mark.asyncio
+async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    episode_id = "00000000-0000-4000-8000-000000000077"
+    session_id = "provider-session-after-report"
+    initial_request = _loop_request(
+        episode_id,
+        "chat-report-rebootstrap",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    initial = _execution(store, project_id, "loop-before-report", initial_request)
+    launcher = _LoopLauncher(session_id, tmp_path, write_handoff=True)
+    await _events(
+        stream_experiment_loop_task(service, launcher, initial_request, data_dir, execution=initial)
+    )
+    assert initial.stage_root is not None
+    store.complete_agent_task("loop-before-report", applied_revision=None, result={})
+    _record_report_attempt(
+        store, project_id, episode_id, session_id, initial.stage_root, "loop-before-report"
+    )
+
+    def wake_request(invocation: int) -> RunRequest:
+        episode = store.experiment_episode(episode_id)
+        assert episode is not None
+        delivered = episode.last_watcher_ids[0]
+        store.record_watcher_check(delivered, status="completed", exit_code=0, error=None)
+        return _loop_request(
+            episode_id,
+            "chat-report-rebootstrap",
+            invocation=invocation,
+            trigger="watcher",
+            session_id=session_id,
+            watcher_ids=[delivered],
+            control_revision=initial_request.control_revision or 0,
+        )
+
+    async def launch(
+        operation_id: str, request: RunRequest, provider: object, **task: object
+    ) -> None:
+        execution = _execution(
+            store, project_id, operation_id, request, stage_root=initial.stage_root, **task
+        )
+        await _events(
+            stream_experiment_loop_task(service, provider, request, data_dir, execution=execution)
+        )
+
+    # Neither a launch that never reached the provider nor its recovery clears the restriction.
+    undelivered = _UndeliveredLauncher()
+    interrupted_wake = wake_request(2)
+    await launch(
+        "loop-wake-undelivered", interrupted_wake, undelivered, continuation="watcher_wake"
+    )
+    store.fail_agent_task("loop-wake-undelivered", "The provider link dropped.")
+    await launch(
+        "loop-resume-delivered",
+        interrupted_wake,
+        launcher,
+        continuation="resume",
+        parent_operation_id="loop-wake-undelivered",
+    )
+    recovered = store.experiment_episode(episode_id)
+    assert recovered is not None and recovered.last_turn_operation_id == "loop-resume-delivered"
+    store.complete_agent_task("loop-resume-delivered", applied_revision=None, result={})
+    # The session's own start contract is what it re-opens; the master itself never changes.
+    master_path = next(Path(initial.stage_root, "inputs").glob("experiment-master-*.md"))
+    assert master_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    reopen = SECTIONS["report_rebootstrap"].format(path=master_path)
+    pointer = SECTIONS["master_pointer"].format(path=master_path)
+    for prompt in (undelivered.contracts[0], launcher.contracts[1]):
+        assert prompt.endswith(reopen)
+        assert pointer not in prompt
+
+    # Once a same-session turn succeeds, the next one points to the unchanged master.
+    await launch("loop-wake-after-report", wake_request(3), launcher, continuation="watcher_wake")
+    assert launcher.contracts[2].endswith(pointer)
+    assert reopen not in launcher.contracts[2]
+
+
+@pytest.mark.asyncio
+async def test_added_turns_continue_the_ended_session_inline(manifest, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_app(str(manifest.path), data_dir=data_dir)
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    store: AppStore = app.state.background_tasks.store
+    source_id = "00000000-0000-4000-8000-000000000078"
+    session_id = "provider-session-added-turns"
+    initial_request = _loop_request(
+        source_id,
+        "chat-added-turns",
+        invocation=1,
+        control_revision=service.history.state().revision,
+    )
+    initial = _execution(store, project_id, "loop-source", initial_request)
+    launcher = _LoopLauncher(session_id, tmp_path, write_handoff=True)
+    await _events(
+        stream_experiment_loop_task(service, launcher, initial_request, data_dir, execution=initial)
+    )
+    assert initial.stage_root is not None
+    store.complete_agent_task("loop-source", applied_revision=None, result={})
+    store.fence_episode_ending(source_id, "exhausted", diagnostic="The ceiling was spent.")
+    receipt_json, receipt_sha256 = compact_episode_receipt(
+        {"ending": "exhausted", "episode_id": source_id}
+    )
+    now = store.now()
+    store.fail_episode_wrapup_unlaunchable(
+        source_id,
+        EpisodeWrapupRecord(
+            episode_id=source_id,
+            ending="exhausted",
+            partial=True,
+            concluding_operation_id="loop-source",
+            receipt_json=receipt_json,
+            receipt_sha256=receipt_sha256,
+            state="failed",
+            diagnostic="No report was requested.",
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+        ),
+        ending_diagnostic="The ceiling was spent.",
+    )
+
+    added_request = _loop_request(
+        "00000000-0000-4000-8000-000000000079",
+        "chat-added-turns",
+        invocation=1,
+        session_id=session_id,
+        control_revision=service.history.state().revision,
+    ).model_copy(update={"message": "Try the larger sweep next."})
+    added = _execution(
+        store,
+        project_id,
+        "loop-added-turns",
+        added_request,
+        stage_root=initial.stage_root,
+        continues_episode_id=source_id,
+    )
+    await _events(
+        stream_experiment_loop_task(service, launcher, added_request, data_dir, execution=added)
+    )
+
+    assert launcher.sessions[1] == session_id
+    prompt = launcher.contracts[1]
+    master_path = next(Path(initial.stage_root, "inputs").glob("experiment-master-*.md"))
+    assert master_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    assert store.agent_task_contract("loop-added-turns", "experiment_loop_turn") == prompt
+    assert prompt.endswith(
+        "Try the larger sweep next.\n\n" + SECTIONS["master_pointer"].format(path=master_path)
+    )
+    assert "task-loop-added-turns-experiment-control-human_reauthorization.json" in prompt
+    assert " validate " in prompt
+    assert graph_rules(edits=True, ontology_extensions=False) not in prompt
+    # Nothing in the episode context changed, so no replacement values travel.
+    assert "\n{" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_provider_switch_stages_full_recovery_contract_with_durable_provenance(
     manifest,
@@ -1274,17 +1512,7 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     assert switched_episode is not None and switched_episode.session_bound
     assert switched_episode.native_session_id == "claude-session-after-switch"
     assert switch_execution.stage_root is not None
-    session_contract_path = experiment_loop_task_module._experiment_session_contract_path(
-        SimpleNamespace(
-            execution=switch_execution,
-            request=switch_request.model_copy(
-                update={"session_id": switched_episode.native_session_id}
-            ),
-            local_stage=Path(switch_execution.stage_root),
-            remote_stage=None,
-        )
-    )
-    assert Path(session_contract_path).read_text(encoding="utf-8") == contract
+    assert store.agent_task_contract("loop-provider-switch", "session_master") == contract
     diagnostics_path = Path(
         next(code for code in contract.split("`")[1::2] if code.endswith("-retry-diagnostics.json"))
     )
