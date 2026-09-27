@@ -3,6 +3,7 @@ import { withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
 import {
+  CONVERSATION_AGENT_GROUPS,
   chatDraftStorageKey,
   chatIdForTask,
   chatIndicator,
@@ -418,57 +419,51 @@ test("worktree creation and integration preserve the ordinary conversation dispa
   }
 });
 
-test("the Agents panel groups each conversation by what its latest turn asks of the human", () => {
-  const conversation = (chatId, title, statuses) => ({
-    chatId,
-    kind: "project_chat",
-    nodeId: null,
-    title,
-    updatedAt: "2026-07-28T00:00:00Z",
-    tasks: statuses.map((status, index) =>
-      task({ operation_id: `${chatId}-${index}`, kind: "project_chat", status }),
-    ),
-  });
-  const conversations = [
-    conversation("failed", "Failed run", ["failed"]),
-    conversation("recovered", "Recovered run", ["failed", "succeeded"]),
-    conversation("paused", "Paused run", ["paused"]),
-    conversation("interrupted", "Interrupted run", ["interrupted"]),
-    conversation("running", "Running audit", ["succeeded", "running"]),
-    conversation("unread", "Unread result", ["succeeded"]),
-    conversation("idle", "Idle notes", ["succeeded"]),
-    { ...conversation("draft", "Unsent draft", []), updatedAt: "" },
-  ];
-  const unread = new Set(["unread-0"]);
-
-  const ids = (groups) =>
-    Object.fromEntries(
-      Object.entries(groups).map(([group, rows]) => [
-        group,
-        rows.map((row) => [row.conversation.chatId, row.status.state]),
-      ]),
+for (const [id, statuses, unread, state, group] of [
+  ["reply", ["succeeded"], true, "unread", "new_reply"],
+  ["failed", ["failed"], false, "failed", "failed"],
+  ["failed-unread", ["failed"], true, "failed", "failed"],
+  ["paused", ["paused"], false, "stopped", "stopped"],
+  ["interrupted-unread", ["interrupted"], true, "stopped", "stopped"],
+  ["queued", ["queued"], false, "working", "working"],
+  ["running", ["succeeded", "running"], true, "working", "working"],
+  ["pausing", ["pausing"], false, "working", "working"],
+  ["recovered", ["failed", "succeeded"], false, "done", "done"],
+  ["summary", [], false, "done", "done"],
+  ["draft", [], false, "draft", "done"],
+]) {
+  test(`agent grouping: ${id}`, () => {
+    const conversation = {
+      chatId: id,
+      kind: "project_chat",
+      nodeId: null,
+      title: id,
+      updatedAt: id === "draft" ? "" : "2026-07-28T00:00:00Z",
+      tasks: statuses.map((status, index) =>
+        task({ operation_id: `${id}-${index}`, kind: "project_chat", status }),
+      ),
+    };
+    const groups = groupConversationAgents([conversation], new Set(unread ? [`${id}-0`] : []));
+    assert.deepEqual(CONVERSATION_AGENT_GROUPS, [
+      "new_reply",
+      "failed",
+      "stopped",
+      "working",
+      "done",
+    ]);
+    assert.deepEqual(Object.keys(groups), CONVERSATION_AGENT_GROUPS);
+    assert.deepEqual(
+      Object.values(groups).map((rows) => rows.length),
+      CONVERSATION_AGENT_GROUPS.map((key) => (key === group ? 1 : 0)),
     );
-
-  assert.deepEqual(ids(groupConversationAgents(conversations, unread)), {
-    needs_you: [
-      ["failed", "needs_you"],
-      ["paused", "paused"],
-      ["interrupted", "needs_you"],
-    ],
-    working: [["running", "working"]],
-    recent: [
-      ["recovered", "done"],
-      ["unread", "unread"],
-      ["idle", "done"],
-      ["draft", "draft"],
-    ],
+    const row = groups[group][0];
+    assert.equal(row.conversation.chatId, id);
+    assert.equal(row.status.state, state);
+    assert.equal(row.status.group, group);
+    assert.equal(row.status.unread, unread);
+    assert.equal(row.status.latest, conversation.tasks.at(-1) ?? null);
   });
-  assert.deepEqual(ids(groupConversationAgents(conversations, unread, "  AUDIT ")), {
-    needs_you: [],
-    working: [["running", "working"]],
-    recent: [],
-  });
-});
+}
 
 test("agent search matches every word against what the card already holds", () => {
   const conversation = {

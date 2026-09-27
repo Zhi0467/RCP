@@ -971,7 +971,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
     0 4px 10px rgb(var(--shadow-rgb) / 6%);
   display: grid;
   gap: 0 8px;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   margin-bottom: 6px;
   padding: 10px 10px 10px 9px;
   position: relative;
@@ -995,43 +995,35 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-color: color-mix(in srgb, var(--rule) 70%, transparent);
   box-shadow: var(--aqua-raised);
 }
-.agent-row-icon {
-  display: flex;
-  padding-top: 4px;
+.chats-workspace {
+  --agent-new: var(--indigo);
+  --agent-working: var(--slate);
+  --agent-failed: var(--coral);
+  --agent-stopped: var(--mustard);
 }
-.agent-row-reason {
-  color: var(--coral);
+.agent-group[data-group="new_reply"] .agent-group-heading {
+  color: var(--agent-new);
 }
-.conversation-list [role="option"][data-state="paused"] .agent-row-reason {
-  color: var(--mustard);
+.agent-group[data-group="failed"] .agent-group-heading {
+  color: var(--agent-failed);
 }
+.agent-group[data-group="stopped"] .agent-group-heading {
+  color: var(--agent-stopped);
+}
+.agent-group[data-group="working"] .agent-group-heading,
 .conversation-list [role="option"][data-state="working"] time {
-  color: var(--slate);
+  color: var(--agent-working);
 }
-.agent-state-dot {
-  background: var(--state-colour, var(--faint));
-  border-radius: 50%;
-  height: 9px;
-  width: 9px;
+.agent-group-label {
+  align-items: center;
+  display: flex;
+  gap: 5px;
 }
-.agent-state-dot[data-state="needs_you"] {
-  --state-colour: var(--coral);
+.agent-group-icon {
+  flex: none;
 }
-.agent-state-dot[data-state="paused"] {
-  --state-colour: var(--mustard);
-}
-.agent-state-dot[data-state="working"] {
-  --state-colour: var(--slate);
+.agent-group[data-group="working"] .agent-group-icon {
   animation: agent-state-pulse 1.4s ease-in-out infinite;
-}
-.agent-state-dot[data-state="unread"] {
-  --state-colour: var(--teal);
-}
-.agent-state-dot[data-state="done"] {
-  --state-colour: color-mix(in srgb, var(--teal) 45%, var(--muted));
-}
-.agent-state-dot[data-state="failed"] {
-  --state-colour: var(--oxblood);
 }
 @keyframes agent-state-pulse {
   50% {
@@ -1039,9 +1031,30 @@ details[open] > .view-disclosure-summary > svg:last-child {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .agent-state-dot[data-state="working"] {
+  .agent-group[data-group="working"] .agent-group-icon {
     animation: none;
   }
+}
+.conversation-list [role="option"].unread,
+:root[data-theme="aqua"] .conversation-list [role="option"].unread {
+  background: color-mix(in srgb, var(--agent-new) 14%, var(--sheet));
+  border: 1.5px solid var(--agent-new);
+}
+.conversation-list [role="option"].active,
+:root[data-theme="aqua"] .conversation-list [role="option"].active {
+  outline: 2px solid var(--agent-new);
+  outline-offset: 1px;
+}
+.agent-new-pill {
+  background: var(--agent-new);
+  border-radius: 999px;
+  color: var(--sheet);
+  display: inline-block;
+  font-size: var(--type-3xs);
+  font-weight: 750;
+  margin-right: 6px;
+  padding: 1px 6px;
+  vertical-align: 1px;
 }
 .agent-row {
   position: relative;
@@ -1057,13 +1070,10 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border-radius: 9px;
   display: grid;
   gap: 0 8px;
-  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   margin-bottom: 6px;
   min-height: 55px;
   padding: 0 10px 0 9px;
-}
-.agent-row-rename .agent-row-icon {
-  padding-top: 0;
 }
 .agent-row-rename input {
   background: transparent;
@@ -1170,10 +1180,9 @@ details[open] > .view-disclosure-summary > svg:last-child {
   white-space: nowrap;
 }
 .conversation-list [role="option"].unread .agent-row-title {
-  color: var(--oxblood-dark);
+  color: color-mix(in srgb, var(--agent-new) 65%, var(--ink));
   font-weight: 750;
 }
-.agent-row-reason,
 .agent-row-meta {
   font-size: var(--type-2xs);
   line-height: 1.4;
@@ -1320,9 +1329,9 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .conversation-header-banner {
   align-items: center;
-  background: color-mix(in srgb, var(--coral) 12%, var(--sheet));
+  background: color-mix(in srgb, var(--agent-failed) 12%, var(--sheet));
   border-radius: 6px;
-  color: var(--coral);
+  color: var(--agent-failed);
   display: flex;
   font-size: var(--type-xs);
   gap: 10px;
@@ -1330,9 +1339,9 @@ details[open] > .view-disclosure-summary > svg:last-child {
   margin-top: 6px;
   padding: 6px 6px 6px 10px;
 }
-.conversation-header[data-state="paused"] .conversation-header-banner {
-  background: color-mix(in srgb, var(--mustard) 16%, var(--sheet));
-  color: color-mix(in srgb, var(--mustard) 55%, var(--ink));
+.conversation-header[data-state="stopped"] .conversation-header-banner {
+  background: color-mix(in srgb, var(--agent-stopped) 16%, var(--sheet));
+  color: color-mix(in srgb, var(--agent-stopped) 55%, var(--ink));
 }
 .conversation-divider {
   background: var(--line);

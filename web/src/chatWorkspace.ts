@@ -268,19 +268,21 @@ export function groupChatConversations(
 }
 
 /** What a conversation's latest turn asks of the human, for the Agents panel. */
-export type ConversationAgentState =
-  "needs_you" | "paused" | "working" | "unread" | "failed" | "done" | "draft";
-export type ConversationAgentGroup = "needs_you" | "working" | "recent";
+export type ConversationAgentState = "stopped" | "working" | "unread" | "failed" | "done" | "draft";
+export type ConversationAgentGroup = "new_reply" | "failed" | "stopped" | "working" | "done";
 export interface ConversationAgentStatus {
   state: ConversationAgentState;
   group: ConversationAgentGroup;
   latest: AgentTask | null;
+  unread: boolean;
 }
 
 export const CONVERSATION_AGENT_GROUPS: readonly ConversationAgentGroup[] = [
-  "needs_you",
+  "new_reply",
+  "failed",
+  "stopped",
   "working",
-  "recent",
+  "done",
 ];
 
 export function conversationAgentStatus(
@@ -288,14 +290,19 @@ export function conversationAgentStatus(
   unreadTaskIds: ReadonlySet<string>,
 ): ConversationAgentStatus {
   const latest = conversation.tasks.at(-1) ?? null;
-  if (latest?.active) return { state: "working", group: "working", latest };
-  if (latest?.paused) return { state: "paused", group: "needs_you", latest };
-  if (latest?.awaiting_human) return { state: "needs_you", group: "needs_you", latest };
-  if (!latest) return { state: "draft", group: "recent", latest };
-  if (conversationHasUnread(conversation, unreadTaskIds)) {
-    return { state: "unread", group: "recent", latest };
+  const unread = conversationHasUnread(conversation, unreadTaskIds);
+  const result = { latest, unread };
+  if (latest?.failed) return { ...result, state: "failed", group: "failed" };
+  // After failures, the backend attention flag covers paused and interrupted turns.
+  if (latest?.paused || latest?.awaiting_human) {
+    return { ...result, state: "stopped", group: "stopped" };
   }
-  return { state: latest.failed ? "failed" : "done", group: "recent", latest };
+  if (latest?.active) return { ...result, state: "working", group: "working" };
+  if (!latest) {
+    return { ...result, state: conversation.updatedAt ? "done" : "draft", group: "done" };
+  }
+  if (latest.settled && unread) return { ...result, state: "unread", group: "new_reply" };
+  return { ...result, state: "done", group: "done" };
 }
 
 export interface ConversationAgentRow {
@@ -329,7 +336,7 @@ export function conversationSearchText(conversation: ChatConversation): string {
   return parts.filter(Boolean).join("\n").toLocaleLowerCase();
 }
 
-/** Rows grouped Needs you, Working, Recent; each group keeps recency order. */
+/** Rows grouped by latest turn status; each group keeps recency order. */
 export function groupConversationAgents(
   conversations: ChatConversation[],
   unreadTaskIds: ReadonlySet<string>,
@@ -337,9 +344,11 @@ export function groupConversationAgents(
 ): Record<ConversationAgentGroup, ConversationAgentRow[]> {
   const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const groups: Record<ConversationAgentGroup, ConversationAgentRow[]> = {
-    needs_you: [],
+    new_reply: [],
+    failed: [],
+    stopped: [],
     working: [],
-    recent: [],
+    done: [],
   };
   for (const conversation of conversations) {
     if (terms.length) {
