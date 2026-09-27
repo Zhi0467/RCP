@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Callable
 from contextlib import aclosing
 from pathlib import Path, PurePosixPath
 
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.agents.continuation_prompt import LaunchPhase, MasterRef, classify, compose
 from rcp.agents.experiment_loop_prompt import experiment_watcher_maintenance_correction_contract
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
@@ -18,12 +20,12 @@ from rcp.runs.experiment_loop import (
     persist_experiment_watchers_idempotently,
     read_experiment_watcher_outputs,
 )
+from rcp.runs.session_master import record_inline_prompt
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _retry_deliverable_is_unchanged,
     _stage_json_task_input,
-    _stage_task_contract,
     _stream_agent_events,
 )
 from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
@@ -87,8 +89,13 @@ async def _process_experiment_watcher_maintenance(
     retry_output_digests: dict[str, str],
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
     supervise_remote: bool = False,
+    continuation_master: Callable[[str], MasterRef] | None = None,
 ) -> tuple[list[str], str | None, bool]:
-    """Admit, validate, and atomically persist each physical Experiment watcher file."""
+    """Admit, validate, and atomically persist each physical Experiment watcher file.
+
+    A correction continues the Work session inline; `continuation_master` names the
+    master that session points to.
+    """
 
     if execution is None:
         return [], native_session_id, False
@@ -284,13 +291,25 @@ async def _process_experiment_watcher_maintenance(
                 diagnostics_path=diagnostics_path,
                 watch_path=staged.watch_path,
             )
-            correction_path, correction_prompt = _stage_task_contract(
-                local_stage,
-                remote_stage,
-                f"task-{token}-experiment-watch-correction-{target_digest}-{correction_round}.md",
-                correction_contract,
-                execution=execution,
+            if continuation_master is None:
+                raise ValueError(
+                    "Experiment watcher maintenance correction requires its live launch context."
+                )
+            correction_prompt = compose(
+                classify(LaunchPhase(session_id=native_session_id, phase="correction")),
+                parts=[correction_contract],
+                master=continuation_master(native_session_id),
+                delta=None,
+            )
+            correction_path = record_inline_prompt(
+                execution,
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                label=(
+                    f"task-{token}-experiment-watch-correction-{target_digest}-{correction_round}.md"
+                ),
                 role=f"experiment_watch_correction_{target_digest}_{correction_round}",
+                prompt=correction_prompt,
             )
             before_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
             _record_agent_launch_receipt(

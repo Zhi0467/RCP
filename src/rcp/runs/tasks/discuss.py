@@ -13,7 +13,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
-from rcp.agents.prompts import chat_master_contract_key, invoked_package_pointers
+from rcp.agents.continuation_prompt import LaunchPhase, classify, compose, master_key
+from rcp.agents.prompts import (
+    DISCUSS_POLICY_VERSION,
+    chat_master_contract_key,
+    invoked_package_pointers,
+)
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -39,6 +44,7 @@ from rcp.runs.chat import (
     _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
+    chat_continuation_master,
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
@@ -54,6 +60,7 @@ from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -63,8 +70,8 @@ from rcp.runs.shared import (
     _sse,
     _stage_context_paths,
     _stage_json_task_input,
+    _stage_or_reuse_task_input,
     _stage_task_contract,
-    _stage_task_input,
     _stream_agent_events,
     _swept_stage_root,
     _task_token,
@@ -651,77 +658,99 @@ async def stream_discuss_run(
                     if execution is not None and retry_attempt
                     else None
                 )
-                human_request_path = _stage_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-human-request.txt",
-                    request.message,
+                invoked_skills = invoked_package_pointers(
+                    skill_pointers,
+                    workflow_ids=request.invoked_workflow_ids,
+                    skill_ids=request.invoked_skill_ids,
                 )
-                contract = PromptFactory.discuss_task_contract(
-                    project_name=context.project_name,
-                    ontology_path=f"{context.graph_path}#ontology",
-                    ontology_extensions=context.ontology_extensions,
-                    graph_path=context.graph_path,
-                    research_path=context.research_md_path,
-                    focused_node_id=str(context.node["id"]) if context.node else None,
-                    repositories=[
-                        {"alias": item.alias, "host": item.host, "path": item.path}
-                        for item in context.repositories
-                    ],
-                    introduction_path=context.introduction_path,
-                    human_request_path=human_request_path,
-                    artifact_path=str(artifact_directory),
-                    retry_diagnostics_path=retry_diagnostics_path,
-                    experiment_watcher_resources=experiment_resource_pointers,
-                    skill_pointers=skill_pointers,
-                    invoked_skill_pointers=invoked_package_pointers(
-                        skill_pointers,
-                        workflow_ids=request.invoked_workflow_ids,
-                        skill_ids=request.invoked_skill_ids,
-                    ),
-                    invoked_provider_skills=request.resolved_provider_skills,
-                    attachments=attachment_pointers,
-                    compute_connections=service.compute_prompt_profiles(
-                        request.resolved_compute_context
-                    ),
-                )
-                current_contract_path, current_prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-base.md",
-                    contract,
-                    execution=execution,
-                    role="discuss_resume_base" if resuming else "discuss_retry_base",
-                )
-                if resuming or retrying:
-                    assert execution is not None
-                    original_contract_path = _parent_task_contract_path(
-                        execution, local_stage, remote_stage
+
+                def render_discuss_contract() -> str:
+                    assert request.message is not None
+                    human_request_path = _stage_or_reuse_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-human-request.txt",
+                        request.message,
                     )
-                    recovery_mode = "resume" if resuming else "retry"
+                    return PromptFactory.discuss_task_contract(
+                        project_name=context.project_name,
+                        ontology_path=f"{context.graph_path}#ontology",
+                        ontology_extensions=context.ontology_extensions,
+                        graph_path=context.graph_path,
+                        research_path=context.research_md_path,
+                        focused_node_id=str(context.node["id"]) if context.node else None,
+                        repositories=[
+                            {"alias": item.alias, "host": item.host, "path": item.path}
+                            for item in context.repositories
+                        ],
+                        introduction_path=context.introduction_path,
+                        human_request_path=human_request_path,
+                        artifact_path=str(artifact_directory),
+                        retry_diagnostics_path=retry_diagnostics_path,
+                        experiment_watcher_resources=experiment_resource_pointers,
+                        skill_pointers=skill_pointers,
+                        invoked_skill_pointers=invoked_skills,
+                        invoked_provider_skills=request.resolved_provider_skills,
+                        attachments=attachment_pointers,
+                        compute_connections=service.compute_prompt_profiles(
+                            request.resolved_compute_context
+                        ),
+                    )
+
+                if resuming or retrying:
+                    assert execution is not None and request.session_id is not None
+                    recovery_mode: Literal["resume", "retry"] = "resume" if resuming else "retry"
+                    node = classify(LaunchPhase(session_id=request.session_id, phase="recovery"))
+                    master = chat_continuation_master(
+                        execution,
+                        request,
+                        session_id=request.session_id,
+                        local_stage=local_stage,
+                        remote_stage=remote_stage,
+                        policy_version=DISCUSS_POLICY_VERSION,
+                        render=render_discuss_contract,
+                    )
                     continuation_contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=original_contract_path,
-                        current_contract_path=current_contract_path,
+                        original_contract_path=_parent_task_contract_path(
+                            execution, local_stage, remote_stage
+                        ),
                         diagnostics_path=retry_diagnostics_path,
                         mode=recovery_mode,
                         turn_mode="discuss",
-                        invoked_skill_pointers=invoked_package_pointers(
-                            skill_pointers,
-                            workflow_ids=request.invoked_workflow_ids,
-                            skill_ids=request.invoked_skill_ids,
-                        ),
+                        artifact_path=str(artifact_directory),
+                        experiment_watcher_resources=experiment_resource_pointers,
+                        skill_pointers=skill_pointers,
+                        invoked_skill_pointers=invoked_skills,
                         invoked_provider_skills=request.resolved_provider_skills,
+                        inline=True,
                     )
+                    prompt = compose(node, parts=[continuation_contract], master=master, delta=None)
+                    contract_path = record_inline_prompt(
+                        execution,
+                        local_stage=local_stage,
+                        remote_stage=remote_stage,
+                        label=f"task-{token}-{recovery_mode}.md",
+                        role=f"discuss_{recovery_mode}",
+                        prompt=prompt,
+                    )
+                else:
+                    # A handoff starts a new native session from the full Discuss contract.
+                    contract = render_discuss_contract()
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
                         remote_stage,
-                        f"task-{token}-{recovery_mode}.md",
-                        continuation_contract,
+                        f"task-{token}-base.md",
+                        contract,
                         execution=execution,
-                        role=f"discuss_{recovery_mode}",
+                        role="discuss_retry_base",
                     )
-                else:
-                    contract_path, prompt = current_contract_path, current_prompt
+                    if execution is not None:
+                        record_session_master(
+                            execution.store,
+                            execution.operation_id,
+                            contract,
+                            master_key(DISCUSS_POLICY_VERSION),
+                        )
             else:
                 assert request.message is not None
                 assert artifact_scope_id is not None

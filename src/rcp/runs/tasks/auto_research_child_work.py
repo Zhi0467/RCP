@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -22,10 +22,10 @@ from rcp.agents.command_protocol import (
     MessageCommandRequest,
     ValidateCommandRequest,
 )
-from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
+from rcp.agents.continuation_prompt import LaunchPhase, classify, compose, master_key
 from rcp.agents.prompts import (
     _CURRENT_OPERATIONAL_INSTRUCTIONS,
-    _EXTERNAL_WATCHER_FORMS,
+    WORK_POLICY_VERSION,
     _invoked_package_section,
     _patch_validator_rules,
     _repository_pointers,
@@ -36,7 +36,6 @@ from rcp.agents.prompts import (
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
-from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_BYTES,
@@ -66,6 +65,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.patch_validator import PatchValidationBudget, PatchValidationResult
 from rcp.runs.recorded_turn import RecordedProviderTurn
+from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _protected_run_stage_roots,
@@ -88,9 +88,11 @@ from rcp.runs.tasks.work import (
     WorkTurn,
     _capture_retry_deliverable_baseline,
     _close_work_validator_mailbox,
+    _compose_work_recovery_prompt,
     _ComposedWorkPrompt,
     _finalize_work_turn,
     _launch_and_stream_work_turn,
+    _maintenance_continuation_master,
     _prepare_work_chat_prompt,
     _record_work_finalization_context,
     _recorded_retry_deliverable_baseline,
@@ -105,6 +107,8 @@ from rcp.runs.tasks.work import (
     _StagedWorkInputs,
     _stream_work_graph_repair,
     _validate_work_patch_live,
+    _work_continuation_master,
+    _work_contract_text,
     _work_execution_instructions,
     _work_finalization_context,
     _WorkValidatorMailboxLifecycle,
@@ -289,6 +293,29 @@ hearsay; the canonical graph and research files remain the source of graph truth
 """.strip()
 
 
+def _child_master_render(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    route: AutoResearchChildWorkRecord,
+    *,
+    mail_path: str | None,
+    retry_diagnostics_path: str | None = None,
+) -> Callable[[], str]:
+    """Render the child's full start contract, for a session that has no master to point to."""
+
+    def render() -> str:
+        assignment = replace(
+            turn, request=turn.request.model_copy(update={"message": route.instruction})
+        )
+        return (
+            _work_contract_text(assignment, staged, retry_diagnostics_path=retry_diagnostics_path)
+            + "\n\n"
+            + _auto_research_child_work_contract(turn, staged, route, mail_path=mail_path)
+        )
+
+    return render
+
+
 def _compose_child_resume_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
@@ -296,60 +323,15 @@ def _compose_child_resume_prompt(
     *,
     mail_path: str | None,
 ) -> _ComposedWorkPrompt:
-    assert turn.execution is not None
-    original_contract_path = _parent_task_contract_path(
-        turn.execution,
-        turn.local_stage,
-        turn.remote_stage,
-    )
-    current_contract_path = _stage_work_contract(
-        replace(turn, request=turn.request.model_copy(update={"message": route.instruction})),
-        staged,
-    )
-    contract = PromptFactory.continuation_task_contract(
-        original_contract_path=original_contract_path,
-        current_contract_path=current_contract_path,
-        mode="resume",
-        turn_mode="work",
-        write_scope=turn.write_scope,
-        output_schema_path=turn.patch_inputs.schema_path,
-        patch_path=turn.patch_inputs.patch_path,
-        watch_path=turn.patch_inputs.watch_path,
-        execution_instructions=_work_execution_instructions(turn),
-        validator_command=turn.patch_inputs.validator_command,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
-        invoked_provider_skills=turn.request.resolved_provider_skills,
-        result_view_action=(
-            staged.prepared_result_view.action if staged.prepared_result_view is not None else None
-        ),
-        result_view_path=(
-            staged.prepared_result_view.prompt_path
-            if staged.prepared_result_view is not None
-            else None
-        ),
-    )
-    contract += "\n\n" + _auto_research_child_work_contract(
+    return _compose_work_recovery_prompt(
         turn,
         staged,
-        route,
-        mail_path=mail_path,
-    )
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-resume.md",
-        contract,
-        execution=turn.execution,
+        mode="resume",
+        diagnostics_path=None,
+        render=_child_master_render(turn, staged, route, mail_path=mail_path),
+        label=f"task-{staged.token}-resume.md",
         role="work_resume",
-    )
-    return _ComposedWorkPrompt(
-        contract_path=contract_path,
-        prompt=prompt,
-        base_contract_path=current_contract_path,
+        extra_parts=(_auto_research_child_work_contract(turn, staged, route, mail_path=mail_path),),
     )
 
 
@@ -384,7 +366,7 @@ def _compose_child_wake_prompt(
         workflow_ids=turn.request.invoked_workflow_ids,
         skill_ids=turn.request.invoked_skill_ids,
     )
-    contract = f"""# RCP Auto-research child Work wake
+    wake = f"""# RCP Auto-research child Work wake
 
 This is a Work turn. Continue the original child assignment in the same native provider session.
 Retain completed work and the original objective; the update below is continuation context.
@@ -407,28 +389,32 @@ original assignment and completed progress.
 Current repository inputs:
 {_repository_pointers(staged.repositories)}
 {write_scope_section(turn.write_scope)}
-{render_agent_graph_authority_contract()}
-{REPEATED_RULES_NOTE}
-{graph_rules(edits=True, ontology_extensions=turn.context.ontology_extensions)}
 {selected_skill_section(staged.skill_pointers) or "No official skills or workflows are selected for this turn."}
 {_invoked_package_section(invoked_skills)}
 {invoked_provider_skill_section(turn.request.resolved_provider_skills)}
 {_patch_validator_rules(turn.patch_inputs.validator_command)}
 {_CURRENT_OPERATIONAL_INSTRUCTIONS}
 {_work_execution_instructions(turn)}
-{_EXTERNAL_WATCHER_FORMS}
 
 {_auto_research_child_work_contract(turn, staged, route, mail_path=mail_path)}
 """.strip()
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-auto-research-child-{label}.md",
-        contract,
-        execution=turn.execution,
-        role=role,
+    render = _child_master_render(turn, staged, route, mail_path=mail_path)
+    session_id = turn.request.session_id
+    prompt = compose(
+        classify(LaunchPhase(session_id=session_id, phase="wake")),
+        parts=[wake],
+        master=_work_continuation_master(turn, render, session_id=session_id),
+        delta=None,
     )
-    return _ComposedWorkPrompt(contract_path, prompt, original_contract_path)
+    contract_path = record_inline_prompt(
+        turn.execution,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+        label=f"task-{staged.token}-auto-research-child-{label}.md",
+        role=role,
+        prompt=prompt,
+    )
+    return _ComposedWorkPrompt(contract_path, prompt, original_contract_path, render)
 
 
 async def _stage_auto_research_child_work_turn(
@@ -737,7 +723,25 @@ def _compose_child_fresh_prompt(
             execution=turn.execution,
             role="work_retry_base" if turn.retry_attempt else "work",
         )
-        return _ComposedWorkPrompt(contract_path, prompt, contract_path)
+        if turn.execution is not None:
+            record_session_master(
+                turn.execution.store,
+                turn.execution.operation_id,
+                contract,
+                master_key(WORK_POLICY_VERSION),
+            )
+        return _ComposedWorkPrompt(
+            contract_path,
+            prompt,
+            contract_path,
+            _child_master_render(
+                turn,
+                staged,
+                route,
+                mail_path=mail_path,
+                retry_diagnostics_path=retry_diagnostics_path,
+            ),
+        )
 
     master_context = PromptFactory.chat_master_context(
         project_name=turn.context.project_name,
@@ -815,7 +819,12 @@ def _compose_child_fresh_prompt(
         result_view=staged.prepared_result_view,
         write_scope=turn.write_scope,
     )
-    return _ComposedWorkPrompt(contract_path, prompt, contract_path)
+    return _ComposedWorkPrompt(
+        contract_path,
+        prompt,
+        contract_path,
+        _child_master_render(turn, staged, route, mail_path=mail_path),
+    )
 
 
 def _compose_child_retry_prompt(
@@ -827,6 +836,23 @@ def _compose_child_retry_prompt(
 ) -> _ComposedWorkPrompt:
     assert turn.execution is not None
     retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
+    render = _child_master_render(
+        turn, staged, route, mail_path=mail_path, retry_diagnostics_path=retry_diagnostics_path
+    )
+    if turn.request.session_id is not None:
+        return _compose_work_recovery_prompt(
+            turn,
+            staged,
+            mode="retry",
+            diagnostics_path=retry_diagnostics_path,
+            render=render,
+            label=f"task-{staged.token}-retry.md",
+            role="work_retry",
+            extra_parts=(
+                _auto_research_child_work_contract(turn, staged, route, mail_path=mail_path),
+            ),
+        )
+    # A handoff starts a new native session from the full current contract.
     current_contract_path = _stage_work_contract(
         replace(turn, request=turn.request.model_copy(update={"message": route.instruction})),
         staged,
@@ -887,6 +913,7 @@ def _compose_child_retry_prompt(
         contract_path=contract_path,
         prompt=prompt,
         base_contract_path=current_contract_path,
+        render_master=render,
     )
 
 
@@ -1063,6 +1090,7 @@ async def settle_child_work_deliverables(
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
         supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
+        continuation_master=_maintenance_continuation_master(launch_turn, composed),
     )
     settled.native_session_id = native_session_id
     for frame in maintenance_frames:

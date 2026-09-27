@@ -7,7 +7,8 @@ import os
 import shutil
 import tempfile
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -22,6 +23,7 @@ from rcp.agents.continuation_prompt import (
     PromptNode,
     classify,
     context_delta,
+    master_key,
 )
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.agents.write_scope import (
@@ -49,6 +51,7 @@ from rcp.limits import (
 from rcp.providers import AgentCapability
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.session_master import (
+    continuation_session_master,
     read_legacy_session_master,
     record_session_master,
     session_master_label,
@@ -333,6 +336,64 @@ def _committed_chat_prompt_state(
         _ChatMasterSnapshot.model_validate_json(baseline.snapshot_json),
         baseline.snapshot_sha256,
     )
+
+
+def chat_continuation_master(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    session_id: str,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    policy_version: str,
+    render: Callable[[], str],
+    force_bootstrap: bool = False,
+) -> MasterRef:
+    """The master a Discuss or Work continuation points to in this native session.
+
+    A session with a committed chat baseline keeps its chat master, restored from its
+    record. Any other session continues from the master recorded for it under the owner's
+    key, or bootstraps a freshly rendered owner contract. A forced bootstrap reopens the
+    same master rather than implying that its content changed. A launch with no task
+    record has nowhere to find a master, so it always bootstraps one.
+    """
+
+    if execution is None:
+        content = render()
+        path = _stage_or_reuse_task_input(
+            local_stage, remote_stage, session_master_label(policy_version, content), content
+        )
+        return MasterRef(path=path, bootstrap=True)
+    previous, _ = _committed_chat_prompt_state(
+        execution, request.model_copy(update={"session_id": session_id})
+    )
+    if (
+        previous is not None
+        and previous.contract_key == chat_master_contract_key()
+        and previous.master_operation_id is not None
+        and previous.master_sha256 is not None
+    ):
+        path = stage_session_master(
+            execution.store,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            operation_id=previous.master_operation_id,
+            sha256=previous.master_sha256,
+            path=previous.master_context_path,
+        )
+        return MasterRef(path=path, bootstrap=force_bootstrap)
+    master = continuation_session_master(
+        execution,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        native_session_id=session_id,
+        label_prefix=policy_version,
+        key=master_key(policy_version),
+        render=render,
+    )
+    if force_bootstrap and not master.bootstrap:
+        return replace(master, bootstrap=True)
+    return master
 
 
 def _retained_chat_patch_values(

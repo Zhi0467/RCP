@@ -202,6 +202,8 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     request = _request().model_copy(
         update={"message": None, "session_id": "manual-repair-native-session"}
     )
+    # A task is stored with the provider and machine its launch is pinned to.
+    request = work_module._resolve_work_execution(service, request, None).request
     execution = _chat_task_execution(app, request, "work-mailbox-manual-repair-failure")
     stage = tmp_path / "data" / "run-stage" / "chat-manual-repair-failure"
     stage.mkdir(parents=True)
@@ -212,6 +214,10 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
         workspace_root=str(stage / "workspace"),
     )
     execution.checkpoint_stage("", str(stage))
+    # A recovery task is created bound to the native session it continues.
+    execution.store.checkpoint_agent_task(
+        execution.operation_id, native_session_id="manual-repair-native-session"
+    )
     execution.continuation = "graph_repair"
     staged_mailboxes: list[StagedCommandMailbox] = []
     started: list[str] = []
@@ -501,6 +507,9 @@ async def test_operational_continuation_renders_current_launch_client(
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
+    if owner is not loop_module:
+        # A task is stored with the provider and machine its launch is pinned to.
+        request = work_module._resolve_work_execution(service, request, None).request
     execution = _chat_task_execution(app, request, "current-launch-turn")
     previous_stage = tmp_path / "previous-stage"
     previous_stage.mkdir()
@@ -525,8 +534,8 @@ async def test_operational_continuation_renders_current_launch_client(
     original = previous_stage / "original.md"
     original.write_text(previous_command)
     previous.cleanup()
-    if owner is not loop_module:
-        monkeypatch.setattr(owner, "_parent_task_contract_path", lambda *_args: str(original))
+    for module in {owner, work_module} - {loop_module}:
+        monkeypatch.setattr(module, "_parent_task_contract_path", lambda *_args: str(original))
     turn, staged = await work_module._stage_work_turn(
         service,
         work_module._resolve_work_execution(service, request, execution),
@@ -536,7 +545,16 @@ async def test_operational_continuation_renders_current_launch_client(
     try:
         execution.continuation = continuation
         execution.retry_feedback = ("The previous invocation was interrupted.",)
-        turn.request = request.model_copy(update={"watcher_ids": ["observer-1"]})
+        if owner is loop_module:
+            turn.request = request.model_copy(update={"watcher_ids": ["observer-1"]})
+        else:
+            # Work and child Work continue the native session their task is bound to.
+            execution.store.checkpoint_agent_task(
+                execution.operation_id, native_session_id="current-launch-session"
+            )
+            turn.request = turn.request.model_copy(
+                update={"watcher_ids": ["observer-1"], "session_id": "current-launch-session"}
+            )
         if owner is child_module:
             composed = child_module._compose_child_prompt(
                 turn,

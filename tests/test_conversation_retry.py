@@ -9,17 +9,19 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.agents import AgentEvent, PromptFactory
+from rcp.agents import AgentEvent, AgentProcessControl, PromptFactory
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
-from rcp.runs.chat import _local_chat_artifact_directory
+from rcp.background import AgentTaskExecution
+from rcp.runs.chat import _local_chat_artifact_directory, chat_continuation_master
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
+from rcp.service import RunRequest
 
 from .helpers import (
     agent_patch_json,
     append_fixture_patch,
-    launch_contract_path,
     refresh_patch,
     seed_patch,
     store_test_claude_token,
@@ -50,8 +52,16 @@ class _FailThenSucceedLauncher:
     async def stream(self, _provider, prompt, **kwargs):
         attempt = len(self.contracts)
         self.prompts.append(prompt)
-        # A session start names its contract; a continuation names its master last.
-        contract_path = launch_contract_path(prompt)
+        master_path = _master_path(prompt)
+        if master_path is None:
+            contract_path = Path(prompt.splitlines()[1])
+        else:
+            # An inline continuation is recorded beside the master it names.
+            contract_path = next(
+                item
+                for item in master_path.parent.iterdir()
+                if item.is_file() and item.read_text(encoding="utf-8") == prompt
+            )
         inputs = contract_path.parent
         workspace = Path(kwargs["cwd"])
         self.contract_paths.append(contract_path)
@@ -75,6 +85,22 @@ class _FailThenSucceedLauncher:
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="answer", text="The Retry completed.")
         yield AgentEvent(event="done")
+
+
+def _master_path(prompt: str) -> Path | None:
+    """The master an inline continuation names, or None for a contract launch."""
+
+    lines = prompt.splitlines()
+    opening = SECTIONS["master_bootstrap"].split("\n")[0]
+    if lines[0] in {opening, "Open and follow the immutable RCP task contract at:"}:
+        return None
+    pointer = SECTIONS["master_pointer"].split("{path}")[0]
+    for index, line in enumerate(lines):
+        if line.startswith(pointer):
+            return Path(line[len(pointer) :].split("`")[0])
+        if line == opening:
+            return Path(lines[index + 1])
+    raise AssertionError("A continuation prompt names no master contract.")
 
 
 def _retry_task(
@@ -116,8 +142,13 @@ def _assert_retry_contract(
     launcher: _FailThenSucceedLauncher,
     *,
     expected_failure: str,
+    inline: bool = False,
 ) -> None:
-    """Recovery stages current inputs and keeps exact predecessor diagnostics."""
+    """Recovery keeps exact predecessor diagnostics and carries current guidance.
+
+    An inline continuation carries it in the prompt beside its master; a contract
+    launch stages a current contract beside the original.
+    """
 
     assert launcher.sessions == [None, launcher.native_session_id]
     retry_contract_path = launcher.contract_paths[1]
@@ -129,14 +160,22 @@ def _assert_retry_contract(
 
     assert str(diagnostics_path) in retry_contract
     assert str(_first_prompt_contract(launcher)) in retry_contract
+    assert json.loads(launcher.input_snapshots[1][diagnostics_path.name]) == {
+        "prior_attempt_diagnostics": expected_diagnostics
+    }
+    if inline:
+        master_path = _master_path(launcher.prompts[1])
+        assert master_path is not None and master_path.parent == stage_inputs
+        assert master_path.read_text(encoding="utf-8") not in launcher.prompts[1]
+        for extensions in (False, True):
+            assert graph_rules(edits=True, ontology_extensions=extensions) not in retry_contract
+        assert f"{prefix}-base.md" not in launcher.input_snapshots[1]
+        return
     current_contract_path = stage_inputs / f"{prefix}-base.md"
     assert str(current_contract_path) in retry_contract
     assert current_contract_path.is_file()
     assert f"{prefix}-base.md" in launcher.input_snapshots[1]
     assert f"{prefix}-human-request.txt" in launcher.input_snapshots[1]
-    assert json.loads(launcher.input_snapshots[1][diagnostics_path.name]) == {
-        "prior_attempt_diagnostics": expected_diagnostics
-    }
 
 
 def _assert_retry_receipt(app, operation_id: str) -> None:
@@ -186,7 +225,7 @@ def test_same_provider_discuss_retry_receives_exact_failure(manifest, tmp_path) 
         },
     )
 
-    _assert_retry_contract(launcher, expected_failure=failure)
+    _assert_retry_contract(launcher, expected_failure=failure, inline=True)
     assert launcher.workspaces[0] == launcher.workspaces[1]
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
@@ -262,7 +301,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
         after_failure=make_legacy,
     )
 
-    _assert_retry_contract(launcher, expected_failure=failure)
+    _assert_retry_contract(launcher, expected_failure=failure, inline=True)
     if legacy_layout:
         assert launcher.workspaces[1] == launcher.workspaces[0].parent
     else:
@@ -325,6 +364,81 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
         )
         assert launch.payload["canonical_write_roots"][0] == str(workspace)
         assert str(workspace / "inputs") in launch.payload["protected_write_paths"]
+
+
+def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    session = str(uuid.uuid4())
+    prompts: list[str] = []
+
+    class Launcher:
+        async def stream(self, _provider, prompt, **_kwargs):
+            prompts.append(prompt)
+            yield AgentEvent(event="session", session_id=session)
+            if len(prompts) == 2:
+                yield AgentEvent(event="error", text="Work provider disconnected.")
+                return
+            yield AgentEvent(event="answer", text="Done.")
+            yield AgentEvent(event="done")
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, Launcher(), request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    body = {"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"], "mode": "work"}
+    first = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat", json={**body, "message": "Start."}
+    )
+    assert wait_for_task_response(client, project_id, first.json()["operation_id"])["status"] == (
+        "succeeded"
+    )
+    assert _master_path(prompts[0]) is None  # A session start opens its master directly.
+    master_path = Path(prompts[0].splitlines()[1])
+    _, retried = _retry_task(
+        client,
+        project_id,
+        "project_chat",
+        {**body, "message": "Continue.", "session_id": session},
+    )
+
+    retry = prompts[2]
+    assert _master_path(retry) == master_path
+    assert SECTIONS["master_pointer"].split("{path}")[0] in retry
+    assert master_path.read_text(encoding="utf-8") not in retry
+    for extensions in (False, True):
+        assert graph_rules(edits=True, ontology_extensions=extensions) not in retry
+    assert store.agent_task_contract(str(retried["operation_id"]), "work_retry") == retry
+
+    # A forced bootstrap reopens the same master rather than rendering a new one.
+    execution = AgentTaskExecution(
+        operation_id=str(retried["operation_id"]),
+        store=store,
+        control=AgentProcessControl(),
+        continuation="retry",
+    )
+    task = store.agent_task(str(retried["operation_id"]))
+    assert task is not None
+    master_path.unlink()
+    forced = chat_continuation_master(
+        execution,
+        RunRequest.model_validate(task.request),
+        session_id=session,
+        local_stage=master_path.parent.parent,
+        remote_stage=None,
+        policy_version="unused",
+        render=lambda: pytest.fail("a session with a chat master renders nothing"),
+        force_bootstrap=True,
+    )
+    assert (forced.path, forced.bootstrap) == (str(master_path), True)
+    assert master_path.is_file()
 
 
 def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state(
@@ -612,12 +726,20 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
     assert launcher.sessions == [None, launcher.native_session_id]
     assert launcher.workspaces[0] == launcher.workspaces[1]
     assert completed["parent_operation_id"] == first["operation_id"]
-    current_name = f"task-{completed['operation_id']}-base.md"
-    current_contract = launcher.input_snapshots[1][current_name]
-    assert updated_guidance in current_contract
     assert updated_guidance not in launcher.contracts[0]
-    assert current_name in launcher.contracts[1]
     assert str(_first_prompt_contract(launcher)) in launcher.contracts[1]
+    if kind == "node_chat":
+        # The first turn never committed a chat baseline, so the continuation opens a
+        # freshly rendered master rather than pointing to one.
+        master_path = _master_path(launcher.prompts[1])
+        assert master_path is not None
+        assert SECTIONS["master_pointer"].split("{path}")[0] not in launcher.prompts[1]
+        assert updated_guidance in master_path.read_text(encoding="utf-8")
+        assert updated_guidance not in launcher.prompts[1]
+    else:
+        current_name = f"task-{completed['operation_id']}-base.md"
+        assert updated_guidance in launcher.input_snapshots[1][current_name]
+        assert current_name in launcher.contracts[1]
     assert (
         launcher.input_snapshots[1][f"task-{completed['operation_id']}-human-request.txt"]
         == objective
