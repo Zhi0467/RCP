@@ -336,6 +336,7 @@ def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
         discuss.DISCUSS_FINALIZATION_CONTEXT_ROLE,
         work_turn_runtime.WORK_CORRECTION_SESSION_ROLE,
         session_master.SESSION_MASTER_ROLE,
+        session_master.SESSION_MASTER_KEY_ROLE,
     ]
     records = {
         "retry": SimpleNamespace(parent_operation_id="dropped"),
