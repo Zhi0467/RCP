@@ -349,6 +349,25 @@ def _launch_text(prompt: str) -> str:
     return prompt
 
 
+def _changed_values(prompt: str) -> dict[str, str]:
+    """The changed-value lines a continuation carries, by their dotted key."""
+
+    header = SECTIONS["context_delta"]
+    if header not in prompt:
+        return {}
+    block = prompt.split(header + "\n", 1)[1].split("\n\n", 1)[0]
+    return dict(line.removeprefix("- ").split(": ", 1) for line in block.splitlines())
+
+
+_TURN_VALUES = {
+    "paths.loop_control",
+    "paths.watcher_state",
+    "paths.artifacts",
+    "commands.validate",
+    "commands.launch",
+}
+
+
 class _LoopLauncher:
     def __init__(self, native_session_id: str, watcher_cwd: Path, *, write_handoff: bool) -> None:
         self.native_session_id = native_session_id
@@ -673,7 +692,7 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
             contract = _launch_text(prompt)
             self.contracts.append(contract)
             for line in contract.splitlines():
-                if "Exact watcher diagnostic" in line:
+                if line.startswith("- Watcher diagnostic: `"):
                     self.diagnostics.append(Path(line.split("`")[1]).read_text(encoding="utf-8"))
             workspace = Path(kwargs["cwd"])
             observer = {
@@ -751,7 +770,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
             self.contracts.append(contract)
             workspace = Path(kwargs["cwd"])
             (workspace / "watch.json").write_text('{"external":[],"graph":[]}\n', encoding="utf-8")
-            correcting = "watcher correction" in contract.casefold()
+            correcting = "watcher correction" in contract.partition("\n")[0].casefold()
             next_action = None if correcting else "Analyze and document the remaining results."
             (workspace / "patch.json").write_text(
                 json.dumps(
@@ -1073,8 +1092,8 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert set(initial_baseline) == {"ontology", "repositories", "skills"}
     store.complete_agent_task("loop-initial", applied_revision=None, result={})
 
-    # Make one prior baseline value stale. The wake must send only that exact
-    # replacement and commit the new complete baseline after its handoff succeeds.
+    # Make one prior baseline value stale. The wake compares with its master's values,
+    # not this baseline, and commits the complete baseline after its handoff succeeds.
     assert episode.provider and episode.execution_machine and episode.chat_id
     store.commit_experiment_episode_turn(
         episode_id=episode.episode_id,
@@ -1151,15 +1170,13 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert wake_contract.endswith(SECTIONS["master_pointer"].format(path=master_path))
     assert graph_rules(edits=True, ontology_extensions=False) not in wake_contract
     assert graph_rules(edits=True, ontology_extensions=False) in launcher.contracts[0]
-    replacement_values, _ = json.JSONDecoder().raw_decode(
-        wake_contract[wake_contract.index("\n{") + 1 :]
-    )
-    assert replacement_values == {"repositories": initial_baseline["repositories"]}
-    assert "task-loop-wake-experiment-control-watcher_wake.json" in wake_contract
-    assert "task-loop-wake-experiment-watchers.json" in wake_contract
-    assert str(service.manifest.research_dir / "graph.json") in wake_contract
-    assert str(service.manifest.research_dir / "research.md") in wake_contract
-    assert "chat-patch-schema-" in wake_contract
+    # Only this turn's own inputs and commands changed from the master; unchanged graph,
+    # research, schema, write roots, repositories, and skills do not travel again.
+    changed = _changed_values(wake_contract)
+    assert set(changed) == _TURN_VALUES
+    assert "task-loop-wake-experiment-control-watcher_wake.json" in changed["paths.loop_control"]
+    assert "task-loop-wake-experiment-watchers.json" in changed["paths.watcher_state"]
+    assert str(service.manifest.research_dir / "graph.json") not in wake_contract
     assert "rcp-agent-client-" in wake_contract
     assert " --broker " in wake_contract
     assert " --credential " not in wake_contract
@@ -1168,6 +1185,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 
     assert str(initial_workspace / "turns" / "loop-wake" / "artifacts") in wake_contract
     assert str(initial_workspace / "turns" / "loop-initial" / "artifacts") not in wake_contract
+    # The in-session Patch correction already holds the wake's values; only its own
+    # validator is new.
+    assert set(_changed_values(launcher.contracts[2])) == {"commands.validate"}
 
     committed = store.experiment_episode(episode_id)
     assert committed is not None
@@ -1434,14 +1454,16 @@ async def test_added_turns_continue_the_ended_session_inline(manifest, tmp_path:
     master_path = next(Path(initial.stage_root, "inputs").glob("experiment-master-*.md"))
     assert master_path.read_text(encoding="utf-8") == launcher.contracts[0]
     assert store.agent_task_contract("loop-added-turns", "experiment_loop_turn") == prompt
-    assert prompt.endswith(
-        "Try the larger sweep next.\n\n" + SECTIONS["master_pointer"].format(path=master_path)
+    assert prompt.endswith(SECTIONS["master_pointer"].format(path=master_path))
+    assert prompt.index("Try the larger sweep next.") < prompt.index(SECTIONS["context_delta"])
+    # Only the new turn's own inputs and commands changed from the master.
+    changed = _changed_values(prompt)
+    assert set(changed) == _TURN_VALUES
+    assert (
+        "task-loop-added-turns-experiment-control-human_reauthorization.json"
+        in changed["paths.loop_control"]
     )
-    assert "task-loop-added-turns-experiment-control-human_reauthorization.json" in prompt
-    assert " validate " in prompt
     assert graph_rules(edits=True, ontology_extensions=False) not in prompt
-    # Nothing in the episode context changed, so no replacement values travel.
-    assert "\n{" not in prompt
 
 
 @pytest.mark.asyncio

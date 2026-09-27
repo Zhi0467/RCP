@@ -581,35 +581,22 @@ def test_work_patch_correction_preserves_paths_and_validator_command() -> None:
         )
 
 
-def test_experiment_continuations_carry_current_inputs_but_no_master_policy() -> None:
-    validator_command = "python /stage/validator.py /stage/patch.json"
+def test_experiment_continuations_carry_their_diagnostics_but_no_master_policy() -> None:
     retry = "\n\n".join(
         experiment_loop_continuation_contract(
-            mode="retry",
-            patch_path="/stage/patch.json",
-            watch_path="/stage/watch.json",
-            diagnostics_path="/stage/inputs/retry.json",
-            output_schema_path="/stage/inputs/patch-schema.json",
-            validator_command=validator_command,
-            loop_control_path="/stage/inputs/experiment-control-retry.json",
+            mode="retry", diagnostics_path="/stage/inputs/retry.json"
         )
     )
     watcher_correction = "\n\n".join(
-        experiment_loop_watcher_correction_contract(
-            diagnostics_path="/stage/inputs/watch.json",
-            watch_path="/stage/watch.json",
-            patch_path="/stage/patch.json",
-            output_schema_path="/stage/inputs/patch-schema.json",
-            validator_command=validator_command,
-        )
+        experiment_loop_watcher_correction_contract(diagnostics_path="/stage/inputs/watch.json")
     )
 
     for continuation in (retry, watcher_correction):
-        assert validator_command in continuation
         assert REPEATED_RULES_NOTE not in continuation
         assert graph_rules(edits=True, ontology_extensions=False) not in continuation
         assert PROVIDER_NATIVE_SUBAGENT_LIFETIME not in continuation
-    assert "/stage/inputs/experiment-control-retry.json" in retry
+    assert "/stage/inputs/retry.json" in retry
+    assert "/stage/inputs/watch.json" in watcher_correction
 
 
 def test_retry_contract_requires_diagnostics_and_preserves_contract_paths() -> None:
@@ -868,32 +855,6 @@ def test_work_continuation_preserves_execution_instructions_only_for_operational
         assert execution_instructions not in contract
 
 
-@pytest.mark.parametrize("mode", ["resume", "retry"])
-def test_experiment_continuation_preserves_current_paths_and_execution_instructions(
-    mode, execution_instructions
-):
-    parts = experiment_loop_continuation_contract(
-        mode=mode,
-        loop_control_path="/stage/control.json",
-        patch_path="/stage/patch.json",
-        watch_path="/stage/watch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="test-client validate",
-        execution_instructions=execution_instructions,
-        diagnostics_path="/stage/diagnostics.json",
-        graph_path="/stage/current/graph.json",
-        research_path="/stage/current/research.md",
-        artifact_path="/stage/turn-2/artifacts",
-        write_scope=_work_write_scope(),
-    )
-    contract = "\n\n".join(parts)
-    assert execution_instructions in contract
-    assert "/stage/current/graph.json" in contract
-    assert "/stage/current/research.md" in contract
-    assert "/stage/turn-2/artifacts" in contract
-    assert "/repo-a/.research" in contract
-
-
 def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
     import inspect
 
@@ -915,7 +876,6 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         auto.auto_research_worker_task_contract,
         auto.auto_research_orchestrator_continuation_contract,
         experiment.experiment_loop_task_contract,
-        experiment.experiment_watcher_maintenance_correction_contract,
         merge.branch_merge_task_contract,
         episode_report_task_contract,
     ]
