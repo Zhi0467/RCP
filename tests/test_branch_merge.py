@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -33,6 +34,7 @@ from rcp.runs.branch_merge import (
     BranchMergeRunOutcome,
     BranchMergeSourceChanged,
     BranchMergeStage,
+    _changed_graph_rules,
     branch_merge_can_resolve_without_patch,
     branch_merge_id,
     build_semantic_delta,
@@ -906,6 +908,18 @@ def _assert_points_to_start_contract(prompts: list[str]) -> None:
         assert start not in prompt
         assert graph_rules(edits=True, ontology_extensions=False) not in prompt
     assert start_path.read_text(encoding="utf-8") == start
+
+
+def test_a_merge_continuation_resends_rules_only_when_main_ontology_changed() -> None:
+    def context(extended: bool) -> Any:
+        ontology = SimpleNamespace(types=[object()] if extended else [], fields=[], relations=[])
+        return SimpleNamespace(main_graph=SimpleNamespace(ontology=ontology))
+
+    master = ("master.md", "start contract", False)
+    assert _changed_graph_rules(context(False), master) == []
+    assert _changed_graph_rules(context(True), master) == [
+        graph_rules(edits=True, ontology_extensions=True)
+    ]
 
 
 @pytest.mark.asyncio

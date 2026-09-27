@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import AsyncIterator, Callable
@@ -28,7 +27,7 @@ from rcp.background import AgentTaskExecution
 from rcp.paper import PaperService, WritingSession
 from rcp.providers import ProviderSkillReference, configured_runtime_id
 from rcp.runs.session_master import (
-    SESSION_MASTER_ROLE,
+    continuation_session_master,
     record_inline_prompt,
     record_session_master,
     session_master_label,
@@ -453,6 +452,9 @@ def _coach_continuation_parts(
     return parts
 
 
+_COACH_MASTER_LABEL = "paper-coach-master"
+
+
 def _coach_session_master(
     execution: AgentTaskExecution | None,
     *,
@@ -461,36 +463,24 @@ def _coach_session_master(
     key: str,
     render: Callable[[], str],
 ) -> MasterRef:
-    """Restage the session's master into this turn's stage, or bootstrap a new one.
+    """Restage the session's master into this turn's own stage, or bootstrap a new one."""
 
-    Each coaching turn has its own stage, so the master is found by native session across
-    every stage the session used, and its exact bytes are restored here.
-    """
-
-    found = None
-    if execution is not None:
-        record = execution.store.agent_task(execution.operation_id)
-        if record is None:
-            raise ValueError("The paper-coach task record is unavailable.")
-        found = execution.store.latest_session_master_any_stage(
-            record.project_id, "paper_coach", native_session_id
-        )
-    if found is not None and found[2] == key:
-        assert execution is not None
-        operation_id, digest, _ = found
-        content = execution.store.agent_task_contract(operation_id, SESSION_MASTER_ROLE)
-        if content is None or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
-            raise ValueError("The native session's recorded master contract is corrupt.")
-        bootstrap = False
-    else:
+    if execution is None:
         content = render()
-        if execution is not None:
-            record_session_master(execution.store, execution.operation_id, content, key)
-        bootstrap = True
-    path = _stage_or_reuse_task_input(
-        local_stage, None, session_master_label("paper-coach-master", content), content
+        path = _stage_or_reuse_task_input(
+            local_stage, None, session_master_label(_COACH_MASTER_LABEL, content), content
+        )
+        return MasterRef(path=path, bootstrap=True)
+    return continuation_session_master(
+        execution,
+        local_stage=local_stage,
+        remote_stage=None,
+        native_session_id=native_session_id,
+        label_prefix=_COACH_MASTER_LABEL,
+        key=key,
+        render=render,
+        across_stages=True,
     )
-    return MasterRef(path=path, bootstrap=bootstrap, replaces=bootstrap and found is not None)
 
 
 def _paper_snapshot_path(data_dir: Path, project_id: str) -> Path:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import threading
 import time
 import uuid
@@ -12,6 +13,7 @@ from typing import Any, TypeVar
 
 from pydantic import TypeAdapter
 
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman, Patch
@@ -55,6 +57,15 @@ _RCP_OWNED_ITEM_FIELDS = {
     ),
     "upsert_glossary": ("terms", {"updated_rev"}),
 }
+
+
+def launch_contract_path(prompt: str) -> Path:
+    """The contract file a launch names: its master pointer or bootstrap, else line two."""
+
+    named = re.search(
+        re.escape(SECTIONS["master_pointer"].split("{path}")[0]) + r"([^`]+)`", prompt
+    ) or re.search(re.escape(SECTIONS["master_bootstrap"].split("{path}")[0]) + r"(.+)", prompt)
+    return Path(named[1] if named else prompt.splitlines()[1].strip())
 
 
 def create_named_app(*args: Any, **kwargs: Any):

@@ -21,7 +21,6 @@ from pydantic import ValidationError
 import rcp.projects as projects_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, ProviderReadiness
-from rcp.agents.acceptance import _launch_contract_path
 from rcp.agents.context import RepositoryPointer
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
@@ -97,6 +96,7 @@ from .helpers import (
     async_wait_until,
     create_named_app,
     gated_patch,
+    launch_contract_path,
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
@@ -3120,7 +3120,7 @@ def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
     assert str(Path(str(launcher.calls[1]["workspace"])) / "patch.json") in prompt
     if recovery == "retry":
         assert f"task-{completed['operation_id']}-retry-diagnostics.json" in prompt
-    master = launcher.calls[1]["inputs"][_launch_contract_path(prompt.splitlines()).name]
+    master = launcher.calls[1]["inputs"][launch_contract_path(prompt).name]
     assert master in {
         store.agent_task_contract(operation_id, "session_master")
         for operation_id in (failed["operation_id"], completed["operation_id"])
@@ -4300,7 +4300,7 @@ def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(app, 
         async def stream(self, _provider, prompt, **kwargs):
             self.prompts.append(prompt)
             self.sessions.append(kwargs.get("session_id"))
-            path = _launch_contract_path(prompt.splitlines())
+            path = launch_contract_path(prompt)
             self.masters.append((path, path.read_text(encoding="utf-8")))
             yield AgentEvent(event="session", session_id=session_id)
             yield AgentEvent(event="message", text="Coached.")

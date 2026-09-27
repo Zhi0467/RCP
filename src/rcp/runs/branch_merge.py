@@ -37,6 +37,7 @@ from rcp.agents.branch_merge_prompt import (
 )
 from rcp.agents.context import _has_ontology_extensions
 from rcp.agents.continuation_prompt import LaunchPhase, MasterRef, classify, compose, master_key
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.schema import (
     AgentProjectNode,
     OrchestratorAgentPatch,
@@ -1866,7 +1867,7 @@ async def stream_branch_merge_run(
 
     token = _task_token(execution)
     # The start contract this session holds, as (staged label, exact bytes).
-    session_master: tuple[str, str] | None = None
+    session_master: tuple[str, str, bool] | None = None
     session_id: str | None = None
     candidate_text: str | None = None
     candidate: Patch | None = None
@@ -1934,7 +1935,11 @@ async def stream_branch_merge_run(
                     contract,
                     master_key(BRANCH_MERGE_POLICY_VERSION),
                 )
-            session_master = (master_label, contract)
+            session_master = (
+                master_label,
+                contract,
+                _has_ontology_extensions(context.main_graph),
+            )
             _record_merge_launch(
                 execution,
                 request,
@@ -2075,7 +2080,8 @@ async def stream_branch_merge_run(
                         stage, token, deterministic_ops, round_number=outcome.rebase_rounds
                     ),
                     residue_block=render_merge_residue(residue),
-                ),
+                )
+                + _changed_graph_rules(context, session_master),
                 master=_restaged_merge_master(stage, session_master),
                 delta=None,
             )
@@ -2284,7 +2290,8 @@ async def stream_branch_merge_run(
                 patch_path=_patch_path(stage),
                 diagnostics_path=diagnostics_path,
                 validator_command=validator_command,
-            ),
+            )
+            + _changed_graph_rules(context, session_master),
             master=_restaged_merge_master(stage, session_master),
             delta=None,
         )
@@ -2898,17 +2905,28 @@ def _read_candidate_text(stage: BranchMergeStage) -> str:
 
 def _restaged_merge_master(
     stage: BranchMergeStage,
-    session_master: tuple[str, str] | None,
+    session_master: tuple[str, str, bool] | None,
 ) -> MasterRef:
     """Point a merge continuation at the start contract this session completed a turn with."""
 
     if session_master is None:
         raise ValueError("A branch merge continuation has no start contract in its session.")
-    label, content = session_master
+    label, content, _ = session_master
     return MasterRef(
         path=_stage_or_reuse_task_input(stage.local_stage, stage.remote_stage, label, content),
         bootstrap=False,
     )
+
+
+def _changed_graph_rules(
+    context: BranchMergeContext, session_master: tuple[str, str, bool] | None
+) -> list[str]:
+    """The current graph rules, only once main's ontology extensions differ from the master's."""
+
+    current = _has_ontology_extensions(context.main_graph)
+    if session_master is None or session_master[2] == current:
+        return []
+    return [graph_rules(edits=True, ontology_extensions=current)]
 
 
 def _provider_turn(

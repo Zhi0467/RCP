@@ -2751,20 +2751,27 @@ class AgentTaskStoreMixin:
         native_session_id: str,
         *,
         stage_host: str | None,
-        stage_root: str,
+        stage_root: str | None,
     ) -> tuple[str, str, str | None] | None:
         """Return the newest master a succeeded turn delivered in one native session.
 
         Only a succeeded operation counts: a master recorded by an attempt that failed,
         paused, or was interrupted may never have reached the provider, so the session is
-        not known to hold it and the next launch must bootstrap again. The result is the
-        recording operation, the master's digest, and the key it was rendered under (None
-        for a master recorded without one).
+        not known to hold it and the next launch must bootstrap again. A ``stage_root`` of
+        None searches every stage the session used, for owners that give each turn a fresh
+        stage. The result is the recording operation, the master's digest, and the key it
+        was rendered under (None for a master recorded without one).
         """
 
+        stage_filter = (
+            ""
+            if stage_root is None
+            else "AND COALESCE(run.stage_host, '') = ? AND run.stage_root = ?"
+        )
+        stage_args = () if stage_root is None else (stage_host or "", stage_root)
         with self.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT master.operation_id, master.sha256, key.content AS master_key
                 FROM graph_run_contracts AS master
                 JOIN graph_runs AS run ON run.operation_id = master.operation_id
@@ -2773,43 +2780,11 @@ class AgentTaskStoreMixin:
                 WHERE master.role = 'session_master'
                   AND run.status = 'succeeded'
                   AND run.project_id = ? AND run.native_session_id = ?
-                  AND COALESCE(run.stage_host, '') = ? AND run.stage_root = ?
+                  {stage_filter}
                 ORDER BY master.rowid DESC
                 LIMIT 1
                 """,
-                (project_id, native_session_id, stage_host or "", stage_root),
-            ).fetchone()
-        if row is None:
-            return None
-        return str(row["operation_id"]), str(row["sha256"]), row["master_key"]
-
-    def latest_session_master_any_stage(
-        self,
-        project_id: str,
-        kind: str,
-        native_session_id: str,
-    ) -> tuple[str, str, str | None] | None:
-        """Return the newest master a succeeded turn of one kind delivered in a native session.
-
-        Unlike ``latest_session_master`` this spans every stage the session used, for owners
-        that give each turn a fresh stage and restage the master into it.
-        """
-
-        with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT master.operation_id, master.sha256, key.content AS master_key
-                FROM graph_run_contracts AS master
-                JOIN graph_runs AS run ON run.operation_id = master.operation_id
-                LEFT JOIN graph_run_contracts AS key
-                  ON key.operation_id = master.operation_id AND key.role = 'session_master_key'
-                WHERE master.role = 'session_master'
-                  AND run.status = 'succeeded'
-                  AND run.project_id = ? AND run.kind = ? AND run.native_session_id = ?
-                ORDER BY master.rowid DESC
-                LIMIT 1
-                """,
-                (project_id, kind, native_session_id),
+                (project_id, native_session_id, *stage_args),
             ).fetchone()
         if row is None:
             return None

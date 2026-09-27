@@ -10,7 +10,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, PromptFactory
-from rcp.agents.acceptance import _launch_contract_path
 from rcp.agents.graph_rules import graph_rules
 from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.runs.tasks.coach import stream_coach
@@ -20,6 +19,7 @@ from rcp.runs.tasks.work import stream_work_run
 from .helpers import (
     agent_patch_json,
     append_fixture_patch,
+    launch_contract_path,
     refresh_patch,
     seed_patch,
     store_test_claude_token,
@@ -51,7 +51,7 @@ class _FailThenSucceedLauncher:
         attempt = len(self.contracts)
         self.prompts.append(prompt)
         # A session start names its contract; a continuation names its master last.
-        contract_path = _launch_contract_path(prompt.splitlines())
+        contract_path = launch_contract_path(prompt)
         inputs = contract_path.parent
         workspace = Path(kwargs["cwd"])
         self.contract_paths.append(contract_path)
