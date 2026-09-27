@@ -187,6 +187,9 @@ export function useChatState({
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
   const chatSummaryRefreshGeneration = useRef(0);
   const chatReadsRef = useRef<ChatReads | null>(null);
+  // Summary refreshes and archive changes both fetch chat-reads; only the newest
+  // fetch may replace its archive and finish projection.
+  const chatReadsFetch = useRef(0);
   const setChatReads = useCallback((next: ChatReads | null) => {
     chatReadsRef.current = next;
     setChatReadsState(next);
@@ -366,6 +369,7 @@ export function useChatState({
       const generation = ++chatSummaryRefreshGeneration.current;
       setChatSummariesLoading(true);
       try {
+        const readsFetch = ++chatReadsFetch.current;
         const [page, reads] = await Promise.all([
           loadChatSummaryPage(base, 0, api, graphTarget),
           loadChatReads(graphTargetUrl(`${base}/chat-reads`, graphTarget)),
@@ -401,7 +405,9 @@ export function useChatState({
         )
           return;
         const nextSummaries = mergeChatSummaryPage([], page.items, "refresh");
-        setChatReads(mergeChatReads(chatReadsRef.current, reads));
+        if (readsFetch === chatReadsFetch.current) {
+          setChatReads(mergeChatReads(chatReadsRef.current, reads));
+        }
         chatSummariesRef.current = nextSummaries;
         setChatSummaries(nextSummaries);
         setChatSummaryTotal(page.total);
@@ -548,8 +554,9 @@ export function useChatState({
   const refreshChatReads = useCallback(async () => {
     if (!projectId || !apiBase) return;
     const requestedProjectId = projectId;
+    const readsFetch = ++chatReadsFetch.current;
     const reads = await loadChatReads(graphTargetUrl(`${apiBase}/chat-reads`, graphTarget));
-    if (isActiveProject(requestedProjectId)) {
+    if (isActiveProject(requestedProjectId) && readsFetch === chatReadsFetch.current) {
       setChatReads(mergeChatReads(chatReadsRef.current, reads));
     }
   }, [apiBase, graphTarget, isActiveProject, projectId, setChatReads]);
