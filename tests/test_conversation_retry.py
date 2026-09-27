@@ -10,6 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, PromptFactory
+from rcp.agents.acceptance import _launch_contract_path
+from rcp.agents.graph_rules import graph_rules
 from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.runs.tasks.coach import stream_coach
 from rcp.runs.tasks.discuss import stream_discuss_run
@@ -48,7 +50,8 @@ class _FailThenSucceedLauncher:
     async def stream(self, _provider, prompt, **kwargs):
         attempt = len(self.contracts)
         self.prompts.append(prompt)
-        contract_path = Path(prompt.splitlines()[1])
+        # A session start names its contract; a continuation names its master last.
+        contract_path = _launch_contract_path(prompt.splitlines())
         inputs = contract_path.parent
         workspace = Path(kwargs["cwd"])
         self.contract_paths.append(contract_path)
@@ -516,12 +519,25 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
         {"message": objective},
     )
 
-    _assert_retry_contract(launcher, expected_failure=failure)
+    assert launcher.sessions == [None, launcher.native_session_id]
     assert launcher.contract_paths[0].parent == launcher.contract_paths[1].parent
+    # The Retry is inline: its diagnostics and request are current, the master a pointer.
+    prompt = launcher.prompts[1]
+    token = retried["operation_id"]
+    store = app.state.background_tasks.store
+    assert store.agent_task_contract(str(token), "paper_coach_retry") == prompt
+    diagnostics = launcher.input_snapshots[1][f"task-{token}-retry-diagnostics.json"]
+    assert json.loads(diagnostics) == {
+        "prior_attempt_diagnostics": [f"Attempt 1 (failed) failed with: {failure}"]
+    }
+    assert f"task-{token}-retry-diagnostics.json" in prompt
+    assert f"task-{token}-human-request.txt" in prompt
+    assert launcher.contracts[1] not in prompt
+    assert graph_rules(edits=False, ontology_extensions=False) not in prompt
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
 
-@pytest.mark.parametrize("kind", ["node_chat", "paper_coach"])
+@pytest.mark.parametrize("kind", ["node_chat"])
 @pytest.mark.parametrize("recovery", ["resume", "retry"])
 def test_recovery_delivers_current_guidance_in_the_retained_session(
     manifest, tmp_path, monkeypatch, kind: str, recovery: str

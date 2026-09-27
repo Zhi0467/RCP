@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import (
     AuthorizedHuman,
@@ -521,17 +523,19 @@ class _FakeLauncher:
         self.patch_text = patch_text
         self.sessions: list[str | None] = []
         self.write_dirs: list[list[Path]] = []
+        self.prompts: list[str] = []
 
     async def stream(
         self,
         _provider: str,
-        _prompt: str,
+        prompt: str,
         *,
         cwd: Path,
         session_id: str | None,
         write_dirs: list[Path],
         **_kwargs: object,
     ) -> AsyncIterator[AgentEvent]:
+        self.prompts.append(prompt)
         self.sessions.append(session_id)
         self.write_dirs.append(write_dirs)
         (cwd / "patch.json").write_text(self.patch_text, encoding="utf-8")
@@ -617,7 +621,7 @@ class _SequenceLauncher(_FakeLauncher):
     async def stream(
         self,
         _provider: str,
-        _prompt: str,
+        prompt: str,
         *,
         cwd: Path,
         session_id: str | None,
@@ -625,6 +629,7 @@ class _SequenceLauncher(_FakeLauncher):
         **_kwargs: object,
     ) -> AsyncIterator[AgentEvent]:
         index = len(self.sessions)
+        self.prompts.append(prompt)
         self.sessions.append(session_id)
         self.write_dirs.append(write_dirs)
         (cwd / "patch.json").write_text(self.patch_texts[index], encoding="utf-8")
@@ -887,6 +892,20 @@ async def test_moving_main_discards_candidate_and_rebases_same_session(tmp_path:
     assert launcher.sessions == [None, "native-session"]
     assert launcher.write_dirs == [[], []]
     assert any('"event":"done"' in frame for frame in frames)
+    # The rebase replaces its context inline and points back to the start contract.
+    _assert_points_to_start_contract(launcher.prompts)
+    assert first.context_id in launcher.prompts[1]
+    assert second.context_id in launcher.prompts[1]
+
+
+def _assert_points_to_start_contract(prompts: list[str]) -> None:
+    start_path = Path(prompts[0].splitlines()[1])
+    start = start_path.read_text(encoding="utf-8")
+    for prompt in prompts[1:]:
+        assert prompt.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=start_path)
+        assert start not in prompt
+        assert graph_rules(edits=True, ontology_extensions=False) not in prompt
+    assert start_path.read_text(encoding="utf-8") == start
 
 
 @pytest.mark.asyncio
@@ -926,6 +945,7 @@ async def test_semantic_conflict_uses_two_bounded_same_session_corrections(
     assert outcome.correction_rounds == 2
     assert outcome.diagnostic == "Candidate conflict 3."
     assert launcher.sessions == [None, "native-session", "native-session"]
+    _assert_points_to_start_contract(launcher.prompts)
     assert history.validation_count == 3
     assert history.append_count == 0
     assert any("Candidate conflict 3" in frame for frame in frames)
