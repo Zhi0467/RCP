@@ -101,8 +101,13 @@ The report's restriction is the newest instruction the session holds. So the
 first operational continuation after a report attempt on that session (Add N
 turns, or an Auto-research lifecycle turn after reauthorization) is a forced
 bootstrap: it says the report instructions have ended and tells the agent to
-open the operational master again. RCP knows this from the session's last
-launch being a report attempt.
+open the operational master again.
+
+That requirement is durable state on the exact session, not a reading of its
+last launch. A report attempt on a session sets it. It stays set through
+failed or interrupted bootstrap attempts and their recovery, because a launch
+receipt does not prove delivery. Only the operational owner's existing success
+or settlement boundary clears it. The master's identity and key do not change.
 
 ## Trees
 
@@ -231,7 +236,9 @@ Each is now reflected above.
   block, except on a key change or forced bootstrap.
 - An Add N turns continuation episode gets a delta, not the start contract.
   After a report attempt on that session, it is a forced bootstrap that retires
-  the report restriction, in both episode modes.
+  the report restriction, in both episode modes. Sequence to test: report,
+  bootstrap launch fails before delivery, same-session recovery bootstraps
+  again, success, then an ordinary delta.
 - Report attempts in both episode modes carry no master pointer and keep their
   frozen input set.
 - A deleted master file inside a live stage is restored with the recorded
@@ -252,7 +259,24 @@ Each is now reflected above.
 
 1. Shared parts: `classify`, the master record and `stage()`, the key, the delta
    function, and the section table. Move Discuss and Work onto them with no
-   behavior change.
+   behavior change. Slice 1 must:
+   - extract the existing ordinary Discuss and Work master path first, keeping
+     the one master that holds both mode contracts, so a mode switch still
+     reuses the native session; convert recovery and correction paths
+     deliberately with their own builders and restrictions;
+   - persist master bytes provisionally and publish the session baseline only at
+     today's success boundaries, keeping compare-and-swap, Resume's originating
+     candidate, and absorption of the turn's own accepted graph revision;
+   - keep master storage separate from the recorded launch payload that Resume
+     and Retry use, and exclude master bookkeeping from original-prompt
+     selection;
+   - keep human text, current credentials, scope, skills, attachments, result
+     view, execution instructions, and compute delta semantics unchanged, and
+     keep child Work correct through the shared Work preparation it already
+     calls;
+   - cover fresh, follow-up, mode switch, failed and interrupted bootstrap,
+     Resume, Retry, handoff, legacy sessions, key changes, exact-byte restore
+     versus missing-stage refusal, binding conflicts, and the child caller.
 2. Experiment loop and the episode report.
 3. Auto-research actors and child Work.
 4. Ingestion, branch merge, and Paper coach (including restaging its session
