@@ -68,6 +68,32 @@ def launch_contract_path(prompt: str) -> Path:
     return Path(named[1] if named else prompt.splitlines()[1].strip())
 
 
+def changed_values(prompt: str) -> dict[str, str]:
+    """The changed values a continuation sends, by dotted key; strings lose their backticks."""
+
+    header = SECTIONS["context_delta"]
+    if header not in prompt:
+        return {}
+    lines = prompt[prompt.index(header) + len(header) :].split("\n\n", 1)[0].splitlines()
+    return {
+        key: value.strip("`")
+        for key, value in (line[2:].split(": ", 1) for line in lines if line.startswith("- "))
+    }
+
+
+def current_command_client(prompt: str) -> str:
+    """The command client a launch runs staged commands through.
+
+    A continuation that changed it sends it; otherwise the session's master names it.
+    """
+
+    changed = changed_values(prompt).get("patch.command_client")
+    if changed is not None:
+        return changed
+    master = launch_contract_path(prompt).read_text(encoding="utf-8")
+    return re.search(r"^- Command client: `([^`]+)`$", master, re.MULTILINE)[1]  # type: ignore[index]
+
+
 def create_named_app(*args: Any, **kwargs: Any):
     """Create a named test app."""
 

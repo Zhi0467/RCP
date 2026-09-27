@@ -159,11 +159,12 @@ def _assert_retry_contract(
     expected_diagnostics = [f"Attempt 1 (failed) failed with: {expected_failure}"]
 
     assert str(diagnostics_path) in retry_contract
-    assert str(_first_prompt_contract(launcher)) in retry_contract
     assert json.loads(launcher.input_snapshots[1][diagnostics_path.name]) == {
         "prior_attempt_diagnostics": expected_diagnostics
     }
     if inline:
+        # The master pointer is the continuation's only contract pointer.
+        assert str(_first_prompt_contract(launcher)) not in retry_contract
         master_path = _master_path(launcher.prompts[1])
         assert master_path is not None and master_path.parent == stage_inputs
         assert master_path.read_text(encoding="utf-8") not in launcher.prompts[1]
@@ -171,6 +172,7 @@ def _assert_retry_contract(
             assert graph_rules(edits=True, ontology_extensions=extensions) not in retry_contract
         assert f"{prefix}-base.md" not in launcher.input_snapshots[1]
         return
+    assert str(_first_prompt_contract(launcher)) in retry_contract
     current_contract_path = stage_inputs / f"{prefix}-base.md"
     assert str(current_contract_path) in retry_contract
     assert current_contract_path.is_file()
@@ -729,7 +731,6 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
     assert launcher.workspaces[0] == launcher.workspaces[1]
     assert completed["parent_operation_id"] == first["operation_id"]
     assert updated_guidance not in launcher.contracts[0]
-    assert str(_first_prompt_contract(launcher)) in launcher.contracts[1]
     if kind == "node_chat":
         # The first turn never committed a chat baseline, so the continuation opens a
         # freshly rendered master rather than pointing to one.

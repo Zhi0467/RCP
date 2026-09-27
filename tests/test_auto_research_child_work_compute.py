@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 from functools import partial
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 
 from rcp.agents import AgentEvent
 from rcp.agents.graph_rules import graph_rules
+from rcp.agents.prompts import COMMAND_CLIENT
 from rcp.api.app import _generic_watcher_delivery_request
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
@@ -23,8 +25,11 @@ from rcp.watchers import WatcherPoller
 
 from .helpers import (
     append_fixture_patch,
+    changed_values,
     create_named_app,
+    current_command_client,
     fabricated_authorizer,
+    launch_contract_path,
     seed_patch,
     wait_for_task,
 )
@@ -79,22 +84,21 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
             assert handler.episode_id == "child-compute"
             assert kwargs["invocation_gate"] is staged.invocation_gate
             if len(self.calls) == 1:
-                if kwargs["capability"] == "work_auto":
-                    path = next(
-                        code for code in prompt.split("`")[1::2] if code.endswith("-execution.md")
-                    )
-                    contract = (workspace / path).read_text()
-                else:
-                    contract = Path(prompt.splitlines()[1]).read_text()
+                # The session start's master names this turn's client and the launch helper.
+                contract = launch_contract_path(prompt).read_text()
+                assert current_command_client(prompt) == staged.client_command()
                 assert (
-                    staged.client_command(
-                        "launch",
-                        "--key",
-                        "<idempotency-key>",
-                        "--cwd",
-                        "<working-directory>",
-                        "--",
-                        "<argv...>",
+                    f"{COMMAND_CLIENT} "
+                    + shlex.join(
+                        [
+                            "launch",
+                            "--key",
+                            "<idempotency-key>",
+                            "--cwd",
+                            "<working-directory>",
+                            "--",
+                            "<argv...>",
+                        ]
                     )
                     in contract
                 )
@@ -122,22 +126,14 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     json.dumps({"external": [self.watcher], "graph": []})
                 )
             if len(self.calls) == 3:
-                # A wake continues the session inline.
+                # A wake continues the session inline and sends only what changed.
                 self.wake_contract = prompt
                 turn, inputs = child_turns[-1]
-                assert turn.patch_inputs.validator_command in self.wake_contract
-                assert child_turns[0][0].patch_inputs.validator_command not in self.wake_contract
-                for path in (
-                    turn.patch_inputs.patch_path,
-                    turn.patch_inputs.watch_path,
-                    turn.patch_inputs.schema_path,
-                    str(inputs.artifact_directory),
-                    *turn.write_scope.writable_roots,
-                    *turn.write_scope.protected_write_paths,
-                ):
-                    assert path in self.wake_contract
-                for package in inputs.skill_pointers:
-                    assert str(package["path"]) in self.wake_contract
+                changed = changed_values(self.wake_contract)
+                assert changed["patch.command_client"] == turn.patch_inputs.command_client
+                assert child_turns[0][0].patch_inputs.command_client not in self.wake_contract
+                assert not any(key.startswith(("work.", "skills")) for key in changed)
+                assert str(inputs.artifact_directory) in self.wake_contract
                 assert '"name": "native-review"' in self.wake_contract
                 for extensions in (False, True):
                     rules = graph_rules(edits=True, ontology_extensions=extensions)

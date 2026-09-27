@@ -7,7 +7,6 @@ from contextlib import aclosing
 from pathlib import Path, PurePosixPath
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.continuation_prompt import LaunchPhase, MasterRef, classify, compose
 from rcp.agents.experiment_loop_prompt import experiment_watcher_maintenance_correction_contract
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
@@ -89,12 +88,12 @@ async def _process_experiment_watcher_maintenance(
     retry_output_digests: dict[str, str],
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
     supervise_remote: bool = False,
-    continuation_master: Callable[[str], MasterRef] | None = None,
+    continuation: Callable[[str, str], str] | None = None,
 ) -> tuple[list[str], str | None, bool]:
     """Admit, validate, and atomically persist each physical Experiment watcher file.
 
-    A correction continues the Work session inline; `continuation_master` names the
-    master that session points to.
+    A correction continues the Work session inline; `continuation` composes it for that
+    session from the correction's own part, adding what changed and the master pointer.
     """
 
     if execution is None:
@@ -291,16 +290,11 @@ async def _process_experiment_watcher_maintenance(
                 diagnostics_path=diagnostics_path,
                 watch_path=staged.watch_path,
             )
-            if continuation_master is None:
+            if continuation is None:
                 raise ValueError(
                     "Experiment watcher maintenance correction requires its live launch context."
                 )
-            correction_prompt = compose(
-                classify(LaunchPhase(session_id=native_session_id, phase="correction")),
-                parts=[correction_contract],
-                master=continuation_master(native_session_id),
-                delta=None,
-            )
+            correction_prompt = continuation(native_session_id, correction_contract)
             correction_path = record_inline_prompt(
                 execution,
                 local_stage=local_stage,

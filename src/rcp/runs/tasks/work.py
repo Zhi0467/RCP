@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import posixpath
+import shlex
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -27,11 +28,14 @@ from rcp.agents.command_mailbox import (
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
+    PromptNode,
+    changed_since_master,
     classify,
     compose,
     master_key,
 )
 from rcp.agents.prompts import (
+    COMMAND_CLIENT,
     WORK_POLICY_VERSION,
     chat_master_contract_key,
     invoked_package_pointers,
@@ -40,6 +44,7 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
+from rcp.compute_jobs.job_managers import JOB_MANAGERS
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.core.authority import AgentProfile
@@ -74,6 +79,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
+    chat_prompt_values,
     finalize_artifact_revision,
     stage_artifact_context,
 )
@@ -116,7 +122,6 @@ from rcp.runs.shared import (
     _stage_json_task_input,
     _stage_or_reuse_task_input,
     _stage_task_contract,
-    _stage_task_input,
     _swept_stage_root,
     _task_token,
     note_link_lost_before_provider,
@@ -257,8 +262,7 @@ def _prepare_work_chat_prompt(
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
     result_view: _PreparedResultView | None,
-    write_scope: ProjectWriteScope,
-    execution_instructions: str,
+    launch_instructions: str,
     ontology_extensions: bool,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
@@ -274,12 +278,8 @@ def _prepare_work_chat_prompt(
         contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
         values=stable_values,
     )
-    execution_instructions_path = _stage_task_input(
-        local_stage,
-        remote_stage,
-        f"task-{_task_token(execution)}-execution.md",
-        execution_instructions,
-    )
+    # A master rendered before this session's first Work turn lacks the launch instructions.
+    first_work_turn = not master.bootstrap and "work" not in (master.values or {})
     prompt = PromptFactory.work_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
@@ -295,21 +295,66 @@ def _prepare_work_chat_prompt(
         attachments=attachment_pointers,
         result_view_action=result_view.action if result_view is not None else None,
         result_view_path=result_view.prompt_path if result_view is not None else None,
-        write_scope=write_scope,
-        execution_instructions_path=posixpath.relpath(
-            execution_instructions_path, write_scope.workspace_root
-        ),
+        launch_instructions=launch_instructions if first_work_turn else None,
     )
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
-def _work_execution_instructions(turn: WorkTurn) -> str:
+def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> str:
+    """The launch instructions, naming the helper relative to ``client`` when given."""
+
     if turn.compute_commands is None:
         return ""
-    command = turn.patch_inputs.validator_staged.client_command(
-        "launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>", "--", "<argv...>"
+    arguments = (
+        "launch",
+        "--key",
+        "<idempotency-key>",
+        "--cwd",
+        "<working-directory>",
+        "--",
+        "<argv...>",
+    )
+    command = (
+        f"{client} {shlex.join(arguments)}"
+        if client is not None
+        else turn.patch_inputs.validator_staged.client_command(*arguments)
     )
     return turn.compute_commands.execution_instructions(command)
+
+
+def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
+    """What a Work turn resolves for itself: its write roots and its launch facts."""
+
+    commands = turn.compute_commands
+    machine = turn.service.manifest.machine_map[turn.write_scope.execution_machine]
+    manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
+    helper = commands.helper_backend if commands is not None else None
+    values: dict[str, object] = {
+        "write_roots": list(turn.write_scope.writable_roots),
+        "denied_paths": list(turn.write_scope.protected_write_paths),
+        "helper_owner": helper.id if helper is not None else None,
+    }
+    if manager is not None:
+        values["job_manager_rules"] = manager.instructions
+    return values
+
+
+def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, object]:
+    """The stable values a Work master states, built from the inputs its renderer uses."""
+
+    return chat_prompt_values(
+        turn.context,
+        turn.request,
+        repositories=staged.repositories,
+        compute_profiles=turn.service.compute_prompt_profiles(
+            turn.request.resolved_compute_context
+        ),
+        skill_pointers=staged.skill_pointers,
+        experiment_watcher_resources=staged.experiment_resource_pointers,
+        patch=turn.patch_inputs.prompt_values(),
+        workspace=str(turn.workspace),
+        work=_work_launch_values(turn),
+    )
 
 
 def _resolve_work_execution(
@@ -883,7 +928,7 @@ def _work_contract_text(
             turn.request.message,
         )
     return PromptFactory.work_task_contract(
-        execution_instructions=_work_execution_instructions(turn),
+        execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
         ontology_extensions=turn.context.ontology_extensions,
@@ -900,7 +945,7 @@ def _work_contract_text(
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
         experiment_watcher_resources=staged.experiment_resource_pointers,
-        validator_command=turn.patch_inputs.validator_command,
+        command_client=turn.patch_inputs.command_client,
         write_scope=turn.write_scope,
         skill_pointers=staged.skill_pointers,
         invoked_skill_pointers=invoked_package_pointers(
@@ -919,13 +964,18 @@ def _stage_work_contract(
     staged: _StagedWorkInputs,
     *,
     retry_diagnostics_path: str | None = None,
+    contract: str | None = None,
+    values: dict[str, object] | None = None,
 ) -> str:
     """Stage the full Work contract a new native session starts from.
 
-    It is recorded as that session's master, so its later continuations point to it.
+    It is recorded as that session's master with its stable values, so its later
+    continuations point to it and send only what changed. An owner that extends the
+    Work contract passes its own ``contract`` and ``values``.
     """
 
-    contract = _work_contract_text(turn, staged, retry_diagnostics_path=retry_diagnostics_path)
+    if contract is None:
+        contract = _work_contract_text(turn, staged, retry_diagnostics_path=retry_diagnostics_path)
     contract_path, _ = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -940,6 +990,7 @@ def _stage_work_contract(
             turn.execution.operation_id,
             contract,
             master_key(WORK_POLICY_VERSION, ontology_extensions=turn.context.ontology_extensions),
+            values if values is not None else _work_prompt_values(turn, staged),
         )
     return contract_path
 
@@ -949,6 +1000,7 @@ def _work_continuation_master(
     render: Callable[[], str] | None,
     *,
     session_id: str | None,
+    values: dict[str, object],
     force_bootstrap: bool = False,
 ) -> MasterRef:
     """The master a Work continuation in this native session points to."""
@@ -964,8 +1016,39 @@ def _work_continuation_master(
         policy_version=WORK_POLICY_VERSION,
         ontology_extensions=turn.context.ontology_extensions,
         render=render,
+        values=values,
         force_bootstrap=force_bootstrap,
     )
+
+
+def _work_continuation(
+    turn: WorkTurn,
+    render: Callable[[], str] | None,
+    *,
+    session_id: str | None,
+    node: PromptNode,
+    part: str,
+    values: dict[str, object],
+    rendered_values: dict[str, object] | None = None,
+    force_bootstrap: bool = False,
+) -> str:
+    """Compose one inline Work continuation: its own part, what changed, and its master.
+
+    ``rendered_values`` are what ``render`` states, when that differs from this launch's
+    own ``values``: a correction runs with a new command client but reopens its turn's
+    contract. What changed is taken against the master's values, even for a master the
+    session is told to read now.
+    """
+
+    master = _work_continuation_master(
+        turn,
+        render,
+        session_id=session_id,
+        values=rendered_values if rendered_values is not None else values,
+        force_bootstrap=force_bootstrap,
+    )
+    delta = changed_since_master(replace(master, bootstrap=False), values)
+    return compose(node, parts=[part], master=master, delta=delta)
 
 
 def _compose_work_recovery_prompt(
@@ -977,41 +1060,17 @@ def _compose_work_recovery_prompt(
     render: Callable[[], str],
     label: str,
     role: str,
-    extra_parts: tuple[str, ...] = (),
+    values: dict[str, object] | None = None,
 ) -> _ComposedWorkPrompt:
-    """Continue a Work session inline: the reason, current overrides, and a master pointer."""
+    """Continue a Work session inline: the reason, what changed, and a master pointer."""
 
     assert turn.execution is not None
-    node = classify(LaunchPhase(session_id=turn.request.session_id, phase="recovery"))
-    master = _work_continuation_master(turn, render, session_id=turn.request.session_id)
-    original_contract_path = (
-        _parent_task_contract_path(turn.execution, turn.local_stage, turn.remote_stage)
-        if mode == "resume"
-        else retry_original_contract_path(
-            turn.execution, turn.local_stage, turn.remote_stage, master.path
-        )
-    )
-    contract = PromptFactory.continuation_task_contract(
-        original_contract_path=original_contract_path,
+    values = values if values is not None else _work_prompt_values(turn, staged)
+    part = PromptFactory.inline_continuation(
         mode=mode,
         turn_mode="work",
-        write_scope=turn.write_scope,
         diagnostics_path=diagnostics_path,
-        patch_path=turn.patch_inputs.patch_path,
-        watch_path=turn.patch_inputs.watch_path,
-        output_schema_path=turn.patch_inputs.schema_path,
         artifact_path=str(staged.artifact_directory),
-        experiment_watcher_resources=staged.experiment_resource_pointers,
-        execution_host=turn.execution_host,
-        validator_command=turn.patch_inputs.validator_command,
-        execution_instructions=_work_execution_instructions(turn),
-        skill_pointers=staged.skill_pointers,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
-        invoked_provider_skills=turn.request.resolved_provider_skills,
         result_view_action=(
             staged.prepared_result_view.action if staged.prepared_result_view is not None else None
         ),
@@ -1020,9 +1079,15 @@ def _compose_work_recovery_prompt(
             if staged.prepared_result_view is not None
             else None
         ),
-        inline=True,
     )
-    prompt = compose(node, parts=[contract, *extra_parts], master=master, delta=None)
+    prompt = _work_continuation(
+        turn,
+        render,
+        session_id=turn.request.session_id,
+        node=classify(LaunchPhase(session_id=turn.request.session_id, phase="recovery")),
+        part=part,
+        values=values,
+    )
     contract_path = record_inline_prompt(
         turn.execution,
         local_stage=turn.local_stage,
@@ -1037,6 +1102,44 @@ def _compose_work_recovery_prompt(
         prompt=prompt,
         base_contract_path=contract_path,
         render_master=render,
+        prompt_values=values,
+    )
+
+
+def _work_chat_master_context(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    *,
+    auto_research_child_boundary: str = "",
+) -> str:
+    """The conversation master a Work turn renders, with its boundary and launch facts."""
+
+    return PromptFactory.chat_master_context(
+        project_name=turn.context.project_name,
+        ontology_path=f"{turn.context.graph_path}#ontology",
+        ontology_extensions=turn.context.ontology_extensions,
+        graph_path=turn.context.graph_path,
+        research_path=turn.context.research_md_path,
+        graph_revision=turn.context.graph_revision,
+        focused_node_id=str(turn.context.node["id"]) if turn.context.node else None,
+        focused_node=turn.context.node,
+        focused_relations=[item.model_dump(mode="json") for item in turn.context.relations],
+        repositories=staged.repositories,
+        introduction_path=turn.context.introduction_path,
+        patch_path=turn.patch_inputs.patch_path,
+        workspace_path=str(turn.workspace),
+        output_schema_path=turn.patch_inputs.schema_path,
+        command_client=turn.patch_inputs.command_client,
+        watch_path=turn.patch_inputs.watch_path,
+        execution_host=turn.execution_host,
+        experiment_watcher_resources=staged.experiment_resource_pointers,
+        skill_pointers=staged.skill_pointers,
+        compute_connections=turn.service.compute_prompt_profiles(
+            turn.request.resolved_compute_context
+        ),
+        write_scope=turn.write_scope,
+        execution_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
+        auto_research_child_boundary=auto_research_child_boundary,
     )
 
 
@@ -1047,83 +1150,31 @@ def _compose_fresh_prompt(
     retry_diagnostics_path: str | None = None,
 ) -> _ComposedWorkPrompt:
     assert turn.request.message is not None
-    focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
-    compute_profiles = turn.service.compute_prompt_profiles(turn.request.resolved_compute_context)
+    values = _work_prompt_values(turn, staged)
     if not turn.uses_master_protocol:
         contract_path = _stage_work_contract(
-            turn, staged, retry_diagnostics_path=retry_diagnostics_path
+            turn, staged, retry_diagnostics_path=retry_diagnostics_path, values=values
         )
         return _ComposedWorkPrompt(
             contract_path=contract_path,
             prompt=PromptFactory.launch_prompt(contract_path),
             base_contract_path=contract_path,
             render_master=lambda: _work_contract_text(turn, staged),
+            prompt_values=values,
         )
 
-    master_context = PromptFactory.chat_master_context(
-        project_name=turn.context.project_name,
-        ontology_path=f"{turn.context.graph_path}#ontology",
-        ontology_extensions=turn.context.ontology_extensions,
-        graph_path=turn.context.graph_path,
-        research_path=turn.context.research_md_path,
-        graph_revision=turn.context.graph_revision,
-        focused_node_id=focused_node_id,
-        focused_node=turn.context.node,
-        focused_relations=[item.model_dump(mode="json") for item in turn.context.relations],
-        repositories=staged.repositories,
-        introduction_path=turn.context.introduction_path,
-        patch_path=turn.patch_inputs.patch_path,
-        workspace_path=str(turn.workspace),
-        output_schema_path=turn.patch_inputs.schema_path,
-        validator_command=turn.patch_inputs.validator_command,
-        watch_path=turn.patch_inputs.watch_path,
-        execution_host=turn.execution_host,
-        experiment_watcher_resources=staged.experiment_resource_pointers,
-        skill_pointers=staged.skill_pointers,
-        compute_connections=compute_profiles,
-    )
-    stable_prompt_values: dict[str, object] = {
-        "project": {"name": turn.context.project_name},
-        "settings": {
-            "provider": turn.request.provider,
-            "model": turn.request.model,
-            "reasoning": turn.request.reasoning,
-            "run_on": turn.request.run_on,
-        },
-        "current": {
-            "ontology_path": f"{turn.context.graph_path}#ontology",
-            "graph_revision": turn.context.graph_revision,
-            "graph_path": turn.context.graph_path,
-            "research_path": turn.context.research_md_path,
-            "focused_node_id": focused_node_id,
-            "introduction_path": turn.context.introduction_path,
-            "experiment_watcher_resources": staged.experiment_resource_pointers,
-        },
-        "repositories": staged.repositories,
-        "compute": {"active": compute_profiles},
-        "skills": {"pointers": staged.skill_pointers},
-        "patch": {
-            "path": turn.patch_inputs.patch_path,
-            "watch_path": turn.patch_inputs.watch_path,
-            "schema_path": turn.patch_inputs.schema_path,
-            "validator_command": turn.patch_inputs.validator_command,
-            "validator_mailbox_id": turn.patch_inputs.validator_mailbox_id,
-        },
-        "workspace": {"path": str(turn.workspace)},
-    }
     prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
-        execution_instructions=_work_execution_instructions(turn),
+        launch_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         artifact_path=str(staged.artifact_directory),
-        master_context=master_context,
-        stable_values=stable_prompt_values,
+        master_context=_work_chat_master_context(turn, staged),
+        stable_values=values,
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         result_view=staged.prepared_result_view,
-        write_scope=turn.write_scope,
         ontology_extensions=turn.context.ontology_extensions,
     )
     return _ComposedWorkPrompt(
@@ -1131,6 +1182,7 @@ def _compose_fresh_prompt(
         prompt=prompt,
         base_contract_path=contract_path,
         render_master=lambda: _work_contract_text(turn, staged),
+        prompt_values=values,
     )
 
 
@@ -1207,6 +1259,7 @@ def _compose_retry_prompt(
         prompt=prompt,
         base_contract_path=current_contract_path,
         render_master=render,
+        prompt_values=_work_prompt_values(turn, staged),
     )
 
 
@@ -1358,22 +1411,11 @@ def _watcher_continuation(
     return WatcherContinuation.model_validate(values)
 
 
-def _patch_correction_contract(
-    turn: WorkTurn,
-    composed: _ComposedWorkPrompt,
-    diagnostics_path: str,
-    validator_command: str,
-) -> str:
-    return PromptFactory.continuation_task_contract(
-        original_contract_path=composed.base_contract_path,
+def _patch_correction_contract(diagnostics_path: str) -> str:
+    return PromptFactory.inline_continuation(
         mode="work_patch_correction",
         turn_mode="work",
-        write_scope=turn.write_scope,
-        output_schema_path=turn.patch_inputs.schema_path,
-        patch_path=turn.patch_inputs.patch_path,
         diagnostics_path=diagnostics_path,
-        validator_command=validator_command,
-        inline=True,
     )
 
 
@@ -1383,14 +1425,29 @@ def _compose_work_correction_prompt(
     *,
     session_id: str | None,
     contract: str,
+    command_client: str,
     label: str,
     role: str,
 ) -> tuple[str, str]:
-    """Send a correction inline in its Work session; return the prompt and its record path."""
+    """Send a correction inline in its Work session; return the prompt and its record path.
 
-    node = classify(LaunchPhase(session_id=session_id, phase="correction"))
-    master = _work_continuation_master(turn, composed.render_master, session_id=session_id)
-    prompt = compose(node, parts=[contract], master=master, delta=None)
+    A correction runs with its own command client; every other value is the turn's own.
+    """
+
+    if composed.prompt_values is None:
+        raise ValueError("A Work correction needs the values its turn was composed with.")
+    patch = composed.prompt_values["patch"]
+    assert isinstance(patch, dict)
+    values = {**composed.prompt_values, "patch": {**patch, "command_client": command_client}}
+    prompt = _work_continuation(
+        turn,
+        composed.render_master,
+        session_id=session_id,
+        node=classify(LaunchPhase(session_id=session_id, phase="correction")),
+        part=contract,
+        values=values,
+        rendered_values=composed.prompt_values,
+    )
     return prompt, record_inline_prompt(
         turn.execution,
         local_stage=turn.local_stage,
@@ -1559,19 +1616,12 @@ async def _validate_watch_deliverable(
     return _DeliverableStep()
 
 
-def _watch_correction_contract(
-    turn: WorkTurn,
-    composed: _ComposedWorkPrompt,
-    diagnostics_path: str,
-    watcher_diagnostic: str,
-) -> str:
-    return PromptFactory.continuation_task_contract(
-        original_contract_path=composed.base_contract_path,
+def _watch_correction_contract(diagnostics_path: str, watcher_diagnostic: str) -> str:
+    return PromptFactory.inline_continuation(
         mode="watch_correction",
+        turn_mode="work",
         diagnostics_path=diagnostics_path,
         watcher_diagnostic=watcher_diagnostic,
-        watch_path=turn.patch_inputs.watch_path,
-        inline=True,
     )
 
 
@@ -1716,20 +1766,12 @@ async def _settle_patch_deliverable(
                 compute_commands=launch_turn.compute_commands,
                 run_truth_scope=turn.run_truth_scope,
             )
-            validator_command = correction_validator.client_command(
-                "validate",
-                launch_turn.patch_inputs.patch_path,
-            )
             correction_prompt, correction_path = _compose_work_correction_prompt(
                 launch_turn,
                 composed,
                 session_id=settled.native_session_id,
-                contract=_patch_correction_contract(
-                    launch_turn,
-                    composed,
-                    diagnostics_path,
-                    validator_command,
-                ),
+                contract=_patch_correction_contract(diagnostics_path),
+                command_client=correction_validator.client_command(),
                 label=f"task-{staged.token}-work-correction-{correction_rounds}.md",
                 role=f"work_patch_correction_{correction_rounds}",
             )
@@ -1922,12 +1964,8 @@ async def _settle_watch_deliverable(
                 launch_turn,
                 composed,
                 session_id=settled.native_session_id,
-                contract=_watch_correction_contract(
-                    launch_turn,
-                    composed,
-                    diagnostics_path,
-                    failure.message,
-                ),
+                contract=_watch_correction_contract(diagnostics_path, failure.message),
+                command_client=correction_validator.client_command(),
                 label=f"task-{staged.token}-watch-correction-{correction_rounds}.md",
                 role=f"watch_correction_{correction_rounds}",
             )
@@ -2032,7 +2070,7 @@ async def _apply_work_turn(
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
         supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
-        continuation_master=_maintenance_continuation_master(launch_turn, composed),
+        continuation=_maintenance_continuation(launch_turn, composed),
     )
     applied.native_session_id = native_session_id
     for frame in maintenance_frames:
@@ -2041,17 +2079,27 @@ async def _apply_work_turn(
         applied.stop = True
 
 
-def _maintenance_continuation_master(
+def _maintenance_continuation(
     turn: WorkTurn | None,
     composed: _ComposedWorkPrompt | None,
-) -> Callable[[str], MasterRef] | None:
-    """Point a watcher maintenance correction at the master of the session it corrects."""
+) -> Callable[[str, str], str] | None:
+    """Compose a watcher maintenance correction in the Work session it corrects."""
 
-    if turn is None or composed is None:
+    if turn is None or composed is None or composed.prompt_values is None:
         return None
-    return lambda session_id: _work_continuation_master(
-        turn, composed.render_master, session_id=session_id
-    )
+    values = composed.prompt_values
+
+    def continuation(session_id: str, part: str) -> str:
+        return _work_continuation(
+            turn,
+            composed.render_master,
+            session_id=session_id,
+            node=classify(LaunchPhase(session_id=session_id, phase="correction")),
+            part=part,
+            values=values,
+        )
+
+    return continuation
 
 
 def _finalize_work_turn(
@@ -2612,7 +2660,6 @@ async def _stream_work_graph_repair(
             budget=validator_budget,
             run_truth_scope=context.run_truth_scope,
         )
-        patch_path = patch_inputs.patch_path
         read_dirs = _chat_read_dirs(
             context,
             local_stage,
@@ -2654,7 +2701,6 @@ async def _stream_work_graph_repair(
         )
         previous = _rejected_graph_update_for_repair(execution)
         original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
-        validator_command = patch_inputs.validator_command
         diagnostics_path = _stage_json_task_input(
             local_stage,
             remote_stage,
@@ -2665,59 +2711,44 @@ async def _stream_work_graph_repair(
                 "prior_correction_rounds": previous.correction_rounds,
             },
         )
-        contract = PromptFactory.continuation_task_contract(
-            original_contract_path=original_contract_path,
-            mode="work_patch_correction",
-            turn_mode="work",
-            write_scope=write_scope,
-            output_schema_path=patch_inputs.schema_path,
-            patch_path=patch_path,
-            diagnostics_path=diagnostics_path,
-            validator_command=validator_command,
-            inline=True,
+        skill_selection = service.resolve_skill_selection(request)
+        repair_staged = _StagedWorkInputs(
+            token=token,
+            artifact_scope_id=execution.operation_id,
+            artifact_directory=workspace / "turns" / execution.operation_id / "artifacts",
+            prepared_result_view=None,
+            experiment_resources=[],
+            experiment_resource_pointers=[],
+            skill_selection=skill_selection,
+            skill_pointers=stage_skill_selection(
+                skill_selection,
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                label=skill_bundle_label(skill_selection),
+                reuse_existing=True,
+            ),
+            attachment_pointers=[],
+            repositories=[
+                {"alias": item.alias, "host": item.host, "path": item.path}
+                for item in context.repositories
+            ],
         )
 
         def render_repair_master() -> str:
-            skill_selection = service.resolve_skill_selection(request)
+            # A repair carries no message; the repaired turn's contract holds it.
             return _work_contract_text(
-                turn,
-                _StagedWorkInputs(
-                    token=token,
-                    artifact_scope_id=execution.operation_id,
-                    artifact_directory=workspace / "turns" / execution.operation_id / "artifacts",
-                    prepared_result_view=None,
-                    experiment_resources=[],
-                    experiment_resource_pointers=[],
-                    skill_selection=skill_selection,
-                    skill_pointers=stage_skill_selection(
-                        skill_selection,
-                        local_stage=local_stage,
-                        remote_stage=remote_stage,
-                        label=skill_bundle_label(skill_selection),
-                        reuse_existing=True,
-                    ),
-                    attachment_pointers=[],
-                    repositories=[
-                        {"alias": item.alias, "host": item.host, "path": item.path}
-                        for item in context.repositories
-                    ],
-                ),
-                # A repair carries no message; the repaired turn's contract holds it.
-                human_request_path=original_contract_path,
+                turn, repair_staged, human_request_path=original_contract_path
             )
 
         # A repair reopens the master: its graph rules govern the Patch it rewrites.
-        master = _work_continuation_master(
+        prompt = _work_continuation(
             turn,
             render_repair_master,
             session_id=request.session_id,
+            node=classify(LaunchPhase(session_id=request.session_id, phase="recovery")),
+            part=_patch_correction_contract(diagnostics_path),
+            values=_work_prompt_values(turn, repair_staged),
             force_bootstrap=True,
-        )
-        prompt = compose(
-            classify(LaunchPhase(session_id=request.session_id, phase="recovery")),
-            parts=[contract],
-            master=master,
-            delta=None,
         )
         contract_path = record_inline_prompt(
             execution,

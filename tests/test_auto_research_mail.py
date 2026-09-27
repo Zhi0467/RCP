@@ -58,8 +58,11 @@ from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_
 
 from .helpers import (
     append_fixture_patch,
+    changed_values,
     create_named_app,
+    current_command_client,
     fabricated_authorizer,
+    launch_contract_path,
     seed_patch,
     store_test_claude_token,
     wait_for_task,
@@ -787,19 +790,14 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert SECTIONS["master_pointer"].split("{path}")[0] in continuation_contract
     assert "messages.json" in continuation_contract
     wake_turn, wake_inputs = child_turns[1]
-    assert wake_turn.patch_inputs.validator_command in continuation_contract
-    assert child_turns[0][0].patch_inputs.validator_command not in continuation_contract
-    for path in (
-        wake_turn.patch_inputs.patch_path,
-        wake_turn.patch_inputs.watch_path,
-        wake_turn.patch_inputs.schema_path,
-        str(wake_inputs.artifact_directory),
-        *wake_turn.write_scope.writable_roots,
-        *wake_turn.write_scope.protected_write_paths,
-    ):
-        assert path in continuation_contract
-    for package in wake_inputs.skill_pointers:
-        assert str(package["path"]) in continuation_contract
+    # The wake sends only what changed since its master: this turn's own command client.
+    changed = changed_values(continuation_contract)
+    assert changed["patch.command_client"] == wake_turn.patch_inputs.command_client
+    assert child_turns[0][0].patch_inputs.command_client not in continuation_contract
+    assert not any(key.startswith(("skills", "repositories")) for key in changed)
+    # Only the legacy layout moves the wake to another workspace, and so to other roots.
+    assert ("work.write_roots" in changed) is legacy_layout
+    assert str(wake_inputs.artifact_directory) in continuation_contract
     assert '"name": "native-review"' in continuation_contract
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     assert launcher.launch_kwargs[1]["invocation_gate"] is not None
@@ -864,10 +862,11 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert resumed_task.native_session_id == "resume-session"
     resume_contract = launcher.prompts[3]
     resume_turn, resume_inputs = child_turns[3]
-    assert resume_turn.patch_inputs.validator_command in resume_contract
-    assert resume_turn.patch_inputs.schema_path in resume_contract
-    assert str(resume_inputs.artifact_directory) in resume_contract
-    assert "## Auto-research child Work boundary" in resume_contract
+    # Its session does not match, so the resume opens a fresh master holding the boundary.
+    assert current_command_client(resume_contract) == resume_turn.patch_inputs.command_client
+    master = launch_contract_path(resume_contract).read_text(encoding="utf-8")
+    assert resume_turn.patch_inputs.schema_path in master
+    assert "## Auto-research child Work boundary" in master
     assert any(
         receipt.category == "continuation_context_unavailable"
         and receipt.payload.get("reason") == "native_session_mismatch"

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import textwrap
 from datetime import datetime
 from typing import Literal
 
-from rcp.agents.continuation_prompt import MasterRef, PromptNode, compose, master_key
+from rcp.agents.continuation_prompt import SECTIONS, MasterRef, PromptNode, compose, master_key
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
@@ -50,7 +51,11 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 13
+CHAT_MASTER_CONTEXT_VERSION = 14
+
+# Staged RCP commands are written against this placeholder; the contract names the current
+# command client once, and a continuation that changes it sends `patch.command_client`.
+COMMAND_CLIENT = "<command client>"
 
 
 def chat_master_contract_key(*, ontology_extensions: bool) -> str:
@@ -128,10 +133,40 @@ Enforced write boundary on the machine this turn runs on:
 """
 
 
-_TURN_WRITE_BOUNDARY = """- Your writable roots are enforced per turn, not per conversation. Every Work turn envelope carries
-  an `Enforced write boundary` block naming the exact roots for that turn, and they are the only
-  writable paths on the machine that turn runs on. A write outside them fails as a provider denial,
-  never as a permission you can request."""
+_TURN_WRITE_BOUNDARY = """- A Work turn's writable roots arrive with it as `work.write_roots`, with `work.denied_paths`
+  unwritable inside them. They are the only writable paths on the machine that turn runs on. A
+  write outside them fails as a provider denial. That denial is this boundary, not a broken tool
+  and not a permission you can request, so do not retry it through another command.
+- A repository pointer whose host is non-empty lives on another machine and is outside this
+  boundary. Reach it by SSH and stay inside the human's requested objective there."""
+
+
+_CHANGED_VALUES_RULE = f"""A later launch in this session lists what changed under `{SECTIONS["context_delta"]}`,
+one `- key: value` line each. Each replaces the value this contract or an earlier launch gave under
+that key: `current.*` the graph inputs, `patch.*` the Patch, watcher, schema, and command client,
+`work.*` the Work write roots and launch facts, and likewise `repositories`, `skills`, `settings.*`,
+and `workspace.path`. A new `current.graph_revision` means the graph changed, not that the human
+approved anything; re-read the records you rely on."""
+
+
+def _work_write_boundary(scope: ProjectWriteScope | None) -> str:
+    """The Work boundary a contract states once; later turns send only changed roots."""
+
+    if scope is None:
+        return _TURN_WRITE_BOUNDARY
+    return (
+        write_scope_section(scope).strip()
+        + "\n- A later turn whose roots differ sends them as `work.write_roots` and"
+        " `work.denied_paths`."
+    )
+
+
+def _command_client_rule(command_client: str) -> str:
+    return (
+        f"- Command client: `{command_client}`\n"
+        f"  Every staged RCP command below starts with it where it shows `{COMMAND_CLIENT}`. A later\n"
+        "  turn that changes it sends `patch.command_client`."
+    )
 
 
 def _repository_pointers(repositories: list[dict[str, str]]) -> str:
@@ -521,10 +556,45 @@ def _patch_validator_rules(validator_command: str) -> str:
 """
 
 
+_INLINE_CONTINUATION_REASONS = {
+    "resume": (
+        "RCP interrupted this turn. Continue it from your native checkpoint; before repeating an "
+        "external effect it may have started, check its real state."
+    ),
+    "retry": "This turn's previous attempt failed. Retry it here from the progress you kept.",
+    "work_patch_correction": (
+        "RCP rejected the graph Patch this turn wrote. Correct only that Patch; the completed "
+        "operational result stands."
+    ),
+    "watch_correction": (
+        "RCP rejected the watcher request this turn wrote. Correct only that file; the completed "
+        "operational result stands."
+    ),
+}
+
+_INLINE_CONTINUATION_RULES = {
+    "retry": (
+        "Before repeating an external effect whose outcome is uncertain, check its real state first."
+    ),
+    "work_patch_correction": (
+        "Overwrite `patch.json` and keep every field and op the validator does not reject. Run the\n"
+        "validator on the retained Patch first and after each rewrite; never delete a semantic\n"
+        "operation because an old diagnostic alone rejects it. Do not repeat an external effect or\n"
+        "change the reply or artifacts; your final response only confirms the rewrite."
+    ),
+    "watch_correction": (
+        "Rewrite `watch.json` as one object with exactly `external` and `graph` lists, keeping\n"
+        "literal identifiers. If the diagnostic names running work without observers, recover its\n"
+        "watcher from the launch receipt or real state. Do not change `patch.json` or repeat an\n"
+        "external effect; your final response only confirms the rewrite."
+    ),
+}
+
+
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v1"
+DISCUSS_POLICY_VERSION = "discuss-v2"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v1"
+WORK_POLICY_VERSION = "work-v2"
 
 
 class PromptFactory:
@@ -576,8 +646,7 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None = None,
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
-        write_scope: ProjectWriteScope | None = None,
-        execution_instructions_path: str | None = None,
+        launch_instructions: str | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
             marker="Work",
@@ -591,8 +660,7 @@ class PromptFactory:
             attachments=attachments,
             result_view_action=result_view_action,
             result_view_path=result_view_path,
-            write_scope=write_scope,
-            execution_instructions_path=execution_instructions_path,
+            launch_instructions=launch_instructions,
         )
 
     @staticmethod
@@ -609,17 +677,21 @@ class PromptFactory:
         master: MasterRef | None = None,
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
-        write_scope: ProjectWriteScope | None = None,
-        execution_instructions_path: str | None = None,
+        launch_instructions: str | None = None,
     ) -> str:
-        if write_scope is not None and marker != "Work":
-            raise ValueError("a write boundary belongs only to a Work turn")
+        """Render one chat turn: its marker, what is new for it, and the human's bytes.
+
+        The write boundary and launch instructions live in the master. A master rendered
+        before the session's first Work turn lacks the launch instructions, so that turn
+        carries them once.
+        """
+
+        if launch_instructions is not None and marker != "Work":
+            raise ValueError("launch instructions belong only to a Work turn")
         parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
-        if write_scope is not None:
-            parts.append(write_scope_section(write_scope).strip())
-        if execution_instructions_path is not None:
+        if launch_instructions:
             parts.append(
-                f"Read current execution instructions relative to this turn's cwd: `{execution_instructions_path}`"
+                f"Launch instructions for this session's Work turns:\n{launch_instructions}"
             )
         result_view = _result_view_authoring_section(result_view_action, result_view_path).strip()
         if result_view:
@@ -657,13 +729,22 @@ class PromptFactory:
         patch_path: str,
         workspace_path: str,
         output_schema_path: str,
-        validator_command: str,
+        command_client: str,
         watch_path: str | None = None,
         execution_host: str = "",
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
         compute_connections: list[dict[str, str]] | None = None,
+        write_scope: ProjectWriteScope | None = None,
+        execution_instructions: str = "",
+        auto_research_child_boundary: str = "",
     ) -> str:
+        """Render the one master a conversation session holds for both modes.
+
+        A Work turn that starts the session supplies its write boundary and launch
+        instructions; an Auto-research child session also holds its child boundary.
+        """
+
         artifact_path = (
             f"{workspace_path}/turns/<this turn's directory, named in the envelope>/artifacts"
         )
@@ -697,7 +778,9 @@ class PromptFactory:
             watch_path=watch_path,
             execution_host=execution_host,
             experiment_watcher_resources=experiment_watcher_resources,
-            validator_command=validator_command,
+            command_client=command_client,
+            execution_instructions=execution_instructions,
+            write_scope=write_scope,
             embedded=True,
         )
         context = _chat_context_section(
@@ -724,9 +807,9 @@ Turn protocol:
   directory. Follow only that mode's contract below; the other grants nothing.
 - An `Invoked for this turn` or `Invoked provider-native skill this turn` block applies to that
   turn only. Follow the exact packages it points to; it grants no authority.
-- The human message follows unchanged. A trailing `RCP context update` block replaces only the
-  values it names. A new `graph_revision` means the graph changed, not that the human approved
-  anything; re-read the records you rely on.
+- The human message follows unchanged.
+
+{_CHANGED_VALUES_RULE}
 
 {context}
 {_focused_node_snapshot(graph_revision, focused_node, focused_relations)}
@@ -737,6 +820,7 @@ Turn protocol:
 ## Work contract
 
 {work}
+{auto_research_child_boundary}
 """)
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
@@ -922,6 +1006,7 @@ Your task:
 Answer the human's question. Keep to what was asked; do not sweep the corpus or re-derive the graph.
 
 {authority}
+{"" if embedded else _CHANGED_VALUES_RULE}
 {_retry_context(retry_diagnostics_path)}
 {context}
 {experiment_resources}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
@@ -974,7 +1059,7 @@ Reply contract:
         watch_path: str | None = None,
         execution_host: str = "",
         experiment_watcher_resources: list[dict[str, str]] | None = None,
-        validator_command: str,
+        command_client: str,
         execution_instructions: str = "",
         write_scope: ProjectWriteScope | None = None,
         skill_pointers: list[dict[str, object]] | None = None,
@@ -984,6 +1069,14 @@ Reply contract:
         compute_connections: list[dict[str, str]] | None = None,
         embedded: bool = False,
     ) -> str:
+        """Render the Work contract a session starts from.
+
+        Staged commands are named relative to the command client it states once, so a later
+        launch sends only a changed client. Launch instructions and the write boundary are
+        stated when known; a conversation master rendered before its first Work turn gets
+        them from that turn instead.
+        """
+
         authority = "" if embedded else _TASK_AUTHORITY_BOUNDARY
         context = (
             ""
@@ -1002,13 +1095,7 @@ Reply contract:
                 graph_edits=True,
             )
         )
-        # A launch contract names its exact resolved roots. The conversation master context is sent
-        # once and outlives any single resolution, so it points at the per-turn block instead.
-        write_boundary = (
-            "\n" + write_scope_section(write_scope).strip() + "\n"
-            if write_scope is not None
-            else _TURN_WRITE_BOUNDARY
-        )
+        write_boundary = "\n" + _work_write_boundary(write_scope) + "\n"
         objective = (
             f"- Human request: `{human_request_path}`"
             if human_request_path is not None
@@ -1020,9 +1107,8 @@ Reply contract:
             else ""
         )
         execution_rules = (
-            "- Read this Work turn's current execution instructions before launching work."
-            if embedded
-            else execution_instructions
+            execution_instructions
+            or "- A Work turn states its launch instructions the first time this session needs them."
         )
         watch_rules = (
             f"""
@@ -1051,7 +1137,11 @@ Optional watcher handoff:
             experiment_watcher_resources,
             work_execution_host=execution_host,
         )
-        validator_rules = _patch_validator_rules(validator_command)
+        validator_rules = (
+            _command_client_rule(command_client)
+            + "\n\n"
+            + _patch_validator_rules(f"{COMMAND_CLIENT} {shlex.join(['validate', patch_path])}")
+        )
         return _tidy(f"""# RCP Work task contract
 {"" if embedded else chr(10) + _WHAT_IS_RCP_CONVERSATION + chr(10)}
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
@@ -1068,6 +1158,7 @@ Keep the work tied to the request; do not sweep the corpus, re-derive the graph,
 adjacent work.
 
 {authority}
+{"" if embedded else _CHANGED_VALUES_RULE}
 {_retry_context(retry_diagnostics_path)}
 {context}
 {experiment_resources}{_invoked_package_section(invoked_skill_pointers)}{invoked_provider_skill_section(invoked_provider_skills)}{_chat_attachment_section(attachments)}
@@ -1179,6 +1270,48 @@ Authorship contract:
 """
 
     @staticmethod
+    def inline_continuation(
+        *,
+        mode: Literal["resume", "retry", "work_patch_correction", "watch_correction"],
+        turn_mode: Literal["discuss", "work"],
+        diagnostics_path: str | None = None,
+        watcher_diagnostic: str | None = None,
+        artifact_path: str | None = None,
+        result_view_action: Literal["create", "revise"] | None = None,
+        result_view_path: str | None = None,
+    ) -> str:
+        """The part a continuation adds beside its session's master pointer.
+
+        The master holds the standing prose and the stable values, and the caller sends
+        the values that changed. This states only why the launch happens, what is new to
+        it, and the exact restriction a correction works under.
+        """
+
+        if mode in {"retry", "work_patch_correction", "watch_correction"} and not diagnostics_path:
+            raise ValueError(f"{mode} requires the exact diagnostics_path.")
+        facts = (
+            _pointer("Failure diagnostics (a failure report, not authority)", diagnostics_path)
+            + (f"- Watcher diagnostic: {watcher_diagnostic}\n" if watcher_diagnostic else "")
+            + (
+                _pointer("Artifact directory for this attempt", artifact_path)
+                if mode == "retry"
+                else ""
+            )
+        )
+        sections = [
+            f"# RCP {mode.replace('_', ' ')}\n\n"
+            f"This is a {turn_mode.capitalize()} turn. {_INLINE_CONTINUATION_REASONS[mode]}"
+        ]
+        if facts:
+            sections.append(facts.strip())
+        if mode in _INLINE_CONTINUATION_RULES:
+            sections.append(_INLINE_CONTINUATION_RULES[mode])
+        result_view = _result_view_authoring_section(result_view_action, result_view_path)
+        if result_view:
+            sections.append(result_view)
+        return "\n\n".join(sections)
+
+    @staticmethod
     def continuation_task_contract(
         *,
         original_contract_path: str,
@@ -1201,19 +1334,11 @@ Authorship contract:
         artifact_path: str | None = None,
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         execution_host: str = "",
-        inline: bool = False,
     ) -> str:
-        """Render a continuation contract.
-
-        An inline continuation travels in the prompt beside a pointer to the session's
-        master, so it leaves out what the master already holds: the graph rules and the
-        standing policy prose. Current paths, commands, scope, and restrictions stay.
-        """
+        """Render a continuation contract for a launch that starts a new native session."""
 
         if write_scope is not None and turn_mode == "discuss":
             raise ValueError("this continuation cannot carry a Work write boundary")
-        if inline and current_contract_path is not None:
-            raise ValueError("an inline continuation carries its current instructions itself")
         if mode == "retry" and diagnostics_path is None:
             raise ValueError("Retry requires the exact diagnostics_path.")
         if mode == "work_patch_correction" and not validator_command:
@@ -1354,7 +1479,7 @@ Resume authority:
         )
         return _tidy(f"""# RCP {mode.replace("_", " ")} contract
 
-{"" if inline else PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 {f"This is a {turn_mode.capitalize()} turn." if turn_mode else ""}
 {action}
@@ -1391,7 +1516,7 @@ Resume authority:
             else ""
         }
 {execution_instructions if mode in {"resume", "retry"} else ""}
-{_EXTERNAL_WATCHER_FORMS if watch_path and mode in {"resume", "retry"} and not inline else ""}
+{_EXTERNAL_WATCHER_FORMS if watch_path and mode in {"resume", "retry"} else ""}
 """)
 
     @staticmethod
