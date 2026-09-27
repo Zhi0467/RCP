@@ -928,8 +928,6 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         experiment.experiment_watcher_maintenance_correction_contract,
         experiment.experiment_loop_patch_correction_contract,
         merge.branch_merge_task_contract,
-        merge.branch_merge_correction_contract,
-        merge.branch_merge_rebase_contract,
         episode_report_task_contract,
     ]
     inputs = dict(
@@ -952,7 +950,6 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         seat_node_id="hyp/example",
         seat_difficulty="standard",
         context_id="a" * 64,
-        previous_context_id="b" * 64,
         review_contract_json="{}",
         residue_block="No residue.",
         ending="completed",

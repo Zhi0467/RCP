@@ -731,6 +731,9 @@ Turn protocol:
 {work}
 """)
 
+    # Bumped when the Seed and Refresh task contract's stable policy prose changes.
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v1"
+
     @staticmethod
     def graph_task_contract(
         kind: str,
@@ -1110,6 +1113,9 @@ Graph Patch (optional):
 {render_agent_graph_authority_contract()}
 
 {watch_rules}""")
+
+    # Bumped when the paper-coach task contract's stable policy prose changes.
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v1"
 
     @staticmethod
     def paper_coach_task_contract(

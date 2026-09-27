@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
-from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
+
+# Bumped when the branch-merge task contract's stable policy prose changes.
+BRANCH_MERGE_POLICY_VERSION = "branch-merge-v1"
 
 
 def branch_merge_task_contract(
@@ -108,49 +111,41 @@ not commit anything; RCP revalidates and commits atomically or commits nothing.
 """
 
 
-def branch_merge_correction_contract(
+def branch_merge_correction_parts(
     *,
-    original_contract_path: str,
     context_path: str,
     context_id: str,
     patch_path: str,
     diagnostics_path: str,
     validator_command: str,
-    ontology_extensions: bool,
-) -> str:
+) -> list[str]:
     """Request one bounded scratch-only correction in the same native session."""
 
     _require_inputs(context_path, context_id, patch_path, validator_command)
-    if not original_contract_path or not diagnostics_path:
-        raise ValueError("branch merge correction requires exact contract and diagnostic paths")
-    return f"""# RCP graph-branch merge Patch correction
+    if not diagnostics_path:
+        raise ValueError("branch merge correction requires an exact diagnostic path")
+    return [
+        f"""# RCP graph-branch merge Patch correction
 
-{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
-
-Continue the exact native session and scratch stage from `{original_contract_path}`.
+Continue in this native session and scratch stage.
 
 Exact current inputs:
 - merge context: `{context_path}`
 - merge context id: `{context_id}`
 - validation diagnostic: `{diagnostics_path}`
 - candidate Patch output to replace: `{patch_path}`
-- live validator command: `{validator_command}`
-
-Correct only the semantic candidate Patch described by the original contract. The branch and
+- live validator command: `{validator_command}`""",
+        f"""Correct only the semantic candidate Patch described by the master contract. The branch and
 main heads have not changed. RCP still prepends the built operations; correct only the residue.
 Read the diagnostic, rewrite `{patch_path}` with a different valid
 orchestrator semantic Patch, and run the validator command before finishing. Do not repeat or
 perform any operational side effect. Do not add RCP bookkeeping or branch provenance, inspect
-repositories, write watcher/artifact files, or write canonical state.
-
-{REPEATED_RULES_NOTE}
-{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
-"""
+repositories, write watcher/artifact files, or write canonical state.""",
+    ]
 
 
-def branch_merge_rebase_contract(
+def branch_merge_rebase_parts(
     *,
-    original_contract_path: str,
     previous_context_id: str,
     context_path: str,
     context_id: str,
@@ -158,45 +153,38 @@ def branch_merge_rebase_contract(
     validator_command: str,
     plan_path: str,
     residue_block: str,
-    ontology_extensions: bool = False,
-) -> str:
+) -> list[str]:
     """Replace a discarded candidate after main moved, preserving the native session."""
 
     _require_inputs(context_path, context_id, patch_path, validator_command)
-    if not original_contract_path or not previous_context_id:
-        raise ValueError("branch merge rebase requires the original and previous context ids")
+    if not previous_context_id:
+        raise ValueError("branch merge rebase requires the previous context id")
     if previous_context_id == context_id:
         raise ValueError("branch merge rebase requires a newly resolved main context")
-    return f"""# RCP graph-branch merge rebase
+    return [
+        f"""# RCP graph-branch merge rebase
 
-{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
-
-Continue the exact native session and scratch stage from `{original_contract_path}`. RCP
-discarded the previous candidate because main advanced; nothing from that candidate was
-committed.
+Continue in this native session and scratch stage. RCP discarded the previous candidate because
+main advanced; nothing from that candidate was committed.
 
 Stale merge context id: `{previous_context_id}`
 Replacement immutable merge context: `{context_path}`
 Replacement merge context id: `{context_id}`
 Candidate Patch output to rewrite: `{patch_path}`
-Live validator command: `{validator_command}`
-
-RCP rebuilt the ordinary operations against the replacement main head. The replacement plan is
+Live validator command: `{validator_command}`""",
+        f"""RCP rebuilt the ordinary operations against the replacement main head. The replacement plan is
 at `{plan_path}` and supersedes the old plan. Output only the operations for the paths below;
 RCP prepends the built operations during both self-check and commit.
 
-{residue_block}
-Recompute the semantic merge against the replacement current-main graph. Preserve compatible
+{residue_block}""",
+        """Recompute the semantic merge against the replacement current-main graph. Preserve compatible
 new main changes and explicitly resolve the replacement context's conflicts. Rewrite the Patch;
 do not reuse the stale candidate unchanged. Run the validator command before finishing. This is
 still graph-only: perform no operational side effects, inspect no repositories, and write no
 watcher, artifact, or canonical-state files. RCP supplies all provenance and commits atomically
-or commits nothing.
-
-The replacement context supersedes the earlier one, and the schema instructions above apply now.
-{REPEATED_RULES_NOTE}
-{graph_rules(edits=True, ontology_extensions=ontology_extensions)}
-"""
+or commits nothing. The replacement context, plan, and paths supersede the ones in the master
+contract.""",
+    ]
 
 
 def _require_inputs(

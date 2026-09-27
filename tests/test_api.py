@@ -21,7 +21,10 @@ from pydantic import ValidationError
 import rcp.projects as projects_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, ProviderReadiness
+from rcp.agents.acceptance import _launch_contract_path
 from rcp.agents.context import RepositoryPointer
+from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.graph_rules import graph_rules
 from rcp.api.app import (
     _generic_watcher_delivery_request,
 )
@@ -2000,6 +2003,15 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
     )
     assert "set_ontology" in diagnostic
     assert str(launcher.workspaces[0] / "patch.json") in contract
+    # The correction is the inline prompt itself and points back to the start contract.
+    assert contract == correction
+    start_path = Path(launcher.prompts[0].splitlines()[1])
+    start = launcher.input_snapshots[0][start_path.name]
+    assert correction.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=start_path)
+    assert start not in correction
+    assert graph_rules(edits=True, ontology_extensions=False) not in correction
+    store = app.state.background_tasks.store
+    assert store.agent_task_contract("invalid-patch-correction", "session_master") == start
 
 
 @pytest.mark.asyncio
@@ -3014,7 +3026,7 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
 
 
 @pytest.mark.parametrize("recovery", ["resume", "retry"])
-def test_same_provider_recovery_refreshes_guidance_without_reassembling_inputs(
+def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
     app, tmp_path, monkeypatch, recovery: str
 ) -> None:
     project_id = app.state.default_project_id
@@ -3079,13 +3091,6 @@ def test_same_provider_recovery_refreshes_guidance_without_reassembling_inputs(
     )
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert failed["status"] == ("paused" if recovery == "resume" else "failed")
-    original_contract = service.graph_task_contract
-    updated_guidance = "Current guidance: preserve planned work without inventing Evidence."
-
-    def updated_contract(kind, **kwargs):
-        return original_contract(kind, **kwargs) + "\n" + updated_guidance
-
-    monkeypatch.setattr(service, "graph_task_contract", updated_contract)
     retried = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/{recovery}", json={}
     )
@@ -3105,27 +3110,24 @@ def test_same_provider_recovery_refreshes_guidance_without_reassembling_inputs(
         assert len(retry_diagnostics["prior_attempt_diagnostics"]) == 1
         assert "provider connection dropped" in retry_diagnostics["prior_attempt_diagnostics"][0]
     store = app.state.catalog.store
-    first_base = store.agent_task_contract(failed["operation_id"], "base")
-    retry_base = store.agent_task_contract(completed["operation_id"], "base")
-    retry_contract = store.agent_task_contract(completed["operation_id"], recovery)
-    assert first_base is not None
-    assert retry_contract is not None
-    assert retry_base is not None
-    assert updated_guidance in retry_base
-    assert updated_guidance not in first_base
-    assert f"task-{completed['operation_id']}-base.md" in retry_contract
-    assert f"task-{failed['operation_id']}-initial.md" in retry_contract
-    # Current schema, validator, and package pointers supersede retained output guidance.
-    assert f"task-{completed['operation_id']}-patch-schema.json" in retry_contract
-    assert f"task-{failed['operation_id']}-patch-schema.json" not in retry_contract
+    prompt = str(launcher.calls[1]["prompt"])
+    # The continuation is sent inline and recorded for the next recovery.
+    assert store.agent_task_contract(completed["operation_id"], recovery) == prompt
+    assert store.agent_task_contract(completed["operation_id"], "base") is None
+    # Current schema, validator, and diagnostics travel inline; the master stays a file.
+    assert f"task-{completed['operation_id']}-patch-schema.json" in prompt
+    assert f"task-{failed['operation_id']}-patch-schema.json" not in prompt
+    assert str(Path(str(launcher.calls[1]["workspace"])) / "patch.json") in prompt
     if recovery == "retry":
-        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_contract
-    if recovery == "retry":
-        assert "provider connection dropped" in next(
-            value
-            for name, value in launcher.calls[1]["inputs"].items()
-            if name.endswith("retry-diagnostics.json")
-        )
+        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in prompt
+    master = launcher.calls[1]["inputs"][_launch_contract_path(prompt.splitlines()).name]
+    assert master in {
+        store.agent_task_contract(operation_id, "session_master")
+        for operation_id in (failed["operation_id"], completed["operation_id"])
+    }
+    assert master not in prompt
+    for extensions in (False, True):
+        assert graph_rules(edits=True, ontology_extensions=extensions) not in prompt
     launches = [item for item in completed["debug_receipts"] if item["category"] == "agent_launch"]
     assert launches[0]["payload"]["continuation_cause"] == recovery
     assert launches[0]["payload"]["launch_kind"] == recovery
@@ -3212,13 +3214,11 @@ def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, mon
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.sessions: list[str | None] = []
-            self.contracts: list[str] = []
 
         async def stream(self, _provider, prompt, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.prompts.append(prompt)
             self.sessions.append(kwargs.get("session_id"))
-            self.contracts.append(Path(prompt.splitlines()[1]).read_text(encoding="utf-8"))
             if len(self.prompts) == 1:
                 yield AgentEvent(event="session", session_id="paused-seed-session")
                 yield AgentEvent(event="paused", text="Provider process paused.")
@@ -3252,11 +3252,9 @@ def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, mon
     assert completed["status"] == "succeeded"
     assert assemble_calls == 1
     assert launcher.sessions == [None, "paused-seed-session"]
-    resume_contract = launcher.contracts[1]
-    assert f"task-{paused['operation_id']}-initial.md" in resume_contract
     assert (
         app.state.catalog.store.agent_task_contract(completed["operation_id"], "resume")
-        == resume_contract
+        == launcher.prompts[1]
     )
     launch = next(
         item for item in completed["debug_receipts"] if item["category"] == "agent_launch"
@@ -4286,6 +4284,61 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> 
     assert isinstance(launcher.last_kwargs["control"], AgentProcessControl)
     assert launcher.last_kwargs["capability"] == "paper_readonly"
     assert service.paper.sessions()[0].native_session_id == session_id
+
+
+def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(app, tmp_path) -> None:
+    service = app.state.service
+    service.paper.create()
+    session_id = str(uuid.uuid4())
+
+    class RecordingCoachLauncher:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self.sessions: list[str | None] = []
+            self.masters: list[tuple[Path, str]] = []
+
+        async def stream(self, _provider, prompt, **kwargs):
+            self.prompts.append(prompt)
+            self.sessions.append(kwargs.get("session_id"))
+            path = _launch_contract_path(prompt.splitlines())
+            self.masters.append((path, path.read_text(encoding="utf-8")))
+            yield AgentEvent(event="session", session_id=session_id)
+            yield AgentEvent(event="message", text="Coached.")
+            yield AgentEvent(event="done")
+
+    launcher = RecordingCoachLauncher()
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_coach(
+            service, launcher, service.paper, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    turns = []
+    for body in (
+        {"message": "Review the argument."},
+        {"message": "Now check the framing.", "session_id": session_id},
+    ):
+        started = client.post(f"/api/projects/{project_id}/tasks/paper_coach", json=body)
+        turns.append(_wait_for_run(client, project_id, started.json()["operation_id"]))
+    assert [turn["status"] for turn in turns] == ["succeeded", "succeeded"]
+
+    store = app.state.background_tasks.store
+    (start_path, start), (master_path, master) = launcher.masters
+    prompt = launcher.prompts[1]
+    assert launcher.sessions == [None, session_id]
+    assert store.agent_task_contract(turns[0]["operation_id"], "session_master") == start
+    # The follow-up has its own stage; the session's exact master is restored into it.
+    assert master_path.parent != start_path.parent
+    assert master_path.parent.parent.name == f"paper-{turns[1]['operation_id']}"
+    assert master == start
+    assert prompt.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=master_path)
+    assert "Now check the framing." in prompt
+    assert start not in prompt
+    assert store.agent_task_contract(turns[1]["operation_id"], "paper_coach") == prompt
 
 
 def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(

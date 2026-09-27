@@ -2779,6 +2779,38 @@ class AgentTaskStoreMixin:
             return None
         return str(row["operation_id"]), str(row["sha256"]), row["master_key"]
 
+    def latest_session_master_any_stage(
+        self,
+        project_id: str,
+        kind: str,
+        native_session_id: str,
+    ) -> tuple[str, str, str | None] | None:
+        """Return the newest master a succeeded turn of one kind delivered in a native session.
+
+        Unlike ``latest_session_master`` this spans every stage the session used, for owners
+        that give each turn a fresh stage and restage the master into it.
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT master.operation_id, master.sha256, key.content AS master_key
+                FROM graph_run_contracts AS master
+                JOIN graph_runs AS run ON run.operation_id = master.operation_id
+                LEFT JOIN graph_run_contracts AS key
+                  ON key.operation_id = master.operation_id AND key.role = 'session_master_key'
+                WHERE master.role = 'session_master'
+                  AND run.status = 'succeeded'
+                  AND run.project_id = ? AND run.kind = ? AND run.native_session_id = ?
+                ORDER BY master.rowid DESC
+                LIMIT 1
+                """,
+                (project_id, kind, native_session_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["operation_id"]), str(row["sha256"]), row["master_key"]
+
     @staticmethod
     def _bounded_receipt_payload(payload: dict[str, object]) -> str:
         keys = [str(key)[:80] for key in list(payload)[:32]]
