@@ -75,7 +75,7 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/chat-patch-schema.json",
-        validator_command="python /stage/inputs/validator.py /stage/workspace/patch.json",
+        command_client="python /stage/inputs/validator.py --workspace /stage/workspace",
         watch_path="/stage/workspace/watch.json",
         skill_pointers=[package.catalog_entry() | {"path": skill_path}],
     )
@@ -110,7 +110,7 @@ def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> N
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/schema.json",
-        validator_command="python3 /stage/inputs/validate.py",
+        command_client="python3 /stage/inputs/validate.py",
         watch_path="/stage/workspace/watch.json",
         execution_host="chat.example",
         experiment_watcher_resources=[resource],
@@ -250,8 +250,8 @@ def test_graph_contract_preserves_input_paths_watermark_and_validator_command() 
     assert graph_rules(edits=True, ontology_extensions=True) in contract
 
 
-def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
-    validator_command = "python /stage/validate_patch.py --token work-token"
+def test_work_contract_preserves_inputs_outputs_and_command_client() -> None:
+    command_client = "python /stage/validate_patch.py --token work-token"
     contract = PromptFactory.work_task_contract(
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
@@ -268,7 +268,7 @@ def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
         patch_path="/stage/patch.json",
         artifact_path="/stage/artifacts",
         output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command=validator_command,
+        command_client=command_client,
     )
 
     assert "/state/graph.json" in contract
@@ -278,7 +278,7 @@ def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
     assert "/srv/repo-b" in contract
     assert "gpu.example" in contract
     assert "/stage/patch.json" in contract
-    assert validator_command in contract
+    assert command_client in contract
     assert graph_rules(edits=True, ontology_extensions=True) in contract
 
 
@@ -555,30 +555,18 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
     assert "/stage/inputs/watch-correction.json" in watcher
 
 
-def test_work_patch_correction_preserves_paths_and_validator_command() -> None:
-    validator_command = "python /stage/validate_patch.py --token correction-token"
-    correction = PromptFactory.continuation_task_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
+def test_work_patch_correction_names_its_diagnostics_and_leaves_rules_to_the_master() -> None:
+    correction = PromptFactory.inline_continuation(
         mode="work_patch_correction",
-        patch_path="/stage/patch.json",
+        turn_mode="work",
         diagnostics_path="/stage/inputs/correction.json",
-        validator_command=validator_command,
-        inline=True,
     )
 
-    assert validator_command in correction
-    assert "/stage/patch.json" in correction
     assert "/stage/inputs/correction.json" in correction
-    # The rules live in the session master the correction points to.
+    # The rules and the command client live in the session master the correction points to.
     assert graph_rules(edits=True, ontology_extensions=True) not in correction
     with pytest.raises(ValueError):
-        PromptFactory.continuation_task_contract(
-            original_contract_path="/stage/inputs/task-initial.md",
-            mode="work_patch_correction",
-            patch_path="/stage/patch.json",
-            diagnostics_path="/stage/inputs/correction.json",
-            inline=True,
-        )
+        PromptFactory.inline_continuation(mode="work_patch_correction", turn_mode="work")
 
 
 def test_experiment_continuations_carry_their_diagnostics_but_no_master_policy() -> None:
@@ -686,7 +674,7 @@ def _work_contract(**overrides: object) -> str:
         "patch_path": "/stage/patch.json",
         "artifact_path": "/stage/artifacts",
         "output_schema_path": "/stage/inputs/patch-schema.json",
-        "validator_command": "python /stage/validate_patch.py --token work-token",
+        "command_client": "python /stage/validate_patch.py --token work-token",
     }
     arguments.update(overrides)
     return PromptFactory.work_task_contract(**arguments)  # type: ignore[arg-type]
@@ -703,7 +691,7 @@ def test_work_launch_contract_preserves_resolved_scope_paths() -> None:
         assert path in contract
 
 
-def test_discuss_turn_rejects_a_work_write_scope() -> None:
+def test_discuss_turn_rejects_work_launch_instructions() -> None:
     with pytest.raises(ValueError, match="only to a Work turn"):
         PromptFactory._chat_turn_prompt(
             marker="Discuss",
@@ -713,7 +701,7 @@ def test_discuss_turn_rejects_a_work_write_scope() -> None:
             invoked_skill_pointers=None,
             invoked_provider_skills=None,
             attachments=None,
-            write_scope=_work_write_scope(),
+            launch_instructions="Use the launch helper.",
         )
 
 
@@ -731,7 +719,7 @@ def test_compute_resources_preserve_selected_connection_metadata() -> None:
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/schema.json",
-        validator_command="python3 /stage/inputs/validate.py",
+        command_client="python3 /stage/inputs/validate.py",
         compute_connections=[
             {
                 "id": "gpu",

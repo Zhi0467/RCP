@@ -12,7 +12,11 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl, continuation_prompt
 from rcp.agents.continuation_prompt import SECTIONS
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
+from rcp.agents.prompts import (
+    CHAT_MASTER_CONTEXT_VERSION,
+    COMMAND_CLIENT,
+    chat_master_contract_key,
+)
 from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig
@@ -26,6 +30,9 @@ from rcp.storage import AgentTaskRecord, AppStore
 from .helpers import (
     agent_patch_json,
     append_fixture_patch,
+    changed_values,
+    current_command_client,
+    launch_contract_path,
     refresh_patch,
     seed_patch,
     wait_for_task_response,
@@ -43,29 +50,17 @@ class _RecordingLauncher:
 
     async def stream(self, _provider, prompt, **kwargs):
         if kwargs["capability"] == "work_auto":
-            tooling_path = next(
-                code for code in prompt.split("`")[1::2] if code.endswith("-execution.md")
-            )
-            execution_instructions = (Path(kwargs["cwd"]) / tooling_path).read_text()
-            command = next(
-                code
-                for code in execution_instructions.split("`")[1::2]
-                if "launch" in shlex.split(code) and "--cwd" in shlex.split(code)
-            )
-            argv = shlex.split(command)
+            # This turn's launches run through its own gate, named by the current client.
+            argv = shlex.split(current_command_client(prompt))
             gate = kwargs["invocation_gate"]
             authority = list(gate.client_arguments())
             assert argv[2 : 2 + len(authority)] == authority
             assert argv[argv.index("--workspace") + 1] == str(kwargs["cwd"])
-            assert argv[argv.index("launch") :] == [
-                "launch",
-                "--key",
-                "<idempotency-key>",
-                "--cwd",
-                "<working-directory>",
-                "--",
-                "<argv...>",
-            ]
+            launch = f"{COMMAND_CLIENT} " + shlex.join(
+                ["launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>", "--"]
+            )
+            master = launch_contract_path(prompt).read_text()
+            assert any(launch in text for text in (*self.prompts, prompt, master))
         self.prompts.append(prompt)
         self.workspaces.append(Path(kwargs["cwd"]))
         self.sessions.append(kwargs.get("session_id"))
@@ -873,7 +868,7 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     work_artifacts = launcher.workspaces[1] / "turns" / second_id / "artifacts"
     assert str(work_artifacts) in launcher.prompts[1]
     assert launcher.prompts[1].count(work_message) == 1
-    delta = _delta_values(launcher.prompts[1])
+    delta = changed_values(launcher.prompts[1])
     assert delta["settings.reasoning"] == "high"
     assert not any(key.startswith(("repositories", "skills")) for key in delta)
 
@@ -960,7 +955,7 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
     append_fixture_patch(service, refresh_patch())
     turn("Third question, after a Sync.", resume=True)
 
-    update = _delta_values(launcher.prompts[2])
+    update = changed_values(launcher.prompts[2])
     assert update["current.graph_revision"] == str(service.graph_snapshot()["revision"])
     assert not any(key.startswith(("repositories", "settings")) for key in update)
 
@@ -1018,14 +1013,14 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     assert service.graph_snapshot()["revision"] > before
 
     turn("Now just answer something.", resume=True)
-    second_delta = _delta_values(launcher.prompts[1])
+    second_delta = changed_values(launcher.prompts[1])
     assert {key.split(".")[0] for key in second_delta} == {"patch"}
-    assert "rcp-agent-client-" in second_delta["patch.validator_command"]
+    assert "rcp-agent-client-" in second_delta["patch.command_client"]
 
     # A Sync by someone else still reaches the conversation.
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
-    third_delta = _delta_values(launcher.prompts[2])
+    third_delta = changed_values(launcher.prompts[2])
     assert third_delta["current.graph_revision"] == str(service.graph_snapshot()["revision"])
 
 
@@ -1089,14 +1084,3 @@ def test_a_chat_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
 
     path = _parent_task_contract_path(wake, Path(first.stage_root), None)
     assert Path(path).read_text(encoding="utf-8") == launcher.prompts[0]
-
-
-def _delta_values(prompt: str) -> dict[str, str]:
-    """The changed values a continuation sends, by dotted key."""
-
-    header = SECTIONS["context_delta"]
-    lines = prompt[prompt.index(header) + len(header) :].split("\n\n", 1)[0].splitlines()
-    return {
-        key: value.strip("`")
-        for key, value in (line[2:].split(": ", 1) for line in lines if line.startswith("- "))
-    }

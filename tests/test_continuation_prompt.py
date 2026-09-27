@@ -80,7 +80,7 @@ def test_a_continuation_carries_no_master_text() -> None:
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/schema.json",
-        validator_command="python3 /stage/inputs/validate.py",
+        command_client="python3 /stage/inputs/validate.py",
     )
     assert GRAPH_RULES_VERSION in master
 

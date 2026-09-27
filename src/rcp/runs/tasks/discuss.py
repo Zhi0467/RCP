@@ -13,7 +13,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
-from rcp.agents.continuation_prompt import LaunchPhase, classify, compose, master_key
+from rcp.agents.continuation_prompt import (
+    LaunchPhase,
+    changed_since_master,
+    classify,
+    compose,
+    master_key,
+)
 from rcp.agents.prompts import (
     DISCUSS_POLICY_VERSION,
     chat_master_contract_key,
@@ -45,6 +51,8 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
+    chat_prompt_values,
+    retained_work_values,
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
@@ -62,7 +70,6 @@ from rcp.runs.recorded_settlement import (
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
-    _parent_task_contract_path,
     _pinned_to_profile,
     _protected_run_stage_roots,
     _ProviderOutcome,
@@ -647,6 +654,20 @@ async def stream_discuss_run(
                     "The continued chat has no native agent session; retry it from a clean "
                     "attempt instead."
                 )
+            repositories = [
+                {"alias": item.alias, "host": item.host, "path": item.path}
+                for item in context.repositories
+            ]
+            compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
+            discuss_values = chat_prompt_values(
+                context,
+                request,
+                repositories=repositories,
+                compute_profiles=compute_profiles,
+                skill_pointers=skill_pointers,
+                experiment_watcher_resources=experiment_resource_pointers,
+                workspace=str(workspace),
+            )
             if resuming or retry_attempt:
                 assert request.message is not None
                 retry_diagnostics_path = (
@@ -658,11 +679,6 @@ async def stream_discuss_run(
                     )
                     if execution is not None and retry_attempt
                     else None
-                )
-                invoked_skills = invoked_package_pointers(
-                    skill_pointers,
-                    workflow_ids=request.invoked_workflow_ids,
-                    skill_ids=request.invoked_skill_ids,
                 )
 
                 def render_discuss_contract() -> str:
@@ -680,22 +696,21 @@ async def stream_discuss_run(
                         graph_path=context.graph_path,
                         research_path=context.research_md_path,
                         focused_node_id=str(context.node["id"]) if context.node else None,
-                        repositories=[
-                            {"alias": item.alias, "host": item.host, "path": item.path}
-                            for item in context.repositories
-                        ],
+                        repositories=repositories,
                         introduction_path=context.introduction_path,
                         human_request_path=human_request_path,
                         artifact_path=str(artifact_directory),
                         retry_diagnostics_path=retry_diagnostics_path,
                         experiment_watcher_resources=experiment_resource_pointers,
                         skill_pointers=skill_pointers,
-                        invoked_skill_pointers=invoked_skills,
+                        invoked_skill_pointers=invoked_package_pointers(
+                            skill_pointers,
+                            workflow_ids=request.invoked_workflow_ids,
+                            skill_ids=request.invoked_skill_ids,
+                        ),
                         invoked_provider_skills=request.resolved_provider_skills,
                         attachments=attachment_pointers,
-                        compute_connections=service.compute_prompt_profiles(
-                            request.resolved_compute_context
-                        ),
+                        compute_connections=compute_profiles,
                     )
 
                 if resuming or retrying:
@@ -711,22 +726,22 @@ async def stream_discuss_run(
                         policy_version=DISCUSS_POLICY_VERSION,
                         ontology_extensions=context.ontology_extensions,
                         render=render_discuss_contract,
+                        values=discuss_values,
                     )
-                    continuation_contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=_parent_task_contract_path(
-                            execution, local_stage, remote_stage
-                        ),
-                        diagnostics_path=retry_diagnostics_path,
+                    # Discuss changes no Work value, so it keeps those its session holds.
+                    current = {**discuss_values, **retained_work_values(master.values)}
+                    continuation_contract = PromptFactory.inline_continuation(
                         mode=recovery_mode,
                         turn_mode="discuss",
+                        diagnostics_path=retry_diagnostics_path,
                         artifact_path=str(artifact_directory),
-                        experiment_watcher_resources=experiment_resource_pointers,
-                        skill_pointers=skill_pointers,
-                        invoked_skill_pointers=invoked_skills,
-                        invoked_provider_skills=request.resolved_provider_skills,
-                        inline=True,
                     )
-                    prompt = compose(node, parts=[continuation_contract], master=master, delta=None)
+                    prompt = compose(
+                        node,
+                        parts=[continuation_contract],
+                        master=master,
+                        delta=changed_since_master(master, current),
+                    )
                     contract_path = record_inline_prompt(
                         execution,
                         local_stage=local_stage,
@@ -755,14 +770,15 @@ async def stream_discuss_run(
                                 DISCUSS_POLICY_VERSION,
                                 ontology_extensions=context.ontology_extensions,
                             ),
+                            discuss_values,
                         )
             else:
                 assert request.message is not None
                 assert artifact_scope_id is not None
-                patch_values = _retained_chat_patch_values(
+                retained = _retained_chat_patch_values(
                     execution, request, ontology_extensions=context.ontology_extensions
                 )
-                if patch_values is None:
+                if retained is None:
                     patch_inputs = _stage_chat_patch_inputs(
                         local_stage,
                         remote_stage,
@@ -771,41 +787,11 @@ async def stream_discuss_run(
                         task_id=execution.operation_id if execution is not None else token,
                         turn_id=f"{token}:discuss",
                     )
-                    patch_values = {
-                        "path": patch_inputs.patch_path,
-                        "watch_path": patch_inputs.watch_path,
-                        "schema_path": patch_inputs.schema_path,
-                        "validator_command": patch_inputs.validator_command,
-                        "validator_mailbox_id": patch_inputs.validator_mailbox_id,
-                    }
-                repositories = [
-                    {"alias": item.alias, "host": item.host, "path": item.path}
-                    for item in context.repositories
-                ]
-                compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
+                    retained = {"patch": patch_inputs.prompt_values()}
+                patch_values = retained["patch"]
+                assert isinstance(patch_values, dict)
+                stable_prompt_values = {**discuss_values, **retained}
                 focused_node_id = str(context.node["id"]) if context.node else None
-                stable_prompt_values: dict[str, object] = {
-                    "project": {"name": context.project_name},
-                    "settings": {
-                        "provider": request.provider,
-                        "model": request.model,
-                        "reasoning": request.reasoning,
-                        "run_on": request.run_on,
-                    },
-                    "current": {
-                        "ontology_path": f"{context.graph_path}#ontology",
-                        "graph_revision": context.graph_revision,
-                        "graph_path": context.graph_path,
-                        "research_path": context.research_md_path,
-                        "focused_node_id": focused_node_id,
-                        "introduction_path": context.introduction_path,
-                    },
-                    "repositories": repositories,
-                    "compute": {"active": compute_profiles},
-                    "skills": {"pointers": skill_pointers},
-                    "patch": patch_values,
-                    "workspace": {"path": str(workspace)},
-                }
                 master_context = PromptFactory.chat_master_context(
                     project_name=context.project_name,
                     ontology_path=f"{context.graph_path}#ontology",
@@ -821,7 +807,7 @@ async def stream_discuss_run(
                     patch_path=patch_values["path"],
                     workspace_path=str(workspace),
                     output_schema_path=patch_values["schema_path"],
-                    validator_command=patch_values["validator_command"],
+                    command_client=patch_values["command_client"],
                     watch_path=patch_values["watch_path"],
                     execution_host=execution_host,
                     experiment_watcher_resources=experiment_resource_pointers,

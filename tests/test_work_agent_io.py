@@ -15,7 +15,7 @@ import rcp.runs.tasks.auto_research_child_work as child_module
 import rcp.runs.tasks.experiment_loop as loop_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
-from rcp.agents.continuation_prompt import MasterRef
+from rcp.agents.continuation_prompt import SECTIONS, MasterRef
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
@@ -24,6 +24,8 @@ from .helpers import (
     agent_patch_json,
     append_fixture_patch,
     create_named_app,
+    current_command_client,
+    launch_contract_path,
     seed_patch,
     shape_invalid_patch,
 )
@@ -531,6 +533,7 @@ async def test_operational_continuation_renders_current_launch_client(
         "<argv...>",
     )
     previous_command = previous.client_command(*launch_args)
+    previous_client = previous.client_command()
     original = previous_stage / "original.md"
     original.write_text(previous_command)
     previous.cleanup()
@@ -560,7 +563,10 @@ async def test_operational_continuation_renders_current_launch_client(
                 turn,
                 staged,
                 SimpleNamespace(
-                    worker_id="child-1", instruction="Complete the bounded child check."
+                    episode_id="episode-1",
+                    worker_id="child-1",
+                    control_node_id="hyp/example",
+                    instruction="Complete the bounded child check.",
                 ),
                 mail_path="/inputs/mail.json",
             )
@@ -600,18 +606,22 @@ async def test_operational_continuation_renders_current_launch_client(
                 else f"_compose_{continuation}_prompt",
             )
             composed = compose(turn, staged)
-        contract = Path(composed.contract_path).read_text()
-        scope_context = composed.prompt + "\n" + contract
-        for path in (*turn.write_scope.writable_roots, *turn.write_scope.protected_write_paths):
-            assert path in scope_context
-        if owner is work_module and continuation == "message_wake":
-            assert turn.patch_inputs.validator_staged.client_command(*launch_args) not in contract
-            tooling = list((turn.local_stage / "inputs").glob("task-*-execution.md"))
-            assert len(tooling) == 1
-            assert tooling[0].name in composed.prompt
-            contract = tooling[0].read_text()
-        assert turn.patch_inputs.validator_staged.client_command(*launch_args) in contract
-        assert previous_command not in contract
+        scope = (*turn.write_scope.writable_roots, *turn.write_scope.protected_write_paths)
+        if owner is loop_module:
+            contract = Path(composed.contract_path).read_text()
+            scope_context = composed.prompt + "\n" + contract
+            for path in scope:
+                assert path in scope_context
+            assert turn.patch_inputs.validator_staged.client_command(*launch_args) in contract
+            assert previous_command not in contract
+        else:
+            # A Work continuation sends what changed; a master it opens now holds the rest.
+            opened = SECTIONS["master_pointer"].split("{path}")[0] not in composed.prompt
+            master = launch_contract_path(composed.prompt).read_text() if opened else ""
+            for path in scope:
+                assert path in composed.prompt + "\n" + master
+            assert current_command_client(composed.prompt) == turn.patch_inputs.command_client
+            assert previous_client not in composed.prompt + "\n" + master
     finally:
         await turn.validator_lifecycle.close()
 

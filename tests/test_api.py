@@ -95,6 +95,7 @@ from .helpers import (
     agent_patch_json,
     append_fixture_patch,
     async_wait_until,
+    changed_values,
     create_named_app,
     gated_patch,
     launch_contract_path,
@@ -5307,6 +5308,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "skills",
         "patch",
         "workspace",
+        "work",
     }
     assert isinstance(prompt_values["current"]["graph_revision"], int)
     assert prompt_values["compute"] == {"active": []}
@@ -5337,20 +5339,11 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert second_prompt.count(second_message) == 1
     assert str(master_path) in second_prompt
     assert str(workspace / "turns" / second_operation_id / "artifacts") in second_prompt
-    second_delta, _ = json.JSONDecoder().raw_decode(second_prompt[second_prompt.index("\n{") + 1 :])
-    assert set(second_delta) == {"patch"}
-    assert set(second_delta["patch"]) == {
-        "path",
-        "watch_path",
-        "schema_path",
-        "validator_command",
-        "validator_mailbox_id",
-    }
-    assert (
-        second_delta["patch"]["validator_mailbox_id"]
-        != prompt_values["patch"]["validator_mailbox_id"]
-    )
-    assert "rcp-agent-client-" in second_delta["patch"]["validator_command"]
+    # Only this turn's own command client changed; the master holds every other value.
+    second_delta = changed_values(second_prompt)
+    assert set(second_delta) == {"patch.command_client"}
+    assert second_delta["patch.command_client"] != prompt_values["patch"]["command_client"]
+    assert "rcp-agent-client-" in second_delta["patch.command_client"]
     assert not (workspace / "current-turn.json").exists()
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 2
@@ -5382,11 +5375,10 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert third_prompt.count(third_message) == 1
     assert str(master_path) in third_prompt
     assert str(workspace / "turns" / third_operation_id / "artifacts") in third_prompt
-    delta, _ = json.JSONDecoder().raw_decode(third_prompt[third_prompt.index("\n{") + 1 :])
-    assert set(delta) == {"patch", "settings"}
-    assert delta["settings"]["reasoning"] == "high"
-    assert "rcp-agent-client-" in delta["patch"]["validator_command"]
-    assert delta["patch"]["validator_mailbox_id"] != second_delta["patch"]["validator_mailbox_id"]
+    delta = changed_values(third_prompt)
+    assert set(delta) == {"patch.command_client", "settings.reasoning"}
+    assert delta["settings.reasoning"] == "high"
+    assert delta["patch.command_client"] != second_delta["patch.command_client"]
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 3
 

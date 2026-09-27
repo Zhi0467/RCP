@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -111,6 +111,17 @@ class _ChatPatchInputs:
     validator_command: str
     validator_mailbox_id: str
     validator_staged: StagedCommandMailbox
+    command_client: str
+
+    def prompt_values(self) -> dict[str, str]:
+        """The Patch values a session is told once and sent again only when they change."""
+
+        return {
+            "path": self.patch_path,
+            "watch_path": self.watch_path,
+            "schema_path": self.schema_path,
+            "command_client": self.command_client,
+        }
 
 
 @dataclass(frozen=True)
@@ -159,7 +170,72 @@ def _stage_chat_patch_inputs(
         validator_command=validator_command,
         validator_mailbox_id=validator_staged.credential.mailbox_id,
         validator_staged=validator_staged,
+        command_client=validator_staged.client_command(),
     )
+
+
+def chat_prompt_values(
+    context: ChatContext,
+    request: RunRequest,
+    *,
+    repositories: list[dict[str, object]],
+    compute_profiles: list[dict[str, str]],
+    skill_pointers: list[dict[str, object]],
+    experiment_watcher_resources: list[dict[str, object]],
+    workspace: str,
+    patch: Mapping[str, object] | None = None,
+    work: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Every value a conversation master states that can differ between launches.
+
+    Discuss, Work, and their recoveries and corrections build their values here, so a
+    continuation's changed values are always taken against the same shape. ``patch``
+    holds the Patch outputs and command client, and ``work`` what only a Work turn
+    resolves: its write roots and its launch facts. A Discuss launch keeps both as its
+    session last had them.
+    """
+
+    values: dict[str, object] = {
+        "project": {"name": context.project_name},
+        "settings": {
+            "provider": request.provider,
+            "model": request.model,
+            "reasoning": request.reasoning,
+            "run_on": request.run_on,
+        },
+        "current": {
+            "ontology_path": f"{context.graph_path}#ontology",
+            "graph_revision": context.graph_revision,
+            "graph_path": context.graph_path,
+            "research_path": context.research_md_path,
+            "focused_node_id": str(context.node["id"]) if context.node else None,
+            "introduction_path": context.introduction_path,
+            "experiment_watcher_resources": experiment_watcher_resources,
+        },
+        "repositories": repositories,
+        "compute": {"active": compute_profiles},
+        "skills": [
+            {
+                "id": item.get("id"),
+                "kind": item.get("kind", "skill"),
+                "version": item.get("version"),
+                "path": item.get("path"),
+            }
+            for item in skill_pointers
+        ],
+        "workspace": {"path": workspace},
+    }
+    if patch is not None:
+        values["patch"] = dict(patch)
+    if work is not None:
+        values["work"] = dict(work)
+    return values
+
+
+def retained_work_values(values: Mapping[str, object] | None) -> dict[str, object]:
+    """The Work-only entries a Discuss launch keeps unchanged from its session's values."""
+
+    return {key: values[key] for key in ("patch", "work") if values and key in values}
 
 
 def _stage_chat_turn_contract(
@@ -285,7 +361,12 @@ def _prepare_chat_prompt_state(
             },
             tier="diagnostic",
         )
-    master = MasterRef(path=master_context_path, bootstrap=must_bootstrap, replaces=replaces)
+    master = MasterRef(
+        path=master_context_path,
+        bootstrap=must_bootstrap,
+        replaces=replaces,
+        values=previous.values if previous is not None else None,
+    )
     return node, master, delta
 
 
@@ -365,7 +446,7 @@ def chat_continuation_master(
         path = _stage_or_reuse_task_input(
             local_stage, remote_stage, session_master_label(policy_version, content), content
         )
-        return MasterRef(path=path, bootstrap=True)
+        return MasterRef(path=path, bootstrap=True, values=values)
     previous, _ = _committed_chat_prompt_state(
         execution, request.model_copy(update={"session_id": session_id})
     )
@@ -405,8 +486,8 @@ def _retained_chat_patch_values(
     request: RunRequest,
     *,
     ontology_extensions: bool,
-) -> dict[str, str] | None:
-    """Reuse an inactive Discuss Patch contract without issuing a credential."""
+) -> dict[str, object] | None:
+    """Reuse an inactive Discuss Patch contract and Work values without issuing a credential."""
 
     previous, _ = _committed_chat_prompt_state(execution, request)
     if previous is None or previous.contract_key != chat_master_contract_key(
@@ -416,10 +497,10 @@ def _retained_chat_patch_values(
     value = previous.values.get("patch")
     if not isinstance(value, dict):
         return None
-    names = ("path", "watch_path", "schema_path", "validator_command", "validator_mailbox_id")
+    names = ("path", "watch_path", "schema_path", "command_client")
     if not all(isinstance(value.get(name), str) and value[name] for name in names):
         return None
-    return {name: str(value[name]) for name in names}
+    return retained_work_values(previous.values)
 
 
 def _commit_chat_prompt_state(
