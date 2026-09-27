@@ -451,9 +451,11 @@ function latestChatFinishes(
   chatReads: ChatReads,
 ): Record<string, string> {
   const latest: Record<string, string> = { ...chatReads.latest_finished };
+  const archived = new Set(chatReads.archived);
   for (const task of tasks) {
     const chatId = chatIdForTask(task);
-    if (!chatId || !task.finished || !task.finished_at || chatTaskNeedsAttention(task)) continue;
+    if (!chatId || archived.has(chatId)) continue;
+    if (!task.finished || !task.finished_at || chatTaskNeedsAttention(task)) continue;
     latest[chatId] = laterTime(latest[chatId], task.finished_at) ?? task.finished_at;
   }
   return latest;

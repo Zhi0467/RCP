@@ -81,10 +81,16 @@ class ChatDisplayStoreMixin:
                 """,
                 (project_id, graph_target.model_dump_json()),
             ).fetchall()
+            archived = connection.execute(
+                "SELECT chat_id FROM chat_display "
+                "WHERE project_id = ? AND archived_at IS NOT NULL ORDER BY chat_id",
+                (project_id,),
+            ).fetchall()
         return {
             "baseline": baseline["completed_at"],
             "reads": {row["chat_id"]: row["read_through"] for row in rows},
             "latest_finished": {row["chat_id"]: row["finished_at"] for row in finished},
+            "archived": [row["chat_id"] for row in archived],
         }
 
     def mark_chat_read(

@@ -69,6 +69,8 @@ class ChatReads(BaseModel):
     baseline: str
     reads: dict[str, str]
     latest_finished: dict[str, str]
+    # Loaded turns of these chats never count as unread either.
+    archived: list[str]
 
 
 def _canonical_chat_id(chat_id: str) -> str:

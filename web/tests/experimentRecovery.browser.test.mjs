@@ -272,7 +272,12 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         else if (path.endsWith("/episodes")) json = [episode()];
         else if (path.endsWith("/chats")) json = { chats: [], next_cursor: null };
         else if (path.endsWith("/chat-reads"))
-          json = { baseline: "2026-01-01T00:00:00+00:00", reads: {}, latest_finished: {} };
+          json = {
+            baseline: "2026-01-01T00:00:00+00:00",
+            reads: {},
+            latest_finished: {},
+            archived: [],
+          };
         else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
         else if (path.endsWith("/revision"))
           json = { revision: 1, graph_head: project().graph_head };

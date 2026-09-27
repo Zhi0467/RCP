@@ -2531,6 +2531,8 @@ export interface ChatReads {
   reads: Record<string, string>;
   /** Each unarchived chat's newest finished turn, however old. */
   latest_finished: Record<string, string>;
+  /** Archived chats never count as unread, even from a loaded turn. */
+  archived: string[];
 }
 
 export interface ChatSummaryPage {

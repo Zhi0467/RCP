@@ -238,6 +238,8 @@ def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
 
     initial = client.get(f"{url}/chat-reads").json()
     assert initial["reads"] == {} and initial["latest_finished"] == {} and initial["baseline"]
+    client.post(f"{url}/chats/{chat_id}/archive", json={"archived": True})
+    assert client.get(f"{url}/chat-reads").json()["archived"] == [chat_id]
     later = "2026-09-27T12:00:00.000000+00:00"
     assert mark(later).json()["reads"] == {chat_id: later}
     # 09:00-02:00 is 11:00 UTC and 13:00+01:00 is 12:00 UTC, so neither moves it.

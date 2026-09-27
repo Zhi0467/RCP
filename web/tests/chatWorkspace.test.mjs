@@ -224,15 +224,21 @@ test("a turn is unread when it ended after the viewer's marker for its chat", ()
   });
   const baseline = "2026-09-27T10:00:00+00:00";
   // Seen finishing or not, only the marker decides: this is what survives a reload.
-  const unread = (tasks, reads, latest_finished = {}) => [
-    ...unreadChatIdsFromReads(tasks, { baseline, reads, latest_finished }),
+  const unread = (tasks, reads, latest_finished = {}, archived = []) => [
+    ...unreadChatIdsFromReads(tasks, { baseline, reads, latest_finished, archived }),
   ];
   assert.deepEqual(unread([completed, older], {}), ["chat-b"]);
+  assert.deepEqual(unread([completed], {}, {}, ["chat-b"]), []);
   assert.deepEqual(unread([completed], { "chat-b": completed.finished_at }), []);
   assert.deepEqual([...unreadChatIdsFromReads([completed], null)], []);
   // A reply the bounded task list no longer holds is still found from the server.
   assert.deepEqual(unread([], {}, { "chat-old": "2026-09-27T11:00:00+00:00" }), ["chat-old"]);
-  const reads = { baseline, reads: {}, latest_finished: { "chat-b": older.finished_at } };
+  const reads = {
+    baseline,
+    reads: {},
+    latest_finished: { "chat-b": older.finished_at },
+    archived: [],
+  };
   assert.equal(chatReadThrough([completed], reads, "chat-b"), completed.finished_at);
   assert.equal(chatReadThrough([completed], reads, "chat-a"), null);
   // A snapshot fetched before a read landed cannot move the marker back.

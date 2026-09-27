@@ -131,7 +131,12 @@ for (const initialFreshness of ["stale", "fresh"]) {
           };
         } else if (path.endsWith("/chats")) json = { chats: [], next_cursor: null };
         else if (path.endsWith("/chat-reads"))
-          json = { baseline: "2026-01-01T00:00:00+00:00", reads: {}, latest_finished: {} };
+          json = {
+            baseline: "2026-01-01T00:00:00+00:00",
+            reads: {},
+            latest_finished: {},
+            archived: [],
+          };
         else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
         await route.fulfill({ json });
       });
