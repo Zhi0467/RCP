@@ -129,6 +129,9 @@ though both are chat task kinds.
     - correction: Patch, watch, node watcher maintenance
       (`continuation_task_contract` modes, `experiment_watcher_maintenance_correction_contract`)
   - start: handoff (`work_task_contract` plus retry diagnostics)
+  - start: fresh watcher notification. `start_watcher_notification` admits it
+    with no session and cause `fresh`, so it gets the full master plus its
+    watcher payload (`src/rcp/runs/watcher_admission.py`)
 - **Experiment loop (main and child Experiments)**
   - start: episode start (`experiment_loop_task_contract`)
     - wake: watcher or graph condition (`experiment_loop_wake_message`, cut to its overrides)
@@ -137,7 +140,9 @@ though both are chat task kinds.
       is a continuation even though its stored cause is `fresh`.
     - recovery: Resume, Retry, graph repair (`experiment_loop_continuation_contract`, its Patch-correction builder for repair)
     - correction: Patch, joint Patch and watch handoff
-  - start: switch provider (full contract plus handoff diagnostics)
+  - start: clean Retry (handoff). `retry_experiment_loop` creates one for a
+    provider, model, or reasoning change and for a stale saved session; each
+    gets the full contract plus retry diagnostics
 - **Episode report (both episode modes)**
   - wake: first report, on the operational session (no master pointer)
     - correction: report fix (HTML only)
