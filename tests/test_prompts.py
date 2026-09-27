@@ -541,14 +541,6 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
     )
     assert invoked["path"] in paper
     assert graph_rules(edits=False, ontology_extensions=False) in paper
-    correction = PromptFactory.continuation_task_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
-        mode="patch_correction",
-        patch_path="/stage/patch.json",
-        diagnostics_path="/stage/inputs/correction.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-        ontology_extensions=False,
-    )
     watcher = PromptFactory.continuation_task_contract(
         original_contract_path="/stage/inputs/task-initial.md",
         mode="watch_correction",
@@ -559,9 +551,6 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
     assert "/state/paper/introduction.md" in paper
     assert "/stage/inputs/human-request.txt" in paper
     assert "/stage/inputs/retry.json" in paper
-    assert "/stage/inputs/correction.json" in correction
-    assert "/stage/inputs/task-initial.md" in correction
-    assert "/stage/patch.json" in correction
     assert "/stage/watch.json" in watcher
     assert "/stage/inputs/watch-correction.json" in watcher
 
@@ -574,22 +563,21 @@ def test_work_patch_correction_preserves_paths_and_validator_command() -> None:
         patch_path="/stage/patch.json",
         diagnostics_path="/stage/inputs/correction.json",
         validator_command=validator_command,
-        ontology_extensions=True,
+        inline=True,
     )
 
     assert validator_command in correction
     assert "/stage/patch.json" in correction
     assert "/stage/inputs/correction.json" in correction
-    # A correction repeats the current rules; it does not claim to replace a same-version copy.
-    assert REPEATED_RULES_NOTE in correction
-    assert graph_rules(edits=True, ontology_extensions=True) in correction
+    # The rules live in the session master the correction points to.
+    assert graph_rules(edits=True, ontology_extensions=True) not in correction
     with pytest.raises(ValueError):
         PromptFactory.continuation_task_contract(
             original_contract_path="/stage/inputs/task-initial.md",
             mode="work_patch_correction",
             patch_path="/stage/patch.json",
             diagnostics_path="/stage/inputs/correction.json",
-            validator_command=validator_command,
+            inline=True,
         )
 
 

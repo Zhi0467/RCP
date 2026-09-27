@@ -646,7 +646,8 @@ def test_same_provider_paper_coach_retry_receives_exact_failure(manifest, tmp_pa
     }
     assert f"task-{token}-retry-diagnostics.json" in prompt
     assert f"task-{token}-human-request.txt" in prompt
-    assert launcher.contracts[1] not in prompt
+    master = _master_path(prompt)
+    assert master is not None and master.read_text(encoding="utf-8") not in prompt
     assert graph_rules(edits=False, ontology_extensions=False) not in prompt
     _assert_retry_receipt(app, str(retried["operation_id"]))
 
