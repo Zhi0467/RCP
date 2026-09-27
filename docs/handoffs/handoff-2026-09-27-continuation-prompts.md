@@ -1,7 +1,8 @@
 # Continuations send deltas, not contracts
 
-Status on 2026-09-27: design under discussion, revised after a Codex xhigh
-design review. Nothing is implemented.
+Status on 2026-09-27: design approved by a Codex xhigh review after two
+revision rounds. Implementation is under way on this pull request, starting
+with slice 1.
 
 - Settled (human, 2026-09-27):
   - A launch that hands the provider a session id is a continuation. Any other
