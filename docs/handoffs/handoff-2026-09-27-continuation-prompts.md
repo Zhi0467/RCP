@@ -1,210 +1,256 @@
 # Continuations send deltas, not contracts
 
-Status on 2026-09-27: design under discussion. Nothing is implemented.
+Status on 2026-09-27: design under discussion, revised after a Codex xhigh
+design review. Nothing is implemented.
 
 - Settled (human, 2026-09-27):
-  - A launch that resumes a provider session is a continuation. Any other
-    launch is a session start. The provider session id decides, nothing else.
+  - A launch that hands the provider a session id is a continuation. Any other
+    launch is a session start.
   - A session start sends the full master contract, as today.
   - A continuation sends only what is new, inline, plus one pointer to the
     master contract. It never resends the contract and never forces a read.
-  - The master contract is re-staged from its durable copy at every launch
-    (option A below), so the file exists whenever a continuation could read it.
-  - Every launch is one node in a per-task tree. Each node has one of five
+  - The master is re-staged from a durable copy at every launch, so the file
+    exists whenever a continuation could read it (option A).
+  - Every launch is one node in a per-owner tree. Each node has one of five
     types, and each type has one prompt construction rule.
   - Prose changes stay small. The change is to the construction path.
-- Open: the questions in [Open questions](#open-questions).
-- Closure: the slices land, the spec and decision edits below land with them,
-  and this handoff is deleted.
+- Settled by the review (2026-09-27), see [Review outcomes](#review-outcomes):
+  current authority always travels inline; the master gets its own durable
+  record; the master key includes owner policy; the episode report never gets a
+  master pointer; commit timing stays as it is.
+- Open: [Open questions](#open-questions).
+- Closure: the slices land with their spec and decision edits, and this handoff
+  is deleted.
 
 ## Why
 
-An Experiment episode wakes when its watcher fires. Each wake today sends about
-27,000 characters. About 1,300 of them are new: why it woke, and this turn's
-paths. The rest repeats the session's launch contract: the graph rules (15,600),
-watcher handoff rules, Experiment graph authority, failure rules, and reply
-style. The agent then opens with "I'll read the current contract…" on every
-wake.
+An Experiment episode wakes when its watcher fires. The provider gets a short
+envelope telling it to read a staged wake file first. Rendered from
+`experiment_loop_wake_message` with placeholder paths, that file is about 27,000
+characters. About 1,300 are new: why it woke, and this turn's paths. The rest
+repeats the session's launch contract: the graph rules (15,600), watcher handoff
+rules, Experiment graph authority, failure rules, and reply style. Episodes then
+open each wake with "I'll read the current contract…".
 
 The repetition exists so that a session that compacted still has its rules.
-That is the wrong fix. The session already holds the contract from its start.
-It needs a reliable way back to it, not a fresh copy every turn.
+The session already holds the contract from its start. It needs a reliable way
+back to it, not a fresh copy every turn.
 
-Chat turns already work this way. `_prepare_chat_prompt_state`
-(`src/rcp/runs/chat.py`) stages one master context, and `_chat_turn_prompt`
-(`src/rcp/agents/prompts.py`) sends each later turn inline with a delta and an
-`RCP master context: <path>` line. Only `uses_master_protocol` turns get this:
-human or orchestrator Work turns that are not retries. Every other continuation
-goes through `_stage_task_contract` and `PromptFactory.launch_prompt`, which
-stages the whole contract as a file and tells the agent to read it first.
+Ordinary Discuss and eligible Work turns already work this way: one staged
+master context, and each later turn inline with a delta and a master pointer
+(`_prepare_chat_prompt_state` in `src/rcp/runs/chat.py`, `_chat_turn_prompt` in
+`src/rcp/agents/prompts.py`). Every other continuation stages a file and forces
+a read.
 
 ## The principle
 
-The provider session id decides the node type's family:
+The session id the launch hands the provider decides session start versus
+continuation. Claude resumes with `--resume`, Codex app-server with
+`thread/resume`, and Codex exec with `exec resume`. Invariant 10g never falls
+back to a fresh session silently.
 
-- Claude resumes with `--resume <session_id>` (`src/rcp/providers.py`).
-- Codex app-server calls `thread/resume` instead of `thread/start`
-  (`src/rcp/agents/codex_app_server.py`).
-- Invariant 10g never falls back to a fresh session silently. A launch that
-  carries a session id therefore runs in a session that holds its master.
+A session id does not prove that the session holds a master RCP can find. A
+continuation whose session has no durable master record (a session from before
+this change, or an owner that never recorded one) bootstraps explicitly: it
+stages a freshly rendered master and says so. It never claims "the same
+contract you were given".
 
-`handoff` (retry on another provider, host, or a stale or limited session)
-carries no session id. It is a session start. So is switching provider in a
-chat, because no session binds.
+Sessionless launches are session starts. That includes handoff, switching
+provider, a clean Auto-research orchestrator Retry, a progress handoff in
+ingestion, and a conversation watcher notification that starts fresh Work.
 
 ## Node types
 
-| Type | Launches | Prompt rule |
-|---|---|---|
-| session start | first chat message, episode start, orchestrator, worker, or child start, merge start, ingestion, coach first message, handoff | Stage the master contract from its durable copy. The prompt tells the agent to open and retain it. |
-| human turn | chat or coach follow-up | Inline: human text, invoked skills, attachments, delta, master pointer. |
-| wake | watcher, graph condition, mail, lifecycle, Auto-research continuation, episode report | Inline: the trigger, what RCP accepted last turn, this turn's paths, delta, master pointer. |
-| recovery | Resume, same-session Retry, graph repair | Inline: reason, diagnostics path, delta, master pointer. |
-| correction | Patch, watch, or watcher-upkeep fix; merge fix; rebase | Inline: diagnostics path, the narrowed command authority, master pointer. |
+| Type | Prompt rule |
+|---|---|
+| session start | Record and stage the master. The prompt tells the agent to open and retain it. |
+| human turn | Inline: human text, invoked skills, attachments, current overrides, delta, master pointer. |
+| wake | Inline: the trigger, what RCP accepted last turn, current overrides, delta, master pointer. |
+| recovery | Inline: reason, diagnostics path, current overrides, delta, master pointer. |
+| correction | Inline: diagnostics, the owner's exact restriction, current overrides, master pointer. |
 
-The master pointer is always this sentence, rendered by one section:
+**Current overrides** are everything specific to this attempt: paths (graph,
+schema, Patch, watch, artifacts, loop control, watcher state), validator and
+command credentials and their prefixes, write scope, execution instructions,
+selected and invoked skills, attachments, result-view instructions, context
+replacement, and each correction's restriction. They always travel inline and
+take precedence over the master. A master pointer never restores an expired
+command or path.
+
+The master pointer is one rendered sentence:
 
 > Master contract: `<path>`. This is the same contract you were given at the
 > start of this session. Read it only after a compaction, or if you have lost
-> track of the graph rules or your authority.
+> track of the graph rules or your authority. Current instructions in this
+> message take precedence over it.
 
-When the master changes inside a live session, the continuation instead says to
-open the new master and that it replaces the earlier one. That is the existing
-chat re-bootstrap. A master changes when its contract key changes: the master
-version or the graph rules digest (a release changed them), or a graph repair,
-which the spec says renders the current contract.
+When the master changes inside a live session, the continuation instead tells
+the agent to open the new master and that it replaces the earlier one. That is
+the existing chat re-bootstrap.
+
+**The episode report is the exception.** It reuses the operational session but
+may read only its frozen inputs and write one HTML file
+(`src/rcp/agents/episode_report_prompt.py`). Its payload carries no master
+pointer, states that the operational instructions no longer apply, and is never
+re-bootstrapped into an operational contract.
 
 ## Trees
 
-Each task kind allows only the nodes listed. Owner methods are today's builders.
-Each becomes that node's `master()` or `payload()` in the kind's profile.
+Each owner below launches only these nodes. Names are today's builders, which
+stay the owners of their content. Discuss and Work are separate owners even
+though both are chat task kinds.
 
-- **Chat turn (Discuss, Work)**
-  - session start: first message. `PromptFactory.chat_master_context`
-    - human turn: follow-up. `work_turn_prompt`, `discuss_turn_prompt`
-    - recovery: Resume, same-session Retry, graph repair. `continuation_task_contract`
-    - correction: Patch or watch fix. `continuation_task_contract` correction modes
-  - session start: switch provider or handoff. `chat_master_context` plus `retry_handoff_task_contract`
-- **Experiment episode**
-  - session start: episode start. `experiment_loop_task_contract`
-    - wake: watcher or graph condition. `experiment_loop_wake_message`, cut to trigger and paths
-    - wake: episode report. `episode_report._stage_attempt_contract`
-    - recovery: Resume, Retry. `experiment_loop_continuation_contract`
-    - correction: `experiment_loop_patch_correction_contract`,
-      `experiment_loop_watcher_correction_contract`,
-      `experiment_watcher_maintenance_correction_contract`
-  - session start: switch provider. `experiment_loop_task_contract` plus handoff diagnostics
-- **Auto-research**
-  - session start: orchestrator or worker. `auto_research_{orchestrator,worker}_task_contract`
-    - wake: mail, lifecycle, graph, continuation. `auto_research_*_continuation_contract`
-    - recovery: Resume, Retry. same builder, recovery modes
-    - correction: Patch fix. `continuation_task_contract(work_patch_correction)`
-  - session start: child work. `work_task_contract` plus `_auto_research_child_work_contract`
-    - wake: message or watcher. `_compose_child_wake_prompt`
-    - recovery: Resume, Retry. `_compose_child_resume_prompt`, `_compose_child_retry_prompt`
+- **Discuss**
+  - start: first message (Discuss master context)
+    - human turn: follow-up
+    - recovery: Resume, same-session Retry (`discuss.py`)
+  - start: handoff (current Discuss base)
+- **Work (ordinary and Auto-research child Work)**
+  - start: first message (`chat_master_context`; non-master Work: `work_task_contract`)
+    - human turn: follow-up
+    - wake: child mail or watcher (`_compose_child_wake_prompt`)
+    - recovery: Resume, same-session Retry, graph repair (`continuation_task_contract`)
+    - correction: Patch, watch, node watcher maintenance
+      (`continuation_task_contract` modes, `experiment_watcher_maintenance_correction_contract`)
+  - start: handoff (`work_task_contract` plus retry diagnostics)
+- **Experiment loop (main and child Experiments)**
+  - start: episode start (`experiment_loop_task_contract`)
+    - wake: watcher or graph condition (`experiment_loop_wake_message`, cut to its overrides)
+    - recovery: Resume, Retry, graph repair (`experiment_loop_continuation_contract`, its Patch-correction builder for repair)
+    - correction: Patch, joint Patch and watch handoff
+  - start: switch provider (full contract plus handoff diagnostics)
+- **Episode report (both episode modes)**
+  - wake: first report, on the operational session (no master pointer)
+    - correction: report fix (HTML only)
+- **Auto-research actors**
+  - start: orchestrator or worker (`auto_research_{orchestrator,worker}_task_contract`)
+    - wake: mail, graph, continuation; lifecycle for the orchestrator only
+    - recovery: Resume, same-session Retry (continuation builders)
+    - correction: Patch, validate-only commands
+  - start: clean orchestrator Retry
+- **Ingestion (seed, refresh)**
+  - start (`graph_task_contract`)
+    - recovery: Resume, same-session Retry
+    - correction: Patch, with operational authority revoked
+  - start: progress handoff (`retry_handoff_task_contract`)
 - **Branch merge**
-  - session start: `branch_merge_task_contract`
-    - correction: `branch_merge_correction_contract`, `branch_merge_rebase_contract`
-- **Ingestion (seed, refresh)**: session start `graph_task_contract`; correction only.
-- **Paper coach**: session start `paper_coach_task_contract`; human turn and
-  recovery from `runs/tasks/coach.py`.
+  - start (`branch_merge_task_contract`)
+    - correction: merge Patch fix (`branch_merge_correction_contract`)
+    - correction: rebase onto new main, with a replaced context, plan, and
+      residue (`branch_merge_rebase_contract`)
+- **Paper coach**
+  - start: first message (`paper_coach_task_contract`)
+    - human turn: follow-up
+    - recovery: Resume, Retry
 
-## Objects
+## Construction
 
-One new module owns the shared path. Owners keep their policy.
+**Open question 1** decides the shape. Either way these parts are shared:
 
-- `LaunchFacts`: the continuation value, the session id the launch hands the
-  provider, and the correction round. Built from the task execution and request.
-- `classify(facts) -> PromptNode`: reads lifecycle facts only. It never reads
-  the task kind, surface, or patch kind (AGENTS.md cross-cutting rules).
-- `PromptProfile`: one per task kind, registered in one place. It has `tree`
-  (the node types this kind allows; any other is a programming error), `master()`
-  (the full contract), `values()` (the stable values a delta is computed from),
-  and `payload(node)` (the node's new content).
-- `SessionMaster`: `stage()` writes the master from its durable copy to one
-  content-addressed path in the session's stage `inputs/`, or reuses an
-  identical file. It returns the path and digest. This generalizes
-  `_experiment_session_contract_path` and the chat master staging.
-- `SessionPromptState`: per native session, what RCP last sent. `baseline()`,
-  `delta(values)`, and `commit()` after the provider accepts the prompt. This
-  generalizes `chat_session_contexts`.
-- Five constructors, one per node type. `build()` returns a `ComposedPrompt`
-  (today's `_ComposedWorkPrompt`). Shared prose (pointer, delta header, wake
-  header, re-bootstrap line) comes from one `PromptSections` table.
+- `classify`: an owner supplies its launch phase at the call boundary (the
+  continuation value, the session id it hands the provider, and its own local
+  counters such as correction, rebase, or report attempt). `classify` checks
+  the session id first, then picks one of the four continuation types. It
+  never reads the task kind or surface.
+- A session master record: immutable master bytes, their digest, and the
+  originating operation and role, bound to provider, host, session, project,
+  and graph target. `stage()` restores the file into an admissible stage.
+- The master key: a manual master version, the graph rules digest, and each
+  owner's stable policy version. A key change renders and records a new master;
+  re-staging old bytes under a new key is wrong. Paths, credentials, and graph
+  data stay out of the key. An explicit `force_bootstrap` covers graph repair
+  without faking a content change.
+- One delta function over the values each owner declares stable.
+- One section table for the shared prose: the pointer, the re-bootstrap line,
+  the delta header, and the report's revocation line.
 
-Every composed prompt, inline or not, is still recorded with
-`record_agent_task_contract` so recovery and receipts see exactly what the
-provider saw.
+## Review outcomes
 
-## Master persistence (option A)
+The Codex xhigh review (2026-09-27) found five problems in the first draft.
+Each is now reflected above.
 
-The durable copy in `agent_task_contracts` is the source of truth. At every
-launch, `SessionMaster.stage()` writes it into the session's stage at the same
-content-addressed path, or reuses the file if it is identical.
-
-A continuation always runs on its session's exact stage (continuation binding
-in `docs/specs/providers-and-containment.md`). The agent reads the file only
-during a live turn, and a live turn's stage is protected from cleanup. So the
-file exists whenever it can be read, including after the 7-day sweep removed an
-idle stage. Retention does not change.
-
-Rejected: option B, protecting a stage for as long as any of its tasks can
-resume or retry. It keeps failed turns' stages forever and still needs the
-durable copy for a remote stage that was lost.
+1. **Current authority must stay inline.** Corrections are not one policy:
+   ingestion revokes operational authority, Work keeps it, Experiment watcher
+   correction may repair the joint handoff, merge rebase replaces its context,
+   and Auto-research correction is validate-only. Each owner keeps its exact
+   restriction inline.
+2. **No universal durable master exists today.** `agent_task_contracts` is keyed
+   by operation and role, not session. Chat records the master's path and
+   values, not its bytes. Paper coach follow-ups use a new stage per turn, and
+   the report's session belongs to another owner. Hence the new master record.
+   Option A restores a missing master file only inside an admissible stage. A
+   whole stage that is gone still fails closed, as today; retention does not
+   change.
+3. **The first tree missed paths**: Discuss versus Work, ingestion recovery and
+   handoff, Experiment graph repair, child Experiments, clean orchestrator
+   Retry, and the report as its own owner. A table over `AgentTaskContinuation`
+   alone cannot classify merge rebase or report attempts, so owners supply
+   their local counters.
+4. **The graph rules digest is not enough for the key.** Owner authority and
+   watcher and recovery policy live outside it. Commit timing also stays as it
+   is: chat commits after a completed reply with its compare-and-swap, and
+   Experiment commits through settlement. A launch receipt is not proof that
+   the provider received the prompt.
+5. **The first draft over-built.** The review recommends dropping the runtime
+   registry, the runtime tree check, and five constructor classes, in favor of
+   owner-selected builders and one small shared assembler. See open question 1.
 
 ## Docs this changes
 
-- `docs/specs/providers-and-containment.md`: "Continuation binding" (recovery
-  repeats graph rules) and "Graph rules in task contracts" (continuations
-  repeat the block). Both become: a continuation points to its master, and
-  resends only on a changed contract key.
-- `docs/decisions/2026-09-23-graph-rules-render-from-the-model.md`, section
-  "Why continuations repeat rather than replace". Replace it with the pointer
-  rule and why. Keep the digest: it is now the contract key's rules component.
+- `docs/specs/providers-and-containment.md`: "Continuation binding" and "Graph
+  rules in task contracts" (continuations repeat the rules block). Both become
+  the pointer rule, with resend only on a key change.
+- `docs/decisions/2026-09-23-graph-rules-render-from-the-model.md`, section "Why
+  continuations repeat rather than replace". Replace it with the pointer rule;
+  the digest stays as one part of the master key.
 - `docs/specs/conversations-episodes-and-watchers.md`, where it describes wake
   prompts.
 
 ## Verification
 
-- A table test over every `AgentTaskContinuation` value and correction round:
-  `classify` returns the expected node type, and each profile's `tree` accepts
-  exactly its nodes.
-- Per node type: a continuation prompt contains no graph rules block and no
-  master contract text; it contains the master pointer section and the path.
-  Test structure and section ids, never wording.
-- Contract key change: a continuation after a rules digest change carries the
-  re-bootstrap section and a new master path.
-- Persistence: delete a stage's `inputs/` master, launch a continuation, and
-  assert the file is back with the recorded digest. Local and remote stage.
-- The acceptance suite's fake provider reads the task contract from the launch
-  prompt (`_read_launch_contract` in `src/rcp/agents/acceptance.py`). It must
-  read inline continuation prompts too. Run both acceptance suites.
+- Every owner launch that can pass a session id (18 invocations, listed in the
+  review) produces the expected node type and carries its current overrides.
+  Test launch data and enforced authority, not section wording.
+- A continuation prompt contains no master contract text and no graph rules
+  block, except on a key change or forced bootstrap.
+- Report attempts in both episode modes carry no master pointer and keep their
+  frozen input set.
+- A deleted master file inside a live stage is restored with the recorded
+  digest. A deleted whole stage still fails closed. Local and remote.
+- A session without a master record bootstraps explicitly.
+- A release upgrade that changes owner policy re-bootstraps once, then returns
+  to deltas.
+- Large UTF-8 prompts pass byte-for-byte through Codex exec, app-server, and
+  remote forwarding.
+- The acceptance fake provider caches what it learned at session start, parses
+  current overrides from the inline prompt, and fails on missing commands
+  instead of reading them from the master. The other launch-parsing doubles the
+  review lists are updated with it.
 - Served journey: one Experiment episode through two watcher wakes on a
-  disposable data directory. Check the recorded wake prompts' size and that the
-  agent does not reopen the master.
+  disposable data directory, checking the recorded wake prompts.
 
 ## Slices
 
-1. The shared module, `classify`, `SessionMaster`, the constructors, and the
-   `PromptSections` table. Move chat onto it with no behavior change. This
-   proves the mechanism on the path that already works.
-2. Experiment episode: wakes, recovery, corrections, episode report.
-3. Auto-research: orchestrator, worker, child work.
-4. Branch merge, ingestion corrections, Paper coach, Work retry.
+1. Shared parts: `classify`, the master record and `stage()`, the key, the delta
+   function, and the section table. Move Discuss and Work onto them with no
+   behavior change.
+2. Experiment loop and the episode report.
+3. Auto-research actors and child Work.
+4. Ingestion, branch merge, and Paper coach (including restaging its session
+   master into each per-turn stage).
 5. Spec and decision edits land with the slice that changes each behavior.
 
 ## Open questions
 
-1. `SessionPromptState` storage: generalize `chat_session_contexts` into one
-   session-keyed table (a schema migration), or add a second table for
-   non-chat sessions. Recommendation: generalize. Two tables would be two
-   delta mechanisms.
-2. Graph repair renders the current contract today. Treat it as a recovery
-   whose contract key always changes, so it re-bootstraps. Recommendation: yes.
-3. Correction rounds narrow command authority (for example, Auto-research
-   corrections may only validate). That narrowing is new authority and must be
-   inline in the correction payload, never only in the master. Confirm every
-   correction owner already states it inline.
-4. Codex exec takes the prompt on stdin, and app-server on `turn/start`. Inline
-   continuation prompts stay well under today's staged sizes, but confirm neither
-   transport has a prompt-size limit that the largest delta could hit.
+1. **Construction shape.** (a) A `PromptConstructor` per node type, chosen
+   through a registry of owner profiles. (b) Owners keep choosing their own
+   builders and call one shared assembler, `compose(node, overrides,
+   master_ref)`, which applies the node type's rule. Recommendation: (b). The
+   node type still decides the rule in one place. Owner profiles split along
+   Discuss, Work, Experiment, and child lines that task kinds do not follow, so
+   a registry duplicates the owners' own dispatch. AGENTS.md also forbids
+   policy selectors in shared plumbing.
+2. **Storage for session state.** Generalize `chat_session_contexts` or add a
+   table for non-chat sessions. Recommendation: add the master record first,
+   reuse one delta function, and generalize storage later. A broad migration
+   should not block slice 1.
