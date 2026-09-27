@@ -97,6 +97,13 @@ may read only its frozen inputs and write one HTML file
 pointer, states that the operational instructions no longer apply, and is never
 re-bootstrapped into an operational contract.
 
+The report's restriction is the newest instruction the session holds. So the
+first operational continuation after a report attempt on that session (Add N
+turns, or an Auto-research lifecycle turn after reauthorization) is a forced
+bootstrap: it says the report instructions have ended and tells the agent to
+open the operational master again. RCP knows this from the session's last
+launch being a report attempt.
+
 ## Trees
 
 Each owner below launches only these nodes. Names are today's builders, which
@@ -223,6 +230,8 @@ Each is now reflected above.
 - A continuation prompt contains no master contract text and no graph rules
   block, except on a key change or forced bootstrap.
 - An Add N turns continuation episode gets a delta, not the start contract.
+  After a report attempt on that session, it is a forced bootstrap that retires
+  the report restriction, in both episode modes.
 - Report attempts in both episode modes carry no master pointer and keep their
   frozen input set.
 - A deleted master file inside a live stage is restored with the recorded
