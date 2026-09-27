@@ -1,6 +1,10 @@
 # Active implementation handoffs
 
-None.
+Active:
+
+- [Space settings own machines, and machines name extra writable paths](handoff-2026-09-27-space-settings-and-writable-paths.md)
+  — design confirmed 2026-09-27; needs one review round before
+  implementation. Nothing implemented.
 
 Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
 and the refusal-explains-itself handoff (a refused dispatch or Apply reported
