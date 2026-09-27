@@ -3,8 +3,7 @@
 Active:
 
 - [Space settings: machine cards and writable paths](handoff-2026-09-27-space-settings-and-writable-paths.md)
-  — confirmed 2026-09-27 after three design reviews; ready to
-  implement. Nothing implemented.
+  — confirmed 2026-09-27; ready to implement. Nothing implemented.
 
 Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
 and the refusal-explains-itself handoff (a refused dispatch or Apply reported
