@@ -119,6 +119,9 @@ though both are chat task kinds.
 - **Experiment loop (main and child Experiments)**
   - start: episode start (`experiment_loop_task_contract`)
     - wake: watcher or graph condition (`experiment_loop_wake_message`, cut to its overrides)
+    - human turn: Add N turns. A continuation episode runs invocation 1 on the
+      ended episode's session and stage (`start_experiment_continuation`), so it
+      is a continuation even though its stored cause is `fresh`.
     - recovery: Resume, Retry, graph repair (`experiment_loop_continuation_contract`, its Patch-correction builder for repair)
     - correction: Patch, joint Patch and watch handoff
   - start: switch provider (full contract plus handoff diagnostics)
@@ -144,7 +147,8 @@ though both are chat task kinds.
 - **Paper coach**
   - start: first message (`paper_coach_task_contract`)
     - human turn: follow-up
-    - recovery: Resume, Retry
+    - recovery: Resume, same-session Retry
+  - start: handoff, a Retry that cannot reuse its checkpoint (retry diagnostics)
 
 ## Construction
 
@@ -218,6 +222,7 @@ Each is now reflected above.
   Test launch data and enforced authority, not section wording.
 - A continuation prompt contains no master contract text and no graph rules
   block, except on a key change or forced bootstrap.
+- An Add N turns continuation episode gets a delta, not the start contract.
 - Report attempts in both episode modes carry no master pointer and keep their
   frozen input set.
 - A deleted master file inside a live stage is restored with the recorded
