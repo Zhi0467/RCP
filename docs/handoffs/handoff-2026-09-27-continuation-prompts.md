@@ -1,8 +1,18 @@
 # Continuations send deltas, not contracts
 
 Status on 2026-09-27: design approved by a Codex xhigh review after two
-revision rounds. Implementation is under way on this pull request, starting
-with slice 1.
+revision rounds. Implementation is under way on this pull request.
+
+- Implemented: slice 1. The shared module (`src/rcp/agents/continuation_prompt.py`)
+  and the session master record (`src/rcp/runs/session_master.py`) exist;
+  ordinary Discuss and Work render through `compose`, record their master's
+  bytes, and restore it before every pointer. Non-chat owners have
+  `start_session_master`, `continuation_session_master` (which counts only
+  masters a succeeded turn delivered), and `record_inline_prompt`.
+- Remaining: slices 2 to 4 for every other owner (Discuss and Work recovery and
+  correction, Experiment loop and the report, Auto-research actors, ingestion,
+  branch merge, Paper coach), the post-report bootstrap state, and the spec and
+  decision edits that land with them.
 
 - Settled (human, 2026-09-27):
   - A launch that hands the provider a session id is a continuation. Any other

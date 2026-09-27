@@ -2753,10 +2753,13 @@ class AgentTaskStoreMixin:
         stage_host: str | None,
         stage_root: str,
     ) -> tuple[str, str, str | None] | None:
-        """Return the newest master recorded in one native session on one exact stage.
+        """Return the newest master a succeeded turn delivered in one native session.
 
-        The result is the recording operation, the master's digest, and the key it was
-        rendered under (None for a master recorded without one).
+        Only a succeeded operation counts: a master recorded by an attempt that failed,
+        paused, or was interrupted may never have reached the provider, so the session is
+        not known to hold it and the next launch must bootstrap again. The result is the
+        recording operation, the master's digest, and the key it was rendered under (None
+        for a master recorded without one).
         """
 
         with self.connection() as connection:
@@ -2768,6 +2771,7 @@ class AgentTaskStoreMixin:
                 LEFT JOIN graph_run_contracts AS key
                   ON key.operation_id = master.operation_id AND key.role = 'session_master_key'
                 WHERE master.role = 'session_master'
+                  AND run.status = 'succeeded'
                   AND run.project_id = ? AND run.native_session_id = ?
                   AND COALESCE(run.stage_host, '') = ? AND run.stage_root = ?
                 ORDER BY master.rowid DESC

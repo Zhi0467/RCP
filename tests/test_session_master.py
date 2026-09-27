@@ -8,14 +8,16 @@ from rcp.storage import AgentTaskRecord, AppStore
 from tests.test_auto_research_children_storage import _identity, _project
 
 
-def _task(store: AppStore, operation_id: str, stage: Path) -> SimpleNamespace:
+def _task(
+    store: AppStore, operation_id: str, stage: Path, status: str = "succeeded"
+) -> SimpleNamespace:
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
             project_id="project",
             kind="project_chat",
-            status="succeeded",
+            status=status,  # type: ignore[arg-type]
             request={"chat_id": "chat"},
             created_at=now,
             updated_at=now,
@@ -43,9 +45,9 @@ def test_a_continuation_keeps_restores_or_replaces_its_session_master(tmp_path: 
     )
     Path(start.path).unlink()
 
-    def continuation(operation_id: str, key: str) -> object:
+    def continuation(operation_id: str, key: str, status: str = "succeeded") -> object:
         return continuation_session_master(
-            _task(store, operation_id, stage),  # type: ignore[arg-type]
+            _task(store, operation_id, stage, status),  # type: ignore[arg-type]
             local_stage=stage,
             remote_stage=None,
             native_session_id="session",
@@ -58,6 +60,9 @@ def test_a_continuation_keeps_restores_or_replaces_its_session_master(tmp_path: 
     assert kept.path == start.path and not kept.bootstrap
     assert Path(kept.path).read_text(encoding="utf-8") == "master one"
 
+    # A replacement recorded by an attempt that failed may never have been delivered.
+    undelivered = continuation("wake-failed", "key-2", status="failed")
+    assert undelivered.bootstrap
     replaced = continuation("wake-2", "key-2")
     assert replaced.bootstrap and replaced.replaces
     assert Path(replaced.path).read_text(encoding="utf-8") == "master for key-2"
