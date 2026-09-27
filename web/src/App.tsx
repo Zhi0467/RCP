@@ -2548,7 +2548,13 @@ export default function App() {
     transitionManifest,
     transitionRulesetTag,
   ]);
-  const unreadChatIds = useMemo(() => unreadChatIdsFromReads(tasks, chatReads), [chatReads, tasks]);
+  // Only a listed conversation can be opened and so marked read; counting any
+  // other chat would leave the badge stuck.
+  const unreadChatIds = useMemo(() => {
+    const listed = new Set(conversations.map((conversation) => conversation.chatId));
+    const unread = unreadChatIdsFromReads(tasks, chatReads);
+    return new Set([...unread].filter((chatId) => listed.has(chatId)));
+  }, [chatReads, conversations, tasks]);
   const chatsIndicator = chatIndicator(tasks, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
