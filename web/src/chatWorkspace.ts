@@ -307,6 +307,13 @@ export function conversationAgentStatus(
   return { ...result, state: "done", group: "done" };
 }
 
+/** The list's sections: pinned conversations first, then each status group. */
+export type AgentListSection = "pinned" | ConversationAgentGroup;
+export const AGENT_LIST_SECTIONS: readonly AgentListSection[] = [
+  "pinned",
+  ...CONVERSATION_AGENT_GROUPS,
+];
+
 export interface ConversationAgentRow {
   conversation: ChatConversation;
   status: ConversationAgentStatus;
@@ -338,14 +345,20 @@ export function conversationSearchText(conversation: ChatConversation): string {
   return parts.filter(Boolean).join("\n").toLocaleLowerCase();
 }
 
-/** Rows grouped by latest turn status; each group keeps recency order. */
+/**
+ * Rows grouped by latest turn status; each group keeps recency order. Pinned
+ * conversations leave their status group for the pinned section, newest pin first.
+ */
 export function groupConversationAgents(
   conversations: ChatConversation[],
   unreadChatIds: ReadonlySet<string>,
   query = "",
-): Record<ConversationAgentGroup, ConversationAgentRow[]> {
+  pinnedChatIds: readonly string[] = [],
+): Record<AgentListSection, ConversationAgentRow[]> {
   const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  const groups: Record<ConversationAgentGroup, ConversationAgentRow[]> = {
+  const pinOrder = new Map(pinnedChatIds.map((chatId, index) => [chatId, index]));
+  const groups: Record<AgentListSection, ConversationAgentRow[]> = {
+    pinned: [],
     new_reply: [],
     failed: [],
     stopped: [],
@@ -358,8 +371,16 @@ export function groupConversationAgents(
       if (!terms.every((term) => text.includes(term))) continue;
     }
     const status = conversationAgentStatus(conversation, unreadChatIds);
-    groups[status.group].push({ conversation, status });
+    groups[pinOrder.has(conversation.chatId) ? "pinned" : status.group].push({
+      conversation,
+      status,
+    });
   }
+  groups.pinned.sort(
+    (left, right) =>
+      (pinOrder.get(left.conversation.chatId) ?? 0) -
+      (pinOrder.get(right.conversation.chatId) ?? 0),
+  );
   return groups;
 }
 

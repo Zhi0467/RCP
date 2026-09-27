@@ -512,16 +512,51 @@ export function useChatState({
   }, [apiBase, graphTarget, isActiveProject, projectId, setChatReads]);
 
   // Reading moves the marker at once; the server's answer then merges into it.
+  const experimentChatTargetRef = useRef(selectedExperimentChatTarget);
+  experimentChatTargetRef.current = selectedExperimentChatTarget;
+  const otherGraphReadKey = useRef<string | null>(null);
+
   const markVisibleChatRead = useCallback(
     (tasks: AgentTask[], visibleChatId: string | null) => {
       const current = chatReadsRef.current;
       if (!visibleChatId || !current || !projectId || !apiBase) return;
+      const requestedProjectId = projectId;
+      const path = `${apiBase}/chats/${encodeURIComponent(visibleChatId)}/read`;
+      const target = visibleChatTranscriptTarget(
+        visibleChatId,
+        selectedExperimentChatId,
+        experimentChatTargetRef.current,
+        graphTarget,
+      );
+      if (!sameGraphTarget(target, graphTarget)) {
+        // A Runs chat on another graph has no finish in the viewed graph's
+        // projection, so read that graph's. Its progress token bounds the fetches.
+        const key = `${visibleChatId}|${experimentChatTargetKey}|${selectedExperimentChatFreshness}`;
+        if (otherGraphReadKey.current === key) return;
+        otherGraphReadKey.current = key;
+        void loadChatReads(graphTargetUrl(`${apiBase}/chat-reads`, target))
+          .then(async (other) => {
+            const readThrough = chatReadThrough(tasks, other, visibleChatId);
+            const marker = other.reads[visibleChatId] ?? other.baseline;
+            if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
+            const reads = await markChatRead(graphTargetUrl(path, target), readThrough);
+            const latest = chatReadsRef.current;
+            // Markers are per chat, not per graph, but finishes belong to their graph.
+            if (isActiveProject(requestedProjectId) && latest) {
+              setChatReads({ ...latest, reads: mergeChatReads(latest, reads).reads });
+            }
+          })
+          .catch((error) => {
+            reportError(
+              `Chat could not be marked read: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        return;
+      }
       const readThrough = chatReadThrough(tasks, current, visibleChatId);
       const marker = current.reads[visibleChatId] ?? current.baseline;
       if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
       setChatReads({ ...current, reads: { ...current.reads, [visibleChatId]: readThrough } });
-      const requestedProjectId = projectId;
-      const path = `${apiBase}/chats/${encodeURIComponent(visibleChatId)}/read`;
       void markChatRead(graphTargetUrl(path, graphTarget), readThrough)
         .then((reads) => {
           if (isActiveProject(requestedProjectId)) {
@@ -534,7 +569,17 @@ export function useChatState({
           );
         });
     },
-    [apiBase, graphTarget, isActiveProject, projectId, reportError, setChatReads],
+    [
+      apiBase,
+      experimentChatTargetKey,
+      graphTarget,
+      isActiveProject,
+      projectId,
+      reportError,
+      selectedExperimentChatFreshness,
+      selectedExperimentChatId,
+      setChatReads,
+    ],
   );
 
   const resetProjectChats = useCallback(() => {

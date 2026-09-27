@@ -3,6 +3,7 @@ import { withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
 import {
+  AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
   chatDraftStorageKey,
   chatIdForTask,
@@ -487,10 +488,10 @@ for (const [id, statuses, unread, state, group] of [
       "working",
       "done",
     ]);
-    assert.deepEqual(Object.keys(groups), CONVERSATION_AGENT_GROUPS);
+    assert.deepEqual(Object.keys(groups), AGENT_LIST_SECTIONS);
     assert.deepEqual(
       Object.values(groups).map((rows) => rows.length),
-      CONVERSATION_AGENT_GROUPS.map((key) => (key === group ? 1 : 0)),
+      AGENT_LIST_SECTIONS.map((key) => (key === group ? 1 : 0)),
     );
     const row = groups[group][0];
     assert.equal(row.conversation.chatId, id);
@@ -500,6 +501,39 @@ for (const [id, statuses, unread, state, group] of [
     assert.equal(row.status.latest, conversation.tasks.at(-1) ?? null);
   });
 }
+
+test("pinned conversations leave their status group, newest pin first", () => {
+  const conversation = (chatId, status) => ({
+    chatId,
+    kind: "project_chat",
+    nodeId: null,
+    title: chatId,
+    updatedAt: "2026-07-28T00:00:00Z",
+    tasks: [task({ operation_id: `${chatId}-turn`, kind: "project_chat", status })],
+  });
+  const groups = groupConversationAgents(
+    [
+      conversation("failed", "failed"),
+      conversation("done", "succeeded"),
+      conversation("other", "succeeded"),
+    ],
+    new Set(),
+    "",
+    ["done", "failed"],
+  );
+  assert.deepEqual(
+    groups.pinned.map((row) => [row.conversation.chatId, row.status.group]),
+    [
+      ["done", "done"],
+      ["failed", "failed"],
+    ],
+  );
+  assert.deepEqual(groups.failed, []);
+  assert.deepEqual(
+    groups.done.map((row) => row.conversation.chatId),
+    ["other"],
+  );
+});
 
 test("agent search matches every word against what the card already holds", () => {
   const conversation = {

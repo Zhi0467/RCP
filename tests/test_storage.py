@@ -85,7 +85,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (23, "agent_task_list_indexes_v1"),
         (24, "compute_probe_routes_v1"),
         (25, "chat_display_v1"),
-        (26, "chat_reads_v1"),
+        (26, "chat_reads_and_pins_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:

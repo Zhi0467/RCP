@@ -518,6 +518,17 @@ export function markChatRead(path: string, readThrough: string): Promise<ChatRea
   return api(path, { method: "POST", body: JSON.stringify({ read_through: readThrough }) });
 }
 
+export function setChatPinned(
+  apiBase: string,
+  chatId: string,
+  pinned: boolean,
+): Promise<ChatDisplay> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/pin`, {
+    method: "POST",
+    body: JSON.stringify({ pinned }),
+  });
+}
+
 /** A blank title returns the chat to its derived name. */
 export function setChatTitle(apiBase: string, chatId: string, title: string): Promise<ChatDisplay> {
   return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/title`, {

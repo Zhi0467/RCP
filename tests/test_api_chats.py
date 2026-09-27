@@ -210,7 +210,10 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
     def rename(chat_id, title):
         return client.post(f"{url}/chats/{chat_id}/title", json={"title": title})
 
-    assert archive(first, True).json() == {"archived": [first], "titles": {}}
+    def pin(chat_id, pinned):
+        return client.post(f"{url}/chats/{chat_id}/pin", json={"pinned": pinned})
+
+    assert archive(first, True).json() == {"archived": [first], "titles": {}, "pinned": []}
     assert archive(first, True).json()["archived"] == [first]
     assert archive(second, True).status_code == 200
     assert set(client.get(f"{url}/chat-display").json()["archived"]) == {first, second}
@@ -220,11 +223,21 @@ def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) 
     assert rename(second, "  Loss   sweep ").json() == {
         "archived": [second],
         "titles": {second: "Loss sweep"},
+        "pinned": [],
     }
-    assert archive(second, False).json() == {"archived": [], "titles": {second: "Loss sweep"}}
+    assert archive(second, False).json() == {
+        "archived": [],
+        "titles": {second: "Loss sweep"},
+        "pinned": [],
+    }
     assert rename(second, "x" * 121).status_code == 422
-    assert rename(second, " ").json() == {"archived": [], "titles": {}}
-    assert client.get(f"{url}/chat-display").json() == {"archived": [], "titles": {}}
+    assert rename(second, " ").json() == {"archived": [], "titles": {}, "pinned": []}
+    # Pins list newest first, and an unpinned chat with no other choice leaves no row.
+    assert pin(first, True).json()["pinned"] == [first]
+    assert pin(second, True).json()["pinned"] == [second, first]
+    assert pin(first, False).json()["pinned"] == [second]
+    assert pin(second, False).json() == {"archived": [], "titles": {}, "pinned": []}
+    assert client.get(f"{url}/chat-display").json() == {"archived": [], "titles": {}, "pinned": []}
 
 
 def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:

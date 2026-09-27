@@ -2523,6 +2523,8 @@ export interface ChatSummary {
 export interface ChatDisplay {
   archived: string[];
   titles: Record<string, string>;
+  /** Newest pin first. */
+  pinned: string[];
 }
 
 /** The viewer's read markers; a chat without one is read through `baseline`. */

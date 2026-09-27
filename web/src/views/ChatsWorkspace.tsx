@@ -6,16 +6,17 @@ import {
   MessageCircle,
   PanelLeft,
   Pause,
+  Pin,
   Search,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CONVERSATION_AGENT_GROUPS,
+  AGENT_LIST_SECTIONS,
   conversationAgentStatus,
   groupConversationAgents,
   type ChatConversation,
-  type ConversationAgentGroup,
+  type AgentListSection,
   type ConversationAgentStatus,
 } from "../chatWorkspace";
 import type { GlossaryIndex } from "../glossary";
@@ -38,7 +39,7 @@ import type {
   StartAgentTask,
   WatcherRecord,
 } from "../types";
-import { loadChatDisplay, setChatArchived, setChatTitle } from "../api";
+import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../api";
 import { NodeChat } from "../components/NodeChat";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
@@ -104,9 +105,10 @@ function readChatListCollapsed(projectId: string): boolean {
 
 type AgentFilter = "all" | "working" | "archived";
 
-const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {} };
+const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {}, pinned: [] };
 
-const GROUP_LABELS: Record<ConversationAgentGroup, string> = {
+const GROUP_LABELS: Record<AgentListSection, string> = {
+  pinned: "Pinned",
   new_reply: "New reply",
   failed: "Failed",
   stopped: "Stopped",
@@ -118,10 +120,15 @@ function needsHuman(status: ConversationAgentStatus): boolean {
   return status.state === "failed" || status.state === "stopped";
 }
 
-function AgentGroupIcon({ group }: { group: ConversationAgentGroup }) {
-  const Icon = { new_reply: MessageCircle, failed: X, stopped: Pause, working: Circle, done: null }[
-    group
-  ];
+function AgentGroupIcon({ group }: { group: AgentListSection }) {
+  const Icon = {
+    pinned: Pin,
+    new_reply: MessageCircle,
+    failed: X,
+    stopped: Pause,
+    working: Circle,
+    done: null,
+  }[group];
   return Icon ? <Icon className="agent-group-icon" size={13} aria-hidden="true" /> : null;
 }
 
@@ -214,15 +221,21 @@ export function ChatsWorkspace({
   // Count every archived chat, including ones on pages not loaded yet; the
   // Archived view pages through them with Load more.
   const archivedCount = archivedChatIds.size;
-  const groups = groupConversationAgents(listed, unreadChatIds, query);
-  const activeGroups = showingArchived
-    ? groupConversationAgents(
-        conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
-        unreadChatIds,
-        query,
-      )
-    : groups;
-  const visibleGroups = CONVERSATION_AGENT_GROUPS.filter(
+  // Pins lead only the All view; a filter shows each pinned chat in its status group.
+  const groups = groupConversationAgents(
+    listed,
+    unreadChatIds,
+    query,
+    filter === "all" ? display.pinned : [],
+  );
+  // Filter counts ignore pins, so Working counts every working agent.
+  const activeGroups = groupConversationAgents(
+    conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
+    unreadChatIds,
+    query,
+  );
+  const pinnedChatIds = new Set(display.pinned);
+  const visibleGroups = AGENT_LIST_SECTIONS.filter(
     (group) => filter === "all" || showingArchived || group === filter,
   );
   const now = Date.now();
@@ -289,6 +302,8 @@ export function ChatsWorkspace({
       onArchiveChange?.(),
     );
   };
+  const pin = (chatId: string, pinned: boolean) =>
+    updateDisplay(() => setChatPinned(apiBase, chatId, pinned));
   const rename = (chatId: string, title: string) => {
     setRenamingChatId(null);
     return updateDisplay(() => setChatTitle(apiBase, chatId, title));
@@ -556,6 +571,8 @@ export function ChatsWorkspace({
                         >
                           <span className="agent-row-body">
                             <span className="agent-row-title">
+                              {/* A pinned row sits outside its status group, so it carries the mark. */}
+                              {group === "pinned" && <AgentGroupIcon group={status.group} />}
                               {unread && <span className="agent-new-pill">New</span>}
                               {conversation.title}
                             </span>
@@ -615,6 +632,20 @@ export function ChatsWorkspace({
                                   >
                                     Rename
                                   </button>
+                                  {!archived && (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() =>
+                                        void pin(
+                                          conversation.chatId,
+                                          !pinnedChatIds.has(conversation.chatId),
+                                        )
+                                      }
+                                    >
+                                      {pinnedChatIds.has(conversation.chatId) ? "Unpin" : "Pin"}
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     role="menuitem"

@@ -1,6 +1,6 @@
-"""Per-project display choices for conversations: archived out of the list, or renamed.
+"""Per-project display choices for conversations: archived, renamed, or pinned.
 
-Neither choice touches a transcript or task; a row goes away once it holds neither.
+No choice touches a transcript or task; a row goes away once it holds none.
 Read markers are per user: each records the newest turn end that user has seen.
 """
 
@@ -16,13 +16,20 @@ class ChatDisplayStoreMixin:
     def chat_display(self, project_id: str) -> dict[str, Any]:
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT chat_id, title, archived_at FROM chat_display "
+                "SELECT chat_id, title, archived_at, pinned_at FROM chat_display "
                 "WHERE project_id = ? ORDER BY chat_id",
                 (project_id,),
             ).fetchall()
+        pinned = sorted(
+            (row for row in rows if row["pinned_at"] is not None),
+            key=lambda row: row["pinned_at"],
+            reverse=True,
+        )
         return {
             "archived": [row["chat_id"] for row in rows if row["archived_at"] is not None],
             "titles": {row["chat_id"]: row["title"] for row in rows if row["title"] is not None},
+            # Newest pin first.
+            "pinned": [row["chat_id"] for row in pinned],
         }
 
     def set_chat_archived(
@@ -33,6 +40,14 @@ class ChatDisplayStoreMixin:
             chat_id,
             "archived_user_id = ?, archived_at = ?",
             (user_id, self.now()) if archived else (None, None),
+        )
+
+    def set_chat_pinned(self, project_id: str, chat_id: str, user_id: str, *, pinned: bool) -> None:
+        self._set_chat_display(
+            project_id,
+            chat_id,
+            "pinned_user_id = ?, pinned_at = ?",
+            (user_id, self.now()) if pinned else (None, None),
         )
 
     def set_chat_title(
@@ -53,7 +68,7 @@ class ChatDisplayStoreMixin:
         with self.connection() as connection:
             baseline = connection.execute(
                 "SELECT completed_at FROM storage_schema_migrations "
-                "WHERE migration_name = 'chat_reads_v1'"
+                "WHERE migration_name = 'chat_reads_and_pins_v1'"
             ).fetchone()
             rows = connection.execute(
                 "SELECT chat_id, read_through FROM chat_reads "
@@ -130,6 +145,6 @@ class ChatDisplayStoreMixin:
             )
             connection.execute(
                 "DELETE FROM chat_display WHERE project_id = ? AND chat_id = ? "
-                "AND title IS NULL AND archived_at IS NULL",
+                "AND title IS NULL AND archived_at IS NULL AND pinned_at IS NULL",
                 (project_id, chat_id),
             )

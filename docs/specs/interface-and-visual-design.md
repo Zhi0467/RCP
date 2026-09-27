@@ -175,9 +175,10 @@ icon at the chat band's top left, and a hairline separates list from chat.
 
 Cards share one fixed size: a one-line title and one secondary line of
 meta; the group they sit in names their state. A three-dot menu on
-the card removes an unsent draft, which exists only in the browser, or renames
-or archives a conversation with turns. Both are project display choices in the
-local store (`POST /api/projects/{project_id}/chats/{chat_id}/title` and
+the card removes an unsent draft, which exists only in the browser, or renames,
+pins, or archives a conversation with turns. All three are project display
+choices in the local store, shared by every member
+(`POST /api/projects/{project_id}/chats/{chat_id}/title`, `.../pin`, and
 `.../archive`, read together from `GET /api/projects/{project_id}/chat-display`);
 a blank name returns the derived one. Rename edits the title in place on the
 card. An Archived filter appears when any exist, counts every archived chat
@@ -202,6 +203,10 @@ from the backend's answers on the latest loaded turn, in this order:
 - **Working**: the turn is queued, running, or pausing.
 - **Done**: the turn succeeded and was read. An unsent draft, and a
   conversation whose turns are not loaded, are also Done.
+
+Pinned conversations leave their group for a **Pinned** section above the
+groups, newest pin first, in the All view only; each pinned row carries its own
+status mark. Filters and their counts ignore pins.
 
 The group header carries the state: a mark and a label in the state's colour,
 plus a count. Rows carry no state dot. Each row is a raised card with a one-line

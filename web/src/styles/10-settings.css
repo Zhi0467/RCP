@@ -1022,6 +1022,24 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-group-icon {
   flex: none;
 }
+/* A pinned row carries its own status mark, in the status colour. */
+.agent-row-title .agent-group-icon {
+  display: inline-block;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+.agent-group[data-group="pinned"] [data-state="unread"] .agent-group-icon {
+  color: var(--agent-new);
+}
+.agent-group[data-group="pinned"] [data-state="failed"] .agent-group-icon {
+  color: var(--agent-failed);
+}
+.agent-group[data-group="pinned"] [data-state="stopped"] .agent-group-icon {
+  color: var(--agent-stopped);
+}
+.agent-group[data-group="pinned"] [data-state="working"] .agent-group-icon {
+  color: var(--agent-working);
+}
 .agent-group[data-group="working"] .agent-group-icon {
   animation: agent-state-pulse 1.4s ease-in-out infinite;
 }

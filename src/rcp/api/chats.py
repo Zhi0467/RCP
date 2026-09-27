@@ -44,6 +44,12 @@ class ChatArchiveBody(BaseModel):
     archived: bool
 
 
+class ChatPinBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pinned: bool
+
+
 class ChatTitleBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -54,6 +60,7 @@ class ChatTitleBody(BaseModel):
 class ChatDisplay(BaseModel):
     archived: list[str]
     titles: dict[str, str]
+    pinned: list[str]
 
 
 class ChatReadBody(BaseModel):
@@ -114,6 +121,29 @@ def archive_chat(
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
+    return ChatDisplay(**store.chat_display(project_id))
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/pin",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatDisplay,
+)
+def pin_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatPinBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    """Keep one conversation at the top of the agent list, or let it go back."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    store.set_chat_pinned(project_id, chat_id, user.user_id, pinned=body.pinned)
     return ChatDisplay(**store.chat_display(project_id))
 
 
@@ -286,6 +316,7 @@ __all__ = [
     "chat_reads",
     "chats",
     "mark_chat_read",
+    "pin_chat",
     "rename_chat",
     "remove_chat_attachment",
     "router",
