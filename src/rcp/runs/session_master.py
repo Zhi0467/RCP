@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.agents.continuation_prompt import MasterRef
-from rcp.runs.shared import _stage_or_reuse_task_input
+from rcp.runs.shared import _stage_or_reuse_task_input, _stage_task_contract
 from rcp.storage import AppStore
 from rcp.transport import RemoteRunStage
 
@@ -162,3 +162,25 @@ def read_legacy_session_master(
 
 def _sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def record_inline_prompt(
+    execution: AgentTaskExecution | None,
+    *,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    label: str,
+    role: str,
+    prompt: str,
+) -> str:
+    """Keep an inline continuation prompt as this attempt's contract; return its path.
+
+    The provider receives the prompt itself, not a pointer to this file. The staged copy
+    and its durable record are what Resume and Retry continue from, exactly as a chat
+    turn's inline prompt already is.
+    """
+
+    contract_path, _ = _stage_task_contract(
+        local_stage, remote_stage, label, prompt, execution=execution, role=role
+    )
+    return contract_path
