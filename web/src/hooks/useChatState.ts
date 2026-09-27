@@ -1,4 +1,4 @@
-import { MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
+import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, loadChatReads, markChatRead } from "../api";
@@ -360,7 +360,7 @@ export function useChatState({
       try {
         const [page, reads] = await Promise.all([
           loadChatSummaryPage(base, 0, api, graphTarget),
-          loadChatReads(base, graphTarget),
+          loadChatReads(graphTargetUrl(`${base}/chat-reads`, graphTarget)),
         ]);
         if (
           !isActiveProject(requestedProjectId) ||
@@ -505,7 +505,7 @@ export function useChatState({
   const refreshChatReads = useCallback(async () => {
     if (!projectId || !apiBase) return;
     const requestedProjectId = projectId;
-    const reads = await loadChatReads(apiBase, graphTarget);
+    const reads = await loadChatReads(graphTargetUrl(`${apiBase}/chat-reads`, graphTarget));
     if (isActiveProject(requestedProjectId)) {
       setChatReads(mergeChatReads(chatReadsRef.current, reads));
     }
@@ -521,7 +521,8 @@ export function useChatState({
       if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
       setChatReads({ ...current, reads: { ...current.reads, [visibleChatId]: readThrough } });
       const requestedProjectId = projectId;
-      void markChatRead(apiBase, visibleChatId, readThrough, graphTarget)
+      const path = `${apiBase}/chats/${encodeURIComponent(visibleChatId)}/read`;
+      void markChatRead(graphTargetUrl(path, graphTarget), readThrough)
         .then((reads) => {
           if (isActiveProject(requestedProjectId)) {
             setChatReads(mergeChatReads(chatReadsRef.current, reads));
