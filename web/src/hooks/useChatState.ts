@@ -611,8 +611,10 @@ export function useChatState({
       setChatReads({ ...current, reads: { ...current.reads, [visibleChatId]: readThrough } });
       void markChatRead(graphTargetUrl(path, graphTarget), readThrough)
         .then((reads) => {
-          if (isActiveProject(requestedProjectId)) {
-            setChatReads(mergeChatReads(chatReadsRef.current, reads));
+          const latest = chatReadsRef.current;
+          // Only the markers: a fetch may have refreshed the archive projection since.
+          if (isActiveProject(requestedProjectId) && latest) {
+            setChatReads({ ...latest, reads: mergeChatReads(latest, reads).reads });
           }
         })
         .catch((error) => {
