@@ -48,10 +48,16 @@ shared context. Seeing both grants no cumulative authority: each turn carries
 one explicit mode marker. A refreshed master replaces earlier master
 instructions while retaining the conversation's native progress.
 
-Later ordinary resumes repeat only the master-context path, then send the marker,
-logical turn id, human message unchanged, resolved artifact directory, and a
-compact replacement delta only when stable context changed. The repeated path is
-a pointer, not an instruction to reread unchanged context. A new baseline commits
+Later ordinary resumes send the marker, logical turn id, human message
+unchanged, resolved artifact directory, and a compact replacement delta only
+when stable context changed, then end with one master pointer. The pointer says
+it is the contract given at the session's start and to read it only after a
+compaction or a lost grip on the graph rules or authority; it is not an
+instruction to reread unchanged context. RCP records the master's exact bytes on
+the operation that first sent it and restores that file into the conversation's
+stage before every pointer, so the path always resolves. A master from before
+that record is kept only when its bytes match the digest in its own name;
+otherwise the session is bootstrapped with a freshly rendered master. A new baseline commits
 only after a mechanically successful turn and is bound to provider, host, native
 session, project, graph target, conversation, and focused node. Failed or
 interrupted work does not advance it.

@@ -25,6 +25,7 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import CommandResponse
+from rcp.agents.continuation_prompt import MasterRef
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.prompts import PromptFactory
@@ -84,7 +85,11 @@ def _result_view_contract(
             if action == "create"
             else "Boxed selection in loss-curves-by-seed.html: late spike. Why?"
         ),
-        master_context_path=str(master_context_path) if master_context_path else None,
+        master=(
+            MasterRef(path=str(master_context_path), bootstrap=True)
+            if master_context_path
+            else None
+        ),
         result_view_action=action,
         result_view_path=str(path),
     )

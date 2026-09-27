@@ -253,7 +253,7 @@ def _prepare_work_chat_prompt(
 
     if request.message is None:
         raise ValueError("An ordinary Work turn requires a human message.")
-    bootstrap_path, context_delta, retained_master_path = _prepare_chat_prompt_state(
+    node, master, context_delta = _prepare_chat_prompt_state(
         execution,
         request,
         local_stage=local_stage,
@@ -271,8 +271,8 @@ def _prepare_work_chat_prompt(
     prompt = PromptFactory.work_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
-        master_context_path=retained_master_path,
-        bootstrap_master_context=bootstrap_path is not None,
+        node=node,
+        master=master,
         context_delta=context_delta,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,

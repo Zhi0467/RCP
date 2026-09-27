@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.launcher import (
@@ -450,13 +451,7 @@ def _read_launch_contract(prompt: str, cwd: Path) -> str:
     lines = prompt.splitlines()
     if len(lines) < 2:
         raise ValueError("Acceptance-agent launch text has no contract path.")
-    retained_prefix = "RCP master context: "
-    path = Path(
-        lines[0][len(retained_prefix) :]
-        if lines[0].startswith(retained_prefix)
-        else lines[1].strip()
-    )
-    paths = [path]
+    paths = [_launch_contract_path(lines)]
     execution_prefix = "Read current execution instructions relative to this turn's cwd: `"
     execution_lines = [line for line in lines if line.startswith(execution_prefix)]
     if execution_lines:
@@ -471,6 +466,21 @@ def _read_launch_contract(prompt: str, cwd: Path) -> str:
         return "\n\n".join(path.read_text(encoding="utf-8") for path in paths)
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"Acceptance-agent contract is unreadable: {exc}") from exc
+
+
+def _launch_contract_path(lines: list[str]) -> Path:
+    """A session start opens with its contract; a continuation names its master last."""
+
+    pointer = SECTIONS["master_pointer"].split("{path}")[0]
+    bootstrap = SECTIONS["master_bootstrap"].split("\n")[0]
+    if lines[0] != bootstrap:
+        for index in range(len(lines) - 1, -1, -1):
+            if lines[index].startswith(pointer) and "`" in lines[index][len(pointer) :]:
+                value = lines[index][len(pointer) :]
+                return Path(value[: value.index("`")])
+            if lines[index] == bootstrap and index + 1 < len(lines):
+                return Path(lines[index + 1].strip())
+    return Path(lines[1].strip())
 
 
 def _read_state(cwd: Path) -> dict[str, object]:

@@ -23,6 +23,7 @@ from rcp.agents import (
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
+from rcp.agents.continuation_prompt import context_delta
 from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_patch_correction_contract,
@@ -44,7 +45,6 @@ from rcp.limits import (
 )
 from rcp.runs.chat import (
     _append_chat_graph_receipt,
-    _chat_context_delta,
     _chat_read_dirs,
     _chat_stage_name,
     _ChatPatchInputs,
@@ -594,7 +594,7 @@ async def _prepare_work_prompt_context(
             )
         if not wake_episode.last_graph_result:
             raise ValueError("Experiment-loop wake cannot confirm the preceding graph handoff.")
-        context_replacement = _chat_context_delta(
+        context_replacement = context_delta(
             wake_episode.context_baseline,
             episode_context_baseline,
         )

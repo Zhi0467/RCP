@@ -6,7 +6,8 @@ import textwrap
 from datetime import datetime
 from typing import Literal
 
-from rcp.agents.graph_rules import GRAPH_RULES_VERSION, REPEATED_RULES_NOTE, graph_rules
+from rcp.agents.continuation_prompt import MasterRef, PromptNode, compose, master_key
+from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.providers import ProviderSkillReference, profile_for
@@ -55,7 +56,7 @@ CHAT_MASTER_CONTEXT_VERSION = 13
 def chat_master_contract_key() -> str:
     """Identify one master-context shape; changed graph rules re-send it to existing chats."""
 
-    return f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-rules-{GRAPH_RULES_VERSION}"
+    return master_key(f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}")
 
 
 def _tidy(text: str) -> str:
@@ -184,38 +185,6 @@ def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
 - Use only credentials already configured on this agent execution machine. Never request, print,
   copy, or store a private key or password. Keep SSH host-key verification enabled.
 """.format("\n".join(lines))
-
-
-def _compute_delta_section(delta: object) -> str:
-    if not isinstance(delta, dict):
-        return ""
-    actions = []
-    for key, verb in (("added", "added"), ("updated", "updated")):
-        profiles = delta.get(key)
-        if isinstance(profiles, list):
-            rendered = [
-                _compute_profile_delta(profile) for profile in profiles if isinstance(profile, dict)
-            ]
-            if rendered:
-                actions.append(f"{verb} " + ", ".join(rendered))
-    removed = delta.get("removed")
-    if isinstance(removed, list) and removed:
-        actions.append("removed " + ", ".join(f"`{value}`" for value in removed))
-    return "RCP compute update: " + "; ".join(actions) + "." if actions else ""
-
-
-def _compute_profile_delta(profile: dict[object, object]) -> str:
-    name = str(profile.get("name", ""))
-    compute_id = str(profile.get("id", ""))
-    kind = str(profile.get("kind", ""))
-    if kind == "local":
-        location = "kind: local; this agent execution machine"
-    else:
-        location = f"kind: SSH; target: `{profile.get('ssh_target', '')}`"
-    hint = str(profile.get("access_hint", ""))
-    if hint:
-        location += f"; access hint: {hint}"
-    return f"`{name}` (`{compute_id}`; {location})"
 
 
 _EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a watcher. For a longer horizon, roughly more than
@@ -567,8 +536,8 @@ class PromptFactory:
         *,
         artifact_path: str,
         human_message: str,
-        master_context_path: str | None = None,
-        bootstrap_master_context: bool = True,
+        node: PromptNode = "session_start",
+        master: MasterRef | None = None,
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -578,8 +547,8 @@ class PromptFactory:
             marker="Discuss",
             artifact_path=artifact_path,
             human_message=human_message,
-            master_context_path=master_context_path,
-            bootstrap_master_context=bootstrap_master_context,
+            node=node,
+            master=master,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -591,8 +560,8 @@ class PromptFactory:
         *,
         artifact_path: str,
         human_message: str,
-        master_context_path: str | None = None,
-        bootstrap_master_context: bool = True,
+        node: PromptNode = "session_start",
+        master: MasterRef | None = None,
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -606,8 +575,8 @@ class PromptFactory:
             marker="Work",
             artifact_path=artifact_path,
             human_message=human_message,
-            master_context_path=master_context_path,
-            bootstrap_master_context=bootstrap_master_context,
+            node=node,
+            master=master,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -624,12 +593,12 @@ class PromptFactory:
         marker: str,
         artifact_path: str,
         human_message: str,
-        master_context_path: str | None,
         context_delta: dict[str, object] | None,
         invoked_skill_pointers: list[dict[str, object]] | None,
         invoked_provider_skills: list[ProviderSkillReference] | None,
         attachments: list[dict[str, object]] | None,
-        bootstrap_master_context: bool = True,
+        node: PromptNode = "session_start",
+        master: MasterRef | None = None,
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
         write_scope: ProjectWriteScope | None = None,
@@ -637,25 +606,7 @@ class PromptFactory:
     ) -> str:
         if write_scope is not None and marker != "Work":
             raise ValueError("a write boundary belongs only to a Work turn")
-        parts = []
-        if master_context_path is not None:
-            if bootstrap_master_context:
-                # Only a changed master context replaces anything; a first one has nothing to replace.
-                replaces = (
-                    " It replaces the master context this session held before, because its "
-                    "version changed."
-                    if context_delta and "master_context" in context_delta
-                    else ""
-                )
-                parts.append(
-                    "Open and retain the RCP chat master context at:\n"
-                    f"{master_context_path}\n"
-                    "It defines the stable pointers and both mode contracts for this native "
-                    f"session.{replaces}"
-                )
-            else:
-                parts.append(f"RCP master context: {master_context_path}")
-        parts.append(f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}")
+        parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
         if write_scope is not None:
             parts.append(write_scope_section(write_scope).strip())
         if execution_instructions_path is not None:
@@ -679,17 +630,7 @@ class PromptFactory:
         # Keep the human-authored bytes as one untouched part. Structured invocation metadata is
         # rendered beside it; RCP never rewrites or consumes the visible slash token.
         parts.append(human_message)
-        if context_delta:
-            ordinary_delta = dict(context_delta)
-            compute_delta = _compute_delta_section(ordinary_delta.pop("compute", None))
-            if compute_delta:
-                parts.append(compute_delta)
-            if ordinary_delta:
-                parts.append(
-                    "RCP context update — these master-context values have changed:\n"
-                    + json.dumps(ordinary_delta, ensure_ascii=False, indent=2, sort_keys=True)
-                )
-        return "\n\n".join(parts)
+        return compose(node, parts=parts, master=master, delta=context_delta)
 
     @staticmethod
     def chat_master_context(

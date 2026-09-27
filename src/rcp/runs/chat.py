@@ -16,6 +16,13 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import ChatContext, agent_output_schema
 from rcp.agents.command_mailbox import StagedCommandMailbox
+from rcp.agents.continuation_prompt import (
+    LaunchPhase,
+    MasterRef,
+    PromptNode,
+    classify,
+    context_delta,
+)
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.agents.write_scope import (
     ProjectWriteScope,
@@ -41,6 +48,12 @@ from rcp.limits import (
 )
 from rcp.providers import AgentCapability
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
+from rcp.runs.session_master import (
+    read_legacy_session_master,
+    record_session_master,
+    session_master_label,
+    stage_session_master,
+)
 from rcp.runs.shared import (
     _remove_local_tree,
     _safe_stage_name,
@@ -75,6 +88,9 @@ class _ChatMasterSnapshot(BaseModel):
     master_context_path: str
     contract_key: str
     values: dict[str, object]
+    # Where the exact master bytes are recorded; absent on snapshots from before the record.
+    master_operation_id: str | None = None
+    master_sha256: str | None = None
 
 
 class _ChatPromptCandidate(BaseModel):
@@ -174,26 +190,58 @@ def _prepare_chat_prompt_state(
     master_context: str,
     contract_key: str,
     values: dict[str, object],
-) -> tuple[str | None, dict[str, object] | None, str]:
-    """Persist a candidate baseline and return bootstrap path plus compact delta."""
+) -> tuple[PromptNode, MasterRef, dict[str, object] | None]:
+    """Persist a candidate baseline and return the turn's node, master, and compact delta."""
 
     previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
-    must_bootstrap = previous is None or previous.contract_key != contract_key
-    if must_bootstrap:
-        digest = hashlib.sha256(master_context.encode("utf-8")).hexdigest()
-        label = f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-{digest[:16]}.md"
+    node = classify(LaunchPhase(session_id=request.session_id, phase="turn"))
+    master_operation_id: str | None = None
+    master_sha256: str | None = None
+    master_source = "rendered"
+    if previous is not None and previous.contract_key == contract_key:
+        if previous.master_operation_id is not None and previous.master_sha256 is not None:
+            master_operation_id = previous.master_operation_id
+            master_sha256 = previous.master_sha256
+            master_source = "restored"
+        elif execution is not None:
+            legacy = read_legacy_session_master(
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                path=previous.master_context_path,
+            )
+            if legacy is not None:
+                master_operation_id = execution.operation_id
+                master_sha256 = record_session_master(
+                    execution.store, execution.operation_id, legacy
+                )
+                master_source = "legacy_capture"
+    must_bootstrap = master_operation_id is None
+    if not must_bootstrap:
+        assert execution is not None and previous is not None and master_sha256 is not None
+        master_context_path = stage_session_master(
+            execution.store,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            operation_id=master_operation_id,
+            sha256=master_sha256,
+            path=previous.master_context_path,
+        )
+    else:
         master_context_path = _stage_or_reuse_task_input(
             local_stage,
             remote_stage,
-            label,
+            session_master_label(f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}", master_context),
             master_context,
         )
-    else:
-        master_context_path = previous.master_context_path
+        if execution is not None:
+            master_operation_id = execution.operation_id
+            master_sha256 = record_session_master(
+                execution.store, execution.operation_id, master_context
+            )
 
-    delta = None if previous is None else _chat_context_delta(previous.values, values)
-    bootstrap_path: str | None = master_context_path if must_bootstrap else None
-    if previous is not None and previous.contract_key != contract_key:
+    delta = None if previous is None else context_delta(previous.values, values)
+    replaces = previous is not None and must_bootstrap
+    if replaces:
         delta = {
             **(delta or {}),
             "master_context": {
@@ -207,6 +255,8 @@ def _prepare_chat_prompt_state(
         master_context_path=master_context_path,
         contract_key=contract_key,
         values=values,
+        master_operation_id=master_operation_id,
+        master_sha256=master_sha256,
     )
     if execution is not None:
         candidate = _ChatPromptCandidate(
@@ -227,11 +277,13 @@ def _prepare_chat_prompt_state(
                 "bootstrapped": must_bootstrap,
                 "master_context_version": CHAT_MASTER_CONTEXT_VERSION,
                 "master_context_path": master_context_path,
+                "master_source": master_source,
                 "changed_fields": sorted(delta or {}),
             },
             tier="diagnostic",
         )
-    return bootstrap_path, delta, master_context_path
+    master = MasterRef(path=master_context_path, bootstrap=must_bootstrap, replaces=replaces)
+    return node, master, delta
 
 
 def _committed_chat_prompt_state(
@@ -419,49 +471,6 @@ def _record_applied_graph_revision(
         committed_operation_id=execution.operation_id,
         expected_snapshot_sha256=record.snapshot_sha256,
     )
-
-
-def _chat_context_delta(
-    previous: dict[str, object],
-    current: dict[str, object],
-) -> dict[str, object] | None:
-    changed = {
-        key: value
-        for key, value in current.items()
-        if key != "compute" and (key not in previous or previous[key] != value)
-    }
-    prior_compute = _compute_profiles(previous.get("compute"))
-    current_compute = _compute_profiles(current.get("compute"))
-    if prior_compute != current_compute:
-        prior_ids = set(prior_compute)
-        current_ids = set(current_compute)
-        changed["compute"] = {
-            "added": [current_compute[item] for item in sorted(current_ids - prior_ids)],
-            "removed": [prior_compute[item]["name"] for item in sorted(prior_ids - current_ids)],
-            "updated": [
-                current_compute[item]
-                for item in sorted(prior_ids & current_ids)
-                if prior_compute[item] != current_compute[item]
-            ],
-        }
-    removed = sorted(key for key in previous if key not in current)
-    if removed:
-        changed["removed"] = removed
-    return changed or None
-
-
-def _compute_profiles(value: object) -> dict[str, dict[str, str]]:
-    if not isinstance(value, dict) or not isinstance(value.get("active"), list):
-        return {}
-    profiles: dict[str, dict[str, str]] = {}
-    for item in value["active"]:
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            continue
-        profiles[item["id"]] = {
-            key: str(item.get(key, ""))
-            for key in ("id", "name", "kind", "ssh_target", "access_hint")
-        }
-    return profiles
 
 
 def _clear_stale_turn_handoffs(

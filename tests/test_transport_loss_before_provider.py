@@ -315,7 +315,7 @@ def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
     prompt, so its reattempt has no original to continue and must not refuse.
     What it did record before the drop is bookkeeping, never a prompt."""
 
-    from rcp.runs import chat, shared
+    from rcp.runs import chat, session_master, shared
     from rcp.runs import experiment_loop as experiment_context
     from rcp.runs.tasks import (
         auto_research_child_work,
@@ -335,6 +335,7 @@ def test_a_retry_continues_the_first_sent_prompt_or_sends_its_own(
         auto_research_child_work.AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE,
         discuss.DISCUSS_FINALIZATION_CONTEXT_ROLE,
         work_turn_runtime.WORK_CORRECTION_SESSION_ROLE,
+        session_master.SESSION_MASTER_ROLE,
     ]
     records = {
         "retry": SimpleNamespace(parent_operation_id="dropped"),

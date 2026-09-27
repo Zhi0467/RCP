@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import validate_work_patch
+from rcp.agents.continuation_prompt import MasterRef, context_delta
 from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_task_contract,
@@ -23,7 +24,6 @@ from rcp.core.validation.experiment_loop import (
     PINNED_DECISION_BALLOT_FIELDS,
 )
 from rcp.providers import ProviderSkillReference
-from rcp.runs.chat import _chat_context_delta
 from rcp.runs.experiment_loop import stage_experiment_loop_context
 from rcp.service import RunRequest
 from rcp.skill_registry import official_registry
@@ -135,8 +135,8 @@ def test_chat_turn_preserves_human_message_and_input_paths(mode, bootstrap) -> N
     prompt = build(
         artifact_path=artifact_path,
         human_message=message,
-        master_context_path=master_path,
-        bootstrap_master_context=bootstrap,
+        node="human_turn",
+        master=MasterRef(path=master_path, bootstrap=bootstrap),
         context_delta={"repositories": [{"alias": "repo-b", "path": "/repo-b"}]},
     )
 
@@ -729,7 +729,6 @@ def test_discuss_turn_rejects_a_work_write_scope() -> None:
             marker="Discuss",
             artifact_path="/stage/turns/t1/artifacts",
             human_message="What do we know?",
-            master_context_path=None,
             context_delta=None,
             invoked_skill_pointers=None,
             invoked_provider_skills=None,
@@ -798,7 +797,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
         }
     }
 
-    delta = _chat_context_delta(previous, current)
+    delta = context_delta(previous, current)
     assert delta == {
         "compute": {
             "added": [
@@ -828,7 +827,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
             ]
         }
     }
-    assert _chat_context_delta(current, updated) == {
+    assert context_delta(current, updated) == {
         "compute": {
             "added": [],
             "removed": ["Current machine"],
@@ -843,7 +842,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
             ],
         }
     }
-    assert _chat_context_delta(updated, updated) is None
+    assert context_delta(updated, updated) is None
 
 
 def test_watch_correction_preserves_supplied_diagnostics() -> None:
