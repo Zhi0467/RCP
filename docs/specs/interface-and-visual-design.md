@@ -173,10 +173,8 @@ names Discuss or Work; each turn's own label already carries it. The agent list 
 band: a sidebar icon beside its search folds it, a folded list leaves that
 icon at the chat band's top left, and a hairline separates list from chat.
 
-Each agent card leads with a filled dot, one fixed colour per state: needs
-you, paused, working (pulsing), unread result, done, failed, or an unsent
-draft. Cards share one fixed size: a one-line title and one secondary
-line, the attention reason when it needs a human, else the meta. A three-dot menu on
+Cards share one fixed size: a one-line title and one secondary line of
+meta; the group they sit in names their state. A three-dot menu on
 the card removes an unsent draft, which exists only in the browser, or renames
 or archives a conversation with turns. Both are project display choices in the
 local store (`POST /api/projects/{project_id}/chats/{chat_id}/title` and

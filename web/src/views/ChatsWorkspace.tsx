@@ -142,7 +142,10 @@ function agentMeta(status: ConversationAgentStatus): string {
   } else {
     parts.push(latest.request.run_truth_scope?.join(", "));
     if (status.state === "failed" && latest.can_retry) parts.push("Retry");
-    if (status.state === "stopped" && latest.can_resume) parts.push("Resume");
+    if (status.state === "stopped") {
+      if (latest.can_resume) parts.push("Resume");
+      else if (latest.can_retry) parts.push("Retry");
+    }
   }
   return parts.filter(Boolean).join(" · ");
 }
