@@ -13,6 +13,7 @@ import {
   chatIdForTask,
   chatReadThrough,
   latestConversation,
+  mergeChatReads,
   newlyFinishedChatTaskIds,
   type ChatConversation,
   type ChatKind,
@@ -392,7 +393,7 @@ export function useChatState({
         )
           return;
         const nextSummaries = mergeChatSummaryPage([], page.items, "refresh");
-        setChatReads(reads);
+        setChatReads(mergeChatReads(chatReadsRef.current, reads));
         chatSummariesRef.current = nextSummaries;
         setChatSummaries(nextSummaries);
         setChatSummaryTotal(page.total);
@@ -501,19 +502,21 @@ export function useChatState({
     return unseen.length > 0;
   }, []);
 
-  // Reading moves the marker at once; the server's answer then replaces it.
+  // Reading moves the marker at once; the server's answer then merges into it.
   const markVisibleChatRead = useCallback(
     (tasks: AgentTask[], visibleChatId: string | null) => {
       const current = chatReadsRef.current;
       if (!visibleChatId || !current || !projectId || !apiBase) return;
-      const readThrough = chatReadThrough(tasks, visibleChatId);
+      const readThrough = chatReadThrough(tasks, current, visibleChatId);
       const marker = current.reads[visibleChatId] ?? current.baseline;
       if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
       setChatReads({ ...current, reads: { ...current.reads, [visibleChatId]: readThrough } });
       const requestedProjectId = projectId;
       void markChatRead(apiBase, visibleChatId, readThrough)
         .then((reads) => {
-          if (isActiveProject(requestedProjectId)) setChatReads(reads);
+          if (isActiveProject(requestedProjectId)) {
+            setChatReads(mergeChatReads(chatReadsRef.current, reads));
+          }
         })
         .catch((error) => {
           reportError(

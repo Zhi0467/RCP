@@ -75,3 +75,33 @@ def test_the_open_chat_cap_keeps_the_most_recent_open_chats(
     listed = [task.operation_id for task in store.agent_tasks("project")]
 
     assert listed[AGENT_TASK_LIST_DEFAULT_LIMIT:] == ["newest-open", "middle-open"]
+
+
+def test_chat_reads_find_a_reply_the_task_list_no_longer_holds(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    _chat_turn(store, "old-success", "chat-done", "succeeded", 0, timedelta(days=1))
+    _chat_turn(store, "old-paused", "chat-paused", "paused", 1)
+    _chat_turn(store, "old-archived", "chat-archived", "succeeded", 2, timedelta(days=1))
+    for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
+        _chat_turn(store, f"newer-{index}", "chat-newer", "succeeded", 10 + index)
+    store.set_chat_archived("project", "chat-archived", "user", archived=True)
+    assert "old-success" not in {task.operation_id for task in store.agent_tasks("project")}
+
+    finished = store.chat_reads("project", "user")["latest_finished"]
+
+    assert set(finished) == {"chat-done"}
+    assert finished["chat-done"] == store.agent_task("old-success").finished_at
+
+
+def test_chat_read_marker_never_moves_back(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    later = datetime.fromisoformat("2026-09-27T12:00:00.5+00:00")
+    store.mark_chat_read("project", "chat", "user", later)
+    store.mark_chat_read("project", "chat", "user", later - timedelta(hours=1))
+    store.mark_chat_read("project", "chat", "other", later - timedelta(hours=1))
+
+    assert store.chat_reads("project", "user")["reads"] == {"chat": later.isoformat()}
+    assert store.chat_reads("project", "other")["reads"] == {
+        "chat": (later - timedelta(hours=1)).isoformat()
+    }

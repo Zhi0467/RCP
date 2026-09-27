@@ -969,8 +969,10 @@ terminal record.
 Read state is stored per user on the server, so it survives a reload, a closed
 app, and a second device. `GET /api/projects/{project_id}/chat-reads` returns
 the acting user's markers, one finish time per chat, plus a `baseline`: the
-time the markers were introduced, which stands in for any chat without one. A
-settled turn is unread when it finished after its chat's marker. Viewing a chat
+time the markers were introduced, which stands in for any chat without one. It
+also returns `latest_finished`, each unarchived chat's newest finished turn, so a
+reply older than the task list window is still found. A chat is unread when its
+newest finished turn ended after its marker. Viewing a chat
 posts its newest finish time to `POST .../chats/{chat_id}/read`; the marker only
 moves forward. Markers are not moved with a transferred project.
 

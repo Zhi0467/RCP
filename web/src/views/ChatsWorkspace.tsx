@@ -52,7 +52,7 @@ interface Props {
   tasks: AgentTask[];
   watchers: WatcherRecord[];
   graphChangesDisabled: boolean;
-  unreadTaskIds: ReadonlySet<string>;
+  unreadChatIds: ReadonlySet<string>;
   chatTranscripts: ReadonlyMap<string, ChatTranscript>;
   hasMore: boolean;
   loadingMore: boolean;
@@ -160,7 +160,7 @@ export function ChatsWorkspace({
   tasks,
   watchers,
   graphChangesDisabled,
-  unreadTaskIds,
+  unreadChatIds,
   chatTranscripts,
   hasMore,
   loadingMore,
@@ -211,11 +211,11 @@ export function ChatsWorkspace({
   // Count every archived chat, including ones on pages not loaded yet; the
   // Archived view pages through them with Load more.
   const archivedCount = archivedChatIds.size;
-  const groups = groupConversationAgents(listed, unreadTaskIds, query);
+  const groups = groupConversationAgents(listed, unreadChatIds, query);
   const activeGroups = showingArchived
     ? groupConversationAgents(
         conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
-        unreadTaskIds,
+        unreadChatIds,
         query,
       )
     : groups;
@@ -343,7 +343,7 @@ export function ChatsWorkspace({
     return () => observer.disconnect();
   }, [project.id, narrow]);
 
-  const selectedStatus = selected ? conversationAgentStatus(selected, unreadTaskIds) : null;
+  const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedLatest = selectedStatus?.latest ?? null;
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();

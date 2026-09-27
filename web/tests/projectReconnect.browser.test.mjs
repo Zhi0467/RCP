@@ -130,6 +130,8 @@ for (const initialFreshness of ["stale", "fresh"]) {
             graph_mutation: project().graph_mutation,
           };
         } else if (path.endsWith("/chats")) json = { chats: [], next_cursor: null };
+        else if (path.endsWith("/chat-reads"))
+          json = { baseline: "2026-01-01T00:00:00+00:00", reads: {}, latest_finished: {} };
         else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
         await route.fulfill({ json });
       });

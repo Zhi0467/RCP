@@ -106,6 +106,7 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (23,),
             (24,),
             (25,),
+            (26,),
         ]
 
     def unexpected_migration(*_args) -> None:

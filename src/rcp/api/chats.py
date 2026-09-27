@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -69,6 +68,7 @@ class ChatReads(BaseModel):
 
     baseline: str
     reads: dict[str, str]
+    latest_finished: dict[str, str]
 
 
 def _canonical_chat_id(chat_id: str) -> str:
@@ -169,7 +169,7 @@ def mark_chat_read(
     chat_id = _canonical_chat_id(chat_id)
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    store.mark_chat_read(project_id, chat_id, user.user_id, body.read_through.astimezone(UTC))
+    store.mark_chat_read(project_id, chat_id, user.user_id, body.read_through)
     return ChatReads(**store.chat_reads(project_id, user.user_id))
 
 

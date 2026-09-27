@@ -6,7 +6,7 @@ Read markers are per user: each records the newest turn end that user has seen.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -56,28 +56,52 @@ class ChatDisplayStoreMixin:
                 "WHERE project_id = ? AND user_id = ? ORDER BY chat_id",
                 (project_id, user_id),
             ).fetchall()
+            # Finished turns as `AgentTaskRecord.finished` defines them; the task
+            # list is bounded, so an old reply is found only here.
+            finished = connection.execute(
+                """
+                SELECT json_extract(runs.request_json, '$.chat_id') AS chat_id,
+                       MAX(runs.finished_at) AS finished_at
+                FROM graph_runs AS runs
+                LEFT JOIN chat_display AS display
+                  ON display.project_id = runs.project_id
+                 AND display.chat_id = json_extract(runs.request_json, '$.chat_id')
+                WHERE runs.project_id = ? AND runs.visible = 1
+                  AND runs.kind IN ('node_chat', 'project_chat')
+                  AND runs.status IN ('succeeded', 'failed', 'interrupted')
+                  AND runs.finished_at IS NOT NULL
+                  AND json_extract(runs.request_json, '$.chat_id') IS NOT NULL
+                  AND display.archived_at IS NULL
+                GROUP BY 1
+                """,
+                (project_id,),
+            ).fetchall()
         return {
             "baseline": baseline["completed_at"],
             "reads": {row["chat_id"]: row["read_through"] for row in rows},
+            "latest_finished": {row["chat_id"]: row["finished_at"] for row in finished},
         }
 
     def mark_chat_read(
         self, project_id: str, chat_id: str, user_id: str, read_through: datetime
     ) -> None:
-        """Move the marker forward only, so a late request cannot unread a newer turn."""
+        """Move the marker forward only, so a late request cannot unread a newer turn.
+
+        Fixed-width UTC text orders like the times it holds, so one conditional
+        upsert decides and writes without a read that a second device could race.
+        """
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT read_through FROM chat_reads "
-                "WHERE project_id = ? AND chat_id = ? AND user_id = ?",
-                (project_id, chat_id, user_id),
-            ).fetchone()
-            if row is not None and datetime.fromisoformat(row["read_through"]) >= read_through:
-                return
             connection.execute(
                 "INSERT INTO chat_reads (project_id, chat_id, user_id, read_through) "
                 "VALUES (?, ?, ?, ?) ON CONFLICT(project_id, chat_id, user_id) "
-                "DO UPDATE SET read_through = excluded.read_through",
-                (project_id, chat_id, user_id, read_through.isoformat()),
+                "DO UPDATE SET read_through = excluded.read_through "
+                "WHERE excluded.read_through > chat_reads.read_through",
+                (
+                    project_id,
+                    chat_id,
+                    user_id,
+                    read_through.astimezone(UTC).isoformat(timespec="microseconds"),
+                ),
             )
 
     def _set_chat_display(

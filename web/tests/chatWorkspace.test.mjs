@@ -22,7 +22,8 @@ import {
   parseConversationMode,
   startConversationTurn,
   toggleConversationMode,
-  unreadTaskIdsFromReads,
+  mergeChatReads,
+  unreadChatIdsFromReads,
   unsentConversation,
 } from "../src/chatWorkspace.ts";
 
@@ -191,19 +192,19 @@ test("entry preserves the previous chat before routing active or unread work", (
     "Project",
   );
   assert.equal(
-    chatEntryConversationId(conversations, active, new Set(["unread"]), "read-chat"),
+    chatEntryConversationId(conversations, active, new Set(["unread-chat"]), "read-chat"),
     "read-chat",
   );
   assert.equal(
-    chatEntryConversationId(conversations, terminal, new Set(["unread"]), "read-chat"),
+    chatEntryConversationId(conversations, terminal, new Set(["unread-chat"]), "read-chat"),
     "read-chat",
   );
   assert.equal(
-    chatEntryConversationId(conversations, active, new Set(["unread"]), "missing-chat"),
+    chatEntryConversationId(conversations, active, new Set(["unread-chat"]), "missing-chat"),
     "active-chat",
   );
   assert.equal(
-    chatEntryConversationId(conversations, terminal, new Set(["unread"]), "missing-chat"),
+    chatEntryConversationId(conversations, terminal, new Set(["unread-chat"]), "missing-chat"),
     "unread-chat",
   );
 });
@@ -223,22 +224,24 @@ test("a turn is unread when it ended after the viewer's marker for its chat", ()
   });
   const baseline = "2026-09-27T10:00:00+00:00";
   // Seen finishing or not, only the marker decides: this is what survives a reload.
-  assert.deepEqual(
-    [...unreadTaskIdsFromReads([completed, older], { baseline, reads: {} })],
-    ["done"],
-  );
-  assert.deepEqual(
-    [
-      ...unreadTaskIdsFromReads([completed], {
-        baseline,
-        reads: { "chat-b": completed.finished_at },
-      }),
-    ],
-    [],
-  );
-  assert.deepEqual([...unreadTaskIdsFromReads([completed], null)], []);
-  assert.equal(chatReadThrough([older, completed], "chat-b"), completed.finished_at);
-  assert.equal(chatReadThrough([completed], "chat-a"), null);
+  const unread = (tasks, reads, latest_finished = {}) => [
+    ...unreadChatIdsFromReads(tasks, { baseline, reads, latest_finished }),
+  ];
+  assert.deepEqual(unread([completed, older], {}), ["chat-b"]);
+  assert.deepEqual(unread([completed], { "chat-b": completed.finished_at }), []);
+  assert.deepEqual([...unreadChatIdsFromReads([completed], null)], []);
+  // A reply the bounded task list no longer holds is still found from the server.
+  assert.deepEqual(unread([], {}, { "chat-old": "2026-09-27T11:00:00+00:00" }), ["chat-old"]);
+  const reads = { baseline, reads: {}, latest_finished: { "chat-b": older.finished_at } };
+  assert.equal(chatReadThrough([completed], reads, "chat-b"), completed.finished_at);
+  assert.equal(chatReadThrough([completed], reads, "chat-a"), null);
+  // A snapshot fetched before a read landed cannot move the marker back.
+  const viewed = { ...reads, reads: { "chat-b": completed.finished_at } };
+  const stale = { ...reads, reads: { "chat-b": older.finished_at, "chat-c": baseline } };
+  assert.deepEqual(mergeChatReads(viewed, stale).reads, {
+    "chat-b": completed.finished_at,
+    "chat-c": baseline,
+  });
   assert.deepEqual(newlyFinishedChatTaskIds([completed], new Map([["done", "running"]])), ["done"]);
   const conversations = groupChatConversations(
     [
@@ -256,7 +259,7 @@ test("a turn is unread when it ended after the viewer's marker for its chat", ()
     {},
     "Project",
   );
-  assert.equal(conversationHasUnread(conversations[0], new Set(["done"])), true);
+  assert.equal(conversationHasUnread(conversations[0], new Set(["chat-b"])), true);
 });
 
 test("conversation mode controls have stable storage keys and Shift+Tab semantics", () => {
@@ -456,6 +459,7 @@ for (const [id, statuses, unread, state, group] of [
   ["pausing", ["pausing"], false, "working", "working"],
   ["recovered", ["failed", "succeeded"], false, "done", "done"],
   ["summary", [], false, "done", "done"],
+  ["summary-unread", [], true, "unread", "new_reply"],
   ["draft", [], false, "draft", "done"],
 ]) {
   test(`agent grouping: ${id}`, () => {
@@ -469,7 +473,7 @@ for (const [id, statuses, unread, state, group] of [
         task({ operation_id: `${id}-${index}`, kind: "project_chat", status }),
       ),
     };
-    const groups = groupConversationAgents([conversation], new Set(unread ? [`${id}-0`] : []));
+    const groups = groupConversationAgents([conversation], new Set(unread ? [id] : []));
     assert.deepEqual(CONVERSATION_AGENT_GROUPS, [
       "new_reply",
       "failed",

@@ -288,10 +288,10 @@ export const CONVERSATION_AGENT_GROUPS: readonly ConversationAgentGroup[] = [
 
 export function conversationAgentStatus(
   conversation: ChatConversation,
-  unreadTaskIds: ReadonlySet<string>,
+  unreadChatIds: ReadonlySet<string>,
 ): ConversationAgentStatus {
   const latest = conversation.tasks.at(-1) ?? null;
-  const unread = conversationHasUnread(conversation, unreadTaskIds);
+  const unread = conversationHasUnread(conversation, unreadChatIds);
   const result = { latest, unread };
   if (latest?.failed) return { ...result, state: "failed", group: "failed" };
   // After failures, the backend attention flag covers paused and interrupted turns.
@@ -300,6 +300,7 @@ export function conversationAgentStatus(
   }
   if (latest?.active) return { ...result, state: "working", group: "working" };
   if (!latest) {
+    if (unread) return { ...result, state: "unread", group: "new_reply" };
     return { ...result, state: conversation.updatedAt ? "done" : "draft", group: "done" };
   }
   if (latest.settled && unread) return { ...result, state: "unread", group: "new_reply" };
@@ -340,7 +341,7 @@ export function conversationSearchText(conversation: ChatConversation): string {
 /** Rows grouped by latest turn status; each group keeps recency order. */
 export function groupConversationAgents(
   conversations: ChatConversation[],
-  unreadTaskIds: ReadonlySet<string>,
+  unreadChatIds: ReadonlySet<string>,
   query = "",
 ): Record<ConversationAgentGroup, ConversationAgentRow[]> {
   const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
@@ -356,7 +357,7 @@ export function groupConversationAgents(
       const text = conversationSearchText(conversation);
       if (!terms.every((term) => text.includes(term))) continue;
     }
-    const status = conversationAgentStatus(conversation, unreadTaskIds);
+    const status = conversationAgentStatus(conversation, unreadChatIds);
     groups[status.group].push({ conversation, status });
   }
   return groups;
@@ -394,12 +395,10 @@ export function latestConversation(
 
 export function chatIndicator(
   tasks: AgentTask[],
-  unreadTaskIds: Set<string>,
+  unreadChatIds: ReadonlySet<string>,
 ): "active" | "unread" | null {
   if (tasks.some((task) => chatIdForTask(task) && chatTaskNeedsAttention(task))) return "active";
-  if (tasks.some((task) => unreadTaskIds.has(task.operation_id) && chatIdForTask(task)))
-    return "unread";
-  return null;
+  return unreadChatIds.size > 0 ? "unread" : null;
 }
 
 export function chatTaskNeedsAttention(task: AgentTask): boolean {
@@ -409,7 +408,7 @@ export function chatTaskNeedsAttention(task: AgentTask): boolean {
 export function chatEntryConversationId(
   conversations: ChatConversation[],
   activityTask: AgentTask | null,
-  unreadTaskIds: Set<string>,
+  unreadChatIds: ReadonlySet<string>,
   previousChatId: string | null,
 ): string | null {
   if (previousChatId && conversations.some((item) => item.chatId === previousChatId))
@@ -418,9 +417,7 @@ export function chatEntryConversationId(
     activityTask && chatTaskNeedsAttention(activityTask) ? chatIdForTask(activityTask) : null;
   if (activeChatId && conversations.some((item) => item.chatId === activeChatId))
     return activeChatId;
-  const unread = conversations.find((conversation) =>
-    conversation.tasks.some((task) => unreadTaskIds.has(task.operation_id)),
-  );
+  const unread = conversations.find((conversation) => unreadChatIds.has(conversation.chatId));
   if (unread) return unread.chatId;
   return conversations[0]?.chatId ?? null;
 }
@@ -439,39 +436,68 @@ export function newlyFinishedChatTaskIds(
   });
 }
 
-/** A turn that ended after the viewer's marker for its chat is unread. */
-export function unreadTaskIdsFromReads(
-  tasks: readonly AgentTask[],
-  chatReads: ChatReads | null,
-): Set<string> {
-  if (!chatReads) return new Set();
-  return new Set(
-    tasks.flatMap((task) => {
-      const chatId = chatIdForTask(task);
-      if (!chatId || !task.finished || !task.finished_at || chatTaskNeedsAttention(task)) return [];
-      const readThrough = chatReads.reads[chatId] ?? chatReads.baseline;
-      return Date.parse(task.finished_at) > Date.parse(readThrough) ? [task.operation_id] : [];
-    }),
-  );
+function laterTime(left: string | null | undefined, right: string | null | undefined) {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  return Date.parse(right) > Date.parse(left) ? right : left;
 }
 
-/** The newest finish time among a chat's turns, which is what reading it marks. */
-export function chatReadThrough(tasks: readonly AgentTask[], chatId: string): string | null {
-  let latest: string | null = null;
+/**
+ * Each chat's newest turn end: the server's durable answer, advanced by any
+ * loaded turn that finished since it was read.
+ */
+function latestChatFinishes(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads,
+): Record<string, string> {
+  const latest: Record<string, string> = { ...chatReads.latest_finished };
   for (const task of tasks) {
-    if (chatIdForTask(task) !== chatId || !task.finished || !task.finished_at) continue;
-    if (latest === null || Date.parse(task.finished_at) > Date.parse(latest)) {
-      latest = task.finished_at;
-    }
+    const chatId = chatIdForTask(task);
+    if (!chatId || !task.finished || !task.finished_at || chatTaskNeedsAttention(task)) continue;
+    latest[chatId] = laterTime(latest[chatId], task.finished_at) ?? task.finished_at;
   }
   return latest;
 }
 
+/** A chat is unread when its newest turn ended after the viewer's marker for it. */
+export function unreadChatIdsFromReads(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads | null,
+): Set<string> {
+  if (!chatReads) return new Set();
+  const latest = latestChatFinishes(tasks, chatReads);
+  return new Set(
+    Object.keys(latest).filter(
+      (chatId) =>
+        Date.parse(latest[chatId]) > Date.parse(chatReads.reads[chatId] ?? chatReads.baseline),
+    ),
+  );
+}
+
+/** The newest turn end in a chat, which is what reading it marks. */
+export function chatReadThrough(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads,
+  chatId: string,
+): string | null {
+  return latestChatFinishes(tasks, chatReads)[chatId] ?? null;
+}
+
+/** Markers only move forward, so a stale snapshot cannot unread a viewed reply. */
+export function mergeChatReads(current: ChatReads | null, incoming: ChatReads): ChatReads {
+  if (!current) return incoming;
+  const reads = { ...incoming.reads };
+  for (const [chatId, readThrough] of Object.entries(current.reads)) {
+    reads[chatId] = laterTime(reads[chatId], readThrough) ?? readThrough;
+  }
+  return { ...incoming, reads };
+}
+
 export function conversationHasUnread(
   conversation: ChatConversation,
-  unreadTaskIds: ReadonlySet<string>,
+  unreadChatIds: ReadonlySet<string>,
 ): boolean {
-  return conversation.tasks.some((task) => unreadTaskIds.has(task.operation_id));
+  return unreadChatIds.has(conversation.chatId);
 }
 
 function comparableTime(value: string): number {

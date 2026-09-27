@@ -51,7 +51,7 @@ import { loadChatTranscript } from "./chatApi";
 import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
 import {
   chatIndicator,
-  unreadTaskIdsFromReads,
+  unreadChatIdsFromReads,
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
@@ -2547,11 +2547,8 @@ export default function App() {
     transitionManifest,
     transitionRulesetTag,
   ]);
-  const unreadChatTaskIds = useMemo(
-    () => unreadTaskIdsFromReads(tasks, chatReads),
-    [chatReads, tasks],
-  );
-  const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
+  const unreadChatIds = useMemo(() => unreadChatIdsFromReads(tasks, chatReads), [chatReads, tasks]);
+  const chatsIndicator = chatIndicator(tasks, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
@@ -2561,7 +2558,7 @@ export default function App() {
   const openChats = (preferredChatId?: string | null) => {
     const nextChatId =
       preferredChatId ??
-      chatEntryConversationId(conversations, activityTask, unreadChatTaskIds, selectedChatId);
+      chatEntryConversationId(conversations, activityTask, unreadChatIds, selectedChatId);
     selectChat(nextChatId);
     setFloatingChat(null);
     clearNodeSelections();
@@ -4349,7 +4346,7 @@ export default function App() {
                     chatsIndicator === "active" ? "Chat task active" : "Unread chat result"
                   }
                 >
-                  {chatsIndicator === "active" ? "•" : unreadChatTaskIds.size}
+                  {chatsIndicator === "active" ? "•" : unreadChatIds.size}
                 </small>
               )}
             </button>
@@ -4759,7 +4756,7 @@ export default function App() {
               tasks={tasks}
               watchers={watchers}
               graphChangesDisabled={mutationsDisabled}
-              unreadTaskIds={unreadChatTaskIds}
+              unreadChatIds={unreadChatIds}
               chatTranscripts={chatTranscripts}
               hasMore={chatSummaryNextOffset < chatSummaryTotal}
               loadingMore={chatSummariesLoading}

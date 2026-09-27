@@ -2529,6 +2529,8 @@ export interface ChatDisplay {
 export interface ChatReads {
   baseline: string;
   reads: Record<string, string>;
+  /** Each unarchived chat's newest finished turn, however old. */
+  latest_finished: Record<string, string>;
 }
 
 export interface ChatSummaryPage {
