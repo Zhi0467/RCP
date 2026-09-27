@@ -49,8 +49,11 @@ one explicit mode marker. A refreshed master replaces earlier master
 instructions while retaining the conversation's native progress.
 
 Later ordinary resumes send the marker, logical turn id, human message
-unchanged, resolved artifact directory, and a compact replacement delta only
-when stable context changed, then end with one master pointer. The pointer says
+unchanged, resolved artifact directory, and one line for each stable value that
+changed since the master, such as a new command client, write root, or compute
+connection. They end with one master pointer. The execution, launch-helper, and
+write-boundary instructions live in the master once; only their changing values
+travel. The pointer says
 it is the contract given at the session's start and to read it only after a
 compaction or a lost grip on the graph rules or authority; it is not an
 instruction to reread unchanged context. RCP records the master's exact bytes on

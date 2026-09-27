@@ -416,12 +416,16 @@ Handoff, a provider switch, a clean Retry, a progress handoff, and a fresh
 watcher notification are all session starts.
 
 A launch with a session id is a continuation: a human turn, a wake, a recovery
-(Resume, same-session Retry, graph repair), or a correction. It sends only what
-is new, inline: the trigger or reason, diagnostics, and every current override
-(paths, validator and command credentials and prefixes, write scope, execution
-instructions, skills, attachments, a replaced context, and the owner's exact
-restriction). Current instructions take precedence over the master. It ends
-with one pointer to the master. The pointer says this is the contract given at
+(Resume, same-session Retry, graph repair), or a correction. It sends, inline:
+why it launched; what is new for its node (the human text and invoked skills,
+the trigger and accepted handoff, the diagnostics, or the correction's exact
+restriction); and one line for each value that differs from the master. The
+master records the stable values it was rendered with (paths, the command
+client, write roots, repositories, skill pointers, execution facts), so a new
+mailbox or a changed root appears and an unchanged one does not. Static
+explanations, such as validator exit codes, the launch helper, and the write
+boundary, live only in the master. Current values take precedence over the
+master. It ends with one pointer to the master. The pointer says this is the contract given at
 the session's start, and to read it only after a compaction or a lost grip on
 the graph rules or authority. A continuation never resends the master and never
 forces a read.
