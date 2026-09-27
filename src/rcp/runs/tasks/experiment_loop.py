@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -23,15 +23,29 @@ from rcp.agents import (
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
-from rcp.agents.continuation_prompt import context_delta
+from rcp.agents.continuation_prompt import (
+    SECTIONS,
+    LaunchPhase,
+    MasterRef,
+    classify,
+    compose,
+    context_delta,
+    master_key,
+)
 from rcp.agents.experiment_loop_prompt import (
+    EXPERIMENT_LOOP_POLICY_VERSION,
     experiment_loop_continuation_contract,
     experiment_loop_patch_correction_contract,
     experiment_loop_task_contract,
+    experiment_loop_turn_message,
     experiment_loop_wake_message,
     experiment_loop_watcher_correction_contract,
 )
-from rcp.agents.prompts import invoked_package_pointers, invoked_provider_skill_section
+from rcp.agents.prompts import (
+    _invoked_package_section,
+    invoked_package_pointers,
+    invoked_provider_skill_section,
+)
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -62,6 +76,7 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
+from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.experiment_loop import (
     commit_experiment_episode_binding,
     commit_experiment_episode_handoff,
@@ -92,8 +107,16 @@ from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+from rcp.runs.session_master import (
+    SESSION_MASTER_KEY_ROLE,
+    SESSION_MASTER_ROLE,
+    continuation_session_master,
+    record_inline_prompt,
+    record_session_master,
+    session_master_label,
+    stage_session_master,
+)
 from rcp.runs.shared import (
-    _parent_task_contract_path,
     _pinned_to_profile,
     _protected_run_stage_roots,
     _ProviderOutcome,
@@ -104,12 +127,12 @@ from rcp.runs.shared import (
     _stage_json_task_input,
     _stage_or_reuse_task_input,
     _stage_task_contract,
-    _stage_task_input,
     _swept_stage_root,
     _task_token,
     note_link_lost_before_provider,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
+from rcp.runs.tasks.episode_report import report_rebootstrap_pending
 from rcp.runs.tasks.work import (
     _WORK_PRIMARY_ANSWER_ROLE,
     WorkTurn,
@@ -598,6 +621,8 @@ async def _prepare_work_prompt_context(
             wake_episode.context_baseline,
             episode_context_baseline,
         )
+    elif turn.request.session_id and not turn.reusing_checkpoint:
+        context_replacement = _continued_session_context(turn, episode_context_baseline)
     if turn.reusing_checkpoint and not turn.request.session_id:
         raise ValueError(
             "The continued Work turn has no native agent session; retry it from a clean attempt "
@@ -614,53 +639,277 @@ async def _prepare_work_prompt_context(
     )
 
 
-def _compose_resume_prompt(
+_EXPERIMENT_MASTER_LABEL = "experiment-master"
+
+
+def _experiment_master(
+    execution: AgentTaskExecution,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    *,
+    session_id: str,
+    episode_id: str | None,
+    render: Callable[[], str] | None,
+) -> MasterRef:
+    """The master contract this continuing episode session holds, staged for a pointer.
+
+    A session with no settled master record keeps the exact start contract its own
+    episode lineage sent it, recorded now under the current key. Otherwise the shared
+    lookup points to the recorded master, or bootstraps a freshly rendered one. Without
+    a renderer, the recorded master is kept even under an older key, and the session's
+    next operational launch re-opens the current one.
+    """
+
+    key = master_key(EXPERIMENT_LOOP_POLICY_VERSION)
+    record = execution.store.agent_task(execution.operation_id)
+    if record is None or not record.stage_root:
+        raise ValueError("An Experiment-loop continuation has no saved stage for its master.")
+    recorded = execution.store.latest_session_master(
+        record.project_id,
+        session_id,
+        stage_host=record.stage_host,
+        stage_root=record.stage_root,
+    )
+    if recorded is None and episode_id:
+        started = _session_start_contract(
+            execution,
+            episode_id=episode_id,
+            session_id=session_id,
+            stage_identity=(record.stage_host or "", record.stage_root),
+            key=key,
+        )
+        if started is not None:
+            record_session_master(execution.store, execution.operation_id, started, key)
+            path = _stage_or_reuse_task_input(
+                local_stage,
+                remote_stage,
+                session_master_label(_EXPERIMENT_MASTER_LABEL, started),
+                started,
+            )
+            return MasterRef(path=path, bootstrap=False)
+    if render is None:
+        if recorded is None:
+            raise ValueError(
+                "The native session has no recoverable master contract; retry the "
+                "Experiment turn from a clean attempt instead."
+            )
+        operation_id, digest, _ = recorded
+        content = execution.store.agent_task_contract(operation_id, SESSION_MASTER_ROLE) or ""
+        path = stage_session_master(
+            execution.store,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            operation_id=operation_id,
+            sha256=digest,
+            path=session_master_label(_EXPERIMENT_MASTER_LABEL, content),
+        )
+        return MasterRef(path=path, bootstrap=False)
+    return continuation_session_master(
+        execution,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        native_session_id=session_id,
+        label_prefix=_EXPERIMENT_MASTER_LABEL,
+        key=key,
+        render=render,
+    )
+
+
+def _session_start_contract(
+    execution: AgentTaskExecution,
+    *,
+    episode_id: str,
+    session_id: str,
+    stage_identity: tuple[str, str],
+    key: str,
+) -> str | None:
+    """The exact full contract that started this session on this stage, if retained.
+
+    The search follows the episode back through the episodes it continues, because an
+    Add-turns episode runs on the session an earlier episode started. A start recorded
+    under another master key is not reused; the caller renders a new master instead.
+    """
+
+    episode_ids: list[str] = []
+    current: str | None = episode_id
+    while current is not None and current not in episode_ids:
+        episode_ids.append(current)
+        source = execution.store.episode(current)
+        current = source.continues_episode_id if source is not None else None
+    tasks = [
+        task
+        for lineage_id in episode_ids
+        for task in reversed(execution.store.episode_tasks(lineage_id))
+        if (task.stage_host or "", task.stage_root) == stage_identity
+    ]
+    for candidate_session_id in (session_id, None):
+        for task in tasks:
+            if task.native_session_id != candidate_session_id:
+                continue
+            for durable in reversed(execution.store.agent_task_contracts(task.operation_id)):
+                if durable.role not in {"work", "work_retry_base"}:
+                    continue
+                digest = hashlib.sha256(durable.content.encode("utf-8")).hexdigest()
+                if digest != durable.sha256:
+                    raise ValueError("The Experiment-loop session contract is corrupt.")
+                started_key = execution.store.agent_task_contract(
+                    task.operation_id, SESSION_MASTER_KEY_ROLE
+                )
+                return durable.content if started_key in {None, key} else None
+    return None
+
+
+def _report_rebootstrap_pending(turn: WorkTurn) -> bool:
+    assert turn.execution is not None and turn.request.session_id
+    return report_rebootstrap_pending(turn.execution, turn.request.session_id)
+
+
+def _record_continuation_prompt(
+    turn: WorkTurn,
+    phase: LaunchPhase,
+    parts: list[str],
+    master: MasterRef,
+    *,
+    report_ended: bool,
+    label: str,
+    role: str,
+) -> tuple[str, str]:
+    """Compose one continuation inline, record it for recovery, and return its path and text.
+
+    After an episode report on this session, the master is re-opened instead of pointed to,
+    because the report's restriction is the newest instruction the session holds.
+    """
+
+    if report_ended:
+        parts = [*parts, SECTIONS["report_rebootstrap"].format(path=master.path)]
+        prompt = compose(classify(phase), parts=parts, master=None, delta=None)
+    else:
+        prompt = compose(classify(phase), parts=parts, master=master, delta=None)
+    contract_path = record_inline_prompt(
+        turn.execution,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+        label=label,
+        role=role,
+        prompt=prompt,
+    )
+    return contract_path, prompt
+
+
+def _turn_invocations(turn: WorkTurn, staged: _StagedWorkInputs) -> list[str]:
+    """This turn's invoked packages and provider skills, which never enter the master."""
+
+    return [
+        section
+        for section in (
+            _invoked_package_section(
+                invoked_package_pointers(
+                    staged.skill_pointers,
+                    workflow_ids=turn.request.invoked_workflow_ids,
+                    skill_ids=turn.request.invoked_skill_ids,
+                )
+            ).strip(),
+            invoked_provider_skill_section(turn.request.resolved_provider_skills).strip(),
+        )
+        if section
+    ]
+
+
+def _continued_master(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
     prepared: _WorkPromptContext,
-) -> _ComposedWorkPrompt:
-    assert turn.execution is not None
-    original_contract_path = _parent_task_contract_path(
+) -> MasterRef:
+    assert turn.execution is not None and turn.request.session_id
+    return _experiment_master(
         turn.execution,
         turn.local_stage,
         turn.remote_stage,
+        session_id=turn.request.session_id,
+        episode_id=turn.request.control_episode_id,
+        render=lambda: _experiment_start_contract(
+            turn,
+            staged,
+            prepared,
+            human_request=_episode_objective(turn),
+            invoked=False,
+        ),
     )
-    if not prepared.loop_control_path:
-        raise ValueError("Experiment-loop Resume is missing fresh loop control.")
-    contract = experiment_loop_continuation_contract(
-        original_contract_path=original_contract_path,
-        mode="resume",
+
+
+def _episode_objective(turn: WorkTurn) -> str:
+    """The human objective the episode started from, for a master rendered mid-episode."""
+
+    assert turn.execution is not None and turn.request.control_node_id
+    for task in turn.execution.store.episode_tasks(turn.request.control_episode_id or ""):
+        message = task.request.get("message")
+        if task.request.get("trigger") != "watcher" and isinstance(message, str):
+            return experiment_start_message(message, turn.request.control_node_id)
+    return experiment_start_message(turn.request.message, turn.request.control_node_id)
+
+
+def _continued_session_context(
+    turn: WorkTurn,
+    current: dict[str, object],
+) -> dict[str, object] | None:
+    """What changed since the ended episode whose session this human turn continues."""
+
+    assert turn.execution is not None
+    episode = turn.execution.store.episode(turn.request.control_episode_id or "")
+    source = (
+        turn.execution.store.experiment_episode(episode.continues_episode_id)
+        if episode is not None and episode.continues_episode_id
+        else None
+    )
+    if (
+        source is None
+        or source.native_session_id != turn.request.session_id
+        or not source.context_baseline
+    ):
+        return current
+    return context_delta(source.context_baseline, current)
+
+
+def _compose_recovery_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    prepared: _WorkPromptContext,
+    mode: Literal["resume", "retry"],
+) -> _ComposedWorkPrompt:
+    assert turn.execution is not None
+    retry_diagnostics_path = _stage_retry_diagnostics(turn, staged) if mode == "retry" else None
+    if not prepared.loop_control_path or (mode == "retry" and not retry_diagnostics_path):
+        raise ValueError(f"Experiment-loop {mode.title()} is missing fresh control or diagnostics.")
+    parts = experiment_loop_continuation_contract(
+        mode=mode,
         loop_control_path=prepared.loop_control_path,
+        watcher_state_path=prepared.watcher_state_path,
         patch_path=turn.patch_inputs.patch_path,
         watch_path=turn.patch_inputs.watch_path,
         output_schema_path=turn.patch_inputs.schema_path,
         validator_command=turn.patch_inputs.validator_command,
         execution_instructions=_work_execution_instructions(turn),
+        diagnostics_path=retry_diagnostics_path,
         write_scope=turn.write_scope,
         artifact_path=str(staged.artifact_directory),
-        ontology_extensions=turn.context.ontology_extensions,
         graph_path=turn.context.graph_path,
         research_path=turn.context.research_md_path,
         context_replacement=prepared.episode_context_baseline,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
     )
-    contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-resume.md",
-        contract,
-        execution=turn.execution,
-        role="work_resume",
+    master = _continued_master(turn, staged, prepared)
+    contract_path, prompt = _record_continuation_prompt(
+        turn,
+        LaunchPhase(session_id=turn.request.session_id, phase="recovery"),
+        [*parts, *_turn_invocations(turn, staged)],
+        master,
+        report_ended=_report_rebootstrap_pending(turn),
+        label=f"task-{staged.token}-{mode}.md",
+        role="work_resume" if mode == "resume" else "work_retry",
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=original_contract_path,
+        base_contract_path=master.path,
     )
 
 
@@ -678,11 +927,9 @@ def _compose_wake_prompt(
         or not prepared.watcher_state_path
     ):
         raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
-    experiment_contract_path = _experiment_session_contract_path(turn)
-    contract = experiment_loop_wake_message(
+    parts = experiment_loop_wake_message(
         execution_instructions=_work_execution_instructions(turn),
         focused_experiment_id=turn.request.control_node_id,
-        experiment_contract_path=experiment_contract_path,
         invocation=turn.request.control_invocation,
         invocation_ceiling=turn.request.control_invocation_ceiling,
         previous_graph_result=prepared.wake_episode.last_graph_result or "",
@@ -696,84 +943,104 @@ def _compose_wake_prompt(
         watch_path=turn.patch_inputs.watch_path,
         output_schema_path=turn.patch_inputs.schema_path,
         validator_command=turn.patch_inputs.validator_command,
-        execution_host=turn.execution_host,
         context_replacement=prepared.context_replacement,
         write_scope=turn.write_scope,
         artifact_path=str(staged.artifact_directory),
-        ontology_extensions=turn.context.ontology_extensions,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
     )
-    contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-watcher-wake.md",
-        contract,
-        execution=turn.execution,
+    master = _continued_master(turn, staged, prepared)
+    contract_path, prompt = _record_continuation_prompt(
+        turn,
+        LaunchPhase(session_id=turn.request.session_id, phase="wake"),
+        [*parts, *_turn_invocations(turn, staged)],
+        master,
+        report_ended=_report_rebootstrap_pending(turn),
+        label=f"task-{staged.token}-watcher-wake.md",
         role="experiment_loop_wake",
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=experiment_contract_path,
+        base_contract_path=master.path,
     )
 
 
-def _experiment_session_contract_path(turn: WorkTurn) -> str:
-    """Stage the full contract that initialized this exact episode session."""
-
-    execution = turn.execution
-    episode_id = turn.request.control_episode_id
-    session_id = turn.request.session_id
-    if execution is None or not episode_id or not session_id or not execution.stage_root:
-        raise ValueError("Experiment-loop wake has no exact session contract binding.")
-    stage_identity = (execution.stage_host or "", execution.stage_root)
-    tasks = tuple(reversed(execution.store.episode_tasks(episode_id)))
-    for candidate_session_id in (session_id, None):
-        for task in tasks:
-            if (
-                task.stage_host or "",
-                task.stage_root,
-            ) != stage_identity or task.native_session_id != candidate_session_id:
-                continue
-            for durable in reversed(execution.store.agent_task_contracts(task.operation_id)):
-                if durable.role not in {"work", "work_retry_base"}:
-                    continue
-                digest = hashlib.sha256(durable.content.encode("utf-8")).hexdigest()
-                if digest != durable.sha256:
-                    raise ValueError("The Experiment-loop session contract is corrupt.")
-                return _stage_or_reuse_task_input(
-                    turn.local_stage,
-                    turn.remote_stage,
-                    f"experiment-contract-{digest[:16]}.md",
-                    durable.content,
-                )
-    raise ValueError("Experiment-loop wake has no full contract for its exact session and stage.")
-
-
-def _compose_fresh_prompt(
+def _compose_human_turn_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
     prepared: _WorkPromptContext,
     *,
-    retry_diagnostics_path: str | None = None,
+    retry_diagnostics_path: str | None,
 ) -> _ComposedWorkPrompt:
+    """Continue an ended episode's session with the human's new turns, never its full contract."""
+
     assert turn.request.message is not None
+    if (
+        not turn.request.control_node_id
+        or turn.request.control_invocation is None
+        or turn.request.control_invocation_ceiling is None
+        or not prepared.loop_control_path
+        or not prepared.watcher_state_path
+    ):
+        raise ValueError("Experiment-loop turn inputs are incomplete after staging.")
+    parts = experiment_loop_turn_message(
+        focused_experiment_id=turn.request.control_node_id,
+        invocation=turn.request.control_invocation,
+        invocation_ceiling=turn.request.control_invocation_ceiling,
+        human_message=turn.request.message,
+        loop_control_path=prepared.loop_control_path,
+        watcher_state_path=prepared.watcher_state_path,
+        graph_path=turn.context.graph_path,
+        research_path=turn.context.research_md_path,
+        patch_path=turn.patch_inputs.patch_path,
+        watch_path=turn.patch_inputs.watch_path,
+        output_schema_path=turn.patch_inputs.schema_path,
+        validator_command=turn.patch_inputs.validator_command,
+        execution_instructions=_work_execution_instructions(turn),
+        diagnostics_path=retry_diagnostics_path,
+        context_replacement=prepared.context_replacement,
+        write_scope=turn.write_scope,
+        artifact_path=str(staged.artifact_directory),
+    )
+    human_message = parts.pop()
+    master = _continued_master(turn, staged, prepared)
+    contract_path, prompt = _record_continuation_prompt(
+        turn,
+        LaunchPhase(session_id=turn.request.session_id, phase="turn"),
+        [*parts, *_turn_invocations(turn, staged), human_message],
+        master,
+        report_ended=_report_rebootstrap_pending(turn),
+        label=f"task-{staged.token}-turn.md",
+        role="experiment_loop_turn",
+    )
+    return _ComposedWorkPrompt(
+        contract_path=contract_path,
+        prompt=prompt,
+        base_contract_path=master.path,
+    )
+
+
+def _experiment_start_contract(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    prepared: _WorkPromptContext,
+    *,
+    human_request: str,
+    invoked: bool,
+    retry_diagnostics_path: str | None = None,
+) -> str:
+    """Render the full contract a session starts from, with this turn's inputs."""
+
     if (
         not turn.request.control_node_id
         or not prepared.loop_control_path
         or not prepared.watcher_state_path
     ):
         raise ValueError("Experiment-loop contract inputs are incomplete after staging.")
-    human_request_path = _stage_task_input(
+    human_request_path = _stage_or_reuse_task_input(
         turn.local_stage,
         turn.remote_stage,
         f"task-{staged.token}-human-request.txt",
-        turn.request.message,
+        human_request,
     )
     contract = experiment_loop_task_contract(
         execution_instructions=_work_execution_instructions(turn),
@@ -799,13 +1066,41 @@ def _compose_fresh_prompt(
             retry_diagnostics_path if prepared.provider_switch_recovery else None
         ),
         skill_pointers=staged.skill_pointers,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
+        invoked_skill_pointers=(
+            invoked_package_pointers(
+                staged.skill_pointers,
+                workflow_ids=turn.request.invoked_workflow_ids,
+                skill_ids=turn.request.invoked_skill_ids,
+            )
+            if invoked
+            else None
         ),
     )
-    contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
+    if invoked:
+        contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
+    return contract
+
+
+def _compose_fresh_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    prepared: _WorkPromptContext,
+    *,
+    retry_diagnostics_path: str | None = None,
+) -> _ComposedWorkPrompt:
+    assert turn.request.message is not None
+    if turn.request.session_id is not None:
+        return _compose_human_turn_prompt(
+            turn, staged, prepared, retry_diagnostics_path=retry_diagnostics_path
+        )
+    contract = _experiment_start_contract(
+        turn,
+        staged,
+        prepared,
+        human_request=turn.request.message,
+        invoked=True,
+        retry_diagnostics_path=retry_diagnostics_path,
+    )
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -814,62 +1109,17 @@ def _compose_fresh_prompt(
         execution=turn.execution,
         role="work_retry_base" if turn.retry_attempt else "work",
     )
+    if turn.execution is not None:
+        record_session_master(
+            turn.execution.store,
+            turn.execution.operation_id,
+            contract,
+            master_key(EXPERIMENT_LOOP_POLICY_VERSION),
+        )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
         base_contract_path=contract_path,
-    )
-
-
-def _compose_retry_prompt(
-    turn: WorkTurn,
-    staged: _StagedWorkInputs,
-    prepared: _WorkPromptContext,
-) -> _ComposedWorkPrompt:
-    assert turn.execution is not None
-    retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
-    if not prepared.loop_control_path or not retry_diagnostics_path:
-        raise ValueError("Experiment-loop Retry is missing fresh control or diagnostics.")
-    original_contract_path = _parent_task_contract_path(
-        turn.execution,
-        turn.local_stage,
-        turn.remote_stage,
-    )
-    retry_contract = experiment_loop_continuation_contract(
-        original_contract_path=original_contract_path,
-        mode="retry",
-        loop_control_path=prepared.loop_control_path,
-        patch_path=turn.patch_inputs.patch_path,
-        watch_path=turn.patch_inputs.watch_path,
-        output_schema_path=turn.patch_inputs.schema_path,
-        validator_command=turn.patch_inputs.validator_command,
-        execution_instructions=_work_execution_instructions(turn),
-        diagnostics_path=retry_diagnostics_path,
-        write_scope=turn.write_scope,
-        artifact_path=str(staged.artifact_directory),
-        ontology_extensions=turn.context.ontology_extensions,
-        graph_path=turn.context.graph_path,
-        research_path=turn.context.research_md_path,
-        context_replacement=prepared.episode_context_baseline,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
-    )
-    retry_contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-retry.md",
-        retry_contract,
-        execution=turn.execution,
-        role="work_retry",
-    )
-    return _ComposedWorkPrompt(
-        contract_path=contract_path,
-        prompt=prompt,
-        base_contract_path=original_contract_path,
     )
 
 
@@ -1093,20 +1343,29 @@ async def _validate_watch_deliverable(
     return _DeliverableStep()
 
 
-def _watch_correction_contract(
+def _correction_prompt(
     launch_turn: WorkTurn,
     composed: _ComposedWorkPrompt,
-    diagnostics_path: str,
-    validator_command: str,
-) -> str:
-    return experiment_loop_watcher_correction_contract(
-        original_contract_path=composed.base_contract_path,
-        diagnostics_path=diagnostics_path,
-        watch_path=launch_turn.patch_inputs.watch_path,
-        patch_path=launch_turn.patch_inputs.patch_path,
-        output_schema_path=launch_turn.patch_inputs.schema_path,
-        validator_command=validator_command,
-        ontology_extensions=launch_turn.context.ontology_extensions,
+    session_id: str | None,
+    parts: list[str],
+    *,
+    label: str,
+    role: str,
+) -> tuple[str, str]:
+    """Correct inside this operation's session, pointing to the master its launch used.
+
+    The provider already answered this operation's launch, so the master it opened or
+    was pointed to is the one it holds; the correction never re-opens it.
+    """
+
+    return _record_continuation_prompt(
+        launch_turn,
+        LaunchPhase(session_id=session_id, phase="correction"),
+        parts,
+        MasterRef(path=composed.base_contract_path, bootstrap=False),
+        report_ended=False,
+        label=label,
+        role=role,
     )
 
 
@@ -1242,18 +1501,18 @@ async def _settle_watch_deliverable(
                 "validate",
                 launch_turn.patch_inputs.patch_path,
             )
-            correction_contract = _watch_correction_contract(
+            correction_path, correction_prompt = _correction_prompt(
                 launch_turn,
                 composed,
-                diagnostics_path,
-                validator_command,
-            )
-            correction_path, correction_prompt = _stage_task_contract(
-                turn.local_stage,
-                turn.remote_stage,
-                f"task-{staged.token}-watch-correction-{correction_rounds}.md",
-                correction_contract,
-                execution=turn.execution,
+                settled.native_session_id,
+                experiment_loop_watcher_correction_contract(
+                    diagnostics_path=diagnostics_path,
+                    watch_path=launch_turn.patch_inputs.watch_path,
+                    patch_path=launch_turn.patch_inputs.patch_path,
+                    output_schema_path=launch_turn.patch_inputs.schema_path,
+                    validator_command=validator_command,
+                ),
+                label=f"task-{staged.token}-watch-correction-{correction_rounds}.md",
                 role=f"watch_correction_{correction_rounds}",
             )
             _record_agent_launch_receipt(
@@ -1535,21 +1794,21 @@ async def _apply_experiment_loop_turn(
                     "validate",
                     launch_turn.patch_inputs.patch_path,
                 )
-                correction_contract = experiment_loop_patch_correction_contract(
-                    original_contract_path=composed.base_contract_path,
-                    diagnostics_path=diagnostics_path,
-                    patch_path=launch_turn.patch_inputs.patch_path,
-                    watch_path=launch_turn.patch_inputs.watch_path,
-                    validator_command=loop_validator_command,
-                    output_schema_path=launch_turn.patch_inputs.schema_path,
-                    ontology_extensions=launch_turn.context.ontology_extensions,
-                )
-                correction_path, correction_prompt = _stage_task_contract(
-                    turn.local_stage,
-                    turn.remote_stage,
-                    f"task-{staged.token}-loop-patch-correction-{loop_patch_correction_rounds}.md",
-                    correction_contract,
-                    execution=turn.execution,
+                correction_path, correction_prompt = _correction_prompt(
+                    launch_turn,
+                    composed,
+                    applied.native_session_id,
+                    experiment_loop_patch_correction_contract(
+                        diagnostics_path=diagnostics_path,
+                        patch_path=launch_turn.patch_inputs.patch_path,
+                        watch_path=launch_turn.patch_inputs.watch_path,
+                        validator_command=loop_validator_command,
+                        output_schema_path=launch_turn.patch_inputs.schema_path,
+                    ),
+                    label=(
+                        f"task-{staged.token}-loop-patch-correction-"
+                        f"{loop_patch_correction_rounds}.md"
+                    ),
                     role=(f"experiment_loop_patch_correction_{loop_patch_correction_rounds}"),
                 )
                 _record_agent_launch_receipt(
@@ -2173,12 +2432,12 @@ async def stream_experiment_loop_task(
         prompt_context = await _prepare_work_prompt_context(turn, staged)
         wake_episode = prompt_context.wake_episode
         if resuming:
-            composed_prompt = _compose_resume_prompt(turn, staged, prompt_context)
+            composed_prompt = _compose_recovery_prompt(turn, staged, prompt_context, "resume")
         elif waking:
             composed_prompt = _compose_wake_prompt(turn, staged, prompt_context)
         else:
             if turn.retrying:
-                composed_prompt = _compose_retry_prompt(turn, staged, prompt_context)
+                composed_prompt = _compose_recovery_prompt(turn, staged, prompt_context, "retry")
             else:
                 retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
                 composed_prompt = _compose_fresh_prompt(
@@ -2431,7 +2690,17 @@ async def _stream_work_graph_repair(
             outcome=outcome,
         )
         previous = _rejected_graph_update_for_repair(execution)
-        original_contract_path = _parent_task_contract_path(execution, local_stage, remote_stage)
+        if not request.session_id:
+            raise ValueError("The graph repair has no native session to continue.")
+        master = _experiment_master(
+            execution,
+            local_stage,
+            remote_stage,
+            session_id=request.session_id,
+            episode_id=request.control_episode_id,
+            # A repair stages no loop inputs, so it renders no master of its own.
+            render=None,
+        )
         validator_command = patch_inputs.validator_command
         diagnostics_path = _stage_json_task_input(
             local_stage,
@@ -2443,22 +2712,20 @@ async def _stream_work_graph_repair(
                 "prior_correction_rounds": previous.correction_rounds,
             },
         )
-        contract = experiment_loop_patch_correction_contract(
-            original_contract_path=original_contract_path,
-            patch_path=patch_path,
-            watch_path=patch_inputs.watch_path,
-            diagnostics_path=diagnostics_path,
-            validator_command=validator_command,
-            output_schema_path=patch_inputs.schema_path,
-            write_scope=write_scope,
-            ontology_extensions=context.ontology_extensions,
-        )
-        contract_path, prompt = _stage_task_contract(
-            local_stage,
-            remote_stage,
-            f"task-{token}-manual-graph-repair.md",
-            contract,
-            execution=execution,
+        contract_path, prompt = _record_continuation_prompt(
+            turn,
+            LaunchPhase(session_id=request.session_id, phase="recovery"),
+            experiment_loop_patch_correction_contract(
+                patch_path=patch_path,
+                watch_path=patch_inputs.watch_path,
+                diagnostics_path=diagnostics_path,
+                validator_command=validator_command,
+                output_schema_path=patch_inputs.schema_path,
+                write_scope=write_scope,
+            ),
+            master,
+            report_ended=report_rebootstrap_pending(execution, request.session_id),
+            label=f"task-{token}-manual-graph-repair.md",
             role="work_patch_repair",
         )
     except BaseException as exc:

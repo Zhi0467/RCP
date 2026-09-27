@@ -23,6 +23,7 @@ from rcp.agents.launcher import (
     AgentProcessControl,
     ProviderReadiness,
 )
+from rcp.agents.prompts import PromptFactory
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
@@ -448,10 +449,18 @@ class AcceptanceAgentLauncher(AgentLauncher):
 
 
 def _read_launch_contract(prompt: str, cwd: Path) -> str:
+    """Read what this launch instructs: a session start's contract, or a continuation itself.
+
+    A continuation carries its current paths and commands inline. The fixture never reads
+    them from the master it points to, so a continuation that omits one fails here as it
+    would for a provider; what the fixture learned at session start lives in its state.
+    """
+
     lines = prompt.splitlines()
     if len(lines) < 2:
         raise ValueError("Acceptance-agent launch text has no contract path.")
-    paths = [_launch_contract_path(lines)]
+    start = _session_start_contract_path(lines)
+    paths = [start] if start is not None else []
     execution_prefix = "Read current execution instructions relative to this turn's cwd: `"
     execution_lines = [line for line in lines if line.startswith(execution_prefix)]
     if execution_lines:
@@ -463,24 +472,19 @@ def _read_launch_contract(prompt: str, cwd: Path) -> str:
         # Follow this invocation's pointer; retained inputs can contain expired commands.
         paths.append(cwd / execution_path)
     try:
-        return "\n\n".join(path.read_text(encoding="utf-8") for path in paths)
+        texts = [path.read_text(encoding="utf-8") for path in paths]
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"Acceptance-agent contract is unreadable: {exc}") from exc
+    return "\n\n".join([prompt, *texts] if start is None else texts)
 
 
-def _launch_contract_path(lines: list[str]) -> Path:
-    """A session start opens with its contract; a continuation names its master last."""
+def _session_start_contract_path(lines: list[str]) -> Path | None:
+    """A session start opens with the file it must read; a continuation opens with itself."""
 
-    pointer = SECTIONS["master_pointer"].split("{path}")[0]
     bootstrap = SECTIONS["master_bootstrap"].split("\n")[0]
-    if lines[0] != bootstrap:
-        for index in range(len(lines) - 1, -1, -1):
-            if lines[index].startswith(pointer) and "`" in lines[index][len(pointer) :]:
-                value = lines[index][len(pointer) :]
-                return Path(value[: value.index("`")])
-            if lines[index] == bootstrap and index + 1 < len(lines):
-                return Path(lines[index + 1].strip())
-    return Path(lines[1].strip())
+    if lines[0] in {bootstrap, PromptFactory.launch_prompt("").splitlines()[0]}:
+        return Path(lines[1].strip())
+    return None
 
 
 def _read_state(cwd: Path) -> dict[str, object]:

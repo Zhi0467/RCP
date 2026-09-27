@@ -14,7 +14,7 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_watcher_correction_contract,
 )
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
-from rcp.agents.prompts import REPLY_STYLE, PromptFactory
+from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME, REPLY_STYLE, PromptFactory
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
@@ -593,30 +593,35 @@ def test_work_patch_correction_preserves_paths_and_validator_command() -> None:
         )
 
 
-def test_experiment_retry_preserves_fresh_control_path() -> None:
-    retry = experiment_loop_continuation_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
-        mode="retry",
-        patch_path="/stage/patch.json",
-        watch_path="/stage/watch.json",
-        diagnostics_path="/stage/inputs/retry.json",
-        output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-        loop_control_path="/stage/inputs/experiment-control-retry.json",
+def test_experiment_continuations_carry_current_inputs_but_no_master_policy() -> None:
+    validator_command = "python /stage/validator.py /stage/patch.json"
+    retry = "\n\n".join(
+        experiment_loop_continuation_contract(
+            mode="retry",
+            patch_path="/stage/patch.json",
+            watch_path="/stage/watch.json",
+            diagnostics_path="/stage/inputs/retry.json",
+            output_schema_path="/stage/inputs/patch-schema.json",
+            validator_command=validator_command,
+            loop_control_path="/stage/inputs/experiment-control-retry.json",
+        )
+    )
+    watcher_correction = "\n\n".join(
+        experiment_loop_watcher_correction_contract(
+            diagnostics_path="/stage/inputs/watch.json",
+            watch_path="/stage/watch.json",
+            patch_path="/stage/patch.json",
+            output_schema_path="/stage/inputs/patch-schema.json",
+            validator_command=validator_command,
+        )
     )
 
+    for continuation in (retry, watcher_correction):
+        assert validator_command in continuation
+        assert REPEATED_RULES_NOTE not in continuation
+        assert graph_rules(edits=True, ontology_extensions=False) not in continuation
+        assert PROVIDER_NATIVE_SUBAGENT_LIFETIME not in continuation
     assert "/stage/inputs/experiment-control-retry.json" in retry
-    assert REPEATED_RULES_NOTE in retry
-    watcher_correction = experiment_loop_watcher_correction_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
-        diagnostics_path="/stage/inputs/watch.json",
-        watch_path="/stage/watch.json",
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-        ontology_extensions=False,
-    )
-    assert graph_rules(edits=True, ontology_extensions=False) in watcher_correction
 
 
 def test_retry_contract_requires_diagnostics_and_preserves_contract_paths() -> None:
@@ -879,8 +884,7 @@ def test_work_continuation_preserves_execution_instructions_only_for_operational
 def test_experiment_continuation_preserves_current_paths_and_execution_instructions(
     mode, execution_instructions
 ):
-    contract = experiment_loop_continuation_contract(
-        original_contract_path="/old/task.md",
+    parts = experiment_loop_continuation_contract(
         mode=mode,
         loop_control_path="/stage/control.json",
         patch_path="/stage/patch.json",
@@ -894,6 +898,7 @@ def test_experiment_continuation_preserves_current_paths_and_execution_instructi
         artifact_path="/stage/turn-2/artifacts",
         write_scope=_work_write_scope(),
     )
+    contract = "\n\n".join(parts)
     assert execution_instructions in contract
     assert "/stage/current/graph.json" in contract
     assert "/stage/current/research.md" in contract
@@ -923,10 +928,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         auto.auto_research_orchestrator_continuation_contract,
         auto.auto_research_worker_continuation_contract,
         experiment.experiment_loop_task_contract,
-        experiment.experiment_loop_continuation_contract,
-        experiment.experiment_loop_watcher_correction_contract,
         experiment.experiment_watcher_maintenance_correction_contract,
-        experiment.experiment_loop_patch_correction_contract,
         merge.branch_merge_task_contract,
         merge.branch_merge_correction_contract,
         merge.branch_merge_rebase_contract,
