@@ -1,12 +1,12 @@
 # Space settings: machine cards and writable paths
 
 Date: 2026-09-27
-Status: design confirmed by the human on 2026-09-27. Two Codex xhigh reviews
-found earlier drafts not ready. The first draft moved machine definitions out
-of project manifests; the human replaced it with this smaller model. The
-second draft protected too broad a set of paths; the human then settled the
-protection rule below. This third revision answers both reviews and needs one
-last review before implementation starts. Nothing is implemented.
+Status: design confirmed by the human on 2026-09-27. Three Codex xhigh
+reviews found earlier drafts not ready; this revision folds in the third
+review's findings, and no fourth review is planned. The first draft moved
+machine definitions out of project manifests; the human replaced it with this
+smaller model. The human then settled the protection rule below. One question
+remains open (Claude's file-tool rules). Nothing is implemented.
 
 Close this handoff when a team member picks `/data/shared/huggingface` as a
 writable path on the GPU machine in Settings. After that, a new member
@@ -88,12 +88,26 @@ size) is a per-device preference and moves to the identity menu.
   deleted, while it is in use. If a registered project's manifest cannot be
   read (for example, its remote host is down), those edits refuse instead of
   guessing. Writable paths stay editable either way.
-- **Adding a machine to an existing project** is a new additive operation
-  through the canonical state workspace. It appends a machine alias and never
-  changes existing aliases or repository placement. The backup check compares
-  the manifest with the completed provisioning proof (`projects.py`); it
-  changes to accept authorized additions while still verifying every
-  provisioned machine and checkout placement.
+- **Existing projects fill the list at startup and on the first space Settings
+  load**, from each registered project's accepted manifest (local or the
+  validated remote mirror). The catalog does not open project services at
+  startup, so without this an upgraded space would show no machines until each
+  project was opened.
+- **Adding a machine to an existing project** means running agents there; it
+  adds no repository. It is a new additive operation through the canonical
+  state workspace, which appends a machine alias and never changes existing
+  aliases or repository placement.
+- **Backup takes machines from the current manifest.** Today backup requires
+  the manifest's machines and repositories to equal the setup-time
+  provisioning record (`_provisioning_bound_configuration` in `projects.py`,
+  and the machine equality in `BackupCheckoutRecoveryDescriptor` in
+  `server_ops/backup_models.py`). That rule only made sense while nothing could
+  change a project's topology after setup. The provisioning record stays the
+  source only for what it uniquely holds: the evidence to rebuild each
+  checkout (resolved path, deploy key). Machine entries come from the current
+  manifest, so an added machine is backed up like any other. Old descriptors
+  still validate. The check is add machine, then backup, restore, and backup
+  again.
 
 ## Provider sign-in
 
@@ -141,15 +155,36 @@ each folder. It is never a setting.
 | Remote machine | `~/.rcp` (jobs, task folders, command sockets) | The remote home, resolved as job folders are today |
 | Remote machine | A project's custom jobs root, if set | The project's compute settings |
 | Remote machine | `~/.local/share/rcp/credentials` | `remote_credentials_root` |
+| Any machine | `~/.rcp` (jobs, credential locks, and after the move: task folders, pending inputs, command and SSH control sockets) | The account home; `credential_gate.py` already keeps its locks there |
+| Remote machine | `~/.local/share/rcp` (deploy keys and generated Git identities) | `remote_credentials_root` and `git_identity.py` |
 | Every repository | `.research` | Project manifests, as today |
 
-**Remote task folders move** from `/tmp/rcp-run.*` to `~/.rcp/stages/`, and
-command sockets from `/tmp/rcp-command-*.sock` into `~/.rcp`. A fixed folder
-is covered by one rule, including folders created after a terminal opened,
-and `/tmp` holds no RCP state. The socket path must stay under the 108-byte
-`AF_UNIX` limit. If a long remote home would exceed it, launch refuses with
-that reason rather than falling back to `/tmp`. The existing `/tmp` sweep
-stays for one release to clean up old folders.
+The implementation completes this list by grepping every RCP storage owner
+(`mkdtemp`, `mktemp`, `tempfile`, `/tmp`, `~/.rcp`, `.local/share/rcp`), not
+from memory. Each entry's path comes from the function that creates it.
+
+**RCP's transient files move under `~/.rcp`**, so that `/tmp` holds no RCP
+state and one fixed rule covers folders created after a launch:
+
+| Today | Moves to |
+|---|---|
+| Remote task folders `/tmp/rcp-run.*` | `~/.rcp/stages/` |
+| Pending inputs `rcp-task-input-*`, `rcp-remote-inputs-*` in the temp dir | `~/.rcp/inputs/` |
+| Command sockets `/tmp/rcp-command-*.sock` | `~/.rcp/sockets/` |
+| SSH control sockets `/tmp/rcp-ssh-<uid>` | `~/.rcp/ssh/` |
+
+Socket paths must stay under the 108-byte `AF_UNIX` limit. If a long home
+would exceed it, launch refuses with that reason instead of falling back to
+`/tmp`.
+
+**Only new sessions use the new layout.** Existing chat and Auto-research
+bindings are checked against their exact `/tmp/rcp-run.*` stage
+(`runs/chat.py`, `runs/tasks/auto_research_stream.py`, and the durable binding
+in `storage/agent_tasks.py`), so moving them would break invariant 10g. A
+legacy stage keeps its location for attachment, collection, and cleanup until
+it is released. While a legacy stage is live or retained, its path is added
+to the protected list. The implementation tests a real pre-upgrade remote chat
+and a waiting episode.
 
 ### The effective policy
 
@@ -163,16 +198,42 @@ stays for one release to clean up old folders.
 5. Reading is never blocked. Agents can still read chats, logs, and records.
 
 This policy is computed once, as three lists on the resolved scope: writable
-roots, protected paths, and exceptions. Backends only render those lists.
+roots, protected paths, and exceptions. Backends only render those lists. The
+same object drives admission checks and prompts too:
+
+- The helper's preflight that refuses a `cwd` under a protected path
+  (`runs/tasks/compute_commands.py`) evaluates the exceptions as well. A
+  launch's own workspace is accepted, and its immutable inputs are refused.
+- The prompt renderer (`agents/prompts.py`) renders grants and exceptions from
+  the same object, so the rendered permissions match enforcement.
+
+**A protected RCP path is added to a scope only when it sits inside one of that
+scope's writable roots.** Repository roots never contain RCP storage, because
+broad repository roots are already refused. So a scope with no grants is the
+same scope as today, with the same fingerprint, and existing continuations are
+unaffected. This follows the existing pattern of leaving `git_metadata_roots`
+out of the fingerprint when empty.
+
+**Grants override the terminal's non-RCP read-only mounts.** Today the
+terminal mounts `~/.ssh`, `~/.gitconfig`, and `~/.config/git` read-only
+(`terminals/git_access.py`) only because nothing grants them. A grant covering
+them makes them writable. RCP-owned credentials and generated identities stay
+read-only, because they are on the protected list.
 
 ### Rendering per backend
 
 | Backend | Writable | Protected | Exceptions inside protected |
 |---|---|---|---|
-| Member terminal (mirrored) | `BindPaths` | `BindReadOnlyPaths` + `ReadOnlyPaths`; an absent directory gets a read-only empty mount, as today | None; a terminal has no stage |
-| systemd job (mirrored) | `ReadWritePaths` | `ReadOnlyPaths`; absent directories get read-only empty mounts, like the terminal | `ReadWritePaths` on the exception, which systemd applies over its read-only parent |
+| Member terminal (mirrored) | `BindPaths`; the preflight checks each grant is writable | `BindReadOnlyPaths` + `ReadOnlyPaths` | None; a terminal has no stage |
+| systemd job (mirrored) | `ReadWritePaths` | `ReadOnlyPaths` | `ReadWritePaths` on the exception, which systemd applies over its read-only parent |
 | Codex | profile `write` roots | profile `read` entries | a more specific `write` entry. The implementation proves on the pinned Codex version that the more specific entry wins, and fails closed if not. |
-| Claude | `Edit(path)` allow | `Edit(path)` deny | Claude's deny beats any allow, so a protected folder containing an exception is denied child by child, skipping the exception's ancestors. The children are enumerated at launch, so folders created later are covered only by the OS backends. That is inside the accepted Claude gap. |
+| Claude | `Edit(path)` allow | `Edit(path)` deny | **Open; see "Open question".** |
+
+**Absent protected paths are masked by type.** A missing folder gets a
+read-only empty folder mount, as the terminal does today. A missing file,
+such as a token file before sign-in, gets a read-only empty file mount, so it
+cannot be created. The terminal preflight stops requiring protected files to
+exist. A missing deny is never silently skipped.
 
 - **Files and folders are distinct entries.** A protected file renders an
   exact-file rule. A folder renders `path/**`. The Claude renderer escapes
@@ -203,13 +264,27 @@ of the carve-outs run in mirrored mode only.
   empty). A mismatch shows "restart to apply" and keeps the session. It is
   kept apart from the repository-identity check in `terminals/manager.py`,
   whose mismatch still retires the session as today.
-- **Continuations.** The larger protected list changes the scope fingerprint
-  even with no grants. New scopes use schema generation 2. A continuation
-  bound to a generation-1 scope is accepted and rebound when its repositories
-  and writable roots are unchanged and only protected paths were added. That
-  only narrows the scope. Anything else follows the existing changed-scope
-  refusal. This is tested with a real generation-1 continuation.
+- **Continuations.** A scope with no grants keeps today's fingerprint (see
+  above). A changed grant set follows the existing changed-scope rule for
+  resumed sessions. This is tested with a real pre-change continuation.
 - **Running jobs** keep the scope they were launched with.
+
+## Open question: Claude's file-tool rules
+
+Claude's deny rules beat its allow rules. When a grant covers a protected
+folder that also holds the launch's own scratch (for example, `/home/rcp`
+covers the data folder), RCP cannot deny the folder and still allow the
+scratch inside it.
+
+- **Simplified (chosen by the human on 2026-09-27, before the third review):**
+  leave a protected folder that holds the launch's own scratch undenied. The
+  third review found this lets Claude's file tools, not only its shell, edit
+  other stages there. The 2026-09-13 decision keeps file tools bounded, so
+  this option also needs that decision amended.
+- **Guard:** an RCP-owned `PreToolUse` hook checks every file edit against the
+  resolved policy, including folders created after launch. RCP sets
+  `disableAllHooks` today, so this changes how Claude launches. About half a
+  day.
 
 ## Folder picker
 
@@ -219,6 +294,11 @@ project card says the list applies to every project on that machine.
 
 - It shows breadcrumbs, one folder level at a time, and a **Use this folder**
   button. Folders only.
+- A filter box narrows the current folder by name, and long folders page.
+  The existing browser stops at 200 entries, counting files, and tells users
+  to type the path (`transport/remote_repository_browser.py`). With no typing,
+  every folder must stay reachable. The check is a folder with more than 200
+  entries, most of them files.
 - Protected folders appear locked, with the reason. Choosing a path inside
   one is refused, with the same rule as save.
 - One endpoint, `POST /api/space/machines/{id}/directories`, lists one
@@ -264,12 +344,16 @@ project card says the list applies to every project on that machine.
   protected paths refuse; each eligible launch renders grants, protected
   paths, and its own exceptions for terminal, systemd, Codex, and Claude;
   scratch-only launches render none; exact-file Claude rules and escaped
-  metacharacters; a symlinked grant; sign-in on an unused card; a generation-1
-  continuation rebinds; a changed grant marks an open terminal restart-needed
+  metacharacters; a symlinked grant; sign-in on an unused card; a scope with no
+  grants keeps its fingerprint; helper admission accepts the own workspace and
+  refuses its inputs; the picker reaches every entry of a 200-plus folder;
+  startup seeding shows machines without opening a project; a changed grant marks an open terminal restart-needed
   without retiring it.
 - Behavior on Linux, in mirrored mode: a write under a granted parent works;
   a write to a protected child, another stage in `~/.rcp/stages`, and a token
-  file fails; the launch's own stage stays writable.
+  file fails, including a sibling stage and a token file created after launch;
+  the launch's own stage stays writable; a pre-upgrade remote chat and a
+  waiting episode continue on their legacy `/tmp` stage.
 - Upgrade fixture, and backup/restore of a new backup and of an older one.
 - Served app: pick a writable path with the picker on both Settings pages,
   write into it from a new terminal on the team server, a Codex Work turn, and
@@ -291,7 +375,8 @@ project card says the list applies to every project on that machine.
 
 ## Estimate
 
-About 6 to 7 days: 1 for the machine list, adding machines, and sign-in; 3 for
-writable paths, protected storage, the stage move, and the four backends; 1.5
-for the Settings pages, cards, and picker; 1 for the Linux behavior, upgrade,
-restore, and served-app drives.
+About 5 to 6 days: 1 for the machine list, seeding, adding machines, backup,
+and sign-in; 2.5 for writable paths, protected storage, moving transient files
+with legacy stages kept, and the four backends; 1.5 for the Settings pages,
+cards, and picker; 1 for the Linux behavior, upgrade, restore, and served-app
+drives.
