@@ -69,6 +69,8 @@ interface Props {
   onStopWatcher?: (watcherId: string) => void;
   onNewSession: (conversation: ChatConversation) => void;
   onRemoveDraft: (chatId: string) => void;
+  /** Archive moves a chat in or out of the unread count, which the server derives. */
+  onArchiveChange?: () => void;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -163,6 +165,7 @@ export function ChatsWorkspace({
   unreadChatIds,
   chatTranscripts,
   hasMore,
+  onArchiveChange,
   loadingMore,
   onSelect,
   onLoadMore,
@@ -282,7 +285,9 @@ export function ChatsWorkspace({
       (item) => item.chatId !== chatId && !archivedChatIds.has(item.chatId),
     );
     if (archived && !showingArchived && selected?.chatId === chatId && next) onSelect(next.chatId);
-    return updateDisplay(() => setChatArchived(apiBase, chatId, archived));
+    return updateDisplay(() => setChatArchived(apiBase, chatId, archived)).then(() =>
+      onArchiveChange?.(),
+    );
   };
   const rename = (chatId: string, title: string) => {
     setRenamingChatId(null);

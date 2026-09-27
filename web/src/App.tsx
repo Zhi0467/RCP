@@ -1172,6 +1172,7 @@ export default function App() {
     recordTaskUpdates,
     recordWatcherResults,
     markVisibleChatRead,
+    refreshChatReads,
     resetProjectChats,
     restoreProjectChats,
   } = useChatState({
@@ -2660,7 +2661,8 @@ export default function App() {
   useEffect(() => {
     const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
     markVisibleChatRead(tasks, visibleChatId);
-  }, [markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
+    // chatReads is a dependency so a chat already open when the markers load is marked.
+  }, [chatReads, markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
     if (!projectId || !hasActiveTasks) return;
@@ -4772,6 +4774,13 @@ export default function App() {
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
+              onArchiveChange={() =>
+                void refreshChatReads().catch((error) =>
+                  reportErrorNotice(
+                    `Unread chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+                )
+              }
               onNewSession={(conversation) => {
                 const node = conversation.nodeId
                   ? (presentedGraph.nodes[conversation.nodeId] ?? null)

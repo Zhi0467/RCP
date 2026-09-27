@@ -5,6 +5,7 @@ import type {
   ChatAttachmentDescriptor,
   ChatDisplay,
   ChatReads,
+  GraphTargetRef,
   ChatMessage,
   SteerRequest,
   ArtifactRevisionCandidate,
@@ -33,6 +34,7 @@ import type {
   TeamDevicePairingStatus,
   TeamSession,
 } from "./types";
+import { graphTargetUrl } from "./graphTarget";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
@@ -508,8 +510,8 @@ export function setChatArchived(
   });
 }
 
-export function loadChatReads(apiBase: string): Promise<ChatReads> {
-  return api(`${apiBase}/chat-reads`);
+export function loadChatReads(apiBase: string, graphTarget: GraphTargetRef): Promise<ChatReads> {
+  return api(graphTargetUrl(`${apiBase}/chat-reads`, graphTarget));
 }
 
 /** `readThrough` is a turn's server-reported finish time; the marker never moves back. */
@@ -517,8 +519,9 @@ export function markChatRead(
   apiBase: string,
   chatId: string,
   readThrough: string,
+  graphTarget: GraphTargetRef,
 ): Promise<ChatReads> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/read`, {
+  return api(graphTargetUrl(`${apiBase}/chats/${encodeURIComponent(chatId)}/read`, graphTarget), {
     method: "POST",
     body: JSON.stringify({ read_through: readThrough }),
   });

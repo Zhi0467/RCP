@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import rcp.storage.agent_tasks as agent_task_storage
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import AGENT_TASK_LIST_DEFAULT_LIMIT
 from rcp.storage import AgentTaskRecord, AgentTaskStatus, AppStore
 from tests.test_auto_research_children_storage import _identity, _project
@@ -86,11 +87,20 @@ def test_chat_reads_find_a_reply_the_task_list_no_longer_holds(tmp_path: Path) -
     for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
         _chat_turn(store, f"newer-{index}", "chat-newer", "succeeded", 10 + index)
     store.set_chat_archived("project", "chat-archived", "user", archived=True)
+    branch = GraphTargetRef(kind="branch", branch_id="branch")
+    _chat_turn(store, "branch-success", "chat-branch", "succeeded", 3, timedelta(days=1))
+    # Admission needs a real branch; the read projection only filters the stored target.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json = ? WHERE operation_id = 'branch-success'",
+            (branch.model_dump_json(),),
+        )
     assert "old-success" not in {task.operation_id for task in store.agent_tasks("project")}
 
-    finished = store.chat_reads("project", "user")["latest_finished"]
+    finished = store.chat_reads("project", "user", GraphTargetRef())["latest_finished"]
 
     assert set(finished) == {"chat-done"}
+    assert set(store.chat_reads("project", "user", branch)["latest_finished"]) == {"chat-branch"}
     assert finished["chat-done"] == store.agent_task("old-success").finished_at
 
 
@@ -101,7 +111,9 @@ def test_chat_read_marker_never_moves_back(tmp_path: Path) -> None:
     store.mark_chat_read("project", "chat", "user", later - timedelta(hours=1))
     store.mark_chat_read("project", "chat", "other", later - timedelta(hours=1))
 
-    assert store.chat_reads("project", "user")["reads"] == {"chat": later.isoformat()}
-    assert store.chat_reads("project", "other")["reads"] == {
+    assert store.chat_reads("project", "user", GraphTargetRef())["reads"] == {
+        "chat": later.isoformat()
+    }
+    assert store.chat_reads("project", "other", GraphTargetRef())["reads"] == {
         "chat": (later - timedelta(hours=1)).isoformat()
     }

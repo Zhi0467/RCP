@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from rcp.core.transition_models import GraphTargetRef
+
 
 class ChatDisplayStoreMixin:
     def chat_display(self, project_id: str) -> dict[str, Any]:
@@ -44,7 +46,9 @@ class ChatDisplayStoreMixin:
             (title, user_id if title is not None else None),
         )
 
-    def chat_reads(self, project_id: str, user_id: str) -> dict[str, Any]:
+    def chat_reads(
+        self, project_id: str, user_id: str, graph_target: GraphTargetRef
+    ) -> dict[str, Any]:
         """A chat without a marker counts as read through the migration that added markers."""
         with self.connection() as connection:
             baseline = connection.execute(
@@ -66,7 +70,8 @@ class ChatDisplayStoreMixin:
                 LEFT JOIN chat_display AS display
                   ON display.project_id = runs.project_id
                  AND display.chat_id = json_extract(runs.request_json, '$.chat_id')
-                WHERE runs.project_id = ? AND runs.visible = 1
+                WHERE runs.project_id = ? AND runs.graph_target_json = ?
+                  AND runs.visible = 1
                   AND runs.kind IN ('node_chat', 'project_chat')
                   AND runs.status IN ('succeeded', 'failed', 'interrupted')
                   AND runs.finished_at IS NOT NULL
@@ -74,7 +79,7 @@ class ChatDisplayStoreMixin:
                   AND display.archived_at IS NULL
                 GROUP BY 1
                 """,
-                (project_id,),
+                (project_id, graph_target.model_dump_json()),
             ).fetchall()
         return {
             "baseline": baseline["completed_at"],

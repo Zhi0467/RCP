@@ -360,7 +360,7 @@ export function useChatState({
       try {
         const [page, reads] = await Promise.all([
           loadChatSummaryPage(base, 0, api, graphTarget),
-          loadChatReads(base),
+          loadChatReads(base, graphTarget),
         ]);
         if (
           !isActiveProject(requestedProjectId) ||
@@ -502,6 +502,15 @@ export function useChatState({
     return unseen.length > 0;
   }, []);
 
+  const refreshChatReads = useCallback(async () => {
+    if (!projectId || !apiBase) return;
+    const requestedProjectId = projectId;
+    const reads = await loadChatReads(apiBase, graphTarget);
+    if (isActiveProject(requestedProjectId)) {
+      setChatReads(mergeChatReads(chatReadsRef.current, reads));
+    }
+  }, [apiBase, graphTarget, isActiveProject, projectId, setChatReads]);
+
   // Reading moves the marker at once; the server's answer then merges into it.
   const markVisibleChatRead = useCallback(
     (tasks: AgentTask[], visibleChatId: string | null) => {
@@ -512,7 +521,7 @@ export function useChatState({
       if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
       setChatReads({ ...current, reads: { ...current.reads, [visibleChatId]: readThrough } });
       const requestedProjectId = projectId;
-      void markChatRead(apiBase, visibleChatId, readThrough)
+      void markChatRead(apiBase, visibleChatId, readThrough, graphTarget)
         .then((reads) => {
           if (isActiveProject(requestedProjectId)) {
             setChatReads(mergeChatReads(chatReadsRef.current, reads));
@@ -524,7 +533,7 @@ export function useChatState({
           );
         });
     },
-    [apiBase, isActiveProject, projectId, reportError, setChatReads],
+    [apiBase, graphTarget, isActiveProject, projectId, reportError, setChatReads],
   );
 
   const resetProjectChats = useCallback(() => {
@@ -596,6 +605,7 @@ export function useChatState({
     recordTaskUpdates,
     recordWatcherResults,
     markVisibleChatRead,
+    refreshChatReads,
     resetProjectChats,
     restoreProjectChats,
   };

@@ -147,10 +147,13 @@ def chat_reads(
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
+    branch_id: str | None = None,
 ) -> ChatReads:
+    """Latest finishes cover the same graph target as the chat list."""
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    return ChatReads(**store.chat_reads(project_id, user.user_id))
+    return ChatReads(**store.chat_reads(project_id, user.user_id, service.history.graph_target))
 
 
 # A viewer's own marker, not project work, so it skips the write-admission fence.
@@ -164,13 +167,15 @@ def mark_chat_read(
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
+    branch_id: str | None = None,
 ) -> ChatReads:
     """Record that the acting user has seen this conversation's turns up to a time."""
     chat_id = _canonical_chat_id(chat_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.mark_chat_read(project_id, chat_id, user.user_id, body.read_through)
-    return ChatReads(**store.chat_reads(project_id, user.user_id))
+    return ChatReads(**store.chat_reads(project_id, user.user_id, service.history.graph_target))
 
 
 @router.post(
