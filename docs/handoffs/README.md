@@ -1,6 +1,8 @@
 # Active implementation handoffs
 
-None.
+- [Continuations send deltas, not contracts](handoff-2026-09-27-continuation-prompts.md):
+  every launch that resumes a provider session gets an inline delta and a
+  pointer to its master contract instead of the whole contract. Design only.
 
 Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
 and the refusal-explains-itself handoff (a refused dispatch or Apply reported
