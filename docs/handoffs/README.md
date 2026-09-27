@@ -1,9 +1,6 @@
 # Active implementation handoffs
 
-- [Continuations send deltas, not contracts](handoff-2026-09-27-continuation-prompts.md):
-  every launch that resumes a provider session gets an inline delta and a
-  pointer to its master contract instead of the whole contract. Slice 1 and the
-  shared master lookup are implemented; the owner slices are in progress.
+There are no active handoffs.
 
 Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
 and the refusal-explains-itself handoff (a refused dispatch or Apply reported
@@ -48,5 +45,8 @@ stands in for it. Run one on disposable data, then delete its line here.
 - Pushes: the live team-space push run and real remote-machine SSH.
 - Phone UI: the real-iPhone journey and its screenshot review.
 - Runs loading: the team-server measurement of first open against the 2 s target.
+- Continuation prompts: with a real provider, an Experiment episode through two
+  watcher wakes, its report, then Add N turns on the same session, checking the
+  recorded prompts carry a pointer, no pointer, and a re-opened master in turn.
 - Update notices: a `publish-desktop.yml` rerun after a failed upload; in the
   prebuilt app, the Download button, quit and reopen, and a team connection.
