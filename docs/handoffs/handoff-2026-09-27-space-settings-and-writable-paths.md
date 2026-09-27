@@ -91,11 +91,30 @@ read-only inside any grant:
 - The helper job's check that refuses a `cwd` under a protected path accepts
   the launch's own workspace.
 
-**RCP's data moves out of `/tmp`.** Remote task folders (`/tmp/rcp-run.*`),
-command sockets (`/tmp/rcp-command-*.sock`), and SSH control sockets
-(`/tmp/rcp-ssh-<uid>`) are created under `~/.rcp` instead, so they are
-protected like the rest. Existing task folders keep working where they are
-until they are cleaned up.
+**RCP stops writing to `/tmp`.** Today RCP puts its own files in `/tmp` and
+the system temp directory: remote task folders (`/tmp/rcp-run.*`), command
+sockets (`/tmp/rcp-command-*.sock`), SSH control sockets (`/tmp/rcp-ssh-<uid>`),
+a Git probe folder, and about 25 short-lived `tempfile` calls. That is wrong
+for an app that owns a data folder. Every one of them moves under `~/.rcp` on
+the machine where it is created: task folders to `~/.rcp/stages/`, sockets to
+`~/.rcp/sockets/` and `~/.rcp/ssh/`, and everything else to `~/.rcp/tmp/`
+(each `tempfile` call gets that `dir=`). `~/.rcp` is short enough for socket
+path limits (104 bytes on macOS, 108 on Linux) and is already protected.
+Existing `/tmp/rcp-run.*` task folders keep working where they are until they
+are cleaned up. After this, `/tmp` holds nothing of RCP's, and a human can
+grant it like any other path.
+
+**What agents can do with `/tmp` today**, measured or read from code:
+
+| Launch | `/tmp` today |
+|---|---|
+| Codex Work | Not writable. Probed on 2026-09-27 with codex-cli 0.157.0 on macOS, using RCP's exact Work profile: both `/tmp` and `$TMPDIR` fail with "Operation not permitted". Confirm on the Linux server. |
+| Member terminal | A private, writable `/tmp` (`PrivateTmp=yes`), separate from the real one |
+| systemd compute job | Read-only under `ProtectSystem=strict`, which sets no `PrivateTmp`. Confirm on the server. |
+| Claude Work | File tools cannot write it; the shell can |
+
+So granting `/tmp` is how a human gives Codex Work and compute jobs a scratch
+area. The design does not change the defaults.
 
 ## Backup
 
