@@ -104,17 +104,21 @@ Existing `/tmp/rcp-run.*` task folders keep working where they are until they
 are cleaned up. After this, `/tmp` holds nothing of RCP's, and a human can
 grant it like any other path.
 
-**What agents can do with `/tmp` today**, measured or read from code:
+**`/tmp` is writable by default.** Once RCP keeps nothing there, every launch
+that gets writable paths also gets `/tmp` and `$TMPDIR` writable, with no grant
+needed. Agents routinely make worktrees and scratch files there. Measured and
+read from code on 2026-09-27:
 
-| Launch | `/tmp` today |
-|---|---|
-| Codex Work | Not writable. Probed on 2026-09-27 with codex-cli 0.157.0 on macOS, using RCP's exact Work profile: both `/tmp` and `$TMPDIR` fail with "Operation not permitted". Confirm on the Linux server. |
-| Member terminal | A private, writable `/tmp` (`PrivateTmp=yes`), separate from the real one |
-| systemd compute job | Read-only under `ProtectSystem=strict`, which sets no `PrivateTmp`. Confirm on the server. |
-| Claude Work | File tools cannot write it; the shell can |
+| Launch | `/tmp` today | After |
+|---|---|---|
+| Claude Work | Writable through the shell, which is unsandboxed | Unchanged, and `Edit` rules allow it too |
+| Codex Discuss | Writable: Codex's standard `workspace-write` mode always allows `/tmp` (probed) | Unchanged |
+| Codex Work | **Not writable.** RCP's own permission profile left `/tmp` out; `git worktree add /tmp/...` fails with "Operation not permitted" (probed with codex-cli 0.157.0, macOS; confirm on Linux) | Writable, via profile write roots |
+| Member terminal | A private `/tmp` (`PrivateTmp=yes`) that agents cannot see and that disappears with the terminal | The real `/tmp`, shared with agents: `PrivateTmp` is dropped |
+| systemd compute job | Read-only under `ProtectSystem=strict` | Writable, via `ReadWritePaths` |
 
-So granting `/tmp` is how a human gives Codex Work and compute jobs a scratch
-area. The design does not change the defaults.
+Codex Work losing `/tmp` was a regression from switching to RCP's own profile,
+not a decision.
 
 ## Backup
 
