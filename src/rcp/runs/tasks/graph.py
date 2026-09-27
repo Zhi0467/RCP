@@ -830,7 +830,10 @@ async def stream_graph_run(
                 validator_command=validator_command,
                 skill_pointers=skill_pointers,
             )
-            graph_master_key = master_key(PromptFactory.GRAPH_TASK_POLICY_VERSION)
+            graph_master_key = master_key(
+                PromptFactory.GRAPH_TASK_POLICY_VERSION,
+                ontology_extensions=context.ontology_extensions,
+            )
             if reuses_native_checkpoint:
                 if continuation not in {"resume", "retry"}:
                     raise ValueError(f"Unsupported graph continuation: {continuation}")

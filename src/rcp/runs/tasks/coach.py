@@ -252,7 +252,8 @@ async def stream_coach(
                 phase="turn" if continuation == "fresh" else "recovery",
             )
         )
-        key = master_key(PromptFactory.PAPER_COACH_POLICY_VERSION)
+        # The coach reads the graph under the base rules only, whatever the ontology.
+        key = master_key(PromptFactory.PAPER_COACH_POLICY_VERSION, ontology_extensions=False)
         if node == "session_start":
             contract = render_contract()
             contract_path, prompt = _stage_task_contract(

@@ -79,11 +79,16 @@ def classify(phase: LaunchPhase) -> PromptNode:
     return _CONTINUATION_NODES[phase.phase]
 
 
-def master_key(owner_policy_version: str) -> str:
-    """Identify one master: shared framing, graph rules, and the owner's own policy."""
+def master_key(owner_policy_version: str, *, ontology_extensions: bool) -> str:
+    """Identify one master: shared framing, graph rules, and the owner's own policy.
+
+    The rules render differently once a project has ontology extensions, so gaining or
+    losing its first one changes the key and re-sends the master.
+    """
 
     shared = "" if MASTER_VERSION == 1 else f"-master-v{MASTER_VERSION}"
-    return f"{owner_policy_version}{shared}-rules-{GRAPH_RULES_VERSION}"
+    ontology = "-ontology" if ontology_extensions else ""
+    return f"{owner_policy_version}{shared}-rules-{GRAPH_RULES_VERSION}{ontology}"
 
 
 def compose(

@@ -649,6 +649,7 @@ def _experiment_master(
     *,
     session_id: str,
     episode_id: str | None,
+    ontology_extensions: bool,
     render: Callable[[], str] | None,
 ) -> MasterRef:
     """The master contract this continuing episode session holds, staged for a pointer.
@@ -660,7 +661,7 @@ def _experiment_master(
     next operational launch re-opens the current one.
     """
 
-    key = master_key(EXPERIMENT_LOOP_POLICY_VERSION)
+    key = master_key(EXPERIMENT_LOOP_POLICY_VERSION, ontology_extensions=ontology_extensions)
     record = execution.store.agent_task(execution.operation_id)
     if record is None or not record.stage_root:
         raise ValueError("An Experiment-loop continuation has no saved stage for its master.")
@@ -827,6 +828,7 @@ def _continued_master(
         turn.remote_stage,
         session_id=turn.request.session_id,
         episode_id=turn.request.control_episode_id,
+        ontology_extensions=turn.context.ontology_extensions,
         render=lambda: _experiment_start_contract(
             turn,
             staged,
@@ -1114,7 +1116,10 @@ def _compose_fresh_prompt(
             turn.execution.store,
             turn.execution.operation_id,
             contract,
-            master_key(EXPERIMENT_LOOP_POLICY_VERSION),
+            master_key(
+                EXPERIMENT_LOOP_POLICY_VERSION,
+                ontology_extensions=turn.context.ontology_extensions,
+            ),
         )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
@@ -2698,6 +2703,7 @@ async def _stream_work_graph_repair(
             remote_stage,
             session_id=request.session_id,
             episode_id=request.control_episode_id,
+            ontology_extensions=context.ontology_extensions,
             # A repair stages no loop inputs, so it renders no master of its own.
             render=None,
         )

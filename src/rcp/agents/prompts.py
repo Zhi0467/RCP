@@ -53,10 +53,12 @@ Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their ow
 CHAT_MASTER_CONTEXT_VERSION = 13
 
 
-def chat_master_contract_key() -> str:
+def chat_master_contract_key(*, ontology_extensions: bool) -> str:
     """Identify one master-context shape; changed graph rules re-send it to existing chats."""
 
-    return master_key(f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}")
+    return master_key(
+        f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}", ontology_extensions=ontology_extensions
+    )
 
 
 def _tidy(text: str) -> str:

@@ -346,6 +346,7 @@ def chat_continuation_master(
     local_stage: Path | None,
     remote_stage: RemoteRunStage | None,
     policy_version: str,
+    ontology_extensions: bool,
     render: Callable[[], str],
     force_bootstrap: bool = False,
 ) -> MasterRef:
@@ -369,7 +370,8 @@ def chat_continuation_master(
     )
     if (
         previous is not None
-        and previous.contract_key == chat_master_contract_key()
+        and previous.contract_key
+        == chat_master_contract_key(ontology_extensions=ontology_extensions)
         and previous.master_operation_id is not None
         and previous.master_sha256 is not None
     ):
@@ -388,7 +390,7 @@ def chat_continuation_master(
         remote_stage=remote_stage,
         native_session_id=session_id,
         label_prefix=policy_version,
-        key=master_key(policy_version),
+        key=master_key(policy_version, ontology_extensions=ontology_extensions),
         render=render,
     )
     if force_bootstrap and not master.bootstrap:
@@ -399,11 +401,15 @@ def chat_continuation_master(
 def _retained_chat_patch_values(
     execution: AgentTaskExecution | None,
     request: RunRequest,
+    *,
+    ontology_extensions: bool,
 ) -> dict[str, str] | None:
     """Reuse an inactive Discuss Patch contract without issuing a credential."""
 
     previous, _ = _committed_chat_prompt_state(execution, request)
-    if previous is None or previous.contract_key != chat_master_contract_key():
+    if previous is None or previous.contract_key != chat_master_contract_key(
+        ontology_extensions=ontology_extensions
+    ):
         return None
     value = previous.values.get("patch")
     if not isinstance(value, dict):

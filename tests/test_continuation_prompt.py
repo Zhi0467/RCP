@@ -28,8 +28,12 @@ def test_the_session_id_decides_start_versus_continuation(phase, continued) -> N
 
 
 def test_chat_master_key_keeps_the_key_existing_sessions_hold() -> None:
-    assert chat_master_contract_key() == (
+    assert chat_master_contract_key(ontology_extensions=False) == (
         f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-rules-{GRAPH_RULES_VERSION}"
+    )
+    # Gaining the first ontology extension changes the rules a master holds.
+    assert chat_master_contract_key(ontology_extensions=True) != chat_master_contract_key(
+        ontology_extensions=False
     )
 
 

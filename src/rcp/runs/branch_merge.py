@@ -1933,7 +1933,10 @@ async def stream_branch_merge_run(
                     execution.store,
                     execution.operation_id,
                     contract,
-                    master_key(BRANCH_MERGE_POLICY_VERSION),
+                    master_key(
+                        BRANCH_MERGE_POLICY_VERSION,
+                        ontology_extensions=_has_ontology_extensions(context.main_graph),
+                    ),
                 )
             session_master = (
                 master_label,

@@ -46,8 +46,10 @@ master, so the pointer can never restore an expired command.
 ## Why the key includes owner policy
 
 The graph rules digest alone misses owner authority, watcher rules, and recovery
-policy. The master key joins a shared master version, the graph rules version,
-and one policy version per owner. A key change renders and records a new master,
+policy. It also misses which rendering a project needs: the rules add extension
+authoring once a project has ontology extensions. The master key joins a shared
+master version, the graph rules version, one policy version per owner, and the
+project's ontology mode. A key change renders and records a new master,
 and the continuation says it replaces the earlier one. Paths and graph data stay
 out of the key.
 

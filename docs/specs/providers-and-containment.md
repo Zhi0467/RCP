@@ -430,8 +430,8 @@ RCP restores the master file from its durable record into the launch's stage
 before every pointer. Only a master recorded by a succeeded operation counts;
 otherwise, or when the session has no record, the continuation bootstraps: it
 renders the current master, records it, and tells the agent to open it. The
-master key joins a shared master version, the graph rules version, and the
-owner's policy version. A key change bootstraps a replacement and says it
+master key joins a shared master version, the graph rules version, the owner's
+policy version, and whether the project has ontology extensions. A key change bootstraps a replacement and says it
 replaces the earlier master. A branch-merge continuation re-sends the graph
 rules inline once main's ontology extensions differ from its master's.
 

@@ -434,6 +434,7 @@ def test_work_recovery_in_a_committed_session_points_to_its_chat_master(manifest
         local_stage=master_path.parent.parent,
         remote_stage=None,
         policy_version="unused",
+        ontology_extensions=False,
         render=lambda: pytest.fail("a session with a chat master renders nothing"),
         force_bootstrap=True,
     )

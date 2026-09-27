@@ -728,7 +728,9 @@ def _compose_child_fresh_prompt(
                 turn.execution.store,
                 turn.execution.operation_id,
                 contract,
-                master_key(WORK_POLICY_VERSION),
+                master_key(
+                    WORK_POLICY_VERSION, ontology_extensions=turn.context.ontology_extensions
+                ),
             )
         return _ComposedWorkPrompt(
             contract_path,
@@ -818,6 +820,7 @@ def _compose_child_fresh_prompt(
         attachment_pointers=staged.attachment_pointers,
         result_view=staged.prepared_result_view,
         write_scope=turn.write_scope,
+        ontology_extensions=turn.context.ontology_extensions,
     )
     return _ComposedWorkPrompt(
         contract_path,

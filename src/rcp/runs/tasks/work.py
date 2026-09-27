@@ -259,6 +259,7 @@ def _prepare_work_chat_prompt(
     result_view: _PreparedResultView | None,
     write_scope: ProjectWriteScope,
     execution_instructions: str,
+    ontology_extensions: bool,
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
 
@@ -270,7 +271,7 @@ def _prepare_work_chat_prompt(
         local_stage=local_stage,
         remote_stage=remote_stage,
         master_context=master_context,
-        contract_key=chat_master_contract_key(),
+        contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
         values=stable_values,
     )
     execution_instructions_path = _stage_task_input(
@@ -938,7 +939,7 @@ def _stage_work_contract(
             turn.execution.store,
             turn.execution.operation_id,
             contract,
-            master_key(WORK_POLICY_VERSION),
+            master_key(WORK_POLICY_VERSION, ontology_extensions=turn.context.ontology_extensions),
         )
     return contract_path
 
@@ -961,6 +962,7 @@ def _work_continuation_master(
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         policy_version=WORK_POLICY_VERSION,
+        ontology_extensions=turn.context.ontology_extensions,
         render=render,
         force_bootstrap=force_bootstrap,
     )
@@ -1122,6 +1124,7 @@ def _compose_fresh_prompt(
         attachment_pointers=staged.attachment_pointers,
         result_view=staged.prepared_result_view,
         write_scope=turn.write_scope,
+        ontology_extensions=turn.context.ontology_extensions,
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,

@@ -135,6 +135,7 @@ def _prepare_discuss_chat_prompt(
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
+    ontology_extensions: bool,
 ) -> tuple[str, str]:
     """Prepare the session baseline behind one Discuss-local seam."""
 
@@ -146,7 +147,7 @@ def _prepare_discuss_chat_prompt(
         local_stage=local_stage,
         remote_stage=remote_stage,
         master_context=master_context,
-        contract_key=chat_master_contract_key(),
+        contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
         values=stable_values,
     )
     prompt = PromptFactory.discuss_turn_prompt(
@@ -708,6 +709,7 @@ async def stream_discuss_run(
                         local_stage=local_stage,
                         remote_stage=remote_stage,
                         policy_version=DISCUSS_POLICY_VERSION,
+                        ontology_extensions=context.ontology_extensions,
                         render=render_discuss_contract,
                     )
                     continuation_contract = PromptFactory.continuation_task_contract(
@@ -749,12 +751,17 @@ async def stream_discuss_run(
                             execution.store,
                             execution.operation_id,
                             contract,
-                            master_key(DISCUSS_POLICY_VERSION),
+                            master_key(
+                                DISCUSS_POLICY_VERSION,
+                                ontology_extensions=context.ontology_extensions,
+                            ),
                         )
             else:
                 assert request.message is not None
                 assert artifact_scope_id is not None
-                patch_values = _retained_chat_patch_values(execution, request)
+                patch_values = _retained_chat_patch_values(
+                    execution, request, ontology_extensions=context.ontology_extensions
+                )
                 if patch_values is None:
                     patch_inputs = _stage_chat_patch_inputs(
                         local_stage,
@@ -831,6 +838,7 @@ async def stream_discuss_run(
                     stable_values=stable_prompt_values,
                     skill_pointers=skill_pointers,
                     attachment_pointers=attachment_pointers,
+                    ontology_extensions=context.ontology_extensions,
                 )
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))

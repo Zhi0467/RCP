@@ -185,7 +185,9 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
         if stale == "graph_rules":
             older_rules.setattr(continuation_prompt, "GRAPH_RULES_VERSION", "0" * 16)
         stale_snapshot["contract_key"] = (
-            f"chat-master-v{stale_version}" if stale == "version" else chat_master_contract_key()
+            f"chat-master-v{stale_version}"
+            if stale == "version"
+            else chat_master_contract_key(ontology_extensions=False)
         )
     stale_snapshot["master_context_path"] = f"/stale/chat-master-v{stale_version}.md"
     stale_json = json.dumps(stale_snapshot, separators=(",", ":"))
@@ -230,7 +232,9 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     committed = store.chat_session_context("codex", "laptop", session_id)
     assert committed is not None
     assert committed.protocol_version == CHAT_MASTER_CONTEXT_VERSION
-    assert json.loads(committed.snapshot_json)["contract_key"] == chat_master_contract_key()
+    assert json.loads(committed.snapshot_json)["contract_key"] == chat_master_contract_key(
+        ontology_extensions=False
+    )
 
 
 @pytest.mark.asyncio

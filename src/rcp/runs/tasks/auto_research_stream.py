@@ -1318,6 +1318,7 @@ def _actor_launch_prompt(
     render_master: Callable[[], str],
     start_contract: Callable[[], str],
     continuation_parts: Callable[[], list[str]],
+    ontology_extensions: bool,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
 ) -> tuple[str, str, str]:
     """Stage one actor launch; return its contract path, prompt, and the session's master path.
@@ -1327,7 +1328,7 @@ def _actor_launch_prompt(
     or a bootstrap when the session holds none under the current key.
     """
 
-    key = master_key(AUTO_RESEARCH_POLICY_VERSION)
+    key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
     node = classify(
         LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
     )
@@ -1470,6 +1471,7 @@ def _orchestrator_prompt(
 
     return _actor_launch_prompt(
         execution,
+        ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
         remote_stage=remote_stage,
@@ -1566,6 +1568,7 @@ def _worker_prompt(
 
     return _actor_launch_prompt(
         execution,
+        ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
         remote_stage=remote_stage,
