@@ -519,6 +519,12 @@ def _patch_validator_rules(validator_command: str) -> str:
 """
 
 
+# Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
+DISCUSS_POLICY_VERSION = "discuss-v1"
+# Bumped by hand when the stable policy prose of `work_task_contract` changes.
+WORK_POLICY_VERSION = "work-v1"
+
+
 class PromptFactory:
     """Build immutable task contracts and the tiny envelopes that point to them."""
 
@@ -1185,10 +1191,23 @@ Authorship contract:
         result_view_action: Literal["create", "revise"] | None = None,
         result_view_path: str | None = None,
         ontology_extensions: bool | None = None,
+        artifact_path: str | None = None,
+        experiment_watcher_resources: list[dict[str, str]] | None = None,
+        execution_host: str = "",
+        inline: bool = False,
     ) -> str:
+        """Render a continuation contract.
+
+        An inline continuation travels in the prompt beside a pointer to the session's
+        master, so it leaves out what the master already holds: the graph rules and the
+        standing policy prose. Current paths, commands, scope, and restrictions stay.
+        """
+
         if write_scope is not None and (turn_mode == "discuss" or mode == "patch_correction"):
             raise ValueError("this continuation cannot carry a Work write boundary")
-        correcting_patch = mode in {"patch_correction", "work_patch_correction"}
+        if inline and current_contract_path is not None:
+            raise ValueError("an inline continuation carries its current instructions itself")
+        correcting_patch = mode in {"patch_correction", "work_patch_correction"} and not inline
         if correcting_patch and ontology_extensions is None:
             raise ValueError(f"{mode} must repeat the graph rules for this project's ontology.")
         if mode == "retry" and diagnostics_path is None:
@@ -1349,6 +1368,13 @@ Resume authority:
             result_view_action,
             result_view_path,
         )
+        experiment_resources = (
+            _discuss_experiment_watcher_resource_section(experiment_watcher_resources)
+            if turn_mode == "discuss"
+            else _work_experiment_watcher_resource_section(
+                experiment_watcher_resources, work_execution_host=execution_host
+            )
+        )
         repeated_rules = (
             REPEATED_RULES_NOTE
             + "\n"
@@ -1358,7 +1384,7 @@ Resume authority:
         )
         return _tidy(f"""# RCP {mode.replace("_", " ")} contract
 
-{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+{"" if inline else PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 {f"This is a {turn_mode.capitalize()} turn." if turn_mode else ""}
 {action}
@@ -1370,6 +1396,7 @@ Resume authority:
             + _pointer("Patch output", patch_path)
             + _pointer("Patch JSON Schema", output_schema_path)
             + _pointer("Watcher output", watch_path)
+            + _pointer("Optional preview artifact directory", artifact_path)
         }
 {
             "The current contract restates the authority, method, schema, and output "
@@ -1384,6 +1411,7 @@ Resume authority:
 {_invoked_package_section(invoked_skill_pointers)}
 {invoked_provider_skill_section(invoked_provider_skills)}
 {result_view_rules}
+{experiment_resources}
 {input_rules}
 {continuation_rules}
 {validator_rules}
@@ -1394,7 +1422,7 @@ Resume authority:
             else ""
         }
 {execution_instructions if mode in {"resume", "retry"} else ""}
-{_EXTERNAL_WATCHER_FORMS if watch_path and mode in {"resume", "retry"} else ""}
+{_EXTERNAL_WATCHER_FORMS if watch_path and mode in {"resume", "retry"} and not inline else ""}
 """)
 
     @staticmethod

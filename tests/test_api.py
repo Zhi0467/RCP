@@ -49,6 +49,7 @@ from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
     _existing_exact_patch_digest,
+    _pinned_to_profile,
     _ProviderOutcome,
     _record_provider_exit,
     _sse,
@@ -4946,6 +4947,21 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         resumed=True,
         graph_revision=1,
         attempt=2,
+    )
+    # A Resume continues a native session RCP already observed on this chat.
+    profile = service.resolve_agent_profile("node_chat", run_on="remote-1")
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="remote-session-origin",
+            project_id="lineage-test",
+            kind="node_chat",
+            status="succeeded",
+            request=_pinned_to_profile(request, profile).model_dump(mode="json"),
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="test fixture",
+            native_session_id=request.session_id,
+        )
     )
     execution = AgentTaskExecution(
         operation_id="remote-resume",

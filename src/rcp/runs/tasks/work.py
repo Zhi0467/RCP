@@ -5,7 +5,7 @@ import hashlib
 import json
 import posixpath
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -24,7 +24,15 @@ from rcp.agents import (
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
+from rcp.agents.continuation_prompt import (
+    LaunchPhase,
+    MasterRef,
+    classify,
+    compose,
+    master_key,
+)
 from rcp.agents.prompts import (
+    WORK_POLICY_VERSION,
     chat_master_contract_key,
     invoked_package_pointers,
 )
@@ -65,6 +73,7 @@ from rcp.runs.chat import (
     _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
+    chat_continuation_master,
     finalize_artifact_revision,
     stage_artifact_context,
 )
@@ -94,6 +103,7 @@ from rcp.runs.recorded_turn import (
     RecordedProviderTurn,
     decode_recorded_turn,
 )
+from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _pinned_to_profile,
@@ -104,6 +114,7 @@ from rcp.runs.shared import (
     _sse,
     _stage_context_paths,
     _stage_json_task_input,
+    _stage_or_reuse_task_input,
     _stage_task_contract,
     _stage_task_input,
     _swept_stage_root,
@@ -836,71 +847,41 @@ def _compose_resume_prompt(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
 ) -> _ComposedWorkPrompt:
-    assert turn.execution is not None
-    original_contract_path = _parent_task_contract_path(
-        turn.execution,
-        turn.local_stage,
-        turn.remote_stage,
-    )
-    current_contract_path = _stage_work_contract(turn, staged)
-    contract = PromptFactory.continuation_task_contract(
-        original_contract_path=original_contract_path,
+    return _compose_work_recovery_prompt(
+        turn,
+        staged,
         mode="resume",
-        turn_mode="work",
-        write_scope=turn.write_scope,
-        current_contract_path=current_contract_path,
-        patch_path=turn.patch_inputs.patch_path,
-        watch_path=turn.patch_inputs.watch_path,
-        validator_command=turn.patch_inputs.validator_command,
-        execution_instructions=_work_execution_instructions(turn),
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
-        invoked_provider_skills=turn.request.resolved_provider_skills,
-        result_view_action=(
-            staged.prepared_result_view.action if staged.prepared_result_view is not None else None
-        ),
-        result_view_path=(
-            staged.prepared_result_view.prompt_path
-            if staged.prepared_result_view is not None
-            else None
-        ),
-    )
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-resume.md",
-        contract,
-        execution=turn.execution,
+        diagnostics_path=None,
+        render=lambda: _work_contract_text(turn, staged),
+        label=f"task-{staged.token}-resume.md",
         role="work_resume",
     )
-    return _ComposedWorkPrompt(
-        contract_path=contract_path,
-        prompt=prompt,
-        base_contract_path=current_contract_path,
-    )
 
 
-def _stage_work_contract(
+def _work_contract_text(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
     *,
     retry_diagnostics_path: str | None = None,
+    human_request_path: str | None = None,
 ) -> str:
-    """Stage current guidance without resetting the native session's assignment."""
+    """Render the full Work contract a native session starts from, from current inputs.
 
-    assert turn.request.message is not None
+    The human request is staged from this turn's message unless the caller names the
+    retained record that holds it.
+    """
+
     focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
     compute_profiles = turn.service.compute_prompt_profiles(turn.request.resolved_compute_context)
-    human_request_path = _stage_task_input(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-human-request.txt",
-        turn.request.message,
-    )
-    contract = PromptFactory.work_task_contract(
+    if human_request_path is None:
+        assert turn.request.message is not None
+        human_request_path = _stage_or_reuse_task_input(
+            turn.local_stage,
+            turn.remote_stage,
+            f"task-{staged.token}-human-request.txt",
+            turn.request.message,
+        )
+    return PromptFactory.work_task_contract(
         execution_instructions=_work_execution_instructions(turn),
         project_name=turn.context.project_name,
         ontology_path=f"{turn.context.graph_path}#ontology",
@@ -930,6 +911,20 @@ def _stage_work_contract(
         attachments=staged.attachment_pointers,
         compute_connections=compute_profiles,
     )
+
+
+def _stage_work_contract(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    *,
+    retry_diagnostics_path: str | None = None,
+) -> str:
+    """Stage the full Work contract a new native session starts from.
+
+    It is recorded as that session's master, so its later continuations point to it.
+    """
+
+    contract = _work_contract_text(turn, staged, retry_diagnostics_path=retry_diagnostics_path)
     contract_path, _ = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -938,7 +933,109 @@ def _stage_work_contract(
         execution=turn.execution,
         role="work_retry_base" if turn.retry_attempt else "work",
     )
+    if turn.execution is not None:
+        record_session_master(
+            turn.execution.store,
+            turn.execution.operation_id,
+            contract,
+            master_key(WORK_POLICY_VERSION),
+        )
     return contract_path
+
+
+def _work_continuation_master(
+    turn: WorkTurn,
+    render: Callable[[], str] | None,
+    *,
+    session_id: str | None,
+    force_bootstrap: bool = False,
+) -> MasterRef:
+    """The master a Work continuation in this native session points to."""
+
+    if session_id is None or render is None:
+        raise ValueError("A Work continuation needs its native session and its start contract.")
+    return chat_continuation_master(
+        turn.execution,
+        turn.request,
+        session_id=session_id,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+        policy_version=WORK_POLICY_VERSION,
+        render=render,
+        force_bootstrap=force_bootstrap,
+    )
+
+
+def _compose_work_recovery_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    *,
+    mode: Literal["resume", "retry"],
+    diagnostics_path: str | None,
+    render: Callable[[], str],
+    label: str,
+    role: str,
+    extra_parts: tuple[str, ...] = (),
+) -> _ComposedWorkPrompt:
+    """Continue a Work session inline: the reason, current overrides, and a master pointer."""
+
+    assert turn.execution is not None
+    node = classify(LaunchPhase(session_id=turn.request.session_id, phase="recovery"))
+    master = _work_continuation_master(turn, render, session_id=turn.request.session_id)
+    original_contract_path = (
+        _parent_task_contract_path(turn.execution, turn.local_stage, turn.remote_stage)
+        if mode == "resume"
+        else retry_original_contract_path(
+            turn.execution, turn.local_stage, turn.remote_stage, master.path
+        )
+    )
+    contract = PromptFactory.continuation_task_contract(
+        original_contract_path=original_contract_path,
+        mode=mode,
+        turn_mode="work",
+        write_scope=turn.write_scope,
+        diagnostics_path=diagnostics_path,
+        patch_path=turn.patch_inputs.patch_path,
+        watch_path=turn.patch_inputs.watch_path,
+        output_schema_path=turn.patch_inputs.schema_path,
+        artifact_path=str(staged.artifact_directory),
+        experiment_watcher_resources=staged.experiment_resource_pointers,
+        execution_host=turn.execution_host,
+        validator_command=turn.patch_inputs.validator_command,
+        execution_instructions=_work_execution_instructions(turn),
+        skill_pointers=staged.skill_pointers,
+        invoked_skill_pointers=invoked_package_pointers(
+            staged.skill_pointers,
+            workflow_ids=turn.request.invoked_workflow_ids,
+            skill_ids=turn.request.invoked_skill_ids,
+        ),
+        invoked_provider_skills=turn.request.resolved_provider_skills,
+        result_view_action=(
+            staged.prepared_result_view.action if staged.prepared_result_view is not None else None
+        ),
+        result_view_path=(
+            staged.prepared_result_view.prompt_path
+            if staged.prepared_result_view is not None
+            else None
+        ),
+        inline=True,
+    )
+    prompt = compose(node, parts=[contract, *extra_parts], master=master, delta=None)
+    contract_path = record_inline_prompt(
+        turn.execution,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+        label=label,
+        role=role,
+        prompt=prompt,
+    )
+    # Later corrections in this attempt name this attempt's own contract, as a fresh turn does.
+    return _ComposedWorkPrompt(
+        contract_path=contract_path,
+        prompt=prompt,
+        base_contract_path=contract_path,
+        render_master=render,
+    )
 
 
 def _compose_fresh_prompt(
@@ -958,6 +1055,7 @@ def _compose_fresh_prompt(
             contract_path=contract_path,
             prompt=PromptFactory.launch_prompt(contract_path),
             base_contract_path=contract_path,
+            render_master=lambda: _work_contract_text(turn, staged),
         )
 
     master_context = PromptFactory.chat_master_context(
@@ -1029,6 +1127,7 @@ def _compose_fresh_prompt(
         contract_path=contract_path,
         prompt=prompt,
         base_contract_path=contract_path,
+        render_master=lambda: _work_contract_text(turn, staged),
     )
 
 
@@ -1038,6 +1137,21 @@ def _compose_retry_prompt(
 ) -> _ComposedWorkPrompt:
     assert turn.execution is not None
     retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
+
+    def render() -> str:
+        return _work_contract_text(turn, staged, retry_diagnostics_path=retry_diagnostics_path)
+
+    if turn.request.session_id is not None:
+        return _compose_work_recovery_prompt(
+            turn,
+            staged,
+            mode="retry",
+            diagnostics_path=retry_diagnostics_path,
+            render=render,
+            label=f"task-{staged.token}-retry.md",
+            role="work_retry",
+        )
+    # A handoff starts a new native session from the full current contract.
     current_contract_path = _stage_work_contract(
         turn, staged, retry_diagnostics_path=retry_diagnostics_path
     )
@@ -1089,6 +1203,7 @@ def _compose_retry_prompt(
         contract_path=contract_path,
         prompt=prompt,
         base_contract_path=current_contract_path,
+        render_master=render,
     )
 
 
@@ -1255,7 +1370,31 @@ def _patch_correction_contract(
         patch_path=turn.patch_inputs.patch_path,
         diagnostics_path=diagnostics_path,
         validator_command=validator_command,
-        ontology_extensions=turn.context.ontology_extensions,
+        inline=True,
+    )
+
+
+def _compose_work_correction_prompt(
+    turn: WorkTurn,
+    composed: _ComposedWorkPrompt,
+    *,
+    session_id: str | None,
+    contract: str,
+    label: str,
+    role: str,
+) -> tuple[str, str]:
+    """Send a correction inline in its Work session; return the prompt and its record path."""
+
+    node = classify(LaunchPhase(session_id=session_id, phase="correction"))
+    master = _work_continuation_master(turn, composed.render_master, session_id=session_id)
+    prompt = compose(node, parts=[contract], master=master, delta=None)
+    return prompt, record_inline_prompt(
+        turn.execution,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+        label=label,
+        role=role,
+        prompt=prompt,
     )
 
 
@@ -1429,6 +1568,7 @@ def _watch_correction_contract(
         diagnostics_path=diagnostics_path,
         watcher_diagnostic=watcher_diagnostic,
         watch_path=turn.patch_inputs.watch_path,
+        inline=True,
     )
 
 
@@ -1577,18 +1717,17 @@ async def _settle_patch_deliverable(
                 "validate",
                 launch_turn.patch_inputs.patch_path,
             )
-            correction_contract = _patch_correction_contract(
+            correction_prompt, correction_path = _compose_work_correction_prompt(
                 launch_turn,
                 composed,
-                diagnostics_path,
-                validator_command,
-            )
-            correction_path, correction_prompt = _stage_task_contract(
-                launch_turn.local_stage,
-                launch_turn.remote_stage,
-                f"task-{staged.token}-work-correction-{correction_rounds}.md",
-                correction_contract,
-                execution=launch_turn.execution,
+                session_id=settled.native_session_id,
+                contract=_patch_correction_contract(
+                    launch_turn,
+                    composed,
+                    diagnostics_path,
+                    validator_command,
+                ),
+                label=f"task-{staged.token}-work-correction-{correction_rounds}.md",
                 role=f"work_patch_correction_{correction_rounds}",
             )
             _record_agent_launch_receipt(
@@ -1776,18 +1915,17 @@ async def _settle_watch_deliverable(
                     ),
                 },
             )
-            correction_contract = _watch_correction_contract(
+            correction_prompt, correction_path = _compose_work_correction_prompt(
                 launch_turn,
                 composed,
-                diagnostics_path,
-                failure.message,
-            )
-            correction_path, correction_prompt = _stage_task_contract(
-                launch_turn.local_stage,
-                launch_turn.remote_stage,
-                f"task-{staged.token}-watch-correction-{correction_rounds}.md",
-                correction_contract,
-                execution=launch_turn.execution,
+                session_id=settled.native_session_id,
+                contract=_watch_correction_contract(
+                    launch_turn,
+                    composed,
+                    diagnostics_path,
+                    failure.message,
+                ),
+                label=f"task-{staged.token}-watch-correction-{correction_rounds}.md",
                 role=f"watch_correction_{correction_rounds}",
             )
             _record_agent_launch_receipt(
@@ -1891,12 +2029,26 @@ async def _apply_work_turn(
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
         supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
+        continuation_master=_maintenance_continuation_master(launch_turn, composed),
     )
     applied.native_session_id = native_session_id
     for frame in maintenance_frames:
         yield frame
     if maintenance_paused:
         applied.stop = True
+
+
+def _maintenance_continuation_master(
+    turn: WorkTurn | None,
+    composed: _ComposedWorkPrompt | None,
+) -> Callable[[str], MasterRef] | None:
+    """Point a watcher maintenance correction at the master of the session it corrects."""
+
+    if turn is None or composed is None:
+        return None
+    return lambda session_id: _work_continuation_master(
+        turn, composed.render_master, session_id=session_id
+    )
 
 
 def _finalize_work_turn(
@@ -2519,15 +2671,58 @@ async def _stream_work_graph_repair(
             patch_path=patch_path,
             diagnostics_path=diagnostics_path,
             validator_command=validator_command,
-            ontology_extensions=context.ontology_extensions,
+            inline=True,
         )
-        contract_path, prompt = _stage_task_contract(
-            local_stage,
-            remote_stage,
-            f"task-{token}-manual-graph-repair.md",
-            contract,
-            execution=execution,
+
+        def render_repair_master() -> str:
+            skill_selection = service.resolve_skill_selection(request)
+            return _work_contract_text(
+                turn,
+                _StagedWorkInputs(
+                    token=token,
+                    artifact_scope_id=execution.operation_id,
+                    artifact_directory=workspace / "turns" / execution.operation_id / "artifacts",
+                    prepared_result_view=None,
+                    experiment_resources=[],
+                    experiment_resource_pointers=[],
+                    skill_selection=skill_selection,
+                    skill_pointers=stage_skill_selection(
+                        skill_selection,
+                        local_stage=local_stage,
+                        remote_stage=remote_stage,
+                        label=skill_bundle_label(skill_selection),
+                        reuse_existing=True,
+                    ),
+                    attachment_pointers=[],
+                    repositories=[
+                        {"alias": item.alias, "host": item.host, "path": item.path}
+                        for item in context.repositories
+                    ],
+                ),
+                # A repair carries no message; the repaired turn's contract holds it.
+                human_request_path=original_contract_path,
+            )
+
+        # A repair reopens the master: its graph rules govern the Patch it rewrites.
+        master = _work_continuation_master(
+            turn,
+            render_repair_master,
+            session_id=request.session_id,
+            force_bootstrap=True,
+        )
+        prompt = compose(
+            classify(LaunchPhase(session_id=request.session_id, phase="recovery")),
+            parts=[contract],
+            master=master,
+            delta=None,
+        )
+        contract_path = record_inline_prompt(
+            execution,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            label=f"task-{token}-manual-graph-repair.md",
             role="work_patch_repair",
+            prompt=prompt,
         )
     except BaseException as exc:
         if validator_lifecycle is not None:

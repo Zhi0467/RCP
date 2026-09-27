@@ -42,6 +42,7 @@ ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE = ".rcp-acceptance-campaign-reauth
 _STATE_FILE = ".rcp-acceptance-agent.json"
 _JOBS_DIRECTORY = "acceptance-agent-jobs"
 _RESULT_VIEW_AUTHORING_MARKER = "RCP result-view authoring contract:"
+_LAUNCH_PROMPT_OPENING = "Open and follow the immutable RCP task contract at:"
 _RESULT_VIEW_CREATE_PREFIX = (
     "- Create exactly one bounded, self-contained, descriptively named HTML file directly inside `"
 )
@@ -448,10 +449,28 @@ class AcceptanceAgentLauncher(AgentLauncher):
 
 
 def _read_launch_contract(prompt: str, cwd: Path) -> str:
+    """What this launch tells the agent: its contract, or its own inline continuation.
+
+    A session start names the contract to open. A continuation carries its current
+    instructions inline and only points to the master the session already holds, so
+    nothing current is read from that master; a bootstrap inside it is opened.
+    """
+
     lines = prompt.splitlines()
     if len(lines) < 2:
         raise ValueError("Acceptance-agent launch text has no contract path.")
-    paths = [_launch_contract_path(lines)]
+    bootstrap = SECTIONS["master_bootstrap"].split("\n")[0]
+    texts: list[str] = []
+    paths: list[Path] = []
+    if lines[0] in {bootstrap, _LAUNCH_PROMPT_OPENING}:
+        paths.append(Path(lines[1].strip()))
+    else:
+        texts.append(prompt)
+        paths.extend(
+            Path(lines[index + 1].strip())
+            for index in range(len(lines) - 1)
+            if lines[index] == bootstrap
+        )
     execution_prefix = "Read current execution instructions relative to this turn's cwd: `"
     execution_lines = [line for line in lines if line.startswith(execution_prefix)]
     if execution_lines:
@@ -463,24 +482,10 @@ def _read_launch_contract(prompt: str, cwd: Path) -> str:
         # Follow this invocation's pointer; retained inputs can contain expired commands.
         paths.append(cwd / execution_path)
     try:
-        return "\n\n".join(path.read_text(encoding="utf-8") for path in paths)
+        texts.extend(path.read_text(encoding="utf-8") for path in paths)
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"Acceptance-agent contract is unreadable: {exc}") from exc
-
-
-def _launch_contract_path(lines: list[str]) -> Path:
-    """A session start opens with its contract; a continuation names its master last."""
-
-    pointer = SECTIONS["master_pointer"].split("{path}")[0]
-    bootstrap = SECTIONS["master_bootstrap"].split("\n")[0]
-    if lines[0] != bootstrap:
-        for index in range(len(lines) - 1, -1, -1):
-            if lines[index].startswith(pointer) and "`" in lines[index][len(pointer) :]:
-                value = lines[index][len(pointer) :]
-                return Path(value[: value.index("`")])
-            if lines[index] == bootstrap and index + 1 < len(lines):
-                return Path(lines[index + 1].strip())
-    return Path(lines[1].strip())
+    return "\n\n".join(texts)
 
 
 def _read_state(cwd: Path) -> dict[str, object]:

@@ -232,6 +232,9 @@ class ComposedWorkPrompt:
     contract_path: str
     prompt: str
     base_contract_path: str
+    #: Renders the owner's full start contract, for a later continuation in this
+    #: session that finds no master to point to.
+    render_master: Callable[[], str] | None = None
 
 
 @dataclass(frozen=True)

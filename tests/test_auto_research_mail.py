@@ -12,6 +12,7 @@ from pydantic import ValidationError
 import rcp.api.app as api_app_module
 import rcp.runs.tasks.auto_research_child_work as child_work_module
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
@@ -781,8 +782,9 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert wake_id is not None
     wake = wait_for_task(store, wake_id, expect="failed")
 
-    continuation_contract_path = Path(launcher.prompts[1].splitlines()[1])
-    continuation_contract = continuation_contract_path.read_text(encoding="utf-8")
+    # The wake continues its session inline, beside a pointer to the master it holds.
+    continuation_contract = launcher.prompts[1]
+    assert SECTIONS["master_pointer"].split("{path}")[0] in continuation_contract
     assert "messages.json" in continuation_contract
     wake_turn, wake_inputs = child_turns[1]
     assert wake_turn.patch_inputs.validator_command in continuation_contract
@@ -860,23 +862,12 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert resumed.task is not None
     resumed_task = wait_for_task(store, resumed.task.operation_id, expect="failed")
     assert resumed_task.native_session_id == "resume-session"
-    resume_contract = Path(launcher.prompts[3].splitlines()[1]).read_text(encoding="utf-8")
+    resume_contract = launcher.prompts[3]
     resume_turn, resume_inputs = child_turns[3]
-    current_path = Path(
-        next(
-            line.split("`")[1]
-            for line in resume_contract.splitlines()
-            if line.startswith("- Current authority and output contract:")
-        )
-    )
-    current_contract = current_path.read_text(encoding="utf-8")
-    assert str(current_path) in resume_contract
     assert resume_turn.patch_inputs.validator_command in resume_contract
     assert resume_turn.patch_inputs.schema_path in resume_contract
-    assert str(resume_inputs.artifact_directory) in current_contract
-    assert (current_path.parent / f"task-{resume_inputs.token}-human-request.txt").read_text() == (
-        resume_instruction
-    )
+    assert str(resume_inputs.artifact_directory) in resume_contract
+    assert "## Auto-research child Work boundary" in resume_contract
     assert any(
         receipt.category == "continuation_context_unavailable"
         and receipt.payload.get("reason") == "native_session_mismatch"

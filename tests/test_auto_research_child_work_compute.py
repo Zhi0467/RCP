@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.agents.graph_rules import graph_rules
 from rcp.api.app import _generic_watcher_delivery_request
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
@@ -112,7 +113,8 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 elif state == "malformed":
                     (workspace / "watch.json").write_text('{"external": [{"bad": true}]}')
             elif self.job_id and len(self.calls) == 2:
-                correction = Path(prompt.splitlines()[1]).read_text()
+                # A correction continues the session inline.
+                correction = prompt
                 assert '"job_id"' not in correction
                 if state == "running":
                     assert self.job_id in correction
@@ -120,7 +122,8 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     json.dumps({"external": [self.watcher], "graph": []})
                 )
             if len(self.calls) == 3:
-                self.wake_contract = Path(prompt.splitlines()[1]).read_text()
+                # A wake continues the session inline.
+                self.wake_contract = prompt
                 turn, inputs = child_turns[-1]
                 assert turn.patch_inputs.validator_command in self.wake_contract
                 assert child_turns[0][0].patch_inputs.validator_command not in self.wake_contract
@@ -136,6 +139,9 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 for package in inputs.skill_pointers:
                     assert str(package["path"]) in self.wake_contract
                 assert '"name": "native-review"' in self.wake_contract
+                for extensions in (False, True):
+                    rules = graph_rules(edits=True, ontology_extensions=extensions)
+                    assert rules not in self.wake_contract
                 assert not (workspace / "watch.json").exists()
             yield AgentEvent(event="session", session_id="child-compute-session")
             yield AgentEvent(event="answer", text="Computation handed off.")
