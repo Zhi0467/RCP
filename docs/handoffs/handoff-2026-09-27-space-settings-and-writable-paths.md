@@ -1,15 +1,15 @@
 # Space settings: machine cards and writable paths
 
 Date: 2026-09-27
-Status: design confirmed by the human on 2026-09-27. A first design, which
-moved machine definitions out of project manifests, failed a Codex xhigh
-review. The human then chose this smaller model: project manifests stay the
-source of truth for their machines, and the space adds a machine list and
-writable paths. This design needs a second review before implementation
-starts. Nothing is implemented.
+Status: design confirmed by the human on 2026-09-27. Two Codex xhigh reviews
+found earlier drafts not ready. The first draft moved machine definitions out
+of project manifests; the human replaced it with this smaller model. The
+second draft protected too broad a set of paths; the human then settled the
+protection rule below. This third revision answers both reviews and needs one
+last review before implementation starts. Nothing is implemented.
 
-Close this handoff when a team member adds `/data/shared/huggingface` as a
-writable path on the GPU machine in space Settings. After that, a new member
+Close this handoff when a team member picks `/data/shared/huggingface` as a
+writable path on the GPU machine in Settings. After that, a new member
 terminal, a Codex Work turn, and a systemd compute job on that machine must
 each be able to write into it, with the checks below passing.
 
@@ -42,16 +42,19 @@ another project already set up.
    Project Settings keeps only what belongs to one project.
 2. **The space keeps a machine list.** A space machine is a host, an OS
    account, a display name, and its writable paths.
-3. **Project manifests stay the source of truth for their machines.** A
-   project picks a machine card from the space list, and RCP copies its host
-   and account into the manifest, as today. Nothing moves out of manifests,
-   and no space edit writes into a manifest.
-4. **Provider paths and compute stay per project.** They are the project's
-   choice of which binary to run and how to run jobs. They are edited on the
-   project's machine card. Only provider sign-in is space-wide.
+3. **Project manifests stay the source of truth for their machines.** Setup
+   and project Settings pick a machine card, and RCP copies its host and
+   account into the manifest. No space edit writes into a manifest.
+4. **Provider paths and compute stay per project.** Only provider sign-in is
+   space-wide.
 5. **Writable paths live only in the space**, keyed by host and account. One
-   list feeds every launch on that machine.
-6. **Any team member may edit space settings.** Team spaces have no admin role,
+   list feeds every eligible launch on that machine. Both Settings pages edit
+   that same list.
+6. **Writable paths are picked with a small folder browser**, not typed.
+7. **RCP constrains grants only to protect RCP itself.** Home folders, `/tmp`,
+   `~/.ssh`, and other projects' repositories can all be granted. Only RCP's
+   own storage stays read-only.
+8. **Any team member may edit space settings.** Team spaces have no admin role,
    and this change adds none.
 
 ## Where each current section goes
@@ -59,7 +62,7 @@ another project already set up.
 | Space Settings | Project Settings |
 |---|---|
 | Server status (team only) | Project home, Members |
-| Machines: cards with host, account, writable paths, and the projects using each | Machines: the cards this project picked, each with its provider paths and compute |
+| Machines: cards with host, account, writable paths, and the projects using each | Machines: this project's cards, each with provider paths, compute, and the machine's writable paths |
 | Provider logins (sign-in) | Project boundary: repositories and truth scope |
 | Clear caches for every project (personal space only) | Compute connections |
 | | Agent defaults, Skills & workflows, Project cache |
@@ -72,159 +75,223 @@ size) is a per-device preference and moves to the identity menu.
 
 - New SQLite table: a random id, a display name, host, OS account, writable
   paths. `(host, os_account)` is unique in a space. An empty host is the RCP
-  host itself. The account is matched as written: an empty account is its own
-  key, not a wildcard.
-- **Filling the list.** Whenever a project manifest is loaded or saved, RCP
-  inserts a space machine for any `(host, os_account)` it does not have yet.
-  The insert is idempotent (a unique key plus insert-or-ignore), so concurrent
-  loads are safe. It writes SQLite only, never a manifest. Existing projects
-  therefore fill the list with no migration step.
-- **Host and account cannot be edited on a machine a project uses.** Changing
-  them would mean relocating the project, and relocation is out of scope. A
-  machine in use cannot be deleted either. An unused machine can be edited or
-  deleted.
-- **Provider sign-in reads this list** (`src/rcp/api/provider_login.py`,
-  `src/rcp/runs/provider_sign_in.py`). Today it iterates project manifests, so
-  a machine no project uses yet cannot be signed in.
+  host itself. The account is matched as written; an empty account is its own
+  key and does not select an account.
+- **Filling the list happens only at live catalog boundaries**: after a
+  project is registered, opened by the live catalog, or has a manifest
+  publication accepted. It never happens in raw `load_manifest`, retained-
+  research preflight, history reload, branch reload, backup snapshots, or
+  upgrade rehearsals. Those stay pure. The insert is idempotent (unique key
+  plus insert-or-ignore).
+- **In use** means some registered project's accepted manifest names the
+  machine. Host and account cannot be edited, and the machine cannot be
+  deleted, while it is in use. If a registered project's manifest cannot be
+  read (for example, its remote host is down), those edits refuse instead of
+  guessing. Writable paths stay editable either way.
+- **Adding a machine to an existing project** is a new additive operation
+  through the canonical state workspace. It appends a machine alias and never
+  changes existing aliases or repository placement. The backup check compares
+  the manifest with the completed provisioning proof (`projects.py`); it
+  changes to accept authorized additions while still verifying every
+  provisioned machine and checkout placement.
+
+## Provider sign-in
+
+- Account discovery and sign-in read the space machine list, so a machine no
+  project uses yet can be signed in (`src/rcp/api/provider_login.py`,
+  `src/rcp/runs/provider_sign_in.py`).
+- **Finding the binary.** If projects on the machine name one provider path,
+  sign-in uses it. If they name different paths, sign-in uses the first one
+  and shows which one it used. The login is per account, so any of them signs
+  in the same account. If no project names a path, sign-in resolves the
+  provider on the machine's `PATH`.
+- Logins stay keyed by provider and host, as today. Two cards on one host with
+  different expected accounts show a conflict notice. A card with a non-empty
+  account is checked against the account SSH actually reached before sign-in,
+  before a writable-path save, and before an eligible launch. Terminals already
+  do this check (`transport/remote_terminal.py`). Compute resolution gains it.
 
 ## Writable paths
 
 ### Who gets them
 
-Writable paths extend repository write roots. A launch gets them exactly when
-it already receives repository write roots:
+A launch gets writable paths exactly when it already gets repository write
+roots. A launch that writes only its scratch folder, or nothing, gets none:
 
-| Launch | Repository write roots today | Gets writable paths |
+| Launch | Gets writable paths |
+|---|---|
+| Member terminal | Yes |
+| Work turn with admitted repositories, both providers | Yes |
+| Auto-research orchestrator episode with admitted repositories | Yes |
+| Compute job launched from one of the above | Yes, inherited |
+| Scratch-only Work, such as episode reports (`runs/tasks/episode_report.py`) | No |
+| Graph-only branch merge | No; its scratch-only check (`runs/branch_merge.py`) keeps holding |
+| Discuss, ingestion, paper coach | No |
+
+### RCP's protected storage
+
+Code computes this list at every launch, from the same functions that create
+each folder. It is never a setting.
+
+| Where | Path | Computed from |
 |---|---|---|
-| Member terminal | Its checkout | Yes |
-| Work turn, both providers | Admitted repositories | Yes |
-| Auto-research orchestrator episode | Admitted repositories | Yes |
-| Compute job launched from one of the above | Inherited | Yes |
-| Graph-only branch merge | None, scratch only | No |
-| Discuss | None | No |
-| Ingestion | None, scratch only | No |
-| Paper coach | None, read-only | No |
+| RCP host | The RCP data folder | The running process's data directory |
+| Team server | `releases/`, `source/`, `credentials/`, `update-checkpoints/`, `restore-operations/` under the server root; `/etc/rcp`; `/run/rcp` | The `ServerLayout` loaded from `/etc/rcp/server.toml`. Not `projects/`, which holds repositories. |
+| Any machine | Provider token files: `auth.json` under the Codex home, `.credentials.json` under the Claude home | The provider homes the credential gate already locks |
+| Remote machine | `~/.rcp` (jobs, task folders, command sockets) | The remote home, resolved as job folders are today |
+| Remote machine | A project's custom jobs root, if set | The project's compute settings |
+| Remote machine | `~/.local/share/rcp/credentials` | `remote_credentials_root` |
+| Every repository | `.research` | Project manifests, as today |
 
-This is structural, so the branch merge's check that its roots are exactly its
-scratch workspace (`src/rcp/runs/branch_merge.py`) keeps holding.
+**Remote task folders move** from `/tmp/rcp-run.*` to `~/.rcp/stages/`, and
+command sockets from `/tmp/rcp-command-*.sock` into `~/.rcp`. A fixed folder
+is covered by one rule, including folders created after a terminal opened,
+and `/tmp` holds no RCP state. The socket path must stay under the 108-byte
+`AF_UNIX` limit. If a long remote home would exceed it, launch refuses with
+that reason rather than falling back to `/tmp`. The existing `/tmp` sweep
+stays for one release to clean up old folders.
 
-### What a path may be
+### The effective policy
 
-A writable path is the human's explicit space-wide grant: every eligible
-launch on that machine, in every project, can write there. The page says so.
-Broad paths such as `/home/rcp`, `/tmp`, or a folder holding other projects'
-repositories are allowed.
+1. A grant **inside** a protected path is refused, both in the folder picker
+   and at save.
+2. A grant that **contains** protected paths is allowed. They stay read-only
+   inside it.
+3. A grant never reopens a protected path.
+4. **The only writable exceptions inside protected storage are the current
+   launch's own stage workspace and job folder.** RCP adds them; users cannot.
+5. Reading is never blocked. Agents can still read chats, logs, and records.
 
-Saving refuses only:
+This policy is computed once, as three lists on the resolved scope: writable
+roots, protected paths, and exceptions. Backends only render those lists.
 
-- a relative path or a path that does not exist on the machine
-- `/` itself, which would remove the mount profile altogether
-- colons, control characters, or `$`, which the terminal mount syntax and older
-  systemd reject or expand
+### Rendering per backend
 
-### Protected paths stay read-only inside any writable path
+| Backend | Writable | Protected | Exceptions inside protected |
+|---|---|---|---|
+| Member terminal (mirrored) | `BindPaths` | `BindReadOnlyPaths` + `ReadOnlyPaths`; an absent directory gets a read-only empty mount, as today | None; a terminal has no stage |
+| systemd job (mirrored) | `ReadWritePaths` | `ReadOnlyPaths`; absent directories get read-only empty mounts, like the terminal | `ReadWritePaths` on the exception, which systemd applies over its read-only parent |
+| Codex | profile `write` roots | profile `read` entries | a more specific `write` entry. The implementation proves on the pinned Codex version that the more specific entry wins, and fails closed if not. |
+| Claude | `Edit(path)` allow | `Edit(path)` deny | Claude's deny beats any allow, so a protected folder containing an exception is denied child by child, skipping the exception's ancestors. The children are enumerated at launch, so folders created later are covered only by the OS backends. That is inside the accepted Claude gap. |
 
-Some paths must stay read-only whatever the grant, because invariants depend
-on them. They are carved out as read-only inside a writable path, the same way
-`.research` is already read-only inside a writable checkout:
+- **Files and folders are distinct entries.** A protected file renders an
+  exact-file rule. A folder renders `path/**`. The Claude renderer escapes
+  gitignore metacharacters (`*`, `?`, `[`, `]`, `\`) in both allow and deny.
+- **Canonical paths.** Grants and protected paths are canonicalized on the
+  execution host at every launch, and both the declared and canonical
+  spellings are protected. Writable-root validation (an existing directory)
+  stays separate from protected-path resolution, which allows files and absent
+  paths.
+- **Helper jobs revalidate every inherited root** at job launch, not only
+  `cwd` (`runs/tasks/compute_commands.py`).
+- **A grant missing at launch** refuses the launch with a message naming it and
+  linking to the machine card.
 
-- every registered repository's and state repository's `.research`
-  (invariants 1, 2, 6)
-- the RCP data directory and the installed service tree (invariants 6, 8)
-- provider credential homes (`docs/decisions/2026-09-14-provider-logins-are-kept-alive.md`:
-  a stray write breaks the shared login)
-- SSH keys and Git identity files (terminals already mount these read-only)
+### Where enforcement does not exist
 
-This protected set is one list built next to `protected_repository_paths` in
-`write_scope.py`. Each backend already supports read-only inside writable:
-
-| Surface | Writable | Read-only inside it |
-|---|---|---|
-| Member terminal | `BindPaths` | `BindReadOnlyPaths` + `ReadOnlyPaths` |
-| systemd compute job | `ReadWritePaths` | `ReadOnlyPaths` |
-| Codex | permission-profile write roots | profile read-only overrides |
-| Claude | `Edit(path)` allow | `Edit(path)` deny; the shell stays unbounded, as before |
-
-Paths are canonicalized on the execution host at every launch. Mounts and the
-protected carve-outs use canonical paths, so a symlink cannot route around a
-carve-out. A path missing at launch refuses the launch with a message naming
-it and linking to the machine card.
-
-### One list, every launch
-
-`ProjectWriteScope` gains the machine's writable paths, and its
-`writable_roots` and protected paths include them. systemd, Codex, and Claude
-already read those two lists. The member terminal builds its own mounts from
-`resolve_repository` today; it changes to read the same two lists from the same
-resolver, through both its local and remote launcher. The terminal preflight
-checks that each writable path is writable, next to its existing checks. The
-prompt renderer (`src/rcp/agents/prompts.py`) gets a writable-paths line
-rendered from the same scope object.
+Cooperative launches have no filesystem enforcement today: non-Linux
+terminals, cooperative systemd after a mirrored probe fails, and launchd jobs.
+There, a grant adds nothing (everything the account can write is already
+writable), and protected paths are not enforced. That is existing behavior.
+The machine card says "not enforced on this machine" for those modes. Checks
+of the carve-outs run in mirrored mode only.
 
 ### When a change takes effect
 
-- **New launches only.** A running terminal keeps its mounts. The terminal's
-  reuse check (`manifest_registration` in `terminals/manager.py`) includes the
-  resolved writable paths, so a stale terminal shows "restart to apply" instead
-  of being reused silently.
-- **Continuations**: the scope fingerprint includes writable paths only when
-  there are any, so every existing fingerprint stays valid. A changed set
-  follows the existing changed-scope rule for resumed sessions.
+- **New launches only.** A running terminal keeps its mounts. The terminal
+  record gains a separate captured copy of its grants (old records decode as
+  empty). A mismatch shows "restart to apply" and keeps the session. It is
+  kept apart from the repository-identity check in `terminals/manager.py`,
+  whose mismatch still retires the session as today.
+- **Continuations.** The larger protected list changes the scope fingerprint
+  even with no grants. New scopes use schema generation 2. A continuation
+  bound to a generation-1 scope is accepted and rebound when its repositories
+  and writable roots are unchanged and only protected paths were added. That
+  only narrows the scope. Anything else follows the existing changed-scope
+  refusal. This is tested with a real generation-1 continuation.
 - **Running jobs** keep the scope they were launched with.
+
+## Folder picker
+
+One small component, `PathPicker`, used on the space machine card and the
+project machine card. It edits the same space record in both places. The
+project card says the list applies to every project on that machine.
+
+- It shows breadcrumbs, one folder level at a time, and a **Use this folder**
+  button. Folders only.
+- Protected folders appear locked, with the reason. Choosing a path inside
+  one is refused, with the same rule as save.
+- One endpoint, `POST /api/space/machines/{id}/directories`, lists one
+  directory on that machine, locally or over SSH. It is generalized from
+  setup's existing SSH browser (`browse_ssh_repository_paths`,
+  `POST /api/project-setup/ssh-paths`). Setup's browser switches to the same
+  component and endpoint, so there is one browser, not two.
+- It is space-level, so any team member can use it. Listing is read-only and
+  bounded to one directory, like today's browser.
 
 ## Backup, restore, transfer
 
-- The space machine table is space data. Backup includes it, and restore
+- The space machine table is space data. Backup includes it and restore
   brings it back. It needs a schema migration, fresh and upgraded
-  fingerprints, a restore fingerprint, and a transfer disposition.
-- An older backup has no table. Restore leaves it empty and it refills from
-  manifests on load, with no writable paths.
-- A personal-to-team transfer does not carry writable paths. The team grants
-  its own. Target machines appear from the transferred manifest on load.
-- Project manifests, provisioning, and history are unchanged.
+  fingerprints, a restore fingerprint, and an immutable upgrade fixture.
+- An older backup has no table. Restore leaves it empty, and it refills at the
+  live boundaries with no grants.
+- Upgrade rehearsals get an empty grant list, so copied production grants
+  cannot reach disposable roots.
+- Transfer classifies the table as excluded space data. The target's cards
+  come from the rebuilt target manifest, not source provenance. Grants are
+  never carried; the team grants its own.
+- Project manifests, provisioning records, and history are unchanged, apart
+  from the backup check accepting added machines.
 
 ## UI
 
 - **Space Settings**: Server (team), Machines as cards (name, host, account,
-  writable paths editor, projects using it, **+ New machine**), Provider logins,
-  and Clear all caches (personal only).
-- **Project Settings**: Machines shows the cards this project uses, each with
-  its provider paths and compute. **Add machine** picks a card from the space
-  list or creates a new one.
-- **Setup and Add repository** pick a machine card, or create one inline, so a
-  new user never leaves the flow.
+  writable paths with the picker, projects using it, **+ New machine**),
+  Provider logins, and Clear all caches (personal only).
+- **Project Settings**: this project's machine cards, each with provider
+  paths, compute, and the machine's writable paths with the picker. **Add
+  machine** picks a card or creates one.
+- **Setup** picks a machine card or creates one inline.
 - A terminal or job error for a read-only path names the path and links to the
   machine card.
 
 ## Checks
 
-- Unit: loading a manifest fills the machine list idempotently; editing host
-  or account on a machine in use is refused; each refused path class is
-  refused at save; each eligible launch carries the paths and the protected
-  carve-outs into the terminal, systemd, Codex, and Claude arguments; the
-  branch merge, Discuss, ingestion, and paper coach scopes carry none; a
-  symlinked path mounts its canonical target with carve-outs intact.
-- Upgrade: an immutable pre-change database upgrades and serves.
-- Backup and restore of a new backup and of an older one.
-- Served app: in space Settings add a writable path, then write into it from a
-  new terminal on the team server, a Codex Work turn, and a systemd compute
-  job. Confirm a write to a `.research` path under it still fails and an open
-  terminal shows the restart notice. Pick a machine card in a new project's
-  setup. Inspect network, console, and server logs.
+- Unit: live boundaries fill the list, and raw loads, preflight, history
+  reload, and backup snapshots do not; in-use edits refuse, including when a
+  manifest is unreadable; adding a machine keeps backup passing; grants inside
+  protected paths refuse; each eligible launch renders grants, protected
+  paths, and its own exceptions for terminal, systemd, Codex, and Claude;
+  scratch-only launches render none; exact-file Claude rules and escaped
+  metacharacters; a symlinked grant; sign-in on an unused card; a generation-1
+  continuation rebinds; a changed grant marks an open terminal restart-needed
+  without retiring it.
+- Behavior on Linux, in mirrored mode: a write under a granted parent works;
+  a write to a protected child, another stage in `~/.rcp/stages`, and a token
+  file fails; the launch's own stage stays writable.
+- Upgrade fixture, and backup/restore of a new backup and of an older one.
+- Served app: pick a writable path with the picker on both Settings pages,
+  write into it from a new terminal on the team server, a Codex Work turn, and
+  a systemd compute job, and confirm an open terminal shows the restart
+  notice. Pick a machine card in setup and add one to an existing project.
+  Inspect network, console, and server logs.
 
 ## Docs to update when this lands
 
 - `docs/design.md` and `docs/specs/providers-and-containment.md`: writable
-  paths, who gets them, and the protected carve-outs.
-- `docs/specs/projects-spaces-and-operations.md`: the space machine list.
+  paths, who gets them, protected storage, and the cooperative caveat.
+- `docs/specs/projects-spaces-and-operations.md`: the space machine list,
+  adding machines, and remote task folders under `~/.rcp`.
 - `docs/specs/api-web-and-desktop-projections.md` and
-  `docs/specs/interface-and-visual-design.md`: the two Settings levels and
-  machine cards.
+  `docs/specs/interface-and-visual-design.md`: the two Settings levels,
+  machine cards, and the picker.
 - A new decision record: invariant 4 fixes which launches may write; humans
-  choose the roots; protected paths stay read-only inside any grant.
+  choose the roots; RCP's own storage stays read-only inside any grant.
 
 ## Estimate
 
-About 4 to 5 days: 1 for the machine list and provider sign-in, 2 for writable
-paths across the four launches, 1 to 2 for the two Settings pages, cards, and
-setup, and half a day for the upgrade, restore, and served-app drives.
+About 6 to 7 days: 1 for the machine list, adding machines, and sign-in; 3 for
+writable paths, protected storage, the stage move, and the four backends; 1.5
+for the Settings pages, cards, and picker; 1 for the Linux behavior, upgrade,
+restore, and served-app drives.
