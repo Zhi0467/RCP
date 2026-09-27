@@ -42,6 +42,7 @@ def test_a_continuation_keeps_restores_or_replaces_its_session_master(tmp_path: 
         label_prefix="owner",
         key="key-1",
         content="master one",
+        values={"patch": {"path": "/stage/patch.json"}},
     )
     Path(start.path).unlink()
 
@@ -58,6 +59,8 @@ def test_a_continuation_keeps_restores_or_replaces_its_session_master(tmp_path: 
 
     kept = continuation("wake-1", "key-1")
     assert kept.path == start.path and not kept.bootstrap
+    # The kept master reports the values it was rendered with, so only a change is sent.
+    assert kept.values == {"patch": {"path": "/stage/patch.json"}}
     assert Path(kept.path).read_text(encoding="utf-8") == "master one"
 
     # A replacement recorded by an attempt that failed may never have been delivered.

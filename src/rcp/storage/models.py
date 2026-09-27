@@ -1997,6 +1997,7 @@ _NON_PROMPT_CONTRACT_ROLES = frozenset(
         "work_primary_answer",
         "session_master",
         "session_master_key",
+        "session_master_values",
     }
 )
 # An ended episode shows these next to Add turns and Start new episode, and a live

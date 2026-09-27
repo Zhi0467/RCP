@@ -348,6 +348,7 @@ def chat_continuation_master(
     policy_version: str,
     ontology_extensions: bool,
     render: Callable[[], str],
+    values: dict[str, object] | None = None,
     force_bootstrap: bool = False,
 ) -> MasterRef:
     """The master a Discuss or Work continuation points to in this native session.
@@ -383,7 +384,7 @@ def chat_continuation_master(
             sha256=previous.master_sha256,
             path=previous.master_context_path,
         )
-        return MasterRef(path=path, bootstrap=force_bootstrap)
+        return MasterRef(path=path, bootstrap=force_bootstrap, values=previous.values)
     master = continuation_session_master(
         execution,
         local_stage=local_stage,
@@ -392,6 +393,7 @@ def chat_continuation_master(
         label_prefix=policy_version,
         key=master_key(policy_version, ontology_extensions=ontology_extensions),
         render=render,
+        values=values,
     )
     if force_bootstrap and not master.bootstrap:
         return replace(master, bootstrap=True)

@@ -873,9 +873,9 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     work_artifacts = launcher.workspaces[1] / "turns" / second_id / "artifacts"
     assert str(work_artifacts) in launcher.prompts[1]
     assert launcher.prompts[1].count(work_message) == 1
-    assert '"reasoning": "high"' in launcher.prompts[1]
-    assert '"repositories"' not in launcher.prompts[1]
-    assert '"skills"' not in launcher.prompts[1]
+    delta = _delta_values(launcher.prompts[1])
+    assert delta["settings.reasoning"] == "high"
+    assert not any(key.startswith(("repositories", "skills")) for key in delta)
 
 
 @pytest.mark.asyncio
@@ -960,10 +960,9 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
     append_fixture_patch(service, refresh_patch())
     turn("Third question, after a Sync.", resume=True)
 
-    update = launcher.prompts[2]
-    assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in update
-    assert '"repositories"' not in update
-    assert '"settings"' not in update
+    update = _delta_values(launcher.prompts[2])
+    assert update["current.graph_revision"] == str(service.graph_snapshot()["revision"])
+    assert not any(key.startswith(("repositories", "settings")) for key in update)
 
 
 class _PatchWritingLauncher(_RecordingLauncher):
@@ -1019,16 +1018,15 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     assert service.graph_snapshot()["revision"] > before
 
     turn("Now just answer something.", resume=True)
-    prompt = launcher.prompts[1]
-    second_delta, _ = json.JSONDecoder().raw_decode(prompt[prompt.index("\n{") + 1 :])
-    assert set(second_delta) == {"patch"}
-    assert "current" not in second_delta
-    assert "rcp-agent-client-" in second_delta["patch"]["validator_command"]
+    second_delta = _delta_values(launcher.prompts[1])
+    assert {key.split(".")[0] for key in second_delta} == {"patch"}
+    assert "rcp-agent-client-" in second_delta["patch.validator_command"]
 
     # A Sync by someone else still reaches the conversation.
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
-    assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in launcher.prompts[2]
+    third_delta = _delta_values(launcher.prompts[2])
+    assert third_delta["current.graph_revision"] == str(service.graph_snapshot()["revision"])
 
 
 @pytest.mark.parametrize("mode", ["work", "discuss"])
@@ -1091,3 +1089,14 @@ def test_a_chat_prompt_past_the_receipt_cap_still_resumes_from_its_contract(
 
     path = _parent_task_contract_path(wake, Path(first.stage_root), None)
     assert Path(path).read_text(encoding="utf-8") == launcher.prompts[0]
+
+
+def _delta_values(prompt: str) -> dict[str, str]:
+    """The changed values a continuation sends, by dotted key."""
+
+    header = SECTIONS["context_delta"]
+    lines = prompt[prompt.index(header) + len(header) :].split("\n\n", 1)[0].splitlines()
+    return {
+        key: value.strip("`")
+        for key, value in (line[2:].split(": ", 1) for line in lines if line.startswith("- "))
+    }

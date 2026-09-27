@@ -7,7 +7,7 @@ only where the master contract and the context delta go for each node type.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -42,7 +42,7 @@ SECTIONS = {
         "It replaces the master contract this session held before, and defines the stable "
         "pointers and contracts for this native session."
     ),
-    "context_delta": "RCP context update — these master-context values have changed:",
+    "context_delta": "Changed since the master contract, and current now:",
     "report_revocation": (
         "The operational instructions this session held no longer apply. Follow only the "
         "report instructions in this message."
@@ -64,11 +64,30 @@ class LaunchPhase:
 
 @dataclass(frozen=True)
 class MasterRef:
-    """The staged master for this launch, and whether the session must open it now."""
+    """The staged master for this launch, and whether the session must open it now.
+
+    ``values`` are the stable values the master was rendered with, when recorded, so a
+    continuation can send only what differs from them.
+    """
 
     path: str
     bootstrap: bool
     replaces: bool = False
+    values: Mapping[str, object] | None = None
+
+
+def changed_since_master(master: MasterRef, current: dict[str, object]) -> dict[str, object] | None:
+    """The current values a continuation must send: those that differ from its master.
+
+    A master opened now already holds the current values. A master whose values were not
+    recorded is compared against nothing, so every current value is sent.
+    """
+
+    if master.bootstrap:
+        return None
+    if master.values is None:
+        return dict(current) or None
+    return context_delta(dict(master.values), current)
 
 
 def classify(phase: LaunchPhase) -> PromptNode:
@@ -130,11 +149,19 @@ def context_delta(
     previous: dict[str, object],
     current: dict[str, object],
 ) -> dict[str, object] | None:
-    changed = {
-        key: value
-        for key, value in current.items()
-        if key != "compute" and (key not in previous or previous[key] != value)
-    }
+    """What changed from ``previous`` to ``current``, down to the changed leaf of a mapping."""
+
+    changed: dict[str, object] = {}
+    for key, value in current.items():
+        if key == "compute" or previous.get(key, _ABSENT) == value:
+            continue
+        before = previous.get(key)
+        if isinstance(before, dict) and isinstance(value, dict):
+            nested = context_delta(before, value)
+            if nested:
+                changed[key] = nested
+        else:
+            changed[key] = value
     prior_compute = _compute_profiles(previous.get("compute"))
     current_compute = _compute_profiles(current.get("compute"))
     if prior_compute != current_compute:
@@ -153,6 +180,9 @@ def context_delta(
     if removed:
         changed["removed"] = removed
     return changed or None
+
+
+_ABSENT = object()
 
 
 def _compute_profiles(value: object) -> dict[str, dict[str, str]]:
@@ -178,12 +208,24 @@ def _delta_sections(delta: dict[str, object] | None) -> list[str]:
     if compute:
         sections.append(compute)
     if ordinary:
-        sections.append(
-            SECTIONS["context_delta"]
-            + "\n"
-            + json.dumps(ordinary, ensure_ascii=False, indent=2, sort_keys=True)
-        )
+        sections.append("\n".join([SECTIONS["context_delta"], *_delta_lines(ordinary)]))
     return sections
+
+
+def _delta_lines(delta: Mapping[str, object], prefix: str = "") -> list[str]:
+    """One line per changed value, named by its dotted key in the master's values."""
+
+    lines = []
+    for key in sorted(delta):
+        value = delta[key]
+        name = f"{prefix}{key}"
+        if isinstance(value, dict) and value:
+            lines.extend(_delta_lines(value, f"{name}."))
+        elif isinstance(value, str):
+            lines.append(f"- {name}: `{value}`")
+        else:
+            lines.append(f"- {name}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
+    return lines
 
 
 def _compute_delta_section(delta: object) -> str:

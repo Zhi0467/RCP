@@ -7,8 +7,9 @@ restored from that record into the selected stage on every launch that points to
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 
 SESSION_MASTER_ROLE = "session_master"
 SESSION_MASTER_KEY_ROLE = "session_master_key"
+SESSION_MASTER_VALUES_ROLE = "session_master_values"
 
 _LABEL_DIGEST = re.compile(r"-([0-9a-f]{16})\.md\Z")
 
@@ -33,19 +35,34 @@ def session_master_label(prefix: str, content: str) -> str:
 
 
 def record_session_master(
-    store: AppStore, operation_id: str, content: str, key: str | None = None
+    store: AppStore,
+    operation_id: str,
+    content: str,
+    key: str | None = None,
+    values: Mapping[str, object] | None = None,
 ) -> str:
     """Record the exact master bytes on the operation that sends them; return their digest.
 
     A key, when given, is recorded beside the bytes so a later launch in the same session
     can tell whether the master it would render now is still the one the session holds.
+    The values it was rendered with let a later launch send only what has changed.
     """
 
     digest = _sha256(content)
     store.record_agent_task_contract(operation_id, SESSION_MASTER_ROLE, content, digest)
     if key is not None:
         store.record_agent_task_contract(operation_id, SESSION_MASTER_KEY_ROLE, key, _sha256(key))
+    if values is not None:
+        encoded = json.dumps(values, ensure_ascii=False, sort_keys=True)
+        store.record_agent_task_contract(
+            operation_id, SESSION_MASTER_VALUES_ROLE, encoded, _sha256(encoded)
+        )
     return digest
+
+
+def _recorded_values(store: AppStore, operation_id: str) -> dict[str, object] | None:
+    encoded = store.agent_task_contract(operation_id, SESSION_MASTER_VALUES_ROLE)
+    return None if encoded is None else json.loads(encoded)
 
 
 def start_session_master(
@@ -56,14 +73,15 @@ def start_session_master(
     label_prefix: str,
     key: str,
     content: str,
+    values: Mapping[str, object] | None = None,
 ) -> MasterRef:
     """Record and stage the master a new native session starts from."""
 
-    record_session_master(execution.store, execution.operation_id, content, key)
+    record_session_master(execution.store, execution.operation_id, content, key, values)
     path = _stage_or_reuse_task_input(
         local_stage, remote_stage, session_master_label(label_prefix, content), content
     )
-    return MasterRef(path=path, bootstrap=True)
+    return MasterRef(path=path, bootstrap=True, values=values)
 
 
 def continuation_session_master(
@@ -75,6 +93,7 @@ def continuation_session_master(
     label_prefix: str,
     key: str,
     render: Callable[[], str],
+    values: Mapping[str, object] | None = None,
     force_bootstrap: bool = False,
     across_stages: bool = False,
 ) -> MasterRef:
@@ -84,6 +103,8 @@ def continuation_session_master(
     into the stage so the pointer resolves. A session with no recorded master, a changed
     key, or a forced bootstrap gets a freshly rendered master, recorded on this operation.
     An owner that gives every turn a fresh stage finds the master across all of them.
+    ``values`` are the current stable values: recorded with a new master, and otherwise
+    returned as the ones the kept master was rendered with, so the caller sends the change.
     """
 
     record = execution.store.agent_task(execution.operation_id)
@@ -103,13 +124,15 @@ def continuation_session_master(
         path = _stage_or_reuse_task_input(
             local_stage, remote_stage, session_master_label(label_prefix, content), content
         )
-        return MasterRef(path=path, bootstrap=False)
+        return MasterRef(
+            path=path, bootstrap=False, values=_recorded_values(execution.store, operation_id)
+        )
     content = render()
-    record_session_master(execution.store, execution.operation_id, content, key)
+    record_session_master(execution.store, execution.operation_id, content, key, values)
     path = _stage_or_reuse_task_input(
         local_stage, remote_stage, session_master_label(label_prefix, content), content
     )
-    return MasterRef(path=path, bootstrap=True, replaces=found is not None)
+    return MasterRef(path=path, bootstrap=True, replaces=found is not None, values=values)
 
 
 def stage_session_master(
