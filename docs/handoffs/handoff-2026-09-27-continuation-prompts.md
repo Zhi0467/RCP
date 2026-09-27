@@ -18,6 +18,9 @@ design review. Nothing is implemented.
   current authority always travels inline; the master gets its own durable
   record; the master key includes owner policy; the episode report never gets a
   master pointer; commit timing stays as it is.
+  - Construction is a shared assembler, not a registry (human, 2026-09-27).
+    Owners keep choosing their builders and call one `compose(node, overrides,
+    master_ref)` that applies the node type's rule.
 - Open: [Open questions](#open-questions).
 - Closure: the slices land with their spec and decision edits, and this handoff
   is deleted.
@@ -145,7 +148,9 @@ though both are chat task kinds.
 
 ## Construction
 
-**Open question 1** decides the shape. Either way these parts are shared:
+Owners keep choosing their own builders. Each calls one shared assembler,
+`compose(node, overrides, master_ref)`, which applies its node type's rule.
+There is no registry of owner profiles and no runtime tree check. Shared parts:
 
 - `classify`: an owner supplies its launch phase at the call boundary (the
   continuation value, the session id it hands the provider, and its own local
@@ -193,7 +198,7 @@ Each is now reflected above.
    the provider received the prompt.
 5. **The first draft over-built.** The review recommends dropping the runtime
    registry, the runtime tree check, and five constructor classes, in favor of
-   owner-selected builders and one small shared assembler. See open question 1.
+   owner-selected builders and one small shared assembler. The human chose that.
 
 ## Docs this changes
 
@@ -242,15 +247,7 @@ Each is now reflected above.
 
 ## Open questions
 
-1. **Construction shape.** (a) A `PromptConstructor` per node type, chosen
-   through a registry of owner profiles. (b) Owners keep choosing their own
-   builders and call one shared assembler, `compose(node, overrides,
-   master_ref)`, which applies the node type's rule. Recommendation: (b). The
-   node type still decides the rule in one place. Owner profiles split along
-   Discuss, Work, Experiment, and child lines that task kinds do not follow, so
-   a registry duplicates the owners' own dispatch. AGENTS.md also forbids
-   policy selectors in shared plumbing.
-2. **Storage for session state.** Generalize `chat_session_contexts` or add a
+1. **Storage for session state.** Generalize `chat_session_contexts` or add a
    table for non-chat sessions. Recommendation: add the master record first,
    reuse one delta function, and generalize storage later. A broad migration
    should not block slice 1.
