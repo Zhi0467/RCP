@@ -100,8 +100,16 @@ the machine where it is created: task folders to `~/.rcp/stages/`, sockets to
 `~/.rcp/sockets/` and `~/.rcp/ssh/`, and everything else to `~/.rcp/tmp/`
 (each `tempfile` call gets that `dir=`). `~/.rcp` is short enough for socket
 path limits (104 bytes on macOS, 108 on Linux) and is already protected.
-Existing `/tmp/rcp-run.*` task folders keep working where they are until they
-are cleaned up. After this, `/tmp` holds nothing of RCP's, and a human can
+Only remote task folders outlive one operation. They exist only on machines
+RCP reaches over SSH (local launches, including all team-server launches,
+stage in the data folder), and a chat keeps one across its turns, with resume
+checking the exact saved path (`runs/chat.py`,
+`runs/tasks/auto_research_stream.py`). An existing chat or task keeps its
+`/tmp/rcp-run.*` folder, and resume accepts that saved legacy path; only new
+ones use `~/.rcp/stages/`. The remote sweep cleans both locations. Sockets and
+temp files are recreated per turn or per operation, so moving them breaks
+nothing. The check is a remote chat started before the update, resumed
+after it. After this, `/tmp` holds nothing of RCP's, and a human can
 grant it like any other path.
 
 **`/tmp` is writable by default.** Once RCP keeps nothing there, every launch
