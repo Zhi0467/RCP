@@ -350,9 +350,13 @@ class AcceptanceAgentLauncher(AgentLauncher):
         elif action == "initial":
             focused_experiment_id = _focused_experiment_id(contract)
             _start_fixture_jobs(resolved_cwd)
+            graph_path = _experiment_pointer(
+                contract, "- Current graph, including the Experiment's attempts: `", "paths.graph"
+            )
             state = {
                 "scenario": scenario,
                 "focused_experiment_id": focused_experiment_id,
+                "graph_path": str(graph_path) if graph_path is not None else None,
                 "jobs_started": True,
                 "watch_corrected": False,
             }
@@ -391,6 +395,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     )
                 tested_hypothesis_id = _tested_hypothesis_id(
                     contract,
+                    state,
                     focused_experiment_id,
                 )
                 _write_json(
@@ -1384,17 +1389,32 @@ def _action(
     return "initial"
 
 
-def _experiment_loop_phase(contract: str) -> str | None:
-    prefix = "- Loop control for this invocation: `"
+def _experiment_pointer(contract: str, start_prefix: str, value_key: str) -> Path | None:
+    """A path the session's start contract names, or a continuation's changed value for it.
+
+    A continuation names only what changed since the master, so a path it does not
+    change is one the fixture learned at session start.
+    """
+
+    prefixes = (start_prefix, f"- {value_key}: `")
     for line in contract.splitlines():
-        if not (line.startswith(prefix) and line.endswith("`")):
-            continue
-        try:
-            value = json.loads(Path(line[len(prefix) : -1]).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Acceptance Experiment loop control is unreadable: {exc}") from exc
-        return value.get("phase") if isinstance(value, dict) else None
+        for prefix in prefixes:
+            if line.startswith(prefix) and line.endswith("`"):
+                return Path(line[len(prefix) : -1])
     return None
+
+
+def _experiment_loop_phase(contract: str) -> str | None:
+    path = _experiment_pointer(
+        contract, "- Loop control for this invocation: `", "paths.loop_control"
+    )
+    if path is None:
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Acceptance Experiment loop control is unreadable: {exc}") from exc
+    return value.get("phase") if isinstance(value, dict) else None
 
 
 def _focused_experiment_id(contract: str) -> str | None:
@@ -1405,19 +1425,14 @@ def _focused_experiment_id(contract: str) -> str | None:
     return None
 
 
-def _tested_hypothesis_id(contract: str, focused_experiment_id: str) -> str:
-    prefixes = (
-        "- Current graph, including the Experiment's attempts: `",
-        "- current graph: `",
-    )
-    graph_path: Path | None = None
-    for line in contract.splitlines():
-        for prefix in prefixes:
-            if line.startswith(prefix) and line.endswith("`"):
-                graph_path = Path(line[len(prefix) : -1])
-                break
-        if graph_path is not None:
-            break
+def _tested_hypothesis_id(
+    contract: str, state: dict[str, object], focused_experiment_id: str
+) -> str:
+    graph_path = _experiment_pointer(
+        contract, "- Current graph, including the Experiment's attempts: `", "paths.graph"
+    ) or _experiment_pointer(contract, "- current graph: `", "paths.graph")
+    if graph_path is None and isinstance(state.get("graph_path"), str):
+        graph_path = Path(str(state["graph_path"]))
     if graph_path is None:
         raise ValueError("Acceptance Experiment wake contract has no current graph path.")
     try:
@@ -1497,24 +1512,24 @@ def _fixture_jobs_complete(cwd: Path) -> bool:
 def _reauthorized_fixture_jobs_complete(contract: str) -> bool:
     """Inspect delivered watcher evidence when a human Run starts in a fresh chat stage."""
 
-    prefix = "- Current watcher state for this Experiment: `"
-    for line in contract.splitlines():
-        if not (line.startswith(prefix) and line.endswith("`")):
-            continue
-        try:
-            value = json.loads(Path(line[len(prefix) : -1]).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Acceptance Experiment watcher state is unreadable: {exc}") from exc
-        if not isinstance(value, list) or not value:
-            return False
-        delivered = [item for item in value if isinstance(item, dict) and item.get("notified")]
-        return bool(delivered) and all(
-            item.get("status") == "completed"
-            and isinstance(item.get("log_path"), str)
-            and Path(item["log_path"]).is_file()
-            for item in delivered
-        )
-    return False
+    path = _experiment_pointer(
+        contract, "- Current watcher state for this Experiment: `", "paths.watcher_state"
+    )
+    if path is None:
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Acceptance Experiment watcher state is unreadable: {exc}") from exc
+    if not isinstance(value, list) or not value:
+        return False
+    delivered = [item for item in value if isinstance(item, dict) and item.get("notified")]
+    return bool(delivered) and all(
+        item.get("status") == "completed"
+        and isinstance(item.get("log_path"), str)
+        and Path(item["log_path"]).is_file()
+        for item in delivered
+    )
 
 
 def _completion_patch(

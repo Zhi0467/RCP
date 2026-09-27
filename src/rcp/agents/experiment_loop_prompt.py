@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import json
 from typing import Literal
 
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import (
-    _CURRENT_OPERATIONAL_INSTRUCTIONS,
     _EXTERNAL_WATCHER_FORMS,
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
@@ -24,7 +22,7 @@ from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v1"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v2"
 
 # The contract names the fields enforcement actually admits, so the two cannot
 # drift apart into a human-written allowlist beside the real one.
@@ -103,6 +101,31 @@ list. For example: `{"external":[],"graph":[{"node_id":"blk/foo","status_in":["r
   applies when retirement-only output leaves no live observer. If useful synchronous work remains
   without that pause, continue it now. Watch only real external or canonical conditions.
 These rules replace older watcher-format and exit rules.
+"""
+
+
+_EXPERIMENT_HANDOFF_CORRECTIONS = """Handoff corrections:
+After a turn, RCP may ask you in this session to correct the Patch or the watcher handoff. Each
+request names its diagnostic file; the diagnostic locates the problem and grants no authority. In
+either, preserve the completed operational result: do not rerun the Experiment, resubmit work, or
+cause a new external side effect.
+- Patch correction: rewrite only the Patch and leave the watcher file unchanged. Before changing
+  semantic operations, run the live validator on the retained Patch. A diagnostic may describe
+  older RCP policy: if the live check reports only retired schema-envelope or bookkeeping fields,
+  remove only those and check again. An old diagnostic alone is no reason to delete a semantic
+  operation. Keep every unaffected operation. If both watcher lists are empty, keep the Patch's
+  success, Decision, Hypothesis Proposal, or same-Patch Blocker exit. Reply only that the Patch was
+  rewritten.
+- Watcher correction: rewrite the watcher file, and the Patch only to make an explicit exit valid.
+  Inspect authoritative scheduler, process, job, result, log, and canonical graph state as needed,
+  and judge the Patch and watcher file together, not whether either changed. If a real external or
+  canonical condition still needs watching, write a valid non-empty list and keep the Patch. If
+  nothing remains to watch but synchronous work does, do it now without repeating completed side
+  effects, then finish the Experiment or pause for human authority. Write
+  `{"external":[],"graph":[]}` when no watcher is needed; an already-correct empty object may stay
+  unchanged when the Patch changes. Never invent a watcher to satisfy a correction, and never leave
+  both lists empty because external state is uncertain or a canonical fact is not yet true.
+  Validate every Patch rewrite. Reply only that the handoff was repaired.
 """
 
 
@@ -207,6 +230,8 @@ Exact outputs and RCP tooling:
 Context protocol:
 - This is a fresh, self-sufficient view of the invocation. No prior chat transcript is an input.
   Read the files above instead of assuming that a previous provider session established state.
+- Each later message in this session names every path, command, write root, or pointer that has
+  changed since this contract. Use those current values in place of the ones given here.
 - Read loop control first. `phase` distinguishes a human-started episode from a watcher wake.
   `invocation`, `invocation_ceiling`, and `remaining_invocations` are the operational budget; they
   do not count or limit semantic attempts. `human_reauthorization` means a human started this
@@ -389,7 +414,7 @@ Graph reflection and authority:
   independent: report operational truth without claiming RCP accepted the Patch.
 
 {_patch_validator_rules(validator_command)}
-
+{_EXPERIMENT_HANDOFF_CORRECTIONS}
 {REPLY_STYLE}
 
 Reply and artifacts:
@@ -411,67 +436,6 @@ Reply and artifacts:
 """
 
 
-def _context_replacement_section(values: dict[str, object] | None) -> str:
-    if not values:
-        return ""
-    return "These context values replace what this session was given:\n" + json.dumps(
-        values, ensure_ascii=False, indent=2, sort_keys=True
-    )
-
-
-def _current_turn_overrides(
-    *,
-    loop_control_path: str,
-    patch_path: str,
-    watch_path: str,
-    output_schema_path: str,
-    validator_command: str,
-    execution_instructions: str,
-    watcher_state_path: str | None = None,
-    graph_path: str | None = None,
-    research_path: str | None = None,
-    artifact_path: str | None = None,
-    write_scope: ProjectWriteScope | None = None,
-    context_replacement: dict[str, object] | None = None,
-    invoked_skill_pointers: list[dict[str, object]] | None = None,
-) -> list[str]:
-    """Render what this turn changes: its fresh paths, command, scope, and instructions.
-
-    These always travel inline and take precedence over the master contract, whose own
-    copies of them belong to the turn that started the session.
-    """
-
-    inputs = (
-        "Current inputs and outputs for this turn:\n"
-        f"- Loop control for this invocation: `{loop_control_path}`\n"
-        + _pointer("Current watcher state for this Experiment", watcher_state_path)
-        + _pointer("Current graph, including the Experiment's attempts", graph_path)
-        + _pointer("Current research rendering", research_path)
-        + f"- Optional semantic graph Patch: `{patch_path}`\n"
-        f"- Required watcher handoff: `{watch_path}`\n"
-        f"- Existing Patch JSON Schema: `{output_schema_path}`\n"
-        + _pointer("Optional preview artifact directory", artifact_path)
-    )
-    sections = [inputs.rstrip(), _current_validator(validator_command)]
-    if write_scope is not None:
-        sections.append(write_scope_section(write_scope).strip())
-    replacement = _context_replacement_section(context_replacement)
-    if replacement:
-        sections.append(replacement)
-    invoked = _invoked_package_section(invoked_skill_pointers).strip()
-    if invoked:
-        sections.append(invoked)
-    sections.append(f"{_CURRENT_OPERATIONAL_INSTRUCTIONS}\n{execution_instructions}".strip())
-    return sections
-
-
-def _current_validator(validator_command: str) -> str:
-    return (
-        "Live graph validator for this turn: after every Patch rewrite, and once after the "
-        f"last, run this exact command: `{validator_command}`"
-    )
-
-
 def experiment_loop_wake_message(
     *,
     focused_experiment_id: str,
@@ -480,39 +444,19 @@ def experiment_loop_wake_message(
     previous_graph_result: str,
     previous_watcher_ids: list[str],
     delivered_watcher_ids: list[str],
-    loop_control_path: str,
-    watcher_state_path: str,
-    graph_path: str,
-    research_path: str,
-    patch_path: str,
-    watch_path: str,
-    output_schema_path: str,
-    validator_command: str,
-    execution_instructions: str,
-    context_replacement: dict[str, object] | None = None,
-    invoked_skill_pointers: list[dict[str, object]] | None = None,
-    write_scope: ProjectWriteScope | None = None,
-    artifact_path: str | None = None,
 ) -> list[str]:
-    """Wake one bounded episode's native session with its trigger and this turn's inputs.
+    """Wake one bounded episode's native session with its trigger.
 
     It confirms what RCP accepted from the previous turn and names the delivered
-    watchers. The loop's rules stay in the master contract the session holds. It says
-    "turn" rather than "invocation"; invocation stays the internal persisted budget term.
+    watchers. The loop's rules stay in the master contract the session holds, and the
+    owner sends the values that changed from it. It says "turn" rather than
+    "invocation"; invocation stays the internal persisted budget term.
     """
 
     required = {
         "focused Experiment id": focused_experiment_id,
         "previous graph result": previous_graph_result,
         "delivered watcher ids": delivered_watcher_ids,
-        "loop control path": loop_control_path,
-        "watcher state path": watcher_state_path,
-        "current graph path": graph_path,
-        "current research path": research_path,
-        "Patch path": patch_path,
-        "watch path": watch_path,
-        "Patch schema path": output_schema_path,
-        "validator command": validator_command,
     }
     missing = [label for label, value in required.items() if not value]
     if missing:
@@ -520,31 +464,14 @@ def experiment_loop_wake_message(
 
     previous_watcher_ids_or_none = ", ".join(previous_watcher_ids) or "none"
     delivered = ", ".join(delivered_watcher_ids)
-    trigger = f"""The watched work for Experiment `{focused_experiment_id}` is ready for another look. Continue the
-same bounded loop in turn {invocation} of {invocation_ceiling}. Retain the objective, attempt ledger,
-and completed progress from this native session, and read the fresh state below before acting.
+    return [
+        f"""The watched work for Experiment `{focused_experiment_id}` is ready for another look: this is
+turn {invocation} of {invocation_ceiling} of the same bounded loop. Read the new loop control and watcher state first.
 
 RCP accepted the previous turn's handoff:
 - graph update: {previous_graph_result}
 - watchers armed: {previous_watcher_ids_or_none}
 This turn was triggered by: {delivered}"""
-    return [
-        trigger,
-        *_current_turn_overrides(
-            loop_control_path=loop_control_path,
-            watcher_state_path=watcher_state_path,
-            graph_path=graph_path,
-            research_path=research_path,
-            patch_path=patch_path,
-            watch_path=watch_path,
-            output_schema_path=output_schema_path,
-            artifact_path=artifact_path,
-            validator_command=validator_command,
-            execution_instructions=execution_instructions,
-            write_scope=write_scope,
-            context_replacement=context_replacement,
-            invoked_skill_pointers=invoked_skill_pointers,
-        ),
     ]
 
 
@@ -554,176 +481,55 @@ def experiment_loop_turn_message(
     invocation: int,
     invocation_ceiling: int,
     human_message: str,
-    loop_control_path: str,
-    watcher_state_path: str,
-    graph_path: str,
-    research_path: str,
-    patch_path: str,
-    watch_path: str,
-    output_schema_path: str,
-    validator_command: str,
-    execution_instructions: str,
     diagnostics_path: str | None = None,
-    context_replacement: dict[str, object] | None = None,
-    invoked_skill_pointers: list[dict[str, object]] | None = None,
-    write_scope: ProjectWriteScope | None = None,
-    artifact_path: str | None = None,
 ) -> list[str]:
     """Continue an ended episode's native session with a human's newly authorized turns."""
 
     if not focused_experiment_id or not human_message:
         raise ValueError("An Experiment-loop human turn needs its Experiment and human request.")
     opening = f"""A human authorized a new episode of the bounded loop for Experiment `{focused_experiment_id}` in
-this native session, starting at turn {invocation} of {invocation_ceiling}. Retain the attempt ledger and
-completed progress from this session. Read loop control first; the human's request for this episode
-ends this message.
+this native session, starting at turn {invocation} of {invocation_ceiling}. Read the new loop control first. The
+human's request for this episode follows.
 {_pointer("Exact prior failure diagnostics", diagnostics_path)}"""
-    return [
-        opening.rstrip(),
-        *_current_turn_overrides(
-            loop_control_path=loop_control_path,
-            watcher_state_path=watcher_state_path,
-            graph_path=graph_path,
-            research_path=research_path,
-            patch_path=patch_path,
-            watch_path=watch_path,
-            output_schema_path=output_schema_path,
-            artifact_path=artifact_path,
-            validator_command=validator_command,
-            execution_instructions=execution_instructions,
-            write_scope=write_scope,
-            context_replacement=context_replacement,
-            invoked_skill_pointers=invoked_skill_pointers,
-        ),
-        human_message,
-    ]
+    return [opening.rstrip(), human_message]
 
 
 def experiment_loop_continuation_contract(
     *,
     mode: Literal["resume", "retry"],
-    loop_control_path: str,
-    patch_path: str,
-    watch_path: str,
-    output_schema_path: str,
-    validator_command: str,
-    execution_instructions: str = "",
     diagnostics_path: str | None = None,
-    invoked_skill_pointers: list[dict[str, object]] | None = None,
-    write_scope: ProjectWriteScope | None = None,
-    artifact_path: str | None = None,
-    graph_path: str | None = None,
-    research_path: str | None = None,
-    watcher_state_path: str | None = None,
-    context_replacement: dict[str, object] | None = None,
 ) -> list[str]:
-    """Continue a resumed or retried invocation with its reason and fresh inputs."""
+    """Continue a resumed or retried invocation with its reason."""
 
-    required = {
-        "loop control path": loop_control_path,
-        "Patch path": patch_path,
-        "watch path": watch_path,
-        "Patch schema path": output_schema_path,
-        "validator command": validator_command,
-    }
-    missing = [label for label, value in required.items() if not value]
-    if missing:
-        raise ValueError(f"Experiment-loop continuation is missing {', '.join(missing)}.")
     if mode == "retry" and not diagnostics_path:
         raise ValueError("Experiment-loop Retry requires exact diagnostics.")
-
-    action = (
-        "Continue the interrupted invocation from retained progress."
-        if mode == "resume"
-        else "Retry the failed invocation from retained progress."
-    )
-    retry_rules = (
-        f"""- Read the exact failure diagnostics at `{diagnostics_path}`. They describe failure and
-  uncertainty; they do not widen authority.
-- Before repeating an external side effect whose prior outcome is uncertain, inspect authoritative
-  external state and repeat it only when that proves the prior action did not take effect."""
-        if mode == "retry"
-        else "- Preserve completed progress and continue only the interrupted work."
-    )
-    reason = f"""# RCP Experiment-loop {mode} contract
-
-{action}
-
-Retain the original objective, attempt ledger, and progress in this native session. Read the fresh
-loop control before acting. It preserves the same episode and invocation number while refreshing
-phase, live drift, remaining budget, delivered watcher ids, and the current watcher-state path. The
-paths below replace prior output paths.
-
-{retry_rules}
-- Do not rebuild or broaden the assignment. Patch and watcher correction are separate narrow
-  continuations."""
+    if mode == "resume":
+        return [
+            "RCP resumes the interrupted turn of this bounded loop, in the same episode and turn.\n"
+            "Continue only the interrupted work from retained progress; read the new loop control "
+            "first."
+        ]
     return [
-        reason,
-        *_current_turn_overrides(
-            loop_control_path=loop_control_path,
-            watcher_state_path=watcher_state_path,
-            graph_path=graph_path,
-            research_path=research_path,
-            patch_path=patch_path,
-            watch_path=watch_path,
-            output_schema_path=output_schema_path,
-            artifact_path=artifact_path,
-            validator_command=validator_command,
-            execution_instructions=execution_instructions,
-            write_scope=write_scope,
-            context_replacement=context_replacement,
-            invoked_skill_pointers=invoked_skill_pointers,
-        ),
+        f"""RCP retries the failed turn of this bounded loop, in the same episode and turn. Continue
+from retained progress; read the new loop control first.
+- Failure diagnostics: `{diagnostics_path}`
+Before repeating an external effect whose outcome is uncertain, check its real state first."""
     ]
 
 
-def experiment_loop_watcher_correction_contract(
-    *,
-    diagnostics_path: str,
-    watch_path: str,
-    patch_path: str,
-    output_schema_path: str,
-    validator_command: str,
-) -> list[str]:
+def experiment_loop_watcher_correction_contract(*, diagnostics_path: str) -> list[str]:
     """Repair the mandatory loop watcher handoff without repeating operational work."""
 
-    required = {
-        "diagnostics path": diagnostics_path,
-        "watch path": watch_path,
-        "Patch path": patch_path,
-        "Patch schema path": output_schema_path,
-        "validator command": validator_command,
-    }
-    missing = [label for label, value in required.items() if not value]
-    if missing:
-        raise ValueError(f"Experiment-loop watcher correction is missing {', '.join(missing)}.")
-    restriction = f"""# RCP Experiment-loop watcher correction
+    if not diagnostics_path:
+        raise ValueError("Experiment-loop watcher correction is missing diagnostics path.")
+    return [
+        f"""# RCP Experiment-loop watcher correction
 
-Correct only the mandatory watcher handoff in the same native Work session.
-
-- Exact watcher diagnostic: `{diagnostics_path}`
-- Watcher output to rewrite: `{watch_path}`
-- Optional Patch output to rewrite for an explicit exit: `{patch_path}`
-- Existing Patch JSON Schema: `{output_schema_path}`
-
-Preserve the completed operational result. Do not rerun the Experiment, resubmit work, or cause a
-new external side effect. Inspect authoritative scheduler, process, job, result, log, and canonical
-graph state as needed. Judge the terminal Patch/watch pair, not whether either file changed. If an
-external observer or canonical graph condition is still needed, reconstruct a valid object with a
-non-empty `external` or `graph` list using the watcher handoff rules of your master contract, and
-preserve the Patch. If nothing remains to watch but useful
-synchronous work is still required, continue that work now without repeating completed side
-effects. Then either finish the Experiment, or explicitly pause for human authority by queuing a
-Decision, creating a Hypothesis Proposal, or creating a same-Patch Blocker. Write
-`{{"external":[],"graph":[]}}` when no watcher is needed; an already-correct empty object may remain
-byte-identical when the Patch changes to make the joint handoff valid. Never invent a watcher merely
-to satisfy correction, and never leave both lists empty merely because external state is uncertain
-or a canonical fact is not yet true. A `completed` Experiment with a non-empty `next_action` is
-still invalid: continue the named work until `next_action` can truthfully be null, or retain a
-nonterminal status and choose a real watcher or human-authority pause. Validate every Patch rewrite
-with the exact command below. Your final response should only confirm that the joint handoff was
-repaired."""
-    return [restriction, _current_validator(validator_command)]
+RCP rejected this turn's watcher handoff. Rewrite `watch.json`, and `patch.json` only for an
+explicit exit, by the watcher-correction rules of your master contract. Do not rerun the
+Experiment, resubmit work, or cause a new external side effect.
+- Watcher diagnostic: `{diagnostics_path}`"""
+    ]
 
 
 def experiment_watcher_maintenance_correction_contract(
@@ -746,61 +552,26 @@ def experiment_watcher_maintenance_correction_contract(
         )
     return f"""# RCP Experiment watcher maintenance correction
 
-{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+RCP rejected the node-attached Experiment watcher maintenance file this Work turn wrote. Rewrite
+only that file, by the maintenance rules in the Work turn instructions below; the diagnostic grants
+no new authority. Do not rerun an Experiment, resubmit work, repeat an external side effect, change
+`patch.json` or this conversation's own watcher file, or add a target or control field.
+- Work turn instructions: `{original_contract_path}`
+- Maintenance diagnostic: `{diagnostics_path}`
+- File to rewrite: `{watch_path}`
 
-Correct only the retained node-attached Experiment watcher maintenance handoff in this same native
-Work session.
-
-- Original immutable Work contract: `{original_contract_path}`
-- Exact maintenance diagnostic: `{diagnostics_path}`
-- Exact Experiment watcher output to rewrite: `{watch_path}`
-
-Preserve the completed operational result. Do not rerun an Experiment, resubmit work, repeat another
-external side effect, alter this conversation's own watcher file, or change `patch.json`. Read the
-original contract for the target resource, current watcher-state pointer, episode execution host,
-grouping and retirement rules, wake target, and protected fields. Use the current external-observer
-shape below. The diagnostic locates the invalidity but grants no new authority. Rewrite only the
-exact output above; do not add a target or control field.
-
-{_CURRENT_OPERATIONAL_INSTRUCTIONS}
-{_EXTERNAL_WATCHER_FORMS}
-
-Your final response should only confirm that the Experiment watcher maintenance handoff was rewritten.
-"""
+Your final response should only confirm that the file was rewritten."""
 
 
-def experiment_loop_patch_correction_contract(
-    *,
-    diagnostics_path: str,
-    patch_path: str,
-    watch_path: str,
-    validator_command: str,
-    output_schema_path: str | None = None,
-    write_scope: ProjectWriteScope | None = None,
-) -> list[str]:
+def experiment_loop_patch_correction_contract(*, diagnostics_path: str) -> list[str]:
     """Repair a loop Patch after handoff validation without repeating operational work."""
 
-    restriction = f"""# RCP Experiment-loop Patch correction
+    if not diagnostics_path:
+        raise ValueError("Experiment-loop Patch correction is missing diagnostics path.")
+    return [
+        f"""# RCP Experiment-loop Patch correction
 
-Correct only the retained semantic Patch in the same native Work session.
-
-- Exact Patch diagnostic: `{diagnostics_path}`
-- Patch output to rewrite: `{patch_path}`
-- Already validated watcher handoff: `{watch_path}`
-{_pointer("Current Patch JSON Schema", output_schema_path)}
-Before changing semantic operations, run the exact live validator below on the retained Patch.
-Historical diagnostics may describe older RCP policy. If the live check reports only retired
-schema-envelope or bookkeeping fields, remove only those fields and recheck before changing
-semantics. An old diagnostic alone is not a reason to delete a semantic operation.
-
-Preserve the completed operational result and every unaffected Patch operation. Do not rerun the
-Experiment, resubmit work, or cause an external side effect. If watcher output has both `external`
-and `graph` empty, the corrected Patch must continue to record success, queue a Decision, create a
-Hypothesis Proposal, or create a same-Patch Blocker; do not remove or weaken that exit merely to
-satisfy another diagnostic. Do not change `watch.json`. Your final response should only confirm that
-the Patch was rewritten."""
-    sections = [restriction]
-    if write_scope is not None:
-        sections.append(write_scope_section(write_scope).strip())
-    sections.append(_current_validator(validator_command))
-    return sections
+RCP rejected the retained Patch. Rewrite only `patch.json`, by the Patch-correction rules of your
+master contract. Do not change `watch.json`, rerun the Experiment, or cause an external side effect.
+- Patch diagnostic: `{diagnostics_path}`"""
+    ]

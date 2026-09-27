@@ -578,7 +578,7 @@ async def test_operational_continuation_renders_current_launch_client(
                 episode_context_baseline={},
                 loop_control_path="/inputs/loop-control.json",
                 watcher_state_path="/inputs/watcher-state.json",
-                context_replacement=None,
+                ontology_sha256="0" * 64,
                 wake_episode=SimpleNamespace(last_graph_result="applied", last_watcher_ids=[]),
             )
             # The master holds the expired command; the continuation must not repeat it.
