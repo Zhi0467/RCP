@@ -178,6 +178,9 @@ export function useChatState({
     () => new Map(),
   );
   const [selectedCanonicalChat, setSelectedCanonicalChat] = useState<ChatSummary | null>(null);
+  // Pinned or unread chats older than the loaded pages, fetched one by one.
+  const [listedExtraSummaries, setListedExtraSummaries] = useState<ChatSummary[]>([]);
+  const listedExtraAttempts = useRef<Set<string>>(new Set());
   const chatTaskStatuses = useRef<Map<string, AgentTask["status"]>>(new Map());
   const chatSummariesRef = useRef<ChatSummary[]>([]);
   const selectedChatIdRef = useRef<string | null>(null);
@@ -189,14 +192,19 @@ export function useChatState({
     setChatReadsState(next);
   }, []);
 
-  const visibleChatSummaries = useMemo(
-    () =>
-      selectedCanonicalChat &&
-      !chatSummaries.some((summary) => summary.chat_id === selectedCanonicalChat.chat_id)
-        ? [...chatSummaries, selectedCanonicalChat]
-        : chatSummaries,
-    [chatSummaries, selectedCanonicalChat],
-  );
+  const visibleChatSummaries = useMemo(() => {
+    const extras = [
+      ...(selectedCanonicalChat ? [selectedCanonicalChat] : []),
+      ...listedExtraSummaries,
+    ];
+    const listed = new Set(chatSummaries.map((summary) => summary.chat_id));
+    const added = extras.filter((summary) => {
+      if (listed.has(summary.chat_id)) return false;
+      listed.add(summary.chat_id);
+      return true;
+    });
+    return added.length ? [...chatSummaries, ...added] : chatSummaries;
+  }, [chatSummaries, listedExtraSummaries, selectedCanonicalChat]);
   const visibleChatIds = useMemo(
     () => visibleTranscriptIds(selectedChatId, floatingChat?.chatId ?? null),
     [floatingChat?.chatId, selectedChatId, visibleTranscriptIds],
@@ -502,6 +510,41 @@ export function useChatState({
     return unseen.length > 0;
   }, []);
 
+  const graphTargetKey = graphTarget.kind === "branch" ? `branch:${graphTarget.branch_id}` : "main";
+  useEffect(() => {
+    setListedExtraSummaries([]);
+    listedExtraAttempts.current = new Set();
+  }, [graphTargetKey]);
+
+  /** A pinned or unread chat must be listed wherever its recency puts it. */
+  const ensureListedChats = useCallback(
+    (chatIds: readonly string[]) => {
+      if (!projectId || !apiBase) return;
+      const requestedProjectId = projectId;
+      for (const chatId of chatIds) {
+        if (listedExtraAttempts.current.has(chatId)) continue;
+        if (chatSummariesRef.current.some((summary) => summary.chat_id === chatId)) continue;
+        listedExtraAttempts.current.add(chatId);
+        void loadChatTranscript(apiBase, chatId, api, graphTarget)
+          .then(({ messages: _messages, ...summary }) => {
+            if (!isActiveProject(requestedProjectId)) return;
+            setListedExtraSummaries((current) =>
+              current.some((item) => item.chat_id === chatId) ? current : [...current, summary],
+            );
+          })
+          .catch((error) => {
+            // A turn whose transcript was never written has no row to show.
+            if (error instanceof ApiError && error.status === 404) return;
+            listedExtraAttempts.current.delete(chatId);
+            reportError(
+              `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+      }
+    },
+    [apiBase, graphTarget, isActiveProject, projectId, reportError],
+  );
+
   const refreshChatReads = useCallback(async () => {
     if (!projectId || !apiBase) return;
     const requestedProjectId = projectId;
@@ -547,6 +590,8 @@ export function useChatState({
             }
           })
           .catch((error) => {
+            // Let the next view retry; the key only suppresses repeats of a success.
+            if (otherGraphReadKey.current === key) otherGraphReadKey.current = null;
             reportError(
               `Chat could not be marked read: ${error instanceof Error ? error.message : String(error)}`,
             );
@@ -587,6 +632,8 @@ export function useChatState({
     setDraftConversations([]);
     selectChat(null);
     setChatReads(null);
+    setListedExtraSummaries([]);
+    listedExtraAttempts.current = new Set();
     chatSummaryRefreshGeneration.current += 1;
     chatSummariesRef.current = [];
     setChatSummaries([]);
@@ -607,6 +654,8 @@ export function useChatState({
       setDraftConversations([...snapshot.draftConversations]);
       selectChat(snapshot.selectedChatId);
       setChatReads(snapshot.chatReads);
+      setListedExtraSummaries([]);
+      listedExtraAttempts.current = new Set();
       chatSummaryRefreshGeneration.current += 1;
       chatSummariesRef.current = [...snapshot.chatSummaries];
       setChatSummaries([...snapshot.chatSummaries]);
@@ -652,6 +701,7 @@ export function useChatState({
     recordWatcherResults,
     markVisibleChatRead,
     refreshChatReads,
+    ensureListedChats,
     resetProjectChats,
     restoreProjectChats,
   };

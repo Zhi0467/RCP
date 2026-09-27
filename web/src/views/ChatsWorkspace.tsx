@@ -72,6 +72,8 @@ interface Props {
   onRemoveDraft: (chatId: string) => void;
   /** Archive moves a chat in or out of the unread count, which the server derives. */
   onArchiveChange?: () => void;
+  /** Fetches conversations the loaded pages do not reach, such as old pinned ones. */
+  onEnsureListed?: (chatIds: readonly string[]) => void;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -173,6 +175,7 @@ export function ChatsWorkspace({
   chatTranscripts,
   hasMore,
   onArchiveChange,
+  onEnsureListed,
   loadingMore,
   onSelect,
   onLoadMore,
@@ -235,6 +238,9 @@ export function ChatsWorkspace({
     query,
   );
   const pinnedChatIds = new Set(display.pinned);
+  useEffect(() => {
+    onEnsureListed?.(display.pinned);
+  }, [display.pinned, onEnsureListed]);
   const visibleGroups = AGENT_LIST_SECTIONS.filter(
     (group) => filter === "all" || showingArchived || group === filter,
   );

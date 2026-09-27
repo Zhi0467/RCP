@@ -1173,6 +1173,7 @@ export default function App() {
     recordWatcherResults,
     markVisibleChatRead,
     refreshChatReads,
+    ensureListedChats,
     resetProjectChats,
     restoreProjectChats,
   } = useChatState({
@@ -2550,11 +2551,19 @@ export default function App() {
   ]);
   // Only a listed conversation can be opened and so marked read; counting any
   // other chat would leave the badge stuck.
+  const readUnreadChatIds = useMemo(
+    () => unreadChatIdsFromReads(tasks, chatReads),
+    [chatReads, tasks],
+  );
+  // An unread chat past the loaded pages is fetched into the list; one whose
+  // transcript was never written cannot be, and is left out of the count.
+  useEffect(() => {
+    ensureListedChats([...readUnreadChatIds]);
+  }, [ensureListedChats, readUnreadChatIds]);
   const unreadChatIds = useMemo(() => {
     const listed = new Set(conversations.map((conversation) => conversation.chatId));
-    const unread = unreadChatIdsFromReads(tasks, chatReads);
-    return new Set([...unread].filter((chatId) => listed.has(chatId)));
-  }, [chatReads, conversations, tasks]);
+    return new Set([...readUnreadChatIds].filter((chatId) => listed.has(chatId)));
+  }, [conversations, readUnreadChatIds]);
   const chatsIndicator = chatIndicator(tasks, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
@@ -4780,6 +4789,7 @@ export default function App() {
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
+              onEnsureListed={ensureListedChats}
               onArchiveChange={() =>
                 void refreshChatReads().catch((error) =>
                   reportErrorNotice(
