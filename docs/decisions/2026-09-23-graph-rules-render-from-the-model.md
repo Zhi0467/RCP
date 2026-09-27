@@ -46,22 +46,14 @@ site keeps its own authority block beside the shared graph rules.
 The test for a sentence is whether it would change between call sites. If it
 would, it is authority and belongs to the call site.
 
-## Why continuations repeat rather than replace
+## Why continuations no longer repeat the rules
 
-Within one release the data model and prompt builders are fixed. A Resume,
-Retry, correction, wake, or added turn re-renders the same graph rules the
-session already holds, so calling them a replacement is false and invites the
-agent to hunt for differences that do not exist. The rules therefore carry a
-version digest, as the agent authority contract already does, and a
-continuation repeats them so a long session does not lose them. Only a changed
-digest means they replace the earlier text. The attempt's own paths, output
-locations, and narrowed authority are genuinely new on every attempt and are
-still stated as applying now.
-
-A chat session bootstraps its master context once and re-sends it only when its
-contract key changes. That key now includes the graph rules digest, so a
-release that changes the rules reaches existing chats without a hand-bumped
-version number.
+The rules carry a version digest. They first shipped repeated on every
+continuation so a long session would not lose them. They now live in the
+session master, and a continuation points to it instead
+([decision](2026-09-27-continuations-point-to-their-master.md)). The digest is
+part of every master key, so a release that changes the rules gives an existing
+session a replacement master without a hand-bumped version number.
 
 ## What a later reviewer might restore
 
@@ -71,4 +63,4 @@ version number.
 - **A "who may write" column.** See above. Generating one from the enforcement
   sets is possible later; hand-writing one is not.
 - **"Supersedes earlier instructions" on every continuation.** It is true only
-  when the digest changed.
+  when the master key changed, and then the continuation says so.

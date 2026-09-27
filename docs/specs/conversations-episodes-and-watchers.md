@@ -317,12 +317,15 @@ Each invocation receives a dedicated Experiment contract and compact control
 file with phase, episode, graph target, invocation counts, pinned Decisions,
 current drift, completion criteria, and delivered watcher identities. Watcher
 state is a separate exact file. The provider never receives prior chat
-transcripts. An automatic wake repeats one path to the full Experiment contract
-that initialized its exact current native session; it does not tell the provider
-to reread that unchanged contract. Current focused authority, causal guidance,
-execution instructions, control inputs, schema, and output/validator paths
-replace earlier instructions while the objective, attempt ledger, and completed
-native-session progress remain intact.
+transcripts. A wake, an Add N turns continuation, and a same-session Resume or
+Retry send only what is new, inline: why the turn started, current focused
+authority, causal guidance, execution instructions, control inputs, schema, and
+output and validator paths. They end with one pointer to the Experiment contract
+that started the session (see
+[continuation prompts](providers-and-containment.md#continuation-prompts)).
+Current inline instructions take precedence while the objective, attempt ledger,
+and completed native-session progress remain intact. The episode report gets no
+pointer, and the next operational turn on its session reopens the master.
 
 The Experiment-loop Patch may update its own attempt/status and guidance, create
 Evidence and Blockers, assert legal epistemic and output edges, and create the

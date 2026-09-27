@@ -399,15 +399,52 @@ resumes the same native session id.
 
 Recovery retains the original assignment and completed native-session progress.
 The attempt's graph inputs, output schema and locations, validator, and command
-metadata apply to this attempt. Graph rules are repeated, not replaced: they
-replace earlier text only when their version digest differs from the one the
-session already holds (see
-[graph rules in task contracts](#graph-rules-in-task-contracts)). This refresh
-does not widen the captured task authority or authorize repeating completed
-external effects; historical diagnostics remain failure reports, not policy.
+metadata apply to this attempt and travel inline (see
+[continuation prompts](#continuation-prompts)). This refresh does not widen the
+captured task authority or authorize repeating completed external effects;
+historical diagnostics remain failure reports, not policy.
 After a completed Work-like Patch correction, RCP revalidates the retained candidate
 against current state even if its bytes did not change. A stale rejection does not
 require cosmetic edits; current schema and authority validation still govern Apply.
+
+## Continuation prompts
+
+The session id a launch hands the provider decides its prompt. A launch with no
+session id is a session start. It sends the owner's full contract, records its
+exact bytes as the session master, and tells the agent to open and retain it.
+Handoff, a provider switch, a clean Retry, a progress handoff, and a fresh
+watcher notification are all session starts.
+
+A launch with a session id is a continuation: a human turn, a wake, a recovery
+(Resume, same-session Retry, graph repair), or a correction. It sends only what
+is new, inline: the trigger or reason, diagnostics, and every current override
+(paths, validator and command credentials and prefixes, write scope, execution
+instructions, skills, attachments, a replaced context, and the owner's exact
+restriction). Current instructions take precedence over the master. It ends
+with one pointer to the master. The pointer says this is the contract given at
+the session's start, and to read it only after a compaction or a lost grip on
+the graph rules or authority. A continuation never resends the master and never
+forces a read.
+
+RCP restores the master file from its durable record into the launch's stage
+before every pointer. Only a master recorded by a succeeded operation counts;
+otherwise, or when the session has no record, the continuation bootstraps: it
+renders the current master, records it, and tells the agent to open it. The
+master key joins a shared master version, the graph rules version, and the
+owner's policy version. A key change bootstraps a replacement and says it
+replaces the earlier master. A branch-merge continuation re-sends the graph
+rules inline once main's ontology extensions differ from its master's.
+
+The episode report reuses the operational session but gets no pointer. It says
+the operational instructions no longer apply. The next operational continuation
+on that session then bootstraps the master again, and keeps doing so until an
+operational attempt on the session succeeds.
+
+Every owner builds its own parts and calls `compose` in
+`src/rcp/agents/continuation_prompt.py`; the master record lives in
+`src/rcp/runs/session_master.py`. The
+[decision](../decisions/2026-09-27-continuations-point-to-their-master.md)
+explains the tradeoffs.
 
 ## Graph rules in task contracts
 
@@ -427,12 +464,12 @@ block beside it: the ordinary agent contract, the orchestrator profile, or the
 Experiment-loop allowlist. A skill may teach method but does not restate the
 block's definitions.
 
-The block carries a version digest over its rendered text. Continuations,
-wakes, corrections, and added turns repeat the block, so a long session keeps
-it, and state that it replaces earlier graph rules only if the digest differs.
-A chat's master-context key includes the digest, so changed rules reach an
-existing chat on its next turn. A human-started graph repair renders the current
-contract rather than relying on the one its session began with.
+The block carries a version digest over its rendered text. It lives in the
+session master, so continuations, wakes, corrections, and added turns do not
+repeat it. Every master key includes the rules version, so changed rules reach
+an existing session as a replacement master on its next continuation. A
+human-started graph repair renders the current contract rather than relying on
+the one its session began with.
 
 ## One graph output channel
 
