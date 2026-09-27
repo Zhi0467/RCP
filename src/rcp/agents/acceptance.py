@@ -258,13 +258,14 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 hold.release()
 
         state = _read_state(resolved_cwd)
-        # An inline campaign continuation is its own current contract. Its master holds what
-        # the session learned at start, which the persisted fixture state already caches, and
-        # expired commands that must never stand in for a missing current one.
+        # An inline campaign continuation is its own current contract. A master it only points
+        # to holds what the session learned at start, which the persisted fixture state already
+        # caches, and expired commands that must never stand in for a missing current one.
         contract = (
             prompt
             if _RESULT_VIEW_AUTHORING_MARKER in prompt
-            or prompt.partition("\n")[0] in _CAMPAIGN_CONTRACTS
+            else _campaign_inline_contract(prompt)
+            if prompt.partition("\n")[0] in _CAMPAIGN_CONTRACTS
             else _read_launch_contract(prompt, resolved_cwd)
         )
         scenario = _scenario(prompt, contract, state)
@@ -629,7 +630,7 @@ async def _accept_campaign_turn(
     fixture_state = dict(fixture) if isinstance(fixture, dict) else {}
 
     if role == "worker":
-        reply_prefix = _campaign_command_prefix(contract, "- Reply command prefix: `")
+        reply_prefix = _campaign_worker_reply_prefix(contract)
         reply_template = _campaign_ordinary_child_reply_template(contract)
         instruction_path = _campaign_optional_path(contract, "- worker instruction: `")
         worker_fixture = False
@@ -992,11 +993,46 @@ def _prepare_campaign_fixture_active(cwd: Path, *, active_name: str, label: str)
     )
 
 
+def _campaign_inline_contract(prompt: str) -> str:
+    """An inline campaign continuation, with the master it opens now when it bootstraps one.
+
+    A master opened now was rendered with the current values, so the continuation sends
+    none of them; a master the session already holds is never read.
+    """
+
+    openers = [
+        SECTIONS[section].split("{path}")[0]
+        for section in ("master_bootstrap", "report_rebootstrap")
+    ]
+    for opener in openers:
+        if opener in prompt:
+            path = Path(prompt.partition(opener)[2].splitlines()[0].strip())
+            try:
+                return f"{prompt}\n\n{path.read_text(encoding='utf-8')}"
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"Acceptance campaign master is unreadable: {exc}") from exc
+    return prompt
+
+
 def _campaign_command_prefix_for_orchestrator(contract: str) -> str | None:
+    """A session start's master names the prefix; a continuation sends it as a changed value."""
+
     return _campaign_command_prefix(
         contract,
-        "- Command prefix for this turn: `",
+        "- command_prefix: `",
     ) or _campaign_command_prefix(contract, "- Command prefix: `")
+
+
+def _campaign_worker_reply_prefix(contract: str) -> str | None:
+    """The worker reply command: the current prefix followed by `message --key <reply key>`."""
+
+    prefix = _campaign_command_prefix_for_orchestrator(contract)
+    key = _campaign_command_prefix(contract, "- reply_key: `") or _campaign_command_prefix(
+        contract, "- Reply key: `"
+    )
+    if prefix is None or key is None:
+        return None
+    return shlex.join([*shlex.split(prefix), "message", "--key", key])
 
 
 def _campaign_command_prefix(contract: str, prefix: str) -> str | None:

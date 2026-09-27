@@ -894,7 +894,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         mode="resume",
         write_scope=_work_write_scope(),
         command_client="rcp-command",
-        reply_command="rcp-reply",
+        reply_key="worker-reply-key",
         seat_node_type="hypothesis",
         seat_node_id="hyp/example",
         seat_difficulty="standard",

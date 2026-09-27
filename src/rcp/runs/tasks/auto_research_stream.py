@@ -20,11 +20,11 @@ from rcp.agents import (
 )
 from rcp.agents.auto_research_prompt import (
     AUTO_RESEARCH_POLICY_VERSION,
+    auto_research_continuation_parts,
     auto_research_orchestrator_continuation_contract,
-    auto_research_orchestrator_continuation_parts,
     auto_research_orchestrator_task_contract,
     auto_research_patch_correction_parts,
-    auto_research_worker_continuation_parts,
+    auto_research_prompt_values,
     auto_research_worker_task_contract,
 )
 from rcp.agents.command_mailbox import (
@@ -38,6 +38,7 @@ from rcp.agents.continuation_prompt import (
     SECTIONS,
     LaunchPhase,
     MasterRef,
+    changed_since_master,
     classify,
     compose,
     master_key,
@@ -264,7 +265,6 @@ async def stream_auto_research_orchestrator_run(
                 expected_turn_id=expected_turn_id,
             ),
         ):
-            validator_command = staged_commands.client_command("validate", patch_path)
             write_scope = _project_write_scope(
                 context,
                 service,
@@ -276,7 +276,7 @@ async def stream_auto_research_orchestrator_run(
                 execution=execution,
                 capability="orchestrate",
             )
-            contract_path, prompt, master_path = _orchestrator_prompt(
+            contract_path, prompt, master, values = _orchestrator_prompt(
                 execution,
                 turn,
                 context=context,
@@ -285,7 +285,6 @@ async def stream_auto_research_orchestrator_run(
                 token=token,
                 patch_path=patch_path,
                 schema_path=schema_path,
-                validator_command=validator_command,
                 command_client=staged_commands.client_command(),
                 messages_path=messages_path,
                 lifecycle_path=lifecycle_path,
@@ -392,9 +391,9 @@ async def stream_auto_research_orchestrator_run(
             execution,
             turn,
             stage,
-            master_path=master_path,
+            master=master,
+            values=values,
             patch_path=patch_path,
-            schema_path=schema_path,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
             write_scope=write_scope,
@@ -509,12 +508,6 @@ async def stream_auto_research_worker_run(
                 expected_turn_id=f"{execution.operation_id}:worker",
             ),
         ):
-            validator_command = staged_commands.client_command("validate", patch_path)
-            reply_command = staged_commands.client_command(
-                "message",
-                "--key",
-                _worker_reply_key(turn),
-            )
             write_scope = _project_write_scope(
                 context,
                 service,
@@ -526,7 +519,7 @@ async def stream_auto_research_worker_run(
                 execution=execution,
                 capability="work_auto",
             )
-            contract_path, prompt, master_path = _worker_prompt(
+            contract_path, prompt, master, values = _worker_prompt(
                 service,
                 execution,
                 turn,
@@ -536,8 +529,8 @@ async def stream_auto_research_worker_run(
                 token=token,
                 patch_path=patch_path,
                 schema_path=schema_path,
-                validator_command=validator_command,
-                reply_command=reply_command,
+                command_client=staged_commands.client_command(),
+                reply_key=_worker_reply_key(turn),
                 messages_path=messages_path,
                 write_scope=write_scope,
             )
@@ -639,9 +632,9 @@ async def stream_auto_research_worker_run(
             execution,
             turn,
             stage,
-            master_path=master_path,
+            master=master,
+            values=values,
             patch_path=patch_path,
-            schema_path=schema_path,
             read_dirs=read_dirs,
             write_dirs=write_dirs,
             write_scope=write_scope,
@@ -1280,16 +1273,6 @@ def _worker_reply_key(turn: _CanonicalWorkerTurn) -> str:
     return f"worker-reply-{digest[:32]}"
 
 
-def _continuation_mode(
-    execution: AgentTaskExecution,
-) -> Literal["resume", "retry", "continuation"]:
-    if execution.continuation in {"fresh", "resume"}:
-        return "resume"
-    if execution.continuation == "retry":
-        return "retry"
-    return "continuation"
-
-
 def _retry_diagnostics_path(
     execution: AgentTaskExecution,
     local_stage: Path | None,
@@ -1318,14 +1301,16 @@ def _actor_launch_prompt(
     render_master: Callable[[], str],
     start_contract: Callable[[], str],
     continuation_parts: Callable[[], list[str]],
+    values: dict[str, object],
     ontology_extensions: bool,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
-) -> tuple[str, str, str]:
-    """Stage one actor launch; return its contract path, prompt, and the session's master path.
+) -> tuple[str, str, MasterRef]:
+    """Stage one actor launch; return its contract path, prompt, and the session's master.
 
     A session start sends its full contract by forced read and records it as the session's
-    master. A continuation sends only its current parts inline, with a pointer to that master,
-    or a bootstrap when the session holds none under the current key.
+    master with its values. A continuation sends only its current parts and the values that
+    changed since that master inline, with a pointer to it, or a bootstrap when the session
+    holds none under the current key. The returned master is the one the session now holds.
     """
 
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
@@ -1337,8 +1322,8 @@ def _actor_launch_prompt(
         contract_path, prompt = _stage_task_contract(
             local_stage, remote_stage, label, contract, execution=execution, role=role
         )
-        record_session_master(execution.store, execution.operation_id, contract, key)
-        return contract_path, prompt, contract_path
+        record_session_master(execution.store, execution.operation_id, contract, key, values)
+        return contract_path, prompt, MasterRef(path=contract_path, bootstrap=False, values=values)
     assert session_id is not None
     parts = continuation_parts()
     after_report = report_pending(session_id)
@@ -1350,6 +1335,7 @@ def _actor_launch_prompt(
         label_prefix=master_label_prefix,
         key=key,
         render=render_master,
+        values=values,
         force_bootstrap=after_report,
     )
     held: MasterRef | None = master
@@ -1358,7 +1344,7 @@ def _actor_launch_prompt(
         # and send the agent back to its operational master.
         parts.append(SECTIONS["report_rebootstrap"].format(path=master.path))
         held = None
-    prompt = compose(node, parts=parts, master=held, delta=None)
+    prompt = compose(node, parts=parts, master=held, delta=changed_since_master(master, values))
     contract_path = record_inline_prompt(
         execution,
         local_stage=local_stage,
@@ -1367,7 +1353,7 @@ def _actor_launch_prompt(
         role=role,
         prompt=prompt,
     )
-    return contract_path, prompt, master.path
+    return contract_path, prompt, MasterRef(path=master.path, bootstrap=False, values=master.values)
 
 
 def _orchestrator_prompt(
@@ -1380,16 +1366,25 @@ def _orchestrator_prompt(
     token: str,
     patch_path: str,
     schema_path: str,
-    validator_command: str,
     command_client: str,
     messages_path: str | None,
     lifecycle_path: str | None,
     skill_pointers: list[dict[str, object]],
     write_scope: ProjectWriteScope,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, MasterRef, dict[str, object]]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
+    values = auto_research_prompt_values(
+        graph_path=context.graph_path,
+        research_path=context.research_md_path,
+        repositories=repositories,
+        patch_path=patch_path,
+        output_schema_path=schema_path,
+        command_client=command_client,
+        write_scope=write_scope,
+        skill_pointers=skill_pointers,
+    )
 
     def render_master() -> str:
         instruction_path = None
@@ -1410,7 +1405,6 @@ def _orchestrator_prompt(
             repositories=repositories,
             patch_path=patch_path,
             output_schema_path=schema_path,
-            validator_command=validator_command,
             command_client=command_client,
             instruction_path=instruction_path,
             messages_path=messages_path,
@@ -1438,7 +1432,6 @@ def _orchestrator_prompt(
             repositories=repositories,
             patch_path=patch_path,
             output_schema_path=schema_path,
-            validator_command=validator_command,
             command_client=command_client,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
@@ -1451,26 +1444,19 @@ def _orchestrator_prompt(
         )
 
     def continuation_parts() -> list[str]:
-        return auto_research_orchestrator_continuation_parts(
-            mode=_continuation_mode(execution),
-            graph_path=context.graph_path,
-            research_path=context.research_md_path,
-            repositories=repositories,
-            patch_path=patch_path,
-            output_schema_path=schema_path,
-            validator_command=validator_command,
-            command_client=command_client,
+        return auto_research_continuation_parts(
+            actor="orchestrator",
+            cause=execution.continuation,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
             retry_diagnostics_path=_retry_diagnostics_path(
                 execution, local_stage, remote_stage, token
             ),
-            skill_pointers=skill_pointers,
-            write_scope=write_scope,
         )
 
-    return _actor_launch_prompt(
+    contract_path, prompt, master = _actor_launch_prompt(
         execution,
+        values=values,
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
@@ -1492,6 +1478,7 @@ def _orchestrator_prompt(
             stage_root=turn.binding.stage_root or "",
         ),
     )
+    return contract_path, prompt, master, values
 
 
 def _worker_prompt(
@@ -1505,11 +1492,11 @@ def _worker_prompt(
     token: str,
     patch_path: str,
     schema_path: str,
-    validator_command: str,
-    reply_command: str,
+    command_client: str,
+    reply_key: str,
     messages_path: str | None,
     write_scope: ProjectWriteScope,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, MasterRef, dict[str, object]]:
     actor = execution.store.agent_task(turn.binding.actor_operation_id)
     if actor is None:
         raise ValueError("AutoResearch worker origin task is missing.")
@@ -1529,6 +1516,16 @@ def _worker_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
+    values = auto_research_prompt_values(
+        graph_path=context.graph_path,
+        research_path=context.research_md_path,
+        repositories=repositories,
+        patch_path=patch_path,
+        output_schema_path=schema_path,
+        command_client=command_client,
+        write_scope=write_scope,
+        reply_key=reply_key,
+    )
 
     def render_master() -> str:
         return auto_research_worker_task_contract(
@@ -1542,32 +1539,26 @@ def _worker_prompt(
             repositories=repositories,
             patch_path=patch_path,
             output_schema_path=schema_path,
-            validator_command=validator_command,
-            reply_command=reply_command,
+            command_client=command_client,
+            reply_key=reply_key,
             messages_path=messages_path,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
         )
 
     def continuation_parts() -> list[str]:
-        return auto_research_worker_continuation_parts(
-            mode=_continuation_mode(execution),
-            graph_path=context.graph_path,
-            research_path=context.research_md_path,
-            repositories=repositories,
-            patch_path=patch_path,
-            output_schema_path=schema_path,
-            validator_command=validator_command,
-            reply_command=reply_command,
+        return auto_research_continuation_parts(
+            actor="worker",
+            cause=execution.continuation,
             messages_path=messages_path,
             retry_diagnostics_path=_retry_diagnostics_path(
                 execution, local_stage, remote_stage, token
             ),
-            write_scope=write_scope,
         )
 
-    return _actor_launch_prompt(
+    contract_path, prompt, master = _actor_launch_prompt(
         execution,
+        values=values,
         ontology_extensions=context.ontology_extensions,
         session_id=turn.binding.native_session_id,
         local_stage=local_stage,
@@ -1583,6 +1574,7 @@ def _worker_prompt(
         start_contract=render_master,
         continuation_parts=continuation_parts,
     )
+    return contract_path, prompt, master, values
 
 
 async def _serve_worker_commands(
@@ -1815,9 +1807,9 @@ async def _settle_worker_patch(
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
     *,
-    master_path: str,
+    master: MasterRef,
+    values: dict[str, object],
     patch_path: str,
-    schema_path: str,
     read_dirs: list[Path],
     write_dirs: list[Path],
     write_scope: ProjectWriteScope,
@@ -1969,21 +1961,17 @@ async def _settle_worker_patch(
                 ),
             ),
         ):
-            correction_validator_command = correction_mailbox.client_command("validate", patch_path)
             # This operation's own launch staged or restored the session's master moments ago,
             # so the correction points to it rather than looking up a settled record.
+            correction_values = {**values, "command_prefix": correction_mailbox.client_command()}
             correction_prompt = compose(
                 classify(LaunchPhase(session_id=native_session_id, phase="correction")),
                 parts=auto_research_patch_correction_parts(
                     actor=_actor_role,
-                    patch_path=patch_path,
                     diagnostics_path=diagnostics_path,
-                    validator_command=correction_validator_command,
-                    output_schema_path=schema_path,
-                    write_scope=write_scope,
                 ),
-                master=MasterRef(path=master_path, bootstrap=False),
-                delta=None,
+                master=master,
+                delta=changed_since_master(master, correction_values),
             )
             correction_path = record_inline_prompt(
                 execution,
@@ -2135,9 +2123,9 @@ async def _settle_orchestrator_patch(
     turn: _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
     *,
-    master_path: str,
+    master: MasterRef,
+    values: dict[str, object],
     patch_path: str,
-    schema_path: str,
     read_dirs: list[Path],
     write_dirs: list[Path],
     write_scope: ProjectWriteScope,
@@ -2152,9 +2140,9 @@ async def _settle_orchestrator_patch(
         execution,
         turn,
         stage,
-        master_path=master_path,
+        master=master,
+        values=values,
         patch_path=patch_path,
-        schema_path=schema_path,
         read_dirs=read_dirs,
         write_dirs=write_dirs,
         write_scope=write_scope,
