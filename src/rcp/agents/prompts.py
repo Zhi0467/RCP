@@ -1123,7 +1123,7 @@ Graph Patch (optional):
 {watch_rules}""")
 
     # Bumped when the paper-coach task contract's stable policy prose changes.
-    PAPER_COACH_POLICY_VERSION = "paper-coach-v1"
+    PAPER_COACH_POLICY_VERSION = "paper-coach-v2"
 
     @staticmethod
     def paper_coach_task_contract(
@@ -1162,6 +1162,8 @@ Relevant repository inputs; read only when the coaching request needs them:
 
 Read the required inputs from disk. Their bytes are the current inputs for this turn and are not
 repeated in the launch message; their semantic standing follows the graph rather than this pointer.
+Read them again at the start of every later turn in this session, because they may have changed; a
+later turn names only the paths that moved.
 
 Authorship contract:
 - Critique structure, logic, claims, literature coverage, and communication.

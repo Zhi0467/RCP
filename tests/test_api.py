@@ -3115,13 +3115,16 @@ def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
     # The continuation is sent inline and recorded for the next recovery.
     assert store.agent_task_contract(completed["operation_id"], recovery) == prompt
     assert store.agent_task_contract(completed["operation_id"], "base") is None
-    # Current schema, validator, and diagnostics travel inline; the master stays a file.
-    assert f"task-{completed['operation_id']}-patch-schema.json" in prompt
-    assert f"task-{failed['operation_id']}-patch-schema.json" not in prompt
-    assert str(Path(str(launcher.calls[1]["workspace"])) / "patch.json") in prompt
-    if recovery == "retry":
-        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in prompt
     master = launcher.calls[1]["inputs"][launch_contract_path(prompt).name]
+    # Current schema, validator, and diagnostics reach the session: in a master it opens
+    # now, or else inline against the master it holds. The master stays a file.
+    bootstrap = SECTIONS["master_bootstrap"].split("{path}")[0] in prompt
+    sent = prompt + (master if bootstrap else "")
+    assert f"task-{completed['operation_id']}-patch-schema.json" in sent
+    assert f"task-{failed['operation_id']}-patch-schema.json" not in sent
+    assert str(Path(str(launcher.calls[1]["workspace"])) / "patch.json") in sent
+    if recovery == "retry":
+        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in sent
     assert master in {
         store.agent_task_contract(operation_id, "session_master")
         for operation_id in (failed["operation_id"], completed["operation_id"])

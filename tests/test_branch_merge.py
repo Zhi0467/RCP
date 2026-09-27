@@ -896,8 +896,8 @@ async def test_moving_main_discards_candidate_and_rebases_same_session(tmp_path:
     assert any('"event":"done"' in frame for frame in frames)
     # The rebase replaces its context inline and points back to the start contract.
     _assert_points_to_start_contract(launcher.prompts)
-    assert first.context_id in launcher.prompts[1]
-    assert second.context_id in launcher.prompts[1]
+    assert first.context_id not in launcher.prompts[1]
+    assert f"- merge_context_id: `{second.context_id}`" in launcher.prompts[1]
 
 
 def _assert_points_to_start_contract(prompts: list[str]) -> None:
