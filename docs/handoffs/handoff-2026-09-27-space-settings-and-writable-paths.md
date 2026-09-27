@@ -105,8 +105,10 @@ RCP reaches over SSH (local launches, including all team-server launches,
 stage in the data folder), and a chat keeps one across its turns, with resume
 checking the exact saved path (`runs/chat.py`,
 `runs/tasks/auto_research_stream.py`). An existing chat or task keeps its
-`/tmp/rcp-run.*` folder, and resume accepts that saved legacy path; only new
-ones use `~/.rcp/stages/`. The remote sweep cleans both locations. Sockets and
+`/tmp/rcp-run.*` folder, and the two resume checks accept that saved legacy
+path (confirmed by the human on 2026-09-27); only new ones use
+`~/.rcp/stages/`. A later release deletes the legacy branch once no saved
+stage points at `/tmp`. The remote sweep cleans both locations. Sockets and
 temp files are recreated per turn or per operation, so moving them breaks
 nothing. The check is a remote chat started before the update, resumed
 after it. After this, `/tmp` holds nothing of RCP's, and a human can
