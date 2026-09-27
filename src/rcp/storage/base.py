@@ -2254,10 +2254,17 @@ class AppStoreBase:
             )
         """)
 
-    @classmethod
-    def _migrate_chat_reads_and_pins(cls, connection: sqlite3.Connection) -> None:
-        cls._ensure_column(connection, "chat_display", "pinned_user_id", "TEXT")
-        cls._ensure_column(connection, "chat_display", "pinned_at", "TEXT")
+    @staticmethod
+    def _migrate_chat_reads_and_pins(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS chat_pins (
+                project_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                pinned_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, chat_id, user_id)
+            )
+        """)
         connection.execute("""
             CREATE TABLE IF NOT EXISTS chat_reads (
                 project_id TEXT NOT NULL,

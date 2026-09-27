@@ -117,3 +117,14 @@ def test_chat_read_marker_never_moves_back(tmp_path: Path) -> None:
     assert store.chat_reads("project", "other", GraphTargetRef())["reads"] == {
         "chat": (later - timedelta(hours=1)).isoformat()
     }
+
+
+def test_chat_pins_belong_to_the_user_who_pinned(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.set_chat_pinned("project", "first", "user", pinned=True)
+    store.set_chat_pinned("project", "second", "user", pinned=True)
+    store.set_chat_pinned("project", "first", "other", pinned=True)
+    store.set_chat_pinned("project", "first", "user", pinned=False)
+
+    assert store.chat_display("project", "user")["pinned"] == ["second"]
+    assert store.chat_display("project", "other")["pinned"] == ["first"]

@@ -1961,6 +1961,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "chat_session_contexts": 1,
         "chat_display": 0,
         "chat_reads": 0,
+        "chat_pins": 0,
         "conversation_worktrees": 0,
         "compute_jobs": 0,
         "compute_backend_probes": 0,

@@ -60,6 +60,7 @@ class ChatTitleBody(BaseModel):
 class ChatDisplay(BaseModel):
     archived: list[str]
     titles: dict[str, str]
+    # The acting user's pins, newest first.
     pinned: list[str]
 
 
@@ -93,12 +94,16 @@ def _canonical_chat_id(chat_id: str) -> str:
 @router.get("/api/projects/{project_id}/chat-display", response_model=ChatDisplay)
 def chat_display(
     project_id: str,
+    request: Request,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    identity_access: IdentityDependency,
 ) -> ChatDisplay:
+    """Archive and names are the project's; pins are the acting user's."""
     project_id = catalog.resolve_project_id(project_id)
-    return ChatDisplay(**store.chat_display(project_id))
+    user = identity_access.acting_user(request)
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
 
 
 @router.post(
@@ -121,7 +126,7 @@ def archive_chat(
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
-    return ChatDisplay(**store.chat_display(project_id))
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
 
 
 @router.post(
@@ -144,7 +149,7 @@ def pin_chat(
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
     store.set_chat_pinned(project_id, chat_id, user.user_id, pinned=body.pinned)
-    return ChatDisplay(**store.chat_display(project_id))
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
 
 
 @router.post(
@@ -168,7 +173,7 @@ def rename_chat(
     user = identity_access.acting_user(request)
     title = " ".join((body.title or "").split()) or None
     store.set_chat_title(project_id, chat_id, user.user_id, title)
-    return ChatDisplay(**store.chat_display(project_id))
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
 
 
 @router.get("/api/projects/{project_id}/chat-reads", response_model=ChatReads)

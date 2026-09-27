@@ -82,6 +82,7 @@ PROJECT_LINKED_TABLES = {
     "auto_research_messages",
     "auto_research_recoveries",
     "chat_display",
+    "chat_pins",
     "chat_reads",
     "chat_session_contexts",
     "compute_jobs",

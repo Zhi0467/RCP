@@ -1,7 +1,7 @@
-"""Per-project display choices for conversations: archived, renamed, or pinned.
+"""Display choices for conversations: archived or renamed per project, pinned per user.
 
 No choice touches a transcript or task; a row goes away once it holds none.
-Read markers are per user: each records the newest turn end that user has seen.
+Pins and read markers are per user; a marker records the newest turn end seen.
 """
 
 from __future__ import annotations
@@ -13,18 +13,18 @@ from rcp.core.transition_models import GraphTargetRef
 
 
 class ChatDisplayStoreMixin:
-    def chat_display(self, project_id: str) -> dict[str, Any]:
+    def chat_display(self, project_id: str, user_id: str) -> dict[str, Any]:
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT chat_id, title, archived_at, pinned_at FROM chat_display "
+                "SELECT chat_id, title, archived_at FROM chat_display "
                 "WHERE project_id = ? ORDER BY chat_id",
                 (project_id,),
             ).fetchall()
-        pinned = sorted(
-            (row for row in rows if row["pinned_at"] is not None),
-            key=lambda row: row["pinned_at"],
-            reverse=True,
-        )
+            pinned = connection.execute(
+                "SELECT chat_id FROM chat_pins WHERE project_id = ? AND user_id = ? "
+                "ORDER BY pinned_at DESC, chat_id",
+                (project_id, user_id),
+            ).fetchall()
         return {
             "archived": [row["chat_id"] for row in rows if row["archived_at"] is not None],
             "titles": {row["chat_id"]: row["title"] for row in rows if row["title"] is not None},
@@ -43,12 +43,18 @@ class ChatDisplayStoreMixin:
         )
 
     def set_chat_pinned(self, project_id: str, chat_id: str, user_id: str, *, pinned: bool) -> None:
-        self._set_chat_display(
-            project_id,
-            chat_id,
-            "pinned_user_id = ?, pinned_at = ?",
-            (user_id, self.now()) if pinned else (None, None),
-        )
+        with self.connection() as connection:
+            if pinned:
+                connection.execute(
+                    "INSERT INTO chat_pins (project_id, chat_id, user_id, pinned_at) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT(project_id, chat_id, user_id) DO NOTHING",
+                    (project_id, chat_id, user_id, self.now()),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM chat_pins WHERE project_id = ? AND chat_id = ? AND user_id = ?",
+                    (project_id, chat_id, user_id),
+                )
 
     def set_chat_title(
         self, project_id: str, chat_id: str, user_id: str, title: str | None
@@ -145,6 +151,6 @@ class ChatDisplayStoreMixin:
             )
             connection.execute(
                 "DELETE FROM chat_display WHERE project_id = ? AND chat_id = ? "
-                "AND title IS NULL AND archived_at IS NULL AND pinned_at IS NULL",
+                "AND title IS NULL AND archived_at IS NULL",
                 (project_id, chat_id),
             )

@@ -432,6 +432,9 @@ class ProjectStoreMixin:
                     "chat_reads": connection.execute(
                         "DELETE FROM chat_reads WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "chat_pins": connection.execute(
+                        "DELETE FROM chat_pins WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "conversation_worktrees": connection.execute(
                         "DELETE FROM conversation_worktrees WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -1010,6 +1013,10 @@ class ProjectStoreMixin:
             )
             connection.execute(
                 "UPDATE chat_reads SET project_id = ? WHERE project_id = ?",
+                (project_id, legacy_id),
+            )
+            connection.execute(
+                "UPDATE chat_pins SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
             connection.execute(

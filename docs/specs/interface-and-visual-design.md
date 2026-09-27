@@ -176,10 +176,11 @@ icon at the chat band's top left, and a hairline separates list from chat.
 Cards share one fixed size: a one-line title and one secondary line of
 meta; the group they sit in names their state. A three-dot menu on
 the card removes an unsent draft, which exists only in the browser, or renames,
-pins, or archives a conversation with turns. All three are project display
-choices in the local store, shared by every member
+pins, or archives a conversation with turns. Rename and archive are project
+display choices shared by every member; a pin belongs to the member who made it
 (`POST /api/projects/{project_id}/chats/{chat_id}/title`, `.../pin`, and
-`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`);
+`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`,
+which returns the acting user's pins);
 a blank name returns the derived one. Rename edits the title in place on the
 card. An Archived filter appears when any exist, counts every archived chat
 including unloaded pages, and offers Restore. Transcripts and tasks are never
