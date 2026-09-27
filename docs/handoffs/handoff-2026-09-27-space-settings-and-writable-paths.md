@@ -5,8 +5,8 @@ Status: design confirmed by the human on 2026-09-27. Three Codex xhigh
 reviews found earlier drafts not ready; this revision folds in the third
 review's findings, and no fourth review is planned. The first draft moved
 machine definitions out of project manifests; the human replaced it with this
-smaller model. The human then settled the protection rule below. One question
-remains open (Claude's file-tool rules). Nothing is implemented.
+smaller model. The human then settled the protection rule below. Nothing is
+implemented.
 
 Close this handoff when a team member picks `/data/shared/huggingface` as a
 writable path on the GPU machine in Settings. After that, a new member
@@ -97,17 +97,15 @@ size) is a per-device preference and moves to the identity menu.
   adds no repository. It is a new additive operation through the canonical
   state workspace, which appends a machine alias and never changes existing
   aliases or repository placement.
-- **Backup takes machines from the current manifest.** Today backup requires
-  the manifest's machines and repositories to equal the setup-time
+- **Backup snapshots the project as it is now.** Today backup refuses a team
+  project whose machines or repositories differ from its setup-time
   provisioning record (`_provisioning_bound_configuration` in `projects.py`,
   and the machine equality in `BackupCheckoutRecoveryDescriptor` in
-  `server_ops/backup_models.py`). That rule only made sense while nothing could
-  change a project's topology after setup. The provisioning record stays the
-  source only for what it uniquely holds: the evidence to rebuild each
-  checkout (resolved path, deploy key). Machine entries come from the current
-  manifest, so an added machine is backed up like any other. Old descriptors
-  still validate. The check is add machine, then backup, restore, and backup
-  again.
+  `server_ops/backup_models.py`). That gate is wrong and is removed, not
+  relaxed. Backup captures the current manifest. Each checkout's re-clone
+  recipe (source, path, commit, deploy key) comes from the checkout's current
+  state, which backup already revalidates when it runs. Old descriptors still
+  restore. The check is add machine, then backup, restore, and backup again.
 
 ## Provider sign-in
 
@@ -227,7 +225,7 @@ read-only, because they are on the protected list.
 | Member terminal (mirrored) | `BindPaths`; the preflight checks each grant is writable | `BindReadOnlyPaths` + `ReadOnlyPaths` | None; a terminal has no stage |
 | systemd job (mirrored) | `ReadWritePaths` | `ReadOnlyPaths` | `ReadWritePaths` on the exception, which systemd applies over its read-only parent |
 | Codex | profile `write` roots | profile `read` entries | a more specific `write` entry. The implementation proves on the pinned Codex version that the more specific entry wins, and fails closed if not. |
-| Claude | `Edit(path)` allow | `Edit(path)` deny | **Open; see "Open question".** |
+| Claude | `Edit(path)` allow | `Edit(path)` deny | The folder holding the exception is left undenied; see "Claude's file-tool rules" |
 
 **Absent protected paths are masked by type.** A missing folder gets a
 read-only empty folder mount, as the terminal does today. A missing file,
@@ -269,22 +267,16 @@ of the carve-outs run in mirrored mode only.
   resumed sessions. This is tested with a real pre-change continuation.
 - **Running jobs** keep the scope they were launched with.
 
-## Open question: Claude's file-tool rules
+## Claude's file-tool rules
 
-Claude's deny rules beat its allow rules. When a grant covers a protected
-folder that also holds the launch's own scratch (for example, `/home/rcp`
-covers the data folder), RCP cannot deny the folder and still allow the
-scratch inside it.
-
-- **Simplified (chosen by the human on 2026-09-27, before the third review):**
-  leave a protected folder that holds the launch's own scratch undenied. The
-  third review found this lets Claude's file tools, not only its shell, edit
-  other stages there. The 2026-09-13 decision keeps file tools bounded, so
-  this option also needs that decision amended.
-- **Guard:** an RCP-owned `PreToolUse` hook checks every file edit against the
-  resolved policy, including folders created after launch. RCP sets
-  `disableAllHooks` today, so this changes how Claude launches. About half a
-  day.
+Claude's deny rules beat its allow rules, so RCP cannot deny a protected folder
+and still allow the launch's own scratch inside it. When a grant covers a
+protected folder that holds the launch's own scratch (for example, `/home/rcp`
+covers the data folder), that folder is left undenied for Claude. Every other
+protected path is denied as usual. Claude's shell can already write anywhere
+(the 2026-09-13 decision), so this adds little. The new decision record amends
+the 2026-09-13 one: inside a grant that covers RCP storage, Claude's file tools
+are bounded only as far as its deny rules can express.
 
 ## Folder picker
 
@@ -351,7 +343,8 @@ project card says the list applies to every project on that machine.
   without retiring it.
 - Behavior on Linux, in mirrored mode: a write under a granted parent works;
   a write to a protected child, another stage in `~/.rcp/stages`, and a token
-  file fails, including a sibling stage and a token file created after launch;
+  file fails under the OS-enforced backends, including a sibling stage and a
+  token file created after launch;
   the launch's own stage stays writable; a pre-upgrade remote chat and a
   waiting episode continue on their legacy `/tmp` stage.
 - Upgrade fixture, and backup/restore of a new backup and of an older one.
@@ -375,8 +368,8 @@ project card says the list applies to every project on that machine.
 
 ## Estimate
 
-About 5 to 6 days: 1 for the machine list, seeding, adding machines, backup,
-and sign-in; 2.5 for writable paths, protected storage, moving transient files
+About 5.5 to 6.5 days: 1.5 for the machine list, seeding, adding machines, the
+backup change, and sign-in; 2.5 for writable paths, protected storage, moving transient files
 with legacy stages kept, and the four backends; 1.5 for the Settings pages,
 cards, and picker; 1 for the Linux behavior, upgrade, restore, and served-app
 drives.
