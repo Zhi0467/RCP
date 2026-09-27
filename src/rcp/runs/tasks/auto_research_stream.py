@@ -19,9 +19,12 @@ from rcp.agents import (
     agent_output_schema,
 )
 from rcp.agents.auto_research_prompt import (
+    AUTO_RESEARCH_POLICY_VERSION,
     auto_research_orchestrator_continuation_contract,
+    auto_research_orchestrator_continuation_parts,
     auto_research_orchestrator_task_contract,
-    auto_research_worker_continuation_contract,
+    auto_research_patch_correction_parts,
+    auto_research_worker_continuation_parts,
     auto_research_worker_task_contract,
 )
 from rcp.agents.command_mailbox import (
@@ -31,7 +34,14 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
-from rcp.agents.prompts import PromptFactory, write_scope_section
+from rcp.agents.continuation_prompt import (
+    SECTIONS,
+    LaunchPhase,
+    MasterRef,
+    classify,
+    compose,
+    master_key,
+)
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
 from rcp.core.research_md import render_research_md
@@ -63,6 +73,11 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
 )
+from rcp.runs.session_master import (
+    continuation_session_master,
+    record_inline_prompt,
+    record_session_master,
+)
 from rcp.runs.shared import (
     _existing_exact_patch_digest,
     _parent_task_contract_path,
@@ -91,6 +106,7 @@ from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AgentTaskRecord,
+    AppStore,
     AutoResearchActorBinding,
     AutoResearchMessageRecord,
 )
@@ -116,6 +132,18 @@ _WORKER_CONTINUATIONS = frozenset(
     }
 )
 _ORCHESTRATOR_CONTINUATIONS = _WORKER_CONTINUATIONS | {"lifecycle_wake"}
+# The node an actor launch is when it hands the provider a saved session. Only a requeued
+# fresh allocation carries one; it continues rather than restarting the session.
+_LAUNCH_PHASES: dict[str, Literal["wake", "recovery"]] = {
+    "fresh": "recovery",
+    "resume": "recovery",
+    "retry": "recovery",
+    "watcher_wake": "wake",
+    "graph_condition_wake": "wake",
+    "message_wake": "wake",
+    "lifecycle_wake": "wake",
+    "auto_research_continuation": "wake",
+}
 
 
 @dataclass(frozen=True)
@@ -249,7 +277,7 @@ async def stream_auto_research_orchestrator_run(
                 execution=execution,
                 capability="orchestrate",
             )
-            contract_path, prompt = _orchestrator_prompt(
+            contract_path, prompt, master_path = _orchestrator_prompt(
                 execution,
                 turn,
                 context=context,
@@ -365,7 +393,7 @@ async def stream_auto_research_orchestrator_run(
             execution,
             turn,
             stage,
-            contract_path=contract_path,
+            master_path=master_path,
             patch_path=patch_path,
             schema_path=schema_path,
             read_dirs=read_dirs,
@@ -375,7 +403,6 @@ async def stream_auto_research_orchestrator_run(
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
             command_dispatcher=command_dispatcher,
-            ontology_extensions=context.ontology_extensions,
         )
         for frame in settlement.frames:
             yield frame
@@ -500,7 +527,7 @@ async def stream_auto_research_worker_run(
                 execution=execution,
                 capability="work_auto",
             )
-            contract_path, prompt = _worker_prompt(
+            contract_path, prompt, master_path = _worker_prompt(
                 service,
                 execution,
                 turn,
@@ -613,7 +640,7 @@ async def stream_auto_research_worker_run(
             execution,
             turn,
             stage,
-            contract_path=contract_path,
+            master_path=master_path,
             patch_path=patch_path,
             schema_path=schema_path,
             read_dirs=read_dirs,
@@ -623,7 +650,6 @@ async def stream_auto_research_worker_run(
             native_session_id=outcome.session_id,
             retry_patch_digest=retry_patch_digest,
             command_dispatcher=command_dispatcher,
-            ontology_extensions=context.ontology_extensions,
         )
         for frame in settlement.frames:
             yield frame
@@ -1255,6 +1281,113 @@ def _worker_reply_key(turn: _CanonicalWorkerTurn) -> str:
     return f"worker-reply-{digest[:32]}"
 
 
+def report_rebootstrap_pending(
+    store: AppStore,
+    *,
+    project_id: str,
+    native_session_id: str,
+    stage_host: str | None,
+    stage_root: str,
+) -> bool:
+    """Whether an episode report ran on this exact session since its last operational success.
+
+    STUB for the lead: wire this to slice B's durable "report bootstrap pending" predicate at
+    merge. Until then no session is ever pending.
+    """
+
+    del store, project_id, native_session_id, stage_host, stage_root
+    return False
+
+
+def _continuation_mode(
+    execution: AgentTaskExecution,
+) -> Literal["resume", "retry", "continuation"]:
+    if execution.continuation in {"fresh", "resume"}:
+        return "resume"
+    if execution.continuation == "retry":
+        return "retry"
+    return "continuation"
+
+
+def _retry_diagnostics_path(
+    execution: AgentTaskExecution,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    token: str,
+) -> str | None:
+    if execution.continuation != "retry":
+        return None
+    return _stage_json_task_input(
+        local_stage,
+        remote_stage,
+        f"task-{token}-retry-diagnostics.json",
+        {"prior_attempt_diagnostics": list(execution.retry_feedback)},
+    )
+
+
+def _actor_launch_prompt(
+    execution: AgentTaskExecution,
+    *,
+    session_id: str | None,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    label: str,
+    role: str,
+    master_label_prefix: str,
+    render_master: Callable[[], str],
+    start_contract: Callable[[], str],
+    continuation_parts: Callable[[], list[str]],
+    report_pending: Callable[[str], bool] = lambda _session_id: False,
+) -> tuple[str, str, str]:
+    """Stage one actor launch; return its contract path, prompt, and the session's master path.
+
+    A session start sends its full contract by forced read and records it as the session's
+    master. A continuation sends only its current parts inline, with a pointer to that master,
+    or a bootstrap when the session holds none under the current key.
+    """
+
+    key = master_key(AUTO_RESEARCH_POLICY_VERSION)
+    node = classify(
+        LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
+    )
+    if node == "session_start":
+        contract = start_contract()
+        contract_path, prompt = _stage_task_contract(
+            local_stage, remote_stage, label, contract, execution=execution, role=role
+        )
+        record_session_master(execution.store, execution.operation_id, contract, key)
+        return contract_path, prompt, contract_path
+    assert session_id is not None
+    parts = continuation_parts()
+    after_report = report_pending(session_id)
+    master = continuation_session_master(
+        execution,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        native_session_id=session_id,
+        label_prefix=master_label_prefix,
+        key=key,
+        render=render_master,
+        force_bootstrap=after_report,
+    )
+    held: MasterRef | None = master
+    if after_report:
+        # The report's restriction is the newest instruction this session holds; retire it
+        # and send the agent back to its operational master.
+        parts.append(SECTIONS["report_rebootstrap"].format(path=master.path))
+        held = None
+    prompt = compose(node, parts=parts, master=held, delta=None)
+    contract_path = record_inline_prompt(
+        execution,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        label=label,
+        role=role,
+        prompt=prompt,
+    )
+    return contract_path, prompt, master.path
+
+
 def _orchestrator_prompt(
     execution: AgentTaskExecution,
     turn: _CanonicalOrchestratorTurn,
@@ -1271,17 +1404,12 @@ def _orchestrator_prompt(
     lifecycle_path: str | None,
     skill_pointers: list[dict[str, object]],
     write_scope: ProjectWriteScope,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
-    # Without a saved stage the failed allocation never reached its first provider launch, so
-    # its clean retry needs the full base contract rather than a reference to a contract it
-    # never got.
-    first_launch = execution.continuation == "fresh" or (
-        turn.clean_session_retry and turn.binding.stage_root is None
-    )
-    if first_launch:
+
+    def render_master() -> str:
         instruction_path = None
         if turn.request.instruction:
             instruction_digest = hashlib.sha256(
@@ -1293,7 +1421,7 @@ def _orchestrator_prompt(
                 f"auto_research-starting-instruction-{instruction_digest}.txt",
                 turn.request.instruction + "\n",
             )
-        contract = auto_research_orchestrator_task_contract(
+        return auto_research_orchestrator_task_contract(
             project_name=context.project_name,
             graph_path=context.graph_path,
             research_path=context.research_md_path,
@@ -1309,35 +1437,20 @@ def _orchestrator_prompt(
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
         )
-        role = (
-            "auto_research_orchestrator"
-            if execution.continuation == "fresh"
-            else "auto_research_orchestrator_retry"
-        )
-    else:
-        retry_diagnostics_path = (
-            _stage_json_task_input(
-                local_stage,
-                remote_stage,
-                f"task-{token}-retry-diagnostics.json",
-                {"prior_attempt_diagnostics": list(execution.retry_feedback)},
-            )
-            if execution.continuation == "retry"
-            else None
-        )
-        contract = auto_research_orchestrator_continuation_contract(
+
+    def start_contract() -> str:
+        # Without a saved stage the failed allocation never reached its first provider
+        # launch, so its clean retry needs the full base contract rather than a reference
+        # to a contract it never got.
+        if execution.continuation == "fresh" or turn.binding.stage_root is None:
+            return render_master()
+        return auto_research_orchestrator_continuation_contract(
             original_contract_path=_parent_task_contract_path(
                 execution,
                 local_stage,
                 remote_stage,
             ),
-            mode=(
-                "resume"
-                if execution.continuation == "resume"
-                else "retry"
-                if execution.continuation == "retry"
-                else "continuation"
-            ),
+            mode="retry",
             graph_path=context.graph_path,
             research_path=context.research_md_path,
             repositories=repositories,
@@ -1347,19 +1460,55 @@ def _orchestrator_prompt(
             command_client=command_client,
             messages_path=messages_path,
             lifecycle_path=lifecycle_path,
-            retry_diagnostics_path=retry_diagnostics_path,
+            retry_diagnostics_path=_retry_diagnostics_path(
+                execution, local_stage, remote_stage, token
+            ),
             skill_pointers=skill_pointers,
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
         )
-        role = f"auto_research_orchestrator_{execution.continuation}"
-    return _stage_task_contract(
-        local_stage,
-        remote_stage,
-        f"task-{token}-auto_research-orchestrator.md",
-        contract,
-        execution=execution,
-        role=role,
+
+    def continuation_parts() -> list[str]:
+        return auto_research_orchestrator_continuation_parts(
+            mode=_continuation_mode(execution),
+            graph_path=context.graph_path,
+            research_path=context.research_md_path,
+            repositories=repositories,
+            patch_path=patch_path,
+            output_schema_path=schema_path,
+            validator_command=validator_command,
+            command_client=command_client,
+            messages_path=messages_path,
+            lifecycle_path=lifecycle_path,
+            retry_diagnostics_path=_retry_diagnostics_path(
+                execution, local_stage, remote_stage, token
+            ),
+            skill_pointers=skill_pointers,
+            write_scope=write_scope,
+        )
+
+    return _actor_launch_prompt(
+        execution,
+        session_id=turn.binding.native_session_id,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        label=f"task-{token}-auto_research-orchestrator.md",
+        role=(
+            "auto_research_orchestrator"
+            if execution.continuation == "fresh"
+            else f"auto_research_orchestrator_{execution.continuation}"
+        ),
+        master_label_prefix="auto_research-orchestrator-master",
+        render_master=render_master,
+        start_contract=start_contract,
+        continuation_parts=continuation_parts,
+        report_pending=lambda session_id: report_rebootstrap_pending(
+            execution.store,
+            project_id=turn.task.project_id,
+            native_session_id=session_id,
+            stage_host=turn.binding.stage_host,
+            stage_root=turn.binding.stage_root or "",
+        ),
     )
 
 
@@ -1378,7 +1527,7 @@ def _worker_prompt(
     reply_command: str,
     messages_path: str | None,
     write_scope: ProjectWriteScope,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     actor = execution.store.agent_task(turn.binding.actor_operation_id)
     if actor is None:
         raise ValueError("AutoResearch worker origin task is missing.")
@@ -1398,8 +1547,9 @@ def _worker_prompt(
     repositories = [
         {"alias": item.alias, "host": item.host, "path": item.path} for item in context.repositories
     ]
-    if execution.continuation == "fresh":
-        contract = auto_research_worker_task_contract(
+
+    def render_master() -> str:
+        return auto_research_worker_task_contract(
             project_name=context.project_name,
             seat_node_type="Experiment" if node.type == "experiment" else "Blocker",
             seat_node_id=node.id,
@@ -1416,27 +1566,10 @@ def _worker_prompt(
             write_scope=write_scope,
             ontology_extensions=context.ontology_extensions,
         )
-        role = "auto_research_worker"
-    else:
-        retry_diagnostics_path = (
-            _stage_json_task_input(
-                local_stage,
-                remote_stage,
-                f"task-{token}-retry-diagnostics.json",
-                {"prior_attempt_diagnostics": list(execution.retry_feedback)},
-            )
-            if execution.continuation == "retry"
-            else None
-        )
-        contract = auto_research_worker_continuation_contract(
-            original_contract_path=_parent_task_contract_path(execution, local_stage, remote_stage),
-            mode=(
-                "resume"
-                if execution.continuation == "resume"
-                else "retry"
-                if execution.continuation == "retry"
-                else "continuation"
-            ),
+
+    def continuation_parts() -> list[str]:
+        return auto_research_worker_continuation_parts(
+            mode=_continuation_mode(execution),
             graph_path=context.graph_path,
             research_path=context.research_md_path,
             repositories=repositories,
@@ -1445,18 +1578,27 @@ def _worker_prompt(
             validator_command=validator_command,
             reply_command=reply_command,
             messages_path=messages_path,
-            retry_diagnostics_path=retry_diagnostics_path,
+            retry_diagnostics_path=_retry_diagnostics_path(
+                execution, local_stage, remote_stage, token
+            ),
             write_scope=write_scope,
-            ontology_extensions=context.ontology_extensions,
         )
-        role = f"auto_research_worker_{execution.continuation}"
-    return _stage_task_contract(
-        local_stage,
-        remote_stage,
-        f"task-{token}-auto_research-worker.md",
-        contract,
-        execution=execution,
-        role=role,
+
+    return _actor_launch_prompt(
+        execution,
+        session_id=turn.binding.native_session_id,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        label=f"task-{token}-auto_research-worker.md",
+        role=(
+            "auto_research_worker"
+            if execution.continuation == "fresh"
+            else f"auto_research_worker_{execution.continuation}"
+        ),
+        master_label_prefix="auto_research-worker-master",
+        render_master=render_master,
+        start_contract=render_master,
+        continuation_parts=continuation_parts,
     )
 
 
@@ -1690,7 +1832,7 @@ async def _settle_worker_patch(
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
     *,
-    contract_path: str,
+    master_path: str,
     patch_path: str,
     schema_path: str,
     read_dirs: list[Path],
@@ -1700,7 +1842,6 @@ async def _settle_worker_patch(
     native_session_id: str,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
-    ontology_extensions: bool,
     _actor_role: Literal["worker", "orchestrator"] = "worker",
     _profile: Literal["ordinary", "orchestrator"] = "ordinary",
     _capability: Literal["work_auto", "orchestrate"] = "work_auto",
@@ -1846,28 +1987,28 @@ async def _settle_worker_patch(
             ),
         ):
             correction_validator_command = correction_mailbox.client_command("validate", patch_path)
-            correction_contract = PromptFactory.continuation_task_contract(
-                original_contract_path=contract_path,
-                mode="work_patch_correction",
-                patch_path=patch_path,
-                diagnostics_path=diagnostics_path,
-                validator_command=correction_validator_command,
-                output_schema_path=schema_path,
-                ontology_extensions=ontology_extensions,
+            # This operation's own launch staged or restored the session's master moments ago,
+            # so the correction points to it rather than looking up a settled record.
+            correction_prompt = compose(
+                classify(LaunchPhase(session_id=native_session_id, phase="correction")),
+                parts=auto_research_patch_correction_parts(
+                    actor=_actor_role,
+                    patch_path=patch_path,
+                    diagnostics_path=diagnostics_path,
+                    validator_command=correction_validator_command,
+                    output_schema_path=schema_path,
+                    write_scope=write_scope,
+                ),
+                master=MasterRef(path=master_path, bootstrap=False),
+                delta=None,
             )
-            correction_contract += (
-                "\nThe current Auto-research command credential permits only Patch validation. "
-                "It replaces every earlier command prefix; do not Apply, send mail, dispatch "
-                "children, register watchers, or finish the episode during this correction.\n"
-                + write_scope_section(write_scope)
-            )
-            correction_path, correction_prompt = _stage_task_contract(
-                stage.local,
-                stage.remote,
-                f"task-{token}-auto_research-work-correction-{correction_rounds}.md",
-                correction_contract,
-                execution=execution,
+            correction_path = record_inline_prompt(
+                execution,
+                local_stage=stage.local,
+                remote_stage=stage.remote,
+                label=f"task-{token}-auto_research-work-correction-{correction_rounds}.md",
                 role=f"auto_research_{_actor_role}_patch_correction_{correction_rounds}",
+                prompt=correction_prompt,
             )
             _record_agent_launch_receipt(
                 execution,
@@ -2011,7 +2152,7 @@ async def _settle_orchestrator_patch(
     turn: _CanonicalOrchestratorTurn,
     stage: _WorkerStage,
     *,
-    contract_path: str,
+    master_path: str,
     patch_path: str,
     schema_path: str,
     read_dirs: list[Path],
@@ -2021,7 +2162,6 @@ async def _settle_orchestrator_patch(
     native_session_id: str,
     retry_patch_digest: str | None,
     command_dispatcher: AutoResearchCommandDispatcher,
-    ontology_extensions: bool,
 ) -> _PatchSettlement:
     return await _settle_worker_patch(
         service,
@@ -2029,7 +2169,7 @@ async def _settle_orchestrator_patch(
         execution,
         turn,
         stage,
-        contract_path=contract_path,
+        master_path=master_path,
         patch_path=patch_path,
         schema_path=schema_path,
         read_dirs=read_dirs,
@@ -2039,7 +2179,6 @@ async def _settle_orchestrator_patch(
         native_session_id=native_session_id,
         retry_patch_digest=retry_patch_digest,
         command_dispatcher=command_dispatcher,
-        ontology_extensions=ontology_extensions,
         _actor_role="orchestrator",
         _profile="orchestrator",
         _capability="orchestrate",

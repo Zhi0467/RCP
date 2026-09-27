@@ -258,9 +258,13 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 hold.release()
 
         state = _read_state(resolved_cwd)
+        # An inline campaign continuation is its own current contract. Its master holds what
+        # the session learned at start, which the persisted fixture state already caches, and
+        # expired commands that must never stand in for a missing current one.
         contract = (
             prompt
             if _RESULT_VIEW_AUTHORING_MARKER in prompt
+            or prompt.partition("\n")[0] in _CAMPAIGN_CONTRACTS
             else _read_launch_contract(prompt, resolved_cwd)
         )
         scenario = _scenario(prompt, contract, state)
