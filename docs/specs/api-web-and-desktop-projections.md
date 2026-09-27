@@ -143,6 +143,9 @@ Graph, snapshot, history, Sync/preview, and ordinary chat/task routes accept an
 optional `branch_id` query naming an existing episode branch. Omitting it selects
 main; project-wide task and watcher lists retain their project-wide default.
 Snapshots publish `graph_target`, `graph_head`, and `graph_changes` (null on main).
+`graph_head` is the exact head, transition id included, that Sync/preview builds
+on. Display caches written before it named the id carry null there; the Web keeps
+the head it already observed at that revision.
 `graph/changes?branch_id=...` publishes the same canonical base-to-head semantic
 delta, changed and neighboring node ids, before/after values, and Patch/task
 provenance. The backend derives that read model from one coherent branch replay.

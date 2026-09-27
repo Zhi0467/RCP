@@ -352,6 +352,50 @@ def test_empty_sync_response_preserves_the_exact_canonical_transition_head(
     assert payload["graph"]["revision"] == exact_head["revision"]
 
 
+def test_project_snapshot_reports_the_exact_head_a_preview_builds_on(
+    manifest, tmp_path: Path
+) -> None:
+    app, client, project_id = _seeded_api(manifest, tmp_path)
+    before = app.state.service.history.state()
+    question = before.nodes["rq/learning-after-shift"]
+    committed = client.post(
+        f"/api/projects/{project_id}/sync",
+        json={
+            "base_revision": before.revision,
+            "nodes": [
+                {
+                    "node_id": question.id,
+                    "base_updated_rev": question.updated_rev,
+                    "changes": {"title": "Learning after a shifted distribution"},
+                }
+            ],
+        },
+    )
+    assert committed.status_code == 200, committed.text
+    exact_head = committed.json()["head"]
+    assert exact_head["transition_id"] is not None
+
+    snapshot = client.get(f"/api/projects/{project_id}")
+    preview = client.post(
+        f"/api/projects/{project_id}/sync/preview",
+        json={
+            "base_revision": exact_head["revision"],
+            "nodes": [
+                {
+                    "node_id": question.id,
+                    "base_updated_rev": exact_head["revision"],
+                    "changes": {"title": "Learning after a distribution shift"},
+                }
+            ],
+        },
+    )
+
+    assert snapshot.status_code == 200, snapshot.text
+    assert preview.status_code == 200, preview.text
+    assert snapshot.json()["graph_head"] == exact_head
+    assert preview.json()["transition"]["pre_head"] == exact_head
+
+
 def test_sync_with_several_staged_actions_spends_exactly_one_revision(
     manifest, tmp_path: Path
 ) -> None:

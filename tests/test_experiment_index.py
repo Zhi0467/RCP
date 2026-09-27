@@ -1573,8 +1573,8 @@ def test_versioned_cache_commit_cannot_regress_graph_or_project_summary(
             "What is the newest question?", base_updated_rev=question.updated_rev
         ),
     )
-    state = app.state.service.history.materialize(write_outputs=False).state
-    newer = app.state.service.project_snapshot(state=state)
+    materialization = app.state.service.history.materialize(write_outputs=False)
+    newer = app.state.service.project_snapshot(materialization=materialization)
     newer["id"] = project_id
 
     catalog = app.state.catalog

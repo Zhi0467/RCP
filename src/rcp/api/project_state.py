@@ -119,7 +119,7 @@ def _branch_snapshot(
     materialization, changes = branch_changes(service.history)
     snapshot = project_display_cache.complete_snapshot(
         project_id,
-        service.project_snapshot(state=materialization.state, head=changes.head),
+        service.project_snapshot(materialization=materialization, head=changes.head),
         fresh=True,
     )
     snapshot["graph_changes"] = changes.model_dump(mode="json")
