@@ -53,7 +53,7 @@ from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
 )
-from rcp.core.materialize import apply_valid_patch
+from rcp.core.materialize import MaterializationResult, apply_valid_patch
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
@@ -1471,15 +1471,25 @@ class ProjectService:
     def project_snapshot(
         self,
         *,
-        state: GraphState | None = None,
+        materialization: MaterializationResult | None = None,
         paper: PaperSnapshot | None = None,
         head: GraphHeadRef | None = None,
     ) -> _ProjectSnapshotDraft:
-        if state is None:
-            state = self.history.state()
+        if materialization is None:
+            materialization = self.history.current_materialization()
+        state = materialization.state
         if paper is None:
             paper = self.paper.snapshot()
-        head = head or GraphHeadRef(target=self.history.graph_target, revision=state.revision)
+        if head is None:
+            # Previews and Sync report the exact head, transition id included; a
+            # display head without it reads as a different head at the same
+            # revision and restarts the browser's staged preview on every poll.
+            # A halted replay has no transition chain to name.
+            head = (
+                self.history.head_ref(materialization)
+                if state.replay_status == "complete"
+                else GraphHeadRef(target=self.history.graph_target, revision=state.revision)
+            )
         if head.target != self.history.graph_target or head.revision != state.revision:
             raise ValueError(
                 "The graph snapshot and its head must describe the same target revision."

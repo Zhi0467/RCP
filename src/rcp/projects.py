@@ -766,7 +766,7 @@ class ProjectCatalog:
         self.provider_skills = provider_skills
         self._services: dict[str, ProjectService] = {}
         self._services_lock = threading.Lock()
-        self._opening: dict[str, Future[tuple[ProjectService, GraphState]]] = {}
+        self._opening: dict[str, Future[tuple[ProjectService, MaterializationResult]]] = {}
         self._deleting: set[str] = set()
         self._snapshot_locks: dict[str, threading.Lock] = {}
         self._snapshot_generations: dict[str, int] = {}
@@ -1085,7 +1085,7 @@ class ProjectCatalog:
                 task_continuation_session=self.store.agent_task_continuation_session_id,
                 chat_graph_target=self.store.chat_graph_target,
             )
-            snapshot = _snapshot_payload(service.project_snapshot(state=materialization.state))
+            snapshot = _snapshot_payload(service.project_snapshot(materialization=materialization))
             self._stamp_snapshot_identity(snapshot, project_id)
             self.mark_snapshot_fresh(snapshot)
             self.write_cached_snapshot(project_id, snapshot)
@@ -1528,9 +1528,9 @@ class ProjectCatalog:
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, _ProjectSnapshotDraft]:
         project_id = self._canonical_project_id(project_id)
-        service, initialized_state = self._service_or_open(project_id)
+        service, initialized = self._service_or_open(project_id)
         project_id = self._canonical_project_id(project_id)
-        snapshot = _snapshot_payload(service.project_snapshot(state=initialized_state))
+        snapshot = _snapshot_payload(service.project_snapshot(materialization=initialized))
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         return service, _ProjectSnapshotDraft(snapshot)
@@ -1542,14 +1542,14 @@ class ProjectCatalog:
         """Refresh canonical state and build one fresh display-snapshot candidate."""
 
         project_id = self._canonical_project_id(project_id)
-        service, initialized_state = self._service_or_open(project_id)
+        service, initialized = self._service_or_open(project_id)
         project_id = self._canonical_project_id(project_id)
-        if initialized_state is None:
+        if initialized is None:
             refreshed = service.history.workspace.refresh()
             if service.history.workspace.remote and not refreshed:
                 raise StateUnavailable("Remote canonical state has no readable manifest.")
-            initialized_state = service.history.materialize(write_outputs=False).state
-        snapshot = _snapshot_payload(service.project_snapshot(state=initialized_state))
+            initialized = service.history.materialize(write_outputs=False)
+        snapshot = _snapshot_payload(service.project_snapshot(materialization=initialized))
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         return service, _ProjectSnapshotDraft(snapshot)
@@ -1603,7 +1603,7 @@ class ProjectCatalog:
     def _service_or_open(
         self,
         project_id: str,
-    ) -> tuple[ProjectService, GraphState | None]:
+    ) -> tuple[ProjectService, MaterializationResult | None]:
         """Open once per project while leaving snapshot work outside the lock."""
 
         project_id = self._ensure_registered_identity(project_id)
@@ -2245,7 +2245,7 @@ class ProjectCatalog:
             / (f"{(safe_project_id or 'project')[:80]}-introduction.md")
         )
 
-    def _open_service(self, project_id: str) -> tuple[ProjectService, GraphState]:
+    def _open_service(self, project_id: str) -> tuple[ProjectService, MaterializationResult]:
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
@@ -2272,8 +2272,7 @@ class ProjectCatalog:
                 f"Registered project id {project_id!r} does not match canonical history "
                 f"{identity.project_id!r}."
             )
-        initialized_state = initialized.state
-        if initialized_state.replay_status != "degraded":
+        if initialized.state.replay_status != "degraded":
             self.store.migrate_legacy_project_data(history.manifest.name, project_id)
         paper = PaperService(
             history.manifest,
@@ -2293,7 +2292,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
         )
-        return service, initialized_state
+        return service, initialized
 
     def update_summary(
         self,
@@ -2654,11 +2653,11 @@ class ProjectDisplayCache:
                 raise ValueError("The expected project display snapshot is missing.")
             if cached is None:
                 raise ValueError("The existing project display snapshot is invalid.")
-            state = service.history.materialize(write_outputs=False).state
+            materialization = service.history.materialize(write_outputs=False)
             paper = PaperSnapshot.model_validate(cached["paper"])
             snapshot = self.complete_snapshot(
                 project_id,
-                service.project_snapshot(state=state, paper=paper),
+                service.project_snapshot(materialization=materialization, paper=paper),
                 fresh=True,
             )
             self._catalog.commit_cached_snapshot(
