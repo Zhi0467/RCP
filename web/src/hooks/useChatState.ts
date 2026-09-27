@@ -609,6 +609,15 @@ export function useChatState({
           }
         })
         .catch((error) => {
+          // Undo the optimistic marker, unless a newer one replaced it, so the
+          // next view retries instead of trusting a write the server never saw.
+          const latest = chatReadsRef.current;
+          if (isActiveProject(requestedProjectId) && latest?.reads[visibleChatId] === readThrough) {
+            const reads = { ...latest.reads };
+            if (visibleChatId in current.reads) reads[visibleChatId] = current.reads[visibleChatId];
+            else delete reads[visibleChatId];
+            setChatReads({ ...latest, reads });
+          }
           reportError(
             `Chat could not be marked read: ${error instanceof Error ? error.message : String(error)}`,
           );
