@@ -7,7 +7,8 @@ use std::{
 
 use reqwest::{
     header::{
-        HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, SET_COOKIE,
+        HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, ORIGIN,
+        SET_COOKIE,
     },
     Client, Method, RequestBuilder, Response,
 };
@@ -609,6 +610,65 @@ impl TeamSessionState {
             .send()
             .await
             .map_err(|error| format!("could not reach the team resource: {error}"))
+    }
+
+    /// Reach this Mac's notification device routes and nothing else.
+    ///
+    /// Polling reuses the cached session cookie without verifying it first,
+    /// because verification reads identity and would renew an idle session on
+    /// every poll. Only a 401 renews the cookie, once.
+    pub(crate) async fn notification_request(
+        &self,
+        connections: &TeamConnectionState,
+        connection_id: &str,
+        method: Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Result<Response, String> {
+        if !path.starts_with(NOTIFICATION_DEVICE_PATH)
+            || !matches!(method, Method::GET | Method::POST | Method::DELETE)
+        {
+            return Err("only notification device routes are reachable".into());
+        }
+        let (connection, session) = self.saved_established(connections, connection_id)?;
+        let cached = self.acquire_cookies()?.get(connection_id).cloned();
+        let (client, cookie) = match cached {
+            Some(cookie) => (
+                self.native_client(&connection, &session).await?.0,
+                HeaderValue::from_str(&cookie)
+                    .map_err(|_| "the team session cookie is invalid".to_string())?,
+            ),
+            None => {
+                let (_, client, cookie) = self
+                    .authenticated_request_context(connections, connection_id)
+                    .await?;
+                (client, cookie)
+            }
+        };
+        let send = |cookie: HeaderValue| {
+            let mut request = client
+                .request(method.clone(), endpoint(&connection.local_origin, path)?)
+                .header(COOKIE, cookie)
+                .header(ORIGIN, connection.local_origin.trim_end_matches('/'))
+                .timeout(NOTIFICATION_REQUEST_TIMEOUT);
+            if let Some(body) = body {
+                request = request.json(body);
+            }
+            Ok::<_, String>(request.send())
+        };
+        let response = send(cookie)?
+            .await
+            .map_err(|error| format!("could not reach the team notifications: {error}"))?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+        self.acquire_cookies()?.remove(connection_id);
+        let (_, _, renewed) = self
+            .authenticated_request_context(connections, connection_id)
+            .await?;
+        send(renewed)?
+            .await
+            .map_err(|error| format!("could not reach the team notifications: {error}"))
     }
 
     /// Acknowledge cleanup using only the typed public receipt returned by the
@@ -1427,6 +1487,9 @@ fn target_admission_request(
         .header(COOKIE, cookie)
         .json(&serde_json::json!({})))
 }
+
+const NOTIFICATION_DEVICE_PATH: &str = "/api/notifications/devices";
+const NOTIFICATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn endpoint(origin: &str, path: &str) -> Result<Url, String> {
     let mut url = Url::parse(origin).map_err(|_| "the local team origin is invalid".to_string())?;

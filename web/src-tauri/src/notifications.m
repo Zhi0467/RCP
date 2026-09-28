@@ -66,6 +66,25 @@ void rcp_notifications_install(RCPNotificationCallback callback) {
     [UNUserNotificationCenter currentNotificationCenter].delegate = controller;
 }
 
+// Asks for permission from a tap; reports "posted" when allowed, else "error".
+void rcp_notifications_authorize(const char *notification_id) {
+    NSString *identifier = [NSString stringWithUTF8String:notification_id];
+    RCPNotificationController *controller = [RCPNotificationController shared];
+    UNAuthorizationOptions options = UNAuthorizationOptionAlert | UNAuthorizationOptionSound;
+    [[UNUserNotificationCenter currentNotificationCenter]
+        requestAuthorizationWithOptions:options
+                      completionHandler:^(BOOL granted, NSError *_Nullable error) {
+                        if (granted) {
+                            [controller emit:@"posted" notificationID:identifier text:@""];
+                        } else {
+                            [controller emit:@"error"
+                                notificationID:identifier
+                                          text:error.localizedDescription
+                                                   ?: @"Notifications are turned off for RCP."];
+                        }
+                      }];
+}
+
 // Asks for permission on the first call; macOS remembers the answer.
 void rcp_notifications_post(const char *notification_id, const char *title, const char *body,
                             const char *link) {

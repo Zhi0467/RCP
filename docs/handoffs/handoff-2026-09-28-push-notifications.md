@@ -12,8 +12,9 @@ and preferences/desktop delivery APIs; slice 3's Web Push encryption, VAPID key,
 outbound limits, and phone routes; slice 4's personal pairing code, loopback
 phone listener, service worker, manifest, and pairing page; slice 5's
 Notifications card, Devices controls in both spaces, visit reconciliation, and
-deep-link resolution. Remaining: the Mac shell's outbox client and Tauri
-commands, and the real-hardware journeys below.
+deep-link resolution; slice 6's Mac shell outbox poller, backlog summary,
+acknowledgment after acceptance, click routing, and Tauri commands. Remaining:
+the real-hardware journeys below.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which landed first (#216): the Mac check below
 runs on an app that install produced. Mac and phone push ship together in one

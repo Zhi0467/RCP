@@ -16,7 +16,7 @@ use crate::{
     backend::{self, BackendState},
     dictation,
     lifecycle::DesktopStatus,
-    navigation, pdf_preview,
+    navigation, notifications, pdf_preview,
     project_transfer::{
         self, ProjectTransferAdvanceResult, ProjectTransferBundle, ProjectTransferCoordinatorState,
         ProjectTransferExportCleanupResult, ProjectTransferExportResult,
@@ -874,6 +874,28 @@ pub fn desktop_start_dictation(app: AppHandle, session_id: String) -> Result<(),
 #[tauri::command]
 pub fn desktop_stop_dictation(session_id: String) -> Result<(), String> {
     dictation::stop(&session_id)
+}
+
+#[tauri::command]
+pub fn desktop_notifications_enabled(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<bool, String> {
+    notifications::enabled_for_window(&app, &window)
+}
+
+#[tauri::command]
+pub async fn desktop_set_notifications(
+    app: AppHandle,
+    window: WebviewWindow,
+    enabled: bool,
+) -> Result<(), String> {
+    notifications::set_for_window(&app, &window, enabled).await
+}
+
+#[tauri::command]
+pub async fn desktop_test_notification(app: AppHandle) -> &'static str {
+    notifications::test(&app).await
 }
 
 #[tauri::command]

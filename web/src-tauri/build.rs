@@ -34,6 +34,9 @@ const COMMANDS: &[&str] = &[
     "choose_repository_folder",
     "desktop_start_dictation",
     "desktop_stop_dictation",
+    "desktop_notifications_enabled",
+    "desktop_set_notifications",
+    "desktop_test_notification",
     "open_artifact_preview",
     "open_artifact_pdf",
     "open_episode_report_preview",
@@ -64,6 +67,13 @@ fn main() {
             .compile("rcp_https_trust");
         println!("cargo:rustc-link-lib=framework=Security");
         println!("cargo:rerun-if-changed=src/https_trust.m");
+        cc::Build::new()
+            .file("src/notifications.m")
+            .flag("-fobjc-arc")
+            .flag("-fblocks")
+            .compile("rcp_notifications");
+        println!("cargo:rustc-link-lib=framework=UserNotifications");
+        println!("cargo:rerun-if-changed=src/notifications.m");
     }
     tauri_build::try_build(
         tauri_build::Attributes::new()
