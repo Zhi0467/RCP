@@ -4,6 +4,7 @@ import json
 import shlex
 import shutil
 import subprocess
+import uuid
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,19 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest,
     ):
         assert client.patch(path, json={"writable_paths": [str(refused)]}).status_code == 422
     assert _machine(client, "laptop")["writable_paths"] == sorted([str(shared), str(tmp_path)])
+
+    # A retained /tmp stage stays read-only for launches, so it is neither saved nor offered.
+    stage = Path("/tmp") / f"rcp-run.test-{uuid.uuid4().hex[:8]}"
+    stage.mkdir(mode=0o700)
+    try:
+        assert client.patch(path, json={"writable_paths": [str(stage)]}).status_code == 422
+        listing = client.post(
+            f"{path}/directories", json={"path": "/tmp", "filter": stage.name}
+        ).json()
+        locked = {entry["name"]: entry["protected"] for entry in listing["entries"]}
+        assert locked[stage.name] is True
+    finally:
+        stage.rmdir()
 
 
 def test_remote_writable_paths_are_checked_over_ssh_against_the_remote_home(
