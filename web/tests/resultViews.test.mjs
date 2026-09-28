@@ -10,12 +10,7 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const {
-  artifactContextDraft,
-  parseArtifactContextPayload,
-  updateArtifactContextDraft,
-  moveArtifactDraftSpan,
-} = await server.ssrLoadModule("/src/components/NodeChat.tsx");
+const { parseArtifactContextPayload } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const {
   handleAutoResearchDialogKeyDown,
   makeAutoResearchDialogBackgroundInert,
@@ -87,59 +82,6 @@ test("artifact selections decode as bounded context for exactly one originating 
   assert.equal(
     parseArtifactContextPayload({ ...payload, source: "episode_report", episode_id: null }),
     null,
-  );
-});
-
-test("artifact selection comments assemble into a visible annotation-style draft", () => {
-  const draft = artifactContextDraft(payload);
-  assert.match(draft, /the final spike/);
-  assert.match(draft, /Why does this happen\?/);
-  assert.match(draft, /seed three/);
-  assert.match(draft, /Compare this with seed one\./);
-});
-
-test("re-adding edited selections replaces their generated draft and preserves user text", () => {
-  const before = "My introduction.\n\n";
-  const after = "\n\nKeep this question too.";
-  const initial = updateArtifactContextDraft(before, payload, null);
-  const withSuffix = moveArtifactDraftSpan(initial, initial.message + after);
-  const revised = {
-    ...payload,
-    selections: [{ ...payload.selections[0], comment: "Use $& literally in the explanation." }],
-  };
-  const expected = `${before}${artifactContextDraft(revised)}${after}`;
-  assert.equal(
-    updateArtifactContextDraft(withSuffix.message, revised, JSON.stringify(withSuffix)).message,
-    expected,
-  );
-  const updated = updateArtifactContextDraft(
-    withSuffix.message,
-    revised,
-    JSON.stringify(withSuffix),
-  );
-  assert.equal(
-    updateArtifactContextDraft(expected, revised, JSON.stringify(updated)).message,
-    expected,
-  );
-  const edited = moveArtifactDraftSpan(
-    withSuffix,
-    withSuffix.message.replace("Why does this happen?", "I edited this in chat."),
-  );
-  assert.equal(
-    updateArtifactContextDraft(edited.message, revised, JSON.stringify(edited)).message,
-    expected,
-  );
-  const editedAgain = moveArtifactDraftSpan(
-    edited,
-    edited.message.replace("Keep this question too.", "Keep my revised closing question."),
-  );
-  assert.equal(
-    updateArtifactContextDraft(editedAgain.message, revised, JSON.stringify(editedAgain)).message,
-    expected.replace("Keep this question too.", "Keep my revised closing question."),
-  );
-  assert.equal(
-    updateArtifactContextDraft("User text", revised, null).message,
-    `User text\n\n${artifactContextDraft(revised)}`,
   );
 });
 

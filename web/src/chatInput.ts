@@ -3,10 +3,23 @@ export interface TextSpan {
   end: number;
 }
 
+import type { ArtifactContextRequest, ArtifactSelection } from "./types";
+
+/** One staged comment: what the human picked, and what they said about it. */
 export interface StagedChatAnnotation {
   id: string;
+  /** What the comment is about as the human sees it: copied answer text, or an
+   * artifact selection's description. */
   selectedText: string;
   comment: string;
+  /** Set when the comment is on an artifact selection, which the server stages. */
+  artifact?: StagedArtifactTarget;
+}
+
+export interface StagedArtifactTarget {
+  context: Omit<ArtifactContextRequest, "selections">;
+  name: string;
+  selection: ArtifactSelection;
 }
 
 export const MAX_CHAT_ANNOTATIONS = 50;
@@ -53,15 +66,35 @@ export function replaceTextSpan(current: string, span: TextSpan, replacement: st
 
 export function assembleChatTurn(
   message: string,
-  annotations: ReadonlyArray<Pick<StagedChatAnnotation, "selectedText" | "comment">>,
+  annotations: ReadonlyArray<Pick<StagedChatAnnotation, "selectedText" | "comment" | "artifact">>,
 ): string {
   const parts = [message.trim()];
+  // Artifact comments are numbered in order, as the prompt lists what each covers.
+  let selection = 0;
   for (const annotation of annotations) {
     const selectedText = annotation.selectedText.trim();
     const comment = annotation.comment.trim();
-    if (selectedText && comment) parts.push(`${selectedText}\ncomment: ${comment}`);
+    if (!selectedText || !comment) continue;
+    const about = annotation.artifact ? `Selection ${++selection}: ${selectedText}` : selectedText;
+    parts.push(`${about}\ncomment: ${comment}`);
   }
   return parts.filter(Boolean).join("\n\n");
+}
+
+/** The artifact selections a turn carries, in the order their comments are numbered. */
+export function stagedArtifactContext(
+  annotations: ReadonlyArray<StagedChatAnnotation>,
+): ArtifactContextRequest | null {
+  const targeted = annotations.filter((annotation) => annotation.artifact);
+  const first = targeted[0]?.artifact;
+  if (!first) return null;
+  return {
+    ...first.context,
+    selections: targeted.map((annotation) => ({
+      ...annotation.artifact!.selection,
+      comment: annotation.comment.trim(),
+    })),
+  };
 }
 
 export function stagedChatAnnotationsAreComplete(
@@ -88,7 +121,8 @@ export function parseStagedChatAnnotations(raw: string | null): StagedChatAnnota
         candidate.selectedText.trim().length < 1 ||
         candidate.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH ||
         typeof candidate.comment !== "string" ||
-        candidate.comment.length > MAX_CHAT_ANNOTATION_COMMENT_LENGTH
+        candidate.comment.length > MAX_CHAT_ANNOTATION_COMMENT_LENGTH ||
+        (candidate.artifact !== undefined && !isStagedArtifactTarget(candidate.artifact))
       )
         return [];
       return [
@@ -96,12 +130,25 @@ export function parseStagedChatAnnotations(raw: string | null): StagedChatAnnota
           id: candidate.id,
           selectedText: candidate.selectedText,
           comment: candidate.comment,
+          ...(candidate.artifact ? { artifact: candidate.artifact as StagedArtifactTarget } : {}),
         },
       ];
     });
   } catch {
     return [];
   }
+}
+
+// This tab wrote the draft itself; the server validates the selection it receives.
+function isStagedArtifactTarget(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const target = value as Partial<StagedArtifactTarget>;
+  return (
+    typeof target.name === "string" &&
+    typeof target.context?.operation_id === "string" &&
+    typeof target.context.artifact_id === "string" &&
+    (target.selection?.kind === "text" || target.selection?.kind === "box")
+  );
 }
 
 export function chatAnnotationTextControlSelection(
