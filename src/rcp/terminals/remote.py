@@ -70,6 +70,9 @@ def start_remote(
         "stop_timeout": TERMINAL_STOP_TIMEOUT_SECONDS,
         "profile_source": terminal_source("profile.py"),
         "git_access_source": terminal_source("git_access.py"),
+        "rcp_home_source": importlib.resources.files("rcp")
+        .joinpath("rcp_home.py")
+        .read_text(encoding="utf-8"),
         "grant_paths_source": importlib.resources.files("rcp.agents")
         .joinpath("grant_paths.py")
         .read_text(encoding="utf-8"),

@@ -105,11 +105,20 @@ def run_session(settings: dict[str, Any]) -> int:
     declared = settings.get("writable_paths") or []
     if mirrored and declared:
         # Grants resolve here, on the filesystem they are mounted from. RCP's
-        # own storage arrives relative to this account's home.
+        # own storage arrives relative to this account's home; the short socket
+        # folder is named from the expanded home, so it is added here.
+        home = str(Path.home())
+        homes = load_source(settings["rcp_home_source"])
+        sockets = homes["command_socket_directory"](home)
         granted, owned_inside = profile["resolve_grants"](
             declared,
             [
                 *(str(Path(path).expanduser()) for path in settings["rcp_owned_paths"]),
+                *(
+                    [homes["short_socket_root"](home)]
+                    if sockets != os.path.join(home, ".rcp", "sockets")
+                    else []
+                ),
                 *protected,
             ],
             load_source(settings["grant_paths_source"]),

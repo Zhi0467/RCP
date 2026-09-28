@@ -28,6 +28,7 @@ def _published_fixture(manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         fixture["catalog"].data_dir,
         fixture["catalog"],
         AgentLauncher(),
+        machine_account=lambda host: "",
     )
     return fixture, request, setup
 

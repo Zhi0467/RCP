@@ -3199,9 +3199,11 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .machine-writable-note {
   color: var(--muted);
 }
+/* A temporary picker, tinted so it reads apart from the project's own tiles. */
 .add-project-machine {
-  background: var(--surface);
-  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--cobalt) 9%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--cobalt) 45%, transparent);
+  border-left: 3px solid var(--cobalt);
   border-radius: 6px;
   margin: 12px 16px 16px;
   padding: 12px;
@@ -3212,6 +3214,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   justify-content: space-between;
 }
 .add-project-machine-header > strong {
+  color: var(--cobalt);
   font-size: var(--type-sm);
 }
 .add-project-machine.open,

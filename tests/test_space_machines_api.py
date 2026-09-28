@@ -58,6 +58,9 @@ def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
         client.post("/api/space/machines", json={**body, "host": "-oProxyCommand=sh"}).status_code
         == 422
     )
+    # The store holds one card per host even when a racing request skipped the check.
+    with pytest.raises(ValueError):
+        _store(app).create_space_machine(name="Other", host=body["host"], os_account="bob")
 
     path = f"/api/space/machines/{machine['machine_id']}"
     renamed = client.patch(path, json={"name": "Big GPU"})

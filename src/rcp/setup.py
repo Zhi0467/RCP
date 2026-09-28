@@ -507,10 +507,14 @@ class ProjectSetupManager:
         data_dir: Path,
         catalog: ProjectCatalog,
         launcher: AgentLauncher,
+        *,
+        machine_account: Callable[[str], str],
     ) -> None:
         self.data_dir = data_dir
         self.catalog = catalog
         self.launcher = launcher
+        # The account on the space's card for an SSH host; "" when it has none.
+        self.machine_account = machine_account
 
     def preflight(self, request: ProjectSetupRequest) -> SetupPreview:
         checks = [self._check_repository(repository) for repository in request.repositories]
@@ -648,7 +652,11 @@ class ProjectSetupManager:
             }
             for host in machine_hosts
         }
-        manifest = render_manifest(request, provider_paths)
+        manifest = render_manifest(
+            request,
+            provider_paths,
+            {host: self.machine_account(host) for host in machine_hosts if host},
+        )
         selected_existing_action = request.existing_research_action
         action_ready = (
             existing_content is None
@@ -1306,6 +1314,7 @@ def render_prepared_team_manifest(request: ProjectProvisioningRequestRecord) -> 
 def render_manifest(
     request: ProjectSetupRequest,
     provider_paths: dict[str, dict[str, str]] | None = None,
+    host_accounts: dict[str, str] | None = None,
 ) -> str:
     assert request.agents is not None
     document = tomlkit.document()
@@ -1333,6 +1342,9 @@ def render_manifest(
         machine = tomlkit.table()
         machine.add("alias", alias)
         machine.add("host", host)
+        if account := (host_accounts or {}).get(host, ""):
+            # The wrong-account check needs it when the host does not name the user.
+            machine.add("os_account", account)
         _add_provider_paths(machine, (provider_paths or {}).get(host, {}))
         machines.append(machine)
     document.add("machines", machines)

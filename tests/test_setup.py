@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -684,6 +685,10 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
     monkeypatch.setattr("rcp.setup._ssh", fake_ssh)
     app = create_app(data_dir=tmp_path / "data")
     app.state.setup.launcher = ReadyLauncher()
+    # The space's card carries the account the host route does not name.
+    app.state.background_tasks.store.create_space_machine(
+        name="GPU", host="gpu.example", os_account="carol"
+    )
     request = ProjectSetupRequest.model_validate(
         {
             "name": "remote-paper",
@@ -709,7 +714,8 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
     assert preview.can_create is True
     assert preview.remote_write is True
     assert preview.canonical_location == "gpu.example:/srv/paper/.research"
-    assert 'host = "gpu.example"' in preview.manifest_preview
+    remote = tomllib.loads(preview.manifest_preview)["machines"]
+    assert [m.get("os_account") for m in remote if m["host"]] == ["carol"]
     assert ["test", "-d", "/srv/paper"] in calls
     assert ["test", "-w", "/srv/paper"] in calls
     assert not any(arguments[0] in {"mkdir", "touch", "rm"} for arguments in calls)

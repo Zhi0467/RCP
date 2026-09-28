@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from rcp import git_identity
+from rcp import git_identity, rcp_home
 from rcp.agents import grant_paths
 from rcp.terminals import git_access, launch, profile, remote
 from rcp.terminals.models import TerminalUnavailable
@@ -461,6 +461,7 @@ def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_pa
         writable_paths=[str(home)],
         rcp_owned_paths=["~/.rcp", "~/.local/share/rcp"],
         grant_paths_source=inspect.getsource(grant_paths),
+        rcp_home_source=inspect.getsource(rcp_home),
     )
     remote_terminal.run_session(request)
     command = commands[0]
@@ -479,3 +480,16 @@ def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_pa
     request.update(writable_paths=[str(history)])
     with pytest.raises(ValueError, match="inside"):
         remote_terminal.run_session(request)
+    # A home too deep for sockets moves them to a short /tmp folder, named on
+    # the far side from the expanded home; a grant cannot reopen it.
+    long_home = tmp_path / ("h" * 80)
+    long_home.mkdir()
+    monkeypatch.setenv("HOME", str(long_home))
+    short_root = type(tmp_path)(rcp_home.short_socket_root(str(long_home)))
+    short_root.mkdir(mode=0o700, exist_ok=True)
+    try:
+        request.update(writable_paths=[str(short_root)])
+        with pytest.raises(ValueError, match="RCP's own storage"):
+            remote_terminal.run_session(request)
+    finally:
+        short_root.rmdir()

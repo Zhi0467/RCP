@@ -705,7 +705,14 @@ def create_app(
     )
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
 
-    setup = ProjectSetupManager(app_data, catalog, launcher)
+    setup = ProjectSetupManager(
+        app_data,
+        catalog,
+        launcher,
+        machine_account=lambda host: (
+            card.os_account if (card := store.space_machine_for(host)) else ""
+        ),
+    )
     if control_server is not None:
         target_transfer_activation_coordinator = TargetTransferActivationCoordinator(
             store,

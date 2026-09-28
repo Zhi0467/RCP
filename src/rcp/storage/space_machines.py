@@ -75,7 +75,7 @@ class SpaceMachineStoreMixin:
                     (machine_id, name, host, os_account, now, now),
                 )
         except sqlite3.IntegrityError as exc:
-            raise ValueError("this space already has a machine for that host and account") from exc
+            raise ValueError("this space already has a machine for that host") from exc
         return self.space_machine(machine_id)
 
     def update_space_machine(

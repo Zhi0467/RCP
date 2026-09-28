@@ -2259,7 +2259,7 @@ class AppStoreBase:
                 writable_paths_json TEXT NOT NULL DEFAULT '[]',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                UNIQUE (host, os_account)
+                UNIQUE (host)
             )
         """)
 
