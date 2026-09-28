@@ -87,7 +87,7 @@ command-line tools, then build and open it:
 
 ```bash
 npm --prefix web run desktop:build-dev
-open web/src-tauri/target/debug/bundle/macos/RCP.app
+open "web/src-tauri/target/debug/bundle/macos/RCP Dev.app"
 ```
 
 Development runs, verification, and updating a source checkout with

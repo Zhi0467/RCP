@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher
-from rcp.agents.codex_app_server import CodexAppServerRuntime
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.providers import ProviderTurnRequest
+from rcp.providers.codex.app_server import CodexAppServerRuntime
 
 
 def _fake_app_server(
@@ -619,7 +619,7 @@ def test_interactive_request_retains_observed_usage(tmp_path: Path):
 
 
 def test_native_agents_enabled_without_ambient_role_files(tmp_path: Path):
-    from rcp.agents.codex_app_server import _containment_config
+    from rcp.providers.codex.app_server import _containment_config
 
     turn = _accounting_turn(tmp_path, resumed=False)
     assert "multi_agent" not in turn.command

@@ -58,17 +58,17 @@ npm --prefix web run desktop:build-dev
 The bundle is written to:
 
 ```text
-web/src-tauri/target/debug/bundle/macos/RCP.app
+web/src-tauri/target/debug/bundle/macos/RCP Dev.app
 ```
 
-`RCP.app` records the checkout and absolute `uv` executable in its `Info.plist` and
+`RCP Dev.app` records the checkout and absolute `uv` executable in its `Info.plist` and
 launches the backend from source. Rebuild it after Rust or Tauri configuration changes.
-An older `/Applications/RCP.app` is a separate copy and is not changed by that build.
-Quit RCP with Cmd+Q before replacing and reopening that copy:
+An older `/Applications/RCP Dev.app` is a separate copy and is not changed by that build.
+Quit it with Cmd+Q before replacing and reopening that copy:
 
 ```bash
-ditto web/src-tauri/target/debug/bundle/macos/RCP.app /Applications/RCP.app
-open /Applications/RCP.app
+ditto "web/src-tauri/target/debug/bundle/macos/RCP Dev.app" "/Applications/RCP Dev.app"
+open "/Applications/RCP Dev.app"
 ```
 
 ### Only the menu Quit stops the backend
@@ -173,6 +173,24 @@ RCP_LIVE_SSH_TARGET=<ssh-alias-or-user@host> \
 
 ## Build and test a release candidate
 
+To test the exact bytes a promotion would publish, run the `desktop-candidate.yml`
+workflow on the build, as described in [docs/release.md](release.md#what-to-check-before-promoting).
+Rename the unzipped `RCP.app` to `RCP Candidate.app`, following the
+[naming convention](../AGENTS.md#three-desktop-builds).
+
+Every desktop build binds backend port 8421 and defaults to the same data
+directory, and a candidate has the released app's bundle identifier. Opening a
+second copy with that identifier only focuses the running one, and a new app
+attaches to any backend already on the port. So a candidate is tested only
+when no other RCP is running, and on its own data:
+
+```bash
+if curl -fsS -m 3 http://127.0.0.1:8421/api/health >/dev/null; then echo "another RCP is running; quit it first"; else open -n "RCP Candidate.app" --env RCP_DATA_DIR="$(mktemp -d)"; fi
+```
+
+The local steps below build the same app from a checkout; launch that bundle
+the same way.
+
 Before packaging, verify that the intended revision is checked out, the version is
 intentional, no unrelated changes will enter the artifact, and the baseline and desktop
 checks pass. Building requires Python and `uv`, Node.js and npm, and Rust.
@@ -197,7 +215,7 @@ uv run python packaging/smoke-backend.py \
   web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
 ```
 
-Then open that bundle through Finder and exercise the desktop workflows affected by
+Then launch that bundle as above, with a throwaway `RCP_DATA_DIR`, and exercise the desktop workflows affected by
 the candidate. Confirm that the project index opens, a project can be read, provider
 readiness is truthful, desktop-only interactions work, and the app owns or reuses the
 expected backend. Source behavior is not evidence for the packaged artifact.
@@ -212,20 +230,25 @@ cargo clean --manifest-path web/src-tauri/Cargo.toml
 ## Publish the desktop companion release
 
 Each promotion ends by calling `.github/workflows/publish-desktop.yml`, which
-can also be run by hand for the same tag. It builds the exact commit of the
+can also be run by hand for the same tag. Given a desktop candidate run, it
+publishes that run's tested app after checking it was built from the release's
+build; the candidate's app expires 14 days after it was built, and a candidate
+run more than once is refused. Otherwise it builds the exact commit of the
 published `vX.Y.Z` release on an Apple Silicon runner, checks that the native
 versions equal the tag (`packaging/release_build.py check-desktop-version`),
-smoke-tests the bundled backend, verifies the updater bundle's signature against
-`web/src-tauri/updater.pub` with `minisign`, and uploads `RCP-vX.Y.Z-macos-arm64.zip`, its
-`.sha256`, and the signed updater bundle `RCP-vX.Y.Z-macos-arm64.app.tar.gz`
-with its `.sig` to a draft `desktop-vX.Y.Z` release. It downloads them back,
+and smoke-tests the bundled backend. Every build, candidate or fresh, is the
+updater-enabled app: it verifies the updater bundle's signature against the
+signing key with `minisign` before anything is uploaded. Either way it uploads
+`RCP-vX.Y.Z-macos-arm64.zip`, its `.sha256`, and the signed updater bundle
+`RCP-vX.Y.Z-macos-arm64.app.tar.gz` with its `.sig` to a draft
+`desktop-vX.Y.Z` release. It downloads them back,
 verifies them, and only then publishes the draft as a pre-release that is not
 latest. The app cannot live in `vX.Y.Z` itself: installed supervisors accept a
 server release only with exactly its five files. A failed run leaves the server
 release unchanged and can be rerun; a published companion is never replaced.
 
-A second job then points the updater at the new release. It writes `latest.json` (`packaging/release_build.py updater-manifest`),
-and uploads it to the fixed `mac-latest` pre-release, creating that release the
+A final job then points the updater at the new release. It writes
+`latest.json` (`packaging/release_build.py updater-manifest`) and uploads it to the fixed `mac-latest` pre-release, creating that release the
 first time. It refuses to replace a `latest.json` that names a newer version,
 and runs one at a time across tags. A failed upload puts the previous
 `latest.json` back. If only this job fails, rerun it alone with
@@ -243,8 +266,8 @@ opens without Open Anyway.
 
 The updater key is a free minisign key pair, not Apple signing, and it does not
 expire. The private key and its password are the `TAURI_SIGNING_PRIVATE_KEY` and
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Actions secrets, which promotion forwards to
-this workflow; the public key is `web/src-tauri/updater.pub`. A human made the
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Actions secrets, which the desktop
+candidate and promotion both forward to `build-desktop.yml`; the public key is `web/src-tauri/updater.pub`. A human made the
 pair with `npm --prefix web exec -- tauri signer generate -w <path>` and keeps a
 backup of the private key; a GitHub secret cannot be read back.
 

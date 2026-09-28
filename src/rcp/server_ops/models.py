@@ -18,6 +18,7 @@ from pydantic import (
 )
 
 from rcp.compute_jobs.routes import ComputeRoute
+from rcp.providers import ProviderId
 from rcp.server_ops._local_primitives import canonical_uuid4
 from rcp.server_ops._local_primitives import normalized_absolute_path as absolute_path
 
@@ -162,7 +163,7 @@ class ServerCommandRequest(_StrictModel):
     project_id: str | None = None
     machine_alias: ShortText | None = Field(default=None, exclude_if=lambda value: value is None)
     compute_route: ComputeRoute | None = Field(default=None, exclude_if=lambda value: value is None)
-    provider_update_provider: Literal["codex", "claude"] | None = None
+    provider_update_provider: ProviderId | None = None
     member_id: str | None = None
     member_confirmed_boundary: str | None = None
     archive_path: str | None = None

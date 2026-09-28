@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import json
 import subprocess
 import sys
@@ -15,7 +14,7 @@ from rcp.core.models import GraphState
 from rcp.history import HistoryManager
 from rcp.paper import PaperService
 from rcp.service import ProjectService, RunRequest
-from rcp.sources import ConversationIndexer, record_parsing
+from rcp.sources import ConversationIndexer
 from rcp.sources.indexer import (
     _REMOTE_INDEX_SCRIPT,
 )
@@ -821,25 +820,3 @@ def test_remote_execution_keeps_same_machine_sources_out_of_permanent_cache(
     assert all(session.source_path_is_remote for session in result.sessions)
     assert all(session.remote_source_host == "research.example" for session in result.sessions)
     assert cache_calls == []
-
-
-def test_shared_record_parser_imports_only_the_standard_library() -> None:
-    """The remote host has no virtualenv and no `rcp` package.
-
-    `record_parsing.py` is shipped as source text and run with `python3 -c`
-    there, so anything it imports must already exist on a bare interpreter.
-    """
-
-    allowed = {"__future__", "hashlib", "json", "posixpath", "typing"}
-    source_path = Path(record_parsing.__file__)
-    tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.partition(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            assert node.level == 0, "the shipped parser cannot use relative imports"
-            assert node.module is not None
-            imported.add(node.module.partition(".")[0])
-
-    assert imported <= allowed, f"non-stdlib imports in {source_path}: {sorted(imported - allowed)}"

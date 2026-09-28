@@ -74,11 +74,12 @@ Close this handoff when all three hold on real hardware:
 - **Endpoint.** One fixed pre-release, tag `mac-latest`, holds only
   `latest.json`. Not `macos-latest`, which is a GitHub runner label. The app
   reads `https://github.com/Zhi0467/RCP/releases/download/mac-latest/latest.json`.
-- **Publish order.** `publish-desktop.yml` builds with the endpoint and public
-  key set, signs the updater bundle, verifies it with `minisign` while the
-  companion is still a draft, and finishes publishing `desktop-vX.Y.Z`. A
-  second job, rerunnable alone, then replaces `latest.json`. It runs one at a time across tags and refuses to
-  replace a newer version.
+- **Publish order.** `build-desktop.yml`, shared by the desktop candidate and
+  publication, builds with the endpoint and public key set, signs the updater
+  bundle, and verifies it with `minisign` before anything is uploaded.
+  `publish-desktop.yml` finishes publishing `desktop-vX.Y.Z`; a final job,
+  rerunnable alone, then replaces `latest.json`. It runs one at a time across
+  tags and refuses to replace a newer version.
 - **Key rotation.** `docs/desktop.md` holds the procedure: ship one release
   signed with the old key that carries the new public key, then switch the
   secret. Apps that skipped that release reinstall once with the `curl` line.
