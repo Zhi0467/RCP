@@ -167,13 +167,19 @@ class NotificationSender:
                         exc_info=True,
                     )
             self.store.prune_notification_devices()
+            self.store.expire_notification_receipts(
+                (
+                    datetime.fromisoformat(self.store.now())
+                    - timedelta(seconds=NOTIFICATION_TTL_SECONDS)
+                ).isoformat()
+            )
             for row in self.store.pending_notification_rows():
                 self.store.guard_notification_delivery(row["device_id"], row["notification_id"])
             self._deliver_web_push()
 
     def reconcile_project(self, project_id: str) -> None:
-        if not self.store.notification_graph_enabled(project_id):
-            return
+        # The marker advances even when nobody wants graph notifications, so
+        # turning a kind back on never replays old attention as new.
         project = next(
             (item for item in self.store.projects() if item.project_id == project_id), None
         )
@@ -419,6 +425,10 @@ class NotificationSender:
                 self.store.drop_notification(device_id, notification_id)
                 continue
             if row["kind"] in _GRAPH_KINDS:
+                # A dirty project's marker may predate an accepted change that
+                # resolved this item; hold it until reconciliation runs.
+                if self._dirty is None or row["project_id"] in self._dirty:
+                    continue
                 # The marker holds the attention of the last reconciled
                 # revision, so a pull never replays canonical history.
                 marker = self.store.notification_graph_marker(row["project_id"])

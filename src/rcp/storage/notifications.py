@@ -725,25 +725,37 @@ class NotificationStoreMixin:
             )
             return True
 
-    def notification_graph_enabled(self, project_id: str) -> bool:
-        with self.connection() as connection:
-            members = connection.execute(
-                "SELECT user_id FROM project_members WHERE project_id=?", (project_id,)
-            ).fetchall()
-            return any(
-                any(
-                    self._notification_preferences(connection, project_id, row["user_id"])[kind]
-                    for kind in ("proposal", "decision", "blocker")
-                )
-                for row in members
-            )
-
     def pending_notification_rows(self, device_id: str | None = None) -> list[dict[str, Any]]:
-        return [
-            row
-            for row in self.notification_outbox(device_id)
-            if row["last_status"] != "posted" and row["next_attempt_at"] <= self.now()
-        ]
+        now = self.now()
+        with self.connection() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT * FROM notification_outbox
+                    WHERE (? IS NULL OR device_id=?) AND last_status!='posted'
+                    ORDER BY created_at,notification_id
+                    """,
+                    (device_id, device_id),
+                )
+                if row["next_attempt_at"] <= now
+            ]
+
+    def expire_notification_receipts(self, before: str) -> None:
+        """Delete posted rows once their delivery window has passed."""
+        cutoff = datetime.fromisoformat(before)
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            expired = [
+                (row["device_id"], row["notification_id"])
+                for row in connection.execute(
+                    "SELECT device_id,notification_id,created_at FROM notification_outbox WHERE last_status='posted'"
+                )
+                if datetime.fromisoformat(row["created_at"]) < cutoff
+            ]
+            connection.executemany(
+                "DELETE FROM notification_outbox WHERE device_id=? AND notification_id=?", expired
+            )
 
     def prune_notification_devices(self) -> None:
         with self.connection() as connection:

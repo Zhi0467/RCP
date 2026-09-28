@@ -15,6 +15,7 @@ import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -258,7 +259,12 @@ def _retry_after(value: str | None) -> float | None:
     try:
         return max(0.0, float(value))
     except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
         return None
+    return max(0.0, when.timestamp() - time.time())
 
 
 def send(

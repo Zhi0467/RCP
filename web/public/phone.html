@@ -119,10 +119,13 @@
           const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
           await navigator.serviceWorker.ready;
           const key = await (await fetch("/api/key")).json();
-          const subscription = await registration.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: key.application_server_key,
-          });
+          const existing = await registration.pushManager.getSubscription();
+          const subscription =
+            existing ??
+            (await registration.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: key.application_server_key,
+            }));
           const response = await fetch("/api/register", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -132,7 +135,8 @@
             }),
           });
           if (!response.ok) {
-            await subscription.unsubscribe();
+            // An earlier pairing may still use this subscription.
+            if (!existing) await subscription.unsubscribe();
             throw new Error("That code did not work. Get a new one from RCP on your Mac.");
           }
           form.hidden = true;

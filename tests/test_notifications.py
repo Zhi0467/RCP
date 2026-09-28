@@ -73,6 +73,63 @@ def test_graph_baseline_restart_reopen_and_no_watchers(manifest, tmp_path, nonem
     assert len(restarted.pending_desktop(device["device_id"])) == 2
 
 
+def test_disabled_kinds_advance_the_marker_and_dirty_projects_hold(manifest, tmp_path):
+    app, store, project_id, device = _setup(manifest, tmp_path)
+    service = app.state.catalog.open(project_id)
+    sender = app.state.notification_sender
+    owner = store.local_owner.user_id
+    off = {"proposal": False, "decision": False, "blocker": False}
+    sender.run_pass()
+    store.set_notification_preferences(project_id, owner, off)
+    _append(app, service, _blocker_patch("blk/while-off"))
+    sender.run_pass()
+    store.set_notification_preferences(project_id, owner, {"blocker": True})
+    sender.run_pass()
+    # Attention from while every kind was off is not replayed as new.
+    assert store.notification_outbox() == []
+    _append(app, service, _blocker_patch("blk/on"))
+    sender.run_pass()
+    assert [row["item_id"] for row in store.notification_outbox()] == ["blk/on"]
+    _append(
+        app,
+        service,
+        Patch(
+            kind="refresh",
+            author="agent",
+            summary="fixture",
+            run_truth_scope=["repo-a"],
+            repositories_read=["repo-a"],
+            ops=[
+                {
+                    "op": "update_nodes",
+                    "nodes": [{"id": "blk/on", "changes": {"status": "resolved"}}],
+                }
+            ],
+        ),
+    )
+    # The marker predates the resolution, so a pull before the pass holds the item.
+    assert sender.pending_desktop(device["device_id"]) == []
+    assert len(store.notification_outbox()) == 1
+    sender.run_pass()
+    assert sender.pending_desktop(device["device_id"]) == []
+    assert store.notification_outbox() == []
+
+
+def test_posted_receipts_expire_after_the_delivery_window(manifest, tmp_path):
+    app, store, project_id, device = _setup(manifest, tmp_path)
+    service = app.state.catalog.open(project_id)
+    sender = app.state.notification_sender
+    sender.run_pass()
+    _append(app, service, _blocker_patch("blk/posted"))
+    sender.run_pass()
+    [row] = sender.pending_desktop(device["device_id"])
+    store.acknowledge_notification(device["device_id"], row["notification_id"], posted=True)
+    sender.run_pass()
+    assert len(store.notification_outbox()) == 1
+    store.expire_notification_receipts("9999-01-01T00:00:00+00:00")
+    assert store.notification_outbox() == []
+
+
 def test_unreachable_graph_does_not_advance_or_enqueue(manifest, tmp_path, monkeypatch):
     app, store, project_id, _ = _setup(manifest, tmp_path)
     sender = app.state.notification_sender

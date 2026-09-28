@@ -139,6 +139,7 @@ def test_refused_destinations_open_no_connection(endpoint, origin, addresses, re
         (201, {}, "posted", None),
         (410, {}, "gone", None),
         (429, {"Retry-After": "30"}, "retry", 30.0),
+        (429, {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}, "retry", 0.0),
         (503, {}, "retry", None),
         (400, {}, "failed", None),
         (301, {"Location": "https://10.0.0.5/"}, "failed", None),
