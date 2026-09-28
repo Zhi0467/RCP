@@ -76,11 +76,11 @@ export function DeviceNotificationControl({
   return (
     <span className="device-notification-control">
       <span>
-        {desktop
-          ? on
-            ? "Notifications on"
-            : "Notifications off"
-          : notificationStatusLabel(device)}
+        {!on
+          ? "Notifications off"
+          : device?.status === "delivery_failed"
+            ? "Delivery failed"
+            : "Notifications on"}
       </span>
       <button
         type="button"

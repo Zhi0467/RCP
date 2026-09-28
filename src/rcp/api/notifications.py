@@ -13,7 +13,6 @@ from rcp.api.dependencies import (
     get_phone_listener,
     get_store,
     require_project_membership,
-    require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
@@ -160,7 +159,7 @@ def notification_preferences(
 
 @router.patch(
     "/api/projects/{project_id}/notifications",
-    dependencies=[Depends(require_project_membership), Depends(require_project_write_admission)],
+    dependencies=[Depends(require_project_membership)],
 )
 def update_notification_preferences(
     project_id: str,

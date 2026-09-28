@@ -92,7 +92,7 @@ class NotificationStoreMixin:
             raise ValueError("invalid notification preferences")
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._require_project_accepts_new_work(connection, project_id)
+            # Member-owned, so a project work fence never blocks an opt-out.
             member = connection.execute(
                 "SELECT 1 FROM project_members m JOIN projects p ON p.project_id=m.project_id "
                 "JOIN space_users u ON u.user_id=m.user_id WHERE m.project_id=? AND m.user_id=? "

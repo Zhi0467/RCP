@@ -173,3 +173,14 @@ def test_notification_state_follows_project_identity_adoption(tmp_path, register
     assert [(row["notification_id"], row["project_id"], row["deep_link"]) for row in rows] == [
         ("n", project_id, f"#/projects/{project_id}/proposals/item")
     ]
+
+
+def test_a_project_work_fence_does_not_block_opting_out(tmp_path, monkeypatch):
+    store, _ = _setup(tmp_path)
+
+    def fenced(*_args):
+        raise ValueError("project is fenced")
+
+    monkeypatch.setattr(store, "_require_project_accepts_new_work", fenced)
+    owner = store.local_owner.user_id
+    assert store.set_notification_preferences("p", owner, {"proposal": False})["proposal"] is False
