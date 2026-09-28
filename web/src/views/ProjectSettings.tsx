@@ -215,8 +215,11 @@ export function ProjectSettings({
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
   const spaceMachines = useSpaceMachines();
-  // Machines show as tiles; one opens at a time so the section stays short.
-  const [openMachine, setOpenMachine] = useState<string | null>(null);
+  // Machines show as tiles; one opens at a time so the section stays short,
+  // starting with the first so its settings are one glance away.
+  const [openMachine, setOpenMachine] = useState<string | null>(
+    () => project.machines[0]?.alias ?? null,
+  );
   const [addingMachine, setAddingMachine] = useState(false);
   const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);

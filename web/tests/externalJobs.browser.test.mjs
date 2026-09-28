@@ -72,9 +72,12 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
       false,
     );
 
-    const machines = page.locator(".provider-machine");
-    const local = machines.nth(0);
-    const cluster = machines.nth(1);
+    // One machine's card is open at a time; its tile opens it.
+    const card = page.locator(".provider-machine");
+    const local = card;
+    const cluster = card;
+    const open = (alias) => page.locator(`.machine-tiles [data-machine-tile="${alias}"]`).click();
+    await open("cluster");
     await cluster.getByRole("textbox", { name: "Jobs root" }).fill("/cluster-edited");
     await cluster.getByRole("checkbox", { name: "Use Slurm" }).check();
     await page.evaluate(() => {
@@ -88,6 +91,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
         ),
       });
     });
+    await open("local");
     await page.waitForFunction(() =>
       [...document.querySelectorAll("input")].some((input) => input.value === "/new"),
     );
@@ -121,6 +125,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     assert.equal(await local.getByRole("textbox", { name: "Jobs root" }).inputValue(), "/new");
     assert.equal(await page.getByText("Slurm account", { exact: true }).count(), 0);
     assert.equal(await page.getByText("Slurm partition", { exact: true }).count(), 0);
+    await open("cluster");
 
     const scheduler = cluster
       .locator(".compute-probe")
@@ -165,6 +170,7 @@ test("external job Cancel and machine setup use one watcher and preserve newer s
     assert.equal(await scheduler.getAttribute("class"), "compute-probe ready");
     assert.equal(await helper.getAttribute("class"), "compute-probe error");
     assert.equal(await cluster.getByRole("button", { name: "Probe", exact: true }).count(), 0);
+    await open("local");
     assert.deepEqual(
       await local.locator(".compute-probe strong").allTextContents(),
       ["Helper"],

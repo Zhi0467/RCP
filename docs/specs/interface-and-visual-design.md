@@ -264,7 +264,8 @@ success cannot replace the empty state left by a failed new-target probe.
 
 Project Settings shows its machines as small tiles (name, host, and status dots
 for each provider, the jobs route, and the writable-path count) with a dashed
-**Add machine** tile; clicking a tile opens one machine's card below, grouping
+**Add machine** tile; one machine's card is open below at a time, the first
+until another tile is clicked, grouping
 provider executables, **Long-running jobs**, and the machine's writable paths.
 The same writable-path record appears in space Settings, so the project card
 says the list applies to every project on that machine. **Add machine** opens
