@@ -1,8 +1,8 @@
 import { FolderPlus, LoaderCircle, Trash2, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { createSpaceMachine, updateSpaceMachine } from "../api";
 import { errorMessage } from "../errors";
-import { writablePathsRequest, type WritablePathEdit } from "../spaceMachines";
+import { createPathEditor, type WritablePathEdit } from "../spaceMachines";
 import type { SpaceMachine, SpaceMachineCreateRequest } from "../types";
 import { PathPicker } from "./PathPicker";
 
@@ -99,26 +99,28 @@ export function WritablePaths({
   onRecordChange: (machine: SpaceMachine) => void;
 }) {
   const [picking, setPicking] = useState(false);
-  const [removing, setRemoving] = useState<string | null>(null);
+  // One pending edit at a time, shared by add and remove.
+  const [pending, setPending] = useState<WritablePathEdit | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const editor = useRef(createPathEditor(updateSpaceMachine)).current;
+  editor.sync(record);
 
-  const edit = async (machine: SpaceMachine, change: WritablePathEdit) => {
-    const updated = await updateSpaceMachine(
-      machine.machine_id,
-      writablePathsRequest(machine, change),
-    );
-    onRecordChange(updated);
+  const edit = async (change: WritablePathEdit) => {
+    setPending(change);
+    try {
+      onRecordChange(await editor.edit(change));
+    } finally {
+      setPending(null);
+    }
   };
 
-  const remove = async (machine: SpaceMachine, path: string) => {
-    setRemoving(path);
+  const remove = async (path: string) => {
+    if (editor.pending) return;
     setError(null);
     try {
-      await edit(machine, { kind: "remove", path });
+      await edit({ kind: "remove", path });
     } catch (failure) {
       setError(errorMessage(failure));
-    } finally {
-      setRemoving(null);
     }
   };
 
@@ -131,7 +133,7 @@ export function WritablePaths({
             className="button secondary compact"
             type="button"
             data-machine-action="add-path"
-            disabled={writesDisabled || picking}
+            disabled={writesDisabled || picking || pending !== null}
             onClick={() => {
               setError(null);
               setPicking(true);
@@ -158,10 +160,14 @@ export function WritablePaths({
                 type="button"
                 data-machine-action="remove-path"
                 aria-label={`Remove ${path}`}
-                disabled={writesDisabled || removing !== null}
-                onClick={() => void remove(record, path)}
+                disabled={writesDisabled || pending !== null}
+                onClick={() => void remove(path)}
               >
-                {removing === path ? <LoaderCircle className="spin" size={13} /> : <X size={13} />}
+                {pending?.kind === "remove" && pending.path === path ? (
+                  <LoaderCircle className="spin" size={13} />
+                ) : (
+                  <X size={13} />
+                )}
               </button>
             </li>
           ))}
@@ -176,7 +182,7 @@ export function WritablePaths({
           pickLabel="Add this folder"
           onClose={() => setPicking(false)}
           onPick={async (path) => {
-            await edit(record, { kind: "add", path });
+            await edit({ kind: "add", path });
             setPicking(false);
           }}
         />

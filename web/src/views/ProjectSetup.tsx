@@ -37,6 +37,7 @@ import {
 import { NewMachineForm } from "../components/MachineCard";
 import { PathPicker } from "../components/PathPicker";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
+import { setupMachineSelection } from "../spaceMachines";
 import { TeamProjectSetup } from "./TeamProjectSetup";
 import { TransferProjectSetup } from "./TransferProjectSetup";
 import type {
@@ -1086,6 +1087,7 @@ function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) 
 }
 
 const NEW_MACHINE_OPTION = "__new_machine__";
+const TYPED_HOST_OPTION = "__typed_host__";
 
 export function RepositoryEditor({
   repository,
@@ -1111,13 +1113,20 @@ export function RepositoryEditor({
   const [pickerError, setPickerError] = useState<string | null>(null);
   const [browsing, setBrowsing] = useState(false);
   const [creatingMachine, setCreatingMachine] = useState(false);
+  // Two accounts on one host are two cards, so the choice is kept by id.
+  const [chosenMachineId, setChosenMachineId] = useState<string | null>(null);
   const picker = repositoryPickerPresentation(repository.location, isDesktopRuntime());
   const pathInputId = `repository-path-${repository.id}`;
   const remoteMachines = machines.filter((machine) => machine.host !== "");
   const host = repository.host.trim();
   const selectedMachine = host
-    ? (remoteMachines.find((machine) => machine.host === host) ?? null)
+    ? setupMachineSelection(remoteMachines, chosenMachineId, host)
     : null;
+  // The setup request carries a host only; an account outside it is not saved yet.
+  const accountNotCarried =
+    selectedMachine?.os_account && !host.startsWith(`${selectedMachine.os_account}@`)
+      ? selectedMachine.os_account
+      : null;
 
   const changeRepository = (patch: Partial<SetupRepository>) => {
     if (patch.location !== undefined || patch.host !== undefined || patch.path !== undefined) {
@@ -1195,23 +1204,32 @@ export function RepositoryEditor({
             <span>Machine</span>
             <select
               data-repository-machine=""
-              value={creatingMachine ? NEW_MACHINE_OPTION : host}
+              value={
+                creatingMachine
+                  ? NEW_MACHINE_OPTION
+                  : (selectedMachine?.machine_id ?? (host ? TYPED_HOST_OPTION : ""))
+              }
               onChange={(event) => {
-                if (event.target.value === NEW_MACHINE_OPTION) {
+                const value = event.target.value;
+                if (value === NEW_MACHINE_OPTION) {
                   setCreatingMachine(true);
                   return;
                 }
                 setCreatingMachine(false);
-                changeRepository({ host: event.target.value });
+                if (value === TYPED_HOST_OPTION) return;
+                const machine = remoteMachines.find((item) => item.machine_id === value);
+                setChosenMachineId(machine?.machine_id ?? null);
+                changeRepository({ host: machine?.host ?? "" });
               }}
             >
               <option value="">Choose a machine…</option>
               {remoteMachines.map((machine) => (
-                <option key={machine.machine_id} value={machine.host}>
-                  {machine.name} ({machine.host})
+                <option key={machine.machine_id} value={machine.machine_id}>
+                  {machine.name} ({machine.host}
+                  {machine.os_account ? ` · ${machine.os_account}` : ""})
                 </option>
               ))}
-              {host && !selectedMachine && <option value={host}>{host}</option>}
+              {host && !selectedMachine && <option value={TYPED_HOST_OPTION}>{host}</option>}
               <option value={NEW_MACHINE_OPTION}>New machine…</option>
             </select>
           </label>
@@ -1222,6 +1240,7 @@ export function RepositoryEditor({
             onCreated={(machine) => {
               onMachineCreated?.(machine);
               setCreatingMachine(false);
+              setChosenMachineId(machine.machine_id);
               changeRepository({ host: machine.host });
             }}
           />
@@ -1273,6 +1292,12 @@ export function RepositoryEditor({
           {pickerError && (
             <small id={`${pathInputId}-error`} className="repository-path-error" role="alert">
               {pickerError}
+            </small>
+          )}
+          {accountNotCarried && (
+            <small className="repository-path-hint" data-setup-account-not-carried="">
+              Setup saves the host only; the account {accountNotCarried} is not carried into the
+              project yet.
             </small>
           )}
           {browsing && selectedMachine && (

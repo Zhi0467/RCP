@@ -64,3 +64,52 @@ export function replaceSpaceMachine(
     ? machines.map((machine) => (machine.machine_id === updated.machine_id ? updated : machine))
     : [...machines, updated];
 }
+
+/**
+ * Runs writable-path edits one at a time, each built from the latest saved record.
+ *
+ * Every PATCH carries the whole list, so two overlapping edits would each send a
+ * list missing the other's change. A second edit while one is pending is refused.
+ */
+export function createPathEditor(
+  save: (machineId: string, request: SpaceMachineUpdateRequest) => Promise<SpaceMachine>,
+) {
+  let saved: SpaceMachine | null = null;
+  let pending = false;
+  return {
+    get pending() {
+      return pending;
+    },
+    /** Adopt a record from outside; ignored while an edit's own answer is outstanding. */
+    sync(record: SpaceMachine | null) {
+      if (!pending) saved = record;
+    },
+    async edit(change: WritablePathEdit): Promise<SpaceMachine> {
+      if (pending) throw new Error("Another path change is still saving.");
+      if (!saved) throw new Error("This machine has no space record yet.");
+      pending = true;
+      try {
+        saved = await save(saved.machine_id, writablePathsRequest(saved, change));
+        return saved;
+      } finally {
+        pending = false;
+      }
+    },
+  };
+}
+
+/**
+ * The card an SSH repository is on. The chosen id wins while its host still
+ * matches; otherwise a host names a card only when exactly one card has it,
+ * since two accounts on one host are two cards.
+ */
+export function setupMachineSelection(
+  machines: readonly SpaceMachine[],
+  selectedId: string | null,
+  host: string,
+): SpaceMachine | null {
+  const chosen = machines.find((machine) => machine.machine_id === selectedId);
+  if (chosen && chosen.host === host) return chosen;
+  const matches = machines.filter((machine) => machine.host === host);
+  return matches.length === 1 ? matches[0] : null;
+}

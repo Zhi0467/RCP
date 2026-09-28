@@ -5,7 +5,9 @@ import { errorMessage } from "../errors";
 import {
   EMPTY_PATH_PICKER,
   applyDirectoryPage,
+  canPickFolder,
   directoryRequest,
+  filterMoveIsCurrent,
   pathBreadcrumbs,
   type PathPickerMove,
   type PathPickerState,
@@ -47,13 +49,25 @@ export function PathPicker({
   stateRef.current = state;
   const generation = useRef(0);
   const abort = useRef<AbortController | null>(null);
+  const filterTimer = useRef<number | null>(null);
+  // Refs, not state, so a click in the same frame as a navigation sees it.
+  const navigating = useRef(false);
+  const pickingRef = useRef(false);
+
+  const cancelPendingFilter = () => {
+    if (filterTimer.current !== null) window.clearTimeout(filterTimer.current);
+    filterTimer.current = null;
+  };
 
   const move = async (next: PathPickerMove) => {
+    if (next.kind !== "filter") cancelPendingFilter();
+    if (!filterMoveIsCurrent(stateRef.current, next)) return;
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
     const request = ++generation.current;
     const current = stateRef.current;
+    navigating.current = true;
     setLoading(true);
     setError(null);
     try {
@@ -65,7 +79,10 @@ export function PathPicker({
       if (request !== generation.current) return;
       setError(errorMessage(failure));
     } finally {
-      if (request === generation.current) setLoading(false);
+      if (request === generation.current) {
+        navigating.current = false;
+        setLoading(false);
+      }
     }
   };
 
@@ -74,27 +91,37 @@ export function PathPicker({
     return () => {
       generation.current += 1;
       abort.current?.abort();
+      cancelPendingFilter();
     };
   }, [machineId]);
 
   useEffect(() => {
-    if (state.path === null || filterDraft === state.filter) return;
-    const timer = window.setTimeout(
-      () => void move({ kind: "filter", filter: filterDraft }),
-      FILTER_DELAY_MS,
-    );
-    return () => window.clearTimeout(timer);
+    const path = stateRef.current.path;
+    if (path === null || filterDraft === stateRef.current.filter) return;
+    cancelPendingFilter();
+    filterTimer.current = window.setTimeout(() => {
+      filterTimer.current = null;
+      void move({ kind: "filter", filter: filterDraft, path });
+    }, FILTER_DELAY_MS);
+    return cancelPendingFilter;
   }, [filterDraft]);
 
   const pick = async () => {
-    if (state.path === null) return;
+    const current = stateRef.current;
+    if (
+      !canPickFolder(current, { navigating: navigating.current, picking: pickingRef.current }) ||
+      current.path === null
+    )
+      return;
+    pickingRef.current = true;
     setPicking(true);
     setError(null);
     try {
-      await onPick(state.path);
+      await onPick(current.path);
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
+      pickingRef.current = false;
       setPicking(false);
     }
   };
@@ -124,7 +151,7 @@ export function PathPicker({
             className="button primary compact"
             type="button"
             data-path-picker-action="pick"
-            disabled={state.path === null || picking}
+            disabled={!canPickFolder(state, { navigating: loading, picking })}
             onClick={() => void pick()}
           >
             {picking ? <LoaderCircle className="spin" size={13} /> : null}

@@ -26,7 +26,10 @@ export const EMPTY_PATH_PICKER: PathPickerState = {
 
 /** Open a folder (the filter clears), narrow the current one, or fetch its next page. */
 export type PathPickerMove =
-  { kind: "open"; path: string | null } | { kind: "filter"; filter: string } | { kind: "more" };
+  | { kind: "open"; path: string | null }
+  /** A filter belongs to the folder it was typed in. */
+  | { kind: "filter"; filter: string; path: string }
+  | { kind: "more" };
 
 export function directoryRequest(
   state: PathPickerState,
@@ -34,7 +37,9 @@ export function directoryRequest(
 ): MachineDirectoryRequest {
   if (move.kind === "open") return { path: move.path };
   const filter = move.kind === "filter" ? move.filter.trim() : state.filter.trim();
-  const request: MachineDirectoryRequest = { path: state.path };
+  const request: MachineDirectoryRequest = {
+    path: move.kind === "filter" ? move.path : state.path,
+  };
   if (filter) request.filter = filter;
   if (move.kind === "more" && state.nextOffset !== null) request.offset = state.nextOffset;
   return request;
@@ -53,6 +58,19 @@ export function applyDirectoryPage(
     total: page.total,
     nextOffset: page.next_offset,
   };
+}
+
+/** A delayed filter still applies only if the picker has not left its folder. */
+export function filterMoveIsCurrent(state: PathPickerState, move: PathPickerMove): boolean {
+  return move.kind !== "filter" || state.path === move.path;
+}
+
+/** Choosing is safe only when the shown folder is settled: no navigation or pick pending. */
+export function canPickFolder(
+  state: PathPickerState,
+  pending: { navigating: boolean; picking: boolean },
+): boolean {
+  return state.path !== null && !pending.navigating && !pending.picking;
 }
 
 /** Each ancestor of an absolute path, root first, for one-click navigation. */

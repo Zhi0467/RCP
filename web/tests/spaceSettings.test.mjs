@@ -8,10 +8,17 @@ import { listMachineDirectory, updateSpaceMachine } from "../src/api.ts";
 import {
   EMPTY_PATH_PICKER,
   applyDirectoryPage,
+  canPickFolder,
   directoryRequest,
+  filterMoveIsCurrent,
   pathBreadcrumbs,
 } from "../src/pathPicker.ts";
-import { spaceMachineForProject, writablePathsRequest } from "../src/spaceMachines.ts";
+import {
+  createPathEditor,
+  setupMachineSelection,
+  spaceMachineForProject,
+  writablePathsRequest,
+} from "../src/spaceMachines.ts";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -79,7 +86,7 @@ test("the picker pages one folder, keeps its filter across pages, and resets bot
   );
   assert.equal(state.nextOffset, null);
 
-  const narrow = { kind: "filter", filter: " hug " };
+  const narrow = { kind: "filter", filter: " hug ", path: "/data" };
   assert.deepEqual(directoryRequest(state, narrow), { path: "/data", filter: "hug" });
   state = applyDirectoryPage(state, narrow, page([folder("hug")], 1));
   assert.equal(state.entries.length, 1);
@@ -308,4 +315,66 @@ test("the identity menu opens space Settings and holds Display", () => {
   assert.match(html, /data-identity-action="space-settings"/);
   assert.match(html, /class="appearance-picker"/);
   assert.match(html, /class="text-scale-controls"/);
+});
+
+test("a filter typed in one folder never runs after the picker opens another", () => {
+  const inData = { ...EMPTY_PATH_PICKER, path: "/data" };
+  const typed = { kind: "filter", filter: "hf", path: "/data" };
+  assert.equal(filterMoveIsCurrent(inData, typed), true);
+  assert.equal(filterMoveIsCurrent({ ...inData, path: "/data/child" }, typed), false);
+  // The request names the folder the filter was typed in, not wherever the state is now.
+  assert.deepEqual(directoryRequest({ ...inData, path: "/data/child" }, typed), {
+    path: "/data",
+    filter: "hf",
+  });
+  assert.equal(filterMoveIsCurrent(inData, { kind: "open", path: "/x" }), true);
+});
+
+test("choosing a folder waits for a pending navigation or pick", () => {
+  const settled = { ...EMPTY_PATH_PICKER, path: "/data" };
+  assert.equal(canPickFolder(settled, { navigating: false, picking: false }), true);
+  assert.equal(canPickFolder(settled, { navigating: true, picking: false }), false);
+  assert.equal(canPickFolder(settled, { navigating: false, picking: true }), false);
+  assert.equal(canPickFolder(EMPTY_PATH_PICKER, { navigating: false, picking: false }), false);
+});
+
+test("path edits run one at a time and each starts from the last saved list", async () => {
+  const sent = [];
+  let finish;
+  const editor = createPathEditor((machineId, request) => {
+    sent.push({ machineId, request });
+    return new Promise((resolve) => {
+      finish = () => resolve({ ...gpu, writable_paths: request.writable_paths });
+    });
+  });
+  editor.sync(gpu);
+  const removal = editor.edit({ kind: "remove", path: "/data/cache" });
+  assert.equal(editor.pending, true);
+  await assert.rejects(editor.edit({ kind: "add", path: "/data/hf" }));
+  // A stale record handed down mid-edit does not replace the edit's own answer.
+  editor.sync(gpu);
+  finish();
+  await removal;
+  assert.equal(editor.pending, false);
+
+  const addition = editor.edit({ kind: "add", path: "/data/hf" });
+  finish();
+  await addition;
+  assert.deepEqual(
+    sent.map((item) => item.request.writable_paths),
+    [["/scratch"], ["/scratch", "/data/hf"]],
+  );
+});
+
+test("setup keeps the chosen card when two accounts share a host", () => {
+  const bob = { ...gpu, machine_id: "m-bob", os_account: "bob", projects: [] };
+  const shared = { ...gpu, host: "gpu.example" };
+  const sharedBob = { ...bob, host: "gpu.example" };
+  const cards = [shared, sharedBob];
+  assert.equal(setupMachineSelection(cards, "m-bob", "gpu.example"), sharedBob);
+  assert.equal(setupMachineSelection(cards, "m-gpu", "gpu.example"), shared);
+  // A host alone cannot tell the two apart.
+  assert.equal(setupMachineSelection(cards, null, "gpu.example"), null);
+  // One card on a host is found by host, and a changed host drops a stale choice.
+  assert.equal(setupMachineSelection([gpu, sharedBob], "m-bob", gpu.host), gpu);
 });
