@@ -9,8 +9,26 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import BinaryIO
+
+
+def _rcp_temp_dir() -> Path:
+    """This account's `~/.rcp/tmp`; stdlib-only because this module ships over SSH."""
+
+    directory = Path.home() / ".rcp" / "tmp"
+    for path in (directory.parent, directory):
+        with suppress(FileExistsError):
+            path.mkdir(mode=0o700)
+    info = directory.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o700
+    ):
+        raise ValueError("RCP temporary directory is unsafe")
+    return directory
 
 
 class RepositoryGit:
@@ -224,7 +242,9 @@ def run_repository_transfer(
         raise ValueError("source repository HEAD changed after transfer review")
     if operation == "install":
         repository.require_clean(allow_untracked=initial_head == expected_head)
-    with tempfile.TemporaryDirectory(prefix="rcp-transfer-git-") as temporary_name:
+    with tempfile.TemporaryDirectory(
+        prefix="rcp-transfer-git-", dir=_rcp_temp_dir()
+    ) as temporary_name:
         temporary = Path(temporary_name)
         bundle = temporary / "head.bundle"
         if operation == "capture":

@@ -182,7 +182,9 @@ COMPUTE_COMMAND_TIMEOUT_SECONDS = (
     + 5 * COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
     + COMMAND_BROKER_RESPONSE_GRACE_SECONDS
 )
-SSH_REPOSITORY_BROWSER_MAX_ENTRIES = 200
+# One page of the machine folder picker and setup's repository browser. Names
+# are filtered before paging, so every directory is reachable.
+MACHINE_DIRECTORY_PAGE_SIZE = 200
 SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS = 20
 
 # Live patch self-validation through the run-stage file mailbox.

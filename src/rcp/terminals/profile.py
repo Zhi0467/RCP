@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 SHELL_PATH = "/usr/local/bin:/usr/bin:/bin"
 
@@ -19,6 +22,18 @@ if ! test -w "$PWD"; then
     printf '%s\n' 'Terminal repository is not writable under the required mount profile.' >&2
     exit 1
 fi
+while [ "$#" -gt 0 ] && [ "$1" != -- ]; do
+    if ! test -w "$1"; then
+        printf '%s\n' 'Terminal writable path is not writable under the required mount profile.' >&2
+        exit 1
+    fi
+    shift
+done
+if [ "$#" -eq 0 ]; then
+    printf '%s\n' 'Terminal launch refused: the containment preflight lost its path list.' >&2
+    exit 1
+fi
+shift
 if ! command -v findmnt >/dev/null; then
     printf '%s\n' 'findmnt is required to verify canonical-state read-only mounts.' >&2
     exit 1
@@ -53,6 +68,7 @@ def launch_command(
     git_environment: dict[str, str],
     empty_directory: Path,
     stop_timeout: float,
+    granted_paths: Sequence[str] = (),
     expand_environment_option: bool = True,
 ) -> list[str]:
     """Build the required profile; failed properties refuse launch.
@@ -64,13 +80,26 @@ def launch_command(
     turn off. The screen covers values this process chooses; the preflight's
     own first lines catch a manager that expands the script itself, whatever
     version reports it.
+
+    ``granted_paths`` are the machine's canonical writable paths; RCP-owned
+    paths inside them arrive in ``protected_paths`` and stay read-only.
     """
+    # Git configuration is read-only only because nothing else grants it; a
+    # grant covering it makes it writable like the rest of the grant. RCP's
+    # own files (identities, deploy keys) stay mounted read-only.
+    git_read_paths = tuple(
+        path
+        for path in git_read_paths
+        if not any(_within(path, grant) for grant in granted_paths)
+        or any(_within(path, protected) for protected in protected_paths)
+    )
     if not expand_environment_option:
         expandable = [
             value
             for value in (
                 str(repository),
                 str(empty_directory),
+                *granted_paths,
                 *protected_paths,
                 *git_read_paths,
                 *git_environment.values(),
@@ -85,7 +114,6 @@ def launch_command(
             )
     properties = [
         "PrivateUsers=yes",
-        "PrivateTmp=yes",
         "ProtectSystem=strict",
         "ProtectHome=tmpfs",
         "NoNewPrivileges=yes",
@@ -96,6 +124,7 @@ def launch_command(
         "StandardOutput=tty",
         "StandardError=tty",
     ]
+    properties.extend(f"BindPaths={_path(path)}" for path in granted_paths)
     for path in git_read_paths:
         properties.extend([f"BindReadOnlyPaths={_path(path)}", f"ReadOnlyPaths={_path(path)}"])
     for path in protected_paths:
@@ -129,10 +158,57 @@ def launch_command(
             "-c",
             _SHELL_PREFLIGHT,
             "rcp-terminal",
+            *granted_paths,
+            "--",
             *protected_paths,
         ]
     )
     return command
+
+
+def resolve_grants(
+    declared: list[str], owned: list[str], rules: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Canonicalize grants on this machine; return them and the paths to keep read-only.
+
+    ``owned`` is everything a grant may not reopen: RCP's storage and the
+    terminal's canonical-state denies. A grant inside one is refused; one a
+    grant covers stays read-only, as does every legacy task stage in `/tmp`.
+    ``rules`` is the shared grant-path module's namespace: this profile is also
+    shipped as source, so it cannot import it.
+    """
+    grants = set()
+    for raw in declared:
+        resolved = Path(rules["check_writable_path_text"](raw)).resolve(strict=True)
+        if not resolved.is_dir():
+            raise ValueError(f"writable path is not a directory: {raw}")
+        grants.add(rules["check_writable_path_text"](str(resolved)))
+    legacy = legacy_stage_roots()
+    canonical_owned = sorted({*owned, *(str(Path(path).resolve()) for path in owned), *legacy})
+    ordered = sorted(grants)
+    rules["refuse_grants_inside"](ordered, canonical_owned)
+    covered = rules["owned_paths_covered"](ordered, canonical_owned)
+    return ordered, sorted({*covered, *legacy})
+
+
+def legacy_stage_roots() -> list[str]:
+    """Task stages left in `/tmp` from before `~/.rcp/stages`; symlinks skipped.
+
+    Only names RCP made count: `/tmp` is writable by launches, and a stray name
+    no mount can carry must not stop every terminal from opening. A later
+    release removes this with the legacy stage location.
+    """
+    return sorted(
+        str(path.resolve())
+        for path in Path("/tmp").glob("rcp-run.*")
+        if re.fullmatch(r"rcp-run\.[A-Za-z0-9._-]+", path.name)
+        and path.is_dir()
+        and not path.is_symlink()
+    )
+
+
+def _within(child: str, parent: str) -> bool:
+    return Path(child) == Path(parent) or Path(parent) in Path(child).parents
 
 
 def shell_environment(git_environment: dict[str, str]) -> list[str]:

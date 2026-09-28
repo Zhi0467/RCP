@@ -234,7 +234,8 @@ def stage_command_mailbox(
             invocation_gate = ProviderInvocationGate(
                 mailbox_id=credential.mailbox_id,
                 broker_path=broker_path,
-                socket_path=f"/tmp/rcp-command-{credential.mailbox_id}.sock",
+                # The broker resolves `~` on the execution host.
+                socket_path=f"~/.rcp/sockets/rcp-command-{credential.mailbox_id}.sock",
                 workspace=str(mailbox.workspace),
                 response_timeout_seconds=timeout_seconds + COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
                 _token=credential.token,

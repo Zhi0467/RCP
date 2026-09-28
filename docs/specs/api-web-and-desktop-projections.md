@@ -788,7 +788,7 @@ uses). While any account is `signed_out`, the project Runs view and the space
 landing render one `ProviderLoginNotice` per account naming the provider,
 machine, time, bounded diagnostic, and a **Verify sign-in** control, and point
 at Settings for the sign-in; the Experiment board's `reauthenticate_provider`
-copy points at it. Project Settings carries a **Provider logins** card
+copy points at it. Space Settings carries a **Provider logins** card
 (`ProviderLogins`) for both space kinds with one row per account: state, who
 changed it and when, **Sign in with device code** when `device_code` is supported
 (the code and link render while `GET .../sign-in/{login_id}` is polled), a token
@@ -994,9 +994,26 @@ moves forward. Markers are not moved with a transferred project.
 
 ### Paper, Settings, and History
 
-Paper owns human Markdown Write/Preview and read-only coaching. Settings owns
-repositories, execution profiles, compute connections, packages, caches, project
-membership, and prospective episode limits, not ontology authoring. Project
+Paper owns human Markdown Write/Preview and read-only coaching. Settings has two
+levels. Space Settings, opened from the gear beside the identity menu, owns the
+server status (team spaces), machine cards with their names (renamed in place) and
+writable paths, provider logins, and the
+personal space's clear-all-caches. Project Settings owns repositories, this
+project's machine cards (provider paths, compute, and the same writable-path
+record), execution profiles, compute connections, packages, caches, project
+membership, and prospective episode limits, not ontology authoring. Display
+preferences live in the identity menu.
+
+`/api/space/machines` lists, creates, renames, and deletes machine cards; a card
+in use by any project, or whose use cannot be established, cannot be deleted,
+and host and account never change. A `PATCH` of `writable_paths` validates each
+path on its machine: absolute, an existing directory, no `:` or `$` or control
+characters, not `/`, and not inside RCP's own storage.
+`/api/space/machines/{id}/directories` lists one directory level on the machine,
+filtered then paged, marking protected entries; project setup's folder browser
+uses the same endpoint. `POST /api/projects/{id}/machines` appends a machine
+alias to the project manifest through the state workspace. Existing projects
+fill the machine list at startup and on registration. Project
 snapshots expose non-secret compute metadata; readiness exposes a backend-owned
 execution-machine/connection matrix with distinct unreachable, authentication,
 and host-key states. Normal readiness reads reuse the last result; only an

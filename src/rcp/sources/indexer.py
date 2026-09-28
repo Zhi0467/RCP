@@ -25,6 +25,7 @@ from rcp.limits import (
     SOURCE_ORIGINAL_COPY_BUFFER_BYTES,
 )
 from rcp.providers import PROVIDERS, ProviderId
+from rcp.rcp_home import rcp_temp_dir
 from rcp.sources.cache import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
@@ -532,7 +533,9 @@ class ConversationIndexer:
 
         if session.provider == "app_chat":
             raise ValueError("RCP chats are not provider-native sources.")
-        with tempfile.TemporaryDirectory(prefix="rcp-provider-original-") as temporary_root:
+        with tempfile.TemporaryDirectory(
+            prefix="rcp-provider-original-", dir=rcp_temp_dir()
+        ) as temporary_root:
             snapshot = Path(temporary_root) / "conversation.jsonl"
             if session.remote_source_host and session.remote_source_path:
                 self._fetch_remote_file(
@@ -576,7 +579,9 @@ class ConversationIndexer:
             yield source_path
             return
         if session.remote_source_host and session.remote_source_path:
-            with tempfile.TemporaryDirectory(prefix="rcp-remote-source-") as temporary_root:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-remote-source-", dir=rcp_temp_dir()
+            ) as temporary_root:
                 temporary = Path(temporary_root) / "conversation.jsonl"
                 self._fetch_remote_file(
                     session.remote_source_host,

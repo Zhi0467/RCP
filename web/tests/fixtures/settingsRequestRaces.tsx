@@ -121,10 +121,7 @@ function Fixture() {
           }}
           onCacheMetricsChange={(metrics) => publications.push({ kind: "cache", metrics })}
           onRefreshReadiness={async () => undefined}
-          showTextScale={false}
           spaceKind={teamIdentity ? "team" : "personal"}
-          textScale={100}
-          onTextScaleChange={() => undefined}
         />
       )}
     </main>

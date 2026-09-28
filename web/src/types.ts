@@ -2820,27 +2820,56 @@ export interface SetupExecution {
   host: string;
 }
 
-export interface SshRepositoryBrowseEntry {
+/** One execution account in the space, shared by every project that uses it. */
+export interface SpaceMachine {
+  machine_id: string;
+  name: string;
+  /** Empty for the machine RCP itself runs on. */
+  host: string;
+  os_account: string;
+  writable_paths: string[];
+  projects: SpaceMachineProject[];
+  /** Null when the server could not tell. */
+  in_use: boolean | null;
+}
+
+export interface SpaceMachineProject {
+  project_id: string;
+  project_name: string;
+  alias: string;
+}
+
+export interface SpaceMachineCreateRequest {
+  name: string;
+  host: string;
+  os_account: string;
+}
+
+export interface SpaceMachineUpdateRequest {
+  name?: string;
+  writable_paths?: string[];
+}
+
+export interface MachineDirectoryRequest {
+  /** Null opens the account's home folder. */
+  path: string | null;
+  filter?: string;
+  offset?: number;
+}
+
+export interface MachineDirectoryEntry {
   name: string;
   path: string;
-  git_repository: boolean;
-  has_research: boolean;
+  /** RCP's own data: it stays read-only and cannot be granted. */
+  protected: boolean;
 }
 
-export interface SshRepositoryDirectoryListing {
+export interface MachineDirectoryListing {
   path: string;
   parent: string | null;
-  entries: SshRepositoryBrowseEntry[];
-  truncated: boolean;
-}
-
-export interface SshRepositoryBrowseResponse {
-  state: "reachable" | "unreachable" | "authentication_failed" | "host_key_failed";
-  rcp_machine: string;
-  host: string;
-  listing: SshRepositoryDirectoryListing | null;
-  diagnostic: string;
-  required_action: string | null;
+  entries: MachineDirectoryEntry[];
+  total: number;
+  next_offset: number | null;
 }
 
 export interface SetupAgentProfile {

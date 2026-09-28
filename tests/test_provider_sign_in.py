@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -907,3 +908,30 @@ def test_a_refused_initialize_ends_the_sign_in_instead_of_waiting() -> None:
     )
     assert step.finished and step.failure == "unsupported client"
     assert step.send is None
+
+
+def test_sign_in_uses_the_first_project_provider_path_on_the_host(tmp_path: Path, manifest) -> None:
+    text = manifest.path.read_text(encoding="utf-8")
+    projects = []
+    for index, binary in enumerate(("/opt/first/codex", "/opt/second/codex")):
+        path = manifest.path if index == 0 else tmp_path / "second.toml"
+        path.write_text(
+            text.replace(
+                'host = ""\n', f'host = ""\nprovider_paths = {{ codex = "{binary}" }}\n', 1
+            ),
+            encoding="utf-8",
+        )
+        projects.append(
+            SimpleNamespace(locator=str(path), project_id=f"p{index}", name=f"Project {index}")
+        )
+    store = AppStore(tmp_path / "login.sqlite3")
+    accounts = ProviderAccounts.for_store(store)
+    runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
+    runner.store = SimpleNamespace(projects=lambda: projects, space_machines=list)
+
+    binary, binaries = runner.provider_binary("codex", "")
+
+    assert binary == "/opt/first/codex"
+    assert binaries == {"/opt/first/codex", "/opt/second/codex"}
+    (first, _second) = provider_sign_in.provider_path_sources(runner.store)[("codex", "")]
+    assert (first.project_id, first.machine_alias) == ("p0", "laptop")

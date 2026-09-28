@@ -7,10 +7,12 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
-from rcp import git_identity
+from rcp import git_identity, rcp_home
+from rcp.agents import grant_paths
 from rcp.terminals import git_access, launch, profile, remote
 from rcp.terminals.models import TerminalUnavailable
 from rcp.transport import remote_terminal
@@ -401,6 +403,8 @@ def test_remote_source_shipping_does_not_require_inspectable_module_files(tmp_pa
     payload = json.loads(shipped[4])
     assert "def launch_command" in payload["profile_source"]
     assert "def terminal_git_access" in payload["git_access_source"]
+    assert "def refuse_grants_inside" in payload["grant_paths_source"]
+    assert payload["writable_paths"] == ["/tmp"]
 
 
 def test_remote_launch_carries_the_deploy_key_path_to_the_far_side(monkeypatch):
@@ -430,3 +434,67 @@ def test_remote_launch_carries_the_deploy_key_path_to_the_far_side(monkeypatch):
     )
     blob = " ".join(captured["command"])
     assert "projects/p1/code/id_ed25519" in blob
+
+
+def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_path, monkeypatch):
+    home = tmp_path / "remote-home"
+    (home / ".ssh").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    commands = []
+
+    class Child:
+        def wait(self, **kwargs):
+            return 0
+
+        def poll(self):
+            return 0
+
+    def capture(command, **kwargs):
+        commands.append(command)
+        return Child()
+
+    monkeypatch.setattr(remote_terminal.subprocess, "Popen", capture)
+    monkeypatch.setattr(remote_terminal, "stop_unit", lambda *args: None)
+    monkeypatch.setattr(remote_terminal.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(remote_terminal.os, "write", lambda *args: None)
+    request = settings(tmp_path, "mirrored")
+    request.update(
+        writable_paths=[str(home)],
+        rcp_owned_paths=["~/.rcp", "~/.local/share/rcp"],
+        grant_paths_source=inspect.getsource(grant_paths),
+        rcp_home_source=inspect.getsource(rcp_home),
+    )
+    remote_terminal.run_session(request)
+    command = commands[0]
+    assert f'BindPaths="{home.resolve()}"' in command
+    owned = home.resolve() / ".rcp"
+    # Read-only whether the launcher already created it or it is masked absent.
+    assert any(arg.endswith(f'"{owned}"') and "ReadOnly" in arg for arg in command)
+    assert str(owned) in command[command.index("--", command.index("rcp-terminal")) :]
+    assert f'ReadOnlyPaths="{home / ".ssh"}"' not in command
+    request.update(writable_paths=[str(home / ".rcp")])
+    (home / ".rcp").mkdir(exist_ok=True)
+    with pytest.raises(ValueError, match="RCP's own storage"):
+        remote_terminal.run_session(request)
+    history = tmp_path / ".research" / "history"
+    history.mkdir(parents=True)
+    request.update(writable_paths=[str(history)])
+    with pytest.raises(ValueError, match="inside"):
+        remote_terminal.run_session(request)
+    # A home too deep for sockets moves them to a short /tmp folder, named on
+    # the far side from the expanded home; a grant cannot reopen it.
+    long_home = tmp_path / ("h" * 80)
+    long_home.mkdir()
+    monkeypatch.setenv("HOME", str(long_home))
+    short_root = type(tmp_path)(rcp_home.short_socket_root(str(long_home)))
+    short_root.mkdir(mode=0o700, exist_ok=True)
+    neighbour = type(tmp_path)(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        request.update(writable_paths=[str(neighbour)])
+        remote_terminal.run_session(request)
+        request.update(writable_paths=[str(short_root)])
+        with pytest.raises(ValueError):
+            remote_terminal.run_session(request)
+    finally:
+        short_root.rmdir()
+        neighbour.rmdir()

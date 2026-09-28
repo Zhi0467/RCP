@@ -596,3 +596,41 @@
   padding: 48px 0 96px;
   width: min(1080px, calc(100% - 72px));
 }
+
+/* The same identity menu sits in the project header, as its initial alone. */
+.landing-identity-menu {
+  --landing-ink: var(--walnut);
+  --landing-muted: var(--ink-soft);
+  --landing-paper: var(--paper);
+  --landing-sheet: var(--sheet);
+  --landing-rule: var(--rule);
+  --landing-accent: var(--oxblood);
+}
+.landing-identity-menu.compact {
+  margin-left: 4px;
+}
+.landing-identity-menu.compact .landing-identity-trigger {
+  grid-template-columns: 27px;
+  min-height: 32px;
+  padding: 2px;
+}
+.landing-space-settings {
+  align-items: center;
+  background: color-mix(in srgb, var(--landing-sheet) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--landing-rule) 84%, var(--landing-paper));
+  border-radius: 3px;
+  color: var(--landing-ink);
+  display: inline-flex;
+  flex: none;
+  height: 38px;
+  justify-content: center;
+  margin-left: auto;
+  width: 38px;
+}
+.landing-space-settings:hover {
+  background: var(--landing-sheet);
+  border-color: color-mix(in srgb, var(--landing-rule) 72%, var(--landing-ink));
+}
+.landing-space-settings + .landing-identity-menu {
+  margin-left: 8px;
+}

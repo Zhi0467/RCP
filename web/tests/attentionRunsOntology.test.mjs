@@ -679,9 +679,6 @@ test("Project Settings supports legacy profiles without an ontology authoring su
         onSaved() {},
         onCacheMetricsChange() {},
         onRefreshReadiness: async () => {},
-        showDisplaySettings: false,
-        textScale: 100,
-        onTextScaleChange() {},
       }),
     );
 

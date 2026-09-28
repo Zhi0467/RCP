@@ -16,6 +16,7 @@ import rcp.runs.tasks.experiment_loop as loop_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.continuation_prompt import SECTIONS, MasterRef
+from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
@@ -50,7 +51,8 @@ def _assert_command_state_removed(staged: StagedCommandMailbox) -> None:
         assert not Path(staged.credential_path).exists()
     else:
         assert staged.invocation_gate is not None
-        assert not Path(staged.invocation_gate.socket_path).exists()
+        socket_path = _broker_socket_path(staged.invocation_gate.socket_path)
+        assert not Path(socket_path).exists()
     assert not any(
         name.startswith(_COMMAND_STATE_PREFIXES) for name in staged.mailbox.entry_names()
     )

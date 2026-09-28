@@ -16,6 +16,7 @@ from rcp.agents.context import ChatContext, RepositoryPointer
 from rcp.agents.write_scope import (
     ProjectWriteScope,
     RegisteredRepositoryRoot,
+    default_temporary_roots,
     registered_repository_roots,
     resolve_project_write_scope,
 )
@@ -53,6 +54,7 @@ def _resolve_local(
     workspace_root: Path | None = None,
     app_data_dir: Path | None = None,
     repository_inventory: list[RegisteredRepositoryRoot] | None = None,
+    machine_writable_paths: list[str] | None = None,
 ):
     selected = aliases or ["repo-a"]
     stage = stage_root or tmp_path / "stage"
@@ -75,6 +77,7 @@ def _resolve_local(
             if repository_inventory is None
             else repository_inventory
         ),
+        machine_writable_paths=machine_writable_paths,
     )
 
 
@@ -85,15 +88,85 @@ def test_local_scope_contains_only_exact_admitted_roots_and_protects_research(
 
     repo_a = str(Path(manifest.repository_map["repo-a"].path).resolve())
     repo_b = str(Path(manifest.repository_map["repo-b"].path).resolve())
+    temporary = sorted(
+        {str(Path(root).resolve()) for root in default_temporary_roots(remote=False)}
+    )
     assert scope.repository_roots == [repo_a, repo_b]
+    assert scope.granted_roots == temporary
     assert scope.writable_roots == [
         str((tmp_path / "stage" / "workspace").resolve()),
         repo_a,
         repo_b,
+        *temporary,
     ]
-    assert scope.protected_write_paths == sorted(
-        [str(Path(repo_a) / ".research"), str(Path(repo_b) / ".research")]
+    assert {str(Path(repo_a) / ".research"), str(Path(repo_b) / ".research")} <= set(
+        scope.protected_write_paths
     )
+
+
+def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    shared = tmp_path / "shared"
+    (shared / "app-data").mkdir(parents=True)
+    scope = _resolve_local(
+        manifest,
+        tmp_path,
+        app_data_dir=shared / "app-data",
+        machine_writable_paths=[str(shared)],
+    )
+
+    assert str(shared.resolve()) in scope.granted_roots
+    assert str(shared.resolve()) in scope.writable_roots
+    assert str((shared / "app-data").resolve()) in scope.granted_protected_paths
+    assert str((shared / "app-data").resolve()) in scope.protected_write_paths
+    # Grants are machine settings: changing them keeps an open chat resumable.
+    assert scope.fingerprint == _resolve_local(manifest, tmp_path).fingerprint
+
+
+def test_a_grant_keeps_unadmitted_repositories_research_read_only(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    scope = _resolve_local(manifest, tmp_path, aliases=["repo-b"])
+
+    research_a = str(Path(manifest.repository_map["repo-a"].path).resolve() / ".research")
+    assert any(research_a == path for path in scope.protected_write_paths)
+    assert str((tmp_path / "stage" / "inputs").resolve()) in scope.protected_write_paths
+
+
+def test_a_grant_inside_rcp_data_is_refused(manifest: Manifest, tmp_path: Path) -> None:
+    app_data = tmp_path / "app-data"
+    (app_data / "cache").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="inside protected storage"):
+        _resolve_local(
+            manifest,
+            tmp_path,
+            app_data_dir=app_data,
+            machine_writable_paths=[str(app_data / "cache")],
+        )
+
+
+def test_a_scope_without_repositories_gets_no_grants(manifest: Manifest, tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    (stage / "workspace").mkdir(parents=True)
+    scope = resolve_project_write_scope(
+        manifest=manifest,
+        project_id="project",
+        execution_machine="laptop",
+        capability="orchestrate",
+        stage_root=str(stage),
+        workspace_root=str(stage / "workspace"),
+        admitted_aliases=[],
+        repository_pointers=[],
+        remote_stage=None,
+        app_data_dir=tmp_path / "app-data",
+        repository_inventory=registered_repository_roots(manifest, project_id="project"),
+        machine_writable_paths=[str(tmp_path)],
+    )
+
+    assert scope.granted_roots == []
+    assert scope.writable_roots == [str((stage / "workspace").resolve())]
 
 
 def test_state_research_is_protected_when_state_repository_is_not_admitted(
@@ -729,6 +802,9 @@ class _RemoteScopeStage:
             raise self.failure
         return ({path: self.overrides.get(path, path) for path in paths}, "/home/worker")
 
+    def legacy_stage_roots(self) -> list[str]:
+        return []
+
 
 def _remote_manifest(manifest: Manifest) -> Manifest:
     remote = manifest.model_copy(deep=True)
@@ -848,13 +924,16 @@ def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) ->
     assert scope.protected_write_paths == [
         "/declared/repo-a/.research",
         "/srv/repo-a/.research",
+        # The default /tmp grant covers this legacy stage; its inputs stay read-only.
+        "/tmp/rcp-run.scope/inputs",
     ]
     assert stage.calls[0][1] is True
     assert all(not writable for _paths, writable in stage.calls[1:])
     # Every declared canonical-state path is canonicalized in one call. With a
     # remote stage each call is an SSH exec, so this count is the launch's
-    # round-trip budget and must not grow with the repository count.
-    assert len(stage.calls) == 3
+    # round-trip budget and must not grow with the repository count. The fourth
+    # resolves every registered repository's `.research` for the grants.
+    assert len(stage.calls) == 4
     assert stage.calls[-1][0] == ["/srv/repo-a/.research", "/declared/repo-a/.research"]
 
 

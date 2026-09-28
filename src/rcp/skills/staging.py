@@ -8,6 +8,7 @@ import stat
 import tempfile
 from pathlib import Path, PurePosixPath
 
+from rcp.rcp_home import rcp_temp_dir
 from rcp.skill_registry import SkillRegistry, SkillSelection, official_registry
 from rcp.transport import RemoteRunStage
 
@@ -73,7 +74,9 @@ def stage_skill_selection(
     if remote_stage is not None:
         if remote_stage.root is None:
             raise RuntimeError("remote run stage is not open")
-        with tempfile.TemporaryDirectory(prefix="rcp-skill-bundle-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="rcp-skill-bundle-", dir=rcp_temp_dir()
+        ) as temporary:
             source_bundle = Path(temporary)
             _copy_packages(registry, selection, source_bundle)
             remote_stage.put_directory(source_bundle, label, reuse=reuse_existing)

@@ -5436,7 +5436,7 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
         }[provider]
     )
     assert launch["payload"]["canonical_repository_roots"] == [repository_root]
-    assert launch["payload"]["canonical_write_roots"][1:] == [repository_root]
+    assert launch["payload"]["canonical_write_roots"][1:2] == [repository_root]
     assert str(Path(repository_root) / ".research") in launch["payload"]["protected_write_paths"]
     assert len(launch["payload"]["write_scope_fingerprint"]) == 64
     assert launch["payload"]["network_access"] is True

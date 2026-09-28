@@ -1,9 +1,9 @@
 import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { loadProviderLogins } from "../api";
-import { LogOut, Mail, MoreHorizontal, Server, Trash2, WifiOff } from "lucide-react";
+import { LogOut, Mail, MoreHorizontal, Server, Settings, Trash2, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { SpaceRuns } from "../components/SpaceRuns";
-import { AppearancePicker, type AppearancePickerProps } from "../components/AppearancePicker";
+import type { AppearancePickerProps, TextScaleControl } from "../components/AppearancePicker";
 import type { ArchiveEpisodeAction } from "../components/EpisodeRunControls";
 import { LandingIdentityMenu } from "../components/LandingIdentityMenu";
 import { ProjectDock } from "../components/ProjectDock";
@@ -41,6 +41,8 @@ interface Props extends AppearancePickerProps {
   identityError: string | null;
   onRequestIdentityName: () => Promise<boolean> | void;
   onExitTeamSpace?: () => void;
+  onOpenSpaceSettings?: () => void;
+  textScale?: TextScaleControl;
 }
 
 const COVER_STYLES = ["plain", "dye", "mosaic", "wood", "marble", "diffusion"] as const;
@@ -198,6 +200,8 @@ export function ProjectLanding({
   identityError,
   onRequestIdentityName,
   onExitTeamSpace,
+  onOpenSpaceSettings,
+  textScale,
   themeChoice,
   colorModeChoice,
   onThemeChoiceChange,
@@ -303,17 +307,29 @@ export function ProjectLanding({
           onActivate={onActivateProjectTab}
           onClose={onCloseProjectTab}
         />
+        {onOpenSpaceSettings && (
+          <button
+            className="landing-space-settings"
+            type="button"
+            aria-label="Space settings"
+            title="Space settings"
+            onClick={onOpenSpaceSettings}
+          >
+            <Settings size={16} aria-hidden="true" />
+          </button>
+        )}
         <LandingIdentityMenu
           identity={identity}
           identityError={identityError}
           onRequestName={onRequestIdentityName}
           onAddTeamSpace={desktop ? () => setAddTeamOpen(true) : undefined}
-        />
-        <AppearancePicker
-          themeChoice={themeChoice}
-          colorModeChoice={colorModeChoice}
-          onThemeChoiceChange={onThemeChoiceChange}
-          onColorModeChoiceChange={onColorModeChoiceChange}
+          appearance={{
+            themeChoice,
+            colorModeChoice,
+            onThemeChoiceChange,
+            onColorModeChoiceChange,
+          }}
+          textScale={textScale}
         />
       </header>
 

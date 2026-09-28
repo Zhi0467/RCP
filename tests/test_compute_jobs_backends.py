@@ -311,3 +311,35 @@ def test_unconfirmed_launch_reports_uncertain_acceptance(backend_id, tmp_path):
     root.mkdir()
     with pytest.raises(ComputeLaunchUncertainError):
         COMPUTE_BACKENDS[backend_id].start(str(root), str(root / "run.sh"), request(), ctx)
+
+
+def test_systemd_job_writes_grants_and_keeps_covered_rcp_storage_read_only():
+    # systemd.exec(5): "Nest ReadWritePaths= inside of ReadOnlyPaths= in order
+    # to provide writable subdirectories within read-only directories."
+    from rcp.agents.write_scope import ProjectWriteScope
+
+    data = "/home/rcp/data"
+    scope = ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root=f"{data}/stages/s",
+        workspace_root=f"{data}/stages/s/workspace",
+        repositories=[],
+        granted_roots=["/home/rcp", "/tmp"],
+        protected_write_paths=[data],
+        granted_protected_paths=[data],
+    )
+    runner = Runner()
+    ctx = context(
+        runner,
+        containment="mirrored",
+        writable_roots=tuple(scope.writable_roots),
+        protected_paths=tuple(scope.protected_write_paths),
+    )
+    COMPUTE_BACKENDS["systemd_user"].start(f"{data}/jobs/abc", "run.sh", request(), ctx)
+    properties = runner.calls[0][0]
+    for writable in ("/home/rcp", "/tmp", scope.workspace_root, f"{data}/jobs/abc"):
+        assert f'ReadWritePaths="{writable}"' in properties
+    assert f'ReadOnlyPaths="{data}"' in properties

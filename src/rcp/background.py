@@ -279,8 +279,11 @@ class AgentTaskExecution:
                 workspace_root=scope.workspace_root,
                 repositories=scope.repositories,
                 git_metadata_roots=scope.git_metadata_roots,
+                # Grant-only protections are outside the fingerprint either way.
                 protected_write_paths=[
-                    path for path in scope.protected_write_paths if path != legacy_inputs
+                    path
+                    for path in scope.protected_write_paths
+                    if path != legacy_inputs and path not in scope.granted_protected_paths
                 ],
             ).fingerprint
         self.store.bind_agent_task_write_scope(

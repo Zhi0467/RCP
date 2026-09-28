@@ -28,6 +28,7 @@ from rcp.core.models import GraphState, Patch
 from rcp.core.operations import CreateEdgesOperation, CreateNodesOperation
 from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.providers import AgentCapability, project_write_enforcement_mode
+from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.service import CoachRequest, ProjectService, RunRequest
 from rcp.storage.models import _NON_PROMPT_CONTRACT_ROLES
@@ -394,7 +395,7 @@ def _stage_task_input(
     if safe_label != label:
         raise ValueError("task input label contains unsupported characters")
     if remote_stage is not None:
-        with tempfile.TemporaryDirectory(prefix="rcp-task-input-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="rcp-task-input-", dir=rcp_temp_dir()) as temporary:
             source = Path(temporary) / safe_label
             source.write_text(content, encoding="utf-8")
             source.chmod(0o400)

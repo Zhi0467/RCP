@@ -18,6 +18,7 @@ from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderR
 from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mailbox
 from rcp.agents.command_protocol import CommandResponse, staged_command_broker_source
 from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
+from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
 from rcp.providers import ProviderRuntimeStep, ProviderTurnRequest, profile_for
@@ -299,8 +300,10 @@ async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
     launched = tmp_path / "provider-launched"
     provider_script = f"from pathlib import Path; Path({str(launched)!r}).write_text('bad')"
     launcher = _scripted_launcher(monkeypatch, provider_script)
+    socket_path = Path(_broker_socket_path(staged.invocation_gate.socket_path))
+    socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     occupied = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    occupied.bind(staged.invocation_gate.socket_path)
+    occupied.bind(str(socket_path))
     try:
         events = [
             event
@@ -314,7 +317,7 @@ async def test_campaign_broker_failure_prevents_provider_prompt_delivery(
         ]
     finally:
         occupied.close()
-        Path(staged.invocation_gate.socket_path).unlink(missing_ok=True)
+        socket_path.unlink(missing_ok=True)
         staged.cleanup()
 
     assert not launched.exists()

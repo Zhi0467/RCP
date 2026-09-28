@@ -110,6 +110,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # Per-user chat read markers and chat pins, fresh and upgraded in place.
         "2e9faec20d33214a6697f2c595c169af76d55ad33a6ebe5fed50369560fea185",
         "a89a5484892c392ee414a410cc132484c99791497ea15e80257a574b0d096ae1",
+        # Space machine cards, fresh and upgraded in place.
+        "0f0456bec7bb95895d5d7287684b03aa4b97c605fa36ef8fec17459948fbb967",
+        "4c04efc71d0177fdb58875e26a4a77b61bef36a2e2253c30fc05aab8b41e9f62",
     }
 )
 

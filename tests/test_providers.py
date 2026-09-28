@@ -774,3 +774,41 @@ def test_claude_work_readiness_probe_uses_the_enforced_settings_without_a_prompt
     assert settings["permissions"]["deny"] == []
     assert settings["sandbox"] == {"enabled": False}
     assert CodexProfile().work_like_probe_command("codex") is None
+
+
+def _granted_scope():
+    from rcp.agents.write_scope import ProjectWriteScope
+
+    return ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root="/home/rcp/data/stages/s",
+        workspace_root="/home/rcp/data/stages/s/workspace",
+        repositories=[],
+        granted_roots=["/home/rcp", "/tmp"],
+        protected_write_paths=["/home/rcp/.rcp", "/home/rcp/data"],
+        granted_protected_paths=["/home/rcp/.rcp", "/home/rcp/data"],
+    )
+
+
+def test_codex_profile_writes_grants_and_reads_covered_rcp_storage():
+    # Precedence was probed with the real sandbox (codex-cli 0.157.0): a
+    # workspace root inside a "read" entry stays writable.
+    from rcp.providers import _codex_permission_profile
+
+    profile = _codex_permission_profile(_granted_scope())
+    for root in ("/home/rcp", "/tmp", "/home/rcp/data/stages/s/workspace"):
+        assert f'"{root}"=true' in profile
+    assert '"/home/rcp/data"="read"' in profile
+    assert '"/home/rcp/.rcp"="read"' in profile
+
+
+def test_claude_leaves_the_protected_parent_of_its_own_stage_undenied():
+    from rcp.providers import _claude_write_settings
+
+    permissions = _claude_write_settings(_granted_scope())["permissions"]
+    assert "Edit(//home/rcp/**)" in permissions["allow"]
+    assert "Edit(//tmp/**)" in permissions["allow"]
+    assert permissions["deny"] == ["Edit(//home/rcp/.rcp/**)"]
