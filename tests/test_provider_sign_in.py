@@ -16,13 +16,14 @@ from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
 from rcp.agents.provider_accounts import ProviderAccounts, reset_logins_without_credentials
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE, CodexDeviceLogin
+from rcp.provider_auth import ClaudeAuthentication, CodexDeviceLogin
 from rcp.runs import provider_sign_in
 from rcp.runs.provider_sign_in import ProviderLoginRefused, ProviderSignInRunner
 from rcp.storage import AppStore
 
 from .helpers import wait_until
 
+CLAUDE_TOKEN_VARIABLE = ClaudeAuthentication.token_variable
 TOKEN = "sk-ant-oat01-a-pasted-setup-token"
 VERIFICATION_URL = "https://auth.example/device"
 USER_CODE = "ABCD-EFGH"

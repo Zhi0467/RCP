@@ -23,55 +23,6 @@ if TYPE_CHECKING:
     from rcp.agents.provider_environment import ProviderCredentialStore
 
 
-CLAUDE_TOKEN_VARIABLE = "CLAUDE_CODE_OAUTH_TOKEN"
-CLAUDE_CONFLICTING_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-#: Where a remote execution account keeps the token RCP placed for it.
-REMOTE_CLAUDE_TOKEN_PATH = "~/.config/rcp/claude-setup-token"
-
-
-def validate_claude_token(token: str) -> str:
-    """Accept only a token-shaped string; the shape is all RCP can check."""
-
-    if not token or token != token.strip() or any(ch.isspace() for ch in token):
-        raise ValueError("A setup token has no spaces or line breaks.")
-    if len(token) > PROVIDER_TOKEN_MAX_CHARS:
-        raise ValueError("The pasted value is longer than any setup token.")
-    return token
-
-
-def remote_claude_token_prefix(path: str = REMOTE_CLAUDE_TOKEN_PATH) -> str:
-    """The shell fragment that exports the token from the remote account's file.
-
-    The path is quoted so `~` still expands; the token itself never enters the
-    command line. A missing or empty file refuses the process rather than
-    falling back to credentials inherited from the remote login shell.
-    """
-
-    unset = " ".join(CLAUDE_CONFLICTING_VARIABLES)
-    quoted = _quote_home_relative(path)
-    return (
-        f"unset {unset} {CLAUDE_TOKEN_VARIABLE}; "
-        f'if [ -s {quoted} ]; then export {CLAUDE_TOKEN_VARIABLE}="$(cat {quoted})"; '
-        "else printf '%s\\n' 'RCP managed credential is missing' >&2; exit 1; fi"
-    )
-
-
-def remote_claude_token_placement_command(path: str = REMOTE_CLAUDE_TOKEN_PATH) -> str:
-    """Write the token read from stdin to the remote account, mode 0600 in a 0700 directory."""
-
-    quoted = _quote_home_relative(path)
-    directory = _quote_home_relative(str(Path(path).parent))
-    temporary = quoted + ".tmp"
-    return (
-        f"umask 077 && mkdir -p {directory} && cat > {temporary} "
-        f"&& chmod 600 {temporary} && mv -f {temporary} {quoted}"
-    )
-
-
-def remote_claude_token_removal_command(path: str = REMOTE_CLAUDE_TOKEN_PATH) -> str:
-    return f"rm -f {_quote_home_relative(path)}"
-
-
 def _quote_home_relative(path: str) -> str:
     if path.startswith("~/"):
         return '"$HOME"/' + shlex.quote(path[2:])
@@ -241,6 +192,8 @@ def _rpc_bytes(value: dict[str, object]) -> bytes:
 
 
 class ProviderAuthentication:
+    #: Variables every process of this provider starts with, managed or not.
+    process_variables: dict[str, str] = {}
     supports_sign_out = False
     methods: tuple[str, ...] = ()
     token_instructions: str | None = None
@@ -259,7 +212,9 @@ class ProviderAuthentication:
 
     def unmanaged_environment(self, host: str) -> ProviderProcessEnvironment:
         """The environment when RCP manages no credential and the CLI's own login applies."""
-        return ProviderProcessEnvironment()
+        return ProviderProcessEnvironment().with_variables(
+            self.process_variables, remote=bool(host)
+        )
 
     def device_login(self) -> DeviceLogin:
         raise ValueError("Device sign-in is not supported by this provider.")
@@ -317,6 +272,13 @@ class ClaudeAuthentication(ProviderAuthentication):
     supports_sign_out = True
     credential_namespace = "claude"
     methods = ("token_entry",)
+    token_variable = "CLAUDE_CODE_OAUTH_TOKEN"
+    #: Variables that would make Claude bill an API key instead of the token.
+    conflicting_variables = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    #: Where a remote execution account keeps the token RCP placed for it.
+    remote_token_path = "~/.config/rcp/claude-setup-token"
+    # Keep delegated Claude work inside the invocation that owns it.
+    process_variables = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"}
     # A member cannot act on "run claude setup-token" alone: the command says
     # nothing about which machine to run it on, which account it mints for, or
     # that Claude's other sign-in is the one that breaks a shared account.
@@ -362,28 +324,56 @@ class ClaudeAuthentication(ProviderAuthentication):
     ) -> ProviderProcessEnvironment:
         if host:
             return ProviderProcessEnvironment(
-                remote_prefix=remote_claude_token_prefix()
+                remote_prefix=self.remote_token_prefix()
                 if self.credential_available(credentials, host)
                 else None
-            ).with_claude_foreground_tasks(remote=True)
+            ).with_variables(self.process_variables, remote=True)
         environment = {
             name: value
             for name, value in os.environ.items()
-            if name not in CLAUDE_CONFLICTING_VARIABLES
+            if name not in self.conflicting_variables
         }
         token = credentials.token(self.credential_namespace, host)
-        environment.pop(CLAUDE_TOKEN_VARIABLE, None)
+        environment.pop(self.token_variable, None)
         if token:
-            environment[CLAUDE_TOKEN_VARIABLE] = token
-        return ProviderProcessEnvironment(local_env=environment).with_claude_foreground_tasks(
-            remote=False
+            environment[self.token_variable] = token
+        return ProviderProcessEnvironment(local_env=environment).with_variables(
+            self.process_variables, remote=False
         )
 
-    def unmanaged_environment(self, host: str) -> ProviderProcessEnvironment:
-        return ProviderProcessEnvironment().with_claude_foreground_tasks(remote=bool(host))
-
     def validate_token(self, token: str) -> str:
-        return validate_claude_token(token)
+        """Accept only a token-shaped string; the shape is all RCP can check."""
+        if not token or token != token.strip() or any(ch.isspace() for ch in token):
+            raise ValueError("A setup token has no spaces or line breaks.")
+        if len(token) > PROVIDER_TOKEN_MAX_CHARS:
+            raise ValueError("The pasted value is longer than any setup token.")
+        return token
+
+    def remote_token_prefix(self, path: str | None = None) -> str:
+        """The shell fragment that exports the token from the remote account's file.
+
+        The path is quoted so `~` still expands; the token itself never enters the
+        command line. A missing or empty file refuses the process rather than
+        falling back to credentials inherited from the remote login shell.
+        """
+        unset = " ".join(self.conflicting_variables)
+        quoted = _quote_home_relative(path or self.remote_token_path)
+        return (
+            f"unset {unset} {self.token_variable}; "
+            f'if [ -s {quoted} ]; then export {self.token_variable}="$(cat {quoted})"; '
+            "else printf '%s\\n' 'RCP managed credential is missing' >&2; exit 1; fi"
+        )
+
+    def remote_token_placement_command(self) -> str:
+        """Write the token read from stdin to the remote account, mode 0600 in a 0700 directory."""
+        path = self.remote_token_path
+        quoted = _quote_home_relative(path)
+        directory = _quote_home_relative(str(Path(path).parent))
+        temporary = quoted + ".tmp"
+        return (
+            f"umask 077 && mkdir -p {directory} && cat > {temporary} "
+            f"&& chmod 600 {temporary} && mv -f {temporary} {quoted}"
+        )
 
     def save_token(
         self,
@@ -406,7 +396,7 @@ class ClaudeAuthentication(ProviderAuthentication):
         if host:
             self._remote(
                 host,
-                remote_claude_token_placement_command(),
+                self.remote_token_placement_command(),
                 token=credentials.token(self.credential_namespace, host),
             )
 
@@ -416,7 +406,7 @@ class ClaudeAuthentication(ProviderAuthentication):
     def sign_out(self, credentials: ProviderCredentialStore, host: str, binary: str) -> None:
         credentials.delete_token(self.credential_namespace, host)
         if host:
-            self._remote(host, remote_claude_token_removal_command())
+            self._remote(host, f"rm -f {_quote_home_relative(self.remote_token_path)}")
 
     @staticmethod
     def _remote(host: str, command: str, *, token: str | None = None) -> None:
