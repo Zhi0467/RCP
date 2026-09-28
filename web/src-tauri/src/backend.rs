@@ -908,7 +908,7 @@ struct DevBundleSettings {
     uv: PathBuf,
 }
 
-/// A bundled source-built `RCP.app` serves its frontend from the backend it
+/// A bundled source-built `RCP Dev.app` serves its frontend from the backend it
 /// launches; only `tauri dev` has a Vite server to load.
 pub fn is_bundled_dev_app() -> bool {
     matches!(dev_bundle_settings(), Ok(Some(_)))
@@ -988,7 +988,7 @@ fn dev_uv() -> Result<PathBuf, String> {
             return canonical_file(&candidate, "uv in ~/.local/bin");
         }
     }
-    Err("RCP.app cannot find uv; set RCP_DEV_UV to its absolute path".into())
+    Err("RCP Dev.app cannot find uv; set RCP_DEV_UV to its absolute path".into())
 }
 
 fn find_on_path(name: &str) -> Option<PathBuf> {

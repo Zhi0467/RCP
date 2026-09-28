@@ -11,6 +11,11 @@ on:
         description: Release tag in vX.Y.Z form
         required: true
         type: string
+      desktop_candidate_run:
+        description: Desktop candidate run id whose tested app to publish; empty builds fresh
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -115,6 +120,8 @@ jobs:
     needs: [promote]
     permissions:
       contents: write
+      actions: read
     uses: ./.github/workflows/publish-desktop.yml
     with:
       tag: ${{ inputs.tag }}
+      candidate_run: ${{ inputs.desktop_candidate_run }}

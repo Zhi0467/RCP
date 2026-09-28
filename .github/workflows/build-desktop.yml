@@ -1,0 +1,77 @@
+name: Build desktop
+
+# The one place the unsigned macOS app is built. A candidate run builds it for
+# a human to test, and promotion can publish that same artifact.
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Full commit to build
+        required: true
+        type: string
+      build:
+        description: CI run number of the build/<N> prerelease at that commit
+        required: true
+        type: string
+      version:
+        description: Desktop version in X.Y.Z form
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build unsigned desktop app
+    runs-on: macos-15
+    env:
+      TARGET_COMMIT: ${{ inputs.commit }}
+      BUILD_NUMBER: ${{ inputs.build }}
+      DESKTOP_VERSION: ${{ inputs.version }}
+      ASSET: RCP-v${{ inputs.version }}-macos-arm64.zip
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check the desktop version and stamp the Python build
+        run: |
+          uv run --no-project python packaging/release_build.py check-desktop-version "$DESKTOP_VERSION"
+          uv run --no-project python packaging/release_build.py stamp-version \
+            --run-number "$BUILD_NUMBER" --sha "$TARGET_COMMIT"
+      - run: npm --prefix web ci
+      - run: npm --prefix web run desktop:build
+      - name: Smoke-test the bundled backend
+        run: uv run python packaging/smoke-backend.py web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
+      - name: Archive the app with macOS metadata
+        run: |
+          mkdir desktop-assets
+          ditto -c -k --sequesterRsrc --keepParent \
+            web/src-tauri/target/release/bundle/macos/RCP.app \
+            "desktop-assets/$ASSET"
+          cd desktop-assets
+          shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          # Kept beside the assets, never published: promotion checks it
+          # before it releases a candidate someone tested.
+          printf '{"commit": "%s", "build": "%s", "version": "%s"}\n' \
+            "$TARGET_COMMIT" "$BUILD_NUMBER" "$DESKTOP_VERSION" > ../desktop-identity.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-app
+          path: |
+            desktop-assets/
+            desktop-identity.json
+          if-no-files-found: error
+          retention-days: 14
