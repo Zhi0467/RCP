@@ -51,6 +51,7 @@ import { loadChatTranscript } from "./chatApi";
 import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
 import {
   chatIndicator,
+  unreadChatIdsFromReads,
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
@@ -1176,6 +1177,8 @@ export default function App() {
     recordTaskUpdates,
     recordWatcherResults,
     markVisibleChatRead,
+    refreshChatReads,
+    ensureListedChats,
     resetProjectChats,
     restoreProjectChats,
   } = useChatState({
@@ -1193,7 +1196,7 @@ export default function App() {
     floatingChat,
     draftConversations,
     selectedChatId,
-    unreadChatTaskIds,
+    chatReads,
     chatSummaryTotal,
     chatSummaryNextOffset,
     chatTranscripts,
@@ -2551,7 +2554,22 @@ export default function App() {
     transitionManifest,
     transitionRulesetTag,
   ]);
-  const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
+  // Only a listed conversation can be opened and so marked read; counting any
+  // other chat would leave the badge stuck.
+  const readUnreadChatIds = useMemo(
+    () => unreadChatIdsFromReads(tasks, chatReads),
+    [chatReads, tasks],
+  );
+  // An unread chat past the loaded pages is fetched into the list; one whose
+  // transcript was never written cannot be, and is left out of the count.
+  useEffect(() => {
+    ensureListedChats([...readUnreadChatIds]);
+  }, [ensureListedChats, readUnreadChatIds]);
+  const unreadChatIds = useMemo(() => {
+    const listed = new Set(conversations.map((conversation) => conversation.chatId));
+    return new Set([...readUnreadChatIds].filter((chatId) => listed.has(chatId)));
+  }, [conversations, readUnreadChatIds]);
+  const chatsIndicator = chatIndicator(tasks, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
@@ -2561,7 +2579,7 @@ export default function App() {
   const openChats = (preferredChatId?: string | null) => {
     const nextChatId =
       preferredChatId ??
-      chatEntryConversationId(conversations, activityTask, unreadChatTaskIds, selectedChatId);
+      chatEntryConversationId(conversations, activityTask, unreadChatIds, selectedChatId);
     selectChat(nextChatId);
     setFloatingChat(null);
     clearNodeSelections();
@@ -2648,8 +2666,7 @@ export default function App() {
   }, [mutationsDisabled]);
 
   useEffect(() => {
-    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
-    if (recordTaskUpdates(tasks, visibleChatId)) {
+    if (recordTaskUpdates(tasks)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
           setNotice({
@@ -2659,22 +2676,13 @@ export default function App() {
         });
       }
     }
-  }, [
-    apiBase,
-    graphPath,
-    isActiveGraph,
-    projectId,
-    refreshChatSummaries,
-    selectedChatId,
-    selectedExperimentChatId,
-    tasks,
-    view,
-  ]);
+  }, [apiBase, graphPath, isActiveGraph, projectId, refreshChatSummaries, tasks]);
 
   useEffect(() => {
     const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
     markVisibleChatRead(tasks, visibleChatId);
-  }, [selectedChatId, selectedExperimentChatId, tasks, view]);
+    // chatReads is a dependency so a chat already open when the markers load is marked.
+  }, [chatReads, markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
     if (!projectId || !hasActiveTasks) return;
@@ -4399,7 +4407,7 @@ export default function App() {
                     chatsIndicator === "active" ? "Chat task active" : "Unread chat result"
                   }
                 >
-                  {chatsIndicator === "active" ? "•" : unreadChatTaskIds.size}
+                  {chatsIndicator === "active" ? "•" : unreadChatIds.size}
                 </small>
               )}
             </button>
@@ -4805,7 +4813,7 @@ export default function App() {
               tasks={tasks}
               watchers={watchers}
               graphChangesDisabled={mutationsDisabled}
-              unreadTaskIds={unreadChatTaskIds}
+              unreadChatIds={unreadChatIds}
               chatTranscripts={chatTranscripts}
               hasMore={chatSummaryNextOffset < chatSummaryTotal}
               loadingMore={chatSummariesLoading}
@@ -4821,6 +4829,14 @@ export default function App() {
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onRemoveDraft={discardDraft}
+              onEnsureListed={ensureListedChats}
+              onArchiveChange={() =>
+                void refreshChatReads().catch((error) =>
+                  reportErrorNotice(
+                    `Unread chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+                )
+              }
               onNewSession={(conversation) => {
                 const node = conversation.nodeId
                   ? (presentedGraph.nodes[conversation.nodeId] ?? null)

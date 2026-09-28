@@ -966,8 +966,18 @@ waiting on a person (queued, running, pausing, paused, failed, or interrupted),
 up to `AGENT_TASK_LIST_OPEN_CHAT_LIMIT`. A chat that needs a human therefore
 stays visible however many newer tasks exist; a failure followed by a later turn
 in the same chat does not count. Such a latest turn also stays listed for
-`AGENT_TASK_LIST_FINISHED_CHAT_SECONDS` after it finishes, so a client that saw
-it running sees the terminal record and marks the result unread.
+`AGENT_TASK_LIST_FINISHED_CHAT_SECONDS` after it finishes, so a client sees the
+terminal record.
+
+Read state is stored per user on the server, so it survives a reload, a closed
+app, and a second device. `GET /api/projects/{project_id}/chat-reads` returns
+the acting user's markers, one finish time per chat, plus a `baseline`: the
+time the markers were introduced, which stands in for any chat without one. It
+also returns `latest_finished`, each unarchived chat's newest finished turn, so a
+reply older than the task list window is still found. A chat is unread when its
+newest finished turn ended after its marker. Viewing a chat
+posts its newest finish time to `POST .../chats/{chat_id}/read`; the marker only
+moves forward. Markers are not moved with a transferred project.
 
 ### Paper, Settings, and History
 

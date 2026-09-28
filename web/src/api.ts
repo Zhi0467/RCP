@@ -4,6 +4,7 @@ import type {
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
   ChatDisplay,
+  ChatReads,
   ChatMessage,
   SteerRequest,
   ArtifactRevisionCandidate,
@@ -559,6 +560,27 @@ export function setChatArchived(
   return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/archive`, {
     method: "POST",
     body: JSON.stringify({ archived }),
+  });
+}
+
+/** `path` already names the graph target, as the chat list's does. */
+export function loadChatReads(path: string): Promise<ChatReads> {
+  return api(path);
+}
+
+/** `readThrough` is a turn's server-reported finish time; the marker never moves back. */
+export function markChatRead(path: string, readThrough: string): Promise<ChatReads> {
+  return api(path, { method: "POST", body: JSON.stringify({ read_through: readThrough }) });
+}
+
+export function setChatPinned(
+  apiBase: string,
+  chatId: string,
+  pinned: boolean,
+): Promise<ChatDisplay> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/pin`, {
+    method: "POST",
+    body: JSON.stringify({ pinned }),
   });
 }
 

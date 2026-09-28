@@ -1,7 +1,7 @@
-import { MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
+import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "../graphTarget";
 import type { GraphTargetRef } from "../types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError } from "../api";
+import { api, ApiError, loadChatReads, markChatRead } from "../api";
 import {
   loadChatSummaryPage,
   loadChatTranscript,
@@ -11,8 +11,10 @@ import {
 } from "../chatApi";
 import {
   chatIdForTask,
+  chatReadThrough,
   latestConversation,
-  newlyUnreadChatTaskIds,
+  mergeChatReads,
+  newlyFinishedChatTaskIds,
   type ChatConversation,
   type ChatKind,
   type DraftConversation,
@@ -20,6 +22,7 @@ import {
 import type {
   AgentTask,
   AppView,
+  ChatReads,
   ChatSummary,
   ChatTranscript,
   ExperimentOperationalState,
@@ -41,7 +44,7 @@ export interface ChatStateSnapshot {
   floatingChat: FloatingChat | null;
   draftConversations: DraftConversation[];
   selectedChatId: string | null;
-  unreadChatTaskIds: Set<string>;
+  chatReads: ChatReads | null;
   chatSummaries: ChatSummary[];
   chatSummaryTotal: number;
   chatSummaryNextOffset: number;
@@ -67,7 +70,6 @@ export function cloneChatStateSnapshot(snapshot: ChatStateSnapshot): ChatStateSn
     ...snapshot,
     floatingChat: snapshot.floatingChat ? { ...snapshot.floatingChat } : null,
     draftConversations: [...snapshot.draftConversations],
-    unreadChatTaskIds: new Set(snapshot.unreadChatTaskIds),
     chatSummaries: [...snapshot.chatSummaries],
     chatTranscripts: new Map(snapshot.chatTranscripts),
     chatTaskStatuses: new Map(snapshot.chatTaskStatuses),
@@ -167,7 +169,7 @@ export function useChatState({
   const [floatingChat, setFloatingChatState] = useState<FloatingChat | null>(null);
   const [draftConversations, setDraftConversations] = useState<DraftConversation[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
-  const [unreadChatTaskIds, setUnreadChatTaskIds] = useState<Set<string>>(() => new Set());
+  const [chatReads, setChatReadsState] = useState<ChatReads | null>(null);
   const [chatSummaries, setChatSummaries] = useState<ChatSummary[]>([]);
   const [chatSummaryTotal, setChatSummaryTotal] = useState(0);
   const [chatSummaryNextOffset, setChatSummaryNextOffset] = useState(0);
@@ -176,20 +178,36 @@ export function useChatState({
     () => new Map(),
   );
   const [selectedCanonicalChat, setSelectedCanonicalChat] = useState<ChatSummary | null>(null);
+  // Pinned or unread chats older than the loaded pages, fetched one by one.
+  const [listedExtraSummaries, setListedExtraSummaries] = useState<ChatSummary[]>([]);
+  const listedExtraAttempts = useRef<Set<string>>(new Set());
   const chatTaskStatuses = useRef<Map<string, AgentTask["status"]>>(new Map());
   const chatSummariesRef = useRef<ChatSummary[]>([]);
   const selectedChatIdRef = useRef<string | null>(null);
   const selectedCanonicalChatRef = useRef<ChatSummary | null>(null);
   const chatSummaryRefreshGeneration = useRef(0);
+  const chatReadsRef = useRef<ChatReads | null>(null);
+  // Summary refreshes and archive changes both fetch chat-reads; only the newest
+  // fetch may replace its archive and finish projection.
+  const chatReadsFetch = useRef(0);
+  const setChatReads = useCallback((next: ChatReads | null) => {
+    chatReadsRef.current = next;
+    setChatReadsState(next);
+  }, []);
 
-  const visibleChatSummaries = useMemo(
-    () =>
-      selectedCanonicalChat &&
-      !chatSummaries.some((summary) => summary.chat_id === selectedCanonicalChat.chat_id)
-        ? [...chatSummaries, selectedCanonicalChat]
-        : chatSummaries,
-    [chatSummaries, selectedCanonicalChat],
-  );
+  const visibleChatSummaries = useMemo(() => {
+    const extras = [
+      ...(selectedCanonicalChat ? [selectedCanonicalChat] : []),
+      ...listedExtraSummaries,
+    ];
+    const listed = new Set(chatSummaries.map((summary) => summary.chat_id));
+    const added = extras.filter((summary) => {
+      if (listed.has(summary.chat_id)) return false;
+      listed.add(summary.chat_id);
+      return true;
+    });
+    return added.length ? [...chatSummaries, ...added] : chatSummaries;
+  }, [chatSummaries, listedExtraSummaries, selectedCanonicalChat]);
   const visibleChatIds = useMemo(
     () => visibleTranscriptIds(selectedChatId, floatingChat?.chatId ?? null),
     [floatingChat?.chatId, selectedChatId, visibleTranscriptIds],
@@ -351,7 +369,11 @@ export function useChatState({
       const generation = ++chatSummaryRefreshGeneration.current;
       setChatSummariesLoading(true);
       try {
-        const page = await loadChatSummaryPage(base, 0, api, graphTarget);
+        const readsFetch = ++chatReadsFetch.current;
+        const [page, reads] = await Promise.all([
+          loadChatSummaryPage(base, 0, api, graphTarget),
+          loadChatReads(graphTargetUrl(`${base}/chat-reads`, graphTarget)),
+        ]);
         if (
           !isActiveProject(requestedProjectId) ||
           generation !== chatSummaryRefreshGeneration.current
@@ -383,6 +405,9 @@ export function useChatState({
         )
           return;
         const nextSummaries = mergeChatSummaryPage([], page.items, "refresh");
+        if (readsFetch === chatReadsFetch.current) {
+          setChatReads(mergeChatReads(chatReadsRef.current, reads));
+        }
         chatSummariesRef.current = nextSummaries;
         setChatSummaries(nextSummaries);
         setChatSummaryTotal(page.total);
@@ -421,7 +446,7 @@ export function useChatState({
         }
       }
     },
-    [graphTarget, isActiveProject],
+    [graphTarget, isActiveProject, setChatReads],
   );
 
   const loadMoreChatSummaries = useCallback(async () => {
@@ -469,19 +494,15 @@ export function useChatState({
     projectId,
   ]);
 
-  const recordTaskUpdates = useCallback((tasks: AgentTask[], visibleChatId: string | null) => {
+  const recordTaskUpdates = useCallback((tasks: AgentTask[]) => {
     const previousStatuses = chatTaskStatuses.current;
     const nextStatuses = new Map(previousStatuses);
-    const newlyTerminal = newlyUnreadChatTaskIds(tasks, previousStatuses, visibleChatId);
-    const completedChatTasks = newlyUnreadChatTaskIds(tasks, previousStatuses, null);
+    const completedChatTasks = newlyFinishedChatTaskIds(tasks, previousStatuses);
     for (const task of tasks) {
       if (!chatIdForTask(task)) continue;
       nextStatuses.set(task.operation_id, task.status);
     }
     chatTaskStatuses.current = nextStatuses;
-    if (newlyTerminal.length) {
-      setUnreadChatTaskIds((current) => new Set([...current, ...newlyTerminal]));
-    }
     return completedChatTasks.length > 0;
   }, []);
 
@@ -492,37 +513,145 @@ export function useChatState({
         !chatTaskStatuses.current.has(task.operation_id) &&
         task.finished,
     );
-    if (unseen.length > 0) {
-      setUnreadChatTaskIds(
-        (current) =>
-          new Set([
-            ...current,
-            ...unseen.flatMap((task) => {
-              const chatId = chatIdForTask(task);
-              return chatId && chatId !== selectedChatIdRef.current ? [task.operation_id] : [];
-            }),
-          ]),
-      );
-    }
     return unseen.length > 0;
   }, []);
 
-  const markVisibleChatRead = useCallback((tasks: AgentTask[], visibleChatId: string | null) => {
-    if (!visibleChatId) return;
-    setUnreadChatTaskIds((current) => {
-      const next = new Set(current);
-      tasks.forEach((task) => {
-        if (task.request.chat_id === visibleChatId) next.delete(task.operation_id);
-      });
-      return next.size === current.size ? current : next;
-    });
-  }, []);
+  const graphTargetKey = graphTarget.kind === "branch" ? `branch:${graphTarget.branch_id}` : "main";
+  useEffect(() => {
+    setListedExtraSummaries([]);
+    listedExtraAttempts.current = new Set();
+  }, [graphTargetKey]);
+
+  /** A pinned or unread chat must be listed wherever its recency puts it. */
+  const ensureListedChats = useCallback(
+    (chatIds: readonly string[]) => {
+      if (!projectId || !apiBase) return;
+      const requestedProjectId = projectId;
+      for (const chatId of chatIds) {
+        if (listedExtraAttempts.current.has(chatId)) continue;
+        if (chatSummariesRef.current.some((summary) => summary.chat_id === chatId)) continue;
+        listedExtraAttempts.current.add(chatId);
+        void loadChatTranscript(apiBase, chatId, api, graphTarget)
+          .then(({ messages: _messages, ...summary }) => {
+            if (!isActiveProject(requestedProjectId)) return;
+            setListedExtraSummaries((current) =>
+              current.some((item) => item.chat_id === chatId) ? current : [...current, summary],
+            );
+          })
+          .catch((error) => {
+            // A turn whose transcript was never written has no row to show.
+            if (error instanceof ApiError && error.status === 404) return;
+            listedExtraAttempts.current.delete(chatId);
+            reportError(
+              `Conversation could not be loaded: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+      }
+    },
+    [apiBase, graphTarget, isActiveProject, projectId, reportError],
+  );
+
+  const refreshChatReads = useCallback(async () => {
+    if (!projectId || !apiBase) return;
+    const requestedProjectId = projectId;
+    const readsFetch = ++chatReadsFetch.current;
+    const reads = await loadChatReads(graphTargetUrl(`${apiBase}/chat-reads`, graphTarget));
+    if (isActiveProject(requestedProjectId) && readsFetch === chatReadsFetch.current) {
+      setChatReads(mergeChatReads(chatReadsRef.current, reads));
+    }
+  }, [apiBase, graphTarget, isActiveProject, projectId, setChatReads]);
+
+  // Reading moves the marker at once; the server's answer then merges into it.
+  const experimentChatTargetRef = useRef(selectedExperimentChatTarget);
+  experimentChatTargetRef.current = selectedExperimentChatTarget;
+  const otherGraphReadKey = useRef<string | null>(null);
+
+  const markVisibleChatRead = useCallback(
+    (tasks: AgentTask[], visibleChatId: string | null) => {
+      const current = chatReadsRef.current;
+      if (!visibleChatId || !current || !projectId || !apiBase) return;
+      const requestedProjectId = projectId;
+      const path = `${apiBase}/chats/${encodeURIComponent(visibleChatId)}/read`;
+      const target = visibleChatTranscriptTarget(
+        visibleChatId,
+        selectedExperimentChatId,
+        experimentChatTargetRef.current,
+        graphTarget,
+      );
+      if (!sameGraphTarget(target, graphTarget)) {
+        // A Runs chat on another graph has no finish in the viewed graph's
+        // projection, so read that graph's. Its progress token bounds the fetches.
+        const key = `${visibleChatId}|${experimentChatTargetKey}|${selectedExperimentChatFreshness}`;
+        if (otherGraphReadKey.current === key) return;
+        otherGraphReadKey.current = key;
+        void loadChatReads(graphTargetUrl(`${apiBase}/chat-reads`, target))
+          .then(async (other) => {
+            const readThrough = chatReadThrough(tasks, other, visibleChatId);
+            const marker = other.reads[visibleChatId] ?? other.baseline;
+            if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
+            const reads = await markChatRead(graphTargetUrl(path, target), readThrough);
+            const latest = chatReadsRef.current;
+            // Markers are per chat, not per graph, but finishes belong to their graph.
+            if (isActiveProject(requestedProjectId) && latest) {
+              setChatReads({ ...latest, reads: mergeChatReads(latest, reads).reads });
+            }
+          })
+          .catch((error) => {
+            // Let the next view retry; the key only suppresses repeats of a success.
+            if (otherGraphReadKey.current === key) otherGraphReadKey.current = null;
+            reportError(
+              `Chat could not be marked read: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+        return;
+      }
+      const readThrough = chatReadThrough(tasks, current, visibleChatId);
+      const marker = current.reads[visibleChatId] ?? current.baseline;
+      if (!readThrough || Date.parse(readThrough) <= Date.parse(marker)) return;
+      setChatReads({ ...current, reads: { ...current.reads, [visibleChatId]: readThrough } });
+      void markChatRead(graphTargetUrl(path, graphTarget), readThrough)
+        .then((reads) => {
+          const latest = chatReadsRef.current;
+          // Only the markers: a fetch may have refreshed the archive projection since.
+          if (isActiveProject(requestedProjectId) && latest) {
+            setChatReads({ ...latest, reads: mergeChatReads(latest, reads).reads });
+          }
+        })
+        .catch((error) => {
+          // Undo the optimistic marker, unless a newer one replaced it, so the
+          // next view retries instead of trusting a write the server never saw.
+          const latest = chatReadsRef.current;
+          if (isActiveProject(requestedProjectId) && latest?.reads[visibleChatId] === readThrough) {
+            const reads = { ...latest.reads };
+            if (visibleChatId in current.reads) reads[visibleChatId] = current.reads[visibleChatId];
+            else delete reads[visibleChatId];
+            setChatReads({ ...latest, reads });
+          }
+          reportError(
+            `Chat could not be marked read: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
+    },
+    [
+      apiBase,
+      experimentChatTargetKey,
+      graphTarget,
+      isActiveProject,
+      projectId,
+      reportError,
+      selectedExperimentChatFreshness,
+      selectedExperimentChatId,
+      setChatReads,
+    ],
+  );
 
   const resetProjectChats = useCallback(() => {
     setFloatingChatState(null);
     setDraftConversations([]);
     selectChat(null);
-    setUnreadChatTaskIds(new Set());
+    setChatReads(null);
+    setListedExtraSummaries([]);
+    listedExtraAttempts.current = new Set();
     chatSummaryRefreshGeneration.current += 1;
     chatSummariesRef.current = [];
     setChatSummaries([]);
@@ -531,7 +660,7 @@ export function useChatState({
     setChatSummariesLoading(false);
     setChatTranscripts(new Map());
     chatTaskStatuses.current = new Map();
-  }, [selectChat]);
+  }, [selectChat, setChatReads]);
 
   const restoreProjectChats = useCallback(
     (snapshot: ChatStateSnapshot, nodes: Record<string, GraphNode>) => {
@@ -542,7 +671,9 @@ export function useChatState({
       );
       setDraftConversations([...snapshot.draftConversations]);
       selectChat(snapshot.selectedChatId);
-      setUnreadChatTaskIds(new Set(snapshot.unreadChatTaskIds));
+      setChatReads(snapshot.chatReads);
+      setListedExtraSummaries([]);
+      listedExtraAttempts.current = new Set();
       chatSummaryRefreshGeneration.current += 1;
       chatSummariesRef.current = [...snapshot.chatSummaries];
       setChatSummaries([...snapshot.chatSummaries]);
@@ -554,14 +685,14 @@ export function useChatState({
       setSelectedCanonicalChat(snapshot.selectedCanonicalChat);
       chatTaskStatuses.current = new Map(snapshot.chatTaskStatuses);
     },
-    [selectChat],
+    [selectChat, setChatReads],
   );
 
   const snapshot: ChatStateSnapshot = {
     floatingChat,
     draftConversations,
     selectedChatId,
-    unreadChatTaskIds,
+    chatReads,
     chatSummaries,
     chatSummaryTotal,
     chatSummaryNextOffset,
@@ -587,6 +718,8 @@ export function useChatState({
     recordTaskUpdates,
     recordWatcherResults,
     markVisibleChatRead,
+    refreshChatReads,
+    ensureListedChats,
     resetProjectChats,
     restoreProjectChats,
   };

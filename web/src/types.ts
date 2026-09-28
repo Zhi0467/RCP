@@ -2523,6 +2523,18 @@ export interface ChatSummary {
 export interface ChatDisplay {
   archived: string[];
   titles: Record<string, string>;
+  /** Newest pin first. */
+  pinned: string[];
+}
+
+/** The viewer's read markers; a chat without one is read through `baseline`. */
+export interface ChatReads {
+  baseline: string;
+  reads: Record<string, string>;
+  /** Each unarchived chat's newest finished turn, however old. */
+  latest_finished: Record<string, string>;
+  /** Archived chats never count as unread, even from a loaded turn. */
+  archived: string[];
 }
 
 export interface ChatSummaryPage {

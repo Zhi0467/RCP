@@ -173,14 +173,14 @@ names Discuss or Work; each turn's own label already carries it. The agent list 
 band: a sidebar icon beside its search folds it, a folded list leaves that
 icon at the chat band's top left, and a hairline separates list from chat.
 
-Each agent card leads with a filled dot, one fixed colour per state: needs
-you, paused, working (pulsing), unread result, done, failed, or an unsent
-draft. Cards share one fixed size: a one-line title and one secondary
-line, the attention reason when it needs a human, else the meta. A three-dot menu on
-the card removes an unsent draft, which exists only in the browser, or renames
-or archives a conversation with turns. Both are project display choices in the
-local store (`POST /api/projects/{project_id}/chats/{chat_id}/title` and
-`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`);
+Cards share one fixed size: a one-line title and one secondary line of
+meta; the group they sit in names their state. A three-dot menu on
+the card removes an unsent draft, which exists only in the browser, or renames,
+pins, or archives a conversation with turns. Rename and archive are project
+display choices shared by every member; a pin belongs to the member who made it
+(`POST /api/projects/{project_id}/chats/{chat_id}/title`, `.../pin`, and
+`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`,
+which returns the acting user's pins);
 a blank name returns the derived one. Rename edits the title in place on the
 card. An Archived filter appears when any exist, counts every archived chat
 including unloaded pages, and offers Restore. Transcripts and tasks are never
@@ -193,17 +193,33 @@ recovery controls stay explicit. The composer is a calm contained writing
 surface rather than a full-width control bar.
 
 The **Agents** destination (formerly Chats; the route view is still `chats`) lists
-conversations as an agent-hub panel. Conversations are grouped **Needs you**,
-**Working**, and **Recent**, each in recency order, from the backend's answers on
-the latest turn: a paused, failed, or interrupted turn needs the human; a
-queued, running, or pausing turn is working. Each row is a raised card with a
-state dot, a one-line title, and either the backend status label as its reason
-when the human is needed or a provider · repository line (the live phase and
-elapsed time while working). Search runs in the browser over what each card
+conversations as an agent-hub panel. Each conversation belongs to exactly one
+group, and each group lists its conversations in recency order. The groups come
+from the backend's answers on the latest loaded turn, in this order:
+
+- **New reply**: the turn succeeded after the human last viewed this
+  conversation (the read markers in `api-web-and-desktop-projections.md`).
+- **Failed**: the turn failed.
+- **Stopped**: the turn was paused or interrupted. Both resume the same way.
+- **Working**: the turn is queued, running, or pausing.
+- **Done**: the turn succeeded and was read. An unsent draft, and a
+  conversation whose turns are not loaded, are also Done.
+
+Pinned conversations leave their group for a **Pinned** section above the
+groups, newest pin first, in the All view only; each pinned row carries its own
+status mark. Filters and their counts ignore pins.
+
+The group header carries the state: a mark and a label in the state's colour,
+plus a count. Rows carry no state dot. Each row is a raised card with a one-line
+title and a provider · repository line. Failed and Stopped rows add Retry or
+Resume when the task offers it, and a working row shows its live phase and
+elapsed time. An unread turn is the most prominent thing in the list in any
+group: a tinted card, an accent border, a bold title, and a New pill. A failed
+or stopped turn that is unread stays in its own group. Search runs in the browser over what each card
 already holds: its name, node, chat kind, latest message, and every loaded
 turn's prompt, provider, model, effort, and repositories; every word must match.
-Chips filter to All, Needs you, or Working. Above the conversation, a header
-names the title, provider, model, effort, repository, and chat scope; a needs-you turn adds a banner
+Chips filter to All or Working. Above the conversation, a header
+names the title, provider, model, effort, repository, and chat scope; a failed or stopped turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
 
 At viewport widths of 560px or less, Agents uses a single column. The conversation

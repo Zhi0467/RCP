@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import rcp.storage.agent_tasks as agent_task_storage
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import AGENT_TASK_LIST_DEFAULT_LIMIT
 from rcp.storage import AgentTaskRecord, AgentTaskStatus, AppStore
 from tests.test_auto_research_children_storage import _identity, _project
@@ -75,3 +76,55 @@ def test_the_open_chat_cap_keeps_the_most_recent_open_chats(
     listed = [task.operation_id for task in store.agent_tasks("project")]
 
     assert listed[AGENT_TASK_LIST_DEFAULT_LIMIT:] == ["newest-open", "middle-open"]
+
+
+def test_chat_reads_find_a_reply_the_task_list_no_longer_holds(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    _chat_turn(store, "old-success", "chat-done", "succeeded", 0, timedelta(days=1))
+    _chat_turn(store, "old-paused", "chat-paused", "paused", 1)
+    _chat_turn(store, "old-archived", "chat-archived", "succeeded", 2, timedelta(days=1))
+    for index in range(AGENT_TASK_LIST_DEFAULT_LIMIT):
+        _chat_turn(store, f"newer-{index}", "chat-newer", "succeeded", 10 + index)
+    store.set_chat_archived("project", "chat-archived", "user", archived=True)
+    branch = GraphTargetRef(kind="branch", branch_id="branch")
+    _chat_turn(store, "branch-success", "chat-branch", "succeeded", 3, timedelta(days=1))
+    # Admission needs a real branch; the read projection only filters the stored target.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET graph_target_json = ? WHERE operation_id = 'branch-success'",
+            (branch.model_dump_json(),),
+        )
+    assert "old-success" not in {task.operation_id for task in store.agent_tasks("project")}
+
+    finished = store.chat_reads("project", "user", GraphTargetRef())["latest_finished"]
+
+    assert set(finished) == {"chat-done"}
+    assert set(store.chat_reads("project", "user", branch)["latest_finished"]) == {"chat-branch"}
+    assert finished["chat-done"] == store.agent_task("old-success").finished_at
+
+
+def test_chat_read_marker_never_moves_back(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    later = datetime.fromisoformat("2026-09-27T12:00:00.5+00:00")
+    store.mark_chat_read("project", "chat", "user", later)
+    store.mark_chat_read("project", "chat", "user", later - timedelta(hours=1))
+    store.mark_chat_read("project", "chat", "other", later - timedelta(hours=1))
+
+    assert store.chat_reads("project", "user", GraphTargetRef())["reads"] == {
+        "chat": later.isoformat()
+    }
+    assert store.chat_reads("project", "other", GraphTargetRef())["reads"] == {
+        "chat": (later - timedelta(hours=1)).isoformat()
+    }
+
+
+def test_chat_pins_belong_to_the_user_who_pinned(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    store.set_chat_pinned("project", "first", "user", pinned=True)
+    store.set_chat_pinned("project", "second", "user", pinned=True)
+    store.set_chat_pinned("project", "first", "other", pinned=True)
+    store.set_chat_pinned("project", "first", "user", pinned=False)
+
+    assert store.chat_display("project", "user")["pinned"] == ["second"]
+    assert store.chat_display("project", "other")["pinned"] == ["first"]

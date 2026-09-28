@@ -60,7 +60,8 @@ class AppStoreBase:
         (23, "agent_task_list_indexes_v1"),
         (24, "compute_probe_routes_v1"),
         (25, "chat_display_v1"),
-        (26, "space_machines_v1"),
+        (26, "chat_reads_and_pins_v1"),
+        (27, "space_machines_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -599,6 +600,12 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection,
             version=26,
+            name="chat_reads_and_pins_v1",
+            migration=self._migrate_chat_reads_and_pins,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=27,
             name="space_machines_v1",
             migration=self._migrate_space_machines,
         )
@@ -2046,6 +2053,7 @@ class AppStoreBase:
         self._migrate_agent_task_list_indexes(connection)
         self._migrate_compute_probe_routes(connection)
         self._migrate_chat_display(connection)
+        self._migrate_chat_reads_and_pins(connection)
         self._migrate_space_machines(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
@@ -2266,6 +2274,27 @@ class AppStoreBase:
                 archived_user_id TEXT,
                 archived_at TEXT,
                 PRIMARY KEY (project_id, chat_id)
+            )
+        """)
+
+    @staticmethod
+    def _migrate_chat_reads_and_pins(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS chat_pins (
+                project_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                pinned_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, chat_id, user_id)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS chat_reads (
+                project_id TEXT NOT NULL,
+                chat_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                read_through TEXT NOT NULL,
+                PRIMARY KEY (project_id, chat_id, user_id)
             )
         """)
 
