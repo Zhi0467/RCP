@@ -8,7 +8,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager, suppress
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Literal, cast
 
 from rcp.agents import (
@@ -116,6 +116,7 @@ from rcp.transport import (
     StateUnavailable,
     repository_access,
 )
+from rcp.transport.run_stage import remote_stage_name
 
 _SAME_ALLOCATION_RECOVERY = frozenset({"resume", "retry"})
 _HANDOFFS_CLEARED_RECEIPT = "auto_research_worker_handoffs_cleared"
@@ -994,12 +995,13 @@ def _open_auto_research_actor_stage(
     machine = service.manifest.machine_map.get(request.run_on)
     if machine is None:
         raise ValueError(f"unknown auto_research {actor_label} execution machine: {request.run_on}")
-    expected_remote = str(PurePosixPath("/tmp") / f"rcp-run.{stage_name}")
     if turn.binding.stage_root is not None:
         if machine.host:
+            # Accepts the new `~/.rcp/stages` root, whose home the host checks on
+            # attach, and a saved legacy `/tmp` root that a later release removes.
             if (
                 turn.binding.stage_host != machine.host
-                or turn.binding.stage_root != expected_remote
+                or remote_stage_name(turn.binding.stage_root) != stage_name
             ):
                 raise ValueError(
                     f"AutoResearch {actor_label} saved remote stage has a different actor binding."

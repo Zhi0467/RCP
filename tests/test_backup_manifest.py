@@ -452,7 +452,7 @@ def test_backup_configuration_preserves_secret_free_compute_metadata(manifest) -
     assert "password" not in recovery.model_dump_json().casefold()
 
 
-def test_missing_or_stale_recovery_proof_makes_the_project_uncapturable(
+def test_backup_needs_a_recovery_proof_but_snapshots_later_manifest_edits(
     tmp_path: Path,
 ) -> None:
     record, request = _completed_registration(tmp_path)
@@ -474,12 +474,12 @@ def test_missing_or_stale_recovery_proof_makes_the_project_uncapturable(
         encoding="utf-8",
     )
     changed_record = record.model_copy(update={"name": "Changed later"})
-    with pytest.raises(BackupProjectUnavailable):
-        inspect_backup_project_registration(
-            changed_record,
-            data_dir=tmp_path / "data",
-            provisioning_requests=[request],
-        )
+    registration = inspect_backup_project_registration(
+        changed_record,
+        data_dir=tmp_path / "data",
+        provisioning_requests=[request],
+    )
+    assert registration.manifest.name == "Changed later"
 
 
 def test_archive_manifest_round_trips_and_calculates_complete_or_partial(

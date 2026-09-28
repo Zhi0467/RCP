@@ -30,6 +30,7 @@ import {
   Network,
   RefreshCw,
   RotateCcw,
+  Settings,
   Settings2,
   Telescope,
   TerminalSquare,
@@ -228,6 +229,8 @@ import type {
 } from "./types";
 import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
+import { SpaceSettings } from "./views/SpaceSettings";
+import { LandingIdentityMenu } from "./components/LandingIdentityMenu";
 import { ProjectOverview } from "./views/ProjectOverview";
 import { ProjectSetup } from "./views/ProjectSetup";
 import {
@@ -996,6 +999,9 @@ export default function App() {
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);
   const [textScale, setTextScale] = useState(readTextScale);
+  const [spaceSettingsOpen, setSpaceSettingsOpen] = useState(false);
+  // Space settings is a page over the current route; any navigation leaves it.
+  useEffect(() => setSpaceSettingsOpen(false), [projectId, setupOpen]);
   const appearance = useTheme();
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
@@ -3981,9 +3987,33 @@ export default function App() {
         <ProjectSetup
           key={projectSetupRouteKey(setupRoute)}
           projectCreation={verifiedHealth!.project_creation}
+          spaceKind={verifiedHealth!.space_kind}
           onCancel={returnToProjects}
           onCreated={openProject}
           setupRoute={setupRoute}
+        />
+        {updateSurface}
+        {desktopAccessSurface}
+        {actorNameSurface}
+        {acceptanceAgentSurface}
+      </>
+    );
+  if (spaceSettingsOpen)
+    return (
+      <>
+        <SpaceSettings
+          spaceKind={verifiedHealth?.space_kind ?? "personal"}
+          updateNotice={releaseUpdate}
+          cacheProjectId={projectId ?? projects[0]?.id ?? null}
+          cacheClearDisabled={Boolean(activeTask)}
+          onAllCachesCleared={(clearedProjectId, cacheMetrics) => {
+            if (project?.id !== clearedProjectId) return;
+            updateProject((current) =>
+              current ? { ...current, cache_metrics: cacheMetrics } : current,
+            );
+          }}
+          onLoginChanged={() => void refreshReadiness().catch(() => {})}
+          onClose={() => setSpaceSettingsOpen(false)}
         />
         {updateSurface}
         {desktopAccessSurface}
@@ -4018,6 +4048,8 @@ export default function App() {
           identityError={actorIdentityError}
           onRequestIdentityName={requestActorName}
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
+          onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
+          textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
@@ -4292,6 +4324,27 @@ export default function App() {
               >
                 <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={15} />
               </button>
+              <button
+                className="icon-button space-settings-control"
+                aria-label="Space settings"
+                title="Space settings"
+                onClick={() => setSpaceSettingsOpen(true)}
+              >
+                <Settings size={15} />
+              </button>
+              <LandingIdentityMenu
+                compact
+                identity={actorIdentity}
+                identityError={actorIdentityError}
+                onRequestName={requestActorName}
+                appearance={{
+                  themeChoice: appearance.theme,
+                  colorModeChoice: appearance.mode,
+                  onThemeChoiceChange: appearance.setTheme,
+                  onColorModeChoiceChange: appearance.setMode,
+                }}
+                textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
+              />
             </div>
           </div>
         </header>
@@ -4717,7 +4770,6 @@ export default function App() {
           )}
           {view === "settings" && (
             <ProjectSettings
-              updateNotice={releaseUpdate}
               apiBase={apiBase}
               project={project}
               identity={actorIdentity}
@@ -4731,10 +4783,7 @@ export default function App() {
               onRefreshUsage={refreshUsage}
               cacheClearDisabled={Boolean(activeTask)}
               writesDisabled={mutationsDisabled}
-              showTextScale={desktop}
               spaceKind={verifiedHealth?.space_kind ?? "personal"}
-              textScale={textScale}
-              onTextScaleChange={changeAppTextScale}
               onRefreshReadiness={refreshReadiness}
               readinessRequest={providerReadinessRequests[project.id]}
               onMovePersonalProjectToTeam={movePersonalProjectToTeam}

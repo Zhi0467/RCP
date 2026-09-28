@@ -198,8 +198,13 @@ class WorkComputeCommands:
             for root in self.write_scope.writable_roots
         ):
             raise ValueError("Compute cwd must be inside this turn's writable roots.")
+        workspace = PurePosixPath(self.write_scope.workspace_root)
+        in_workspace = cwd == workspace or workspace in cwd.parents
         if any(
-            cwd == PurePosixPath(root) or PurePosixPath(root) in cwd.parents
+            (cwd == PurePosixPath(root) or PurePosixPath(root) in cwd.parents)
+            # RCP storage covered by a grant can hold this launch's own
+            # workspace, which stays writable; a deeper input still refuses.
+            and not (in_workspace and PurePosixPath(root) in workspace.parents)
             for root in self.write_scope.protected_write_paths
         ):
             raise ValueError("Compute cwd is a protected write path.")

@@ -3730,7 +3730,22 @@ class ProviderReadinessSnapshotRecord(BaseModel):
     probed_at: str
 
 
+class SpaceMachineRecord(BaseModel):
+    """One machine account this space runs on, and the paths granted on it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    machine_id: str
+    name: str
+    host: str
+    os_account: str
+    writable_paths: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
 __all__ = [
+    "SpaceMachineRecord",
     "ProviderLoginStateRecord",
     "ProviderReadinessSnapshotRecord",
     "ArtifactRevisionCandidateRecord",

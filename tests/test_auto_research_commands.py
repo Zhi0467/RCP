@@ -30,6 +30,7 @@ from rcp.agents.command_protocol import (
     ValidateCommandRequest,
     WatchGraphCommandRequest,
 )
+from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -1195,7 +1196,7 @@ async def test_auto_research_mailbox_audits_authenticated_mutation_without_key(t
 
         def send_request() -> dict[str, object]:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.connect(staged.invocation_gate.socket_path)
+                client.connect(_broker_socket_path(staged.invocation_gate.socket_path))
                 client.sendall(request.model_dump_json().encode("utf-8") + b"\n")
                 response = bytearray()
                 while not response.endswith(b"\n"):

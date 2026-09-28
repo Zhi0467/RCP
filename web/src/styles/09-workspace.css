@@ -227,18 +227,9 @@
   .repository-path-field.wide {
     grid-column: auto;
   }
-  .ssh-repository-browser > header {
+  .path-picker > header {
     align-items: stretch;
     flex-direction: column;
-  }
-  .ssh-repository-browser > header > div {
-    flex-wrap: wrap;
-  }
-  .ssh-repository-browser-labels {
-    grid-column: 2 / -1;
-  }
-  .ssh-repository-browser-list > button {
-    grid-template-columns: 16px minmax(0, 1fr) 14px;
   }
   .repository-editor > footer {
     align-items: flex-start;

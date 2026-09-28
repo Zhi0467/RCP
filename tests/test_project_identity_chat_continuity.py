@@ -100,8 +100,12 @@ def _task(
     )
 
 
-@pytest.mark.parametrize("remote", [False, True])
-def test_adopted_chat_next_turn_reuses_exact_saved_stage(tmp_path: Path, remote: bool) -> None:
+# A remote stage lives under the host's `~/.rcp/stages`; a legacy saved `/tmp`
+# stage from before that move still resumes.
+@pytest.mark.parametrize("remote", [None, "/home/worker/.rcp/stages", "/tmp"])
+def test_adopted_chat_next_turn_reuses_exact_saved_stage(
+    tmp_path: Path, remote: str | None
+) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     legacy_id = "legacy-project"
     canonical_id = str(uuid.uuid4())
@@ -110,7 +114,7 @@ def test_adopted_chat_next_turn_reuses_exact_saved_stage(tmp_path: Path, remote:
     native_session_id = str(uuid.uuid4())
     if remote:
         stage_host = "worker.example"
-        stage_root = f"/tmp/rcp-run.{stage_name}"
+        stage_root = f"{remote}/rcp-run.{stage_name}"
     else:
         stage_host = None
         local_stage = tmp_path / "data" / "run-stage" / stage_name

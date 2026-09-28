@@ -1,6 +1,8 @@
 # Claude Work runs without the OS sandbox
 
-Confirmed by the human 2026-09-13. This record fixes a containment tradeoff that
+Confirmed by the human 2026-09-13. Amended 2026-09-27 by
+[Machine writable paths protect only RCP's own storage](2026-09-27-machine-writable-paths-protect-only-rcp-storage.md)
+for Claude's file tools inside a grant that covers a stage. This record fixes a containment tradeoff that
 is easy to regress, because it already regressed once silently.
 
 ## What happened

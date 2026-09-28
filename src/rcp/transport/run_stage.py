@@ -23,7 +23,9 @@ from rcp.limits import (
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
+from rcp.rcp_home import rcp_temp_dir
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
+from rcp.transport import remote_stage_root
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
     StateMissing,
@@ -59,32 +61,6 @@ def _ssh_failure(
     if result.returncode == 255:
         return StateUnreachable(detail)
     return answered(detail)
-
-
-_REMOTE_TREE_HELPERS = """\
-import os,shutil
-def make_writable(path):
-    if os.path.islink(path):
-        return
-    os.chmod(path, 0o700)
-    if not os.path.isdir(path):
-        return
-    with os.scandir(path) as entries:
-        for entry in entries:
-            child=entry.path
-            if entry.is_dir(follow_symlinks=False):
-                make_writable(child)
-            elif not entry.is_symlink():
-                os.chmod(child, 0o600)
-def remove_tree(path):
-    if not os.path.lexists(path):
-        return
-    if os.path.islink(path) or not os.path.isdir(path):
-        os.unlink(path)
-        return
-    make_writable(path)
-    shutil.rmtree(path)
-"""
 
 
 @dataclass(frozen=True)
@@ -147,25 +123,12 @@ class RemoteRunStage:
         protected = tuple(dict.fromkeys(protected_roots))
         if any(not _safe_root(root) for root in protected):
             raise ValueError("protected remote run stage is outside the staging boundary")
-        script = (
-            _REMOTE_TREE_HELPERS
-            + """
-import glob,json,sys,time
-cutoff=time.time()-(int(sys.argv[1])*86400)
-protected=set(json.loads(sys.argv[2]))
-for target in glob.glob('/tmp/rcp-run.*'):
-    try:
-        if target not in protected and os.path.isdir(target) and os.path.getmtime(target) < cutoff:
-            remove_tree(target)
-    except OSError:
-        pass
-"""
-        )
         self._ssh(
             [
                 "python3",
                 "-c",
-                script,
+                _remote_script("remote_stage_root.py"),
+                "sweep",
                 str(int(retain_days)),
                 json.dumps(protected, separators=(",", ":")),
             ]
@@ -184,17 +147,18 @@ for target in glob.glob('/tmp/rcp-run.*'):
         second time must land in the same directory rather than fail.
         """
         self.sweep(protected_roots=protected_roots)
-        if operation_id is None:
-            result = self._ssh(["mktemp", "-d", "/tmp/rcp-run.XXXXXXXX"])
-            remote_root = result.stdout.strip()
-        else:
-            label = _safe_label(operation_id)
-            remote_root = f"/tmp/rcp-run.{label}"
-            result = self._ssh(
-                ["mkdir", "-p", "-m", "700", remote_root]
-                if reuse
-                else ["mkdir", "-m", "700", remote_root]
-            )
+        label = "" if operation_id is None else _safe_label(operation_id)
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "create",
+                label,
+                "1" if reuse else "0",
+            ]
+        )
+        remote_root = result.stdout.strip()
         if result.returncode or not _safe_root(remote_root):
             raise _ssh_failure(result, "could not create remote run stage")
         safe = self._directory_probe(remote_root)
@@ -244,8 +208,11 @@ for target in glob.glob('/tmp/rcp-run.*'):
 
         script = """
 import os,stat,sys
+root=sys.argv[1]
+if not root.startswith('/tmp/rcp-run.') and os.path.dirname(root)!=os.path.join(os.path.expanduser('~'),'.rcp','stages'):
+    print('remote run stage is outside this account',file=sys.stderr); raise SystemExit(1)
 try:
-    info=os.lstat(sys.argv[1])
+    info=os.lstat(root)
 except (FileNotFoundError,NotADirectoryError):
     raise SystemExit(1)
 except OSError as exc:
@@ -322,6 +289,23 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
             raise StateUnavailable("remote repository root inspection returned invalid paths")
         return values, home
 
+    def legacy_stage_roots(self) -> list[str]:
+        """Canonical paths of the `/tmp/rcp-run.*` stages left from before `~/.rcp`.
+
+        A later release removes this with the legacy stage location.
+        """
+
+        result = self._ssh(["python3", "-c", _remote_script("remote_stage_root.py"), "legacy"])
+        if result.returncode:
+            raise _ssh_failure(result, "could not list legacy remote run stages")
+        try:
+            roots = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise StateUnavailable("legacy remote run stage listing returned invalid data") from exc
+        if not isinstance(roots, list) or not all(isinstance(root, str) for root in roots):
+            raise StateUnavailable("legacy remote run stage listing returned invalid paths")
+        return roots
+
     def attach_artifact_source(self, root: str) -> RemoteRunStage:
         """Adopt saved provenance; the bounded artifact read performs the SSH check."""
         if not _safe_root(root):
@@ -336,12 +320,9 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         root = str(self.root)
         if not _safe_root(root):
             return False
-        script = (
-            _REMOTE_TREE_HELPERS
-            + "\nimport sys\nremove_tree(sys.argv[1])\n"
-            + "if os.path.lexists(sys.argv[1]):\n    raise SystemExit(1)\n"
+        result = self._ssh(
+            ["python3", "-c", _remote_script("remote_stage_root.py"), "remove", root]
         )
-        result = self._ssh(["python3", "-c", script, root])
         if result.returncode:
             return False
         self.root = None
@@ -530,80 +511,6 @@ if actual!=expected:
 
         batch = self.root / f".input-batch-{uuid.uuid4().hex}"
         reusable_labels = sorted(self._reusable_inputs.intersection(labels))
-        script = (
-            _REMOTE_TREE_HELPERS
-            + """
-import hashlib,json,stat,sys
-root,batch=map(os.path.abspath,sys.argv[1:3])
-labels=json.loads(sys.argv[3]); transferred=sys.argv[4]=='1'
-reusable=set(json.loads(sys.argv[5]))
-inputs=os.path.join(root,'inputs')
-def fingerprint(path,immutable=False):
-    info=os.lstat(path)
-    if stat.S_ISLNK(info.st_mode): raise ValueError('staged input contains a symlink')
-    if immutable and info.st_mode & 0o222:
-        raise ValueError('reusable staged input is writable')
-    if stat.S_ISDIR(info.st_mode):
-        children=[]
-        with os.scandir(path) as entries:
-            for entry in sorted(entries,key=lambda item:item.name):
-                children.append((entry.name,fingerprint(entry.path,immutable)))
-        return ('directory',children)
-    elif stat.S_ISREG(info.st_mode):
-        digest=hashlib.sha256()
-        with open(path,'rb') as source:
-            while True:
-                chunk=source.read(1024*1024)
-                if not chunk: break
-                digest.update(chunk)
-        return ('file',digest.hexdigest())
-    else:
-        raise ValueError('staged input is not a regular file or directory')
-def protect(path):
-    info=os.lstat(path)
-    if stat.S_ISDIR(info.st_mode):
-        with os.scandir(path) as entries:
-            for entry in entries: protect(entry.path)
-        os.chmod(path,0o500)
-    elif stat.S_ISREG(info.st_mode):
-        os.chmod(path,0o400)
-if not transferred:
-    remove_tree(batch); raise SystemExit(44)
-if not reusable.issubset(labels):
-    remove_tree(batch); raise ValueError('reusable input labels are invalid')
-entries=[]
-moved=[]
-try:
-    if os.path.dirname(batch)!=root or not os.path.basename(batch).startswith('.input-batch-'):
-        raise ValueError('remote input batch is outside its stage')
-    if os.path.islink(root) or not os.path.isdir(root): raise ValueError('run stage is unavailable')
-    if os.path.islink(inputs) or not os.path.isdir(inputs):
-        raise ValueError('input root is unavailable')
-    if sorted(os.listdir(batch))!=labels: raise ValueError('remote input batch is incomplete')
-    for label in labels:
-        if label!=os.path.basename(label) or label in ('','.','..'):
-            raise ValueError('remote input label is unsafe')
-        source=os.path.join(batch,label); target=os.path.join(inputs,label)
-        source_fingerprint=fingerprint(source)
-        if os.path.lexists(target):
-            if label not in reusable: raise FileExistsError(target)
-            if fingerprint(target,True)!=source_fingerprint:
-                raise ValueError('reusable staged input does not match its content label')
-        else:
-            entries.append((source,target))
-    for source,target in entries:
-        os.replace(source,target); moved.append((source,target))
-    for _source,target in moved:
-        protect(target)
-    remove_tree(batch)
-except BaseException:
-    for source,target in reversed(moved):
-        if os.path.lexists(target) and not os.path.lexists(source):
-            make_writable(target); os.replace(target,source)
-    remove_tree(batch)
-    raise
-"""
-        )
         try:
             spawned = True
             try:
@@ -629,7 +536,8 @@ except BaseException:
                 [
                     "python3",
                     "-c",
-                    script,
+                    _remote_script("remote_stage_root.py"),
+                    "commit-inputs",
                     str(self.root),
                     str(batch),
                     json.dumps(labels, separators=(",", ":")),
@@ -652,7 +560,9 @@ except BaseException:
 
     def _pending_input_root(self) -> Path:
         if self._pending_inputs is None:
-            self._pending_inputs = Path(tempfile.mkdtemp(prefix="rcp-remote-inputs-"))
+            self._pending_inputs = Path(
+                tempfile.mkdtemp(prefix="rcp-remote-inputs-", dir=rcp_temp_dir())
+            )
         return self._pending_inputs
 
     def _clear_pending_inputs(self) -> None:
@@ -978,30 +888,16 @@ finally:
         if _safe_label(scope_id) != scope_id:
             raise ValueError("artifact scope contains unsupported characters")
         target = self.workspace / "turns" / scope_id / "artifacts"
-        script = (
-            _REMOTE_TREE_HELPERS
-            + """
-import stat,sys
-workspace,scope,reuse=sys.argv[1],sys.argv[2],sys.argv[3]=='1'
-if os.path.islink(workspace) or not os.path.isdir(workspace):
-    raise SystemExit('workspace is unavailable')
-turns=os.path.join(workspace,'turns')
-if os.path.lexists(turns) and (os.path.islink(turns) or not os.path.isdir(turns)):
-    raise SystemExit('artifact parent is unsafe')
-os.makedirs(turns,mode=0o700,exist_ok=True)
-scope_path=os.path.join(turns,scope)
-target=os.path.join(scope_path,'artifacts')
-if reuse:
-    if (os.path.islink(scope_path) or not os.path.isdir(scope_path) or
-        os.path.islink(target) or not os.path.isdir(target)):
-        raise SystemExit('saved artifact directory is unavailable')
-else:
-    remove_tree(scope_path)
-    os.makedirs(target,mode=0o700,exist_ok=False)
-"""
-        )
         result = self._ssh(
-            ["python3", "-c", script, str(self.workspace), scope_id, "1" if reuse else "0"]
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "prepare-artifacts",
+                str(self.workspace),
+                scope_id,
+                "1" if reuse else "0",
+            ]
         )
         if result.returncode:
             raise _ssh_failure(result, "could not prepare remote artifact directory")
@@ -1518,8 +1414,30 @@ def _safe_workspace_file_name(name: str) -> str:
 
 
 def _safe_root(value: str) -> bool:
-    candidate = PurePosixPath(value)
-    return (
-        candidate.parent == PurePosixPath("/tmp")
-        and re.fullmatch(r"rcp-run\.[A-Za-z0-9_-]+", candidate.name) is not None
-    )
+    return remote_stage_name(value) is not None
+
+
+def remote_stage_name(root: str) -> str | None:
+    """The stage name in a remote stage root, or None when it is not one.
+
+    New stages live at `<remote home>/.rcp/stages/rcp-run.<name>`; the home is
+    only known on that host, so the directory probe there checks it exactly.
+    """
+
+    candidate = PurePosixPath(root)
+    # The same names the shipped stage creator makes, dots included.
+    if remote_stage_root.STAGE_NAME.fullmatch(candidate.name) is None:
+        return None
+    name = candidate.name.removeprefix("rcp-run.")
+    parent = candidate.parent
+    # Legacy: stages saved before RCP left /tmp. A later release removes this.
+    if parent == PurePosixPath("/tmp"):
+        return name
+    if (
+        parent.is_absolute()
+        and len(parent.parts) > 3
+        and parent.parts[-2:] == (".rcp", "stages")
+        and ".." not in parent.parts
+    ):
+        return name
+    return None

@@ -135,8 +135,9 @@ def test_real_worktree_git_commit_uses_exact_common_metadata_outside_worktree(
         str((tmp_path / "stage" / "workspace").resolve()),
         str(worktree),
         metadata,
+        *scope.granted_roots,
     ]
-    assert str(shared) not in scope.writable_roots
+    assert str(shared) not in scope.granted_roots
     (worktree / "scope-notes.txt").write_text("worktree\n")
     git(worktree, "add", "scope-notes.txt")
     git(worktree, "commit", "-m", "fixture worktree edit")

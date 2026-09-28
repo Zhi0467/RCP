@@ -90,7 +90,9 @@ def test_reused_remote_stage_refuses_unsafe_existing_root(
     replacement: str,
 ) -> None:
     label = f"test-{uuid.uuid4().hex}"
-    remote_root = Path("/tmp") / f"rcp-run.{label}"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    remote_root = tmp_path / "home" / ".rcp" / "stages" / f"rcp-run.{label}"
+    remote_root.parent.mkdir(parents=True)
     if replacement == "symlink":
         target = tmp_path / "replacement"
         target.mkdir()

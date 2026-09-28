@@ -2086,8 +2086,11 @@ def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) ->
     assert rsync_calls[0][0:2] == ["rsync", "-a"]
     assert len(ssh_calls) == 1
     assert ssh_calls[0][0:2] == ["python3", "-c"]
-    assert json.loads(ssh_calls[0][5]) == ["conversations", "schema.json"]
-    assert ssh_calls[0][6] == "1"
+    _root, _batch, labels, transferred, _reusable = ssh_calls[0][
+        ssh_calls[0].index("commit-inputs") + 1 :
+    ]
+    assert json.loads(labels) == ["conversations", "schema.json"]
+    assert transferred == "1"
     assert stage._pending_inputs is None
     assert pending is not None
     assert not pending.exists()
@@ -2419,25 +2422,6 @@ def test_remote_stage_close_keeps_root_when_deletion_failed(
     assert stage.close() is False
     assert root.exists()
     assert stage.root == PurePosixPath(str(root))
-
-
-def test_remote_stage_sweeper_uses_read_only_tree_cleanup(monkeypatch) -> None:
-    stage = RemoteRunStage("research.example")
-    calls: list[list[str]] = []
-
-    def fake_ssh(arguments):
-        calls.append(arguments)
-        return subprocess.CompletedProcess([], 0, "", "")
-
-    monkeypatch.setattr(stage, "_ssh", fake_ssh)
-
-    stage.sweep(retain_days=7, protected_roots=["/tmp/rcp-run.episode-live"])
-
-    assert calls[0][:2] == ["python3", "-c"]
-    assert "make_writable" in calls[0][2]
-    assert "remove_tree(target)" in calls[0][2]
-    assert "target not in protected" in calls[0][2]
-    assert json.loads(calls[0][4]) == ["/tmp/rcp-run.episode-live"]
 
 
 def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from rcp.config import load_manifest
+from rcp.config import MachineConfig, load_manifest
 from rcp.history import HistoryManager
 from rcp.projects import (
     complete_restored_project_publication,
@@ -25,8 +25,9 @@ from tests.test_backup_capture import _initialize_git_repository, _metadata
 from tests.test_backup_manifest import _completed_registration
 
 
+@pytest.mark.parametrize("added_after_setup", [False, True])
 def test_capture_and_restore_preserve_machine_without_checkout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, added_after_setup: bool
 ) -> None:
     data_dir = tmp_path / "data"
     store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Backup lab")
@@ -74,6 +75,11 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     manifest = load_manifest(manifest_path)
     history = HistoryManager(manifest, expected_space_id=store.space_id)
     history.claim_project_identity("created", project_id=record.project_id)
+    if added_after_setup:
+        # Project Settings' Add machine: the provisioning record never saw it.
+        manifest = history.add_machine(
+            MachineConfig(alias="added", host="gpu.example", os_account="alice")
+        )
     original_head = history.head_ref()
     record = record.model_copy(
         update={
@@ -97,11 +103,13 @@ def test_capture_and_restore_preserve_machine_without_checkout(
     (capture,) = files.receipt.projects
     assert capture.status == "captured"
     assert capture.recovery is not None
-    assert {item.alias: item.resolved_central_root for item in capture.recovery.machines} == {
-        "worker": str(root),
-        "unused": None,
-    }
-    assert {item.alias for item in capture.recovery.configuration.machines} == {"worker", "unused"}
+    expected_roots = {"worker": str(root), "unused": None}
+    if added_after_setup:
+        expected_roots["added"] = None
+    assert {
+        item.alias: item.resolved_central_root for item in capture.recovery.machines
+    } == expected_roots
+    assert {item.alias for item in capture.recovery.configuration.machines} == set(expected_roots)
     assert all(item.group == "canonical" for item in capture.files)
 
     restored_data = tmp_path / "restored-data"

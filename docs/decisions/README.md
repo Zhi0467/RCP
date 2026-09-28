@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Machine writable paths protect only RCP's own storage](2026-09-27-machine-writable-paths-protect-only-rcp-storage.md)
+  records why machine cards grant extra writable paths and `/tmp` to every
+  repository-writing launch, why only RCP's own storage stays read-only, and
+  why Claude's file tools lose their bound inside a grant covering a stage.
+
 - [Continuations point to their master](2026-09-27-continuations-point-to-their-master.md)
   records why a continuation sends only what is new plus one pointer to its
   session's master, why the master has a durable record that only a succeeded

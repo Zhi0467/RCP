@@ -61,6 +61,7 @@ class AppStoreBase:
         (24, "compute_probe_routes_v1"),
         (25, "chat_display_v1"),
         (26, "chat_reads_and_pins_v1"),
+        (27, "space_machines_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -601,6 +602,12 @@ class AppStoreBase:
             version=26,
             name="chat_reads_and_pins_v1",
             migration=self._migrate_chat_reads_and_pins,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=27,
+            name="space_machines_v1",
+            migration=self._migrate_space_machines,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2047,6 +2054,7 @@ class AppStoreBase:
         self._migrate_compute_probe_routes(connection)
         self._migrate_chat_display(connection)
         self._migrate_chat_reads_and_pins(connection)
+        self._migrate_space_machines(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2239,6 +2247,21 @@ class AppStoreBase:
             )
             """
         )
+
+    @staticmethod
+    def _migrate_space_machines(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS space_machines (
+                machine_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                os_account TEXT NOT NULL,
+                writable_paths_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (host)
+            )
+        """)
 
     @staticmethod
     def _migrate_chat_display(connection: sqlite3.Connection) -> None:

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import tty
@@ -35,7 +36,7 @@ from rcp.terminals.manager import manifest_registration, session_registration
 from rcp.terminals.models import DETACHED
 from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
 from rcp.terminals.runtime import read_ready
-from rcp.terminals.utilities import record_path, resolve_repository, save_metadata
+from rcp.terminals.utilities import local_grants, record_path, resolve_repository, save_metadata
 from rcp.transport.remote_terminal import EXIT_PREFIX, EXIT_SUFFIX
 
 from .test_write_scope import _remote_manifest, _RemoteScopeStage
@@ -246,7 +247,7 @@ def test_launch_profile_preserves_canonical_denies_and_exact_git_access(manifest
     properties = [argv[index + 1] for index, item in enumerate(argv) if item == "--property"]
     assert "ProtectHome=tmpfs" in properties
     assert "ProtectSystem=strict" in properties
-    assert "PrivateTmp=yes" in properties
+    assert "PrivateTmp=yes" not in properties
     assert f'BindPaths="{root}"' in properties
     assert f'ReadOnlyPaths="{state}"' in properties
     assert f'ReadOnlyPaths="{credential}"' in properties
@@ -260,6 +261,75 @@ def test_launch_profile_preserves_canonical_denies_and_exact_git_access(manifest
     assert f"GIT_CONFIG_SYSTEM={identity}" in argv
     assert f'BindReadOnlyPaths="{identity}"' in properties
     assert "HISTFILE=/dev/null" in argv
+
+
+def test_grants_mount_writable_and_keep_rcp_storage_read_only_inside(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    data = home / "rcp-data"
+    data.mkdir()
+    identity = data / "identity.gitconfig"
+    identity.write_text("[user]\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    (data / "cache").mkdir()
+    with pytest.raises(TerminalUnavailable, match="inside"):
+        local_grants([str(data / "cache")], data, [])
+    granted, owned_inside = local_grants([str(home)], data, [])
+    assert str(home.resolve()) in granted
+    assert {str(data.resolve()), str((home / ".rcp").resolve())} <= set(owned_inside)
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    argv = launch.launch_command(
+        unit="rcp-terminal-grants",
+        repository=repository,
+        protected_paths=owned_inside,
+        git_read_paths=(str(home / ".ssh"), str(identity)),
+        git_environment={},
+        empty_directory=tmp_path,
+        granted_paths=granted,
+    )
+    properties = [argv[index + 1] for index, item in enumerate(argv) if item == "--property"]
+    assert f'BindPaths="{home.resolve()}"' in properties
+    assert f'ReadOnlyPaths="{data.resolve()}"' in properties
+    assert f'BindReadOnlyPaths="{identity}"' in properties
+    assert f'ReadOnlyPaths="{home / ".ssh"}"' not in properties
+    separator = argv.index("--", argv.index("rcp-terminal"))
+    assert set(granted) <= set(argv[argv.index("rcp-terminal") + 1 : separator])
+    assert argv[separator + 1 :] == owned_inside
+
+
+def test_a_grant_cannot_reopen_canonical_state_and_legacy_stages_stay_read_only(tmp_path):
+    history = tmp_path / "repo" / ".research" / "history"
+    history.mkdir(parents=True)
+    with pytest.raises(TerminalUnavailable, match="inside"):
+        local_grants([str(history)], tmp_path / "data", [str(tmp_path / "repo" / ".research")])
+    stage = Path(tempfile.mkdtemp(prefix="rcp-run.test-", dir="/tmp"))
+    link = Path(f"{stage}-link")
+    link.symlink_to(stage, target_is_directory=True)
+    try:
+        _granted, read_only = local_grants([], tmp_path / "data", [])
+    finally:
+        link.unlink()
+        stage.rmdir()
+    assert str(stage.resolve()) in read_only
+    assert not any(path.endswith("-link") for path in read_only)
+
+
+def test_preflight_refuses_an_unwritable_grant(tmp_path):
+    grant = tmp_path / "grant"
+    grant.mkdir()
+    grant.chmod(0o500)
+    try:
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", "-c", launch._SHELL_PREFLIGHT]
+            + ["rcp-terminal", str(grant), "--"],
+            cwd=tmp_path,
+            capture_output=True,
+        )
+    finally:
+        grant.chmod(0o700)
+    assert result.returncode == 1
+    assert launch._READY_MARKER not in result.stdout
 
 
 def test_shared_protected_builder_canonicalizes_every_repository_research(manifest, tmp_path):
@@ -402,6 +472,7 @@ def _preflight(tmp_path, *, findmnt_output, protected, prelude=""):
             "-c",
             prelude + launch._SHELL_PREFLIGHT,
             "rcp-terminal",
+            "--",
             protected,
         ],
         cwd=tmp_path,

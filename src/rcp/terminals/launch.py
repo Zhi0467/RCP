@@ -88,6 +88,7 @@ def launch_command(
     git_read_paths: tuple[str, ...],
     git_environment: dict[str, str],
     empty_directory: Path,
+    granted_paths: list[str] | None = None,
     expand_environment_option: bool = True,
 ) -> list[str]:
     try:
@@ -99,6 +100,7 @@ def launch_command(
             git_environment=git_environment,
             empty_directory=empty_directory,
             stop_timeout=TERMINAL_STOP_TIMEOUT_SECONDS,
+            granted_paths=granted_paths or [],
             expand_environment_option=expand_environment_option,
         )
     except ValueError as exc:
