@@ -3,8 +3,10 @@
 Date: 2026-09-28
 Status: design settled with the human on 2026-09-28, then revised the same day
 for a second xhigh review (Mac adapter, outbound push limits, watcher-free
-graph reconciliation, ended episodes, sign-in during wrap-up). Nothing is
-implemented.
+graph reconciliation, ended episodes, sign-in during wrap-up).
+Implementation started in this PR on 2026-09-28. Done: the Mac adapter
+(`web/src-tauri/src/notifications.m`) and its gate probe, below. Remaining:
+everything else in Settled and the design answers.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which lands first: the Mac check below
 runs on an app that install produced. Mac and phone push ship together in one
@@ -97,8 +99,8 @@ Both the Mac and the phone deliver the same items, from one outbox.
 - **Mac:** `tauri-plugin-notification` cannot be used. On desktop it passes
   only title, body, icon, and sound; it drops the notification id and click
   data, and it discards delivery errors. The desktop shell instead gets a
-  small native adapter over macOS `UNUserNotificationCenter` (through the
-  `objc2` bindings). It sets the stable notification id as the request
+  small native adapter over macOS `UNUserNotificationCenter`, an Objective-C
+  file compiled by `build.rs` like the dictation bridge. It sets the stable notification id as the request
   identifier, carries the deep link in `userInfo`, routes clicks through the
   notification-center delegate (including a click that launches the app), and
   reports delivery errors back to the outbox. The shell
@@ -201,7 +203,10 @@ requirements.
   native adapter can post a notification, replace it by reposting the same
   id, open the exact item from a click while running and from a click that
   launches the app, and report a delivery error. If any of these fails, stop
-  and bring the Mac path back for a decision.
+  and bring the Mac path back for a decision. **Passed 2026-09-28** in an
+  ad-hoc-signed probe app built from the adapter file: each item held, and a
+  banner showed once Focus was off. Repeat it in the packaged RCP app at the
+  end.
 - Registration refuses a non-`https` endpoint, a host off the allowlist, a
   host that resolves to a private or loopback address, and an oversized
   subscription, each without opening a connection; a redirect from a push

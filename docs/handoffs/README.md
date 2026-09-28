@@ -2,7 +2,8 @@
 
 - [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
   — design settled 2026-09-28; one PR, after the Mac install handoff lands.
-  Replaces the 2026-09-25 Inbox-push handoff. Nothing implemented.
+  Replaces the 2026-09-25 Inbox-push handoff. Mac adapter gate passed;
+  the rest is in progress on the same PR.
 
 ## Open live checks
 
