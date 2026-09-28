@@ -3987,6 +3987,7 @@ export default function App() {
         <ProjectSetup
           key={projectSetupRouteKey(setupRoute)}
           projectCreation={verifiedHealth!.project_creation}
+          spaceKind={verifiedHealth!.space_kind}
           onCancel={returnToProjects}
           onCreated={openProject}
           setupRoute={setupRoute}

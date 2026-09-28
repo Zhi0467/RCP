@@ -339,6 +339,9 @@ test("choosing a folder waits for a pending navigation or pick", () => {
   assert.equal(canPickFolder(settled, { navigating: true, picking: false }), false);
   assert.equal(canPickFolder(settled, { navigating: false, picking: true }), false);
   assert.equal(canPickFolder(EMPTY_PATH_PICKER, { navigating: false, picking: false }), false);
+  // The root can be browsed but never granted.
+  const root = { ...EMPTY_PATH_PICKER, path: "/" };
+  assert.equal(canPickFolder(root, { navigating: false, picking: false }), false);
 });
 
 test("path edits run one at a time and each starts from the last saved list", async () => {

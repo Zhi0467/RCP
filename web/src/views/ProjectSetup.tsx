@@ -58,6 +58,7 @@ import type {
 
 interface Props {
   projectCreation: ProjectCreationControl;
+  spaceKind: "personal" | "team";
   onCancel: () => void;
   onCreated: (projectId: string) => void;
   setupRoute: ProjectSetupRoute;
@@ -98,6 +99,7 @@ const defaultAgentProfile = (model = ""): SetupAgentProfile => ({
 
 export function ProjectSetup({
   projectCreation,
+  spaceKind,
   onCancel,
   onCreated,
   setupRoute = { kind: "create", requestId: null },
@@ -172,6 +174,7 @@ export function ProjectSetup({
       ) : (
         <PersonalProjectSetup
           intentChooser={intentChooser}
+          spaceKind={spaceKind}
           onCancel={onCancel}
           onCreated={onCreated}
         />
@@ -182,6 +185,7 @@ export function ProjectSetup({
 
 function PersonalProjectSetup({
   intentChooser,
+  spaceKind,
   onCancel,
   onCreated,
 }: Omit<Props, "projectCreation" | "setupRoute"> & { intentChooser: ReactNode }) {
@@ -509,6 +513,7 @@ function PersonalProjectSetup({
                 canonical={stateRepository === repositories[0].alias}
                 only
                 machines={spaceMachines.machines ?? []}
+                accountRequired={spaceKind === "team"}
                 onMachineCreated={spaceMachines.replace}
                 onCanonical={() => setStateRepository(repositories[0].alias)}
                 onChange={(patch) => updateRepository(repositories[0].id, patch)}
@@ -530,6 +535,7 @@ function PersonalProjectSetup({
                     canonical={stateRepository === repository.alias}
                     only={repositories.length === 1}
                     machines={spaceMachines.machines ?? []}
+                    accountRequired={spaceKind === "team"}
                     onMachineCreated={spaceMachines.replace}
                     onCanonical={() => setStateRepository(repository.alias)}
                     onChange={(patch) => updateRepository(repository.id, patch)}
@@ -1092,6 +1098,7 @@ export function RepositoryEditor({
   canonical,
   only,
   machines = [],
+  accountRequired = false,
   onMachineCreated,
   onCanonical,
   onChange,
@@ -1102,6 +1109,8 @@ export function RepositoryEditor({
   only: boolean;
   /** The space machine cards an SSH repository can live on. */
   machines?: SpaceMachine[];
+  /** Team spaces need each new machine's account. */
+  accountRequired?: boolean;
   onMachineCreated?: (machine: SpaceMachine) => void;
   onCanonical: () => void;
   onChange: (patch: Partial<SetupRepository>) => void;
@@ -1228,6 +1237,7 @@ export function RepositoryEditor({
         )}
         {repository.location === "ssh" && creatingMachine && (
           <NewMachineForm
+            accountRequired={accountRequired}
             onCancel={() => setCreatingMachine(false)}
             onCreated={(machine) => {
               onMachineCreated?.(machine);

@@ -65,12 +65,15 @@ export function filterMoveIsCurrent(state: PathPickerState, move: PathPickerMove
   return move.kind !== "filter" || state.path === move.path;
 }
 
-/** Choosing is safe only when the shown folder is settled: no navigation or pick pending. */
+/**
+ * Choosing is safe only when the shown folder is settled (no navigation or pick
+ * pending) and is not the filesystem root, which no grant may cover.
+ */
 export function canPickFolder(
   state: PathPickerState,
   pending: { navigating: boolean; picking: boolean },
 ): boolean {
-  return state.path !== null && !pending.navigating && !pending.picking;
+  return state.path !== null && state.path !== "/" && !pending.navigating && !pending.picking;
 }
 
 /** Each ancestor of an absolute path, root first, for one-click navigation. */
