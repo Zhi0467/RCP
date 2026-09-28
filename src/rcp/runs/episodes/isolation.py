@@ -114,8 +114,21 @@ def validate_episode_admission(
         raise ValueError("episode_isolation_host_mismatch")
     if isolation and isolation.worktree:
         binding = isolation.worktree
-        if host != binding.execution_host or repository.alias != binding.repository_alias:
+        if (
+            host != binding.execution_host
+            or repository.alias != binding.repository_alias
+            or repository.machine != binding.machine
+        ):
             raise ValueError("episode_isolation_host_mismatch")
+        canonical = worktree_command(
+            store,
+            host=host,
+            operation="canonicalize",
+            paths=[repository.path],
+            shared_path=repository.path,
+        )["canonical"][repository.path]
+        if canonical != binding.shared_path:
+            raise ValueError("episode_isolation_repository_moved")
         state = store.episode_isolation_state(project_id, isolation.owner_episode_id)
         if state is None or state.status not in {"creating", "ready"}:
             raise ValueError("episode_isolation_unavailable")

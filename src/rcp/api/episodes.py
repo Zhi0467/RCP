@@ -532,41 +532,34 @@ def serialize_episodes(
     """Serialize the ordered project list, optionally limited to one episode mode."""
 
     bounded_limit = 50
-    episodes = store.episodes(
-        project_id,
-        limit=500 if mode is not None else bounded_limit,
-    )
-    selected = [episode for episode in episodes if mode is None or episode.mode == mode][
+
+    def listed(episode: EpisodeRecord) -> bool:
+        if mode is not None and episode.mode != mode:
+            return False
+        if include_archived_branches or episode.graph_target.kind != "branch":
+            return True
+        state = store.episode_isolation_state(
+            project_id,
+            episode.isolation_owner_episode_id
+            or episode.graph_target.branch_id
+            or episode.episode_id,
+        )
+        return state is None or not state.graph_archived
+
+    # Filter before the limit so hidden archived branches do not shrink the list.
+    selected = [episode for episode in store.episodes(project_id, limit=500) if listed(episode)][
         :bounded_limit
     ]
     # Retained archives remain discoverable after newer episodes fill the recent list.
     selected_by_id = {episode.episode_id: episode for episode in selected}
     for episode in store.archived_episodes(project_id):
-        if mode is None or episode.mode == mode:
+        if listed(episode):
             selected_by_id[episode.episode_id] = episode
     selected = sorted(
         selected_by_id.values(),
         key=lambda episode: (episode.created_at, episode.episode_id),
         reverse=True,
     )
-    if not include_archived_branches:
-        selected = [
-            episode
-            for episode in selected
-            if not (
-                episode.graph_target.kind == "branch"
-                and (
-                    state := store.episode_isolation_state(
-                        project_id,
-                        episode.isolation_owner_episode_id
-                        or episode.graph_target.branch_id
-                        or episode.episode_id,
-                    )
-                )
-                is not None
-                and state.graph_archived
-            )
-        ]
     archive_states = store.episode_archive_states(project_id)
     branch_summary: BranchSummaryResolver | None = None
     if branch_summaries is not None:
