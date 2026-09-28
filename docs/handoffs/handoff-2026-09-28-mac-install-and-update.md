@@ -1,11 +1,14 @@
 # Install and update the Mac app without Open Anyway
 
 Date: 2026-09-28
-Status: implemented on this PR's branch on 2026-09-28, after one xhigh design
-review. The updater key exists: both secrets are set and the public key is
-checked in. Remaining: the three real-hardware journeys below, which need two
-real releases. Push notifications stay in their own
-handoff and PR.
+Status: shipped in v0.4.5 on 2026-09-28. The first two journeys below passed
+on real hardware against the published v0.4.5: the README command installed it
+with no approval and no quarantine flag, refused while RCP ran, and replaced it
+in place on a second run. Remaining: the third journey, which needs v0.4.6.
+Promoting v0.4.5 with a tested candidate skipped the `mac-latest` job (a
+skipped `build` ancestor); its `latest.json` was published by hand with the
+job's own commands, and the job now has an explicit condition. Push
+notifications stay in their own handoff and PR.
 
 Close this handoff when all three hold on real hardware:
 

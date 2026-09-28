@@ -206,6 +206,9 @@ jobs:
     # A separate job, so a failure here reruns alone ("Re-run failed jobs") from
     # the already-published companion instead of rebuilding it.
     needs: [identity, publish]
+    # `build` is skipped when a tested candidate is published, and a skipped
+    # ancestor skips this job too unless the condition is explicit.
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     # One pointer update at a time across every tag; the manifest step also
     # refuses to replace a newer version, so a late older run cannot win.
     concurrency:

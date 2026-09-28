@@ -1,10 +1,9 @@
 # Active implementation handoffs
 
 - [Install and update the Mac app without Open Anyway](handoff-2026-09-28-mac-install-and-update.md)
-  — implemented 2026-09-28; waiting on live checks across two releases.
+  — shipped in v0.4.5; install checks passed, one-click update waits for v0.4.6.
 - [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
-  — design settled 2026-09-28; Mac adapter gate passed and the backend outbox
-  landed; Web Push, clients, and hardware journeys in progress on the same PR.
+  — implemented 2026-09-28 on the same PR; real Mac and iPhone journeys remain.
 
 ## Open live checks
 
