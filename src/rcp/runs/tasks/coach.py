@@ -492,7 +492,6 @@ def _coach_session_master(
         key=key,
         render=render,
         values=values,
-        across_stages=True,
     )
 
 

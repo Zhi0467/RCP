@@ -9,7 +9,9 @@ export interface StagedChatAnnotation {
   comment: string;
 }
 
-export const MAX_CHAT_ANNOTATIONS = 12;
+export const MAX_CHAT_ANNOTATIONS = 50;
+// Mirrors ARTIFACT_CONTEXT_MAX_SELECTIONS in src/rcp/limits.py.
+export const MAX_ARTIFACT_SELECTIONS = 50;
 export const MAX_CHAT_ANNOTATION_TEXT_LENGTH = 4096;
 export const MAX_CHAT_ANNOTATION_COMMENT_LENGTH = 2048;
 

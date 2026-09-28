@@ -92,6 +92,7 @@ from rcp.core.validation.proposals import (
 from rcp.history import HistoryManager
 from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
+    ARTIFACT_CONTEXT_MAX_SELECTIONS,
     BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
@@ -852,7 +853,9 @@ class ArtifactContextRequest(BaseModel):
     operation_id: str = Field(min_length=1)
     artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     episode_id: str | None = None
-    selections: list[ArtifactSelection] = Field(min_length=1, max_length=12)
+    selections: list[ArtifactSelection] = Field(
+        min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    )
 
     @model_validator(mode="after")
     def source_identity_is_coherent(self) -> ArtifactContextRequest:

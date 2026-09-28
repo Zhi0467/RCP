@@ -7,7 +7,7 @@ import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing, asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal, cast
 
@@ -35,7 +35,6 @@ from rcp.agents.command_mailbox import (
 )
 from rcp.agents.command_protocol import CommandRequest, CommandResponse, ValidateCommandRequest
 from rcp.agents.continuation_prompt import (
-    SECTIONS,
     LaunchPhase,
     MasterRef,
     changed_since_master,
@@ -1338,12 +1337,9 @@ def _actor_launch_prompt(
         values=values,
         force_bootstrap=after_report,
     )
-    held: MasterRef | None = master
-    if after_report:
-        # The report's restriction is the newest instruction this session holds; retire it
-        # and send the agent back to its operational master.
-        parts.append(SECTIONS["report_rebootstrap"].format(path=master.path))
-        held = None
+    # The report's restriction is the newest instruction this session holds; the prompt
+    # retires it and sends the agent back to its operational master.
+    held = replace(master, after_report=True) if after_report else master
     prompt = compose(node, parts=parts, master=held, delta=changed_since_master(master, values))
     contract_path = record_inline_prompt(
         execution,

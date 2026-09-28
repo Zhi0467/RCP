@@ -21,7 +21,11 @@ from rcp.artifact_replace import (
     recover_regular_file_replacement_in_open_directory,
     replace_regular_file_in_open_directory,
 )
-from rcp.limits import ARTIFACT_CHAT_OPEN_TIMEOUT_MS, ARTIFACT_DISPLAY_TITLE_MAX_CHARS
+from rcp.limits import (
+    ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
+    ARTIFACT_CONTEXT_MAX_SELECTIONS,
+    ARTIFACT_DISPLAY_TITLE_MAX_CHARS,
+)
 
 ArtifactMediaType = Literal[
     "text/html",
@@ -583,6 +587,7 @@ def artifact_viewer_document(
         "chatId": chat_id,
         "chatAvailable": chat_id is not None,
         "chatOpenTimeoutMs": ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
+        "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
         "operationId": operation_id,
         "source": source,
         "episodeId": episode_id,

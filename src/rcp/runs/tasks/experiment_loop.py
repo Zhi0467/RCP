@@ -24,7 +24,6 @@ from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
 from rcp.agents.continuation_prompt import (
-    SECTIONS,
     LaunchPhase,
     MasterRef,
     changed_since_master,
@@ -766,12 +765,7 @@ def _experiment_master(
     record = execution.store.agent_task(execution.operation_id)
     if record is None or not record.stage_root:
         raise ValueError("An Experiment-loop continuation has no saved stage for its master.")
-    recorded = execution.store.latest_session_master(
-        record.project_id,
-        session_id,
-        stage_host=record.stage_host,
-        stage_root=record.stage_root,
-    )
+    recorded = execution.store.latest_session_master(record.project_id, session_id)
     if recorded is None and episode_id:
         started = _session_start_contract(
             execution,
@@ -893,14 +887,8 @@ def _record_continuation_prompt(
     """
 
     if report_ended:
-        prompt = "\n\n".join(
-            [
-                compose(classify(phase), parts=parts, master=None, delta=delta),
-                SECTIONS["report_rebootstrap"].format(path=master.path),
-            ]
-        )
-    else:
-        prompt = compose(classify(phase), parts=parts, master=master, delta=delta)
+        master = replace(master, after_report=True)
+    prompt = compose(classify(phase), parts=parts, master=master, delta=delta)
     contract_path = record_inline_prompt(
         turn.execution,
         local_stage=turn.local_stage,

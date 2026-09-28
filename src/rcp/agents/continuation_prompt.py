@@ -13,7 +13,7 @@ from typing import Literal
 
 from rcp.agents.graph_rules import GRAPH_RULES_VERSION
 
-PromptNode = Literal["session_start", "human_turn", "wake", "recovery", "correction"]
+PromptNode = Literal["session_start", "human_turn", "wake", "recovery", "correction", "report"]
 
 # Bumped by hand when the shared master framing changes. Version 1 adds nothing to the
 # key, so keys minted before this module existed stay valid and sessions keep their master.
@@ -24,6 +24,7 @@ _CONTINUATION_NODES: dict[str, PromptNode] = {
     "wake": "wake",
     "recovery": "recovery",
     "correction": "correction",
+    "report": "report",
 }
 
 # The shared prose, by section id. Owners never restate these.
@@ -67,7 +68,7 @@ class LaunchPhase:
     """What the owner knows at its call boundary: the session it hands the provider."""
 
     session_id: str | None
-    phase: Literal["turn", "wake", "recovery", "correction"]
+    phase: Literal["turn", "wake", "recovery", "correction", "report"]
 
 
 @dataclass(frozen=True)
@@ -75,13 +76,15 @@ class MasterRef:
     """The staged master for this launch, and whether the session must open it now.
 
     ``values`` are the stable values the master was rendered with, when recorded, so a
-    continuation can send only what differs from them.
+    continuation can send only what differs from them. ``after_report`` marks the first
+    operational launch after an episode report, which sends the agent back to this master.
     """
 
     path: str
     bootstrap: bool
     replaces: bool = False
     values: Mapping[str, object] | None = None
+    after_report: bool = False
 
 
 def changed_since_master(master: MasterRef, current: dict[str, object]) -> dict[str, object] | None:
@@ -129,7 +132,9 @@ def compose(
 
     A session start opens with its master. A continuation carries the owner's parts,
     then what changed, then a pointer to the master it already holds, or the master
-    itself when that is new or replaced. A continuation never carries master text.
+    itself when that is new or replaced. A report runs on the operational session under
+    its own instructions, so it carries no master and revokes the operational ones; the
+    next operational launch reopens the master. A continuation never carries master text.
     """
 
     sections = list(parts)
@@ -141,15 +146,23 @@ def compose(
                 raise ValueError("a session start must open its master contract")
             sections.insert(0, SECTIONS["master_bootstrap"].format(path=master.path))
         return "\n\n".join(sections)
+    if node == "report":
+        if master is not None or delta:
+            raise ValueError("a report carries neither the operational master nor its values")
+        sections.append(SECTIONS["report_revocation"])
+        return "\n\n".join(sections)
+    if master is None:
+        raise ValueError("a continuation must point to or open its master contract")
     sections.extend(_delta_sections(delta))
-    if master is not None:
-        if not master.bootstrap:
-            section = "master_pointer"
-        elif master.replaces:
-            section = "master_rebootstrap"
-        else:
-            section = "master_bootstrap"
-        sections.append(SECTIONS[section].format(path=master.path))
+    if master.after_report:
+        section = "report_rebootstrap"
+    elif not master.bootstrap:
+        section = "master_pointer"
+    elif master.replaces:
+        section = "master_rebootstrap"
+    else:
+        section = "master_bootstrap"
+    sections.append(SECTIONS[section].format(path=master.path))
     return "\n\n".join(sections)
 
 

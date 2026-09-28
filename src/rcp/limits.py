@@ -109,6 +109,8 @@ GRAPH_UPDATE_HISTORY_MAX_COUNT = AUTO_RESEARCH_APPLY_MAX_PER_TURN + 1
 CHAT_ARTIFACT_MAX_COUNT = 8
 ARTIFACT_CHAT_OPEN_TIMEOUT_MS = 5000
 ARTIFACT_DISPLAY_TITLE_MAX_CHARS = 240
+# Selections one chat turn may carry from an artifact viewer; the web mirrors it.
+ARTIFACT_CONTEXT_MAX_SELECTIONS = 50
 CHAT_ARTIFACT_MAX_FILE_BYTES = 16 * 1024 * 1024
 CHAT_ARTIFACT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 # One paid Auto-research mail wake carries only this bounded prefix. The byte limit

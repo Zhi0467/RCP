@@ -424,7 +424,8 @@ master records the stable values it was rendered with (paths, the command
 client, write roots, repositories, skill pointers, execution facts), so a new
 mailbox or a changed root appears and an unchanged one does not. Static
 explanations, such as validator exit codes, the launch helper, and the write
-boundary, live only in the master. Current values take precedence over the
+boundary, live only in the master; so do the rules for a turn's attachments,
+which the turn lists as plain lines. Current values take precedence over the
 master. Every master says so: a listed value replaces its own for that launch,
 and an unlisted one is its own. A chat's graph revision is the one value
 compared with the chat's last committed turn instead, so its own Apply is not
@@ -435,7 +436,9 @@ the graph rules or authority. A continuation never resends the master and never
 forces a read.
 
 RCP restores the master file from its durable record into the launch's stage
-before every pointer. Only a master recorded by a succeeded operation counts;
+before every pointer. The native session id alone selects the record, so an
+owner that gives each turn a fresh stage, such as the paper coach, finds it too.
+Only a master recorded by a succeeded operation counts;
 otherwise, or when the session has no record, the continuation bootstraps: it
 renders the current master, records it, and tells the agent to open it. The
 master key joins a shared master version, the graph rules version, the owner's
@@ -443,10 +446,12 @@ policy version, and whether the project has ontology extensions. A key change bo
 replaces the earlier master. A branch-merge continuation re-sends the graph
 rules inline once main's ontology extensions differ from its master's.
 
-The episode report reuses the operational session but gets no pointer. It says
-the operational instructions no longer apply. The next operational continuation
-on that session then bootstraps the master again, and keeps doing so until an
-operational attempt on the session succeeds.
+The episode report is its own node type, `report`. It reuses the operational
+session but gets no master pointer, and says the operational instructions no
+longer apply; `compose` adds both, and refuses a report with a master or any
+other continuation without one. The next operational continuation on that
+session then reopens the master, and keeps doing so until an operational attempt
+on the session succeeds.
 
 Every owner builds its own parts and calls `compose` in
 `src/rcp/agents/continuation_prompt.py`; the master record lives in

@@ -20,6 +20,7 @@ from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, PromptFactory, chat_
         ("wake", "wake"),
         ("recovery", "recovery"),
         ("correction", "correction"),
+        ("report", "report"),
     ],
 )
 def test_the_session_id_decides_start_versus_continuation(phase, continued) -> None:
@@ -44,6 +45,11 @@ def test_chat_master_key_keeps_the_key_existing_sessions_hold() -> None:
         ("human_turn", MasterRef(path="/m.md", bootstrap=False), "master_pointer"),
         ("human_turn", MasterRef(path="/m.md", bootstrap=True), "master_bootstrap"),
         ("wake", MasterRef(path="/m.md", bootstrap=True, replaces=True), "master_rebootstrap"),
+        (
+            "recovery",
+            MasterRef(path="/m.md", bootstrap=False, after_report=True),
+            "report_rebootstrap",
+        ),
     ],
 )
 def test_compose_places_the_master_by_node_type(node, master, section) -> None:
@@ -64,6 +70,15 @@ def test_compose_places_the_master_by_node_type(node, master, section) -> None:
 def test_session_start_refuses_a_pointer_to_a_master_it_never_had() -> None:
     with pytest.raises(ValueError):
         compose("session_start", parts=["x"], master=MasterRef("/m.md", False), delta=None)
+
+
+def test_only_a_report_goes_without_the_operational_master() -> None:
+    report = compose("report", parts=["report contract"], master=None, delta=None)
+    assert report.split("\n\n") == ["report contract", SECTIONS["report_revocation"]]
+    with pytest.raises(ValueError):
+        compose("report", parts=["x"], master=MasterRef("/m.md", False), delta=None)
+    with pytest.raises(ValueError):
+        compose("wake", parts=["x"], master=None, delta=None)
 
 
 def test_a_continuation_carries_no_master_text() -> None:

@@ -97,14 +97,14 @@ def continuation_session_master(
     render: Callable[[], str],
     values: Mapping[str, object] | None = None,
     force_bootstrap: bool = False,
-    across_stages: bool = False,
 ) -> MasterRef:
     """Point a continuing session at its master, or bootstrap one it does not hold.
 
     The session keeps its recorded master while the key matches, and the file is restored
     into the stage so the pointer resolves. A session with no recorded master, a changed
     key, or a forced bootstrap gets a freshly rendered master, recorded on this operation.
-    An owner that gives every turn a fresh stage finds the master across all of them.
+    The session id alone finds the master, so an owner that gives every turn a fresh stage
+    restores it into the current one.
     ``values`` are the current stable values: recorded with a new master, and otherwise
     returned as the ones the kept master was rendered with, so the caller sends the change.
     """
@@ -112,12 +112,7 @@ def continuation_session_master(
     record = execution.store.agent_task(execution.operation_id)
     if record is None or not record.stage_root:
         raise ValueError("A continuation has no saved stage to hold its master contract.")
-    found = execution.store.latest_session_master(
-        record.project_id,
-        native_session_id,
-        stage_host=record.stage_host,
-        stage_root=None if across_stages else record.stage_root,
-    )
+    found = execution.store.latest_session_master(record.project_id, native_session_id)
     if found is not None and found[2] == key and not force_bootstrap:
         operation_id, digest, _ = found
         content = execution.store.agent_task_contract(operation_id, SESSION_MASTER_ROLE)

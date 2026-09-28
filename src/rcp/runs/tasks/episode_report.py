@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.continuation_prompt import SECTIONS, LaunchPhase, classify, compose
+from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
@@ -192,10 +192,7 @@ async def stream_episode_report_run(
                 attempt_number,
                 stage,
                 contract,
-                LaunchPhase(
-                    session_id=turn.wrapup.native_session_id,
-                    phase="correction" if diagnostic_path is not None else "wake",
-                ),
+                LaunchPhase(session_id=turn.wrapup.native_session_id, phase="report"),
             )
 
             # A retained output from an older operational turn or failed report attempt must never
@@ -611,12 +608,7 @@ def _stage_attempt_contract(
     so it is reused rather than refused.
     """
 
-    prompt = compose(
-        classify(phase),
-        parts=[contract, SECTIONS["report_revocation"]],
-        master=None,
-        delta=None,
-    )
+    prompt = compose(classify(phase), parts=[contract], master=None, delta=None)
     role = f"episode_report_attempt_{attempt_number}"
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     execution.store.record_agent_task_contract(

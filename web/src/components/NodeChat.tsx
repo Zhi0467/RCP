@@ -69,6 +69,7 @@ import {
   chatAnnotationComposerPosition,
   chatAnnotationTextControlSelection,
   chatAnnotationViewportMetrics,
+  MAX_ARTIFACT_SELECTIONS,
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
@@ -288,7 +289,7 @@ export function parseArtifactContextPayload(value: unknown): ArtifactContextPayl
     !isBoundedArtifactText(candidate.media_type, 1, 64) ||
     !Array.isArray(candidate.selections) ||
     candidate.selections.length < 1 ||
-    candidate.selections.length > 12
+    candidate.selections.length > MAX_ARTIFACT_SELECTIONS
   )
     return null;
   const selections: ArtifactSelection[] = [];

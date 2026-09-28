@@ -61,7 +61,7 @@ function render() {
 try {
   const saved = JSON.parse(localStorage.getItem(draftKey) || "null");
   if (saved && Array.isArray(saved.selections)) {
-    selections.push(...saved.selections.slice(0, 12));
+    selections.push(...saved.selections.slice(0, config.maxSelections));
     render();
     openChat.hidden = !saved.added;
   }
@@ -71,8 +71,8 @@ try {
   notice.textContent = "Saved comments could not be restored.";
 }
 function appendSelection(selection) {
-  if (selections.length >= 12) {
-    notice.textContent = "A prompt can include at most 12 selections.";
+  if (selections.length >= config.maxSelections) {
+    notice.textContent = `A prompt can include at most ${config.maxSelections} selections.`;
     return;
   }
   selections.push(selection);
