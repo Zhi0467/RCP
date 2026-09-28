@@ -304,9 +304,13 @@ def _backup_recovery_machine(
 def record_space_machines(store: AppStore, manifest: Manifest) -> None:
     """Give the space a card for every machine account this manifest names."""
 
-    store.ensure_space_machines(
+    conflicts = store.ensure_space_machines(
         (machine.host, machine.os_account, machine.alias) for machine in manifest.machines
     )
+    for host in conflicts:
+        _LOGGER.warning(
+            "Projects name different accounts for machine %s; its card now names none.", host
+        )
 
 
 def fill_space_machines(store: AppStore) -> None:

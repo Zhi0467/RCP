@@ -38,7 +38,8 @@ wrong-account check still runs when the route does not name the user, and a
 project machine finds its
 card by host. Nothing on the space page writes a manifest. The list fills from
 registered projects' accepted manifests at startup, on registration, and when a
-machine is added; raw manifest loads, preflight, history reload, backup, and
+machine is added; when two manifests name different accounts for one host, its
+card names none (and a warning is logged) rather than keeping one at random; raw manifest loads, preflight, history reload, backup, and
 rehearsals never write it. The table is space data: backup keeps it, and project
 transfer excludes it, so a target space grants its own paths.
 

@@ -149,7 +149,8 @@ class MachineDirectoryPage(_StrictSetupModel):
     entries: list[SshRepositoryBrowseEntry] = Field(max_length=MACHINE_DIRECTORY_PAGE_SIZE)
     total: int = Field(ge=0)
     next_offset: int | None = Field(default=None, ge=1)
-    protected_targets: list[str] = Field(default_factory=list, max_length=1024)
+    # One per registered state folder on the host, which has no cap of its own.
+    protected_targets: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_page(self) -> MachineDirectoryPage:

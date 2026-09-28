@@ -45,6 +45,18 @@ def test_registered_machines_fill_the_list_and_a_used_machine_cannot_be_deleted(
     assert [machine.name for machine in store.space_machines()] == ["laptop"]
 
 
+def test_projects_naming_two_accounts_for_one_host_leave_its_card_with_none(app) -> None:
+    store = _store(app)
+    assert store.ensure_space_machines([("gpu.example", "alice", "gpu")]) == []
+    assert store.ensure_space_machines([("gpu.example", "alice", "gpu")]) == []
+    assert store.space_machine_for("gpu.example").os_account == "alice"
+    # Neither manifest is picked at random; an empty account checks nothing.
+    assert store.ensure_space_machines([("gpu.example", "bob", "gpu")]) == ["gpu.example"]
+    assert store.space_machine_for("gpu.example").os_account == ""
+    assert store.ensure_space_machines([("gpu.example", "alice", "gpu")]) == []
+    assert store.space_machine_for("gpu.example").os_account == ""
+
+
 def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
     client = TestClient(app)
     body = {"name": "GPU", "host": "alice@gpu.example", "os_account": "alice"}

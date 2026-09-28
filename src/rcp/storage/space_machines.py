@@ -37,13 +37,16 @@ class SpaceMachineStoreMixin:
             ).fetchone()
         return _record(row) if row else None
 
-    def ensure_space_machines(self, machines: Iterable[tuple[str, str, str]]) -> None:
-        """Insert a card for each host the space lacks.
+    def ensure_space_machines(self, machines: Iterable[tuple[str, str, str]]) -> list[str]:
+        """Insert a card for each host the space lacks; return hosts whose account conflicts.
 
         Idempotent: an existing card for the host keeps its name, account, and
-        writable paths, even when a manifest leaves the account empty.
+        writable paths, even when a manifest leaves the account empty. When
+        manifests name two accounts for one host, the card's account is cleared
+        rather than one being kept at random; an empty account checks nothing.
         """
 
+        machines = list(machines)
         now = self.now()
         with self.connection() as connection:
             connection.executemany(
@@ -59,6 +62,18 @@ class SpaceMachineStoreMixin:
                     for host, os_account, name in machines
                 ],
             )
+            conflicts = []
+            for host, os_account, _name in machines:
+                cleared = connection.execute(
+                    """
+                    UPDATE space_machines SET os_account = '', updated_at = ?
+                    WHERE host = ? AND ? != '' AND os_account NOT IN ('', ?)
+                    """,
+                    (now, host, os_account, os_account),
+                ).rowcount
+                if cleared:
+                    conflicts.append(host)
+        return conflicts
 
     def create_space_machine(self, *, name: str, host: str, os_account: str) -> SpaceMachineRecord:
         now = self.now()
