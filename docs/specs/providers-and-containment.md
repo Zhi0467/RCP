@@ -317,8 +317,8 @@ server's release, source, credentials, update-checkpoint, and restore folders,
 `/etc/rcp` and `/run/rcp`, `~/.rcp` on every machine, `~/.local/share/rcp` on
 remote machines, every registered repository's `.research`, this launch's
 `inputs`, and legacy `/tmp/rcp-run.*` stages. A grant equal to or inside any of
-them is refused; one of them inside a grant stays read-only there
-(`granted_protected_paths`). The launch's own workspace and job folder stay
+them is refused, both when a card is saved and in the folder picker, which locks
+it; one of them inside a grant stays read-only there (`granted_protected_paths`). The launch's own workspace and job folder stay
 writable. Paths are compared by filesystem identity on the execution machine.
 Grants and the protections they add are machine settings, so they stay out of
 the scope fingerprint: changing a machine's writable paths leaves open chats
@@ -329,9 +329,11 @@ systemd jobs render grants as `ReadWritePaths` and covered storage as
 deeper `write` entry inside a `read` parent, which wins (probed with codex-cli
 0.157.0). Claude's deny rules beat its allows, so a protected folder holding
 the launch's own stage is left undenied for Claude; its shell was already
-unbounded. RCP keeps none of its own files in `/tmp`: remote stages, command
-and SSH control sockets, and temporary files live under `~/.rcp`, and a saved
-legacy `/tmp/rcp-run.*` stage still resumes until a later release removes it.
+unbounded. RCP keeps its own files under `~/.rcp`: remote stages, command and
+SSH control sockets, and temporary files. Two exceptions sit in `/tmp`, and both
+are protected: when a home is too deep for a socket path, sockets use a private
+`/tmp/rcp-<id>` folder named from the home, and a saved legacy `/tmp/rcp-run.*`
+stage still resumes until a later release removes it.
 
 ## Provider enforcement
 
