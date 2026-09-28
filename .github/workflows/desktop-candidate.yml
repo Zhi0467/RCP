@@ -1,0 +1,68 @@
+name: Desktop candidate
+run-name: Desktop candidate for build ${{ inputs.build }}
+
+# Builds the desktop app for build/<N> as a workflow artifact, so a human can
+# test it before promoting. It publishes nothing; promotion given this run's id
+# publishes these exact bytes. Manual, because macOS minutes are costly.
+on:
+  workflow_dispatch:
+    inputs:
+      build:
+        description: Build run number, the N in build/<N>
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-candidate-${{ inputs.build }}
+  cancel-in-progress: true
+
+jobs:
+  identity:
+    name: resolve the build
+    runs-on: ubuntu-latest
+    env:
+      BUILD_NUMBER: ${{ inputs.build }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    outputs:
+      commit: ${{ steps.build.outputs.commit }}
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - name: Read the build's commit
+        id: commit
+        shell: bash
+        run: |
+          if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "invalid build number $BUILD_NUMBER"
+            exit 1
+          fi
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/build/$BUILD_NUMBER" --jq .target_commitish)
+          if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "build/$BUILD_NUMBER has no exact commit"
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.commit.outputs.commit }}
+          persist-credentials: false
+      - name: Read the base version at that commit
+        id: build
+        shell: bash
+        env:
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: |
+          version=$(python3 -c 'import re, pathlib; print(re.search(r"^__version__ = \"([0-9]+\.[0-9]+\.[0-9]+)\"$", pathlib.Path("src/rcp/__init__.py").read_text(), re.M)[1])')
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [identity]
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      commit: ${{ needs.identity.outputs.commit }}
+      build: ${{ inputs.build }}
+      version: ${{ needs.identity.outputs.version }}

@@ -115,8 +115,10 @@ def update(root: Path, tag: str, desktop: bool) -> None:
             restore(root, recovery)
             raise
     if desktop:
-        print("Replace /Applications/RCP.app with web/src-tauri/target/debug/bundle/macos/RCP.app,")
-        print("then reopen /Applications/RCP.app.")
+        print(
+            "Replace /Applications/RCP Dev.app with web/src-tauri/target/debug/bundle/macos/RCP Dev.app,"
+        )
+        print("then reopen /Applications/RCP Dev.app.")
     else:
         print("Restart: uv run rcp serve")
 

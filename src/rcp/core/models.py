@@ -21,6 +21,8 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined, to_jsonable_python
 
+from rcp.providers import PROVIDER_IDS
+
 DISPLAY_NAME_MAX_LENGTH = 120
 EVIDENCE_ASSESSMENT_SCOPE_MAX_LENGTH = 500
 EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH = 300
@@ -122,10 +124,16 @@ class Standing(StrEnum):
     CONTESTED = "contested"
 
 
+#: A native session's origin: a registered provider, or RCP's own chat records.
+#: Built from the registry so adding a provider needs no edit here; the schema
+#: still renders a closed enum.
+SessionSourceId = Literal[(*PROVIDER_IDS, "app_chat")]  # type: ignore[valid-type]
+
+
 class SourceRef(BaseModel):
     machine: str
     truth_repository: str
-    source: Literal["claude", "codex", "app_chat"]
+    source: SessionSourceId
     session_id: str
     record_uuid: str
     timestamp: datetime

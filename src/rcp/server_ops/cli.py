@@ -20,6 +20,7 @@ from typing import BinaryIO, TextIO
 
 from pydantic import ValidationError
 
+from rcp.providers import PROVIDER_IDS
 from rcp.server_ops.config import (
     DEFAULT_BACKUP_RETENTION,
     DEFAULT_BACKUP_SCHEDULE,
@@ -151,8 +152,8 @@ def add_server_parser(subcommands: argparse._SubParsersAction) -> argparse.Argum
     )
     provider_update.add_argument(
         "provider_update_provider",
-        choices=("codex", "claude"),
-        metavar="{codex,claude}",
+        choices=PROVIDER_IDS,
+        metavar="{" + ",".join(PROVIDER_IDS) + "}",
     )
     provider_update.set_defaults(server_operation="server provider update")
 

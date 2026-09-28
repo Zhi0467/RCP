@@ -1834,7 +1834,7 @@ export interface AgentPermissions {
 }
 
 /**
- * A provider id. The backend registry in `src/rcp/providers.py` is the only
+ * A provider id. The backend registry in `src/rcp/providers/` is the only
  * place providers are enumerated; the frontend never hardcodes one, and reads
  * ids, labels, models, and reasoning efforts out of `provider_readiness`.
  */
