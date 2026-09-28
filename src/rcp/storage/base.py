@@ -2043,7 +2043,6 @@ class AppStoreBase:
         # upgrade for stores whose version-5 migration already completed.
         self._migrate_artifact_revision_candidates(connection)
         self._migrate_conversation_worktrees(connection)
-        self._migrate_episode_isolation(connection)
         self._migrate_compute_jobs(connection)
         self._migrate_external_watcher_actions(connection)
         self._migrate_child_work_watchers(connection)
@@ -2063,6 +2062,7 @@ class AppStoreBase:
         self._migrate_chat_display(connection)
         self._migrate_chat_reads_and_pins(connection)
         self._migrate_space_machines(connection)
+        self._migrate_episode_isolation(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
