@@ -802,6 +802,7 @@ def test_running_service_closes_drains_captures_and_releases_maintenance(
         assert client.get("/api/health").status_code == 200
         entered = command("maintenance_enter")
         assert entered.closed and entered.quiescent
+        assert not app.state.notification_sender.is_running()
         assert entered.capture.status == "complete"
         assert Path(entered.capture.receipt_path).is_file()
         assert command("maintenance_enter").capture == entered.capture
@@ -810,6 +811,7 @@ def test_running_service_closes_drains_captures_and_releases_maintenance(
             command("maintenance_release", MaintenanceIdentity(str(uuid.uuid4()), "c" * 64))
         assert not command("maintenance_release").closed
         assert client.get("/api/health").status_code == 200
+        assert app.state.notification_sender.is_running()
         next_boundary = MaintenanceIdentity(str(uuid.uuid4()), "d" * 64)
         assert (
             command("maintenance_enter", next_boundary).maintenance_id

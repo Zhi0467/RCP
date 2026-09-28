@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import re
 import shutil
@@ -411,6 +412,7 @@ class HistoryManager:
         require_attribution: bool = False,
         agent_authority_resolver: Callable[[str, str], AgentTaskAuthority] | None = None,
         project_membership_check: ProjectMembershipCheck | None = None,
+        on_accepted_transition: Callable[[], None] | None = None,
     ) -> None:
         if expected_space_id is not None:
             parsed = uuid.UUID(expected_space_id)
@@ -431,6 +433,7 @@ class HistoryManager:
         self.require_attribution = require_attribution
         self.agent_authority_resolver = agent_authority_resolver
         self.project_membership_check = project_membership_check
+        self.on_accepted_transition = on_accepted_transition
         self._branch_materialization_repairs: set[str] = set()
 
     def initialize(self) -> MaterializationResult:
@@ -967,13 +970,25 @@ class HistoryManager:
         the write — a freshness check made outside this lock cannot say that.
         """
         with self.workspace.transaction(), self._append_lock():
-            return self._append_locked(
+            accepted = self._append_locked(
                 patch,
                 raise_on_reject=raise_on_reject,
                 discard_on_reject=discard_on_reject,
                 expected_revision=expected_revision,
                 authorized_by=authorized_by,
             )
+        if accepted[0].admission == "accepted":
+            self._notify_accepted_transition()
+        return accepted
+
+    def _notify_accepted_transition(self) -> None:
+        if self.on_accepted_transition is not None:
+            try:
+                self.on_accepted_transition()
+            except Exception:
+                # The canonical commit succeeded. Operational reconciliation
+                # catches up on its next pass without changing that outcome.
+                logging.getLogger(__name__).exception("Accepted transition notification failed")
 
     def _append_locked(
         self,
@@ -1609,7 +1624,8 @@ class HistoryManager:
                 ):
                     raise
             self._remember_accepted_revision(result)
-            return [prepared], result
+        self._notify_accepted_transition()
+        return [prepared], result
 
     def materialize(
         self,

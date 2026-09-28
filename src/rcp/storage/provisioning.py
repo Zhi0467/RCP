@@ -285,6 +285,16 @@ class ProjectProvisioningStoreMixin:
                 """,
                 (self.now(), canonical_request_id, current.project_id),
             )
+            for table in (
+                "notification_preferences",
+                "notification_outbox",
+                "notification_graph_markers",
+                "notification_episode_observations",
+                "notification_project_baselines",
+            ):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE project_id = ?", (current.project_id,)
+                )
         return current
 
     def create_source_project_transfer_request(

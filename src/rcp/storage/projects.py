@@ -322,6 +322,11 @@ class ProjectStoreMixin:
                         f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
                         (canonical_project_id, old_project_id),
                     )
+                self._rewrite_notification_project_links(
+                    connection,
+                    old_project_id,
+                    canonical_project_id,
+                )
                 connection.execute(
                     "UPDATE conversation_worktrees "
                     "SET binding_json = json_set(binding_json, '$.project_id', ?) "
@@ -626,6 +631,16 @@ class ProjectStoreMixin:
                     """,
                     (project_id,),
                 ).rowcount
+                for table in (
+                    "notification_preferences",
+                    "notification_outbox",
+                    "notification_graph_markers",
+                    "notification_episode_observations",
+                    "notification_project_baselines",
+                ):
+                    counts[table] = connection.execute(
+                        f"DELETE FROM {table} WHERE project_id = ?", (project_id,)
+                    ).rowcount
                 counts["projects"] = connection.execute(
                     "DELETE FROM projects WHERE project_id = ?", (project_id,)
                 ).rowcount
@@ -999,6 +1014,21 @@ class ProjectStoreMixin:
                 "DELETE FROM project_members WHERE project_id = ?",
                 (legacy_id,),
             )
+            # Canonical preferences and baselines win conflicts, like the
+            # existing membership and watcher markers above/below.
+            for table in (
+                "notification_preferences",
+                "notification_outbox",
+                "notification_graph_markers",
+                "notification_episode_observations",
+                "notification_project_baselines",
+            ):
+                connection.execute(
+                    f"UPDATE OR IGNORE {table} SET project_id = ? WHERE project_id = ?",
+                    (project_id, legacy_id),
+                )
+                connection.execute(f"DELETE FROM {table} WHERE project_id = ?", (legacy_id,))
+            self._rewrite_notification_project_links(connection, legacy_id, project_id)
             connection.execute(
                 "UPDATE writing_sessions SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),

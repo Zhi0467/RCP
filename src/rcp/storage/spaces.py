@@ -986,7 +986,9 @@ class SpaceStoreMixin:
             )
         return member
 
-    def resolve_team_session(self, session: str | None) -> SpaceUserRecord | None:
+    def resolve_team_session(
+        self, session: str | None, *, touch: bool = True
+    ) -> SpaceUserRecord | None:
         if (
             not session
             or len(session) > TEAM_SESSION_TOKEN_MAX_LENGTH
@@ -1022,13 +1024,14 @@ class SpaceStoreMixin:
                     "DELETE FROM team_sessions WHERE session_hash = ?", (session_hash,)
                 )
                 return None
-            connection.execute(
-                """
-                UPDATE team_sessions SET last_seen_at = ?, expires_at = ?
-                WHERE session_hash = ?
-                """,
-                (now, expires_at, session_hash),
-            )
+            if touch:
+                connection.execute(
+                    """
+                    UPDATE team_sessions SET last_seen_at = ?, expires_at = ?
+                    WHERE session_hash = ?
+                    """,
+                    (now, expires_at, session_hash),
+                )
             return member
 
     def team_sessions(

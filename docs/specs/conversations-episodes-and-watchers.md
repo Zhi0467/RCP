@@ -5,6 +5,25 @@ common episode lifecycle, watcher observation/delivery, and visual wrap-up.
 Auto-research-specific orchestration and graph branches are in
 [Auto-research and branch merge](auto-research-and-branch-merge.md).
 
+## Human notification observations
+
+Notification reconciliation is independent of graph watchers. Main targets
+with an enabled graph preference reconcile accepted attention boundaries at
+startup, after accepted main transitions, and on each sender pass. An
+unreachable canonical project produces no observation. The notification marker
+and per-device outbox rows advance in one SQLite transaction; empty attention
+is still a durable first-run baseline. The first baseline sends nothing.
+
+Every 15 seconds the sender rechecks unfinished episodes and ended episodes
+whose recorded observation is not yet terminal. It uses the same batched health
+calculation as the episode API and observes `(health, blocked_reason)`.
+Changes to `needs_action`, or to `wrapping_up` with `sign_in`, use the Needs you
+preference. Changes to `completed`, `stopped`, or `failed` use Episodes finished.
+Existing episodes are baselined without notification when their project is first
+observed. Episodes created after that baseline notify on their first eligible
+observation, including one that has already ended between passes. Ending during
+downtime therefore remains observable on restart.
+
 ## Discuss and Work turns
 
 Discuss and Work are explicit per-turn modes in one conversation. Submit time

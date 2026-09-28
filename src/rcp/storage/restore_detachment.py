@@ -68,5 +68,9 @@ class RestoreDetachmentStoreMixin:
                 diagnostic=recorded_detail,
                 now=now,
             )
+            connection.execute("DELETE FROM notification_devices")
+            connection.execute("DELETE FROM notification_graph_markers")
+            connection.execute("DELETE FROM notification_episode_observations")
+            connection.execute("DELETE FROM notification_project_baselines")
             self.detach_space_authentication_for_restore(connection, now=now)
             self.detach_provider_logins_for_restore(connection, now=now)

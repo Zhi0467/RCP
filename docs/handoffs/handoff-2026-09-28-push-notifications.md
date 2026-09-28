@@ -5,8 +5,12 @@ Status: design settled with the human on 2026-09-28, then revised the same day
 for a second xhigh review (Mac adapter, outbound push limits, watcher-free
 graph reconciliation, ended episodes, sign-in during wrap-up).
 Implementation started in this PR on 2026-09-28. Done: the Mac adapter
-(`web/src-tauri/src/notifications.m`) and its gate probe, below. Remaining:
-everything else in Settled and the design answers.
+(`web/src-tauri/src/notifications.m`) and its gate probe, below; slice 2's
+SQLite preferences/devices/outbox, migration and persistence boundaries,
+shared episode health, watcher-independent main reconciliation, owner loop,
+and preferences/desktop delivery APIs. Remaining: Web Push and VAPID,
+notify-only pairing/listener, Web settings and lifecycle, native client
+integration and deep-link handling, and the real-hardware journeys below.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which lands first: the Mac check below
 runs on an app that install produced. Mac and phone push ship together in one
@@ -33,6 +37,12 @@ Close this handoff when all four hold on real hardware:
 - Nothing else.
 
 Both the Mac and the phone deliver the same items, from one outbox.
+
+The implemented backend contract and routes are in
+[API, Web, and desktop projections](../specs/api-web-and-desktop-projections.md#desktop-notification-delivery).
+Slice 2 does not yet post notifications through either client. Its backend
+checks include an ephemeral served HTTP register/Sync/pull/acknowledge journey,
+plus recovery, retry, session, migration, restore, and transfer regressions.
 
 ## Settled
 
@@ -111,7 +121,9 @@ Both the Mac and the phone deliver the same items, from one outbox.
 - **Mac backlog.** On launch, the Mac drops items already resolved and items
   older than 24 hours, the same TTL phone pushes use. If more than three are
   left it posts one summary that opens the Inbox; otherwise it posts each one.
-  Every item is then marked delivered for that Mac.
+  An item is marked delivered for that Mac only after macOS accepts its
+  request; a summary accepted marks every item it covers. A rejected request
+  or summary leaves its items for retry.
 
 ## Design answers to the 2026-09-25 review
 
@@ -183,7 +195,10 @@ requirements.
    after `TEAM_SESSION_IDLE_DAYS`, and the Devices card says so. On a personal
    space, Remove deletes it. Before every send, including a retry, project
    membership and the member's current toggle for that project and kind are
-   checked again; a send that finds the toggle off drops the row.
+   checked again, and so is the item itself: a resolved Proposal, Decision,
+   or Blocker, or an episode no longer in the observed state, no longer
+   qualifies. A send that finds the toggle off or the item no longer
+   qualifying drops the row.
 9. **Deep links.** Add hash routes for a Proposal, Decision, Blocker, or
    episode on its target. Handle a cold launch, an expired session (sign in,
    then continue to the link), and an item already resolved (open it read-only

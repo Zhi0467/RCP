@@ -66,6 +66,39 @@ Per-machine capability and canonical-path refusal are owned by
 session expiry and metadata are owned by
 [Projects, spaces, and operations](projects-spaces-and-operations.md#member-terminal-lifecycle).
 
+## Desktop notification delivery
+
+The backend exposes a desktop delivery target through
+`POST /api/notifications/devices/desktop`. Personal registration belongs to the
+local owner; team registration belongs to the calling member's current session.
+Registration is idempotent for that owner/session. A member cannot pull or
+acknowledge another session's device, including another of their own sessions.
+
+`GET /api/notifications/devices/{device_id}/pending` returns due, unresolved
+items younger than 24 hours. Each item carries its stable notification id and
+only a fixed reason code, project name, and hash-route deep link as content.
+Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
+each value URL-escaped; both episode reasons use `episode` as the link kind.
+Graph item age starts at its accepted Patch, and terminal episode age starts
+at its latest lifecycle update, so downtime does not renew the 24-hour TTL.
+`POST /api/notifications/devices/{device_id}/items/{notification_id}` accepts
+`status: posted` or `status: failed`. Posted means the native notification
+center accepted the request, not proof of display. A failed attempt is retried
+with backoff; an unacknowledged attempt remains eligible for retry with the same
+id. Success for one device does not settle another device's row.
+Each episode item retains its observed health and blocked reason internally;
+delivery drops it if the current pair differs, even within the same toggle.
+
+Delivery pulls and acknowledgments authenticate without refreshing the team's
+idle session expiry or cookie lifetime. Shell polling must call these endpoints
+directly, without an identity-refresh request before each poll.
+
+`GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
+calling member's five toggles: `proposal`, `decision`, `blocker`,
+`episode_needs_action`, and `episode_finished`. All default on except
+`episode_finished`. These routes require project membership. This backend
+contract does not yet provide Web Push or a Web/native delivery client.
+
 ## API composition and mutation boundary
 
 One FastAPI backend serves the JSON API and, when built, the React/Vite
