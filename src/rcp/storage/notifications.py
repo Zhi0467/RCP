@@ -203,6 +203,25 @@ class NotificationStoreMixin:
                     is None
                 ):
                     raise ValueError("a phone subscription requires an active session")
+                same = connection.execute(
+                    "SELECT d.device_id FROM notification_devices d JOIN "
+                    "notification_web_push_subscriptions w ON w.device_id=d.device_id "
+                    "WHERE d.session_id=? AND w.endpoint=?",
+                    (session_id, endpoint),
+                ).fetchone()
+                if same is not None:
+                    # A revisit re-registers; keep the device so queued items survive.
+                    connection.execute(
+                        "UPDATE notification_web_push_subscriptions SET p256dh=?,auth=?,origin=? "
+                        "WHERE device_id=?",
+                        (p256dh, auth, origin, same["device_id"]),
+                    )
+                    return dict(
+                        connection.execute(
+                            "SELECT * FROM notification_devices WHERE device_id=?",
+                            (same["device_id"],),
+                        ).fetchone()
+                    )
                 connection.execute(
                     "DELETE FROM notification_devices WHERE kind='web_push' AND session_id=?",
                     (session_id,),

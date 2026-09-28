@@ -264,3 +264,28 @@ def create_phone_pairing(
     code, expires_at = store.create_notification_phone_pairing()
     listener.ensure_running()
     return {"code": code, "expires_at": expires_at, "listener_port": PHONE_LISTENER_PORT}
+
+
+@router.get("/api/notifications/devices")
+def list_devices(
+    request: Request, *, store: StoreDependency, identity: IdentityDependency
+) -> list[dict[str, object]]:
+    """The caller's notification devices: a team member's sessions, or the owner's."""
+    member = identity.acting_user(request)
+    sessions = (
+        {item.session_id for item in store.team_sessions(member.user_id)}
+        if member.identity_kind == "team_member"
+        else None
+    )
+    return [
+        {
+            "device_id": device["device_id"],
+            "kind": device["kind"],
+            "session_id": device["session_id"],
+            "status": device["last_status"],
+            "created_at": device["created_at"],
+        }
+        for device in store.notification_devices()
+        if device["user_id"] == member.user_id
+        and (sessions is None or device["session_id"] in sessions)
+    ]

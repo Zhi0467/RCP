@@ -200,9 +200,21 @@ def test_team_phone_registers_receives_and_detaches(manifest, tmp_path) -> None:
         f"/api/notifications/devices/{device_id}/test", json={}, headers=origin
     ).json() == {"outcome": "posted"}
     assert len(sent) == 1
-    # A second registration from the same session replaces the first phone.
-    again = client.post("/api/notifications/devices/web-push", json=registration, headers=origin)
+    # A revisit keeps the device; a new endpoint from the session replaces it.
+    same = client.post("/api/notifications/devices/web-push", json=registration, headers=origin)
+    assert same.json()["device_id"] == device_id
+    again = client.post(
+        "/api/notifications/devices/web-push",
+        json={**registration, "endpoint": "https://web.push.apple.com/renewed"},
+        headers=origin,
+    )
     assert again.json()["device_id"] != device_id
+    [listed] = client.get("/api/notifications/devices").json()
+    assert (listed["device_id"], listed["kind"], listed["status"]) == (
+        again.json()["device_id"],
+        "web_push",
+        "on",
+    )
     assert [item["kind"] for item in store.notification_devices()] == ["web_push"]
     assert client.post("/api/team/session/logout", json={}, headers=origin).status_code == 200
     assert store.notification_devices() == []

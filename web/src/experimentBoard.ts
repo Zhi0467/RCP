@@ -38,7 +38,7 @@ export interface ExperimentExecutionProjection {
 }
 
 const INDEX_ROUTE_PREFIX = "rcp-index:";
-const AUTO_RESEARCH_ROUTE_PREFIX = "rcp-auto-research:";
+export const AUTO_RESEARCH_ROUTE_PREFIX = "rcp-auto-research:";
 
 export function experimentTerminalLabel(status: unknown): string {
   if (status === "completed") return "Succeeded";

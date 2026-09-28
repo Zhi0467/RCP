@@ -19,6 +19,7 @@ import { api, clearProjectCaches } from "../api";
 import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
 import { MachineCard } from "../components/MachineCard";
+import { ProjectNotifications } from "../components/ProjectNotifications";
 import { AddMachineTile, MachineTile, type MachineSignal } from "../components/MachineTile";
 import { AddProjectMachine } from "../components/AddProjectMachine";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
@@ -855,6 +856,13 @@ export function ProjectSettings({
           />
         )}
       </section>
+
+      <ProjectNotifications
+        key={`notifications:${project.id}`}
+        projectId={project.id}
+        disabled={writesDisabled}
+        api={api}
+      />
 
       <section className="settings-section compute-settings">
         <header>

@@ -175,7 +175,9 @@ test("the personal identity panel opens the desktop Add team space flow", () => 
   assert.doesNotMatch(html, /<(form|input|textarea|select)\b/i);
   assert.doesNotMatch(html, /password|access token|private key/i);
 
-  assert.doesNotMatch(html, /landing-team-devices/);
+  // A personal space lists notification targets, never team sessions.
+  assert.match(html, /data-devices="personal"/);
+  assert.doesNotMatch(html, /data-devices="team"/);
 });
 
 test("an issued device code is shown once with its expiry and can be dismissed", () => {

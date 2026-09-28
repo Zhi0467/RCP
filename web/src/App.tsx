@@ -65,6 +65,8 @@ import {
   archiveEpisode,
   ApiError,
   loadEpisodes,
+  loadProjectExperimentEpisodes,
+  loadTeamSessions,
   loadProjectReadiness,
   loadProviderLogins,
   mergeEpisodeToMain,
@@ -262,6 +264,14 @@ import {
 } from "./webmcp";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
+import {
+  episodeNotificationHash,
+  graphNotificationHash,
+  initialNotificationLink,
+  parseNotificationLink,
+  type NotificationLink,
+} from "./notificationLinks";
+import { loadNotificationDevices, reconcileWebPush } from "./notificationDevices";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
@@ -2318,6 +2328,57 @@ export default function App() {
     [presentedGraph.glossary, presentedGraph.revision],
   );
   const openNodeById = (nodeId: string) => openNode(presentedGraph.nodes[nodeId] ?? null);
+  // A notification link resolves once into the item's ordinary route. A graph
+  // item then opens as soon as its project's graph holds it, resolved or not.
+  const [notificationNode, setNotificationNode] = useState<NotificationLink | null>(null);
+  useEffect(() => {
+    let pending: NotificationLink | null = initialNotificationLink;
+    const resolve = async () => {
+      const link = pending ?? parseNotificationLink(window.location.hash);
+      pending = null;
+      if (!link) return;
+      let next = graphNotificationHash(link);
+      if (link.kind === "episode") {
+        const [episodes, entries] = await Promise.all([
+          loadEpisodes(
+            `/api/projects/${encodeURIComponent(link.projectId)}`,
+            undefined,
+            link.itemId,
+          ).catch(() => []),
+          loadProjectExperimentEpisodes(link.projectId).catch(() => []),
+        ]);
+        next = episodeNotificationHash(link, episodes[0] ?? null, entries);
+      } else {
+        setNotificationNode(link);
+      }
+      window.location.replace(next);
+    };
+    void resolve();
+    window.addEventListener("hashchange", resolve);
+    return () => window.removeEventListener("hashchange", resolve);
+  }, []);
+  // Each signed-in visit keeps the server's phone record in step with this browser.
+  const teamSpace = verifiedHealth?.space_kind === "team";
+  useEffect(() => {
+    if (!teamSpace || desktop) return;
+    void Promise.all([loadTeamSessions(), loadNotificationDevices()])
+      .then(([sessions, devices]) => {
+        const current = sessions.find((session) => session.is_current);
+        return reconcileWebPush(
+          devices.find((device) => device.session_id === current?.session_id) ?? null,
+        );
+      })
+      .catch(() => {
+        // A missed reconciliation is retried on the next visit.
+      });
+  }, [teamSpace, desktop]);
+  useEffect(() => {
+    if (!notificationNode || notificationNode.projectId !== projectId) return;
+    const node = presentedGraph.nodes[notificationNode.itemId];
+    if (!node) return;
+    setNotificationNode(null);
+    openNode(node);
+  }, [notificationNode, projectId, presentedGraph.nodes, openNode]);
   const openRelatedNode = (sourceSlot: DetailWindowSlot, nodeId: string) => {
     openRelatedGraphNode(sourceSlot, presentedGraph.nodes[nodeId] ?? null);
   };

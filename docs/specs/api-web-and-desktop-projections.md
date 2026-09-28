@@ -96,7 +96,15 @@ directly, without an identity-refresh request before each poll.
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
 calling member's five toggles: `proposal`, `decision`, `blocker`,
 `episode_needs_action`, and `episode_finished`. All default on except
-`episode_finished`. These routes require project membership.
+`episode_finished`. These routes require project membership. Project Settings
+shows them as a **Notifications** card after Machines, which also says the
+project name appears on the lock screen.
+
+The Web app resolves a notification link once, at load or on a hash change,
+into the item's ordinary route: a Proposal, Decision, or Blocker opens the Inbox
+and then that node's detail as soon as the graph holds it, resolved or not; an
+episode opens its exact run when it is still listed, else Runs. The link is read
+at module load, so a team sign-in in between still continues to it.
 
 ## Phone push delivery
 
@@ -417,7 +425,17 @@ and returns `{"ok": true}`. Unknown, expired, and other members' identifiers all
 return the same 404; the current session returns 409 directing the member to
 Logout. Other sessions and the member credential remain usable. Both routes
 inherit team authentication and mutation-origin enforcement, and return 404 in
-a personal space, whose identity panel has no Devices section.
+a personal space. A personal identity panel's **Devices** section lists
+notification targets instead: **This Mac** and notify-only phones, which have
+Remove rather than Revoke, and **Connect a phone**.
+
+In a team space each session row shows its notification state (on, off, or
+Delivery failed). Only the current device's row has **Turn on**, **Turn off**,
+and **Test**; in the Mac app it drives native notifications, and in a browser it
+subscribes to Web Push, asking for permission only from that tap. A browser
+without Web Push capability is told to add RCP to its Home Screen. Each
+signed-in browser visit re-registers a live subscription, keeping its device,
+and removes a server device whose browser subscription is gone.
 
 Projects hidden by membership never appear as locked cards. Losing access
 closes its open tab and returns to the index.

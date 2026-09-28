@@ -22,6 +22,12 @@ import {
   revokeTeamSession,
 } from "../api";
 import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../desktopRuntime";
+import { loadNotificationDevices, type NotificationDevice } from "../notificationDevices";
+import {
+  DeviceNotificationControl,
+  notificationStatusLabel,
+  PersonalDevicesPanel,
+} from "./NotificationDevices";
 import {
   AppearancePicker,
   type AppearancePickerProps,
@@ -155,11 +161,14 @@ export function IdentityProvenanceSlip({
           <TeamDevicesPanel key={identity.user.user_id} active={teamPanelActive} />
         </>
       ) : (
-        <PersonalTeamSeam
-          noticeId={teamNoticeId}
-          onAddTeamSpace={onAddTeamSpace}
-          teamSpaces={teamSpaces}
-        />
+        <>
+          <PersonalDevicesPanel active={teamPanelActive} />
+          <PersonalTeamSeam
+            noticeId={teamNoticeId}
+            onAddTeamSpace={onAddTeamSpace}
+            teamSpaces={teamSpaces}
+          />
+        </>
       )}
     </>
   );
@@ -220,6 +229,7 @@ const DEVICE_PAIRING_ENDED: Record<
 
 export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
   const [sessions, setSessions] = useState<TeamSession[]>([]);
+  const [devices, setDevices] = useState<NotificationDevice[]>([]);
   const [loading, setLoading] = useState(true);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -238,9 +248,11 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
     let stopped = false;
     setLoading(true);
     setError(null);
-    void loadTeamSessions()
-      .then((next) => {
-        if (!stopped) setSessions(next);
+    void Promise.all([loadTeamSessions(), loadNotificationDevices().catch(() => [])])
+      .then(([next, nextDevices]) => {
+        if (stopped) return;
+        setSessions(next);
+        setDevices(nextDevices);
       })
       .catch(() => {
         if (!stopped) setError("Devices could not be refreshed. Try again.");
@@ -306,7 +318,12 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
   };
 
   return (
-    <section className="landing-team-devices" aria-labelledby={titleId} aria-busy={loading}>
+    <section
+      className="landing-team-devices"
+      data-devices="team"
+      aria-labelledby={titleId}
+      aria-busy={loading}
+    >
       <header>
         <span id={titleId}>Devices</span>
         <button
@@ -332,7 +349,13 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
       {loading ? (
         <p role="status">Loading devices…</p>
       ) : (
-        <TeamSessionList sessions={sessions} revoking={revoking} onRevoke={revoke} />
+        <TeamSessionList
+          sessions={sessions}
+          devices={devices}
+          revoking={revoking}
+          onRevoke={revoke}
+          onNotificationsChange={() => setRefreshVersion((current) => current + 1)}
+        />
       )}
     </section>
   );
@@ -383,39 +406,51 @@ export function TeamDevicePairingCard({
 
 export function TeamSessionList({
   sessions,
+  devices = [],
   revoking,
   onRevoke,
+  onNotificationsChange = () => {},
 }: {
   sessions: TeamSession[];
+  devices?: NotificationDevice[];
   revoking: string | null;
   onRevoke: (sessionId: string) => void | Promise<void>;
+  onNotificationsChange?: () => void;
 }) {
   return (
     <ul>
-      {sessions.map((session) => (
-        <li key={session.session_id}>
-          <div>
-            <strong>{session.label}</strong>
-            {session.is_current && <strong>Current device</strong>}
-            <time dateTime={session.created_at}>
-              Connected {formatInvitationTime(session.created_at)}
-            </time>
-            <time dateTime={session.last_seen_at}>
-              Last seen {formatInvitationTime(session.last_seen_at)}
-            </time>
-          </div>
-          {session.can_revoke && (
-            <button
-              type="button"
-              disabled={revoking !== null}
-              onClick={() => void onRevoke(session.session_id)}
-              aria-label={`Revoke device connected ${formatInvitationTime(session.created_at)}`}
-            >
-              {revoking === session.session_id ? "Revoking…" : "Revoke"}
-            </button>
-          )}
-        </li>
-      ))}
+      {sessions.map((session) => {
+        const device = devices.find((item) => item.session_id === session.session_id) ?? null;
+        return (
+          <li key={session.session_id}>
+            <div>
+              <strong>{session.label}</strong>
+              {session.is_current && <strong>Current device</strong>}
+              {session.is_current ? (
+                <DeviceNotificationControl device={device} onChange={onNotificationsChange} />
+              ) : (
+                <span>{notificationStatusLabel(device)}</span>
+              )}
+              <time dateTime={session.created_at}>
+                Connected {formatInvitationTime(session.created_at)}
+              </time>
+              <time dateTime={session.last_seen_at}>
+                Last seen {formatInvitationTime(session.last_seen_at)}
+              </time>
+            </div>
+            {session.can_revoke && (
+              <button
+                type="button"
+                disabled={revoking !== null}
+                onClick={() => void onRevoke(session.session_id)}
+                aria-label={`Revoke device connected ${formatInvitationTime(session.created_at)}`}
+              >
+                {revoking === session.session_id ? "Revoking…" : "Revoke"}
+              </button>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
