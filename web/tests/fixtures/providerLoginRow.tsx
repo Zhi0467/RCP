@@ -36,6 +36,7 @@ const initial: ProviderLoginAccount = {
     started_at: "2026-09-14T00:00:00Z",
   },
   sign_in_methods: ["device_code"],
+  supports_sign_out: true,
   token_instructions: null,
 };
 
