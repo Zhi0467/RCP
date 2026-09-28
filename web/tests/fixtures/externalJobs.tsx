@@ -99,9 +99,6 @@ function Fixture() {
         onSaved={setProject as never}
         onCacheMetricsChange={noop}
         onRefreshReadiness={ready}
-        showTextScale={false}
-        textScale={100}
-        onTextScaleChange={noop}
         spaceKind="personal"
       />
     </main>

@@ -3,9 +3,7 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
-  ChevronRight,
   FileCode2,
-  Folder,
   FolderGit2,
   FolderOpen,
   LoaderCircle,
@@ -16,7 +14,7 @@ import {
   TriangleAlert,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../api";
 import { chooseDesktopRepositoryFolder, isDesktopRuntime } from "../desktopRuntime";
@@ -31,13 +29,14 @@ import {
 } from "../providers";
 import {
   assertSupportedProjectCreationIntent,
-  latestSshBrowseRequestCanApply,
   repositoryPickerPresentation,
   selectedProjectCreationIntent,
-  sshBrowseTargetIdentity,
   stateRepositoryAfterRemoval,
   type ProjectSetupRoute,
 } from "../projectSetup";
+import { NewMachineForm } from "../components/MachineCard";
+import { PathPicker } from "../components/PathPicker";
+import { useSpaceMachines } from "../hooks/useSpaceMachines";
 import { TeamProjectSetup } from "./TeamProjectSetup";
 import { TransferProjectSetup } from "./TransferProjectSetup";
 import type {
@@ -48,11 +47,11 @@ import type {
   ProjectCreationControl,
   ProjectCreationIntent,
   ProjectSetupRequest,
-  SshRepositoryBrowseResponse,
   SetupAgentProfile,
   SetupAgents,
   SetupPreview,
   SetupRepository,
+  SpaceMachine,
 } from "../types";
 
 interface Props {
@@ -215,6 +214,7 @@ function PersonalProjectSetup({
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState<"preflight" | "create" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const spaceMachines = useSpaceMachines();
 
   useEffect(() => {
     void api<ProviderReadiness[]>("/api/providers")
@@ -506,6 +506,8 @@ function PersonalProjectSetup({
                 repository={repositories[0]}
                 canonical={stateRepository === repositories[0].alias}
                 only
+                machines={spaceMachines.machines ?? []}
+                onMachineCreated={spaceMachines.replace}
                 onCanonical={() => setStateRepository(repositories[0].alias)}
                 onChange={(patch) => updateRepository(repositories[0].id, patch)}
               />
@@ -525,6 +527,8 @@ function PersonalProjectSetup({
                     repository={repository}
                     canonical={stateRepository === repository.alias}
                     only={repositories.length === 1}
+                    machines={spaceMachines.machines ?? []}
+                    onMachineCreated={spaceMachines.replace}
                     onCanonical={() => setStateRepository(repository.alias)}
                     onChange={(patch) => updateRepository(repository.id, patch)}
                     onRemove={() => removeRepository(repository.id)}
@@ -1081,10 +1085,14 @@ function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) 
   );
 }
 
+const NEW_MACHINE_OPTION = "__new_machine__";
+
 export function RepositoryEditor({
   repository,
   canonical,
   only,
+  machines = [],
+  onMachineCreated,
   onCanonical,
   onChange,
   onRemove,
@@ -1092,53 +1100,29 @@ export function RepositoryEditor({
   repository: DraftRepository;
   canonical: boolean;
   only: boolean;
+  /** The space machine cards an SSH repository can live on. */
+  machines?: SpaceMachine[];
+  onMachineCreated?: (machine: SpaceMachine) => void;
   onCanonical: () => void;
   onChange: (patch: Partial<SetupRepository>) => void;
   onRemove?: () => void;
 }) {
   const [pickerBusy, setPickerBusy] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
-  const [sshListing, setSshListing] = useState<SshRepositoryBrowseResponse["listing"]>(null);
-  const sshBrowseGeneration = useRef(0);
-  const sshBrowseAbort = useRef<AbortController | null>(null);
-  const sshBrowseTarget = sshBrowseTargetIdentity(
-    repository.location,
-    repository.host,
-    repository.path,
-  );
-  const latestSshBrowseTarget = useRef(sshBrowseTarget);
-  const previousSshBrowseTarget = useRef(sshBrowseTarget);
-  latestSshBrowseTarget.current = sshBrowseTarget;
+  const [browsing, setBrowsing] = useState(false);
+  const [creatingMachine, setCreatingMachine] = useState(false);
   const picker = repositoryPickerPresentation(repository.location, isDesktopRuntime());
   const pathInputId = `repository-path-${repository.id}`;
-
-  const invalidateSshBrowse = () => {
-    sshBrowseGeneration.current += 1;
-    sshBrowseAbort.current?.abort();
-    sshBrowseAbort.current = null;
-    setPickerBusy(false);
-    setSshListing(null);
-  };
-
-  useEffect(() => {
-    if (previousSshBrowseTarget.current !== sshBrowseTarget) {
-      previousSshBrowseTarget.current = sshBrowseTarget;
-      invalidateSshBrowse();
-    }
-  }, [sshBrowseTarget]);
-
-  useEffect(
-    () => () => {
-      sshBrowseGeneration.current += 1;
-      sshBrowseAbort.current?.abort();
-    },
-    [],
-  );
+  const remoteMachines = machines.filter((machine) => machine.host !== "");
+  const host = repository.host.trim();
+  const selectedMachine = host
+    ? (remoteMachines.find((machine) => machine.host === host) ?? null)
+    : null;
 
   const changeRepository = (patch: Partial<SetupRepository>) => {
     if (patch.location !== undefined || patch.host !== undefined || patch.path !== undefined) {
       setPickerError(null);
-      invalidateSshBrowse();
+      setBrowsing(false);
     }
     onChange(patch);
   };
@@ -1156,47 +1140,13 @@ export function RepositoryEditor({
     }
   };
 
-  const browseSshDirectory = async (path?: string) => {
-    const host = repository.host.trim();
-    if (!host) {
-      setPickerError("Enter the SSH host before browsing.");
+  const browseMachine = () => {
+    if (!selectedMachine) {
+      setPickerError("Choose a machine before browsing.");
       return;
     }
-    sshBrowseAbort.current?.abort();
-    const controller = new AbortController();
-    const generation = ++sshBrowseGeneration.current;
-    const requestTarget = sshBrowseTarget;
-    const requestCanApply = () =>
-      latestSshBrowseRequestCanApply(
-        generation,
-        sshBrowseGeneration.current,
-        requestTarget,
-        latestSshBrowseTarget.current,
-      );
-    sshBrowseAbort.current = controller;
-    setPickerBusy(true);
     setPickerError(null);
-    try {
-      const response = await api<SshRepositoryBrowseResponse>("/api/project-setup/ssh-paths", {
-        method: "POST",
-        signal: controller.signal,
-        body: JSON.stringify({ host, ...(path ? { path } : {}) }),
-      });
-      if (!requestCanApply()) return;
-      if (response.state !== "reachable" || !response.listing) {
-        setPickerError(response.required_action ?? response.diagnostic);
-        return;
-      }
-      setSshListing(response.listing);
-    } catch (error) {
-      if (!requestCanApply()) return;
-      setPickerError(error instanceof Error ? error.message : String(error));
-    } finally {
-      if (requestCanApply()) {
-        sshBrowseAbort.current = null;
-        setPickerBusy(false);
-      }
-    }
+    setBrowsing(true);
   };
 
   return (
@@ -1242,13 +1192,39 @@ export function RepositoryEditor({
         </div>
         {repository.location === "ssh" && (
           <label>
-            <span>SSH host</span>
-            <input
-              value={repository.host}
-              onChange={(event) => changeRepository({ host: event.target.value })}
-              placeholder="gpu.example.edu"
-            />
+            <span>Machine</span>
+            <select
+              data-repository-machine=""
+              value={creatingMachine ? NEW_MACHINE_OPTION : host}
+              onChange={(event) => {
+                if (event.target.value === NEW_MACHINE_OPTION) {
+                  setCreatingMachine(true);
+                  return;
+                }
+                setCreatingMachine(false);
+                changeRepository({ host: event.target.value });
+              }}
+            >
+              <option value="">Choose a machine…</option>
+              {remoteMachines.map((machine) => (
+                <option key={machine.machine_id} value={machine.host}>
+                  {machine.name} ({machine.host})
+                </option>
+              ))}
+              {host && !selectedMachine && <option value={host}>{host}</option>}
+              <option value={NEW_MACHINE_OPTION}>New machine…</option>
+            </select>
           </label>
+        )}
+        {repository.location === "ssh" && creatingMachine && (
+          <NewMachineForm
+            onCancel={() => setCreatingMachine(false)}
+            onCreated={(machine) => {
+              onMachineCreated?.(machine);
+              setCreatingMachine(false);
+              changeRepository({ host: machine.host });
+            }}
+          />
         )}
         <div className={`repository-path-field ${repository.location === "ssh" ? "" : "wide"}`}>
           <label htmlFor={pathInputId}>
@@ -1283,13 +1259,9 @@ export function RepositoryEditor({
               </button>
             )}
             {picker.showSshBrowser && (
-              <button type="button" onClick={() => void browseSshDirectory()} disabled={pickerBusy}>
-                {pickerBusy ? (
-                  <LoaderCircle className="spin" size={14} />
-                ) : (
-                  <FolderOpen size={14} />
-                )}
-                Browse SSH…
+              <button type="button" onClick={browseMachine} disabled={browsing}>
+                <FolderOpen size={14} />
+                Browse…
               </button>
             )}
           </div>
@@ -1303,63 +1275,14 @@ export function RepositoryEditor({
               {pickerError}
             </small>
           )}
-          {sshListing && (
-            <section className="ssh-repository-browser" aria-label="SSH repository folders">
-              <header>
-                <code>{sshListing.path}</code>
-                <div>
-                  <button type="button" onClick={() => changeRepository({ path: sshListing.path })}>
-                    Use this folder
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Close SSH folder browser"
-                    onClick={() => setSshListing(null)}
-                  >
-                    Close
-                  </button>
-                </div>
-              </header>
-              <div className="ssh-repository-browser-list">
-                {sshListing.parent && (
-                  <button
-                    type="button"
-                    className="ssh-repository-browser-up"
-                    onClick={() => void browseSshDirectory(sshListing.parent ?? undefined)}
-                    disabled={pickerBusy}
-                  >
-                    <Folder size={14} />
-                    <strong>Parent folder</strong>
-                    <ChevronRight size={13} />
-                  </button>
-                )}
-                {sshListing.entries.map((entry) => (
-                  <button
-                    type="button"
-                    key={entry.path}
-                    onClick={() => void browseSshDirectory(entry.path)}
-                    disabled={pickerBusy}
-                  >
-                    <Folder size={14} />
-                    <strong>{entry.name}</strong>
-                    <span className="ssh-repository-browser-labels">
-                      {entry.git_repository && <span>Git repository</span>}
-                      {entry.has_research && <span>.research</span>}
-                    </span>
-                    <ChevronRight size={13} />
-                  </button>
-                ))}
-                {!sshListing.entries.length && (
-                  <div className="ssh-repository-browser-empty">No child folders.</div>
-                )}
-              </div>
-              {sshListing.truncated && (
-                <div className="ssh-repository-browser-truncated" role="status">
-                  Showing the first bounded set of entries. Enter another absolute path manually if
-                  needed.
-                </div>
-              )}
-            </section>
+          {browsing && selectedMachine && (
+            <PathPicker
+              key={selectedMachine.machine_id}
+              machineId={selectedMachine.machine_id}
+              initialPath={repository.path.trim() || null}
+              onClose={() => setBrowsing(false)}
+              onPick={(path) => changeRepository({ path })}
+            />
           )}
         </div>
       </div>

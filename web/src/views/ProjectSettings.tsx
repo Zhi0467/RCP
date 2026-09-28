@@ -1,5 +1,3 @@
-import { ReleaseCheckRow } from "../components/UpdateNotice";
-import type { UpdateNotice } from "../types";
 import {
   BookOpen,
   Check,
@@ -7,7 +5,6 @@ import {
   GitBranch,
   HardDrive,
   LoaderCircle,
-  Minus,
   Plus,
   RotateCcw,
   ScanSearch,
@@ -16,14 +13,20 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
-  Type,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, clearAllProjectCaches, clearProjectCaches } from "../api";
+import { addProjectMachine, api, clearProjectCaches } from "../api";
 import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
-import { ProviderLogins } from "../components/ProviderLogins";
-import { ServerSettings } from "../components/ServerSettings";
+import { MachineCard, NewMachineForm } from "../components/MachineCard";
+import { errorMessage } from "../errors";
+import { useSpaceMachines } from "../hooks/useSpaceMachines";
+import {
+  machineHostLabel,
+  machinesToAdd,
+  spaceMachineForProject,
+  suggestedMachineAlias,
+} from "../spaceMachines";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
@@ -44,7 +47,6 @@ import {
   settingsFingerprint,
   type MachineProviderPaths,
 } from "../settingsDraft";
-import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
 import type { ProjectReadinessRetention } from "../hooks/projectSession";
 import type {
   AgentExecutionProfile,
@@ -61,10 +63,10 @@ import type {
   ProviderPathResolution,
   ProviderReadiness,
   SkillDefaults,
+  SpaceMachine,
 } from "../types";
 
 interface Props {
-  updateNotice?: UpdateNotice | null;
   apiBase: string;
   project: ProjectSnapshot;
   identity: IdentityResponse | null;
@@ -81,12 +83,8 @@ interface Props {
     providerError: string | null;
     computeError: string | null;
   };
-  /** Text size is a desktop webview zoom. */
-  showTextScale: boolean;
   spaceKind: "personal" | "team";
   onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
-  textScale: number;
-  onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
 }
 
 export function publishCacheMetrics(
@@ -96,11 +94,6 @@ export function publishCacheMetrics(
 ) {
   setVisibleMetrics(metrics);
   onCacheMetricsChange(metrics);
-}
-
-export function showClearAllCachesWarning(clearStatus: () => void, openWarning: () => void) {
-  clearStatus();
-  openWarning();
 }
 
 const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
@@ -173,7 +166,6 @@ function stagedOrSaved(project: ProjectSnapshot) {
 }
 
 export function ProjectSettings({
-  updateNotice = null,
   apiBase,
   project,
   identity,
@@ -186,11 +178,8 @@ export function ProjectSettings({
   onCacheMetricsChange,
   onRefreshReadiness,
   readinessRequest,
-  showTextScale,
   spaceKind,
   onMovePersonalProjectToTeam,
-  textScale,
-  onTextScaleChange,
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
@@ -224,8 +213,7 @@ export function ProjectSettings({
   const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
-  const [clearAllCachesOpen, setClearAllCachesOpen] = useState(false);
-  const [clearingAllCaches, setClearingAllCaches] = useState(false);
+  const spaceMachines = useSpaceMachines();
   const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);
   const [status, setStatus] = useState<{ kind: "saved" | "error"; text: string } | null>(null);
@@ -251,8 +239,6 @@ export function ProjectSettings({
     setComputeConnections(restoredSettings.computeConnections);
     setSaving(false);
     setClearingCaches(false);
-    setClearAllCachesOpen(false);
-    setClearingAllCaches(false);
     setResolvingProvider(null);
     setInspectedPackage(null);
     setStatus(null);
@@ -570,73 +556,10 @@ export function ProjectSettings({
     }
   };
 
-  const clearEveryProjectCache = async () => {
-    if (clearingAllCaches) return;
-    setClearingAllCaches(true);
-    setStatus(null);
-    try {
-      const metrics = await clearAllProjectCaches(project.id);
-      if (!requestIsCurrent()) return;
-      publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
-      setClearAllCachesOpen(false);
-      setStatus({ kind: "saved", text: "All project caches cleared." });
-    } catch (caught) {
-      if (!requestIsCurrent()) return;
-      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    } finally {
-      if (requestIsCurrent()) setClearingAllCaches(false);
-    }
-  };
-
   return (
-    <section className="settings-page">
-      {spaceKind === "team" ? (
-        <ServerSettings updateNotice={updateNotice} />
-      ) : (
-        <section className="settings-section">
-          <ReleaseCheckRow notice={updateNotice} />
-        </section>
-      )}
+    <section className="settings-page" data-settings-level="project">
       <AgentUsageWidgets usage={usage} providers={project.providers} />
 
-      {showTextScale && (
-        <section className="settings-section display-settings">
-          <header>
-            <span>
-              <Type size={16} />
-            </span>
-            <h2>Display</h2>
-            <div className="text-scale-controls" role="group" aria-label="Interface text size">
-              <button
-                className="icon-button"
-                type="button"
-                disabled={textScale <= TEXT_SCALE_MIN}
-                onClick={() => onTextScaleChange("decrease")}
-                aria-label="Decrease text size"
-              >
-                <Minus size={15} />
-              </button>
-              <button
-                className="text-scale-value"
-                type="button"
-                onClick={() => onTextScaleChange("reset")}
-                aria-label="Reset text size to 100 percent"
-              >
-                {textScale}%
-              </button>
-              <button
-                className="icon-button"
-                type="button"
-                disabled={textScale >= TEXT_SCALE_MAX}
-                onClick={() => onTextScaleChange("increase")}
-                aria-label="Increase text size"
-              >
-                <Plus size={15} />
-              </button>
-            </div>
-          </header>
-        </section>
-      )}
       {spaceKind === "personal" && onMovePersonalProjectToTeam ? (
         <section className="settings-section project-home-settings">
           <header>
@@ -723,13 +646,20 @@ export function ProjectSettings({
             );
             const computeDisabled = writesDisabled || saving;
             return (
-              <article className="provider-machine" key={machine.alias}>
-                <header>
-                  <strong>{machine.alias}</strong>
-                  <span>
-                    {machine.host || (spaceKind === "team" ? "Team server" : "Local machine")}
-                  </span>
-                </header>
+              <MachineCard
+                key={machine.alias}
+                title={machine.alias}
+                hostLabel={machineHostLabel(machine.host, spaceKind)}
+                osAccount={machine.os_account}
+                record={
+                  spaceMachines.machines
+                    ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
+                    : null
+                }
+                level="project"
+                writesDisabled={writesDisabled}
+                onRecordChange={spaceMachines.replace}
+              >
                 <div className="provider-path-list">
                   {providerCatalog.map((provider) => {
                     const recorded = machine.provider_paths[provider.provider] ?? "";
@@ -836,17 +766,29 @@ export function ProjectSettings({
                     );
                   })}
                 </fieldset>
-              </article>
+              </MachineCard>
             );
           })}
         </div>
+        {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
+        <AddProjectMachine
+          projectId={project.id}
+          machines={spaceMachines.machines ?? []}
+          writesDisabled={writesDisabled}
+          onCreated={spaceMachines.replace}
+          onAdded={(saved) => {
+            if (!requestIsCurrent()) return;
+            // Keep in-progress path edits; the new machine starts from its manifest values.
+            setProviderPaths((currentPaths) => ({
+              ...machineProviderPathsFrom(saved.machines),
+              ...currentPaths,
+            }));
+            onSaved(saved, { provider: false, compute: false });
+            void spaceMachines.reload();
+            void onRefreshReadiness().catch(() => {});
+          }}
+        />
       </section>
-
-      <ProviderLogins
-        spaceKind={spaceKind}
-        writesDisabled={writesDisabled}
-        onLoginChanged={() => void onRefreshReadiness().catch(() => {})}
-      />
 
       <section className="settings-section compute-settings">
         <header>
@@ -1167,83 +1109,7 @@ export function ProjectSettings({
           <CacheMeter label="Remote sources" metric={cacheMetrics.remote_sources} />
           <CacheMeter label="Session slices" metric={cacheMetrics.session_slices} />
         </div>
-        {spaceKind === "personal" ? (
-          <div className="app-cache-danger-row">
-            <TriangleAlert size={16} aria-hidden="true" />
-            <strong>Every project</strong>
-            <button
-              className="button danger compact"
-              type="button"
-              disabled={clearingAllCaches}
-              onClick={() => {
-                showClearAllCachesWarning(
-                  () => setStatus(null),
-                  () => setClearAllCachesOpen(true),
-                );
-              }}
-            >
-              <Trash2 size={13} /> Clear all project caches
-            </button>
-          </div>
-        ) : null}
       </section>
-
-      {spaceKind === "personal" && clearAllCachesOpen && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !clearingAllCaches) {
-              setClearAllCachesOpen(false);
-            }
-          }}
-        >
-          <section
-            className="project-delete-dialog app-cache-clear-dialog"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="app-cache-clear-title"
-            aria-describedby="app-cache-clear-warning"
-          >
-            <header>
-              <TriangleAlert size={18} aria-hidden="true" />
-              <h2 id="app-cache-clear-title">Clear caches for every project?</h2>
-            </header>
-            <p id="app-cache-clear-warning">
-              Rebuildable remote-source copies and session slices for all projects will be removed.
-              Canonical research and original provider data are not affected.
-            </p>
-            {status?.kind === "error" && (
-              <div className="project-delete-error" role="alert">
-                {status.text}
-              </div>
-            )}
-            <footer>
-              <button
-                className="button secondary"
-                type="button"
-                autoFocus
-                disabled={clearingAllCaches}
-                onClick={() => setClearAllCachesOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="button danger"
-                type="button"
-                disabled={clearingAllCaches}
-                onClick={() => void clearEveryProjectCache()}
-              >
-                {clearingAllCaches ? (
-                  <LoaderCircle className="spin" size={13} />
-                ) : (
-                  <Trash2 size={13} />
-                )}
-                {clearingAllCaches ? "Clearing…" : "Clear all project caches"}
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
 
       {inspectedPackage && (
         <SkillPackageInspector entry={inspectedPackage} onClose={() => setInspectedPackage(null)} />
@@ -1277,6 +1143,142 @@ export function ProjectSettings({
         </button>
       </footer>
     </section>
+  );
+}
+
+/** Appends a space machine to this project's manifest, picking a card or creating one. */
+function AddProjectMachine({
+  projectId,
+  machines,
+  writesDisabled,
+  onCreated,
+  onAdded,
+}: {
+  projectId: string;
+  machines: SpaceMachine[];
+  writesDisabled: boolean;
+  onCreated: (machine: SpaceMachine) => void;
+  onAdded: (project: ProjectSnapshot) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [machineId, setMachineId] = useState("");
+  const [alias, setAlias] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const candidates = machinesToAdd(machines, projectId);
+
+  const choose = (machine: SpaceMachine | undefined) => {
+    setMachineId(machine?.machine_id ?? "");
+    setAlias(machine ? suggestedMachineAlias(machine.name) : "");
+    setError(null);
+  };
+
+  const add = async () => {
+    if (!machineId || !alias.trim() || adding) return;
+    setAdding(true);
+    setError(null);
+    try {
+      onAdded(await addProjectMachine(projectId, machineId, alias.trim()));
+      setOpen(false);
+      choose(undefined);
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <div className="add-project-machine">
+        <button
+          className="button secondary compact"
+          type="button"
+          data-machine-action="add-machine"
+          disabled={writesDisabled}
+          onClick={() => setOpen(true)}
+        >
+          <Plus size={13} /> Add machine
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="add-project-machine open" data-add-project-machine="">
+      {creating ? (
+        <NewMachineForm
+          writesDisabled={writesDisabled}
+          onCancel={() => setCreating(false)}
+          onCreated={(machine) => {
+            onCreated(machine);
+            setCreating(false);
+            choose(machine);
+          }}
+        />
+      ) : (
+        <div className="add-project-machine-fields">
+          <label>
+            <span>Machine</span>
+            <select
+              value={machineId}
+              disabled={writesDisabled || adding}
+              onChange={(event) =>
+                choose(candidates.find((machine) => machine.machine_id === event.target.value))
+              }
+            >
+              <option value="">Choose a machine…</option>
+              {candidates.map((machine) => (
+                <option key={machine.machine_id} value={machine.machine_id}>
+                  {machine.name} ({machine.host || "this machine"})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Alias in this project</span>
+            <input
+              value={alias}
+              maxLength={64}
+              disabled={writesDisabled || adding || !machineId}
+              onChange={(event) => setAlias(event.target.value)}
+            />
+          </label>
+          <div className="new-machine-actions">
+            <button
+              className="button primary compact"
+              type="button"
+              data-machine-action="confirm-add-machine"
+              disabled={writesDisabled || adding || !machineId || !alias.trim()}
+              onClick={() => void add()}
+            >
+              {adding ? <LoaderCircle className="spin" size={13} /> : <Plus size={13} />}
+              Add
+            </button>
+            <button
+              className="button secondary compact"
+              type="button"
+              disabled={adding}
+              onClick={() => setCreating(true)}
+            >
+              New machine
+            </button>
+            <button
+              className="button secondary compact"
+              type="button"
+              disabled={adding}
+              onClick={() => {
+                setOpen(false);
+                choose(undefined);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <p role="alert">{error}</p>}
+    </div>
   );
 }
 

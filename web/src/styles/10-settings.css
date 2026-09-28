@@ -899,28 +899,6 @@ details[open] > .view-disclosure-summary > svg:last-child {
   border: 1px solid var(--rule);
   margin-bottom: 20px;
 }
-.display-settings > header {
-  align-items: center;
-  display: grid;
-  gap: 12px;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  padding: 18px 20px;
-}
-.display-settings > header > span:first-child {
-  align-items: center;
-  background: var(--cobalt-soft);
-  color: var(--cobalt-dark);
-  display: flex;
-  height: 28px;
-  justify-content: center;
-  width: 28px;
-}
-.display-settings h2 {
-  font-family: var(--editorial);
-  font-size: var(--type-2xl);
-  font-weight: 550;
-  margin: 0;
-}
 .text-scale-controls {
   align-items: center;
   display: flex;
@@ -2987,5 +2965,269 @@ details[open] > .view-disclosure-summary > svg:last-child {
   }
   .experiment-run-watcher-facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Space settings: a page of its own, reached from the identity menu. */
+.space-settings-shell {
+  background: var(--paper);
+  color: var(--ink);
+  height: 100vh;
+  overflow: auto;
+}
+.space-settings-header {
+  align-items: center;
+  background: color-mix(in srgb, var(--sheet) 94%, transparent);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  height: 62px;
+  padding: 0 28px;
+}
+.space-settings-header h1 {
+  font-family: var(--editorial);
+  font-size: var(--type-2xl);
+  font-weight: 550;
+  margin: 0;
+}
+.provider-machine.machine-card > header {
+  gap: 10px;
+}
+.provider-machine.machine-card > header > span {
+  margin-left: auto;
+}
+.machine-card-error,
+.machine-card-projects {
+  font-size: var(--type-2xs);
+  margin: 0;
+  padding: 8px 12px 0;
+}
+.machine-card-error {
+  color: var(--red);
+}
+.machine-card-projects {
+  color: var(--ink-soft);
+}
+
+/* One folder level at a time; shared by Settings and project setup. */
+.path-picker {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  box-shadow: var(--shadow);
+  margin-top: 8px;
+  overflow: hidden;
+}
+.path-picker > header {
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+.path-picker-crumbs {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  min-width: 0;
+}
+.path-picker-crumbs > span {
+  align-items: center;
+  display: inline-flex;
+  gap: 2px;
+}
+.path-picker-crumbs button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--cobalt-dark);
+  font: var(--type-xs) var(--mono);
+  padding: 3px 4px;
+}
+.path-picker-crumbs button:disabled {
+  color: var(--ink);
+  font-weight: 700;
+}
+.path-picker-crumbs button:hover:not(:disabled) {
+  background: var(--cobalt-soft);
+}
+.path-picker-actions {
+  display: flex;
+  flex: none;
+  gap: 5px;
+}
+.path-picker-filter {
+  background: var(--paper);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--type-xs);
+  min-height: 34px;
+  padding: 0 10px;
+  width: 100%;
+}
+.path-picker-error {
+  background: var(--red-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
+  color: var(--red);
+  font-size: var(--type-xs);
+  margin: 0;
+  padding: 8px 10px;
+}
+.path-picker-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+.path-picker-list > button,
+.path-picker-locked {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+  display: grid;
+  font-size: var(--type-xs);
+  gap: 7px;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  min-height: 38px;
+  padding: 6px 10px;
+  text-align: left;
+  width: 100%;
+}
+.path-picker-list > button:hover:not(:disabled),
+.path-picker-list > button:focus-visible {
+  background: var(--cobalt-soft);
+  outline: 0;
+}
+.path-picker-list strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.path-picker-locked {
+  color: var(--muted);
+}
+.path-picker-locked > span {
+  font-size: var(--type-2xs);
+}
+.path-picker-empty {
+  color: var(--muted);
+  font-size: var(--type-xs);
+  padding: 9px 10px;
+  text-align: center;
+}
+.path-picker-more {
+  background: var(--sheet);
+  border: 0;
+  color: var(--cobalt-dark);
+  font-size: var(--type-xs);
+  font-weight: 700;
+  min-height: 34px;
+  width: 100%;
+}
+.machine-writable-paths {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px 12px;
+}
+.machine-writable-paths > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+.machine-writable-paths > header strong {
+  font-size: var(--type-2xs);
+}
+.machine-writable-paths ul {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.machine-writable-paths li {
+  align-items: center;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 3px 3px 3px 8px;
+}
+.machine-writable-paths li code {
+  font-size: var(--type-3xs);
+  overflow-wrap: anywhere;
+}
+.machine-writable-paths li .icon-button {
+  height: 26px;
+  min-height: 26px;
+  width: 26px;
+}
+.machine-writable-paths > p {
+  font-size: var(--type-2xs);
+  margin: 0;
+}
+.machine-writable-paths > p[role="alert"] {
+  color: var(--red);
+}
+.machine-writable-note {
+  color: var(--muted);
+}
+.add-project-machine {
+  padding: 0 16px 16px;
+}
+.add-project-machine.open,
+.new-machine-form {
+  display: grid;
+  gap: 10px;
+}
+.add-project-machine-fields,
+.new-machine-form {
+  align-items: end;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.add-project-machine-fields label,
+.new-machine-form label {
+  display: grid;
+  gap: 5px;
+}
+.add-project-machine-fields label > span,
+.new-machine-form label > span {
+  font-size: var(--type-2xs);
+  font-weight: 700;
+}
+.add-project-machine-fields input,
+.add-project-machine-fields select,
+.new-machine-form input {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  font-size: var(--type-xs);
+  height: 31px;
+  min-width: 0;
+  padding: 0 8px;
+}
+.new-machine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+.add-project-machine > p[role="alert"],
+.new-machine-form > p[role="alert"] {
+  color: var(--red);
+  font-size: var(--type-2xs);
+  grid-column: 1 / -1;
+  margin: 0;
+}
+@media (max-width: 560px) {
+  .space-settings-header {
+    padding: 0 12px;
+  }
+  .path-picker-actions {
+    flex-wrap: wrap;
   }
 }

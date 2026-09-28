@@ -5,6 +5,7 @@ import {
   Link2,
   Pencil,
   RefreshCw,
+  Settings2,
   Smartphone,
   UserPlus,
   UserRound,
@@ -22,6 +23,11 @@ import {
   revokeTeamSession,
 } from "../api";
 import { listDesktopTeamConnections, type TeamConnectionMetadata } from "../desktopRuntime";
+import {
+  AppearancePicker,
+  type AppearancePickerProps,
+  type TextScaleControl,
+} from "./AppearancePicker";
 import type {
   IdentityResponse,
   SpaceUserSummary,
@@ -37,6 +43,11 @@ interface Props {
   identityError: string | null;
   onRequestName: () => Promise<boolean> | void;
   onAddTeamSpace?: () => void;
+  onOpenSpaceSettings?: () => void;
+  appearance?: AppearancePickerProps;
+  textScale?: TextScaleControl;
+  /** Inside a project the trigger shows the initial alone. */
+  compact?: boolean;
 }
 
 interface IdentityProvenanceSlipProps {
@@ -668,6 +679,10 @@ export function LandingIdentityMenu({
   identityError,
   onRequestName,
   onAddTeamSpace,
+  onOpenSpaceSettings,
+  appearance,
+  textScale,
+  compact = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
@@ -738,7 +753,10 @@ export function LandingIdentityMenu({
   }, [open, identity?.space_kind]);
 
   return (
-    <div className={`landing-identity-menu${identityError ? " has-error" : ""}`} ref={rootRef}>
+    <div
+      className={`landing-identity-menu${identityError ? " has-error" : ""}${compact ? " compact" : ""}`}
+      ref={rootRef}
+    >
       <button
         className="landing-identity-trigger"
         type="button"
@@ -746,6 +764,7 @@ export function LandingIdentityMenu({
         aria-haspopup={namedIdentity ? "dialog" : undefined}
         aria-expanded={namedIdentity ? open : undefined}
         aria-controls={namedIdentity ? panelId : undefined}
+        aria-label={compact ? (namedIdentity ? displayName : "Sign in") : undefined}
         onClick={() => {
           if (!namedIdentity) {
             requestName();
@@ -758,11 +777,13 @@ export function LandingIdentityMenu({
         <span className="landing-identity-avatar" aria-hidden="true">
           {namedIdentity ? identityInitial(displayName) : <UserRound size={14} />}
         </span>
-        <span className="landing-identity-trigger-copy">
-          <strong>{namedIdentity ? displayName : "Sign in"}</strong>
-          {namedIdentity && <small>{spaceLabel}</small>}
-        </span>
-        {namedIdentity && <ChevronDown size={13} aria-hidden="true" />}
+        {!compact && (
+          <span className="landing-identity-trigger-copy">
+            <strong>{namedIdentity ? displayName : "Sign in"}</strong>
+            {namedIdentity && <small>{spaceLabel}</small>}
+          </span>
+        )}
+        {namedIdentity && !compact && <ChevronDown size={13} aria-hidden="true" />}
       </button>
 
       {identityError && (
@@ -791,6 +812,21 @@ export function LandingIdentityMenu({
             teamSpaces={teamSpaces}
             onAddTeamSpace={onAddTeamSpace}
           />
+          {onOpenSpaceSettings && (
+            <button
+              className="landing-identity-space-settings"
+              type="button"
+              data-identity-action="space-settings"
+              onClick={() => {
+                setOpen(false);
+                onOpenSpaceSettings();
+              }}
+            >
+              <Settings2 size={13} aria-hidden="true" />
+              Space settings
+            </button>
+          )}
+          {appearance && <AppearancePicker {...appearance} textScale={textScale} />}
         </section>
       )}
     </div>

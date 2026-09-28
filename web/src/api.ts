@@ -14,6 +14,8 @@ import type {
   EpisodeMode,
   ExperimentLoopIndexEntry,
   IdentityResponse,
+  MachineDirectoryListing,
+  MachineDirectoryRequest,
   ProjectCacheMetrics,
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
@@ -23,6 +25,9 @@ import type {
   ProviderSignInStatus,
   ProviderResumeSummary,
   ServerStatus,
+  SpaceMachine,
+  SpaceMachineCreateRequest,
+  SpaceMachineUpdateRequest,
   SpaceRunIndexEntry,
   SpaceUserSummary,
   StartEpisodeRequest,
@@ -307,6 +312,56 @@ export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics
 export function clearAllProjectCaches(projectId: string): Promise<ProjectCacheMetrics> {
   return api<ProjectCacheMetrics>(`/api/projects/${encodeURIComponent(projectId)}/caches/all`, {
     method: "DELETE",
+  });
+}
+
+export async function loadSpaceMachines(): Promise<SpaceMachine[]> {
+  return (await api<{ machines: SpaceMachine[] }>("/api/space/machines")).machines;
+}
+
+export function createSpaceMachine(request: SpaceMachineCreateRequest): Promise<SpaceMachine> {
+  return api<SpaceMachine>("/api/space/machines", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function updateSpaceMachine(
+  machineId: string,
+  request: SpaceMachineUpdateRequest,
+): Promise<SpaceMachine> {
+  return api<SpaceMachine>(`/api/space/machines/${encodeURIComponent(machineId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
+}
+
+export function deleteSpaceMachine(machineId: string): Promise<unknown> {
+  return api<unknown>(`/api/space/machines/${encodeURIComponent(machineId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function listMachineDirectory(
+  machineId: string,
+  request: MachineDirectoryRequest,
+  signal?: AbortSignal,
+): Promise<MachineDirectoryListing> {
+  return api<MachineDirectoryListing>(
+    `/api/space/machines/${encodeURIComponent(machineId)}/directories`,
+    { method: "POST", body: JSON.stringify(request), signal },
+  );
+}
+
+/** Appends a space machine to a project's manifest under a project alias. */
+export function addProjectMachine(
+  projectId: string,
+  machineId: string,
+  alias: string,
+): Promise<ProjectSnapshot> {
+  return api<ProjectSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/machines`, {
+    method: "POST",
+    body: JSON.stringify({ machine_id: machineId, alias }),
   });
 }
 
