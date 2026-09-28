@@ -6,6 +6,7 @@ import os
 import shlex
 import socket
 import stat
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -146,16 +147,33 @@ def _require_control_directory() -> Path:
     return private_directory(_control_directory_path(), "SSH control directory")
 
 
-# sizeof(sun_path) on macOS, minus the terminator and OpenSSH's bind suffix.
-_CONTROL_PATH_CEILING = 104 - 1 - 17
+# sizeof(sun_path), minus the terminator and OpenSSH's bind suffix.
+_CONTROL_PATH_CEILING = (104 if sys.platform == "darwin" else 108) - 1 - 17
 
 
 def _control_directory_path() -> Path:
-    directory = rcp_home() / "ssh"
+    directory = control_directory_candidate()
     # A master binds `<ControlPath>.<16 random chars>`, so the room this
     # directory leaves for `/<token>-<%C>` has a hard ceiling. Refuse rather
-    # than fall back to a shorter shared directory such as /tmp.
+    # than fall back to a shared directory such as /tmp.
     widest = len(os.fsencode(directory)) + len(f"/{control_partition_token('x')}-") + 40
     if widest > _CONTROL_PATH_CEILING:
         raise RuntimeError(f"RCP SSH control directory path is too long: {directory}")
     return directory
+
+
+def control_directory_candidate() -> Path:
+    """The private per-account runtime directory when it exists, else `~/.rcp/ssh`.
+
+    Linux's `/run/user/<uid>` is short and private, so long home paths still fit
+    the socket limit.
+    """
+
+    runtime = Path(f"/run/user/{os.geteuid()}")
+    try:
+        info = runtime.stat()
+    except OSError:
+        return rcp_home() / "ssh"
+    if info.st_uid == os.geteuid() and (info.st_mode & 0o077) == 0:
+        return runtime / "rcp-ssh"
+    return rcp_home() / "ssh"

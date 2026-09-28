@@ -945,8 +945,9 @@ def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) ->
     assert all(not writable for _paths, writable in stage.calls[1:])
     # Every declared canonical-state path is canonicalized in one call. With a
     # remote stage each call is an SSH exec, so this count is the launch's
-    # round-trip budget and must not grow with the repository count.
-    assert len(stage.calls) == 3
+    # round-trip budget and must not grow with the repository count. The fourth
+    # resolves every registered repository's `.research` for the grants.
+    assert len(stage.calls) == 4
     assert stage.calls[-1][0] == ["/srv/repo-a/.research", "/declared/repo-a/.research"]
 
 
@@ -1494,3 +1495,26 @@ def test_a_sessionless_fresh_launch_still_rebinds_a_finished_stage(tmp_path: Pat
     ).bind_write_scope(wider, resumes_native_session=False)
 
     assert store.agent_task("later").write_scope_fingerprint == wider.fingerprint
+
+
+def test_legacy_stage_protection_stays_out_of_the_fingerprint() -> None:
+    def create(transient: list[str]) -> ProjectWriteScope:
+        return ProjectWriteScope.create(
+            project_id="project",
+            execution_machine="gpu",
+            execution_host="gpu.example",
+            capability="work_auto",
+            stage_root="/home/a/.rcp/stages/rcp-run.x",
+            workspace_root="/home/a/.rcp/stages/rcp-run.x/workspace",
+            repositories=[],
+            granted_roots=["/tmp"],
+            protected_write_paths=["/srv/r/.research", *transient],
+            granted_protected_paths=transient,
+            transient_protected_paths=transient,
+        )
+
+    swept = create([])
+    live = create(["/tmp/rcp-run.other"])
+
+    assert "/tmp/rcp-run.other" in live.protected_write_paths
+    assert live.fingerprint == swept.fingerprint

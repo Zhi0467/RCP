@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from rcp.config import load_manifest
 from rcp.projects import fill_space_machines
 from tests.helpers import create_named_app
+from tests.test_project_membership import _create_project, _team_app
 
 
 @pytest.fixture
@@ -63,7 +64,7 @@ def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
     assert client.delete(path).status_code == 404
 
 
-def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, tmp_path) -> None:
+def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest, tmp_path) -> None:
     client = TestClient(app)
     shared = tmp_path / "shared"
     shared.mkdir()
@@ -76,7 +77,9 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, tmp_path)
 
     inside_data = tmp_path / "data" / "inside"
     inside_data.mkdir()
-    for refused in (tmp_path / "missing", inside_data, Path("relative")):
+    research = Path(load_manifest(manifest.path).repositories[0].path) / ".research"
+    research.mkdir(exist_ok=True)
+    for refused in (tmp_path / "missing", inside_data, research, Path("relative")):
         assert client.patch(path, json={"writable_paths": [str(refused)]}).status_code == 422
     assert _machine(client, "laptop")["writable_paths"] == sorted([str(shared), str(tmp_path)])
 
@@ -165,3 +168,18 @@ def test_adding_a_space_machine_to_a_project_appends_it_to_the_manifest(app, man
         == 422
     )
     assert client.post(path, json={"machine_id": "missing", "alias": "x"}).status_code == 404
+
+
+def test_team_machines_name_only_the_viewers_projects_and_need_an_account(tmp_path) -> None:
+    _app, client, _store, people, acting = _team_app(tmp_path)
+    project_id = _create_project(client, tmp_path / "repo", seat_member=people[0].user_id)
+    (machine,) = client.get("/api/space/machines").json()["machines"]
+    assert [project["project_id"] for project in machine["projects"]] == [project_id]
+
+    acting[0] = people[1].user_id
+    (hidden,) = client.get("/api/space/machines").json()["machines"]
+    assert hidden["projects"] == [] and hidden["in_use"] is True
+
+    body = {"name": "GPU", "host": "gpu.example"}
+    assert client.post("/api/space/machines", json=body).status_code == 422
+    assert client.post("/api/space/machines", json={**body, "os_account": "bob"}).status_code == 200

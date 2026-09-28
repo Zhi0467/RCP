@@ -102,11 +102,21 @@ def _refused(exc: ProviderLoginRefused) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
+def _visible_path(
+    sources: list[ProviderPathSource], visible: set[str]
+) -> ProviderPathSource | None:
+    """The path sign-in uses, shown only when the viewer is on its project."""
+
+    first = next(iter(sources), None)
+    return first if first is not None and first.project_id in visible else None
+
+
 def provider_login_accounts(
     store: AppStore,
     catalog: ProjectCatalog,
     credentials: ProviderCredentialStore,
     sign_ins: ProviderSignInRunner,
+    visible: set[str],
 ) -> list[ProviderLoginAccount]:
     machines: dict[str, set[str]] = {}
     for machine in store.space_machines():
@@ -135,7 +145,7 @@ def provider_login_accounts(
                 sign_in_methods=profile.authentication.methods,
                 token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
-                provider_path=next(iter(paths.get((provider, host), [])), None),
+                provider_path=_visible_path(paths.get((provider, host), []), visible),
                 token=token,
                 sign_in=sign_ins.running_sign_in(provider, host),
             )
@@ -151,8 +161,9 @@ def provider_logins(
     credentials: CredentialsDependency,
     sign_ins: SignInsDependency,
 ) -> list[ProviderLoginAccount]:
-    get_identity_access(request).acting_user(request)
-    return provider_login_accounts(store, catalog, credentials, sign_ins)
+    user = get_identity_access(request).acting_user(request)
+    visible = store.member_project_ids(user.user_id)
+    return provider_login_accounts(store, catalog, credentials, sign_ins, visible)
 
 
 @router.post("/api/providers/{provider}/logins/verify")

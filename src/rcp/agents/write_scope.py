@@ -60,6 +60,9 @@ class ProjectWriteScope(BaseModel):
     # The subset of protected paths present only because a grant covers RCP's
     # own storage; kept apart so a pre-grant fingerprint can be derived.
     granted_protected_paths: list[str] = Field(default_factory=list)
+    # Other tasks' legacy /tmp stages: enforced, but they come and go as stages
+    # are swept, so they stay out of the fingerprint.
+    transient_protected_paths: list[str] = Field(default_factory=list)
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -91,6 +94,10 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("granted protected paths must be sorted and unique")
         if not set(self.granted_protected_paths).issubset(self.protected_write_paths):
             raise ValueError("granted protected paths must be protected write paths")
+        if self.transient_protected_paths != sorted(set(self.transient_protected_paths)):
+            raise ValueError("transient protected paths must be sorted and unique")
+        if not set(self.transient_protected_paths).issubset(self.granted_protected_paths):
+            raise ValueError("transient protected paths must be granted protected paths")
         if self.protected_write_paths != sorted(set(self.protected_write_paths)):
             raise ValueError("protected write paths must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.protected_write_paths):
@@ -115,6 +122,7 @@ class ProjectWriteScope(BaseModel):
         git_metadata_roots: list[str] | None = None,
         granted_roots: list[str] | None = None,
         granted_protected_paths: list[str] | None = None,
+        transient_protected_paths: list[str] | None = None,
     ) -> ProjectWriteScope:
         payload: dict[str, object] = {
             "schema_generation": 1,
@@ -139,7 +147,11 @@ class ProjectWriteScope(BaseModel):
             payload["granted_roots"] = sorted(set(granted_roots))
         if granted_protected_paths:
             payload["granted_protected_paths"] = sorted(set(granted_protected_paths))
-        return cls.model_validate({**payload, "fingerprint": _scope_fingerprint(payload)})
+        transient = sorted(set(transient_protected_paths or []))
+        fingerprinted = _without_transient(payload, transient)
+        if transient:
+            payload["transient_protected_paths"] = transient
+        return cls.model_validate({**payload, "fingerprint": _scope_fingerprint(fingerprinted)})
 
     def without_grants(self) -> ProjectWriteScope:
         """This scope as a build without machine grants would have resolved it."""
@@ -186,7 +198,10 @@ class ProjectWriteScope(BaseModel):
             excluded.add("granted_roots")
         if not self.granted_protected_paths:
             excluded.add("granted_protected_paths")
-        return self.model_dump(mode="json", exclude=excluded)
+        excluded.add("transient_protected_paths")
+        return _without_transient(
+            self.model_dump(mode="json", exclude=excluded), self.transient_protected_paths
+        )
 
 
 def resolve_project_write_scope(
@@ -390,6 +405,13 @@ def resolve_project_write_scope(
         )
 
     granted_input = sorted({canonical[path] for path in declared_grants})
+    legacy_stages = [
+        root
+        for root in (
+            remote_stage.legacy_stage_roots() if remote_stage is not None and granted_input else []
+        )
+        if root != canonical_stage
+    ]
     granted, rcp_protected = _granted_roots(
         granted_input,
         owned=[
@@ -398,23 +420,26 @@ def resolve_project_write_scope(
                 app_data_dir=app_data_dir,
                 remote=remote_stage is not None,
             ),
-            # Canonical state of every repository on this host, admitted or not.
+            # Canonical state of every repository on this host, admitted or not,
+            # declared and resolved on the execution host (it may be a symlink).
             *(
-                str(PurePosixPath(path) / ".research")
-                for item in execution_inventory
-                for path in (item.path, canonical_inventory[item.path])
+                protected_repository_paths(
+                    manifest=manifest,
+                    repository_roots=sorted(
+                        {
+                            path
+                            for item in execution_inventory
+                            for path in (item.path, canonical_inventory[item.path])
+                        }
+                    ),
+                    remote_stage=remote_stage,
+                )
+                if granted_input
+                else []
             ),
             # This launch's own immutable inputs, and other tasks' legacy stages.
             str(PurePosixPath(canonical_stage) / "inputs"),
-            *(
-                root
-                for root in (
-                    remote_stage.legacy_stage_roots()
-                    if remote_stage is not None and granted_input
-                    else []
-                )
-                if root != canonical_stage
-            ),
+            *legacy_stages,
         ],
         path_semantics=path_semantics,
     )
@@ -440,6 +465,7 @@ def resolve_project_write_scope(
         granted_roots=granted,
         protected_write_paths=protected,
         granted_protected_paths=granted_protected,
+        transient_protected_paths=sorted(set(granted_protected) & set(legacy_stages)),
     )
 
 
@@ -509,6 +535,9 @@ def rcp_owned_paths(
     if remote:
         paths.append(str(home / ".local" / "share" / "rcp"))
         return paths
+    from rcp.transport.ssh import control_directory_candidate
+
+    paths.append(str(control_directory_candidate()))
     if app_data_dir is not None:
         data_dir = app_data_dir.expanduser().resolve()
         paths.append(str(data_dir))
@@ -729,6 +758,21 @@ def _reject_repository_ownership_overlap(
             f"repository {alias!r} overlaps {relation} on this execution host: "
             f"{owner.project_id}/{owner.alias}"
         )
+
+
+def _without_transient(payload: dict[str, object], transient: list[str]) -> dict[str, object]:
+    if not transient:
+        return payload
+    dropped = set(transient)
+    result = dict(payload)
+    for key in ("protected_write_paths", "granted_protected_paths"):
+        if key in result:
+            kept = [path for path in result[key] if path not in dropped]  # type: ignore[union-attr]
+            if kept or key == "protected_write_paths":
+                result[key] = kept
+            else:
+                del result[key]
+    return result
 
 
 def _scope_fingerprint(payload: dict[str, object]) -> str:

@@ -113,6 +113,7 @@ def _machine_view(
     machine: SpaceMachineRecord,
     usage: dict[tuple[str, str], list[dict[str, str]]],
     complete: bool,
+    visible: set[str],
 ) -> dict[str, object]:
     projects = usage.get((machine.host, machine.os_account), [])
     return {
@@ -121,13 +122,22 @@ def _machine_view(
         "host": machine.host,
         "os_account": machine.os_account,
         "writable_paths": list(machine.writable_paths),
-        "projects": projects,
+        # Use counts every project; only the viewer's own projects are named.
+        "projects": [project for project in projects if project["project_id"] in visible],
         "in_use": True if projects else (False if complete else None),
     }
 
 
-def _one_machine_view(store: AppStore, machine: SpaceMachineRecord) -> dict[str, object]:
-    return _machine_view(machine, *_machine_usage(store))
+def _one_machine_view(
+    store: AppStore, machine: SpaceMachineRecord, visible: set[str]
+) -> dict[str, object]:
+    return _machine_view(machine, *_machine_usage(store), visible)
+
+
+def _visible_project_ids(
+    request: Request, identity_access: IdentityAccess, store: AppStore
+) -> set[str]:
+    return store.member_project_ids(identity_access.acting_user(request).user_id)
 
 
 def _machine_or_404(store: AppStore, machine_id: str) -> SpaceMachineRecord:
@@ -154,14 +164,23 @@ def _is_protected(path: str, owned: list[str]) -> bool:
 
 
 def _validated_writable_paths(
-    machine: SpaceMachineRecord, requested: list[str], data_dir: Path
+    machine: SpaceMachineRecord, requested: list[str], catalog: ProjectCatalog
 ) -> list[str]:
     paths = sorted({check_writable_path_text(path) for path in requested})
     if not paths:
         return []
+    # Every registered repository's canonical state on this host, admitted or
+    # not; resolved on the machine because `.research` may be a symlink.
+    research = sorted(
+        {
+            str(PurePosixPath(item.path) / ".research")
+            for item in catalog.repository_ownership_inventory()
+            if item.execution_host == machine.host
+        }
+    )
     result = run_machine_directory_request(
         machine.host,
-        {"mode": "check", "paths": paths},
+        {"mode": "check", "paths": sorted({*paths, *research})},
         os_account=machine.os_account,
     )
     home = result.get("home")
@@ -170,10 +189,12 @@ def _validated_writable_paths(
         not isinstance(home, str)
         or not PurePosixPath(home).is_absolute()
         or not isinstance(resolved, dict)
-        or set(resolved) != set(paths)
+        or set(resolved) != {*paths, *research}
     ):
         raise ValueError("the machine returned an invalid folder check")
-    owned = _owned_paths(machine, home, data_dir)
+    owned = _owned_paths(machine, home, catalog.data_dir)
+    owned.extend(research)
+    owned.extend(real for path in research if isinstance(real := resolved[path], str))
     for path in paths:
         real = resolved[path]
         if not isinstance(real, str):
@@ -190,10 +211,12 @@ def list_space_machines(
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
-    identity_access.acting_user(request)
+    visible = _visible_project_ids(request, identity_access, store)
     usage, complete = _machine_usage(store)
     return {
-        "machines": [_machine_view(machine, usage, complete) for machine in store.space_machines()]
+        "machines": [
+            _machine_view(machine, usage, complete, visible) for machine in store.space_machines()
+        ]
     }
 
 
@@ -206,6 +229,9 @@ def create_space_machine(
     store: StoreDependency,
 ) -> dict[str, object]:
     identity_access.acting_user(request)
+    if store.space_kind == "team" and not body.os_account:
+        # Team projects are backed up, and a backup records each machine's account.
+        raise HTTPException(status_code=422, detail="A team machine needs its account.")
     try:
         machine = MachineConfig(alias="card", host=body.host, os_account=body.os_account)
     except ValidationError as exc:
@@ -217,7 +243,7 @@ def create_space_machine(
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _one_machine_view(store, created)
+    return _one_machine_view(store, created, _visible_project_ids(request, identity_access, store))
 
 
 @router.patch("/api/space/machines/{machine_id}")
@@ -235,13 +261,11 @@ def update_space_machine(
     writable_paths = None
     if body.writable_paths is not None:
         try:
-            writable_paths = _validated_writable_paths(
-                machine, body.writable_paths, catalog.data_dir
-            )
+            writable_paths = _validated_writable_paths(machine, body.writable_paths, catalog)
         except (MachineBrowseFailure, ValueError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     updated = store.update_space_machine(machine_id, name=body.name, writable_paths=writable_paths)
-    return _one_machine_view(store, updated)
+    return _one_machine_view(store, updated, _visible_project_ids(request, identity_access, store))
 
 
 @router.delete("/api/space/machines/{machine_id}")
@@ -252,8 +276,11 @@ def delete_space_machine(
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
-    identity_access.acting_user(request)
-    view = _one_machine_view(store, _machine_or_404(store, machine_id))
+    view = _one_machine_view(
+        store,
+        _machine_or_404(store, machine_id),
+        _visible_project_ids(request, identity_access, store),
+    )
     if view["in_use"] is not False:
         detail = (
             "A project uses this machine; remove it from the project first."
