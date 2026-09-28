@@ -94,7 +94,9 @@ def test_team_space_does_not_pair_notify_only_phones(tmp_path) -> None:
         store.create_notification_phone_pairing()
 
 
-def test_listener_stops_once_no_code_is_live(manifest, tmp_path, monkeypatch) -> None:
+def test_listener_resumes_for_a_live_code_and_stops_without_one(
+    manifest, tmp_path, monkeypatch
+) -> None:
     from .helpers import wait_until
 
     monkeypatch.setattr("rcp.phone_listener.PHONE_LISTENER_POLL_SECONDS", 0.05)
@@ -103,9 +105,12 @@ def test_listener_stops_once_no_code_is_live(manifest, tmp_path, monkeypatch) ->
     store.notification_vapid_key()
     store.create_notification_phone_pairing()
     listener = PhoneListener(store, lambda _host: [_PUBLIC_ADDRESS], port=0)
-    listener.ensure_running()
+    # A restart finds the persisted code and serves again.
+    listener.resume()
     assert listener.is_running()
     store.create_notification_phone_pairing()
     with store.connection() as connection:
         connection.execute("UPDATE notification_phone_pairings SET revoked_at=created_at")
     wait_until(lambda: not listener.is_running())
+    listener.resume()
+    assert not listener.is_running()

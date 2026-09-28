@@ -614,9 +614,10 @@ impl TeamSessionState {
 
     /// Reach this Mac's notification device routes and nothing else.
     ///
-    /// Polling reuses the cached session cookie without verifying it first,
-    /// because verification reads identity and would renew an idle session on
-    /// every poll. Only a 401 renews the cookie, once.
+    /// The cached session cookie is used without verifying it first, because
+    /// verification reads identity and would renew an idle session. Only a
+    /// human tap passes `renew`; background polling returns a 401 as is, so an
+    /// unattended Mac never outlives its idle session.
     pub(crate) async fn notification_request(
         &self,
         connections: &TeamConnectionState,
@@ -624,6 +625,7 @@ impl TeamSessionState {
         method: Method,
         path: &str,
         body: Option<&Value>,
+        renew: bool,
     ) -> Result<Response, String> {
         if !path.starts_with(NOTIFICATION_DEVICE_PATH)
             || !matches!(method, Method::GET | Method::POST | Method::DELETE)
@@ -638,12 +640,13 @@ impl TeamSessionState {
                 HeaderValue::from_str(&cookie)
                     .map_err(|_| "the team session cookie is invalid".to_string())?,
             ),
-            None => {
+            None if renew => {
                 let (_, client, cookie) = self
                     .authenticated_request_context(connections, connection_id)
                     .await?;
                 (client, cookie)
             }
+            None => return Err("the team session needs you to open it again".into()),
         };
         let send = |cookie: HeaderValue| {
             let mut request = client
@@ -663,6 +666,9 @@ impl TeamSessionState {
             return Ok(response);
         }
         self.acquire_cookies()?.remove(connection_id);
+        if !renew {
+            return Ok(response);
+        }
         let (_, _, renewed) = self
             .authenticated_request_context(connections, connection_id)
             .await?;

@@ -1550,6 +1550,8 @@ def create_app(
         graph_watcher_retry_worker.start()
         watcher_poller.start()
         notification_sender.start()
+        if phone_listener is not None:
+            phone_listener.resume()
 
     if control_server is not None:
         assert target_transfer_upload_coordinator is not None
@@ -1707,6 +1709,8 @@ def create_app(
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()
                 notification_sender.start()
+                if phone_listener is not None:
+                    await asyncio.to_thread(phone_listener.resume)
                 if control_server is not None and not control_started:
                     control_server.start()
                     control_started = True

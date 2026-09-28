@@ -224,6 +224,7 @@ async fn request(
     method: Method,
     path: &str,
     body: Option<&Value>,
+    renew: bool,
 ) -> Result<(u16, Value), String> {
     let response = match space {
         Space::Personal => {
@@ -244,6 +245,7 @@ async fn request(
                     method,
                     path,
                     body,
+                    renew,
                 )
                 .await?
         }
@@ -253,10 +255,12 @@ async fn request(
     Ok((status, value))
 }
 
+/// `renew` is true only for a human tap; see `notification_request`.
 async fn device_id(
     app: &AppHandle,
     state: &NotificationState,
     space: &Space,
+    renew: bool,
 ) -> Result<String, String> {
     if let Some(id) = state.lock().devices.get(space).cloned() {
         return Ok(id);
@@ -267,6 +271,7 @@ async fn device_id(
         Method::POST,
         "/api/notifications/devices/desktop",
         Some(&json!({})),
+        renew,
     )
     .await?;
     if status != 200 {
@@ -290,13 +295,14 @@ async fn poll(app: &AppHandle, state: &NotificationState, space: &Space) -> Resu
             return Ok(());
         }
     }
-    let device = device_id(app, state, space).await?;
+    let device = device_id(app, state, space, false).await?;
     let (status, value) = request(
         app,
         space,
         Method::GET,
         &format!("/api/notifications/devices/{device}/pending"),
         None,
+        false,
     )
     .await?;
     if status == 404 || status == 401 {
@@ -360,6 +366,7 @@ fn acknowledge(app: &AppHandle, posting: Posting, posted: bool) {
                 Method::POST,
                 &path,
                 Some(&json!({ "status": status })),
+                false,
             )
             .await
             {
@@ -474,10 +481,10 @@ pub async fn set_for_window(
     if enabled {
         adapter_reply(app, AUTHORIZE_ID, platform::authorize).await?;
         state.set_enabled(&space, true)?;
-        device_id(app, &state, &space).await?;
+        device_id(app, &state, &space, true).await?;
         return Ok(());
     }
-    let device = device_id(app, &state, &space).await;
+    let device = device_id(app, &state, &space, true).await;
     state.set_enabled(&space, false)?;
     if let Ok(device) = device {
         request(
@@ -486,6 +493,7 @@ pub async fn set_for_window(
             Method::DELETE,
             &format!("/api/notifications/devices/{device}"),
             None,
+            true,
         )
         .await?;
     }

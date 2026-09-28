@@ -130,6 +130,11 @@ class PhoneListener:
             )
             self._thread.start()
 
+    def resume(self) -> None:
+        """Serve again after a restart or maintenance while a code is still live."""
+        if self.store.notification_phone_pairing_live():
+            self.ensure_running()
+
     def _serve(self, server: uvicorn.Server) -> None:
         watchdog = threading.Thread(target=self._stop_when_no_code, args=(server,), daemon=True)
         watchdog.start()

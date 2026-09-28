@@ -638,3 +638,27 @@
 .landing-space-settings + .landing-identity-menu {
   margin-left: 8px;
 }
+.device-notification-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 10px;
+  min-width: 0;
+  font-size: var(--type-2xs);
+}
+.device-notification-control > button {
+  padding: 0 10px;
+  border: 1px solid var(--landing-rule);
+  font-size: var(--type-2xs);
+  font-weight: 700;
+}
+.device-notification-control > [role="status"] {
+  flex-basis: 100%;
+  color: var(--landing-muted);
+  text-align: right;
+}
+.device-notification-note {
+  color: var(--landing-muted);
+  font-size: var(--type-2xs);
+}

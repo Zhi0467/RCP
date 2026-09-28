@@ -2330,12 +2330,15 @@ export default function App() {
   const openNodeById = (nodeId: string) => openNode(presentedGraph.nodes[nodeId] ?? null);
   // A notification link resolves once into the item's ordinary route. A graph
   // item then opens as soon as its project's graph holds it, resolved or not.
+  // It waits for a verified session, so a link opened before team sign-in
+  // still reaches its exact item afterwards.
   const [notificationNode, setNotificationNode] = useState<NotificationLink | null>(null);
+  const initialLinkPending = useRef(initialNotificationLink);
   useEffect(() => {
-    let pending: NotificationLink | null = initialNotificationLink;
+    if (!backendSessionReady) return;
     const resolve = async () => {
-      const link = pending ?? parseNotificationLink(window.location.hash);
-      pending = null;
+      const link = initialLinkPending.current ?? parseNotificationLink(window.location.hash);
+      initialLinkPending.current = null;
       if (!link) return;
       let next = graphNotificationHash(link);
       if (link.kind === "episode") {
@@ -2356,7 +2359,7 @@ export default function App() {
     void resolve();
     window.addEventListener("hashchange", resolve);
     return () => window.removeEventListener("hashchange", resolve);
-  }, []);
+  }, [backendSessionReady]);
   // Each signed-in visit keeps the server's phone record in step with this browser.
   const teamSpace = verifiedHealth?.space_kind === "team";
   useEffect(() => {
