@@ -534,6 +534,11 @@
   flex-shrink: 0;
 }
 
+.artifact-entry-download {
+  position: relative;
+  z-index: 1;
+}
+
 .artifact-entry-chat {
   align-items: center;
   color: var(--cobalt);

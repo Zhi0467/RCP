@@ -2075,18 +2075,42 @@ export interface HistoryEpisodeDecoration {
 export interface AgentTaskResult {
   messages?: string[];
   artifacts?: AgentArtifactDescriptor[];
+  artifact_omissions?: ArtifactOmissions;
   graph_update?: GraphUpdateResult;
   graph_updates?: GraphUpdateResult[];
   [key: string]: unknown;
 }
 
+export type ArtifactView = "html" | "image" | "markdown" | "text" | "pdf" | "file";
+
+export interface ArtifactOmissions {
+  count_limit?: number;
+  file_size_limit?: number;
+  total_size_limit?: number;
+  empty?: number;
+  invalid_or_unavailable?: number;
+  discovery_failed: boolean;
+}
+
 export type AgentArtifactMediaType =
-  "text/html" | "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml";
+  | "text/html"
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp"
+  | "image/svg+xml"
+  | "text/markdown"
+  | "text/plain"
+  | "text/csv"
+  | "application/json"
+  | "application/pdf"
+  | "application/octet-stream";
 
 export interface AgentArtifactDescriptor {
   artifact_id: string;
   name: string;
   media_type: AgentArtifactMediaType;
+  view: ArtifactView;
   size_bytes?: number | null;
   kept_filename?: string | null;
   kept_at?: string | null;
@@ -2917,7 +2941,11 @@ export interface ProjectArtifact {
   episode_id: string | null;
   episode_mode: EpisodeMode | null;
   source_chat_href: string | null;
-  viewer_url: string;
+  viewer_url: string | null;
+  view: ArtifactView;
+  available: boolean;
+  can_download: boolean;
+  download_url: string | null;
   can_open: boolean;
   unavailable_reason: string | null;
 }

@@ -14,6 +14,8 @@ import {
   relatedChatTasks,
   resumablePausedChatTask,
   versionedArtifactContentUrl,
+  taskArtifactOmissions,
+  taskArtifacts,
 } from "../src/agentTasks.ts";
 
 function task(overrides) {
@@ -44,6 +46,7 @@ function artifact(overrides = {}) {
     artifact_id: "a".repeat(24),
     name: "chart.html",
     media_type: "text/html",
+    view: "html",
     available: true,
     unavailable_reason: null,
     can_open: true,
@@ -706,4 +709,71 @@ test("a steer receipt preserves the original turn and the unfinished answer", ()
     reconcileChatHistoryArtifacts(completedHistory, [active]).map((line) => line.text),
     ["Original prompt", "Steer text", "Final answer"],
   );
+});
+
+test("artifact view validation retains download-only files and rejects unknown views", () => {
+  const file = artifact({ view: "file", media_type: "application/octet-stream", can_open: false });
+  assert.deepEqual(
+    taskArtifacts(
+      task({
+        result: { artifacts: [file, artifact({ view: "unknown" }), artifact({ view: undefined })] },
+      }),
+    ),
+    [file],
+  );
+});
+
+test("omissions retain only known nonnegative integer counts and a boolean failure flag", () => {
+  const value = {
+    discovery_failed: false,
+    empty: 2,
+    count_limit: -1,
+    total_size_limit: 1.5,
+    file_size_limit: "2",
+    invalid_or_unavailable: 0,
+    path: "private",
+    unsupported_type: 1,
+  };
+  assert.deepEqual(taskArtifactOmissions(task({ result: { artifact_omissions: value } })), {
+    discovery_failed: false,
+    empty: 2,
+    invalid_or_unavailable: 0,
+  });
+  for (const value of [
+    null,
+    [],
+    {},
+    { discovery_failed: "true" },
+    { discovery_failed: false, empty: 0 },
+  ]) {
+    assert.equal(taskArtifactOmissions(task({ result: { artifact_omissions: value } })), undefined);
+  }
+});
+
+test("omission-only turns survive reconstruction and persisted history reconciliation", () => {
+  for (const omissions of [{ discovery_failed: true }, { discovery_failed: false, empty: 2 }]) {
+    const completed = task({
+      operation_id: "omitted",
+      request: {},
+      result: { artifact_omissions: omissions },
+    });
+    const lines = reconstructTaskTranscript([completed]);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].role, "agent");
+    assert.deepEqual(lines[0].artifactOmissions, omissions);
+    const human = {
+      message_id: "human",
+      role: "user",
+      operation_id: "omitted",
+      text: "",
+      timestamp: completed.created_at,
+    };
+    const reconciled = reconcileChatHistoryArtifacts([human], [completed]);
+    assert.equal(reconciled.length, 2);
+    assert.deepEqual(reconciled[1].artifactOmissions, omissions);
+    const answer = { ...human, message_id: "answer", role: "assistant" };
+    const persisted = reconcileChatHistoryArtifacts([human, answer], [completed]);
+    assert.equal(persisted.length, 2);
+    assert.deepEqual(persisted[1].artifactOmissions, omissions);
+  }
 });

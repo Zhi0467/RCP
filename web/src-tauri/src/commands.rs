@@ -16,7 +16,7 @@ use crate::{
     backend::{self, BackendState},
     dictation,
     lifecycle::DesktopStatus,
-    navigation,
+    navigation, pdf_preview,
     project_transfer::{
         self, ProjectTransferAdvanceResult, ProjectTransferBundle, ProjectTransferCoordinatorState,
         ProjectTransferExportCleanupResult, ProjectTransferExportResult,
@@ -1027,6 +1027,59 @@ pub async fn open_artifact_preview(
         .ensure_available(Method::GET, &url, "artifact", ARTIFACT_AVAILABILITY_TIMEOUT)
         .await?;
     windows::open_preview(&app, url, target.base_url().to_string())?;
+    Ok(OpenResult { opened: true })
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn open_artifact_pdf(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    project_id: String,
+    task_id: String,
+    artifact_id: String,
+) -> Result<OpenResult, String> {
+    let target = current_resource_target(&window, &state, &sessions)?;
+    let root = pdf_preview::prepare_cache(&app)?;
+    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
+    let url = artifact_url(
+        target.base_url(),
+        &project_id,
+        &task_id,
+        &artifact_id,
+        "download",
+    )?;
+    let mut response = access
+        .response(Method::GET, url, "PDF download", Duration::from_secs(30))
+        .await?;
+    pdf_preview::validate_headers(
+        response.status(),
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        response.content_length(),
+    )?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("PDF download was interrupted: {error}"))?
+    {
+        pdf_preview::append_chunk(&mut bytes, &chunk)?;
+    }
+    let directory = pdf_preview::write(&root, &bytes)?;
+    app.opener()
+        .open_path(
+            directory.path().join("artifact.pdf").to_string_lossy(),
+            None::<&str>,
+        )
+        .map_err(|error| format!("could not open system PDF viewer: {error}"))?;
+    // Keep successful previews until retention pruning; TempDir removes failures.
+    let _ = directory.keep();
     Ok(OpenResult { opened: true })
 }
 

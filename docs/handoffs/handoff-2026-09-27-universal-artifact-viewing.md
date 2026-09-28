@@ -5,8 +5,18 @@ chose not to review it and asked to implement it in this pull request.
 
 - Implemented (backend): changes 1–5, the backend half of 7 (saved-artifact
   capabilities), 8, the prompt lines of 9, and 10, with their Python tests.
-- Remains: the web half of 4 (the desktop PDF command), 6, the web half of 7,
-  then [Verification](#verification).
+- Implemented (web and desktop): the desktop PDF command in 4, chat cards in
+  6, the web contracts, Artifacts inventory, and WebMCP in 7, with browser,
+  TypeScript, and Rust coverage. The current behavior specs in 9 are updated.
+- Verified: web build and full web suite, focused backend tests, Rust tests and
+  clippy, native development bundle, frozen-backend build and smoke check, and
+  the disposable served-app mixed-artifact journey. Chromium still reports the
+  existing unsupported `navigate-to` CSP directive; no requests or page scripts
+  failed in that journey.
+- Remains: live native verification and human merge. The native PDF/viewer
+  journey remains unverified: desktop startup fixes its backend port at 8421
+  and initializes the normal app profile, so it cannot honor this slice's
+  disposable-data and spare-port constraints without a separate launch change.
 - Settled (human, 2026-09-27):
   - Viewing is universal. Every file an agent leaves in its turn artifact
     directory gets a card with Download and Keep, within the existing bounds.

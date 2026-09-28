@@ -3,7 +3,8 @@
 - [Show every artifact, and keep commenting separate](handoff-2026-09-27-universal-artifact-viewing.md):
   every file an agent leaves gets a card with Download and a read-only view
   by type; select-and-comment stays an opt-in layer for the six current
-  types. Design settled; implementation in progress on its pull request.
+  types. Implementation and automated/served verification complete; the live
+  native journey and human merge remain.
 
 Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
 and the refusal-explains-itself handoff (a refused dispatch or Apply reported

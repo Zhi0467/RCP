@@ -1,8 +1,10 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { ExternalLink, MessageSquare, RefreshCw } from "lucide-react";
+import { Download, ExternalLink, MessageSquare, RefreshCw } from "lucide-react";
 import { api } from "../api";
 import {
+  downloadDesktopArtifact,
   isDesktopRuntime,
+  openDesktopArtifactPdf,
   openDesktopArtifactPreview,
   openDesktopEpisodeReportPreview,
 } from "../desktopRuntime";
@@ -40,7 +42,10 @@ export function Artifacts({ projectId }: { projectId: string }) {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  const open = async (event: MouseEvent<HTMLAnchorElement>, entry: ProjectArtifact) => {
+  const open = async (
+    event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
+    entry: ProjectArtifact,
+  ) => {
     if (!isDesktopRuntime()) return;
     event.preventDefault();
     setError(null);
@@ -48,7 +53,7 @@ export function Artifacts({ projectId }: { projectId: string }) {
       if (entry.episode_id) {
         await openDesktopEpisodeReportPreview({ projectId, episodeId: entry.episode_id });
       } else if (entry.operation_id && entry.artifact_id) {
-        await openDesktopArtifactPreview({
+        await (entry.view === "pdf" ? openDesktopArtifactPdf : openDesktopArtifactPreview)({
           projectId,
           taskId: entry.operation_id,
           artifactId: entry.artifact_id,
@@ -56,6 +61,22 @@ export function Artifacts({ projectId }: { projectId: string }) {
       } else {
         throw new Error("This artifact cannot be opened in the desktop app.");
       }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const download = async (event: MouseEvent<HTMLAnchorElement>, entry: ProjectArtifact) => {
+    if (!isDesktopRuntime() || !entry.operation_id || !entry.artifact_id) return;
+    event.preventDefault();
+    setError(null);
+    try {
+      await downloadDesktopArtifact({
+        projectId,
+        taskId: entry.operation_id,
+        artifactId: entry.artifact_id,
+        suggestedName: entry.name,
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -100,12 +121,36 @@ export function Artifacts({ projectId }: { projectId: string }) {
                     <MessageSquare size={14} aria-hidden="true" /> Source chat
                   </a>
                 )}
-                {!entry.can_open && <p>{entry.unavailable_reason || "Preview unavailable."}</p>}
+                {!entry.can_open && !entry.can_download && (
+                  <p>{entry.unavailable_reason || "Preview unavailable."}</p>
+                )}
               </div>
+              {!entry.can_open &&
+                entry.view === "pdf" &&
+                entry.can_download &&
+                isDesktopRuntime() && (
+                  <button
+                    className="button compact secondary artifact-entry-open"
+                    aria-label={`Open ${entry.name}`}
+                    onClick={(event) => void open(event, entry)}
+                  >
+                    <ExternalLink size={14} /> Open
+                  </button>
+                )}
+              {entry.can_download && entry.download_url && (
+                <a
+                  className="button compact secondary artifact-entry-download"
+                  href={entry.download_url}
+                  download={entry.name}
+                  onClick={(event) => void download(event, entry)}
+                >
+                  <Download size={14} /> Download
+                </a>
+              )}
               {entry.can_open && (
                 <a
                   className="button compact secondary artifact-entry-open"
-                  href={entry.viewer_url}
+                  href={entry.viewer_url ?? undefined}
                   target="_blank"
                   rel="noopener noreferrer"
                   aria-label={`Open ${entry.name}`}

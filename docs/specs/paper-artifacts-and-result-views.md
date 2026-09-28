@@ -81,6 +81,8 @@ Every card offers Download and Keep. The file's type decides how it is viewed:
   or RCP's supported types change later.
 
 A broken preview never hides Download or Keep, and never erases the reply.
+Keep refreshes the authoritative task projection after the mutation succeeds.
+Omission counts remain visible even when the turn has no artifact cards.
 
 ## Episode reports
 
@@ -330,8 +332,8 @@ never presents it as the whole file.
 
 An answer may also cite a file the turn itself wrote. That path lies outside
 every repository root, so RCP opens the artifact the task already registered
-under that name through the artifact viewer. An unregistered name keeps the
-ordinary nonnavigating error.
+under that name through its viewer, or focuses its card when it is download-only.
+An unregistered name keeps the ordinary nonnavigating error.
 
 Task prompts state this citation contract to the agent: an absolute path on the
 file's host, optionally suffixed with a line, naming either an authorized

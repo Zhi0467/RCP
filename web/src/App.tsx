@@ -199,6 +199,7 @@ import {
   type HumanSyncRequest,
 } from "./humanDraft";
 import type {
+  ArtifactView,
   AgentExecutionProfile,
   AgentRunConfig,
   AgentTask,
@@ -899,18 +900,22 @@ export default function App() {
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
     string | null
   >(null);
-  const showWebMcpArtifactViewer = useCallback(async (viewerUrl: string, contentUrl: string) => {
-    const response = await fetch(contentUrl, {
-      method: "HEAD",
-      cache: "no-store",
-      credentials: "same-origin",
-    });
-    if (!response.ok) {
-      throw new Error(`Artifact content is unavailable (${response.status}).`);
-    }
-    setWebMcpArtifactViewerUrl(viewerUrl);
-    return true;
-  }, []);
+  const showWebMcpArtifactViewer = useCallback(
+    async (viewerUrl: string, contentUrl: string, view: ArtifactView) => {
+      if (view === "pdf" || view === "file") return false;
+      const response = await fetch(contentUrl, {
+        method: "HEAD",
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error(`Artifact content is unavailable (${response.status}).`);
+      }
+      setWebMcpArtifactViewerUrl(viewerUrl);
+      return true;
+    },
+    [],
+  );
   const reportErrorNotice = useCallback((text: string) => {
     setNotice({ kind: "error", text });
   }, []);

@@ -34,6 +34,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import {
+  api,
   decideArtifactRevision,
   removeChatAttachment,
   steerChatTurn,
@@ -99,6 +100,7 @@ import {
   type DictationStateEvent,
   isDesktopRuntime,
   listenDesktopEvent,
+  openDesktopArtifactPdf,
   openDesktopArtifactPreview,
   openDesktopRepositoryFilePreview,
   startDesktopDictation,
@@ -643,10 +645,13 @@ export function NodeChat({
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
-  const [unavailableArtifacts, setUnavailableArtifacts] = useState<Set<string>>(() => new Set());
+  const [failedArtifactPreviews, setFailedArtifactPreviews] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [artifactShellErrors, setArtifactShellErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
+  const [keepingArtifacts, setKeepingArtifacts] = useState<Set<string>>(() => new Set());
   const [revisionReview, setRevisionReview] = useState<ArtifactRevisionReview | null>(null);
   const [revisionDecision, setRevisionDecision] = useState<"accept" | "reject" | null>(null);
   const [revisionDecisionError, setRevisionDecisionError] = useState<string | null>(null);
@@ -1536,8 +1541,8 @@ export function NodeChat({
     }
   };
 
-  const markArtifactUnavailable = (taskId: string, artifactId: string) => {
-    setUnavailableArtifacts((current) => {
+  const markArtifactPreviewFailed = (taskId: string, artifactId: string) => {
+    setFailedArtifactPreviews((current) => {
       const next = new Set(current);
       next.add(`${taskId}:${artifactId}`);
       return next;
@@ -1549,12 +1554,13 @@ export function NodeChat({
     artifact: AgentArtifactDescriptor,
     reserved: Window | null = null,
   ) => {
-    if (!artifact.can_open) return;
+    const systemPdf = desktop && artifact.view === "pdf" && artifact.can_download;
+    if (!artifact.can_open && !systemPdf) return;
     if (desktop) {
       const key = `${taskId}:${artifact.artifact_id}`;
       setArtifactShellErrors((current) => withoutMapKey(current, key));
       try {
-        await openDesktopArtifactPreview({
+        await (systemPdf ? openDesktopArtifactPdf : openDesktopArtifactPreview)({
           projectId: project.id,
           taskId,
           artifactId: artifact.artifact_id,
@@ -1572,7 +1578,7 @@ export function NodeChat({
     }
     const target = reserved ?? window.open("about:blank", "_blank");
     if (!target) {
-      markArtifactUnavailable(taskId, artifact.artifact_id);
+      markArtifactPreviewFailed(taskId, artifact.artifact_id);
       return;
     }
     target.opener = null;
@@ -1580,7 +1586,7 @@ export function NodeChat({
       target.location.replace(artifactUrl(project.id, taskId, artifact.artifact_id, "viewer"));
     } catch {
       target.close();
-      markArtifactUnavailable(taskId, artifact.artifact_id);
+      markArtifactPreviewFailed(taskId, artifact.artifact_id);
     }
   };
 
@@ -1603,6 +1609,30 @@ export function NodeChat({
           `Download failed: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
+    }
+  };
+
+  const keepArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
+    const key = `${taskId}:${artifact.artifact_id}`;
+    if (!artifact.can_keep || keepingArtifacts.has(key)) return;
+    setKeepingArtifacts((current) => new Set(current).add(key));
+    setArtifactShellErrors((current) => withoutMapKey(current, key));
+    try {
+      await api(artifactUrl(project.id, taskId, artifact.artifact_id, "keep"), {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      await onRefreshTask(taskId);
+    } catch (error) {
+      setArtifactShellErrors((current) =>
+        withMapValue(current, key, error instanceof Error ? error.message : String(error)),
+      );
+    } finally {
+      setKeepingArtifacts((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
     }
   };
 
@@ -1658,9 +1688,18 @@ export function NodeChat({
         // task rather than refusing a citation the transcript still displays.
         const task = known ?? (await onRefreshTask(taskId).catch(() => null));
         const artifact = task?.result?.artifacts?.find((candidate) => candidate.name === name);
-        if (artifact?.can_open) {
+        if (artifact) {
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-          await openArtifact(taskId, artifact, reserved);
+          if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
+            await openArtifact(taskId, artifact, reserved);
+          } else {
+            reserved?.close();
+            if (!known)
+              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+            const card = document.getElementById(`artifact-${taskId}-${artifact.artifact_id}`);
+            card?.scrollIntoView({ block: "nearest" });
+            card?.focus();
+          }
           return;
         }
         reserved?.close();
@@ -1978,13 +2017,13 @@ export function NodeChat({
                 const revisionCandidate = artifact.revision_candidate ?? null;
                 const taskUpdatedAt =
                   relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
-                const runtimeUnavailable = unavailableArtifacts.has(
+                const previewFailed = failedArtifactPreviews.has(
                   `${line.taskId}:${artifact.artifact_id}`,
                 );
-                const unavailable = !artifact.available || runtimeUnavailable;
+                const unavailable = !artifact.available;
                 const unavailableReason =
                   (!artifact.available && artifact.unavailable_reason) ||
-                  (runtimeUnavailable ? "Preview unavailable" : null);
+                  (previewFailed ? "Preview unavailable" : null);
                 const shellError = artifactShellErrors.get(
                   `${line.taskId}:${artifact.artifact_id}`,
                 );
@@ -1992,12 +2031,15 @@ export function NodeChat({
                   <div
                     className={`chat-artifact${unavailable ? " unavailable" : ""}`}
                     key={artifact.artifact_id}
+                    id={`artifact-${line.taskId}-${artifact.artifact_id}`}
+                    tabIndex={-1}
                   >
-                    {artifact.media_type !== "text/html" &&
+                    {artifact.view === "image" &&
                       artifact.size_bytes != null &&
                       artifact.size_bytes <= INLINE_ARTIFACT_MAX_BYTES &&
                       artifact.can_open &&
-                      !unavailable && (
+                      !unavailable &&
+                      !previewFailed && (
                         <button
                           className="chat-artifact-inline"
                           type="button"
@@ -2013,7 +2055,7 @@ export function NodeChat({
                             )}
                             alt={artifact.name}
                             onError={() =>
-                              markArtifactUnavailable(line.taskId, artifact.artifact_id)
+                              markArtifactPreviewFailed(line.taskId, artifact.artifact_id)
                             }
                           />
                         </button>
@@ -2021,58 +2063,67 @@ export function NodeChat({
                     <File size={14} />
                     <span>
                       {artifact.name}
+                      {artifact.size_bytes != null && ` · ${formatBytes(artifact.size_bytes)}`}
                       {artifact.kept_filename && <em>Kept</em>}
                     </span>
-                    {unavailable && <strong>{unavailableReason ?? "Preview unavailable"}</strong>}
-                    {(!unavailable || revisionCandidate) && (
-                      <div className="chat-artifact-actions">
-                        {!unavailable && artifact.can_open && (
+                    {unavailableReason && <strong>{unavailableReason}</strong>}
+                    <div className="chat-artifact-actions">
+                      {(artifact.can_open ||
+                        (desktop && artifact.view === "pdf" && artifact.can_download)) && (
+                        <button
+                          type="button"
+                          onClick={() => void openArtifact(line.taskId, artifact)}
+                        >
+                          <ExternalLink size={12} /> Open
+                        </button>
+                      )}
+                      {artifact.can_download &&
+                        (desktop ? (
                           <button
                             type="button"
-                            onClick={() => void openArtifact(line.taskId, artifact)}
+                            onClick={() => void downloadArtifact(line.taskId, artifact)}
                           >
-                            <ExternalLink size={12} /> Open
+                            <Download size={12} /> Download
                           </button>
-                        )}
-                        {!unavailable &&
-                          artifact.can_download &&
-                          (desktop ? (
-                            <button
-                              type="button"
-                              onClick={() => void downloadArtifact(line.taskId, artifact)}
-                            >
-                              <Download size={12} /> Download
-                            </button>
-                          ) : (
-                            <a
-                              href={artifactUrl(
-                                project.id,
-                                line.taskId,
-                                artifact.artifact_id,
-                                "download",
-                              )}
-                              download={artifact.name}
-                            >
-                              <Download size={12} /> Download
-                            </a>
-                          ))}
-                        {revisionCandidate && (
-                          <button
-                            type="button"
-                            className="review-revision"
-                            onClick={() => {
-                              setRevisionDecisionError(null);
-                              setRevisionReview({
-                                taskId: line.taskId,
-                                artifactId: artifact.artifact_id,
-                              });
-                            }}
+                        ) : (
+                          <a
+                            href={artifactUrl(
+                              project.id,
+                              line.taskId,
+                              artifact.artifact_id,
+                              "download",
+                            )}
+                            download={artifact.name}
                           >
-                            Review revision
-                          </button>
-                        )}
-                      </div>
-                    )}
+                            <Download size={12} /> Download
+                          </a>
+                        ))}
+                      {artifact.can_keep && (
+                        <button
+                          type="button"
+                          data-artifact-action="keep"
+                          disabled={keepingArtifacts.has(`${line.taskId}:${artifact.artifact_id}`)}
+                          onClick={() => void keepArtifact(line.taskId, artifact)}
+                        >
+                          Keep
+                        </button>
+                      )}
+                      {revisionCandidate && (
+                        <button
+                          type="button"
+                          className="review-revision"
+                          onClick={() => {
+                            setRevisionDecisionError(null);
+                            setRevisionReview({
+                              taskId: line.taskId,
+                              artifactId: artifact.artifact_id,
+                            });
+                          }}
+                        >
+                          Review revision
+                        </button>
+                      )}
+                    </div>
                     {shellError && (
                       <strong className="chat-artifact-shell-error" role="alert">
                         {shellError}
@@ -2081,6 +2132,16 @@ export function NodeChat({
                   </div>
                 );
               })}
+              {line.artifactOmissions && (
+                <p className="chat-artifact-omissions" role="status">
+                  {line.artifactOmissions.discovery_failed
+                    ? "Artifact discovery failed"
+                    : `Artifacts omitted: ${Object.entries(line.artifactOmissions)
+                        .filter(([, count]) => typeof count === "number" && count > 0)
+                        .map(([reason, count]) => `${reason.replaceAll("_", " ")}: ${count}`)
+                        .join("; ")}`}
+                </p>
+              )}
               {line.role === "agent" && line.graphUpdate && (
                 <GraphUpdateReceipt
                   update={line.graphUpdate}

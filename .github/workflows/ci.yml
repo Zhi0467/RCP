@@ -248,8 +248,15 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: web/package-lock.json
+      # The artifact selection browser test renders its documents with the real
+      # Python renderer through `uv run`, so the web job needs the package too.
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          python-version: "3.12"
       - run: npm --prefix web ci
       - run: npm --prefix web run build
+      - run: uv sync --frozen
       # The browser test needs a Chromium binary that npm ci does not fetch. Cache
       # it by lockfile so a run only downloads when the playwright version moves.
       - uses: actions/cache@v4
