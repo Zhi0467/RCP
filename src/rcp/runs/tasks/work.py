@@ -2586,8 +2586,14 @@ async def _stream_work_graph_repair(
     data_dir: Path,
     *,
     execution: AgentTaskExecution,
+    master_for: Callable[[WorkTurn, _StagedWorkInputs], tuple[Callable[[], str], dict[str, object]]]
+    | None = None,
 ) -> AsyncIterator[str]:
-    """Repair only a retained Work patch; never repeat the operational turn."""
+    """Repair only a retained Work patch; never repeat the operational turn.
+
+    ``master_for`` gives the owner's master renderer and values when the session's master
+    is not an ordinary Work contract, so a repair keeps that owner's boundary.
+    """
 
     surface: AgentSurface = "project_chat" if request.chat_scope == "project" else "node_chat"
     patch_inputs = None
@@ -2739,14 +2745,19 @@ async def _stream_work_graph_repair(
                 turn, repair_staged, human_request_path=original_contract_path
             )
 
+        if master_for is None:
+            render, values = render_repair_master, _work_prompt_values(turn, repair_staged)
+        else:
+            render, values = master_for(turn, repair_staged)
+
         # A repair reopens the master: its graph rules govern the Patch it rewrites.
         prompt = _work_continuation(
             turn,
-            render_repair_master,
+            render,
             session_id=request.session_id,
             node=classify(LaunchPhase(session_id=request.session_id, phase="recovery")),
             part=_patch_correction_contract(diagnostics_path),
-            values=_work_prompt_values(turn, repair_staged),
+            values=values,
             force_bootstrap=True,
         )
         contract_path = record_inline_prompt(

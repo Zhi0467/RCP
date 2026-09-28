@@ -40,6 +40,7 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_wake_message,
     experiment_loop_watcher_correction_contract,
 )
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import (
     _invoked_package_section,
     invoked_package_pointers,
@@ -817,6 +818,27 @@ def _experiment_master(
     )
 
 
+def _stale_master_graph_rules(
+    execution: AgentTaskExecution, session_id: str, *, ontology_extensions: bool
+) -> list[str]:
+    """The current graph rules, when the master a repair keeps was rendered under another key.
+
+    A repair stages no loop inputs to render a new master, so the rules its Patch must
+    follow travel inline instead.
+    """
+
+    record = execution.store.agent_task(execution.operation_id)
+    recorded = (
+        execution.store.latest_session_master(record.project_id, session_id)
+        if record is not None
+        else None
+    )
+    key = master_key(EXPERIMENT_LOOP_POLICY_VERSION, ontology_extensions=ontology_extensions)
+    if recorded is not None and recorded[2] == key:
+        return []
+    return [graph_rules(edits=True, ontology_extensions=ontology_extensions)]
+
+
 def _session_start_contract(
     execution: AgentTaskExecution,
     *,
@@ -830,7 +852,8 @@ def _session_start_contract(
     The search follows the episode back through the episodes it continues, because an
     Add-turns episode runs on the session an earlier episode started. A start recorded
     under another master key is not reused; the caller renders a new master instead.
-    The values the start recorded beside it come back with it.
+    The values the start recorded beside it come back with it. Only a succeeded start
+    counts: one that failed or paused may never have delivered its contract.
     """
 
     episode_ids: list[str] = []
@@ -843,7 +866,7 @@ def _session_start_contract(
         task
         for lineage_id in episode_ids
         for task in reversed(execution.store.episode_tasks(lineage_id))
-        if (task.stage_host or "", task.stage_root) == stage_identity
+        if task.status == "succeeded" and (task.stage_host or "", task.stage_root) == stage_identity
     ]
     for candidate_session_id in (session_id, None):
         for task in tasks:
@@ -2785,7 +2808,10 @@ async def _stream_work_graph_repair(
         contract_path, prompt = _record_continuation_prompt(
             turn,
             LaunchPhase(session_id=request.session_id, phase="recovery"),
-            experiment_loop_patch_correction_contract(diagnostics_path=diagnostics_path),
+            experiment_loop_patch_correction_contract(diagnostics_path=diagnostics_path)
+            + _stale_master_graph_rules(
+                execution, request.session_id, ontology_extensions=context.ontology_extensions
+            ),
             master,
             delta=_changed_handoff_values(master, repair_values),
             report_ended=report_rebootstrap_pending(execution, request.session_id),

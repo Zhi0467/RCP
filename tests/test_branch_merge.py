@@ -916,9 +916,12 @@ def test_a_merge_continuation_resends_rules_only_when_main_ontology_changed() ->
         return SimpleNamespace(main_graph=SimpleNamespace(ontology=ontology))
 
     master = ("master.md", "start contract", False)
-    assert _changed_graph_rules(context(False), master) == []
-    assert _changed_graph_rules(context(True), master) == [
-        graph_rules(edits=True, ontology_extensions=True)
+    assert _changed_graph_rules(context(False), master) == ([], master)
+    rules, sent = _changed_graph_rules(context(True), master)
+    assert rules == [graph_rules(edits=True, ontology_extensions=True)]
+    # A later rebase back to the master's mode replaces the inline rules again.
+    assert _changed_graph_rules(context(False), sent)[0] == [
+        graph_rules(edits=True, ontology_extensions=False)
     ]
 
 

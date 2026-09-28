@@ -197,9 +197,11 @@ def context_delta(
                 if prior_compute[item] != current_compute[item]
             ],
         }
-    removed = sorted(key for key in previous if key not in current)
-    if removed:
-        changed["removed"] = removed
+    # A value the master states that is gone now is listed as not set, so the overlay
+    # replaces it like any other changed value.
+    for key in previous:
+        if key not in current:
+            changed[key] = None
     return changed or None
 
 
@@ -244,6 +246,8 @@ def _delta_lines(delta: Mapping[str, object], prefix: str = "") -> list[str]:
             lines.extend(_delta_lines(value, f"{name}."))
         elif isinstance(value, str):
             lines.append(f"- {name}: `{value}`")
+        elif value is None:
+            lines.append(f"- {name}: not set")
         else:
             lines.append(f"- {name}: {json.dumps(value, ensure_ascii=False, sort_keys=True)}")
     return lines

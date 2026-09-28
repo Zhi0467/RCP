@@ -1025,6 +1025,10 @@ async def stream_auto_research_child_work_run(
                 request,
                 data_dir,
                 execution=execution,
+                master_for=lambda turn, staged: (
+                    _child_master_render(turn, staged, route),
+                    _child_prompt_values(turn, staged, route),
+                ),
             )
         ) as stream:
             async for frame in stream:

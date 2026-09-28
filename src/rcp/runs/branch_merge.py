@@ -1878,7 +1878,8 @@ async def stream_branch_merge_run(
         return
 
     token = _task_token(execution)
-    # The start contract this session holds, as (staged label, exact bytes).
+    # The start contract this session holds, as (staged label, exact bytes, whether the
+    # graph rules it last received include ontology extensions).
     session_master: tuple[str, str, bool] | None = None
     # The values that start contract was rendered with, and the ones the latest launch
     # sent, so a continuation sends only what differs from the master.
@@ -2111,6 +2112,7 @@ async def stream_branch_merge_run(
                 residue=residue,
             )
             master = _restaged_merge_master(stage, session_master, master_values)
+            rules, session_master = _changed_graph_rules(context, session_master)
             prompt = compose(
                 classify(LaunchPhase(session_id=session_id, phase="correction")),
                 parts=branch_merge_rebase_parts(
@@ -2118,7 +2120,7 @@ async def stream_branch_merge_run(
                     context_id=context.context_id,
                     new_reason_legend=_residue_legend(set(residue.values()) - master_reasons),
                 )
-                + _changed_graph_rules(context, session_master),
+                + rules,
                 master=master,
                 delta=changed_since_master(master, merge_values),
             )
@@ -2325,10 +2327,10 @@ async def stream_branch_merge_run(
             ),
         }
         master = _restaged_merge_master(stage, session_master, master_values)
+        rules, session_master = _changed_graph_rules(context, session_master)
         prompt = compose(
             classify(LaunchPhase(session_id=session_id, phase="correction")),
-            parts=branch_merge_correction_parts(diagnostics_path=diagnostics_path)
-            + _changed_graph_rules(context, session_master),
+            parts=branch_merge_correction_parts(diagnostics_path=diagnostics_path) + rules,
             master=master,
             delta=changed_since_master(master, merge_values),
         )
@@ -2981,13 +2983,21 @@ def _merge_master_values(
 
 def _changed_graph_rules(
     context: BranchMergeContext, session_master: tuple[str, str, bool] | None
-) -> list[str]:
-    """The current graph rules, only once main's ontology extensions differ from the master's."""
+) -> tuple[list[str], tuple[str, str, bool] | None]:
+    """The current graph rules, only when main's ontology extensions differ from the last sent.
+
+    The session record comes back updated to the mode now sent, so a later rebase that
+    returns main to the master's mode sends the rules again.
+    """
 
     current = _has_ontology_extensions(context.main_graph)
     if session_master is None or session_master[2] == current:
-        return []
-    return [graph_rules(edits=True, ontology_extensions=current)]
+        return [], session_master
+    return [graph_rules(edits=True, ontology_extensions=current)], (
+        session_master[0],
+        session_master[1],
+        current,
+    )
 
 
 def _provider_turn(

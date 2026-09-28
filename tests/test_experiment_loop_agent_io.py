@@ -30,6 +30,7 @@ from rcp.runs.tasks.experiment_loop import (
     _required_work_continuation_session_id,
     _resolve_work_execution,
     _stage_work_turn,
+    _stale_master_graph_rules,
     stream_experiment_loop_task,
 )
 from rcp.runs.tasks.experiment_watcher_maintenance import (
@@ -1721,6 +1722,12 @@ async def test_completed_loop_correction_revalidates_retained_patch_against_live
         )
         graph_update = _graph_update_from_events(events)
         assert repair_launcher.sessions == [native_session_id]
+        # The repair keeps the master; only a master under another key needs rules inline.
+        rules = _stale_master_graph_rules
+        assert rules(repair_execution, native_session_id, ontology_extensions=False) == []
+        assert rules(repair_execution, native_session_id, ontology_extensions=True) == [
+            graph_rules(edits=True, ontology_extensions=True)
+        ]
 
     assert not [event for event in events if event.event == "error"]
     assert (launcher.workspaces[0] / "patch.json").read_text(encoding="utf-8") == json.dumps(
