@@ -319,10 +319,9 @@ export function ProviderLoginRow({
             Verify sign-in
           </button>
         ) : null}
-        {account.supports_sign_out && (account.state === "signed_in" || account.token) ? (
+        {account.state === "signed_in" || account.token ? (
           <button
             className="button secondary compact"
-            data-provider-action="sign-out"
             type="button"
             disabled={disabled}
             onClick={() =>

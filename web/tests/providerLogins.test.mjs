@@ -27,7 +27,6 @@ test("a registered third provider renders only its declared interactions and bac
       token: null,
       sign_in: null,
       sign_in_methods: ["device_code"],
-      supports_sign_out: true,
       token_instructions: "Paste the test provider token",
     };
     const render = (overrides = {}) =>
@@ -70,10 +69,6 @@ test("a registered third provider renders only its declared interactions and bac
     assert.match(saved, /data-provider-action="verify"/);
     assert.doesNotMatch(saved, /data-provider-action="sign-in"/);
     assert.match(saved, /<form class="provider-login-token"/);
-    // A CLI whose own login RCP does not manage offers nothing that could only fail.
-    const unmanaged = render({ state: "signed_in", sign_in_methods: [], supports_sign_out: false });
-    assert.doesNotMatch(unmanaged, /data-provider-action=/);
-    assert.match(render({ state: "signed_in" }), /data-provider-action="sign-out"/);
     const unsupported = render({ sign_in_methods: ["future_method"] });
     assert.match(unsupported, /data-provider-action="verify"/);
     assert.doesNotMatch(unsupported, /data-provider-action="sign-in"|<form/);

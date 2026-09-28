@@ -91,7 +91,6 @@ class ProviderLoginAccount(BaseModel):
     changed_by: str | None
     label: str
     sign_in_methods: tuple[str, ...]
-    supports_sign_out: bool
     token_instructions: str | None = None
     token: ProviderCredentialSummary | None = None
     sign_in: ProviderSignInStatus | None = None
@@ -144,7 +143,6 @@ def provider_login_accounts(
                 **state.model_dump(),
                 label=profile.label,
                 sign_in_methods=profile.authentication.methods,
-                supports_sign_out=profile.authentication.supports_sign_out,
                 token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
                 provider_path=_visible_path(paths.get((provider, host), []), visible),

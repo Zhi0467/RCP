@@ -3029,7 +3029,6 @@ export interface ProviderSignInStatus {
 export interface ProviderLoginAccount extends ProviderLoginState {
   label: string;
   sign_in_methods: string[];
-  supports_sign_out: boolean;
   token_instructions: string | null;
   machines: string[];
   token: ProviderCredentialSummary | null;
