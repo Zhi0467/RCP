@@ -1251,6 +1251,18 @@ def _chat_read_dirs(
     return read_dirs
 
 
+def _machine_writable_paths(
+    service: ProjectService, execution_machine: str, store: AppStore | None
+) -> list[str]:
+    """The space-level writable paths granted on this execution machine."""
+
+    if store is None:
+        return []
+    machine = service.manifest.machine_map[execution_machine]
+    card = store.space_machine_for(machine.host, machine.os_account)
+    return list(card.writable_paths) if card is not None else []
+
+
 def _project_write_scope(
     context: ChatContext,
     service: ProjectService,
@@ -1321,6 +1333,9 @@ def _project_write_scope(
         repository_inventory=service.repository_ownership_inventory(project_id=project_id),
         conversation_worktree=binding,
         include_shared_checkout=include_shared,
+        machine_writable_paths=_machine_writable_paths(
+            service, execution_machine, execution.store if execution is not None else None
+        ),
         additional_protected_write_paths=[
             *(
                 [str(local_stage / "inputs")]

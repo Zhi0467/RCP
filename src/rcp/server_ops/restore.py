@@ -107,6 +107,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # Chat display (archive and title), fresh and upgraded in place.
         "ab05d5a356e78f8fac814b2b5d0d73d84fad1880373265878c44ee592f363d0f",
         "dfa7f6dbaeb5fe3cbe9073f8a62861f4c76fe6da58be5b48daa0ec7eb85478a8",
+        # Space machine cards, fresh and upgraded in place.
+        "c8a6d7a4ba2af735fc9c92296bdf734aff89c45fc2afb840db3f31c2dde53801",
+        "87932bcd6c8b6d1c372debbdfa35e899fb67fc93f6280493c653ea0c99428058",
     }
 )
 

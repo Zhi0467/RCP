@@ -264,7 +264,11 @@ class AgentTaskExecution:
             )
         legacy_inputs = str(PurePosixPath(scope.stage_root) / "inputs")
         compatible_previous_fingerprint = None
-        if (
+        if scope.granted_roots:
+            # A task bound before machine grants existed resolved this same
+            # scope without them.
+            compatible_previous_fingerprint = scope.without_grants().fingerprint
+        elif (
             scope.workspace_root == scope.stage_root
             and legacy_inputs in scope.protected_write_paths
         ):
