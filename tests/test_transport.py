@@ -2086,8 +2086,11 @@ def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) ->
     assert rsync_calls[0][0:2] == ["rsync", "-a"]
     assert len(ssh_calls) == 1
     assert ssh_calls[0][0:2] == ["python3", "-c"]
-    assert json.loads(ssh_calls[0][5]) == ["conversations", "schema.json"]
-    assert ssh_calls[0][6] == "1"
+    _root, _batch, labels, transferred, _reusable = ssh_calls[0][
+        ssh_calls[0].index("commit-inputs") + 1 :
+    ]
+    assert json.loads(labels) == ["conversations", "schema.json"]
+    assert transferred == "1"
     assert stage._pending_inputs is None
     assert pending is not None
     assert not pending.exists()

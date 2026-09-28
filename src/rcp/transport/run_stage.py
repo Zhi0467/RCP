@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import os
 import re
@@ -26,7 +25,6 @@ from rcp.limits import (
 )
 from rcp.rcp_home import rcp_temp_dir
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
-from rcp.transport import remote_stage_root
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
     StateMissing,
@@ -62,14 +60,6 @@ def _ssh_failure(
     if result.returncode == 255:
         return StateUnreachable(detail)
     return answered(detail)
-
-
-# Older inline scripts share the one tree removal the stage module ships.
-_REMOTE_TREE_HELPERS = (
-    "import os,shutil\n"
-    + inspect.getsource(remote_stage_root.make_writable)
-    + inspect.getsource(remote_stage_root.remove_tree)
-)
 
 
 @dataclass(frozen=True)
@@ -329,12 +319,9 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         root = str(self.root)
         if not _safe_root(root):
             return False
-        script = (
-            _REMOTE_TREE_HELPERS
-            + "\nimport sys\nremove_tree(sys.argv[1])\n"
-            + "if os.path.lexists(sys.argv[1]):\n    raise SystemExit(1)\n"
+        result = self._ssh(
+            ["python3", "-c", _remote_script("remote_stage_root.py"), "remove", root]
         )
-        result = self._ssh(["python3", "-c", script, root])
         if result.returncode:
             return False
         self.root = None
@@ -523,80 +510,6 @@ if actual!=expected:
 
         batch = self.root / f".input-batch-{uuid.uuid4().hex}"
         reusable_labels = sorted(self._reusable_inputs.intersection(labels))
-        script = (
-            _REMOTE_TREE_HELPERS
-            + """
-import hashlib,json,stat,sys
-root,batch=map(os.path.abspath,sys.argv[1:3])
-labels=json.loads(sys.argv[3]); transferred=sys.argv[4]=='1'
-reusable=set(json.loads(sys.argv[5]))
-inputs=os.path.join(root,'inputs')
-def fingerprint(path,immutable=False):
-    info=os.lstat(path)
-    if stat.S_ISLNK(info.st_mode): raise ValueError('staged input contains a symlink')
-    if immutable and info.st_mode & 0o222:
-        raise ValueError('reusable staged input is writable')
-    if stat.S_ISDIR(info.st_mode):
-        children=[]
-        with os.scandir(path) as entries:
-            for entry in sorted(entries,key=lambda item:item.name):
-                children.append((entry.name,fingerprint(entry.path,immutable)))
-        return ('directory',children)
-    elif stat.S_ISREG(info.st_mode):
-        digest=hashlib.sha256()
-        with open(path,'rb') as source:
-            while True:
-                chunk=source.read(1024*1024)
-                if not chunk: break
-                digest.update(chunk)
-        return ('file',digest.hexdigest())
-    else:
-        raise ValueError('staged input is not a regular file or directory')
-def protect(path):
-    info=os.lstat(path)
-    if stat.S_ISDIR(info.st_mode):
-        with os.scandir(path) as entries:
-            for entry in entries: protect(entry.path)
-        os.chmod(path,0o500)
-    elif stat.S_ISREG(info.st_mode):
-        os.chmod(path,0o400)
-if not transferred:
-    remove_tree(batch); raise SystemExit(44)
-if not reusable.issubset(labels):
-    remove_tree(batch); raise ValueError('reusable input labels are invalid')
-entries=[]
-moved=[]
-try:
-    if os.path.dirname(batch)!=root or not os.path.basename(batch).startswith('.input-batch-'):
-        raise ValueError('remote input batch is outside its stage')
-    if os.path.islink(root) or not os.path.isdir(root): raise ValueError('run stage is unavailable')
-    if os.path.islink(inputs) or not os.path.isdir(inputs):
-        raise ValueError('input root is unavailable')
-    if sorted(os.listdir(batch))!=labels: raise ValueError('remote input batch is incomplete')
-    for label in labels:
-        if label!=os.path.basename(label) or label in ('','.','..'):
-            raise ValueError('remote input label is unsafe')
-        source=os.path.join(batch,label); target=os.path.join(inputs,label)
-        source_fingerprint=fingerprint(source)
-        if os.path.lexists(target):
-            if label not in reusable: raise FileExistsError(target)
-            if fingerprint(target,True)!=source_fingerprint:
-                raise ValueError('reusable staged input does not match its content label')
-        else:
-            entries.append((source,target))
-    for source,target in entries:
-        os.replace(source,target); moved.append((source,target))
-    for _source,target in moved:
-        protect(target)
-    remove_tree(batch)
-except BaseException:
-    for source,target in reversed(moved):
-        if os.path.lexists(target) and not os.path.lexists(source):
-            make_writable(target); os.replace(target,source)
-    remove_tree(batch)
-    raise
-"""
-        )
         try:
             spawned = True
             try:
@@ -622,7 +535,8 @@ except BaseException:
                 [
                     "python3",
                     "-c",
-                    script,
+                    _remote_script("remote_stage_root.py"),
+                    "commit-inputs",
                     str(self.root),
                     str(batch),
                     json.dumps(labels, separators=(",", ":")),
@@ -973,30 +887,16 @@ finally:
         if _safe_label(scope_id) != scope_id:
             raise ValueError("artifact scope contains unsupported characters")
         target = self.workspace / "turns" / scope_id / "artifacts"
-        script = (
-            _REMOTE_TREE_HELPERS
-            + """
-import stat,sys
-workspace,scope,reuse=sys.argv[1],sys.argv[2],sys.argv[3]=='1'
-if os.path.islink(workspace) or not os.path.isdir(workspace):
-    raise SystemExit('workspace is unavailable')
-turns=os.path.join(workspace,'turns')
-if os.path.lexists(turns) and (os.path.islink(turns) or not os.path.isdir(turns)):
-    raise SystemExit('artifact parent is unsafe')
-os.makedirs(turns,mode=0o700,exist_ok=True)
-scope_path=os.path.join(turns,scope)
-target=os.path.join(scope_path,'artifacts')
-if reuse:
-    if (os.path.islink(scope_path) or not os.path.isdir(scope_path) or
-        os.path.islink(target) or not os.path.isdir(target)):
-        raise SystemExit('saved artifact directory is unavailable')
-else:
-    remove_tree(scope_path)
-    os.makedirs(target,mode=0o700,exist_ok=False)
-"""
-        )
         result = self._ssh(
-            ["python3", "-c", script, str(self.workspace), scope_id, "1" if reuse else "0"]
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "prepare-artifacts",
+                str(self.workspace),
+                scope_id,
+                "1" if reuse else "0",
+            ]
         )
         if result.returncode:
             raise _ssh_failure(result, "could not prepare remote artifact directory")

@@ -28,6 +28,7 @@ def private_directory(directory: Path, label: str) -> Path:
         directory.mkdir(mode=0o700)
     try:
         info = directory.lstat()
+        _close_owned_parent(directory.parent)
         parent_safe = _safe_parent(directory.parent)
     except OSError as exc:
         raise RuntimeError(f"RCP {label} is unavailable: {directory}") from exc
@@ -41,20 +42,26 @@ def private_directory(directory: Path, label: str) -> Path:
     return directory
 
 
+def _close_owned_parent(parent: Path) -> None:
+    """Drop group and other write from a real folder we own, such as `~/.rcp`
+    made under a 0002 umask."""
+
+    link = parent.lstat()
+    if stat.S_ISDIR(link.st_mode) and link.st_uid == os.geteuid() and link.st_mode & 0o022:
+        os.chmod(parent, stat.S_IMODE(link.st_mode) & ~0o022)
+
+
 def _safe_parent(parent: Path) -> bool:
     """Whether no other user can rename or replace a folder inside `parent`.
 
-    A parent we own must be a real folder no one else can write; one made
-    group-writable, such as `~/.rcp` under a 0002 umask, is closed here. A
-    root-owned sticky parent such as `/tmp` (on macOS reached through root's
-    own symlink) lets others write but not rename what we own.
+    A parent we own must be a real folder no one else can write. A root-owned
+    sticky parent such as `/tmp` (on macOS reached through root's own symlink)
+    lets others write but not rename what we own.
     """
 
     link = parent.lstat()
     if stat.S_ISDIR(link.st_mode) and link.st_uid == os.geteuid():
-        if link.st_mode & 0o022:
-            os.chmod(parent, stat.S_IMODE(link.st_mode) & ~0o022)
-        return True
+        return not link.st_mode & 0o022
     if link.st_uid != 0:
         return False
     target = parent.stat()
