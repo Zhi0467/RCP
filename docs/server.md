@@ -97,7 +97,7 @@ Finally check every system prerequisite:
 git --version
 ssh -V
 age --version
-command -v age age-keygen curl getent git runuser ssh ssh-keygen sudo systemctl useradd uv
+command -v age age-keygen curl git loginctl runuser ssh ssh-keygen sudo systemctl useradd uv
 ```
 
 Success is a path for every command and age major 1. The server installs prebuilt Python and Web assets; Node.js and npm are not server installation prerequisites.
@@ -129,37 +129,23 @@ versions still match promoted stable, verifies the full five-asset bundle, and
 creates the dedicated `rcp` account. No source checkout, source deploy key, or
 operator GitHub credential is installed.
 
-## 7. Independent supervisor and recovery ownership
+## 7. What the installer sets up
 
-The supervisor owns `/etc/rcp/supervisor`, including its own root-owned Python,
-versioned environments, selected-release receipt, and recovery journal.
-`/usr/local/bin/rcp-supervisor` is the root-owned entry point. Application releases
-live at `/home/rcp/rcp-server/releases/<build>/.venv` and are installed as `rcp`.
-The application data, project, credential, and `/etc/rcp/current` paths remain
-fixed. The `rcp` account receives no general sudo authority.
+- The supervisor, in `/etc/rcp/supervisor` with its own root-owned Python.
+  `/usr/local/bin/rcp-supervisor` is its entry point.
+- Application releases, at `/home/rcp/rcp-server/releases/<build>/.venv`,
+  installed as `rcp`.
+- `rcp.service`, which runs as `rcp`. The `rcp` account gets no general sudo.
+  Before each start, a root recovery step finishes any interrupted update,
+  with no network access needed.
+- On a server that ran from a source checkout, a one-time adoption. It backs up
+  the old data first, and restores it if adoption fails.
 
-The retained privileged `server backup configure` and `server provider update`
-commands run from a separate root-owned operator environment pinned to the
-selected application build. That environment is installed from the same verified
-application wheel and locked dependencies; it does not add application imports
-to the supervisor runtime.
+`--machine-readable` gives a noninteractive JSON event stream. Exit status 3
+means an operator action is needed; that mode never prompts.
 
-`rcp.service` still runs as `rcp`. Its root `ExecStartPre` recovery guard finishes
-an interrupted transaction before the application starts. It needs no release
-network request during reboot recovery. The root-owned `selected.json` binds
-the promoted tag, build, full Git commit, manifest digest, and release path.
-The launcher exports that identity for application and backup metadata.
-
-An initialized source installation uses an explicit one-time adoption journal.
-It retains the original launch files, installs the reboot guard, stops the old
-service, and preserves opaque original bytes before current application code
-interprets copied data. Candidate admission requires a complete protected backup
-and current application verification. A failure restores original data and
-launch authority before old source code can run again; a durable committed
-selection resumes only the chosen release.
-
-`--machine-readable` emits the sealed noninteractive event stream. Exit status
-3 marks an operator action; it never reads terminal input or runs that action.
+The full ownership and recovery contract is in
+[server and machine operations](specs/server-and-machine-operations.md).
 
 ## 8. Save the code when the running wizard asks
 
@@ -255,8 +241,7 @@ Provider logins are signed in, verified, and signed out from the product, in
 **Settings, Provider logins**, by any signed-in member; the server records who
 did it and shows the result to everyone. The operator installs the provider
 executables under the service account; nothing else about a login needs a
-shell. This reverses the earlier rule that RCP never logs in to a provider; the
-reasoning is in the
+shell. The reasoning is in the
 [provider logins decision](decisions/2026-09-14-provider-logins-are-kept-alive.md).
 
 Stay in the ordinary operator SSH session for the installs. You do not need to
@@ -380,7 +365,7 @@ the credential itself.
 
 ## 12. Add the team space in the desktop app
 
-In the source-built desktop app, choose **Add team space**, select SSH, enter the
+In the desktop app, choose **Add team space**, select SSH, enter the
 saved server route, and enroll with the one-time bootstrap code from Step 8. The
 unified project wizard can then create a team project from GitHub or move an
 existing personal RCP project into the team space.
@@ -431,7 +416,7 @@ As an existing member:
 4. Keep or close the panel. The raw code is shown only when created, while its
    nonsecret status remains under **Created by you**.
 
-As the person joining, from their own source-built RCP desktop app:
+As the person joining, from their own RCP desktop app:
 
 1. On the personal project index, select **Add team space** and
    **Bootstrap or invitation code**.
@@ -566,51 +551,20 @@ refusal), closes application admission, and verifies
 copied state before changing live data. A fenced candidate probe must pass before
 the durable selected-release decision allows ordinary systemd startup.
 
-Before that decision, interruption restores the stopped roots by rename. The
-supervisor copies whole roots with root privilege onto their own filesystems,
-retaining scratch, modes, ownership, links and special-file nodes. Copy and sync
-must finish before the snapshot becomes ready; space estimates are advisory.
-Rollback consumes that snapshot, preserves failed candidate trees in quarantine,
-and restores absence for destinations that did not previously exist. Interrupted
-renames resume from the journal; completed rollback never overwrites later work.
-After the release decision, recovery completes the selected release. Reboot follows the same
-root-owned journal without fetching a release or consulting `main`.
-
-After an update commits, retention removes every finished operation workspace
-under `update-checkpoints/`, including snapshots, catalogs, rehearsal copies and
-failed-attempt quarantines. It also removes abandoned UUID workspaces and failed
-build installations. The two newest completed application release trees and the
-live release remain; their sealed receipts remain only while their trees do.
-Selecting a pruned release downloads and verifies its promoted bundle again.
-
-The supervisor keeps the newest 20 operation journals. It keeps at most 20
-subprocess diagnostic logs after failure, each capped at 8 MiB, and clears those
-logs after successful cleanup. Downloads, fetch staging/locks, interrupted
-metadata writes, the root uv cache, and maintenance backup captures are reclaimed
-at the next successful operation. Root supervisor/operator environments keep the
-two newest completed versions plus the selected and executing environments;
-root Python installations remain only while one of those environments uses them.
-New application installations keep temporary files inside their release tree
-and disable persistent uv caching. They reuse the service account's managed
-Python 3.12; that shared runtime remains available to retained agent environments.
-Cleanup does not delete shared provider caches.
-
-Preparation and pruning are serialized, so cleanup cannot race another update's
-installer. Startup recovery keeps its separate operation lock. Pruning refuses
-when the release pointer and selected receipt disagree or an operation is
-unfinished. The one-time adoption workspace and unrecognized entries are left
-alone; the final event reports any cleanup refusal. No research history or
-ordinary agent scratch is pruned. Nightly and service logs go to journald and
-follow the host's journal retention policy. To apply cleanup to an existing
-backlog:
+If an update is interrupted before the new release is chosen, it rolls back.
+After that point, recovery finishes the chosen release. Reboot recovery needs no
+network. After a successful update, RCP removes finished update workspaces and
+keeps the two newest releases plus the live one. No research history or agent
+scratch is removed. To clean up an existing backlog:
 
 ```bash
 sudo /usr/local/bin/rcp server prune
 ```
 
-The public wrapper learns that route at `server install`; on a server installed
-before it existed, run `sudo /usr/local/bin/rcp-supervisor server prune` until
-the next converge.
+On a server installed before `server prune` existed, run
+`sudo /usr/local/bin/rcp-supervisor server prune` instead, until the next
+`server install`. Retention limits are in the
+[operations spec](specs/server-and-machine-operations.md).
 
 The installed `[release]` table defaults to `followed = "stable"`. An operator
 may set `pin = "vX.Y.Z"` in `/etc/rcp/server.toml` to hold an exact promoted release;
@@ -749,33 +703,3 @@ memberships, credentials, invitations, and active-work boundary, then run the
 exact confirmation command printed by the wizard. Re-enter the same initial
 command after an interruption; RCP resumes the durable removal fence instead of
 restoring access.
-
-## Maintainer live qualification
-
-One manually dispatched workflow, `supervisor-recovery-live.yml`, qualifies
-installation and recovery. It runs only on GitHub-hosted disposable Ubuntu 22.04
-and 24.04 x86-64 runners, refuses to start anywhere it cannot prove real guest
-virtualization, builds explicitly synthetic local release bundles from the
-checkout, and drives them in a disposable VM. It cuts VM power at durable
-transaction boundaries, boots the same disk without release network access,
-checks that the boot identity changed, and verifies the exact chosen release and
-application records. Process-interruption tests alone do not establish reboot or
-power-loss recovery. Never point these fixtures at real lab data or a production
-host.
-
-Installation from promoted GitHub release assets remains a separate production
-drive in the deployment handoff. The fixture restore reuses an existing local
-Git checkout, so it does not prove fresh-host checkout and deploy-key
-reconstruction through GitHub. Full machine-loss reconstruction qualification is
-outside this deployment drive; operators may repair those connections manually.
-
-## Current implementation boundary
-
-The independent supervisor, artifact bootstrap, guarded source adoption,
-application maintenance protocol, protected recovery, operator delegation, and
-reboot qualification harness are implemented together. Local tests establish
-bounded parsing and transaction behavior. Acceptance records and the deployment
-handoff distinguish completed live drives from checks still requiring a promoted
-release or a disposable host. Production adoption and recovery must be driven
-against the merged promoted release, with any resulting defects fixed in separate
-reviewed changes.

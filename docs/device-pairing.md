@@ -127,7 +127,7 @@ removing the share in Tailscale, which cuts the network path.
 ## A second computer
 
 A second computer's browser follows Part 3 exactly, over the same shared
-machine. The source-built desktop app on a second computer still enrolls with a
+machine. The desktop app on a second computer still enrolls with a
 member token through **Add team space**; pairing it with a code is not offered
 yet.
 

@@ -9,6 +9,16 @@ WEB_DIST = PROJECT_ROOT / "web" / "dist"
 ARTIFACT_SELECTION = SOURCE_ROOT / "rcp" / "artifact_selection.js"
 ARTIFACT_COMMENT_PANEL = SOURCE_ROOT / "rcp" / "artifact_comment_panel.js"
 RECORD_PARSER = SOURCE_ROOT / "rcp" / "sources" / "record_parsing.py"
+PROVIDERS_ROOT = SOURCE_ROOT / "rcp" / "providers"
+# Shipped to execution hosts as source text by `rcp.providers.remote_bundle`.
+PROVIDER_REMOTE_SOURCES = [
+    (str(PROVIDERS_ROOT / "session_format.py"), "rcp/providers"),
+    (str(PROVIDERS_ROOT / "turn_fence.py"), "rcp/providers"),
+    *(
+        (str(path), f"rcp/providers/{path.parent.name}")
+        for path in sorted(PROVIDERS_ROOT.glob("*/remote.py"))
+    ),
+]
 STAGED_COMMAND_CLIENT = SOURCE_ROOT / "rcp" / "agents" / "staged_command_client.py"
 STAGED_COMMAND_BROKER = SOURCE_ROOT / "rcp" / "agents" / "staged_command_broker.py"
 TRANSPORT_ROOT = SOURCE_ROOT / "rcp" / "transport"
@@ -18,6 +28,7 @@ REMOTE_READ_KEPT_VIEW = TRANSPORT_ROOT / "remote_read_kept_view.py"
 REMOTE_TRANSFER_GIT = TRANSPORT_ROOT / "remote_transfer_git.py"
 CONVERSATION_WORKTREE = TRANSPORT_ROOT / "conversation_worktree.py"
 REMOTE_TERMINATE_PROVIDER = TRANSPORT_ROOT / "remote_terminate_provider.py"
+REMOTE_TURN_SUPERVISOR = TRANSPORT_ROOT / "remote_turn_supervisor.py"
 REMOTE_TERMINAL = TRANSPORT_ROOT / "remote_terminal.py"
 REMOTE_TERMINAL_PROBE = TRANSPORT_ROOT / "remote_terminal_probe.py"
 TERMINAL_PROFILE = SOURCE_ROOT / "rcp" / "terminals" / "profile.py"
@@ -42,6 +53,7 @@ analysis = Analysis(
         (str(ARTIFACT_SELECTION), "rcp"),
         (str(ARTIFACT_COMMENT_PANEL), "rcp"),
         (str(RECORD_PARSER), "rcp/sources"),
+        *PROVIDER_REMOTE_SOURCES,
         (str(STAGED_COMMAND_CLIENT), "rcp/agents"),
         (str(STAGED_COMMAND_BROKER), "rcp/agents"),
         (str(REMOTE_LOCK_HOLDER), "rcp/transport"),
@@ -50,6 +62,7 @@ analysis = Analysis(
         (str(REMOTE_TRANSFER_GIT), "rcp/transport"),
         (str(CONVERSATION_WORKTREE), "rcp/transport"),
         (str(REMOTE_TERMINATE_PROVIDER), "rcp/transport"),
+        (str(REMOTE_TURN_SUPERVISOR), "rcp/transport"),
         (str(REMOTE_TERMINAL), "rcp/transport"),
         (str(REMOTE_TERMINAL_PROBE), "rcp/transport"),
         (str(TERMINAL_PROFILE), "rcp/terminals"),

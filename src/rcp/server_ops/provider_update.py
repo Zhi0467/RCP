@@ -13,9 +13,9 @@ import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Literal
+from typing import BinaryIO
 
-from rcp.providers import profile_for
+from rcp.providers import ProviderId, profile_for
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
 from rcp.server_ops.install import _run_as_account
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
@@ -28,7 +28,6 @@ from rcp.server_ops.models import (
     redact_server_text,
 )
 
-ProviderUpdateId = Literal["codex", "claude"]
 ProviderProcessRunner = Callable[
     [pwd.struct_passwd, tuple[str, ...], float], subprocess.CompletedProcess[str]
 ]
@@ -36,7 +35,6 @@ ProviderProcessRunner = Callable[
 _UPDATE_TIMEOUT_SECONDS = 15 * 60
 _PROBE_TIMEOUT_SECONDS = 30
 _SAFE_VERSION = re.compile(r"[ -~]{1,120}")
-_CODEX_INSTALLER_URL = "https://chatgpt.com/codex/install.sh"
 
 
 class ProviderUpdateRefused(RuntimeError):
@@ -72,10 +70,10 @@ def prepare_provider_update_command(
                 if before_path is not None
                 else None
             )
-            if provider == "claude" and before_path is None:
+            if profile_for(provider).native_update.requires_installed and before_path is None:
                 raise ProviderUpdateRefused(
-                    "Claude Code is not installed for rcp. Use the documented provider install "
-                    "command, then rerun this update."
+                    f"{profile_for(provider).label} is not installed for rcp. Use the documented "
+                    "provider install command, then rerun this update."
                 )
         except (KeyError, OSError, ProviderUpdateRefused) as exc:
             emitter.emit_step(_failed(pending[0], str(exc)))
@@ -145,7 +143,7 @@ def prepare_provider_update_command(
     )
 
 
-def _pending_steps(provider: ProviderUpdateId, target: MachineTarget) -> tuple[ServerStep, ...]:
+def _pending_steps(provider: ProviderId, target: MachineTarget) -> tuple[ServerStep, ...]:
     label = profile_for(provider).label
     common = {"performed_by": "system", "target": target, "state": "pending"}
     return (
@@ -190,7 +188,7 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
         raise ProviderUpdateRefused("The installed rcp service account is missing.") from exc
 
 
-def _discover_provider(account: pwd.struct_passwd, provider: ProviderUpdateId) -> Path | None:
+def _discover_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path | None:
     search = (
         Path(account.pw_dir) / ".local" / "bin",
         Path("/usr/local/bin"),
@@ -223,42 +221,50 @@ def _provider_version(
 
 def _update_provider(
     account: pwd.struct_passwd,
-    provider: ProviderUpdateId,
+    provider: ProviderId,
     before_path: Path | None,
     runner: ProviderProcessRunner,
 ) -> None:
-    if provider == "claude":
+    profile = profile_for(provider)
+    update = profile.native_update
+    if update.self_update_args is not None:
         assert before_path is not None
-        result = runner(account, (str(before_path), "update"), _UPDATE_TIMEOUT_SECONDS)
+        result = runner(
+            account, (str(before_path), *update.self_update_args), _UPDATE_TIMEOUT_SECONDS
+        )
         if result.returncode != 0:
             raise ProviderUpdateRefused(
-                f"Claude's native update failed: {_bounded_diagnostic(result)}"
+                f"{profile.label}'s native update failed: {_bounded_diagnostic(result)}"
             )
         return
+    assert update.installer_url is not None
     # Agents may write /tmp, so the installer is staged in the account's own
     # `~/.rcp/tmp`, which their write scopes keep read-only.
-    temporary = Path(tempfile.mkdtemp(prefix="rcp-provider-codex-", dir=_account_temp_dir(account)))
+    temporary = Path(
+        tempfile.mkdtemp(prefix=f"rcp-provider-{provider}-", dir=_account_temp_dir(account))
+    )
     try:
         os.chown(temporary, account.pw_uid, account.pw_gid)
         os.chmod(temporary, 0o700)
         installer = temporary / "install.sh"
         downloaded = runner(
             account,
-            ("/usr/bin/curl", "-fsSL", _CODEX_INSTALLER_URL, "-o", str(installer)),
+            ("/usr/bin/curl", "-fsSL", update.installer_url, "-o", str(installer)),
             _UPDATE_TIMEOUT_SECONDS,
         )
         if downloaded.returncode != 0:
             raise ProviderUpdateRefused(
-                f"Codex's official installer download failed: {_bounded_diagnostic(downloaded)}"
+                f"{profile.label}'s official installer download failed: "
+                f"{_bounded_diagnostic(downloaded)}"
             )
         installed = runner(
             account,
-            ("/usr/bin/env", "CODEX_NON_INTERACTIVE=1", "/bin/sh", str(installer)),
+            ("/usr/bin/env", *update.installer_env, "/bin/sh", str(installer)),
             _UPDATE_TIMEOUT_SECONDS,
         )
         if installed.returncode != 0:
             raise ProviderUpdateRefused(
-                f"Codex's official installer failed: {_bounded_diagnostic(installed)}"
+                f"{profile.label}'s official installer failed: {_bounded_diagnostic(installed)}"
             )
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -292,7 +298,7 @@ def _bounded_diagnostic(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _success_message(
-    provider: ProviderUpdateId,
+    provider: ProviderId,
     before_path: Path | None,
     after_path: Path,
 ) -> str:

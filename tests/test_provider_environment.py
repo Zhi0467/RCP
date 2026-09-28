@@ -11,15 +11,13 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.provider_auth import (
-    CLAUDE_CONFLICTING_VARIABLES,
-    CLAUDE_TOKEN_VARIABLE,
-    remote_claude_token_placement_command,
-    remote_claude_token_prefix,
-    validate_claude_token,
-)
 from rcp.provider_skills import ProviderSkillInventoryManager
+from rcp.providers.claude.auth import ClaudeAuthentication
 from rcp.storage import AppStore
+
+CLAUDE = ClaudeAuthentication()
+CLAUDE_TOKEN_VARIABLE = CLAUDE.token_variable
+CLAUDE_CONFLICTING_VARIABLES = CLAUDE.conflicting_variables
 
 TOKEN = "sk-ant-oat01-test-token-value"
 
@@ -91,9 +89,9 @@ def test_token_is_stored_privately_and_the_record_is_secret_free(
     assert record is not None and record.pasted_by == "member" and record.verified_at is None
     assert TOKEN not in (path.parent / "setup-token.json").read_text()
     with pytest.raises(ValueError):
-        validate_claude_token("two words")
+        CLAUDE.validate_token("two words")
     with pytest.raises(ValueError):
-        validate_claude_token("x" * 5000)
+        CLAUDE.validate_token("x" * 5000)
 
 
 def test_local_environment_carries_the_token_and_drops_conflicting_variables(
@@ -128,14 +126,14 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
         AgentLauncher(credentials=credentials).process_environment("claude", host).remote_prefix
     )
     assert (
-        prefix == remote_claude_token_prefix() + "; export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
+        prefix == CLAUDE.remote_token_prefix() + "; export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
     )
     assert TOKEN not in prefix
     assert "unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN" in prefix
     assert (
         'export CLAUDE_CODE_OAUTH_TOKEN="$(cat "$HOME"/.config/rcp/claude-setup-token)"' in prefix
     )
-    placement = remote_claude_token_placement_command()
+    placement = CLAUDE.remote_token_placement_command()
     assert placement.startswith("umask 077 && mkdir -p ")
     assert 'cat > "$HOME"/.config/rcp/claude-setup-token.tmp' in placement
     assert (
@@ -271,7 +269,7 @@ def test_remote_environment_refuses_missing_token_instead_of_inheriting_one(tmp_
     from rcp.providers import profile_for
 
     missing = tmp_path / "missing-token"
-    prefix = remote_claude_token_prefix(str(missing))
+    prefix = CLAUDE.remote_token_prefix(str(missing))
     result = subprocess.run(
         ["sh", "-c", prefix + "; printf 'provider-started'"],
         env={**os.environ, CLAUDE_TOKEN_VARIABLE: "inherited-token"},

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from rcp.providers import (
+from rcp.providers.base import (
     ProviderRuntime,
     ProviderRuntimeStep,
     ProviderSteeringState,
@@ -12,10 +12,10 @@ from rcp.providers import (
     ProviderTurn,
     ProviderTurnRequest,
     ProviderUsage,
-    _codex_permission_profile,
     _require_project_write_scope,
     _require_provider_version,
 )
+from rcp.providers.codex.profile import _codex_permission_profile
 
 CODEX_APP_SERVER_RUNTIME_ID = "codex.app-server-stdio.v1"
 _INITIALIZE_ID = 1

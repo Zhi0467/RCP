@@ -39,8 +39,12 @@ class ProviderProcessEnvironment:
     local_env: dict[str, str] | None = None
     remote_prefix: str | None = None
 
-    def with_claude_foreground_tasks(self, *, remote: bool) -> ProviderProcessEnvironment:
-        """Keep delegated Claude work inside the invocation that owns it."""
+    def with_variables(
+        self, variables: dict[str, str], *, remote: bool
+    ) -> ProviderProcessEnvironment:
+        """Add fixed variables a provider's processes always need."""
+        if not variables:
+            return self
         if remote:
             return ProviderProcessEnvironment(
                 local_env=self.local_env,
@@ -48,7 +52,10 @@ class ProviderProcessEnvironment:
                     part
                     for part in (
                         self.remote_prefix,
-                        "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1",
+                        *(
+                            f"export {name}={shlex.quote(value)}"
+                            for name, value in variables.items()
+                        ),
                     )
                     if part
                 ),
@@ -56,7 +63,7 @@ class ProviderProcessEnvironment:
         return ProviderProcessEnvironment(
             local_env={
                 **(os.environ if self.local_env is None else self.local_env),
-                "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                **variables,
             },
             remote_prefix=self.remote_prefix,
         )

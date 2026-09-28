@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
-from rcp.providers import PROVIDER_IDS, ClaudeProfile, CodexProfile, profile_for, runtime_label
+from rcp.providers import (
+    PROVIDER_IDS,
+    PROVIDERS,
+    ClaudeProfile,
+    CodexProfile,
+    profile_for,
+    runtime_label,
+)
 
 
 def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -796,7 +803,7 @@ def _granted_scope():
 def test_codex_profile_writes_grants_and_reads_covered_rcp_storage():
     # Precedence was probed with the real sandbox (codex-cli 0.157.0): a
     # workspace root inside a "read" entry stays writable.
-    from rcp.providers import _codex_permission_profile
+    from rcp.providers.codex.profile import _codex_permission_profile
 
     profile = _codex_permission_profile(_granted_scope())
     for root in ("/home/rcp", "/tmp", "/home/rcp/data/stages/s/workspace"):
@@ -806,9 +813,23 @@ def test_codex_profile_writes_grants_and_reads_covered_rcp_storage():
 
 
 def test_claude_leaves_the_protected_parent_of_its_own_stage_undenied():
-    from rcp.providers import _claude_write_settings
+    from rcp.providers.claude.profile import _claude_write_settings
 
     permissions = _claude_write_settings(_granted_scope())["permissions"]
     assert "Edit(//home/rcp/**)" in permissions["allow"]
     assert "Edit(//tmp/**)" in permissions["allow"]
     assert permissions["deny"] == ["Edit(//home/rcp/.rcp/**)"]
+
+
+def test_every_runtime_has_a_fence_and_every_provider_a_session_format() -> None:
+    from rcp.providers.session_format import SESSION_FORMATS
+    from rcp.providers.turn_fence import TURN_FENCES
+
+    runtime_ids = {
+        runtime_id
+        for profile in PROVIDERS.values()
+        for runtime_id in (*profile.runtime_aliases.values(), profile.legacy_runtime_id)
+    }
+    assert set(SESSION_FORMATS) == {*PROVIDERS, "app_chat"}
+    assert set(TURN_FENCES) == runtime_ids
+    assert all(profile.native_update for profile in PROVIDERS.values())
