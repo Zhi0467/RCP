@@ -1756,18 +1756,19 @@ def require_graph_only_merge_scope(
     *,
     context: BranchMergeContext,
     stage: BranchMergeStage,
+    code_roots: list[str] | None = None,
 ) -> None:
-    """Fail closed unless the provider can write only its exact scratch workspace."""
+    """Fail closed unless the provider writes only its scratch and, with code, those roots."""
 
     if scope.capability != "orchestrate":
         raise ValueError("branch merge requires orchestrate capability")
     if scope.project_id != context.metadata.project_id:
         raise ValueError("branch merge write scope belongs to a different project")
-    if scope.repositories or scope.repository_roots:
-        raise ValueError("branch merge agents receive no repository write roots")
+    if sorted(scope.repository_roots) != sorted(code_roots or []):
+        raise ValueError("branch merge repository roots must be exactly its code merge roots")
     if scope.workspace_root != str(stage.workspace):
         raise ValueError("branch merge write scope does not name its exact workspace")
-    if scope.writable_roots != [str(stage.workspace)]:
+    if not code_roots and scope.writable_roots != [str(stage.workspace)]:
         raise ValueError("branch merge writable roots must contain only its scratch workspace")
     if stage.remote_stage is not None:
         assert stage.remote_stage.root is not None
@@ -1834,6 +1835,8 @@ async def stream_branch_merge_run(
     binary: str | None = None,
     max_main_rebases: int = MAX_BRANCH_MERGE_REBASE_ROUNDS,
     before_commit: Callable[[], None] | None = None,
+    code_block: str = "",
+    code_roots: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """Run, correct, rebase, and atomically commit one graph-only branch merge.
 
@@ -1851,12 +1854,12 @@ async def stream_branch_merge_run(
         raise ValueError("branch merge main rebase bound must be positive")
 
     context = load_context()
-    require_graph_only_merge_scope(write_scope, context=context, stage=stage)
+    require_graph_only_merge_scope(write_scope, context=context, stage=stage, code_roots=code_roots)
     outcome.merge_id = branch_merge_id(context.metadata)
     outcome.source_branch_head = context.metadata.head
     outcome.rebased_main_head = context.main_head
 
-    if _branch_merge_is_represented(context):
+    if not code_block and _branch_merge_is_represented(context):
         provenance = branch_merge_provenance(context)
         if before_commit is not None:
             before_commit()
@@ -1906,7 +1909,7 @@ async def stream_branch_merge_run(
                 outcome.diagnostic = exc.message
                 yield _sse(AgentEvent(event="error", text=exc.message))
                 return
-        if not residue:
+        if not residue and not (code_block and first_turn):
             _clear_patch_candidates(stage)
             if first_turn:
                 _stage_merge_context(stage, token, context, round_number=outcome.rebase_rounds)
@@ -1941,6 +1944,7 @@ async def stream_branch_merge_run(
                 plan_path=plan_path,
                 residue_block=render_merge_residue(residue),
                 ontology_extensions=_has_ontology_extensions(context.main_graph),
+                code_block=code_block,
             )
             master_values = merge_values = _merge_master_values(
                 context,
@@ -2126,6 +2130,7 @@ async def stream_branch_merge_run(
                     previous_context_id=previous_context.context_id,
                     context_id=context.context_id,
                     new_reason_legend=_residue_legend(set(residue.values()) - master_reasons),
+                    code=bool(code_block),
                 )
                 + rules,
                 master=master,
@@ -2341,7 +2346,10 @@ async def stream_branch_merge_run(
         rules, session_master = _changed_graph_rules(context, session_master)
         prompt = compose(
             classify(LaunchPhase(session_id=session_id, phase="correction")),
-            parts=branch_merge_correction_parts(diagnostics_path=diagnostics_path) + rules,
+            parts=branch_merge_correction_parts(
+                diagnostics_path=diagnostics_path, code=bool(code_block)
+            )
+            + rules,
             master=master,
             delta=changed_since_master(master, merge_values),
         )
@@ -3036,10 +3044,10 @@ def _provider_turn(
         workspace=stage.workspace,
         session_id=session_id,
         read_dirs=[inputs],
-        # The provider API treats write_dirs as admitted repository roots.
-        # The scratch workspace is already the cwd/workspace root carried by
-        # ProjectWriteScope, while a graph-only merge admits no repositories.
-        write_dirs=[],
+        # The provider API treats write_dirs as admitted repository roots. The
+        # scratch workspace is already the cwd/workspace root carried by
+        # ProjectWriteScope; only a code merge admits repository roots.
+        write_dirs=[Path(item) for item in write_scope.repository_roots],
         write_scope=write_scope,
         execution_host=write_scope.execution_host,
         execution=execution,

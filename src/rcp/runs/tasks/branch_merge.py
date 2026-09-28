@@ -25,7 +25,7 @@ from rcp.runs.branch_merge import (
     stream_branch_merge_run,
 )
 from rcp.runs.branch_merge_context import load_branch_merge_context
-from rcp.runs.episodes.merge import verify_episode_merge_code
+from rcp.runs.episodes.merge import episode_code_merge, verify_episode_merge_code
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -111,6 +111,9 @@ async def stream_branch_merge_task(
             remote_stage=remote_stage,
             workspace=workspace,
         )
+        # With code to merge, the task gets chat Integrate's local-merge scope for the
+        # episode's one worktree; otherwise it admits no repository.
+        code = episode_code_merge(service, execution.store, episode)
         write_scope = resolve_project_write_scope(
             manifest=service.manifest,
             project_id=task.project_id,
@@ -118,11 +121,14 @@ async def stream_branch_merge_task(
             capability="orchestrate",
             stage_root=stage_root,
             workspace_root=str(workspace),
-            admitted_aliases=[],
-            repository_pointers=[],
+            admitted_aliases=[code.binding.repository_alias] if code else [],
+            repository_pointers=[code.pointer] if code else [],
             remote_stage=remote_stage,
             app_data_dir=data_dir,
             repository_inventory=service.repository_ownership_inventory(project_id=task.project_id),
+            conversation_worktree=code.binding if code else None,
+            include_shared_checkout=code is not None,
+            machine_writable_paths=code.machine_writable_paths if code else None,
         )
         # A merge orchestrator never carries a provider session into its turn.
         execution.bind_write_scope(write_scope, resumes_native_session=False)
@@ -148,7 +154,7 @@ async def stream_branch_merge_task(
         initial_context = load_context()
         merge_id = branch_merge_id(initial_context.metadata)
         existing_receipt = branch.reconcile_merge_receipt(merge_id)
-        if existing_receipt is not None:
+        if existing_receipt is not None and code is None:
             _apply_receipt_to_execution(service, execution, existing_receipt)
             execution.store.record_agent_task_receipt(
                 task.operation_id,
@@ -207,6 +213,8 @@ async def stream_branch_merge_task(
                     outcome=outcome,
                     execution=execution,
                     binary=machine.provider_paths.get(request.provider),
+                    code_block=code.prompt_section(write_scope) if code else "",
+                    code_roots=list(write_scope.repository_roots) if code else None,
                 )
             ) as stream:
                 async for frame in stream:

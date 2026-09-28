@@ -255,7 +255,8 @@ def resolve_project_write_scope(
                 raise ValueError("conversation worktrees require ordinary Work capability")
             if binding.status != "ready":
                 raise ValueError("conversation worktree is not ready")
-        elif include_shared_checkout:
+        elif include_shared_checkout and capability != "orchestrate":
+            # Only the human-dispatched merge task lands an episode's code.
             raise ValueError("episode launches cannot admit the shared checkout")
         if (
             (isinstance(binding, ConversationWorktreeBinding) and binding.project_id != project_id)

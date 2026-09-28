@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rcp.conversation_worktrees import worktree_command
+from rcp.agents.context import RepositoryPointer
+from rcp.agents.prompts import write_scope_section
+from rcp.agents.write_scope import ProjectWriteScope
+from rcp.conversation_worktrees import (
+    WorktreeIntegrationOption,
+    integration_instruction,
+    worktree_command,
+)
 from rcp.core.models import (
     AuthorizedHuman,
     BranchMergeReceipt,
     EpisodeIsolation,
     EpisodeMergeAttempt,
+    EpisodeWorktreeBinding,
 )
 from rcp.core.transition_models import GraphHeadRef
 from rcp.runs.branch_merge import (
@@ -71,6 +80,68 @@ class MergePreview(BaseModel):
     graph: MergeGraphPreview = Field(default_factory=MergeGraphPreview)
     code: MergeCodePreview | None = None
     needs_agent: bool = False
+
+
+@dataclass(frozen=True)
+class EpisodeCodeMerge:
+    """The code half of a merge task: Integrate's local merge, for one episode worktree."""
+
+    binding: EpisodeWorktreeBinding
+    attempt: EpisodeMergeAttempt
+    pointer: RepositoryPointer
+    machine_writable_paths: list[str]
+    target_checked_out: bool
+
+    def prompt_section(self, scope: ProjectWriteScope) -> str:
+        target = self.attempt.target_branch or self.binding.starting_branch
+        option = WorktreeIntegrationOption(
+            id="starting_branch",
+            label=f"Merge into {target}",
+            target_branch=target,
+            enabled=True,
+        )
+        instruction = integration_instruction(
+            self.binding, option, {"target_checked_out": self.target_checked_out}
+        )
+        conflicts = "\n".join(f"- `{path}`" for path in self.attempt.conflict_files)
+        return f"""
+## Code merge
+
+RCP committed the worktree's leftovers; merge exactly commit `{self.attempt.source_commit}`.
+Use a merge commit (`git merge --no-ff`), never a squash. RCP checks that `{target}` contains
+that commit before it commits the graph.
+{("Conflicting files from RCP's merge test:" + chr(10) + conflicts) if conflicts else "RCP's merge test found no conflicts."}
+
+{instruction}
+{write_scope_section(scope)}"""
+
+
+def episode_code_merge(
+    service: ProjectService, store: AppStore, owner: EpisodeRecord
+) -> EpisodeCodeMerge | None:
+    """The code merge this owner's merge task carries, or None for a graph-only merge."""
+
+    state = store.episode_isolation_state(owner.project_id, owner.episode_id)
+    binding = store.episode_isolation(owner.project_id, owner.episode_id)
+    attempt = state.merge_attempt if state else None
+    if attempt is None or not attempt.code_by_agent or binding is None or not binding.worktree:
+        return None
+    worktree = binding.worktree
+    machine = service.manifest.machine_map[worktree.machine]
+    preflight = _git(store, binding, "preflight", target_branch=attempt.target_branch)
+    card = store.space_machine_for(machine.host)
+    return EpisodeCodeMerge(
+        binding=worktree,
+        attempt=attempt,
+        pointer=RepositoryPointer(
+            alias=worktree.repository_alias,
+            machine=worktree.machine,
+            host=machine.host,
+            path=worktree.worktree_path,
+        ),
+        machine_writable_paths=list(card.writable_paths) if card else [],
+        target_checked_out=bool(preflight.get("target_checked_out")),
+    )
 
 
 def merge_owner(store: AppStore, member: EpisodeRecord) -> EpisodeRecord:
@@ -461,15 +532,28 @@ def merge_episode(
             if code_side:
                 target = body.target_branch or binding.worktree.starting_branch
                 _git(store, binding, "commit_leftovers", target_branch=target)
-                facts = _git(store, binding, "merge_preview", target_branch=target)
-                if facts["status"] == "conflict":
+                preview = _git(store, binding, "merge_preview", target_branch=target)
+                if preview["status"] in {"target_missing", "target_dirty"}:
+                    raise ValueError(preview["status"])
+                if preview["status"] == "conflict" and context is None:
+                    # A code-only owner has no merge task to resolve a conflict yet.
                     raise ValueError("code_residue_needs_merge_task")
-                if facts["status"] in {"target_missing", "target_dirty"}:
-                    raise ValueError(facts["status"])
-                already_merged = facts["status"] == "already_merged"
-                facts = {key: facts[key] for key in ("source_commit", "target_commit", "tree")}
+                already_merged = preview["status"] == "already_merged"
+                facts = {key: preview[key] for key in ("source_commit", "target_commit", "tree")}
                 facts["target_branch"] = target
-                if not already_merged:
+                code_by_agent = not already_merged and (
+                    bool(residue) or preview["status"] == "conflict"
+                )
+                if code_by_agent:
+                    # When a merge task runs, its agent lands the code the way Integrate does.
+                    if body.history_mode == "squash":
+                        raise ValueError("squash_needs_agentless_merge")
+                    facts.update(
+                        code_by_agent=True,
+                        conflict_files=list(preview.get("conflict_files") or []),
+                        merge_tree_output=preview.get("merge_tree_output"),
+                    )
+                elif not already_merged:
                     facts.update(
                         _git(
                             store,
@@ -484,20 +568,27 @@ def merge_episode(
                 and context.previous_merge_receipt is not None
                 and context.previous_merge_receipt.provenance.branch_head == context.metadata.head
             )
-            if context is not None and not residue and not graph_delivered:
+            if (
+                context is not None
+                and not residue
+                and not graph_delivered
+                and not facts.get("code_by_agent")
+            ):
                 dispatch_graph(attempt.attempt_id, launch=False)
                 store.mark_agent_task_running(attempt.attempt_id)
+            needs_task = bool(residue) or bool(facts.get("code_by_agent"))
             attempt = _save(
                 store,
                 owner,
                 attempt,
-                phase="landing",
+                phase="agent_merging" if facts.get("code_by_agent") else "landing",
                 graph_head=context.metadata.head if context else None,
-                graph_task_id=attempt.attempt_id if residue else None,
+                graph_task_id=attempt.attempt_id if needs_task else None,
                 **facts,
             )
-            if residue:
-                _resume(service, store, owner, binding, attempt)
+            if needs_task:
+                if attempt.phase == "landing":
+                    _resume(service, store, owner, binding, attempt)
                 return dispatch_graph(attempt.attempt_id)
             return _resume(service, store, owner, binding, attempt)
         except Exception as exc:
@@ -528,6 +619,15 @@ def complete_graph_merge(service, store, owner):
         return
     attempt = state.merge_attempt
     if attempt.graph_task_id is not None:
+        if attempt.code_by_agent:
+            store.update_episode_merge_attempt(
+                owner.project_id,
+                owner.episode_id,
+                expected_attempt_id=attempt.attempt_id,
+                attempt=attempt,
+                delivered_source_commit=attempt.source_commit,
+                delivered_target_branch=attempt.target_branch,
+            )
         attempt = _save(store, owner, attempt, phase="graph_committed")
         try:
             _cleanup(service, store, owner, _binding(store, owner), attempt)

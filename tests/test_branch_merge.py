@@ -516,8 +516,14 @@ def test_graph_only_scope_has_no_repository_roots(tmp_path: Path) -> None:
         repositories=[WritableRepositoryRoot(alias="repo", machine="laptop", path=str(repo))],
         protected_write_paths=[str(tmp_path / "state" / ".research")],
     )
-    with pytest.raises(ValueError, match="no repository write roots"):
+    with pytest.raises(ValueError, match="code merge roots"):
         require_graph_only_merge_scope(broadened, context=context, stage=stage)
+    # A code merge admits exactly its named roots and no others.
+    require_graph_only_merge_scope(broadened, context=context, stage=stage, code_roots=[str(repo)])
+    with pytest.raises(ValueError, match="code merge roots"):
+        require_graph_only_merge_scope(
+            broadened, context=context, stage=stage, code_roots=[str(tmp_path / "other")]
+        )
 
 
 class _FakeLauncher:

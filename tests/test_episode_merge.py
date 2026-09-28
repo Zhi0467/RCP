@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
+from rcp.runs.episodes.merge import verify_episode_merge_code
 from rcp.transport import conversation_worktree
 
 from .test_branch_merge_api import _create_branch_harness
@@ -366,34 +367,56 @@ def test_invalid_merge_choices_fail_request_validation(manifest, tmp_path, body)
     assert not harness.branch.merge_receipts()
 
 
-def test_code_residue_refuses_without_graph_delivery_or_provider(manifest, tmp_path, monkeypatch):
+@pytest.mark.parametrize("case", ["merge_task", "squash", "code_only"])
+def test_code_conflict_dispatches_one_code_merge_task(manifest, tmp_path, monkeypatch, case):
     harness = _create_branch_harness(manifest, tmp_path, change="status")
-    shared, binding = _isolated(harness, tmp_path)
+    shared, binding = _isolated(harness, tmp_path, graph=case != "code_only")
     (shared / "file").write_text("target change")
     git(shared, "add", "file")
     git(shared, "commit", "-m", "target change")
     target_commit = git(shared, "rev-parse", "HEAD")
     (Path(binding.worktree_path) / "file").write_text("episode change")
     monkeypatch.setattr(
-        harness.app.state.launcher,
-        "stream",
-        lambda *_a, **_kw: (_ for _ in ()).throw(AssertionError("provider launched")),
+        harness.app.state.background_tasks, "_spawn_record", lambda record, *a, **kw: record
     )
-    task_ids = {
-        task.operation_id for task in harness.store.episode_tasks(harness.episode.episode_id)
-    }
-    revision = harness.service.history.state().revision
+    before = {task.operation_id for task in harness.store.episode_tasks(harness.episode.episode_id)}
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
+        json={"history_mode": "squash", "keep_branch_open": False} if case == "squash" else {},
     )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "code_residue_needs_merge_task"
+    # RCP never lands conflicting code itself.
     assert git(shared, "rev-parse", "HEAD") == target_commit
-    assert harness.service.history.state().revision == revision
     assert not harness.branch.merge_receipts()
-    assert {
-        task.operation_id for task in harness.store.episode_tasks(harness.episode.episode_id)
-    } == task_ids
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
-    assert state.merge_reservation is None
-    assert state.delivered_source_commit is None
+    if case != "merge_task":
+        assert response.status_code == 409
+        assert (
+            response.json()["detail"]["code"]
+            == {
+                "squash": "squash_needs_agentless_merge",
+                "code_only": "code_residue_needs_merge_task",
+            }[case]
+        )
+        assert state.merge_reservation is None
+        return
+    assert response.status_code == 202, response.text
+    tasks = [
+        task
+        for task in harness.store.episode_tasks(harness.episode.episode_id)
+        if task.operation_id not in before
+    ]
+    assert [task.kind for task in tasks] == ["branch_merge"]
+    attempt = state.merge_attempt
+    assert (attempt.phase, attempt.code_by_agent, attempt.conflict_files) == (
+        "agent_merging",
+        True,
+        ["file"],
+    )
+    assert attempt.graph_task_id == tasks[0].operation_id
+    assert tasks[0].request["run_on"] == binding.machine
+    episode = harness.store.episode(harness.episode.episode_id)
+    with pytest.raises(ValueError, match="code_landing_unverified"):
+        verify_episode_merge_code(harness.store, episode)
+    # The agent's merge commit lands the exact source commit; then RCP may commit the graph.
+    git(shared, "merge", "--no-ff", "-X", "theirs", "-m", "merge", attempt.source_commit)
+    verify_episode_merge_code(harness.store, episode)

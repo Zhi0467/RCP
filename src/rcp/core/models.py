@@ -1099,9 +1099,9 @@ class EpisodeMergeAttempt(BaseModel):
 
     attempt_id: str = Field(min_length=1)
     authorized_by: AuthorizedHuman
-    phase: Literal["pre_merge", "landing", "verified", "graph_committed", "cleanup", "done"] = (
-        "pre_merge"
-    )
+    phase: Literal[
+        "pre_merge", "landing", "agent_merging", "verified", "graph_committed", "cleanup", "done"
+    ] = "pre_merge"
     source_commit: str | None = None
     target_branch: str | None = None
     target_commit: str | None = None
@@ -1120,6 +1120,10 @@ class EpisodeMergeAttempt(BaseModel):
     cleanup_completed: list[str] = Field(default_factory=list)
     error: str | None = None
     graph_task_id: str | None = None
+    # The merge task's agent lands the code; RCP verifies before the graph commit.
+    code_by_agent: bool = False
+    conflict_files: list[str] = Field(default_factory=list)
+    merge_tree_output: str | None = None
 
     @model_validator(mode="after")
     def validate_cleanup(self) -> EpisodeMergeAttempt:

@@ -401,7 +401,7 @@ def _integration_option(
 
 
 def integration_instruction(
-    binding: ConversationWorktreeBinding, option: WorktreeIntegrationOption, facts: dict
+    binding: WorktreeBinding, option: WorktreeIntegrationOption, facts: dict
 ) -> str:
     context = {
         "repository_alias": binding.repository_alias,

@@ -370,7 +370,20 @@ def merge_episode_branch(
                     dispatch_graph=lambda operation_id, launch=True: start_branch_merge(
                         background_tasks,
                         project_id,
-                        _resolved_branch_merge_request(service, episode.episode_id),
+                        _resolved_branch_merge_request(
+                            service,
+                            episode.episode_id,
+                            run_on=(
+                                isolation.worktree.machine
+                                if (
+                                    isolation := store.episode_isolation(
+                                        project_id, episode.episode_id
+                                    )
+                                )
+                                and isolation.worktree
+                                else None
+                            ),
+                        ),
                         authorized_by=authorized_by,
                         operation_id=operation_id,
                         launch=launch,
@@ -820,6 +833,8 @@ def _resolved_auto_research_start_request(
 def _resolved_branch_merge_request(
     service: ProjectService,
     episode_id: str,
+    *,
+    run_on: str | None = None,
 ) -> BranchMergeRunRequest:
     profile = service.resolve_agent_profile("orchestrator")
     return BranchMergeRunRequest(
@@ -827,7 +842,8 @@ def _resolved_branch_merge_request(
         provider=profile.provider,
         model=profile.model,
         reasoning=profile.reasoning,
-        run_on=profile.run_on,
+        # A code-isolated merge runs where its worktree is.
+        run_on=run_on or profile.run_on,
         run_truth_scope=sorted(set(service.history.state().project_truth_scope)),
         chat_scope="project",
         mode="work",
