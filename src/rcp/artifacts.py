@@ -219,8 +219,11 @@ def crop_region(frame: Image.Image, *, x: float, y: float, width: float, height:
     top = min(rows - 1, math.floor(y * rows))
     right = max(left + 1, min(columns, math.ceil((x + width) * columns)))
     bottom = max(top + 1, min(rows, math.ceil((y + height) * rows)))
-    crop = frame.crop((left, top, right, bottom))
-    crop.thumbnail((ARTIFACT_CROP_MAX_SIDE, ARTIFACT_CROP_MAX_SIDE))
+    # Resample the box straight into the bounded size; a full-size copy of a large
+    # region per selection would cost memory the output never needs.
+    scale = min(1.0, ARTIFACT_CROP_MAX_SIDE / max(right - left, bottom - top))
+    size = (max(1, round((right - left) * scale)), max(1, round((bottom - top) * scale)))
+    crop = frame.resize(size, Image.Resampling.LANCZOS, box=(left, top, right, bottom))
     output = io.BytesIO()
     crop.save(output, format="PNG")
     return output.getvalue()
