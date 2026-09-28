@@ -424,8 +424,8 @@ master records the stable values it was rendered with (paths, the command
 client, write roots, repositories, skill pointers, execution facts), so a new
 mailbox or a changed root appears and an unchanged one does not. Static
 explanations, such as validator exit codes, the launch helper, and the write
-boundary, live only in the master; so do the rules for a turn's attachments,
-which the turn lists as plain lines. Current values take precedence over the
+boundary, live only in the master. A turn lists its attachments as plain lines
+with no rules beside them: what they may do is enforced, not explained. Current values take precedence over the
 master. Every master says so: a listed value replaces its own for that launch,
 and an unlisted one is its own. A chat's graph revision is the one value
 compared with the chat's last committed turn instead, so its own Apply is not
