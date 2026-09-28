@@ -210,7 +210,7 @@ def run_machine_directory_request(
             result = remote_repository_browser.handle(local_request)
         except (OSError, ValueError) as exc:
             raise MachineBrowseFailure("unreachable", str(exc)[:600]) from exc
-        return {**result, "home": home}
+        return {**result, "home": os.path.realpath(home)}
     run = runner or subprocess.run
     machine = rcp_machine or socket.gethostname() or "this RCP machine"
     command = shlex.join(

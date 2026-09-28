@@ -21,7 +21,8 @@ def browse_directory(
 ) -> dict[str, object]:
     """One page of the directories directly inside `path`, filtered before paging."""
 
-    home = os.path.expanduser("~")
+    # Real, like every path returned beside it and like launch-time protection.
+    home = os.path.realpath(os.path.expanduser("~"))
     target = home if path is None else path
     if not os.path.isabs(target):
         raise ValueError("directory browser path must be absolute")
@@ -66,10 +67,10 @@ def browse_directory(
 
 
 def check_directories(paths: list[str]) -> dict[str, object]:
-    """The account home, and each path's real location if it is a directory."""
+    """The account's real home, and each path's real location if it is a directory."""
 
     return {
-        "home": os.path.expanduser("~"),
+        "home": os.path.realpath(os.path.expanduser("~")),
         "resolved": {
             path: os.path.realpath(path) if os.path.isdir(path) else None for path in paths
         },

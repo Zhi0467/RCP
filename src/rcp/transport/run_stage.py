@@ -25,6 +25,7 @@ from rcp.limits import (
 )
 from rcp.rcp_home import rcp_temp_dir
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
+from rcp.transport import remote_stage_root
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
     StateMissing,
@@ -1424,18 +1425,19 @@ def remote_stage_name(root: str) -> str | None:
     """
 
     candidate = PurePosixPath(root)
-    match = re.fullmatch(r"rcp-run\.([A-Za-z0-9_-]+)", candidate.name)
-    if match is None:
+    # The same names the shipped stage creator makes, dots included.
+    if remote_stage_root.STAGE_NAME.fullmatch(candidate.name) is None:
         return None
+    name = candidate.name.removeprefix("rcp-run.")
     parent = candidate.parent
     # Legacy: stages saved before RCP left /tmp. A later release removes this.
     if parent == PurePosixPath("/tmp"):
-        return match.group(1)
+        return name
     if (
         parent.is_absolute()
         and len(parent.parts) > 3
         and parent.parts[-2:] == (".rcp", "stages")
         and ".." not in parent.parts
     ):
-        return match.group(1)
+        return name
     return None

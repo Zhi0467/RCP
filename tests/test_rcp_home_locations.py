@@ -52,7 +52,8 @@ def test_new_remote_stages_land_under_the_remote_rcp_home(
     stage = _local_stage(monkeypatch, home)
     monkeypatch.setattr(stage, "sweep", lambda **_kwargs: None)
 
-    for label in ("op-one", None):
+    # Operation labels may carry dots; the stage opens under the same name.
+    for label in ("op-one", "op.two", None):
         stage.open(label)
         assert stage.root is not None
         root = Path(str(stage.root))

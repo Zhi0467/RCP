@@ -24,6 +24,7 @@ from rcp.setup import (
     SetupRepository,
     browse_machine_directory,
     render_manifest,
+    run_machine_directory_request,
 )
 from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
@@ -163,14 +164,30 @@ def test_shipped_directory_browser_refuses_another_account(tmp_path) -> None:
         return subprocess.run(["sh", "-c", command[-1]], **kwargs)
 
     me = pwd.getpwuid(os.geteuid()).pw_name
-    (tmp_path / "folder").mkdir()
+    browse = tmp_path / "browse"
+    (browse / "folder").mkdir(parents=True)
+    # A symlinked home comes back real, like the paths checked beside it.
+    real_home = tmp_path / "homes" / "real"
+    real_home.mkdir(parents=True)
+    (tmp_path / "homes" / "link").symlink_to(real_home)
+    checked = run_machine_directory_request(
+        "worker@gpu.example",
+        {"mode": "check", "paths": []},
+        os_account=me,
+        runner=lambda command, **kwargs: subprocess.run(
+            ["sh", "-c", command[-1]],
+            env={**os.environ, "HOME": str(tmp_path / "homes" / "link")},
+            **kwargs,
+        ),
+    )
+    assert checked["home"] == os.path.realpath(real_home)
     page = browse_machine_directory(
-        "worker@gpu.example", str(tmp_path), os_account=me, runner=run_here
+        "worker@gpu.example", str(browse), os_account=me, runner=run_here
     )
     assert [entry.name for entry in page.entries] == ["folder"]
     with pytest.raises(MachineBrowseFailure):
         browse_machine_directory(
-            "worker@gpu.example", str(tmp_path), os_account=f"{me}-other", runner=run_here
+            "worker@gpu.example", str(browse), os_account=f"{me}-other", runner=run_here
         )
 
 
