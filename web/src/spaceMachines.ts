@@ -59,6 +59,18 @@ export function suggestedMachineAlias(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/** A machine's name in one project: its suggested alias, numbered past any already taken. */
+export function projectMachineAlias(name: string, taken: readonly string[]): string {
+  const base = suggestedMachineAlias(name) || "machine";
+  const used = new Set(taken);
+  if (!used.has(base)) return base;
+  for (let index = 2; ; index += 1) {
+    const suffix = `-${index}`;
+    const candidate = `${base.slice(0, MACHINE_ALIAS_MAX_LENGTH - suffix.length)}${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
 export function replaceSpaceMachine(
   machines: readonly SpaceMachine[],
   updated: SpaceMachine,

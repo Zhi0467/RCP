@@ -26,8 +26,7 @@ import {
   machineHostLabel,
   machinesToAdd,
   spaceMachineForProject,
-  MACHINE_ALIAS_MAX_LENGTH,
-  suggestedMachineAlias,
+  projectMachineAlias,
 } from "../spaceMachines";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
@@ -838,6 +837,7 @@ export function ProjectSettings({
           <AddProjectMachine
             projectId={project.id}
             spaceKind={spaceKind}
+            takenAliases={project.machines.map((machine) => machine.alias)}
             onClose={() => setAddingMachine(false)}
             machines={spaceMachines.machines ?? []}
             writesDisabled={writesDisabled}
@@ -1219,6 +1219,7 @@ export function ProjectSettings({
 function AddProjectMachine({
   projectId,
   spaceKind,
+  takenAliases,
   machines,
   writesDisabled,
   onCreated,
@@ -1227,6 +1228,7 @@ function AddProjectMachine({
 }: {
   projectId: string;
   spaceKind: "personal" | "team";
+  takenAliases: string[];
   machines: SpaceMachine[];
   writesDisabled: boolean;
   onCreated: (machine: SpaceMachine) => void;
@@ -1234,34 +1236,33 @@ function AddProjectMachine({
   onClose: () => void;
 }) {
   const [creating, setCreating] = useState(false);
-  const [machineId, setMachineId] = useState("");
-  const [alias, setAlias] = useState("");
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const candidates = machinesToAdd(machines, projectId);
 
-  const choose = (machine: SpaceMachine | undefined) => {
-    setMachineId(machine?.machine_id ?? "");
-    setAlias(machine ? suggestedMachineAlias(machine.name) : "");
-    setError(null);
-  };
-
-  const add = async () => {
-    const chosen = alias.trim();
-    if (!machineId || !chosen || adding) return;
-    setAdding(true);
+  // One click adds the machine; its name in this project is derived, not asked.
+  const add = async (machine: SpaceMachine) => {
+    if (adding) return;
+    const alias = projectMachineAlias(machine.name, takenAliases);
+    setAdding(machine.machine_id);
     setError(null);
     try {
-      onAdded(await addProjectMachine(projectId, machineId, chosen), chosen);
+      onAdded(await addProjectMachine(projectId, machine.machine_id, alias), alias);
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
-      setAdding(false);
+      setAdding(null);
     }
   };
 
   return (
     <div className="add-project-machine open" data-add-project-machine="">
+      <header className="add-project-machine-header">
+        <strong>Add a machine to this project</strong>
+        <button className="button secondary compact" type="button" onClick={onClose}>
+          Cancel
+        </button>
+      </header>
       {creating ? (
         <NewMachineForm
           writesDisabled={writesDisabled}
@@ -1269,61 +1270,28 @@ function AddProjectMachine({
           onCreated={(machine) => {
             onCreated(machine);
             setCreating(false);
-            choose(machine);
+            void add(machine);
           }}
         />
       ) : (
-        <>
-          <div className="machine-tiles" role="group" aria-label="Space machines">
-            {candidates.map((machine) => (
-              <MachineTile
-                key={machine.machine_id}
-                name={machine.name}
-                hostLabel={machineHostLabel(machine.host, spaceKind)}
-                account={machine.os_account}
-                selected={machine.machine_id === machineId}
-                disabled={writesDisabled || adding}
-                onSelect={() => choose(machine)}
-              />
-            ))}
-            <AddMachineTile
-              label="New machine"
-              disabled={writesDisabled || adding}
-              onSelect={() => setCreating(true)}
+        <div className="machine-tiles" role="group" aria-label="Space machines">
+          {candidates.map((machine) => (
+            <MachineTile
+              key={machine.machine_id}
+              name={machine.name}
+              hostLabel={machineHostLabel(machine.host, spaceKind)}
+              account={machine.os_account}
+              signals={adding === machine.machine_id ? [{ label: "Adding…", tone: "pending" }] : []}
+              disabled={writesDisabled || adding !== null}
+              onSelect={() => void add(machine)}
             />
-          </div>
-          <div className="add-project-machine-fields">
-            <label>
-              <span>Alias in this project</span>
-              <input
-                value={alias}
-                maxLength={MACHINE_ALIAS_MAX_LENGTH}
-                disabled={writesDisabled || adding || !machineId}
-                onChange={(event) => setAlias(event.target.value)}
-              />
-            </label>
-            <div className="new-machine-actions">
-              <button
-                className="button primary compact"
-                type="button"
-                data-machine-action="confirm-add-machine"
-                disabled={writesDisabled || adding || !machineId || !alias.trim()}
-                onClick={() => void add()}
-              >
-                {adding ? <LoaderCircle className="spin" size={13} /> : <Plus size={13} />}
-                Add
-              </button>
-              <button
-                className="button secondary compact"
-                type="button"
-                disabled={adding}
-                onClick={onClose}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </>
+          ))}
+          <AddMachineTile
+            label="New machine"
+            disabled={writesDisabled || adding !== null}
+            onSelect={() => setCreating(true)}
+          />
+        </div>
       )}
       {error && <p role="alert">{error}</p>}
     </div>

@@ -267,9 +267,10 @@ for each provider, the jobs route, and the writable-path count) with a dashed
 **Add machine** tile; clicking a tile opens one machine's card below, grouping
 provider executables, **Long-running jobs**, and the machine's writable paths.
 The same writable-path record appears in space Settings, so the project card
-says the list applies to every project on that machine. **Add machine** and
-setup pick a space machine from the same tiles, with a dashed **New machine**
-tile. Writable paths are picked with a small folder picker (breadcrumbs, one
+says the list applies to every project on that machine. **Add machine** opens
+a labelled box of the space's other machines as the same tiles; one click adds
+that machine under a name derived from its card and opens it. Setup picks from
+the same tiles. Both end with a dashed **New machine** tile. Writable paths are picked with a small folder picker (breadcrumbs, one
 level, name filter, **Load more**, locked protected folders, **Use this
 folder**) rather than typed. **Use Slurm** opts into direct scheduler submission; **Jobs root**
 configures helper storage. RCP exposes no scheduler resource settings. **Reset

@@ -15,6 +15,7 @@ import {
 } from "../src/pathPicker.ts";
 import {
   createPathEditor,
+  projectMachineAlias,
   setupMachineSelection,
   spaceMachineForProject,
   writablePathsRequest,
@@ -376,4 +377,13 @@ test("setup keeps the chosen card when two accounts share a host", () => {
   assert.equal(setupMachineSelection(cards, null, "gpu.example"), null);
   // One card on a host is found by host, and a changed host drops a stale choice.
   assert.equal(setupMachineSelection([gpu, sharedBob], "m-bob", gpu.host), gpu);
+});
+
+test("adding a machine names it from its card, numbered past taken names", () => {
+  assert.equal(projectMachineAlias("Lab cluster", ["laptop"]), "lab-cluster");
+  assert.equal(
+    projectMachineAlias("Lab cluster", ["lab-cluster", "lab-cluster-2"]),
+    "lab-cluster-3",
+  );
+  assert.ok(projectMachineAlias("x".repeat(80), ["x".repeat(48)]).length <= 48);
 });

@@ -3200,32 +3200,39 @@ details[open] > .view-disclosure-summary > svg:last-child {
   color: var(--muted);
 }
 .add-project-machine {
-  padding: 0 16px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  margin: 12px 16px 16px;
+  padding: 12px;
+}
+.add-project-machine-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+.add-project-machine-header > strong {
+  font-size: var(--type-sm);
 }
 .add-project-machine.open,
 .new-machine-form {
   display: grid;
   gap: 10px;
 }
-.add-project-machine-fields,
 .new-machine-form {
   align-items: end;
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
-.add-project-machine-fields label,
 .new-machine-form label {
   display: grid;
   gap: 5px;
 }
-.add-project-machine-fields label > span,
 .new-machine-form label > span {
   font-size: var(--type-2xs);
   font-weight: 700;
 }
-.add-project-machine-fields input,
-.add-project-machine-fields select,
 .new-machine-form input {
   background: var(--paper);
   border: 1px solid var(--line-strong);
