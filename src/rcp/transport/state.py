@@ -126,30 +126,18 @@ def _remote_lock_holder_script() -> str:
 
 @lru_cache(maxsize=1)
 def _remote_turn_supervisor_script() -> str:
-    """Compose the shipped turn fence into the turn supervisor's source.
+    """Compose every provider's shipped turn fence into the turn supervisor's source.
 
-    The fence is its own module because it is the one piece of protocol
-    knowledge that exists twice -- here and in RCP's canonical decoder -- and a
-    test compares the two on real traffic. It travels prepended rather than
+    The fences are the one piece of protocol knowledge that exists twice -- on
+    the host and in RCP's canonical decoder -- and a test compares the two on
+    real traffic. They travel in the provider remote bundle rather than being
     imported, because the execution host has the standard library and nothing
     else.
     """
 
-    fence = (
-        importlib.resources.files("rcp.agents")
-        .joinpath("remote_turn_fence.py")
-        .read_text(encoding="utf-8")
-    )
-    completion = (
-        importlib.resources.files("rcp.agents")
-        .joinpath("turn_completion.py")
-        .read_text(encoding="utf-8")
-    )
-    return (
-        f"exec(compile({completion!r}, 'turn_completion.py', 'exec'))\n"
-        f"exec(compile({fence!r}, 'remote_turn_fence.py', 'exec'))\n"
-        f"{_remote_script('remote_turn_supervisor.py')}"
-    )
+    from rcp.providers import remote_bundle
+
+    return remote_bundle(_remote_script("remote_turn_supervisor.py"))
 
 
 def remote_turn_supervisor_input_label() -> str:

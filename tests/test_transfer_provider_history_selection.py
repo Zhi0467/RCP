@@ -11,6 +11,7 @@ import pytest
 
 from rcp.config import MachineConfig
 from rcp.providers import PROVIDERS, ProviderProfile
+from rcp.providers.session_format import SessionFormat
 from rcp.sources import ConversationIndexer, OriginalConversationSource
 from rcp.sources import indexer as indexer_module
 from rcp.transfer import provider_history as provider_history_module
@@ -257,6 +258,7 @@ def test_provider_history_selection_uses_the_provider_root_registry(
 
     class FixtureProvider(ProviderProfile):
         id = "fixture"
+        session_format = SessionFormat()
 
         def session_roots(self, _sources: object, *, remote: bool) -> list[str]:
             return [] if remote else [str(fixture_root)]

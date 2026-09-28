@@ -5,7 +5,7 @@ import type { ProviderLoginState } from "./types";
  * Turning the backend provider registry into select options.
  *
  * The frontend knows no provider facts of its own. Ids, labels, models, and
- * reasoning efforts all arrive from `src/rcp/providers.py` by way of a
+ * reasoning efforts all arrive from `src/rcp/providers/` by way of a
  * readiness probe, so adding a provider there is enough to make it appear here.
  */
 

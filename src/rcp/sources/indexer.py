@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.resources
 import json
 import os
 import posixpath
@@ -13,7 +12,6 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,7 +22,8 @@ from rcp.limits import (
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
     SOURCE_ORIGINAL_COPY_BUFFER_BYTES,
 )
-from rcp.providers import PROVIDERS, ProviderId
+from rcp.providers import PROVIDERS, ProviderId, remote_bundle
+from rcp.providers.session_format import SessionFormat, session_format
 from rcp.rcp_home import rcp_temp_dir
 from rcp.sources.cache import (
     REMOTE_SOURCE_CACHE_LIMITS,
@@ -32,12 +31,7 @@ from rcp.sources.cache import (
     RebuildableCache,
     RebuildableCacheMetrics,
 )
-from rcp.sources.record_parsing import (
-    normalize_path,
-    normalize_record,
-    path_matches_roots,
-    session_format,
-)
+from rcp.sources.record_parsing import normalize_path, normalize_record, path_matches_roots
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 
 
@@ -186,7 +180,7 @@ class ConversationIndexer:
             if not root.exists():
                 continue
             for path in root.rglob("*.jsonl"):
-                if session_format(provider).skip_file(path.parts):
+                if _source_format(provider).skip_file(path.parts):
                     continue
                 cache_key = (provider, path)
                 seen_local_sources.add(cache_key)
@@ -641,7 +635,7 @@ class ConversationIndexer:
     def _inspect(
         path: Path, provider: str, repository_paths: list[str] | None = None
     ) -> dict[str, Any]:
-        source_format = session_format(provider)
+        source_format = _source_format(provider)
         metadata = source_format.initial_metadata()
         first_timestamp = None
         last_timestamp = None
@@ -778,10 +772,16 @@ class ConversationIndexer:
         return cached
 
 
+def _source_format(source: str) -> SessionFormat:
+    """The live registry's format, so a profile is the one place it is declared."""
+    profile = PROVIDERS.get(source)
+    return profile.session_format if profile is not None else session_format(source)
+
+
 def _normalize_record(raw: dict[str, Any], provider: str, line_number: int) -> ConversationRecord:
     """Model wrapper over the parser shared with the remote drivers."""
 
-    normalized = normalize_record(raw, provider, line_number)
+    normalized = normalize_record(raw, _source_format(provider), line_number)
     return ConversationRecord(
         uuid=normalized["uuid"],
         timestamp=_parse_datetime(normalized["timestamp"]),
@@ -887,22 +887,6 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
-@lru_cache(maxsize=1)
-def _record_parsing_source() -> str:
-    """Load the parser as a package resource for source, wheel, and frozen builds."""
-    return (
-        importlib.resources.files("rcp.sources")
-        .joinpath("record_parsing.py")
-        .read_text(encoding="utf-8")
-    )
-
-
-def _remote_program(driver: str) -> str:
-    """Prepend the shared parser's source to a remote driver."""
-
-    return f"{_record_parsing_source()}\n{driver}"
-
-
 _REMOTE_INDEX_DRIVER = r"""
 import json
 import sys
@@ -936,7 +920,7 @@ for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
                     continue
                 raw = json.loads(line)
                 sequence_count += 1
-                record = normalize_record(raw, provider, line_number)
+                record = normalize_record(raw, source_format, line_number)
                 timestamp = record["timestamp"]
                 if timestamp:
                     sequence_first_timestamp = sequence_first_timestamp or timestamp
@@ -990,4 +974,4 @@ print(json.dumps({
 """
 
 
-_REMOTE_INDEX_SCRIPT = _remote_program(_REMOTE_INDEX_DRIVER)
+_REMOTE_INDEX_SCRIPT = remote_bundle(_REMOTE_INDEX_DRIVER)

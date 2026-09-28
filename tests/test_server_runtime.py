@@ -12,7 +12,6 @@ from rcp.server_runtime import (
     read_server_metadata,
     remove_server_metadata,
 )
-from rcp.sources import indexer
 
 from .helpers import create_named_app as create_app
 
@@ -110,32 +109,22 @@ def test_source_app_shutdown_leaves_outer_supervisor_metadata_in_place(tmp_path)
         assert read_server_metadata(data_dir) == metadata
 
 
-def test_remote_parser_source_is_loaded_as_a_package_resource(monkeypatch) -> None:
-    calls = []
+def test_remote_bundle_runs_on_a_bare_interpreter_and_registers_every_provider() -> None:
+    """Execution hosts have no `rcp` package; `-I -S` hides it here too."""
+    import subprocess
+    import sys
 
-    class Resource:
-        def joinpath(self, name):
-            calls.append(("joinpath", name))
-            return self
+    from rcp.providers import PROVIDERS, remote_bundle
 
-        def read_text(self, *, encoding):
-            calls.append(("read_text", encoding))
-            return "def normalize_record():\n    pass\n"
-
-    indexer._record_parsing_source.cache_clear()
-    monkeypatch.setattr(
-        indexer.importlib.resources,
-        "files",
-        lambda package: calls.append(("files", package)) or Resource(),
+    driver = "import json; print(json.dumps([sorted(SESSION_FORMATS), sorted(TURN_FENCES)]))"
+    result = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", remote_bundle(driver)],
+        capture_output=True,
+        text=True,
+        check=True,
     )
-
-    program = indexer._remote_program("print('driver')")
-
-    assert program.startswith("def normalize_record()")
-    assert program.endswith("print('driver')")
-    assert calls == [
-        ("files", "rcp.sources"),
-        ("joinpath", "record_parsing.py"),
-        ("read_text", "utf-8"),
-    ]
-    indexer._record_parsing_source.cache_clear()
+    sources, runtimes = json.loads(result.stdout)
+    assert sources == sorted({*PROVIDERS, "app_chat"})
+    assert runtimes == sorted(
+        runtime_id for profile in PROVIDERS.values() for runtime_id in profile.turn_fences
+    )

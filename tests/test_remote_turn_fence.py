@@ -16,12 +16,12 @@ import json
 
 import pytest
 
-from rcp.agents.remote_turn_fence import turn_fence
+from rcp.providers.turn_fence import turn_fence
 
 
 def _canonical_app_server_turn(tmp_path, *, handshake: bool):
-    from rcp.agents.codex_app_server import CodexAppServerRuntime
     from rcp.providers import ProviderTurnRequest
+    from rcp.providers.codex.app_server import CodexAppServerRuntime
 
     turn = CodexAppServerRuntime().turn(
         ProviderTurnRequest(

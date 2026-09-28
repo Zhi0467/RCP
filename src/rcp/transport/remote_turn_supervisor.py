@@ -1,6 +1,6 @@
 """Keep one provider turn's evidence on the machine that runs it.
 
-RCP ships this module with the turn fence prepended and runs the result with
+RCP ships this module after the provider remote bundle and runs the result with
 ``python -c``. Keeping the executable source in a real module lets ruff, the
 formatter, and `tests/test_remote_turn_supervisor.py` see it.
 
@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 if "turn_fence" not in globals():
-    from rcp.agents.remote_turn_fence import turn_fence
+    from rcp.providers.turn_fence import turn_fence
 
 
 class Lines:

@@ -11,8 +11,8 @@ import pytest
 
 from rcp.agents import AgentLauncher
 from rcp.agents.provider_environment import ProviderCredentialStore
-from rcp.provider_auth import ClaudeAuthentication
 from rcp.provider_skills import ProviderSkillInventoryManager
+from rcp.providers.claude.auth import ClaudeAuthentication
 from rcp.storage import AppStore
 
 CLAUDE = ClaudeAuthentication()
