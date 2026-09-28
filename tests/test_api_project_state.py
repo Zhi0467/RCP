@@ -18,7 +18,7 @@ from rcp.config import load_manifest, permissions_for
 from rcp.core.models import Patch
 from rcp.history import HistoryManager
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
-from rcp.providers import ProviderUsage
+from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.storage import AgentTaskRecord
 
 from .helpers import (
@@ -840,21 +840,11 @@ def test_project_readiness_does_not_open_or_materialize_project(
         "unavailable"
     )
     assert set(calls) == {
-        ("codex", False),
-        ("claude", False),
-        ("codex", True),
-        ("claude", True),
+        (provider, refresh) for provider in PROVIDER_IDS for refresh in (False, True)
     }
-    assert inventory_waits == [
-        ("codex", "", None),
-        ("claude", "", None),
-        ("codex", "", None),
-        ("claude", "", None),
-        ("codex", "", None),
-        ("claude", "", None),
-    ]
+    assert inventory_waits == [(provider, "", None) for provider in PROVIDER_IDS] * 3
     # Only the explicit refresh probed skills; the two implicit reads started none.
-    assert sorted(skill_refreshes) == [("claude", "", None), ("codex", "", None)]
+    assert sorted(skill_refreshes) == sorted((provider, "", None) for provider in PROVIDER_IDS)
     assert project_id not in app.state.catalog._services
 
 

@@ -391,7 +391,7 @@ OpenCode merges last, and sets `OPENCODE_DISABLE_PROJECT_CONFIG`. The rules
 belong to an RCP agent that the launch selects with `--agent`. OpenCode applies
 agent rules after top-level ones, so neither the user's global rules nor their
 own agents can widen them. The agent is named after a digest of its rules, so no
-user agent can share the name and be merged in. Work and orchestrate also pass
+user agent can share the name and be merged in. Every launch also passes
 `--pure`, because a plugin's config hook could rewrite the rules.
 
 Edit rules deny everything, then allow the exact workspace and admitted roots,
@@ -401,11 +401,12 @@ Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carrie
 path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages are outside Git. The paper coach runs
 inside the project and denies every edit and the shell outright, so it needs no
-path rules. Discuss may edit only its workspace and its own write folders.
+path rules. Discuss and ingestion may edit only their workspace and their own
+write folders, and have no shell.
 
-Like Claude's rules, these bound every file-editing tool and do not bound the
-shell. A rule that would ask is rejected, because `opencode run` cannot ask. The
-same accepted accidental-write gap applies.
+Work keeps the shell. Like Claude's rules, these bound every file-editing tool
+and do not bound the shell, so the same accepted accidental-write gap applies.
+A rule that would ask is rejected, because `opencode run` cannot ask.
 
 OpenCode prints no event when a turn ends, and a step that stops can be followed
 by another. The launch wrapper therefore prints one `rcp.provider_exit` line

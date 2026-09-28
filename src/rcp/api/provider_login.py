@@ -131,6 +131,8 @@ def provider_login_accounts(
         for state in store.provider_login_states()
         if not state.host or state.host in machines
     )
+    # A CLI whose own login RCP does not manage has no account here to act on.
+    pairs = {pair for pair in pairs if profile_for(pair[0]).authentication.manages_login}
     paths = provider_path_sources(store)
     accounts = []
     for provider, host in sorted(pairs):

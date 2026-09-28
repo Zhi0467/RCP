@@ -1647,6 +1647,7 @@ class ProjectService:
                     (provider, machine.host)
                     for machine in manifest.machines
                     for provider in PROVIDER_IDS
+                    if profile_for(provider).authentication.manages_login
                 }
             )
         ]

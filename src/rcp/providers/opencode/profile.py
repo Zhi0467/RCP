@@ -208,10 +208,8 @@ class OpenCodeProfile(ProviderProfile):
         elif write_scope is not None:
             raise ValueError(f"capability {capability!r} cannot carry a project write scope")
         permission = _permission(capability, cwd, write_dirs, write_scope)
-        command = [binary, "run", "--format", "json", "--agent", _agent_name(permission)]
-        if work_like:
-            # A plugin's config hook could rewrite the rules below.
-            command.append("--pure")
+        # `--pure` loads no plugin, whose config hook could rewrite these rules.
+        command = [binary, "run", "--format", "json", "--pure", "--agent", _agent_name(permission)]
         if session_id:
             command.extend(["--session", session_id])
         if model:
@@ -310,7 +308,9 @@ def _permission(
     edit.update({_root_pattern(path): "deny" for path in denied})
     return {
         "edit": edit,
-        "bash": "allow",
+        # Only Work runs commands. Nothing bounds the shell's writes, and Discuss
+        # and ingestion may write no further than their own folders.
+        "bash": "allow" if scope is not None else "deny",
         "external_directory": "allow",
         "webfetch": "allow",
         "websearch": "allow",

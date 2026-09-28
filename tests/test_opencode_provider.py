@@ -73,8 +73,10 @@ def test_paper_coach_denies_every_edit_so_no_path_base_is_needed():
     assert permission["bash"] == "deny"
 
 
-def test_discuss_edits_only_its_own_folders():
-    _, permission = _launch(_request("discuss", write_dirs=[Path("/work/notes")]))
+def test_discuss_edits_only_its_own_folders_and_has_no_shell():
+    command, permission = _launch(_request("discuss", write_dirs=[Path("/work/notes")]))
+    assert "--pure" in command
+    assert permission["bash"] == "deny"
     assert permission["edit"] == {
         "*": "deny",
         "home/rcp/data/stages/s/workspace/**": "allow",
