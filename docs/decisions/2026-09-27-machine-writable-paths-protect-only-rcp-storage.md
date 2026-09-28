@@ -38,3 +38,14 @@ folder, Claude's file tools can edit sibling stages there. This amends the
 2026-09-13 decision, which kept Claude's file tools bounded: inside such a grant
 they are bounded only as far as deny rules can express. Claude's shell was
 already unbounded. The human chose this over an RCP-owned file-edit hook.
+
+## Claude's shell stays unwrapped
+
+Claude's own sandbox cannot run scheduler work: a team-host probe on
+2026-09-27 (Claude Code 2.1.283) showed it cuts the network namespace even with
+no domain list, so `sinfo` and `srun` fail. Wrapping Claude in an RCP-owned
+systemd unit was reviewed and rejected by the human the same day: it touches the
+command broker's ancestry check, Stop and crash recovery, and environment
+handoff, and Docker or Slurm could still write outside it. Claude's shell is
+bounded by the prompt's write boundary (`write_scope_section`) and agent
+behavior, not by the OS. Do not re-propose a separate OS account for agents.
