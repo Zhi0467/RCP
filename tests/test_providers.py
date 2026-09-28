@@ -10,7 +10,14 @@ from pathlib import Path
 import pytest
 
 from rcp.agents import AgentLauncher, ProviderReadiness
-from rcp.providers import PROVIDER_IDS, ClaudeProfile, CodexProfile, profile_for, runtime_label
+from rcp.providers import (
+    PROVIDER_IDS,
+    PROVIDERS,
+    ClaudeProfile,
+    CodexProfile,
+    profile_for,
+    runtime_label,
+)
 
 
 def _result(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -812,3 +819,18 @@ def test_claude_leaves_the_protected_parent_of_its_own_stage_undenied():
     assert "Edit(//home/rcp/**)" in permissions["allow"]
     assert "Edit(//tmp/**)" in permissions["allow"]
     assert permissions["deny"] == ["Edit(//home/rcp/.rcp/**)"]
+
+
+def test_shipped_provider_tables_cover_exactly_the_registry() -> None:
+    """Remote-shipped modules cannot import the registry, so their tables must match it."""
+    from rcp.agents.remote_turn_fence import TURN_FENCES
+    from rcp.sources.record_parsing import SESSION_FORMATS
+
+    runtime_ids = {
+        runtime_id
+        for profile in PROVIDERS.values()
+        for runtime_id in (*profile.runtime_aliases.values(), profile.legacy_runtime_id)
+    }
+    assert set(SESSION_FORMATS) == {*PROVIDERS, "app_chat"}
+    assert set(TURN_FENCES) <= runtime_ids
+    assert all(profile.native_update for profile in PROVIDERS.values())

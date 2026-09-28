@@ -32,7 +32,12 @@ from rcp.sources.cache import (
     RebuildableCache,
     RebuildableCacheMetrics,
 )
-from rcp.sources.record_parsing import normalize_path, normalize_record, path_matches_roots
+from rcp.sources.record_parsing import (
+    normalize_path,
+    normalize_record,
+    path_matches_roots,
+    session_format,
+)
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 
 
@@ -181,7 +186,7 @@ class ConversationIndexer:
             if not root.exists():
                 continue
             for path in root.rglob("*.jsonl"):
-                if provider == "claude" and "subagents" in path.parts:
+                if session_format(provider).skip_file(path.parts):
                     continue
                 cache_key = (provider, path)
                 seen_local_sources.add(cache_key)
@@ -636,40 +641,20 @@ class ConversationIndexer:
     def _inspect(
         path: Path, provider: str, repository_paths: list[str] | None = None
     ) -> dict[str, Any]:
-        cwd = ""
-        session_id = ""
+        source_format = session_format(provider)
+        metadata = source_format.initial_metadata()
         first_timestamp = None
         last_timestamp = None
         last_uuid = None
         record_count = 0
-        thread_source = "user" if provider in {"claude", "app_chat"} else None
-        parent_session_id = None
-        originator = None
-        source_kind = provider if provider in {"claude", "app_chat"} else None
         with path.open(encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, start=1):
                 if not line.strip():
                     continue
                 raw = json.loads(line)
                 record_count += 1
-                if provider == "codex" and raw.get("type") == "session_meta":
-                    payload = raw.get("payload", {})
-                    cwd = payload.get("cwd", cwd)
-                    session_id = payload.get("id") or payload.get("session_id") or session_id
-                    thread_source = payload.get("thread_source") or thread_source
-                    originator = payload.get("originator") or originator
-                    source = payload.get("source")
-                    if isinstance(source, str):
-                        source_kind = source
-                    elif isinstance(source, dict):
-                        source_kind = "subagent" if "subagent" in source else source_kind
-                        subagent = source.get("subagent")
-                        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-                        if isinstance(spawn, dict):
-                            parent_session_id = spawn.get("parent_thread_id") or parent_session_id
-                else:
-                    cwd = raw.get("cwd", cwd)
-                    session_id = raw.get("sessionId", session_id)
+                source_format.read_metadata(raw, metadata)
+                cwd = metadata["cwd"]
                 if cwd and repository_paths and not path_matches_roots(cwd, repository_paths):
                     break
                 record = _normalize_record(raw, provider, line_number)
@@ -677,19 +662,19 @@ class ConversationIndexer:
                 if record.timestamp is not None:
                     first_timestamp = first_timestamp or record.timestamp
                     last_timestamp = record.timestamp
-        if provider != "app_chat" and not cwd:
+        if source_format.requires_cwd and not metadata["cwd"]:
             raise ValueError("conversation has no cwd")
         return {
-            "cwd": cwd,
-            "session_id": session_id,
+            "cwd": metadata["cwd"],
+            "session_id": metadata["session_id"],
             "first_timestamp": first_timestamp,
             "last_timestamp": last_timestamp,
             "last_uuid": last_uuid,
             "record_count": record_count,
-            "thread_source": thread_source,
-            "parent_session_id": parent_session_id,
-            "originator": originator,
-            "source_kind": source_kind,
+            "thread_source": metadata["thread_source"],
+            "parent_session_id": metadata["parent_session_id"],
+            "originator": metadata["originator"],
+            "source_kind": metadata["source_kind"],
         }
 
     def _inspect_remote_root(
@@ -925,23 +910,20 @@ from pathlib import Path
 
 request = json.loads(sys.argv[1])
 provider = request["provider"]
+source_format = session_format(provider)
 roots = request["repository_paths"]
 unmatched_files = 0
 malformed_files = 0
 
 for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
-    if provider == "claude" and "subagents" in path.parts:
+    if source_format.skip_file(path.parts):
         continue
+    metadata = source_format.initial_metadata()
     cwd = ""
-    session_id = ""
     first_timestamp = None
     last_timestamp = None
     last_uuid = None
     record_count = 0
-    thread_source = "user" if provider == "claude" else None
-    parent_session_id = None
-    originator = None
-    source_kind = provider if provider == "claude" else None
     relevant = False
     sequence_count = 0
     sequence_first_timestamp = None
@@ -960,26 +942,8 @@ for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
                     sequence_first_timestamp = sequence_first_timestamp or timestamp
                     sequence_last_timestamp = timestamp
                 sequence_last_uuid = record["uuid"]
-                if provider == "codex" and raw.get("type") == "session_meta":
-                    inner = raw.get("payload", {})
-                    cwd = inner.get("cwd", cwd)
-                    session_id = inner.get("id") or inner.get("session_id") or session_id
-                    thread_source = inner.get("thread_source") or thread_source
-                    originator = inner.get("originator") or originator
-                    source = inner.get("source")
-                    if isinstance(source, str):
-                        source_kind = source
-                    elif isinstance(source, dict):
-                        source_kind = "subagent" if "subagent" in source else source_kind
-                        subagent = source.get("subagent")
-                        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-                        if isinstance(spawn, dict):
-                            parent_session_id = (
-                                spawn.get("parent_thread_id") or parent_session_id
-                            )
-                else:
-                    cwd = raw.get("cwd", cwd)
-                    session_id = raw.get("sessionId", session_id)
+                source_format.read_metadata(raw, metadata)
+                cwd = metadata["cwd"]
                 if cwd:
                     relevant = path_matches_roots(cwd, roots)
                     if not relevant:
@@ -1001,15 +965,15 @@ for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
                 "kind": "session",
                 "path": str(path),
                 "cwd": cwd,
-                "session_id": session_id or path.stem,
+                "session_id": metadata["session_id"] or path.stem,
                 "first_timestamp": first_timestamp,
                 "last_timestamp": last_timestamp,
                 "last_uuid": last_uuid,
                 "record_count": record_count,
-                "thread_source": thread_source,
-                "parent_session_id": parent_session_id,
-                "originator": originator,
-                "source_kind": source_kind,
+                "thread_source": metadata["thread_source"],
+                "parent_session_id": metadata["parent_session_id"],
+                "originator": metadata["originator"],
+                "source_kind": metadata["source_kind"],
             }))
         elif cwd:
             unmatched_files += 1

@@ -257,6 +257,10 @@ class ProviderAuthentication:
     ) -> ProviderProcessEnvironment:
         return ProviderProcessEnvironment()
 
+    def unmanaged_environment(self, host: str) -> ProviderProcessEnvironment:
+        """The environment when RCP manages no credential and the CLI's own login applies."""
+        return ProviderProcessEnvironment()
+
     def device_login(self) -> DeviceLogin:
         raise ValueError("Device sign-in is not supported by this provider.")
 
@@ -374,6 +378,9 @@ class ClaudeAuthentication(ProviderAuthentication):
         return ProviderProcessEnvironment(local_env=environment).with_claude_foreground_tasks(
             remote=False
         )
+
+    def unmanaged_environment(self, host: str) -> ProviderProcessEnvironment:
+        return ProviderProcessEnvironment().with_claude_foreground_tasks(remote=bool(host))
 
     def validate_token(self, token: str) -> str:
         return validate_claude_token(token)

@@ -423,6 +423,28 @@ class _JsonlProviderRuntime(ProviderRuntime):
         return _JsonlProviderTurn(self._profile, request)
 
 
+@dataclass(frozen=True)
+class ProviderNativeUpdate:
+    """How the provider's own supported update runs on a team server.
+
+    Exactly one route is set: `self_update_args` runs the installed executable
+    with those arguments, and `installer_url` downloads and runs the vendor's
+    installer script with `installer_env`.
+    """
+
+    self_update_args: tuple[str, ...] | None = None
+    installer_url: str | None = None
+    installer_env: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if (self.self_update_args is None) == (self.installer_url is None):
+            raise ValueError("a native update names exactly one route")
+
+    @property
+    def requires_installed(self) -> bool:
+        return self.self_update_args is not None
+
+
 class ProviderProfile:
     """Everything RCP knows about one agent CLI."""
 
@@ -448,6 +470,7 @@ class ProviderProfile:
     runtime_aliases: dict[str, str]
     runtime_choices: tuple[ProviderRuntimeChoice, ...]
     work_like_minimum_version: tuple[int, int, int] | None = None
+    native_update: ProviderNativeUpdate
 
     def session_roots(self, sources: object, *, remote: bool) -> list[str]:
         """Return this provider's configured native-session roots.
@@ -652,6 +675,11 @@ class CodexProfile(ProviderProfile):
     usage_profile = "codex.turn.v1"
     local_session_roots_field = "codex_roots"
     remote_session_roots_field = "remote_codex_roots"
+    # OpenAI's standalone installer is Codex's supported update path.
+    native_update = ProviderNativeUpdate(
+        installer_url="https://chatgpt.com/codex/install.sh",
+        installer_env=("CODEX_NON_INTERACTIVE=1",),
+    )
     legacy_runtime_id = "codex.exec-json.v1"
     default_runtime = "exec"
     runtime_aliases = {
@@ -1000,6 +1028,7 @@ class ClaudeProfile(ProviderProfile):
     usage_profile = "claude.query.v1"
     local_session_roots_field = "claude_roots"
     remote_session_roots_field = "remote_claude_roots"
+    native_update = ProviderNativeUpdate(self_update_args=("update",))
     legacy_runtime_id = "claude.stream-json.v1"
     default_runtime = "stream-json"
     runtime_aliases = {

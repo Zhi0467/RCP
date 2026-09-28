@@ -40,17 +40,36 @@ class TurnFence:
 
     @property
     def prompt_started(self) -> bool:
-        if self.runtime_id == "codex.app-server-stdio.v1":
-            return "turn/start" in self.requests.values()
-        if self.runtime_id == "claude.stream-json.v1":
-            return bool(self.message_ids)
         return True
 
     def input(self, value: object) -> None:
-        if not isinstance(value, dict):
+        if isinstance(value, dict):
+            self._input(value)
+
+    def _input(self, value: dict) -> None:
+        pass
+
+    def output(self, value: object) -> None:
+        if not isinstance(value, dict) or self.terminal:
             return
-        if value.get("type") == "user" and isinstance(value.get("uuid"), str):
-            self.message_ids.setdefault(value["uuid"], None)
+        self._output(value)
+
+    def _output(self, value: dict) -> None:
+        kind = value.get("type")
+        if kind == "error":
+            self.last_error = str(value.get("message") or value.get("error") or "")
+        if kind in {"turn.completed", "turn.failed"}:
+            self.terminal = True
+
+
+class AppServerTurnFence(TurnFence):
+    """Codex's persistent app server, which keeps a turn open until told."""
+
+    @property
+    def prompt_started(self) -> bool:
+        return "turn/start" in self.requests.values()
+
+    def _input(self, value: dict) -> None:
         method = value.get("method")
         identifier = value.get("id")
         if isinstance(method, str) and identifier is not None:
@@ -71,22 +90,7 @@ class TurnFence:
                 params.get("expectedTurnId") if isinstance(params, dict) else None
             )
 
-    def output(self, value: object) -> None:
-        if not isinstance(value, dict) or self.terminal:
-            return
-        if self.runtime_id == "codex.app-server-stdio.v1":
-            self._app_server_output(value)
-            return
-        kind = value.get("type")
-        if self.runtime_id == "claude.stream-json.v1":
-            self._claude_output(value, kind)
-            return
-        if kind == "error":
-            self.last_error = str(value.get("message") or value.get("error") or "")
-        if kind in {"turn.completed", "turn.failed"}:
-            self.terminal = True
-
-    def _app_server_output(self, value: dict) -> None:
+    def _output(self, value: dict) -> None:
         result = value.get("result")
         method = self.requests.get(value.get("id"))
         if isinstance(result, dict):
@@ -137,7 +141,20 @@ class TurnFence:
         ):
             self.terminal = True
 
-    def _claude_output(self, value: dict, kind: object) -> None:
+
+class ClaudeStreamTurnFence(TurnFence):
+    """Claude's stream-json session, which reports each prompt it finishes."""
+
+    @property
+    def prompt_started(self) -> bool:
+        return bool(self.message_ids)
+
+    def _input(self, value: dict) -> None:
+        if value.get("type") == "user" and isinstance(value.get("uuid"), str):
+            self.message_ids.setdefault(value["uuid"], None)
+
+    def _output(self, value: dict) -> None:
+        kind = value.get("type")
         identifier = value.get("command_uuid")
         if kind == "command_lifecycle" and identifier in self.message_ids:
             if value.get("state") in {"queued", "started"}:
@@ -162,3 +179,15 @@ class TurnFence:
         if finished and self.outstanding and not failed:
             return
         self.terminal = True
+
+
+#: Runtimes whose turn boundary differs from the one-shot JSONL default. Keyed
+#: by the durable runtime ids in `rcp.providers`; this module cannot import it.
+TURN_FENCES: dict[str, type[TurnFence]] = {
+    "codex.app-server-stdio.v1": AppServerTurnFence,
+    "claude.stream-json.v1": ClaudeStreamTurnFence,
+}
+
+
+def turn_fence(runtime_id: str) -> TurnFence:
+    return TURN_FENCES.get(runtime_id, TurnFence)(runtime_id)

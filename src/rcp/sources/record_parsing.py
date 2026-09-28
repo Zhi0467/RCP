@@ -49,15 +49,77 @@ def fallback_record_id(raw: dict[str, Any], line_number: int) -> str:
     return f"line-{line_number}-{digest}"
 
 
-def normalize_record(raw: dict[str, Any], provider: str, line_number: int) -> dict[str, Any]:
-    """Normalize one provider record.
+class SessionFormat:
+    """How one source writes its native session files.
 
-    Returns a plain dict rather than a model so the remote copy needs no
-    pydantic. `timestamp` stays as the provider wrote it; callers that want a
-    datetime parse it themselves.
+    Every provider-specific fact about session files lives in one subclass
+    here, because this module is shipped to execution hosts that cannot import
+    the provider registry. `SESSION_FORMATS` is keyed by the same ids.
     """
 
-    if provider == "codex":
+    #: Path components that mark files belonging to another session.
+    skipped_path_parts: frozenset[str] = frozenset()
+    #: Metadata a file starts with before any of its records is read.
+    default_thread_source: str | None = None
+    default_source_kind: str | None = None
+    #: Whether a file without a working directory is malformed.
+    requires_cwd = True
+
+    def skip_file(self, parts: tuple[str, ...]) -> bool:
+        return any(part in self.skipped_path_parts for part in parts)
+
+    def initial_metadata(self) -> dict[str, Any]:
+        return {
+            "cwd": "",
+            "session_id": "",
+            "thread_source": self.default_thread_source,
+            "parent_session_id": None,
+            "originator": None,
+            "source_kind": self.default_source_kind,
+        }
+
+    def read_metadata(self, raw: dict[str, Any], metadata: dict[str, Any]) -> None:
+        """Fold one raw record's session facts into `metadata`."""
+        metadata["cwd"] = raw.get("cwd", metadata["cwd"])
+        metadata["session_id"] = raw.get("sessionId", metadata["session_id"])
+
+    def record_fields(self, raw: dict[str, Any]) -> tuple[Any, str, Any, str, Any]:
+        """Return `(record_id, raw_type, role, text, timestamp)` for one record."""
+        return (
+            raw.get("uuid") or raw.get("id"),
+            str(raw.get("type", "")),
+            raw.get("role", "unknown"),
+            str(raw.get("text", raw.get("content", ""))),
+            raw.get("timestamp"),
+        )
+
+
+class CodexSessionFormat(SessionFormat):
+    def read_metadata(self, raw: dict[str, Any], metadata: dict[str, Any]) -> None:
+        if raw.get("type") != "session_meta":
+            super().read_metadata(raw, metadata)
+            return
+        payload = raw.get("payload", {})
+        metadata["cwd"] = payload.get("cwd", metadata["cwd"])
+        metadata["session_id"] = (
+            payload.get("id") or payload.get("session_id") or metadata["session_id"]
+        )
+        metadata["thread_source"] = payload.get("thread_source") or metadata["thread_source"]
+        metadata["originator"] = payload.get("originator") or metadata["originator"]
+        source = payload.get("source")
+        if isinstance(source, str):
+            metadata["source_kind"] = source
+        elif isinstance(source, dict):
+            if "subagent" in source:
+                metadata["source_kind"] = "subagent"
+            subagent = source.get("subagent")
+            spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
+            if isinstance(spawn, dict):
+                metadata["parent_session_id"] = (
+                    spawn.get("parent_thread_id") or metadata["parent_session_id"]
+                )
+
+    def record_fields(self, raw: dict[str, Any]) -> tuple[Any, str, Any, str, Any]:
         payload = raw.get("payload", {})
         if not isinstance(payload, dict):
             payload = {}
@@ -73,21 +135,51 @@ def normalize_record(raw: dict[str, Any], provider: str, line_number: int) -> di
             if isinstance(tool_input, str):
                 text = tool_input
                 role = "assistant"
-        timestamp = payload.get("timestamp") or raw.get("timestamp")
-    elif provider == "claude":
-        record_id = raw.get("uuid")
+        return record_id, raw_type, role, text, payload.get("timestamp") or raw.get("timestamp")
+
+
+class ClaudeSessionFormat(SessionFormat):
+    # Subagent transcripts sit beside their parent and are not sessions.
+    skipped_path_parts = frozenset({"subagents"})
+    default_thread_source = "user"
+    default_source_kind = "claude"
+
+    def record_fields(self, raw: dict[str, Any]) -> tuple[Any, str, Any, str, Any]:
         raw_type = str(raw.get("type", ""))
         role = raw_type if raw_type in {"user", "assistant", "system"} else "unknown"
         message = raw.get("message", {})
         text = extract_text(message.get("content") if isinstance(message, dict) else message)
-        timestamp = raw.get("timestamp")
-    else:
-        record_id = raw.get("uuid") or raw.get("id")
-        raw_type = str(raw.get("type", ""))
-        role = raw.get("role", "unknown")
-        text = str(raw.get("text", raw.get("content", "")))
-        timestamp = raw.get("timestamp")
+        return raw.get("uuid"), raw_type, role, text, raw.get("timestamp")
 
+
+class AppChatSessionFormat(SessionFormat):
+    """RCP's own chat records, which are indexed beside provider sessions."""
+
+    default_thread_source = "user"
+    default_source_kind = "app_chat"
+    requires_cwd = False
+
+
+SESSION_FORMATS: dict[str, SessionFormat] = {
+    "codex": CodexSessionFormat(),
+    "claude": ClaudeSessionFormat(),
+    "app_chat": AppChatSessionFormat(),
+}
+
+
+def session_format(source: str) -> SessionFormat:
+    return SESSION_FORMATS.get(source) or SessionFormat()
+
+
+def normalize_record(raw: dict[str, Any], provider: str, line_number: int) -> dict[str, Any]:
+    """Normalize one provider record.
+
+    Returns a plain dict rather than a model so the remote copy needs no
+    pydantic. `timestamp` stays as the provider wrote it; callers that want a
+    datetime parse it themselves.
+    """
+
+    record_id, raw_type, role, text, timestamp = session_format(provider).record_fields(raw)
     if role not in KNOWN_ROLES:
         role = "unknown"
     return {
