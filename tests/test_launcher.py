@@ -21,7 +21,7 @@ from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
 from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
-from rcp.providers import ProviderRuntimeStep, ProviderTurnRequest, profile_for
+from rcp.providers import PROVIDER_IDS, ProviderRuntimeStep, ProviderTurnRequest, profile_for
 
 
 def _command(
@@ -1076,7 +1076,7 @@ def test_codex_graph_only_orchestrate_accepts_no_repository_write_roots() -> Non
     assert "--add-dir" not in command
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("provider", PROVIDER_IDS)
 @pytest.mark.parametrize("capability", ["work_auto", "orchestrate"])
 def test_work_like_provider_commands_require_a_resolved_project_scope(
     provider: str,
