@@ -121,9 +121,9 @@ def merge_preview(
             ],
         )
         preview.needs_agent = bool(residue)
-    if binding and binding.worktree:
+    state = store.episode_isolation_state(owner.project_id, owner.episode_id)
+    if binding and binding.worktree and not _code_discarded(state):
         worktree = binding.worktree
-        state = store.episode_isolation_state(owner.project_id, owner.episode_id)
         try:
             if state and state.status == "removed":
                 if not state.delivered_source_commit:
@@ -172,6 +172,11 @@ def merge_preview(
     return preview
 
 
+def _code_discarded(state) -> bool:
+    """A removed worktree whose code never landed was discarded on purpose."""
+    return state is not None and state.status == "removed" and not state.delivered_source_commit
+
+
 def _save(
     store: AppStore, owner: EpisodeRecord, attempt: EpisodeMergeAttempt, **changes
 ) -> EpisodeMergeAttempt:
@@ -200,6 +205,8 @@ def verify_episode_merge_code(store, owner):
     if state is None or state.merge_attempt is None or not state.merge_reservation:
         raise ValueError("episode_merge_reserved")
     attempt = state.merge_attempt
+    if attempt.source_commit is None:
+        return
     if not _git(
         store,
         binding,
@@ -271,10 +278,11 @@ def _commit_graph_once(service, store, owner, attempt):
 
 def _cleanup(service, store, owner, binding, attempt):
     attempt = _save(store, owner, attempt, phase="cleanup", error=None)
+    code_side = binding.worktree is not None and attempt.source_commit is not None
     errors = []
     for step, enabled in (
-        ("remove_worktree", attempt.remove_worktree and binding.worktree is not None),
-        ("delete_code_branch", attempt.delete_code_branch and binding.worktree is not None),
+        ("remove_worktree", attempt.remove_worktree and code_side),
+        ("delete_code_branch", attempt.delete_code_branch and code_side),
         (
             "archive_graph_branch",
             attempt.archive_graph_branch and binding.graph_branch_id is not None,
@@ -303,17 +311,18 @@ def _cleanup(service, store, owner, binding, attempt):
                     target_branch=attempt.target_branch,
                     squash_commit=attempt.squash_commit,
                 )
-            attempt = _save(
-                store, owner, attempt, cleanup_completed=[*attempt.cleanup_completed, step]
+            completed = attempt.model_copy(
+                update={"cleanup_completed": [*attempt.cleanup_completed, step]}
             )
-            if step == "archive_graph_branch":
-                store.update_episode_merge_attempt(
-                    owner.project_id,
-                    owner.episode_id,
-                    expected_attempt_id=attempt.attempt_id,
-                    attempt=attempt,
-                    graph_archived=True,
-                )
+            # One write, so a crash cannot record the step without its effect.
+            store.update_episode_merge_attempt(
+                owner.project_id,
+                owner.episode_id,
+                expected_attempt_id=attempt.attempt_id,
+                attempt=completed,
+                **({"graph_archived": True} if step == "archive_graph_branch" else {}),
+            )
+            attempt = completed
         except (ValueError, OSError) as exc:
             errors.append(str(exc))
     if errors:
@@ -328,7 +337,8 @@ def _cleanup(service, store, owner, binding, attempt):
 
 def _resume(service, store, owner, binding, attempt):
     if attempt.phase == "landing":
-        if binding.worktree:
+        # No source commit means this attempt carries no code side.
+        if binding.worktree and attempt.source_commit:
             verified = _git(
                 store,
                 binding,
@@ -417,6 +427,7 @@ def merge_episode(
                 expected_attempt_id=previous.attempt_id,
                 attempt=previous,
             )
+        code_side = binding.worktree is not None and state.status != "removed"
         attempt = EpisodeMergeAttempt(
             attempt_id=str(uuid.uuid4()), authorized_by=authorized_by, **body.model_dump()
         )
@@ -434,7 +445,7 @@ def merge_episode(
                 )
                 _, residue = build_deterministic_merge_ops(context)
             if (
-                binding.worktree is None
+                not code_side
                 and context is not None
                 and (
                     context.metadata.head.revision <= context.metadata.base_head.revision
@@ -447,7 +458,7 @@ def merge_episode(
             ):
                 raise ValueError("no_undelivered_work")
             facts = {}
-            if binding.worktree:
+            if code_side:
                 target = body.target_branch or binding.worktree.starting_branch
                 _git(store, binding, "commit_leftovers", target_branch=target)
                 facts = _git(store, binding, "merge_preview", target_branch=target)

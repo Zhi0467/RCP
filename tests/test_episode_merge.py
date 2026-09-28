@@ -100,6 +100,13 @@ def test_unmerged_cleanup_requires_confirmation(manifest, tmp_path):
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     assert state.status == "removed"
     assert state.merge_attempt.confirm_discard
+    # The graph side still merges after its code side was discarded.
+    merged = harness.client.post(
+        route.replace("/cleanup", "/merge"),
+        json={"remove_worktree": False, "delete_code_branch": False},
+    )
+    assert merged.status_code == 202, merged.text
+    assert len(harness.branch.merge_receipts()) == 1
 
 
 def test_squash_records_commit_and_cleans_once(manifest, tmp_path):
