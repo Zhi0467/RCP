@@ -11,6 +11,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents.context import RepositoryPointer
+from rcp.agents.grant_paths import owned_paths_covered, refuse_grants_inside
 from rcp.config import Manifest, RepositoryConfig
 from rcp.core.models import ConversationWorktreeBinding
 from rcp.providers import AgentCapability
@@ -394,7 +395,6 @@ def resolve_project_write_scope(
         remote=remote_stage is not None,
         account_home=account_home,
         app_data_dir=app_data_dir,
-        path_semantics=path_semantics,
     )
 
     protected = protected_repository_paths(
@@ -524,28 +524,14 @@ def _granted_roots(
     remote: bool,
     account_home: str,
     app_data_dir: Path | None,
-    path_semantics: _ExecutionPathSemantics,
 ) -> tuple[list[str], list[str]]:
     """Refuse grants inside RCP storage; return the RCP paths they cover."""
 
     if not grants:
         return [], []
     owned = rcp_owned_paths(account_home=account_home, app_data_dir=app_data_dir, remote=remote)
-    for grant in grants:
-        for path in owned:
-            if path_semantics.equal(grant, path) or any(
-                path_semantics.equal(parent, path) for parent in PurePosixPath(grant).parents
-            ):
-                raise ValueError(f"writable path {grant} is inside RCP's own storage at {path}")
-    covered = [
-        path
-        for path in owned
-        if any(
-            path_semantics.normalized(grant) in path_semantics.normalized(path).parents
-            for grant in grants
-        )
-    ]
-    return grants, covered
+    refuse_grants_inside(grants, owned)
+    return grants, owned_paths_covered(grants, owned)
 
 
 def registered_repository_roots(
