@@ -229,6 +229,25 @@ def test_command_sockets_resolve_under_the_account_rcp_home(short_home: Path, mo
             staged_command_client._broker_socket_path(outside)
 
 
+def test_a_private_folder_needs_a_parent_no_one_else_can_rename_it_in(tmp_path: Path) -> None:
+    # Ours but group-writable, as a 0002 umask leaves `~/.rcp`: closed, then used.
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    loose.chmod(0o775)
+    rcp_home.private_directory(loose / "tmp", "test folder")
+    assert stat.S_IMODE(loose.stat().st_mode) & 0o022 == 0
+    # A symlinked parent puts the folder wherever the link points.
+    (tmp_path / "linked").symlink_to(loose)
+    with pytest.raises(RuntimeError):
+        rcp_home.private_directory(tmp_path / "linked" / "tmp", "test folder")
+    # /tmp is shared but sticky, so a folder directly inside it is still ours.
+    shared = Path("/tmp") / f"rcp-test-{uuid.uuid4().hex[:8]}"
+    try:
+        rcp_home.private_directory(shared, "test folder")
+    finally:
+        shared.rmdir()
+
+
 def test_a_socket_parent_another_user_can_write_is_refused(tmp_path: Path) -> None:
     parent = tmp_path / "rcp"
     parent.mkdir(mode=0o700)
