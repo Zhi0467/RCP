@@ -1,8 +1,8 @@
 # Active implementation handoffs
 
 - [Episodes run isolated, and a branch view shows the graph diff](handoff-2026-09-28-episode-isolation.md)
-  — design confirmed 2026-09-28; xhigh design review next, then seven
-  slices. Nothing implemented.
+  — design confirmed and reviewed 2026-09-28; seven slices, starting with
+  slice 1. Nothing implemented yet.
 
 ## Open live checks
 

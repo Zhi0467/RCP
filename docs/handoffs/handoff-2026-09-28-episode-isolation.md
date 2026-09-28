@@ -2,8 +2,10 @@
 
 Date: 2026-09-28
 Status: scope and design confirmed by the human on 2026-09-28, after a grilling
-round that settled every open choice below. Nothing is implemented. One xhigh
-design review runs next, then the slices at the end, in order.
+round that settled every open choice below. The xhigh design review ran the
+same day; its eleven findings are folded in, and one choice it raised was
+settled by the human (Auto-research keeps the graph toggle on). Nothing is
+implemented. The slices at the end run in order.
 
 Close this handoff when, on disposable data:
 
@@ -39,12 +41,18 @@ merges both sides.
 - Defaults: Auto-research has both toggles on. An Experiment has both off, as
   today. The Run panel shows both, and the human may change either before Run.
   Neither can change after the first provider launch.
+- Auto-research's graph toggle is locked on. Its Decision exception stays
+  branch-only (`docs/specs/authority-and-proposals.md`), so the orchestrator
+  never chooses Decisions on main. Only its code toggle is free.
 - The code toggle needs exactly one repository in the run scope, as chat
   worktrees do today. With more, the toggle is disabled and says why.
   Multi-repository isolation is later work, not this handoff.
 - The code toggle needs Git 2.38 or later on the execution host
   (`git merge-tree --write-tree`). With older Git the toggle is disabled and
   names the version. There is no fallback merge path.
+- The code toggle refuses when a machine writable-path grant covers the shared
+  checkout, because that grant would make the shared checkout writable again.
+  Every launch rechecks this.
 
 ### One binding, owned by the root episode
 
@@ -73,6 +81,13 @@ merges both sides.
   worktree fails before launch. It never falls back to the shared checkout.
 - An episode with the code toggle on writes only its worktree. The shared
   checkout is outside its write roots.
+- The binding fixes the code side: the repository alias and the execution host.
+  Graph truth membership stays separate and unchanged. A child or branch
+  Experiment whose Work profile runs on another host refuses at admission.
+  Binding-aware write-scope resolution, which today serves only `work_auto`
+  chats, extends to episode `work_auto` and `orchestrate` launches.
+- The binding identity is immutable. Operation state (creating, merging,
+  removing, removed) lives in a separate record with its own lock order.
 
 ### Experiments on a graph branch
 
@@ -84,21 +99,38 @@ merges both sides.
 
 ### Fence
 
-- Merge admission already waits for graph writers, and an active merge fences
-  new graph writes on the branch. The same fence covers the worktree: no turn
-  on the binding runs while Merge runs, and Merge waits for live turns.
+- A Merge click first persists an owner-keyed **merge reservation**, before any
+  leftovers commit, also when no agent runs. Every admission on the binding
+  (turns, continuations, Resume, Retry, recovery, Remove worktree) checks it.
+  It lasts through landing, verification, and cleanup.
+- Merge waits for live turns on the binding.
+- Merge and Remove worktree also refuse while any compute job started by an
+  episode on the binding is live or unobservable. A stopped watcher is not job
+  completion. RCP still never cancels the job itself.
 
 ### Merge
+
+Merge admission keys on the isolation owner. The code side and the graph side
+each have their own delivered state. Merge is offered while either side has
+undelivered work: a code-only owner, or a branch whose graph was already
+delivered but whose code moved on, can merge.
 
 One **Merge** click runs the **pre-merge**, RCP's automatic first step:
 
 1. **Leftovers.** If the episode worktree has uncommitted changes, RCP commits
    them as one leftovers commit on the episode branch. Gitignored files stay
    out.
-2. **Refusals.** Merge refuses, and lists the files or the reason, when the
-   local target branch is missing, or when the target is checked out in the
-   shared checkout and that checkout is dirty. Refusals are validation errors,
-   never residue.
+   Before that, an unfinished Git operation (merge, rebase, cherry-pick),
+   unmerged index entries, or dirty submodule contents refuse Merge and need
+   repair. They are never leftovers.
+2. **Refusals.** Merge refuses, and lists the files or the reason, when:
+   - the local target branch is missing;
+   - the target is the episode branch itself;
+   - the target is checked out in any worktree other than the shared checkout
+     (all registrations on the execution host are inspected);
+   - the target is checked out in the shared checkout and that checkout is
+     dirty.
+   Refusals are validation errors, never residue.
 3. **Graph.** Today's `build_deterministic_merge_ops`
    (`src/rcp/runs/branch_merge.py`) gives clean ops, Proposals, and residue.
 4. **Code.** `git merge-tree --write-tree <target> <episode branch>` on the
@@ -106,7 +138,10 @@ One **Merge** click runs the **pre-merge**, RCP's automatic first step:
    runs as a new operation of the shipped worktree script. It touches no
    checkout and moves no ref.
 
-Then:
+Then RCP persists a **merge attempt** before any Git write: the owner, the
+source commit, the target ref and its commit, the graph head, the history mode,
+and the cleanup choices. Just before landing it rechecks those commits and the
+checkout's identity and cleanliness.
 
 - **No residue on either side:** RCP lands the code, then commits the graph,
   with no provider turn.
@@ -129,6 +164,14 @@ Then:
     RCP prepends the clean ops, self-checks, runs the existing correction loop
     (`PATCH_CORRECTION_MAX_ROUNDS`), re-prepares if main moved, and commits
     one main transition or nothing. There is no in-turn Apply to main.
+  - The merge launch runs on the binding's execution host, and its code alias
+    comes from the binding.
+- **Verification.** Before the graph commits, RCP checks the code landed: the
+  target contains the source commit, or the attempt records the squash commit
+  RCP or the agent made. A graph Patch without landed code fails the task.
+- **Interrupted attempts.** A new Merge first reconciles any unfinished
+  attempt from its record, squash included, before it runs a fresh pre-merge.
+  An uncertain SSH result is reconciled the same way, never guessed.
   - An episode with no code toggle launches its merge with no repository roots,
     as today.
 - **Retries.** Inside one merge task, the correction rounds and main
@@ -151,16 +194,20 @@ Then:
 The Merge panel offers three checkboxes, all on by default:
 
 - **Remove worktree** removes the checkout only. It refuses while any episode
-  on the binding is live. Later episodes that point at a removed worktree
-  refuse before launch.
+  or known compute job on the binding is live. Later episodes that point at a
+  removed worktree refuse before launch.
 - **Delete code branch** is offered only once the target contains the branch
-  tip, or RCP recorded the squash commit for it.
+  tip, or RCP recorded the squash commit for it. It needs **Remove worktree**
+  too, because the retained checkout holds the branch.
 - **Archive graph branch** hides the branch from the default list. Its Patch
   log stays forever (invariant 1). An archived branch can be shown again.
 
 **Keep branch open** merges and skips cleanup, so later work can merge again.
 The same controls also appear on an unmerged branch, as **Discard worktree**
 and **Archive**. They name what will be lost and need a confirmation.
+
+Each cleanup step is recorded, idempotent, and retryable on its own. A cleanup
+failure shows as a cleanup failure, never as a failed code or graph delivery.
 
 ### What the graph diff shows
 
@@ -198,14 +245,22 @@ ResearchDiffRow
   entity: node | edge | proposal | ambiguity | glossary | global
   id, type, title
   change: created | updated | removed
-  fields: [field_path]
+  neighbours: [id]              # one-hop context
   revision                      # branch revision that last touched it
-  disposition: clean | proposal | conflict | residue
+  delivered: bool               # covered by an earlier merge receipt
+  paths: [ResearchDiffPath]
+
+ResearchDiffPath
+  field_path
+  base, branch, main            # values, as the change views keep today
+  conflict: bool
+  needs_agent: bool
   residue_reason: <MERGE_RESIDUE_REASONS key> | None
+  needs_proposal: bool          # a requirement, not a built operation
 
 MergePreview
-  graph: {clean_ops: int, proposal_ops: int,
-          residue: [{path, reason}]}
+  delivered_baseline            # the builder's previous delivered snapshot
+  graph: {ops: int, residue: [{path, reason}]}
   code:  {repo_alias, source_branch, target_branch, commits_ahead,
           leftover_files: [path],
           status: clean | conflict | already_merged | target_dirty
@@ -214,10 +269,14 @@ MergePreview
   needs_agent: bool
 ```
 
-`rows` come from the existing `GraphSemanticDelta` (base → branch).
-`disposition` and `residue_reason` come from the same call to
-`build_deterministic_merge_ops` that Merge uses, so the diff and the merge
-cannot disagree.
+`rows` come from the existing `GraphSemanticDelta` (base → branch) and keep
+the values, provenance, and neighbour ids that `src/rcp/api/graph_changes.py`
+already carries. Classification is per path, not per entity: one node can need
+a Proposal and hold a conflict at once. The flags come from the same call to
+`build_deterministic_merge_ops` that Merge uses, against the same delivered
+baseline, so the diff and the merge cannot disagree. Rows an earlier merge
+already delivered stay in the diff, marked `delivered`. A node's mark in the
+graph is its most severe path.
 
 ## Rules this changes
 
@@ -243,15 +302,21 @@ cannot disagree.
 
 Each slice is one Codex implementation pass, reviewed once as it lands.
 
-1. **Binding.** `EpisodeIsolation` storage, the chat-or-episode worktree
-   owner, `isolation_owner_episode_id` resolution for children, continuations,
-   and branch Experiments, Run admission (one repository, Git version), launch
-   write roots, recovery fail-closed, and the worktree fence.
+1. **Binding.** `EpisodeIsolation` storage and its separate operation state,
+   the chat-or-episode worktree owner, `isolation_owner_episode_id` resolution
+   for children, continuations, and branch Experiments, Run admission (one
+   repository, Git version, grant overlap, host compatibility, Auto-research
+   graph toggle locked on), binding-aware write roots for `work_auto` and
+   `orchestrate`, and recovery fail-closed. Specs for these rules change in
+   the same slice.
 2. **Experiment graph branch.** The graph toggle for Experiments, reusing the
    Auto-research branch creation.
-3. **Pre-merge and agentless merge.** The leftovers commit, the refusals, the
-   merge-tree operation in the shipped script, `MergePreview`, landing
-   (checkout merge or compare-and-swap), Squash, and cleanup.
+3. **Pre-merge and agentless merge.** Owner-keyed merge admission with
+   separate code and graph delivery, the merge reservation and job gate, the
+   merge attempt record and its reconciliation, interrupted-Git detection, the
+   leftovers commit, the refusals, the merge-tree operation in the shipped
+   script, `MergePreview`, landing (checkout merge or compare-and-swap),
+   verification, Squash, and recorded cleanup steps.
 4. **Merge task with code.** The Integrate write scope on the merge launch, the
    combined prompt, and an **audit of the branch-merge prompt and its
    correction prompt**: what each round says and how it is built, now that it
@@ -267,7 +332,17 @@ Each slice is one Codex implementation pass, reviewed once as it lands.
   checkout and main stay unchanged until Merge.
 - Children, continuations, and branch Experiments resolve the owner's binding,
   including after restart and Retry. None creates a second one.
-- Run refuses the code toggle for two run-scope repositories and for old Git.
+- Run refuses the code toggle for two run-scope repositories, for old Git, and
+  for a grant covering the shared checkout. Auto-research cannot turn the
+  graph toggle off.
+- A code-only owner can Merge. So can a branch whose graph was delivered but
+  whose code moved on.
+- Merge refuses a target checked out in another worktree, a target equal to
+  the source, an unfinished Git operation, and a live or unobservable job.
+- A merge task whose Patch is valid but whose code did not land fails before
+  the graph commit.
+- A crash after landing and before the graph commit, squash included, is
+  reconciled by the next Merge from the attempt record.
 - Merge refuses a dirty shared checkout that has the target checked out, and a
   missing target. It commits worktree leftovers.
 - Merge with no residue on either side runs no provider turn.
