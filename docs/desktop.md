@@ -185,8 +185,7 @@ attaches to any backend already on the port. So a candidate is tested only
 when no other RCP is running, and on its own data:
 
 ```bash
-curl -fsS -m 3 http://127.0.0.1:8421/api/health && echo "another RCP is running; quit it first"
-open -n "RCP Candidate.app" --env RCP_DATA_DIR="$(mktemp -d)"
+if curl -fsS -m 3 http://127.0.0.1:8421/api/health >/dev/null; then echo "another RCP is running; quit it first"; else open -n "RCP Candidate.app" --env RCP_DATA_DIR="$(mktemp -d)"; fi
 ```
 
 The local steps below build the same app from a checkout; launch that bundle
