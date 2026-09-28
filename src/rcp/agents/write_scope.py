@@ -40,6 +40,17 @@ class RegisteredRepositoryRoot(BaseModel):
     path: str = Field(min_length=1)
 
 
+class EpisodeWorktreeFact(BaseModel):
+    """What an episode prompt says about its bound worktree, taken from the binding."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    repository_alias: str = Field(min_length=1)
+    branch: str = Field(min_length=1)
+    starting_branch: str = Field(min_length=1)
+    shared_path: str = Field(min_length=1)
+
+
 class ProjectWriteScope(BaseModel):
     """Provider-neutral, canonical filesystem scope for one Work-like launch."""
 
@@ -61,6 +72,7 @@ class ProjectWriteScope(BaseModel):
     # The subset of protected paths present only because a grant covers RCP's
     # own storage; kept apart so a pre-grant fingerprint can be derived.
     granted_protected_paths: list[str] = Field(default_factory=list)
+    episode_worktree: EpisodeWorktreeFact | None = None
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -116,6 +128,7 @@ class ProjectWriteScope(BaseModel):
         git_metadata_roots: list[str] | None = None,
         granted_roots: list[str] | None = None,
         granted_protected_paths: list[str] | None = None,
+        episode_worktree: EpisodeWorktreeFact | None = None,
     ) -> ProjectWriteScope:
         payload: dict[str, object] = {
             "schema_generation": 1,
@@ -140,6 +153,8 @@ class ProjectWriteScope(BaseModel):
             payload["granted_roots"] = sorted(set(granted_roots))
         if granted_protected_paths:
             payload["granted_protected_paths"] = sorted(set(granted_protected_paths))
+        if episode_worktree is not None:
+            payload["episode_worktree"] = episode_worktree.model_dump(mode="json")
         return cls.model_validate(
             {**payload, "fingerprint": _scope_fingerprint(_without_grants(payload))}
         )
@@ -167,6 +182,8 @@ class ProjectWriteScope(BaseModel):
         excluded = {"fingerprint"}
         if not self.git_metadata_roots:
             excluded.add("git_metadata_roots")
+        if self.episode_worktree is None:
+            excluded.add("episode_worktree")
         return _without_grants(self.model_dump(mode="json", exclude=excluded))
 
 
@@ -446,6 +463,17 @@ def resolve_project_write_scope(
         granted_roots=granted,
         protected_write_paths=protected,
         granted_protected_paths=granted_protected,
+        episode_worktree=(
+            EpisodeWorktreeFact(
+                repository_alias=binding.repository_alias,
+                branch=binding.branch,
+                starting_branch=binding.starting_branch,
+                shared_path=binding.shared_path,
+            )
+            # A merge turn writes the shared checkout too, so the episode rule does not apply.
+            if isinstance(binding, EpisodeWorktreeBinding) and not include_shared_checkout
+            else None
+        ),
     )
 
 

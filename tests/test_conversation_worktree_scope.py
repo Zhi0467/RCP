@@ -11,6 +11,7 @@ from threading import Barrier
 import pytest
 
 from rcp.agents.context import RepositoryPointer
+from rcp.agents.prompts import write_scope_section
 from rcp.agents.write_scope import (
     ProjectWriteScope,
     RegisteredRepositoryRoot,
@@ -443,6 +444,13 @@ def test_episode_scope_admits_one_worktree_without_shared_ancestor_grants(
     assert scope.repository_roots == [binding.worktree_path]
     assert scope.git_metadata_roots == [binding.git_common_dir]
     assert not any(Path(binding.shared_path).is_relative_to(root) for root in scope.granted_roots)
+    # The prompt's worktree fact is the binding's own identity.
+    assert scope.episode_worktree is not None
+    assert (scope.episode_worktree.branch, scope.episode_worktree.shared_path) == (
+        binding.branch,
+        binding.shared_path,
+    )
+    assert binding.branch in write_scope_section(scope)
     for grant in (binding.shared_path, str(Path(binding.shared_path).parent)):
         with pytest.raises(ValueError):
             _resolve(manifest, tmp_path, binding, machine_writable_paths=[grant])

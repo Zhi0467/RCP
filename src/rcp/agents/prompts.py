@@ -114,6 +114,17 @@ Relations one hop from this node:
 """
 
 
+def _episode_worktree_rule(scope: ProjectWriteScope) -> str:
+    worktree = scope.episode_worktree
+    if worktree is None:
+        return ""
+    return f"""- Repository `{worktree.repository_alias}` is this episode's own Git worktree on branch
+  `{worktree.branch}`, started from `{worktree.starting_branch}`. The shared checkout
+  `{worktree.shared_path}` is outside the boundary. Commit on `{worktree.branch}` as you go;
+  do not switch branches, merge, rebase, or push. A human Merge lands this branch.
+"""
+
+
 def write_scope_section(scope: ProjectWriteScope) -> str:
     """Render the exact filesystem boundary the provider is launched with.
 
@@ -133,7 +144,7 @@ def write_scope_section(scope: ProjectWriteScope) -> str:
     return f"""
 Enforced write boundary on the machine this turn runs on:
 {roots}
-- Every other path on this machine is readable but not writable. A write outside the roots above
+{_episode_worktree_rule(scope)}- Every other path on this machine is readable but not writable. A write outside the roots above
   fails as a provider denial. That denial is this boundary, not a broken tool and not a permission
   you can request, so do not retry it through another command.
 - A repository pointer whose host is non-empty lives on another machine and is outside this
