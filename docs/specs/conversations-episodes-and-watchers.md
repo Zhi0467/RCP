@@ -2,7 +2,7 @@
 
 This specification owns ordinary conversations, bounded Experiment control,
 common episode lifecycle, watcher observation/delivery, and visual wrap-up.
-Auto-research-specific orchestration and graph branches are in
+Auto-research orchestration and episode graph branches are in
 [Auto-research and branch merge](auto-research-and-branch-merge.md).
 
 ## Discuss and Work turns
@@ -76,7 +76,7 @@ An exact conversation/native session cannot be reused across a different chat
 or graph target. Main and branch-bound stages fail closed instead of silently
 continuing with the other target's authority.
 
-Opening an Auto-research branch exposes the ordinary node and project composers
+Opening an episode branch exposes the ordinary node and project composers
 for that graph target, during and after the episode. These chats have independent
 human authorization and sessions; they do not route through the orchestrator or
 spend its budget. Canonical chat records carry their graph target. Older records
@@ -214,10 +214,17 @@ authority, watcher/child settlement, and compact wrap-up facts.
 
 ### Episode isolation
 
-Run captures independent code and graph isolation choices. Auto-research defaults
-both on and keeps graph isolation locked on. Experiments default both off.
-Creating an Experiment graph branch is not yet supported. An Experiment with
-graph isolation off keeps its existing graph target.
+Run captures independent code and graph isolation choices. Auto-research keeps
+graph isolation locked on. Its omitted code choice resolves on when eligible,
+otherwise off. Experiments default both off. The episode records the resolved
+choices. Explicit code isolation still refuses when ineligible.
+
+An Experiment with graph isolation on creates an episode branch from an
+immutable main head, with its own Patch log. Its isolation owner records that
+branch id. With graph isolation off it keeps its existing graph target. An
+Experiment started on an existing branch keeps that branch and its isolation
+owner. Branch Work has no Decision exception. A new graph-isolated Run starts
+fresh; pending watcher completions on main remain on main.
 
 The episode that first creates isolation owns one immutable `EpisodeIsolation`.
 It records the owner id, optional graph branch id, and optional worktree identity
@@ -233,7 +240,8 @@ the worktree binding. Graph truth membership is unchanged.
 
 Code isolation requires exactly one run-scope repository and Git 2.38 or later
 on the execution host. The shipped worktree script probes the Git version.
-A machine writable-path grant covering the shared checkout refuses admission.
+A machine writable-path grant overlapping the shared checkout makes code
+isolation ineligible.
 Every launch rechecks grants and the exact binding. Work and orchestrate receive
 the worktree as their repository write root. The shared checkout is not writable.
 

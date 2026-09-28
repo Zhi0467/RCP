@@ -566,7 +566,7 @@ def _setup_branch_auto_research(
     )
     _enable_task_attribution(main_service, store)
     assert episode.authorized_by is not None
-    main_service.history.create_auto_research_branch(
+    main_service.history.create_episode_branch(
         GraphBranchMetadata(
             branch_id=episode_id,
             episode_id=episode_id,

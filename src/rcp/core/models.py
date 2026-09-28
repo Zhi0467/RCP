@@ -1127,7 +1127,7 @@ class GraphBranchMetadata(BaseModel):
     branch_id: str
     episode_id: str
     project_id: str = Field(min_length=1)
-    kind: Literal["auto_research"] = "auto_research"
+    kind: Literal["auto_research", "experiment_loop"] = "auto_research"
     base_head: GraphHeadRef
     head: GraphHeadRef
     created_at: datetime = Field(default_factory=utc_now)
@@ -1138,7 +1138,7 @@ class GraphBranchMetadata(BaseModel):
     @model_validator(mode="after")
     def identity_and_heads_are_coherent(self) -> GraphBranchMetadata:
         if self.branch_id != self.episode_id:
-            raise ValueError("an Auto-research graph branch must use its episode UUID")
+            raise ValueError("a graph branch must use its owner episode UUID")
         if self.base_head.target.kind != "main":
             raise ValueError("a graph branch base must name a main head")
         if self.head.target.kind != "branch" or self.head.target.branch_id != self.branch_id:

@@ -82,7 +82,7 @@ tests cite (`4b`, `10g`, and the rest) are registered in
 The two lists decompose the same promises at different grain, so do not read a
 number here.
 
-- **Canonical history is append-only.** Main and Auto-research branch Patch
+- **Canonical history is append-only.** Main and episode branch Patch
   logs are never edited or compacted. Materialized graph, research, glossary,
   Proposal, control, and branch outputs are derived and replaceable.
 - **Graph changes have one typed channel.** Agents write one strict
@@ -136,7 +136,7 @@ number here.
 - A **project** is one durable project identity, manifest, repository set, and
   canonical state repository.
 - **Main** is the project graph visible in ordinary project views.
-- A **graph branch** is an Auto-research episode's append-only graph history,
+- A **graph branch** is an episode's append-only graph history,
   based on one immutable main head. It is not a Git or filesystem branch.
 - A **Patch** is an attributable ordered list of typed semantic graph operations.
 - A **transition** is the manager-prepared atomic result of one initiating
@@ -198,7 +198,7 @@ winner by timestamp or silently implement around it.
   — Discuss and Work context, Experiment control, native-session continuity,
   watcher delivery, Stop, and reporting.
 - [Auto-research and branch merge](specs/auto-research-and-branch-merge.md) —
-  orchestrator authority, budgets, child work, graph-only episode branches, and
+  orchestrator authority, budgets, child work, episode graph branches, and
   human-dispatched semantic merge.
 - [Projects, spaces, and operations](specs/projects-spaces-and-operations.md) —
   durable identity, team enrollment, membership, project homes, setup, caches,

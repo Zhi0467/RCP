@@ -155,7 +155,8 @@ the same named Decision-choice authority path.
 
 The Auto-research orchestrator may queue and decide Decisions directly within
 its authorized episode and graph branch. Its child workers use the ordinary
-profile and do not inherit that exception.
+profile and do not inherit that exception. Experiment Work also has no Decision
+exception, including on an Experiment-owned graph branch.
 
 ## Two permission gates
 

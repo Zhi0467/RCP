@@ -842,15 +842,15 @@ class HistoryManager:
             transition_id=transition_id,
         )
 
-    def create_auto_research_branch(
+    def create_episode_branch(
         self,
         metadata: GraphBranchMetadata,
     ) -> BranchHistoryManager:
         """Create one episode branch at the exact current accepted main head."""
 
-        from rcp.history.branches import create_auto_research_branch
+        from rcp.history.branches import create_episode_branch
 
-        return create_auto_research_branch(self, metadata)
+        return create_episode_branch(self, metadata)
 
     def branch(
         self,

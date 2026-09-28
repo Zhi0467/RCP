@@ -76,10 +76,15 @@ def _episode_runs_query(
     experiment = store.auto_research_child_experiment(episode.episode_id)
     if (
         not episode.control_node_id
-        or experiment is None
-        or experiment.project_id != project_id
-        or experiment.control_node_id != episode.control_node_id
-        or not episode_on_branch(store, experiment.auto_research_episode_id, branch_id)
+        or not episode_on_branch(store, episode.episode_id, branch_id)
+        or (
+            experiment is not None
+            and (
+                experiment.project_id != project_id
+                or experiment.control_node_id != episode.control_node_id
+                or not episode_on_branch(store, experiment.auto_research_episode_id, branch_id)
+            )
+        )
     ):
         return None
     return {
@@ -88,7 +93,7 @@ def _episode_runs_query(
         "episode": episode.episode_id,
         "target": "branch",
         "branch": branch_id,
-        "parent": experiment.auto_research_episode_id,
+        **({"parent": experiment.auto_research_episode_id} if experiment else {}),
     }
 
 

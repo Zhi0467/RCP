@@ -7,8 +7,11 @@ same day; its eleven findings are folded in, and one choice it raised was
 settled by the human (Auto-research keeps the graph toggle on). Slice 1, Binding,
 is implemented. It includes persisted owner identity and operation state,
 inherited bindings, Run admission, launch write roots, and fail-closed recovery.
-The API exposes the toggles. Experiment graph-branch creation, merge, diff, and
-web controls remain in slices 2–7. The settled choices below are unchanged.
+Slice 2, Experiment graph branch, is implemented. Experiments can create graph
+branches, and branch reads accept either episode kind. The API exposes the
+toggles and resolves omitted Auto-research code isolation from eligibility.
+Merge, diff, and web controls remain in slices 3–7. The settled choices below
+are unchanged.
 
 Close this handoff when, on disposable data:
 
@@ -41,8 +44,9 @@ merges both sides.
 
 ### Toggles at Run
 
-- Defaults: Auto-research has both toggles on. An Experiment has both off, as
-  today. The Run panel shows both, and the human may change either before Run.
+- Defaults: Auto-research has graph isolation on and code isolation on when
+  eligible, otherwise off. An Experiment has both off, as today. The Run panel
+  shows both, and the human may change either before Run.
   Neither can change after the first provider launch.
 - Auto-research's graph toggle is locked on. Its Decision exception stays
   branch-only (`docs/specs/authority-and-proposals.md`), so the orchestrator
@@ -320,8 +324,10 @@ Each slice is one Codex implementation pass, reviewed once as it lands.
    graph toggle locked on), binding-aware write roots for `work_auto` and
    `orchestrate`, and recovery fail-closed. Specs for these rules change in
    the same slice.
-2. **Experiment graph branch.** The graph toggle for Experiments, reusing the
-   Auto-research branch creation.
+2. **Experiment graph branch — implemented.** The graph toggle for Experiments
+   reuses episode branch creation. Branch reads accept Experiment owners.
+   Omitted Auto-research code isolation resolves from eligibility; an omitted
+   Experiment choice stays off. Current-behavior specs are updated.
 3. **Pre-merge and agentless merge.** Owner-keyed merge admission with
    separate code and graph delivery, the merge reservation and job gate, the
    merge attempt record and its reconciliation, interrupted-Git detection, the

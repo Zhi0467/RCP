@@ -70,6 +70,7 @@ class ExperimentStoreMixin:
         auto_research_admission_id: str | None = None,
         continues_episode_id: str | None = None,
         continuation_request_id: str | None = None,
+        graph_base_head: GraphHeadRef | None = None,
     ) -> AgentTaskRecord:
         """Atomically create the Experiment parent, mode child, and invocation 1.
 
@@ -97,17 +98,31 @@ class ExperimentStoreMixin:
             if record.graph_target.kind == "branch"
             else None
         )
-        if record.graph_target.kind == "branch" and (
-            graph_branch is None
-            or graph_branch.mode != "auto_research"
-            or graph_branch.project_id != record.project_id
-            or graph_branch.graph_target != record.graph_target
+        owns_branch = (
+            graph_base_head is not None and record.graph_target.branch_id == record.episode_id
+        )
+        if graph_base_head is not None and (
+            not owns_branch
+            or graph_base_head.target.kind != "main"
+            or record.request.get("graph_isolation") is not True
+            or auto_research_route is not None
+            or continues_episode_id is not None
+        ):
+            raise ValueError("experiment_graph_isolation_invalid_base")
+        if (
+            record.graph_target.kind == "branch"
+            and not owns_branch
+            and (
+                graph_branch is None
+                or graph_branch.project_id != record.project_id
+                or graph_branch.graph_target != record.graph_target
+            )
         ):
             raise ValueError("a branch Experiment requires its exact project graph branch")
         episode = self._new_experiment_episode(
             record,
             auto_research_route=auto_research_route,
-            graph_base_head=(graph_branch.graph_base_head if graph_branch else None),
+            graph_base_head=(graph_branch.graph_base_head if graph_branch else graph_base_head),
             continues_episode_id=continues_episode_id,
             continuation_request_id=continuation_request_id,
         )

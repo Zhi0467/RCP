@@ -189,7 +189,7 @@ def _create_branch_harness(
     assert base_head.transition_id is not None
     episode_id = str(uuid.uuid4())
     target = GraphTargetRef(kind="branch", branch_id=episode_id)
-    branch = service.history.create_auto_research_branch(
+    branch = service.history.create_episode_branch(
         GraphBranchMetadata(
             branch_id=episode_id,
             episode_id=episode_id,
@@ -565,7 +565,7 @@ def test_start_episode_keeps_a_visible_failed_reservation_when_branch_creation_f
     def unavailable_branch(_metadata):
         raise ValueError("canonical branch publication unavailable")
 
-    monkeypatch.setattr(service.history, "create_auto_research_branch", unavailable_branch)
+    monkeypatch.setattr(service.history, "create_episode_branch", unavailable_branch)
     response = TestClient(app).post(
         f"/api/projects/{project_id}/episodes",
         json={"mode": "auto_research", "invocation_ceiling": 2},
@@ -609,14 +609,14 @@ def test_episode_list_projects_a_reservation_while_remote_branch_publication_is_
     tasks = app.state.background_tasks
     entered = threading.Event()
     release = threading.Event()
-    real_create = service.history.create_auto_research_branch
+    real_create = service.history.create_episode_branch
 
     def delayed_create(metadata):
         entered.set()
         assert release.wait(timeout=5)
         return real_create(metadata)
 
-    monkeypatch.setattr(service.history, "create_auto_research_branch", delayed_create)
+    monkeypatch.setattr(service.history, "create_episode_branch", delayed_create)
     monkeypatch.setattr(tasks, "_spawn_record", lambda record, _request, **_kwargs: record)
     start_client = TestClient(app)
     list_client = TestClient(app)
@@ -670,7 +670,7 @@ def test_restart_reconciles_an_already_published_reserved_branch(
     )
 
     def ensure(reserved: EpisodeRecord) -> None:
-        service.history.create_auto_research_branch(
+        service.history.create_episode_branch(
             GraphBranchMetadata(
                 branch_id=reserved.episode_id,
                 episode_id=reserved.episode_id,

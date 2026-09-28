@@ -90,6 +90,7 @@ def _auto_start(**updates: object) -> AutoResearchStartRequest:
     return AutoResearchStartRequest.model_validate(
         {
             "invocation_ceiling": 3,
+            "code_worktree": False,
             "provider": "codex",
             "model": "",
             "reasoning": "medium",
@@ -1954,7 +1955,7 @@ def test_restart_dispatches_committed_child_experiment_watcher_wake_once(
     )
     store.create_watchers([watcher])
     store.record_watcher_check(watcher.watcher_id, status="completed", exit_code=0, error=None)
-    wake_request = child_request.model_copy(
+    wake_request = RunRequest.model_validate(child_root.request).model_copy(
         update={
             "trigger": "watcher",
             "control_invocation": 2,

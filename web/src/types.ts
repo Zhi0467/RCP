@@ -2491,7 +2491,7 @@ export interface EpisodeMessage {
 
 export interface StartEpisodeRequest {
   mode: "auto_research";
-  code_worktree?: boolean;
+  code_worktree?: boolean | null;
   graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;

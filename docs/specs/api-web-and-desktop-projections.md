@@ -135,9 +135,10 @@ whether **Check now** is currently available. These are backend decisions, not
 client reconstructions from replay, status, or notification fields.
 
 Every branch route proves the branch belongs to the requested project and
-episode. A branch id alone never grants lookup. Task, watcher, episode, and
-Experiment detail APIs preserve exact `main` versus `branch:<id>` target
-identity.
+episode. Branch lists, targets, indexes, Research, Inbox, Chats, and merge
+eligibility reads accept both Experiment and Auto-research owners. A branch id
+alone never grants lookup. Task, watcher, episode, and Experiment detail APIs
+preserve exact `main` versus `branch:<id>` target identity.
 
 Graph, snapshot, history, Sync/preview, and ordinary chat/task routes accept an
 optional `branch_id` query naming an existing episode branch. Omitting it selects
@@ -736,9 +737,13 @@ authority. Entering Agents closes node detail.
 
 ### Runs
 
-Episode Run requests expose `code_worktree` and `graph_isolation`. Auto-research
-defaults both to true and refuses `graph_isolation: false`. Experiment starts
-default both to false. Experiment graph-branch creation is not yet supported.
+Episode Run requests expose `code_worktree` and `graph_isolation`.
+Auto-research `code_worktree` is optional and nullable. It resolves an omitted or
+null code choice to true when eligible, otherwise false. It defaults graph
+isolation to true and refuses `graph_isolation: false`. Experiment starts
+default both to false; graph isolation creates an episode branch. An existing
+branch target retains its branch and owner. Explicit ineligible code isolation
+still refuses with its admission code.
 The episode response publishes both choices and `isolation_owner_episode_id`.
 The binding is backend-owned; clients cannot supply worktree paths or an owner.
 Resume, Retry, and Add N turns keep the captured choices and owner.
@@ -871,7 +876,7 @@ The page keeps each project's episode list, so returning to a project tab shows
 that list at once while it refreshes. A poll never overlaps a list request
 already in flight for the same project; it waits for that request instead.
 Project Runs refreshes this index while visible, so an Experiment dispatched on
-an Auto-research graph branch appears as its own episode card even before anyone
+an episode graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped
 `/api/projects/{project_id}/experiment-episodes` path restricts projection work
 to that visible project. The same child appears once as a linked, subordinate

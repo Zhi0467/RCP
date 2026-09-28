@@ -41,7 +41,7 @@ from rcp.api.dependencies import (
     get_project_service as _project_service,
 )
 from rcp.api.episode_branches import (
-    ensure_auto_research_graph_target as _ensure_auto_research_graph_target,
+    ensure_episode_graph_target as _ensure_episode_graph_target,
 )
 from rcp.api.episode_branches import (
     graph_branch_summary as _graph_branch_summary,
@@ -672,8 +672,8 @@ def create_app(
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 
-    ensure_auto_research_graph_target = partial(
-        _ensure_auto_research_graph_target,
+    ensure_episode_graph_target = partial(
+        _ensure_episode_graph_target,
         catalog=catalog,
     )
     graph_branch_summary = partial(
@@ -775,6 +775,11 @@ def create_app(
             layout=server_layout,
         )
         if task.graph_target.kind == "branch" and kind != "branch_merge":
+            owner = store.episode(task.graph_target.branch_id or "")
+            if owner is None:
+                raise ValueError("episode_isolation_owner_missing")
+            if owner.mode == "experiment_loop" and task.episode_id == owner.episode_id:
+                ensure_episode_graph_target(owner)
             service = service.for_graph_target(
                 task.graph_target,
                 expected_episode_id=task.graph_target.branch_id,
@@ -1572,7 +1577,7 @@ def create_app(
                 await asyncio.to_thread(
                     reconcile_reserved_auto_research_roots,
                     background_tasks,
-                    ensure_auto_research_graph_target,
+                    ensure_episode_graph_target,
                 )
                 await asyncio.to_thread(
                     reconcile_committed_auto_research_dispatches,

@@ -913,8 +913,13 @@ class WatcherDelivery:
                     completion_criteria=runtime.completion_criteria,
                     session_id=preflight.session_id,
                 )
+                parent = self._store.episode(episode.episode_id)
+                if parent is None:
+                    raise ValueError("episode_isolation_episode_missing")
                 request = request.model_copy(
                     update={
+                        "code_worktree": parent.code_worktree,
+                        "graph_isolation": parent.graph_isolation,
                         "provider": runtime.provider,
                         "model": runtime.model,
                         "reasoning": runtime.reasoning,

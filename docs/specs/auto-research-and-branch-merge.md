@@ -86,8 +86,10 @@ child without creating another id or spending again.
 
 ## Persistent graph branch
 
-Every Auto-research episode owns one persistent canonical graph branch. The
-episode id is its stable branch identity. Before any provider launch, RCP:
+An Auto-research root or a main-target Experiment with graph isolation on owns
+one persistent canonical graph branch. Both use the same branch creation path.
+The owner episode id is its stable branch identity. Before any provider launch,
+RCP:
 
 1. reads one coherent main head;
 2. creates or reconciles branch metadata in the canonical state repository;
@@ -96,12 +98,13 @@ episode id is its stable branch identity. Before any provider launch, RCP:
 
 A crash may leave an orphan on one side of the canonical/SQLite boundary, but
 startup reconciliation either restores the exact binding or fails explicitly.
-RCP never launches an unbranched episode and never redirects it to main.
+An episode bound to a graph branch never launches without it or redirects to main.
 
-The canonical branch record contains project, episode, kind `auto_research`,
-immutable main base head, authorizing human snapshot, creation time, append-only
-branch Patch history, current head, and durable merge receipts. Branch revisions
-are identified by branch id plus head; an integer alone is insufficient.
+The canonical branch record contains project, episode, kind `auto_research` or
+`experiment_loop`, immutable main base head, authorizing human snapshot, creation
+time, append-only branch Patch history, current head, and durable merge receipts.
+Branch revisions are identified by branch id plus head; an integer alone is
+insufficient.
 
 The branch materializes the accepted main prefix through its base and then its
 own log. It does not copy mutable main outputs and never rewrites its base when
@@ -137,8 +140,11 @@ advancing main while the episode runs.
 ## Graph and code isolation
 
 The graph branch covers canonical research state. Code isolation is a separate
-Run choice and defaults on. Graph isolation stays on for every Auto-research
-episode. Its Decision exception remains branch-only.
+Run choice. An omitted Auto-research code choice resolves on only with one
+run-scope repository, Git 2.38 or later, and no writable-path grant overlapping
+the shared checkout. Otherwise it resolves off. An explicit ineligible choice
+still refuses. Graph isolation stays on for every Auto-research episode. Its
+Decision exception remains branch-only. Experiment Work has no such exception.
 
 The root episode owns the optional Git worktree. Children, continuations, and
 human-started Experiments on its graph branch resolve the same immutable

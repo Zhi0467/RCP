@@ -246,8 +246,7 @@ def _plan_worktree(
 def _require_episode_git(store: AppStore, host: str) -> None:
     facts = worktree_command(store, host=host, operation="git_version")
     if not facts["supported"]:
-        version = ".".join(str(part) for part in facts["version"])
-        raise ValueError(f"Episode code isolation requires Git 2.38 or later; found {version}.")
+        raise ValueError("episode_isolation_git_version")
 
 
 def plan_episode_worktree(

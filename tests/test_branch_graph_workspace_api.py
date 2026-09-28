@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from rcp.core.models import Patch
@@ -13,8 +14,11 @@ QUESTION = "rq/learning-after-shift"
 HYPOTHESIS = "hyp/replanning-restores-plasticity"
 
 
-def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(manifest, tmp_path):
-    app, main, episode, _root = _app_branch(manifest, tmp_path)
+@pytest.mark.parametrize("owner_mode", ["auto_research", "experiment_loop"])
+def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(
+    manifest, tmp_path, owner_mode
+):
+    app, main, episode, _root = _app_branch(manifest, tmp_path, owner_mode=owner_mode)
     client = TestClient(app)
     base = f"/api/projects/{episode.project_id}"
     params = {"branch_id": episode.episode_id}
@@ -26,6 +30,9 @@ def test_branch_graph_workspace_sync_isolated_with_delta_and_human_history(manif
     assert snapshot["graph_head"] == snapshot["graph_changes"]["head"]
     assert snapshot["graph_changes"]["nodes"] == []
     assert snapshot["graph_mutation"]["available"] is True
+    listed = client.get(f"{base}/episodes").json()
+    assert listed[0]["graph_branch"]["branch_id"] == episode.episode_id
+    assert listed[0]["graph_branch"]["merge_eligible"] is False
     draft = {
         "base_revision": snapshot["revision"],
         "nodes": [

@@ -111,7 +111,7 @@ class StartEpisodeBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["auto_research"]
-    code_worktree: bool = True
+    code_worktree: bool | None = None
     graph_isolation: Literal[True] = True
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(
@@ -379,8 +379,8 @@ def serialize_episode(
         episode.mode != "experiment_loop" or projection_snapshot.episode != episode
     ):
         raise ValueError("Experiment episode projection does not match its durable parent.")
-    owns_graph_branch = episode.mode == "auto_research" and episode.graph_target.kind == "branch"
-    if owns_graph_branch and include_graph_branch and branch_summary is None:
+    has_graph_branch = episode.graph_target.kind == "branch"
+    if has_graph_branch and include_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
     task_records = (
@@ -460,7 +460,7 @@ def serialize_episode(
         graph_base_head=episode.graph_base_head,
         graph_branch=(
             branch_summary(episode)
-            if owns_graph_branch and include_graph_branch and branch_summary is not None
+            if has_graph_branch and include_graph_branch and branch_summary is not None
             else None
         ),
         root_operation_id=episode.root_operation_id,
@@ -543,11 +543,7 @@ def serialize_episodes(
     archive_states = store.episode_archive_states(project_id)
     branch_summary: BranchSummaryResolver | None = None
     if branch_summaries is not None:
-        branch_episodes = [
-            episode
-            for episode in selected
-            if episode.mode == "auto_research" and episode.graph_target.kind == "branch"
-        ]
+        branch_episodes = [episode for episode in selected if episode.graph_target.kind == "branch"]
         resolved = branch_summaries(branch_episodes)
         expected_ids = {episode.episode_id for episode in branch_episodes}
         if set(resolved) != expected_ids:

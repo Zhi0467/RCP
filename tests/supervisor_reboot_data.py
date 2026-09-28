@@ -354,7 +354,7 @@ def _prepare_data(
     if empty_branch:
         base = history.head_ref()
         branch_id = str(uuid.uuid4())
-        branch = history.create_auto_research_branch(
+        branch = history.create_episode_branch(
             GraphBranchMetadata(
                 branch_id=branch_id,
                 episode_id=branch_id,

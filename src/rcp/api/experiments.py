@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from functools import partial
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -17,6 +18,7 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.episode_branches import ensure_episode_graph_target
 from rcp.api.episodes import _episode_for_http, episode_on_branch
 from rcp.api.experiment_controls import _experiment_control, _experiment_control_for_target
 from rcp.api.graph_changes import require_graph_edit_admission
@@ -114,9 +116,10 @@ def run_experiment(
             raise ValueError("Run requires a chat_id")
         uuid.UUID(supplied.chat_id)
         episode_id = str(uuid.uuid4())
+        creates_branch = supplied.graph_isolation and target.kind == "main"
         pending_group = (
             None
-            if runtime.stop_requested and runtime.stop_settled
+            if creates_branch or (runtime.stop_requested and runtime.stop_settled)
             else store.completed_experiment_watcher_group(
                 project_id,
                 node_id,
@@ -177,6 +180,10 @@ def run_experiment(
             experiment_request,
             authorized_by=authorized_by,
             graph_target=target,
+            graph_base_head=service.history.head_ref() if creates_branch else None,
+            ensure_graph_target=(
+                partial(ensure_episode_graph_target, catalog=catalog) if creates_branch else None
+            ),
         )
     except AgentTaskAdmissionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

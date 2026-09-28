@@ -76,7 +76,7 @@ class AutoResearchStartRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    code_worktree: bool = True
+    code_worktree: bool | None = None
     graph_isolation: Literal[True] = True
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(default=None, max_length=16_000)

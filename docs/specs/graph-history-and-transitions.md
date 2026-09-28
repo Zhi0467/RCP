@@ -189,14 +189,14 @@ not independently reinterpret dictionaries.
 ## Append-only history and graph targets
 
 The project canonical repository contains one append-only main Patch log and,
-when Auto-research has run, persistent append-only graph-branch namespaces.
+when an episode creates a graph branch, persistent append-only branch namespaces.
 Main and branch Patch files are never edited or deleted. A human Sync becomes
 one atomically published visible batch. Hidden staging is ignored until its
 directory rename.
 
 A graph target is either `main` or `branch:<branch_id>`. A graph head always
 contains its target, integer revision, and last transition id; a bare integer is
-not globally unique. An Auto-research branch additionally records its project,
+not globally unique. An episode branch additionally records its project,
 owning episode (the chain root whose id is the `branch_id`), immutable base main
 head, branch kind, authorizing human snapshot, creation time, current head, and
 merge receipts. Continuation episodes of that chain write to the same branch

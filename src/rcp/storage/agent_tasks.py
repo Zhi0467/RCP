@@ -265,11 +265,11 @@ class AgentTaskStoreMixin:
                     raise KeyError(record.episode_id)
                 stored_episode = self._episode_record(episode)
                 if (
-                    stored_episode.mode != "auto_research"
+                    stored_episode.graph_target.branch_id != stored_episode.episode_id
                     or stored_episode.project_id != record.project_id
                     or stored_episode.graph_target != record.graph_target
                 ):
-                    raise ValueError("branch merge requires its exact Auto-research episode")
+                    raise ValueError("branch merge requires its exact owner episode")
                 # A branch merges on branch facts: nothing about the episode's
                 # status, ending, or paused turns is a condition, and merging ends
                 # nothing. The only writers that matter are live graph-capable tasks.
@@ -398,13 +398,12 @@ class AgentTaskStoreMixin:
                         "only an ordinary conversation may independently target a branch"
                     )
                 branch = connection.execute(
-                    "SELECT project_id, mode, graph_target_json FROM episodes WHERE episode_id = ?",
+                    "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
                     (record.graph_target.branch_id,),
                 ).fetchone()
                 if (
                     branch is None
                     or branch["project_id"] != record.project_id
-                    or branch["mode"] != "auto_research"
                     or GraphTargetRef.model_validate_json(branch["graph_target_json"])
                     != record.graph_target
                 ):

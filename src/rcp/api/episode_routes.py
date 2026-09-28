@@ -62,7 +62,7 @@ from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
 from rcp.transport import StateUnavailable
 
 from .episode_branches import (
-    ensure_auto_research_graph_target,
+    ensure_episode_graph_target,
     graph_branch_summaries,
     graph_branch_summary,
 )
@@ -213,7 +213,7 @@ def start_episode(
             authorized_by=authorized_by,
             graph_base_head=graph_base_head,
             ensure_graph_target=partial(
-                ensure_auto_research_graph_target,
+                ensure_episode_graph_target,
                 catalog=catalog,
             ),
         )
@@ -332,10 +332,10 @@ def merge_episode_branch(
 ) -> EpisodeResponse:
     authorized_by = identity_access.require_patch_capable_identity(request)
     member = _episode_for_http(store, catalog, project_id, episode_id)
-    if member.mode != "auto_research" or member.graph_target.kind != "branch":
+    if member.graph_target.kind != "branch":
         raise HTTPException(
             status_code=409,
-            detail="Only an Auto-research graph branch can merge to main.",
+            detail="Only an episode graph branch can merge to main.",
         )
     # The branch keeps its chain root's id, so the merge binds to the root
     # whichever chain member's card dispatched it.

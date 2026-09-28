@@ -18,7 +18,7 @@ from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AppStore
 
 if TYPE_CHECKING:
-    from rcp.runs.auto_research import AutoResearchRunRequest
+    from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
     from rcp.service import ProjectService, RunRequest
 
 isolation_locks = KeyedLocks()
@@ -45,7 +45,7 @@ def _check_grants(store: AppStore, host: str, shared_path: str) -> None:
 def validate_episode_admission(
     store: AppStore,
     project_id: str,
-    request: RunRequest | AutoResearchRunRequest,
+    request: RunRequest | AutoResearchRunRequest | AutoResearchStartRequest,
     *,
     episode_id: str | None = None,
     graph_target: GraphTargetRef | None = None,
@@ -86,12 +86,6 @@ def validate_episode_admission(
         )
     ):
         raise ValueError("episode_isolation_choices_changed")
-    if (
-        owner is None
-        and request.graph_isolation
-        and getattr(request, "patch_kind", None) == "experiment_loop"
-    ):
-        raise ValueError("experiment_graph_isolation_not_implemented")
     if not code:
         return
     project = store.project(project_id)
@@ -122,6 +116,27 @@ def validate_episode_admission(
         raise ValueError("episode_isolation_owner_missing")
     _require_episode_git(store, host)
     _check_grants(store, host, repository.path)
+
+
+def resolve_auto_research_code_worktree(
+    store: AppStore, project_id: str, request: AutoResearchStartRequest
+) -> bool:
+    """Resolve the omitted toggle once, before persisting the owner's choices."""
+    if request.code_worktree is not None:
+        return request.code_worktree
+    try:
+        validate_episode_admission(
+            store, project_id, request.model_copy(update={"code_worktree": True})
+        )
+    except ValueError as exc:
+        if str(exc) not in {
+            "episode_isolation_requires_one_repository",
+            "episode_isolation_git_version",
+            "episode_isolation_grant_overlap",
+        }:
+            raise
+        return False
+    return True
 
 
 def ensure_episode_isolation(

@@ -91,6 +91,7 @@ import {
 } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
 import {
+  experimentBoardHref,
   experimentBoardRouteToken,
   experimentIndexEntryForRoute,
   experimentStopPath,
@@ -1234,7 +1235,11 @@ export default function App() {
   });
   const activeBranchEpisode =
     graphTarget.kind === "branch"
-      ? episodes.find((episode) => episode.graph_branch?.branch_id === graphTarget.branch_id)
+      ? episodes.find(
+          (episode) =>
+            episode.graph_branch?.branch_id === graphTarget.branch_id &&
+            episode.episode_id === episode.graph_branch.current_episode_id,
+        )
       : null;
   const {
     snapshot: projectHistorySnapshot,
@@ -4459,7 +4464,16 @@ export default function App() {
               className="button compact secondary"
               onClick={() => {
                 if (activeBranchEpisode) {
-                  window.location.hash = `${graphViewHash(project.id, graphTarget, "execution")}&mode=auto_research&episode=${encodeURIComponent(activeBranchEpisode.episode_id)}`;
+                  window.location.hash =
+                    activeBranchEpisode.mode === "experiment_loop" &&
+                    activeBranchEpisode.control_node_id
+                      ? experimentBoardHref(project.id, {
+                          experiment_id: activeBranchEpisode.control_node_id,
+                          episode_id: activeBranchEpisode.episode_id,
+                          graph_target: graphTarget,
+                          parent_episode_id: null,
+                        })
+                      : `${graphViewHash(project.id, graphTarget, "execution")}&mode=auto_research&episode=${encodeURIComponent(activeBranchEpisode.episode_id)}`;
                 } else changeView("execution");
               }}
             >

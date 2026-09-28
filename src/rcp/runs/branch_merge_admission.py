@@ -1,7 +1,7 @@
-"""Admission for one graph-only Auto-research branch merge.
+"""Admission for one graph-only episode branch merge.
 
 Branch-merge policy, not engine plumbing: the checks below are about what an
-ended Auto-research branch is, and none of them generalise to any other task
+episode graph branch is, and none of them generalise to any other task
 kind.  It takes the engine because launching needs the engine's launch gate.
 """
 
@@ -35,11 +35,10 @@ def start_branch_merge(
     if (
         episode is None
         or episode.project_id != project_id
-        or episode.mode != "auto_research"
         or episode.graph_target.kind != "branch"
         or episode.graph_target.branch_id != episode.episode_id
     ):
-        raise ValueError("branch merge requires its exact Auto-research episode branch")
+        raise ValueError("branch merge requires its exact owner episode branch")
     # Branch facts only: a live graph-capable writer blocks the merge; the
     # episode's status, ending, and paused turns do not.
     active_branch_writers = [

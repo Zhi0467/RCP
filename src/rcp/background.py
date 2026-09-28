@@ -22,7 +22,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.config import load_manifest
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS,
     AGENT_TRANSPORT_RETRY_LIMIT,
@@ -547,6 +547,8 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
         graph_target: GraphTargetRef | None = None,
+        graph_base_head: GraphHeadRef | None = None,
+        ensure_graph_target: Callable[[EpisodeRecord], None] | None = None,
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task dispatch")
         if kind == "auto_research":
@@ -605,6 +607,8 @@ class BackgroundAgentTasks:
             stage_host=stage_host,
             stage_root=stage_root,
             graph_target=graph_target,
+            graph_base_head=graph_base_head,
+            ensure_graph_target=ensure_graph_target,
         )
 
     def resume(
@@ -1145,6 +1149,8 @@ class BackgroundAgentTasks:
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
         claim_graph_repair_parent: bool = False,
         graph_target: GraphTargetRef | None = None,
+        graph_base_head: GraphHeadRef | None = None,
+        ensure_graph_target: Callable[[EpisodeRecord], None] | None = None,
         continues_episode_id: str | None = None,
         continuation_request_id: str | None = None,
     ) -> AgentTaskRecord | None:
@@ -1226,6 +1232,17 @@ class BackgroundAgentTasks:
             )
         ):
             raise ValueError("Only an Experiment Run at invocation 1 can continue an episode.")
+        if (
+            isinstance(request, RunRequest)
+            and request.patch_kind == "experiment_loop"
+            and request.graph_isolation
+            and task_graph_target.kind == "main"
+            and continues_episode_id is None
+            and parent is None
+        ):
+            if graph_base_head is None or ensure_graph_target is None:
+                raise ValueError("experiment_graph_isolation_requires_base")
+            task_graph_target = GraphTargetRef(kind="branch", branch_id=request.control_episode_id)
         operation_id = operation_id or str(uuid.uuid4())
         dispatch_authority = resolved_dispatch_authority(
             self.store,
@@ -1340,6 +1357,7 @@ class BackgroundAgentTasks:
                     request.watcher_ids,
                     continues_episode_id=continues_episode_id,
                     continuation_request_id=continuation_request_id,
+                    graph_base_head=graph_base_head,
                 )
             elif parent is not None and continuation in {
                 "resume",
@@ -1376,6 +1394,31 @@ class BackgroundAgentTasks:
         # the turn's input but reuses the paid allocation, which the wake validator
         # rejects by design.
         try:
+            if ensure_graph_target is not None:
+                owner = self.store.episode(record.episode_id or "")
+                if owner is None:
+                    raise ValueError("episode_isolation_episode_missing")
+                try:
+                    ensure_graph_target(owner)
+                except Exception as exc:
+                    self.store.fail_agent_task(record.operation_id, str(exc))
+                    from rcp.runs.episodes.wrapup import (
+                        EpisodeWrapupSpec,
+                        begin_episode_report_wrapup,
+                    )
+
+                    begin_episode_report_wrapup(
+                        self.store,
+                        EpisodeWrapupSpec(
+                            episode_id=owner.episode_id,
+                            ending="failed",
+                            partial=True,
+                            continuation_operation_id=record.operation_id,
+                            receipt={"reason": "graph_branch_unavailable_before_launch"},
+                            diagnostic=str(exc),
+                        ),
+                    )
+                    raise
             if auto_research_wake_admission is not None or auto_research_mail_delivery is not None:
                 assert isinstance(request, AutoResearchRunRequest)
                 return ensure_auto_research_wake_spawned(

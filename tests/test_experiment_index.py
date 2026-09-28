@@ -179,7 +179,7 @@ def _record_branch_target_child_experiment(
     parent_id = str(uuid.uuid4())
     parent_target = GraphTargetRef(kind="branch", branch_id=parent_id)
     base_head = service.history.head_ref()
-    service.history.create_auto_research_branch(
+    service.history.create_episode_branch(
         GraphBranchMetadata(
             branch_id=parent_id,
             episode_id=parent_id,
@@ -1112,7 +1112,7 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         assert project_child["episode_id"] == child.episode_id
         assert project_child["graph_target"] == parent.graph_target.model_dump(mode="json")
         assert project_child["graph_base_head"] == parent.graph_base_head.model_dump(mode="json")
-        assert project_child["graph_branch"] is None
+        assert project_child["graph_branch"]["branch_id"] == parent.episode_id
 
         experiment_index = client.get("/api/episodes", params={"mode": "experiment_loop"})
         assert experiment_index.status_code == 200
@@ -1122,7 +1122,7 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         assert indexed_child["episode_id"] == child.episode_id
         assert indexed_child["graph_target"] == parent.graph_target.model_dump(mode="json")
         assert indexed_child["graph_base_head"] == parent.graph_base_head.model_dump(mode="json")
-        assert indexed_child["graph_branch"] is None
+        assert indexed_child["graph_branch"]["branch_id"] == parent.episode_id
         assert entry["graph_target"] == parent.graph_target.model_dump(mode="json")
         assert entry["graph_head"]["target"] == parent.graph_target.model_dump(mode="json")
         assert entry["graph_head"]["revision"] > parent.graph_base_head.revision
