@@ -120,8 +120,9 @@ requirements.
    response means it accepted the message, not that the phone showed it;
    the service can still drop or expire it. So the outbox guarantees
    at-least-once submission to the push service across local crashes, and
-   display on the phone is best effort. The Mac adapter reports display
-   itself. There is one outbox row per (subscription,
+   display on the phone is best effort. The Mac is the same: success means
+   `UNUserNotificationCenter` accepted the request, and Focus or other
+   settings may still hide it. There is one outbox row per (subscription,
    notification id). It records the attempt count, next attempt time, and
    last status. A stable notification id is the Web Push `Topic`, the Web
    Notification `tag` passed to `showNotification`, and the Mac request
