@@ -111,6 +111,36 @@ def sweep_stages(retain_days: int, protected: set[str]) -> None:
                     remove_tree(target)
 
 
+def check_stage(root: str) -> None:
+    """Exit 0 when `root` is this account's own private stage; 1 when it is not, 2 when unknown.
+
+    The saved root itself is checked, never followed through a replacement.
+    """
+
+    base = os.path.join(os.path.expanduser("~"), ".rcp", "stages")
+    legacy = os.path.dirname(root) == LEGACY_PARENT
+    if not STAGE_NAME.fullmatch(os.path.basename(root)) or (
+        os.path.dirname(root) != base and not legacy
+    ):
+        print("remote run stage is outside this account", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        info = os.lstat(root)
+    except (FileNotFoundError, NotADirectoryError):
+        raise SystemExit(1) from None
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2) from None
+    for unsafe, message in (
+        (not stat.S_ISDIR(info.st_mode), "remote run stage is not a directory"),
+        (info.st_uid != os.geteuid(), "remote run stage has the wrong owner"),
+        (stat.S_IMODE(info.st_mode) != 0o700, "remote run stage has unsafe permissions"),
+    ):
+        if unsafe:
+            print(message, file=sys.stderr)
+            raise SystemExit(1)
+
+
 def remove_stage(root: str) -> None:
     remove_tree(root)
     if os.path.lexists(root):
@@ -236,6 +266,8 @@ def main(argv: list[str]) -> int:
             print(json.dumps(legacy_stage_roots()))
         elif len(argv) == 4 and argv[1] == "sweep":
             sweep_stages(int(argv[2]), set(json.loads(argv[3])))
+        elif len(argv) == 3 and argv[1] == "check":
+            check_stage(argv[2])
         elif len(argv) == 3 and argv[1] == "remove":
             remove_stage(argv[2])
         elif len(argv) == 5 and argv[1] == "prepare-artifacts":

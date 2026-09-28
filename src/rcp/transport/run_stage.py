@@ -206,25 +206,7 @@ class RemoteRunStage:
     def _directory_probe(self, root: str) -> subprocess.CompletedProcess[str]:
         """Check the saved root itself without following an unsafe replacement."""
 
-        script = """
-import os,stat,sys
-root=sys.argv[1]
-if not root.startswith('/tmp/rcp-run.') and os.path.dirname(root)!=os.path.join(os.path.expanduser('~'),'.rcp','stages'):
-    print('remote run stage is outside this account',file=sys.stderr); raise SystemExit(1)
-try:
-    info=os.lstat(root)
-except (FileNotFoundError,NotADirectoryError):
-    raise SystemExit(1)
-except OSError as exc:
-    print(str(exc),file=sys.stderr); raise SystemExit(2)
-if not stat.S_ISDIR(info.st_mode):
-    print('remote run stage is not a directory',file=sys.stderr); raise SystemExit(1)
-if info.st_uid!=os.geteuid():
-    print('remote run stage has the wrong owner',file=sys.stderr); raise SystemExit(1)
-if stat.S_IMODE(info.st_mode)!=0o700:
-    print('remote run stage has unsafe permissions',file=sys.stderr); raise SystemExit(1)
-"""
-        return self._ssh(["python3", "-c", script, root])
+        return self._ssh(["python3", "-c", _remote_script("remote_stage_root.py"), "check", root])
 
     def canonical_directories(
         self,
