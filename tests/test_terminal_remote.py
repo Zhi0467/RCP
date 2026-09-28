@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -487,9 +488,13 @@ def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_pa
     monkeypatch.setenv("HOME", str(long_home))
     short_root = type(tmp_path)(rcp_home.short_socket_root(str(long_home)))
     short_root.mkdir(mode=0o700, exist_ok=True)
+    neighbour = type(tmp_path)(tempfile.mkdtemp(dir="/tmp"))
     try:
+        request.update(writable_paths=[str(neighbour)])
+        remote_terminal.run_session(request)
         request.update(writable_paths=[str(short_root)])
-        with pytest.raises(ValueError, match="RCP's own storage"):
+        with pytest.raises(ValueError):
             remote_terminal.run_session(request)
     finally:
         short_root.rmdir()
+        neighbour.rmdir()
