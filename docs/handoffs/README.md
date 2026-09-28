@@ -1,11 +1,7 @@
 # Active implementation handoffs
 
-There are no active handoffs.
-
-Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
-and the refusal-explains-itself handoff (a refused dispatch or Apply reported
-where the human clicked, with no task row) was closed unbuilt because the human
-chose not to pursue it. Git history holds their full text.
+- [Install and update the Mac app without Open Anyway](handoff-2026-09-28-mac-install-and-update.md)
+  — design settled 2026-09-28; one PR, nothing implemented.
 
 ## Open live checks
 

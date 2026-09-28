@@ -45,3 +45,14 @@ update is out, but does not apply it.
   a stable signing identity.
 - If RCP ever pays for signing, the prebuilt app, the updater, and app-bound
   credentials change together.
+
+## Amendment, 2026-09-28
+
+The one-time approval is no longer an accepted cost, and one-click update is
+back in scope for the prebuilt app. A `curl … | sh` installer becomes the first
+install step: a file that `curl` downloads has no quarantine flag, so macOS does
+not block its first launch. The Tauri updater is switched on with a free
+updater signing key, not Apple signing, and its downloads are not quarantined
+either. The manual zip stays as the alternative, with its approval step. The
+app keeps its companion release, for the reason above. The plan is in the
+[Mac install and update handoff](../handoffs/handoff-2026-09-28-mac-install-and-update.md).
