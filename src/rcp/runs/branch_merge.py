@@ -30,11 +30,21 @@ from pydantic import (
 
 from rcp.agents import AgentEvent, AgentLauncher, agent_output_schema, parse_agent_patch_json
 from rcp.agents.branch_merge_prompt import (
-    branch_merge_correction_contract,
-    branch_merge_rebase_contract,
+    BRANCH_MERGE_POLICY_VERSION,
+    branch_merge_correction_parts,
+    branch_merge_rebase_parts,
     branch_merge_task_contract,
 )
 from rcp.agents.context import _has_ontology_extensions
+from rcp.agents.continuation_prompt import (
+    LaunchPhase,
+    MasterRef,
+    changed_since_master,
+    classify,
+    compose,
+    master_key,
+)
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.schema import (
     AgentProjectNode,
     OrchestratorAgentPatch,
@@ -93,6 +103,7 @@ from rcp.history import (
     RevisionConflict,
 )
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
@@ -101,6 +112,7 @@ from rcp.runs.shared import (
     _record_agent_launch_receipt,
     _sse,
     _stage_json_task_input,
+    _stage_or_reuse_task_input,
     _stage_task_contract,
     _stream_agent_events,
     _task_token,
@@ -1131,19 +1143,24 @@ def build_deterministic_merge_ops(
 def render_merge_residue(residue: dict[SemanticWritePath, str]) -> str:
     """Render the remaining paths and the meaning of every reason they carry."""
 
-    items = [
-        {"path": _render_semantic_path(path), "reason": residue[path]} for path in sorted(residue)
-    ]
-    legend = "\n".join(
-        f"- `{reason}` — {MERGE_RESIDUE_REASONS[reason]}"
-        for reason in sorted(set(residue.values()))
-    )
     return f"""```json
-{json.dumps(items, indent=2)}
+{json.dumps(_residue_items(residue), indent=2)}
 ```
 
 What each reason means:
-{legend}"""
+{_residue_legend(set(residue.values()))}"""
+
+
+def _residue_items(residue: dict[SemanticWritePath, str]) -> list[dict[str, str]]:
+    return [
+        {"path": _render_semantic_path(path), "reason": residue[path]} for path in sorted(residue)
+    ]
+
+
+def _residue_legend(reasons: set[str]) -> str:
+    return "\n".join(
+        f"- `{reason}` — {MERGE_RESIDUE_REASONS[reason]}" for reason in sorted(reasons)
+    )
 
 
 def _require_possible_merge_plan(
@@ -1861,7 +1878,15 @@ async def stream_branch_merge_run(
         return
 
     token = _task_token(execution)
-    original_contract_path: str | None = None
+    # The start contract this session holds, as (staged label, exact bytes, whether the
+    # graph rules it last received include ontology extensions).
+    session_master: tuple[str, str, bool] | None = None
+    # The values that start contract was rendered with, and the ones the latest launch
+    # sent, so a continuation sends only what differs from the master.
+    master_values: dict[str, object] | None = None
+    merge_values: dict[str, object] = {}
+    # The residue reasons whose meaning that start contract explains.
+    master_reasons: set[str] = set()
     session_id: str | None = None
     candidate_text: str | None = None
     candidate: Patch | None = None
@@ -1901,31 +1926,58 @@ async def stream_branch_merge_run(
                 stage, token, context, round_number=outcome.rebase_rounds
             )
             patch_path = _patch_path(stage)
+            plan_path = _stage_merge_plan(
+                stage, token, deterministic_ops, round_number=outcome.rebase_rounds
+            )
             contract = branch_merge_task_contract(
                 context_path=context_path,
                 context_id=context.context_id,
                 patch_path=patch_path,
                 validator_command=validator_command,
                 review_contract_json=context.review_contract.model_dump_json(indent=2),
-                plan_path=_stage_merge_plan(
-                    stage, token, deterministic_ops, round_number=outcome.rebase_rounds
-                ),
+                plan_path=plan_path,
                 residue_block=render_merge_residue(residue),
                 ontology_extensions=_has_ontology_extensions(context.main_graph),
             )
-            original_contract_path, prompt = _stage_task_contract(
+            master_values = merge_values = _merge_master_values(
+                context,
+                context_path=context_path,
+                plan_path=plan_path,
+                patch_path=patch_path,
+                validator_command=validator_command,
+                residue=residue,
+            )
+            master_reasons = set(residue.values())
+            master_label = f"task-{token}-branch-merge.md"
+            contract_path, prompt = _stage_task_contract(
                 stage.local_stage,
                 stage.remote_stage,
-                f"task-{token}-branch-merge.md",
+                master_label,
                 contract,
                 execution=execution,
                 role="branch_merge",
+            )
+            if execution is not None:
+                record_session_master(
+                    execution.store,
+                    execution.operation_id,
+                    contract,
+                    master_key(
+                        BRANCH_MERGE_POLICY_VERSION,
+                        ontology_extensions=_has_ontology_extensions(context.main_graph),
+                    ),
+                    master_values,
+                )
+            session_master = (
+                master_label,
+                contract,
+                _has_ontology_extensions(context.main_graph),
             )
             _record_merge_launch(
                 execution,
                 request,
                 prompt=prompt,
-                contract_path=original_contract_path,
+                contract_path=contract_path,
                 write_scope=write_scope,
                 context=context,
                 continuation="initial",
@@ -2049,27 +2101,36 @@ async def stream_branch_merge_run(
                 round_number=outcome.rebase_rounds,
             )
             _clear_patch_candidates(stage)
-            assert original_contract_path is not None
-            contract = branch_merge_rebase_contract(
-                original_contract_path=original_contract_path,
-                previous_context_id=previous_context.context_id,
+            merge_values = _merge_master_values(
+                context,
                 context_path=context_path,
-                context_id=context.context_id,
-                patch_path=_patch_path(stage),
-                validator_command=validator_command,
                 plan_path=_stage_merge_plan(
                     stage, token, deterministic_ops, round_number=outcome.rebase_rounds
                 ),
-                residue_block=render_merge_residue(residue),
-                ontology_extensions=_has_ontology_extensions(context.main_graph),
+                patch_path=_patch_path(stage),
+                validator_command=validator_command,
+                residue=residue,
             )
-            contract_path, prompt = _stage_task_contract(
-                stage.local_stage,
-                stage.remote_stage,
-                f"task-{token}-branch-merge-rebase-{outcome.rebase_rounds}.md",
-                contract,
-                execution=execution,
+            master = _restaged_merge_master(stage, session_master, master_values)
+            rules, session_master = _changed_graph_rules(context, session_master)
+            prompt = compose(
+                classify(LaunchPhase(session_id=session_id, phase="correction")),
+                parts=branch_merge_rebase_parts(
+                    previous_context_id=previous_context.context_id,
+                    context_id=context.context_id,
+                    new_reason_legend=_residue_legend(set(residue.values()) - master_reasons),
+                )
+                + rules,
+                master=master,
+                delta=changed_since_master(master, merge_values),
+            )
+            contract_path = record_inline_prompt(
+                execution,
+                local_stage=stage.local_stage,
+                remote_stage=stage.remote_stage,
+                label=f"task-{token}-branch-merge-rebase-{outcome.rebase_rounds}.md",
                 role=f"branch_merge_rebase_{outcome.rebase_rounds}",
+                prompt=prompt,
             )
             _record_merge_launch(
                 execution,
@@ -2259,24 +2320,27 @@ async def stream_branch_merge_run(
                 "conflicts": [item.model_dump(mode="json") for item in candidate_problem.conflicts],
             },
         )
-        assert original_contract_path is not None
-        context_path = _stage_merge_context_reference(stage, token, context, outcome.rebase_rounds)
-        contract = branch_merge_correction_contract(
-            original_contract_path=original_contract_path,
-            context_path=context_path,
-            context_id=context.context_id,
-            patch_path=_patch_path(stage),
-            diagnostics_path=diagnostics_path,
-            validator_command=validator_command,
-            ontology_extensions=_has_ontology_extensions(context.main_graph),
+        merge_values = {
+            **merge_values,
+            "merge_context": _stage_merge_context_reference(
+                stage, token, context, outcome.rebase_rounds
+            ),
+        }
+        master = _restaged_merge_master(stage, session_master, master_values)
+        rules, session_master = _changed_graph_rules(context, session_master)
+        prompt = compose(
+            classify(LaunchPhase(session_id=session_id, phase="correction")),
+            parts=branch_merge_correction_parts(diagnostics_path=diagnostics_path) + rules,
+            master=master,
+            delta=changed_since_master(master, merge_values),
         )
-        contract_path, prompt = _stage_task_contract(
-            stage.local_stage,
-            stage.remote_stage,
-            f"task-{token}-branch-merge-correction-{outcome.correction_rounds}.md",
-            contract,
-            execution=execution,
+        contract_path = record_inline_prompt(
+            execution,
+            local_stage=stage.local_stage,
+            remote_stage=stage.remote_stage,
+            label=f"task-{token}-branch-merge-correction-{outcome.correction_rounds}.md",
             role=f"branch_merge_correction_{outcome.correction_rounds}",
+            prompt=prompt,
         )
         pre_launch_digest = _existing_patch_digest(stage.workspace, stage.remote_stage)
         _record_merge_launch(
@@ -2876,6 +2940,64 @@ def _is_agent_json_output(name: str) -> bool:
 def _read_candidate_text(stage: BranchMergeStage) -> str:
     text, _name = _collect_patch_text(stage.workspace, stage.remote_stage)
     return text
+
+
+def _restaged_merge_master(
+    stage: BranchMergeStage,
+    session_master: tuple[str, str, bool] | None,
+    values: dict[str, object] | None,
+) -> MasterRef:
+    """Point a merge continuation at the start contract this session completed a turn with."""
+
+    if session_master is None:
+        raise ValueError("A branch merge continuation has no start contract in its session.")
+    label, content, _ = session_master
+    return MasterRef(
+        path=_stage_or_reuse_task_input(stage.local_stage, stage.remote_stage, label, content),
+        bootstrap=False,
+        values=values,
+    )
+
+
+def _merge_master_values(
+    context: BranchMergeContext,
+    *,
+    context_path: str,
+    plan_path: str,
+    patch_path: str,
+    validator_command: str,
+    residue: dict[SemanticWritePath, str],
+) -> dict[str, object]:
+    """The values the merge start contract states that a rebase or correction may change."""
+
+    return {
+        "merge_context": context_path,
+        "merge_context_id": context.context_id,
+        "operation_plan": plan_path,
+        "patch_output": patch_path,
+        "validator_command": validator_command,
+        "residue": _residue_items(residue),
+        "review_policy": context.review_contract.model_dump(mode="json"),
+    }
+
+
+def _changed_graph_rules(
+    context: BranchMergeContext, session_master: tuple[str, str, bool] | None
+) -> tuple[list[str], tuple[str, str, bool] | None]:
+    """The current graph rules, only when main's ontology extensions differ from the last sent.
+
+    The session record comes back updated to the mode now sent, so a later rebase that
+    returns main to the master's mode sends the rules again.
+    """
+
+    current = _has_ontology_extensions(context.main_graph)
+    if session_master is None or session_master[2] == current:
+        return [], session_master
+    return [graph_rules(edits=True, ontology_extensions=current)], (
+        session_master[0],
+        session_master[1],
+        current,
+    )
 
 
 def _provider_turn(

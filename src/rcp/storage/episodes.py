@@ -1686,6 +1686,47 @@ class EpisodeStoreMixin:
             ).fetchall()
         return [self._episode_report_attempt_record(row) for row in rows]
 
+    def episode_report_rebootstrap_pending(
+        self,
+        project_id: str,
+        native_session_id: str,
+        *,
+        stage_host: str | None,
+        stage_root: str,
+    ) -> bool:
+        """Whether an episode report's instructions are still the newest this session holds.
+
+        A report attempt on the exact session sets it. It clears only once an operational
+        task created after that attempt, on the same session and stage, has succeeded; a
+        launch that failed or was interrupted proves nothing reached the provider.
+        """
+
+        session = (project_id, native_session_id, stage_host or "", stage_root)
+        with self.connection() as connection:
+            reported = connection.execute(
+                """
+                SELECT MAX(attempt.created_at) AS reported_at
+                FROM episode_report_attempts AS attempt
+                JOIN graph_runs AS run ON run.operation_id = attempt.allocation_operation_id
+                WHERE run.project_id = ? AND run.native_session_id = ?
+                  AND COALESCE(run.stage_host, '') = ? AND run.stage_root = ?
+                """,
+                session,
+            ).fetchone()
+            if reported is None or reported["reported_at"] is None:
+                return False
+            settled = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND native_session_id = ?
+                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
+                  AND kind != 'episode_report' AND status = 'succeeded' AND created_at > ?
+                LIMIT 1
+                """,
+                (*session, reported["reported_at"]),
+            ).fetchone()
+        return settled is None
+
     def mark_episode_report_attempt_running(
         self,
         attempt_id: str,

@@ -16,6 +16,10 @@ from rcp.agents.acceptance import (
     ACCEPTANCE_CAMPAIGN_INTERRUPT_ACTIVE_FILE as ACCEPTANCE_EPISODE_INTERRUPT_ACTIVE_FILE,
 )
 from rcp.agents.acceptance import (
+    ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE,
+    ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE,
+)
+from rcp.agents.acceptance import (
     ACCEPTANCE_CAMPAIGN_SPAWN_THEN_FINISH_MARKER as ACCEPTANCE_EPISODE_FINISH_MARKER,
 )
 from rcp.agents.acceptance import (
@@ -512,7 +516,14 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
             json={"invocation_ceiling": 1, "request_id": str(uuid.uuid4())},
         )
         assert refused.status_code == 409, refused.text
-        wait_for_task(store, continuation_root_id)
+        # The continuation turn reaches its provider in the ended episode's session and
+        # stage; the fixture holds a reauthorized turn until it is released.
+        stage = _wait_for_task_stage(store, continuation_root_id)
+        _wait_for_path(stage / ACCEPTANCE_CAMPAIGN_REAUTHORIZED_ACTIVE_FILE)
+        (stage / ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE).write_text(
+            "release the reauthorized turn\n", encoding="utf-8"
+        )
+        wait_for_task(store, continuation_root_id, expect="succeeded")
 
         listed = client.get(f"/api/projects/{project_id}/episodes").json()
         old_after = next(item for item in listed if item["episode_id"] == old_episode_id)

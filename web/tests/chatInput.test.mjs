@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
+  parseStagedChatAnnotations,
   replaceTextSpan,
+  stagedArtifactContext,
 } from "../src/chatInput.ts";
 
 test("dictation inserts at the captured cursor and revises only its active span", () => {
@@ -32,6 +34,46 @@ test("chat annotations become plain selected text and comments in the outgoing t
       assert.ok(result.includes(annotation.comment.trim()));
     }
   }
+});
+
+test("artifact comments are chips like answer comments, numbered as their selections", () => {
+  const context = { source: "task", operation_id: "operation", artifact_id: "artifact" };
+  const box = { kind: "box", rect: { x: 0, y: 0, width: 1, height: 1 }, comment: "" };
+  const chips = [
+    {
+      id: "a",
+      selectedText: "boxed plot",
+      comment: "Why flat?",
+      artifact: { context, name: "r.html", selection: box },
+    },
+    { id: "b", selectedText: "An answer sentence.", comment: "Source?" },
+    {
+      id: "c",
+      selectedText: '"the spike"',
+      comment: "Cause?",
+      artifact: { context, name: "r.html", selection: { ...box, kind: "text" } },
+    },
+  ];
+  // A chip survives the tab's draft storage with its artifact target.
+  const staged = parseStagedChatAnnotations(JSON.stringify(chips));
+  assert.deepEqual(staged, chips);
+
+  const turn = assembleChatTurn("", staged);
+  const labels = [...turn.matchAll(/^Selection (\d+): /gm)].map((match) => match[1]);
+  assert.deepEqual(labels, ["1", "2"]);
+  assert.ok(turn.indexOf("Why flat?") < turn.indexOf("Source?"));
+  assert.ok(turn.includes("An answer sentence.\ncomment: Source?"));
+
+  // The turn carries the artifact selections in the order they are numbered, with
+  // the comment as edited on the chip.
+  assert.deepEqual(stagedArtifactContext(staged), {
+    ...context,
+    selections: [
+      { ...box, comment: "Why flat?" },
+      { ...box, kind: "text", comment: "Cause?" },
+    ],
+  });
+  assert.equal(stagedArtifactContext(staged.filter((chip) => !chip.artifact)), null);
 });
 
 test("annotation composer stays beside the selection and inside the viewport", () => {

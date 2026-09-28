@@ -92,6 +92,7 @@ from rcp.core.validation.proposals import (
 from rcp.history import HistoryManager
 from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
+    ARTIFACT_CONTEXT_MAX_SELECTIONS,
     BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
@@ -829,12 +830,29 @@ class ArtifactTextSelection(BaseModel):
     comment: str = Field(default="", max_length=2048)
 
 
+class ArtifactBoxElement(BaseModel):
+    """One HTML element a box covers, named so the agent can find it in the source."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1, max_length=512)
+    label: str = Field(default="", max_length=256)
+    text: str = Field(default="", max_length=512)
+    # Where the box lies within this element, when the box sits inside it.
+    region: ArtifactSelectionRect | None = None
+
+
 class ArtifactBoxSelection(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["box"]
+    # A fraction of the image for an image artifact, of the visible frame for HTML.
     rect: ArtifactSelectionRect
     viewport: ArtifactViewport
+    # None marks a box from the viewer before elements were named. Its rect is a
+    # fraction of the viewer area, not of an image, so it is never cropped.
+    elements: list[ArtifactBoxElement] | None = Field(default=None, max_length=8)
+    # That older viewer's sampled nearby text, kept so its stored requests still render.
     labels: str = Field(default="", max_length=4096)
     comment: str = Field(default="", max_length=2048)
 
@@ -852,7 +870,9 @@ class ArtifactContextRequest(BaseModel):
     operation_id: str = Field(min_length=1)
     artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     episode_id: str | None = None
-    selections: list[ArtifactSelection] = Field(min_length=1, max_length=12)
+    selections: list[ArtifactSelection] = Field(
+        min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    )
 
     @model_validator(mode="after")
     def source_identity_is_coherent(self) -> ArtifactContextRequest:

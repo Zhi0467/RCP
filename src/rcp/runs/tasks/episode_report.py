@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.agents import AgentEvent, AgentLauncher
+from rcp.agents.continuation_prompt import LaunchPhase, classify, compose
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
@@ -191,6 +192,7 @@ async def stream_episode_report_run(
                 attempt_number,
                 stage,
                 contract,
+                LaunchPhase(session_id=turn.wrapup.native_session_id, phase="report"),
             )
 
             # A retained output from an older operational turn or failed report attempt must never
@@ -598,22 +600,49 @@ def _stage_attempt_contract(
     attempt_number: int,
     stage: _ReportStage,
     contract: str,
+    phase: LaunchPhase,
 ) -> tuple[str, str]:
+    """Send the report instructions inline, with no pointer to the operational master.
+
+    The staged copy may already exist when a queued attempt is relaunched after a crash,
+    so it is reused rather than refused.
+    """
+
+    prompt = compose(classify(phase), parts=[contract], master=None, delta=None)
     role = f"episode_report_attempt_{attempt_number}"
-    digest = hashlib.sha256(contract.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     execution.store.record_agent_task_contract(
         execution.operation_id,
         role,
-        contract,
+        prompt,
         digest,
     )
     path = _stage_or_reuse_task_input(
         stage.local,
         stage.remote,
         f"task-{_task_token(execution)}-episode-report-{attempt_number}.md",
-        contract,
+        prompt,
     )
-    return path, PromptFactory.launch_prompt(path)
+    return path, prompt
+
+
+def report_rebootstrap_pending(execution: AgentTaskExecution, native_session_id: str) -> bool:
+    """Whether this launch must retire episode report instructions from its session.
+
+    The first operational continuation after a report attempt on the same session and
+    stage re-opens the operational master, and every later launch does too until one
+    such operational task succeeds.
+    """
+
+    record = execution.store.agent_task(execution.operation_id)
+    if record is None or not record.stage_root:
+        raise ValueError("A session continuation has no saved stage to check for a report.")
+    return execution.store.episode_report_rebootstrap_pending(
+        record.project_id,
+        native_session_id,
+        stage_host=record.stage_host,
+        stage_root=record.stage_root,
+    )
 
 
 def _reconcile_running_attempt(

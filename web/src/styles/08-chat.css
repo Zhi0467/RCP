@@ -999,6 +999,10 @@
   padding: 4px 7px;
   white-space: pre-wrap;
 }
+.chat-annotation-review article > small {
+  color: var(--muted);
+  font: var(--type-3xs) var(--mono);
+}
 .chat-annotation-review textarea {
   flex: none;
   font-size: var(--type-xs);
@@ -1157,25 +1161,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.artifact-context-chip {
-  align-items: center;
-  background: color-mix(in srgb, var(--chat-mode-soft) 62%, var(--paper));
-  border: 1px solid var(--chat-mode-accent);
-  border-radius: 6px;
-  display: flex;
-  flex-basis: 100%;
-  font: 700 var(--type-3xs) var(--mono);
-  justify-content: space-between;
-  padding: 5px 7px;
-}
-.artifact-context-chip button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--muted);
-  display: inline-flex;
-  padding: 2px;
 }
 .chat-composer.is-dragging-files {
   background: color-mix(in srgb, var(--chat-mode-soft) 72%, var(--surface));

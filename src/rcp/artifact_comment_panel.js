@@ -47,11 +47,7 @@ function render() {
     label.textContent = `${index + 1} · ${selection.kind}`;
     const excerpt = document.createElement("div");
     excerpt.className = "excerpt";
-    excerpt.textContent =
-      selection.kind === "text"
-        ? selection.text
-        : selection.labels ||
-          `Box ${Math.round(selection.rect.x * 100)}–${Math.round((selection.rect.x + selection.rect.width) * 100)}%`;
+    excerpt.textContent = describeSelection(selection);
     const comment = document.createElement("textarea");
     comment.placeholder = "Comment or question";
     comment.maxLength = 2048;
@@ -77,7 +73,7 @@ function render() {
 try {
   const saved = JSON.parse(localStorage.getItem(draftKey) || "null");
   if (saved && Array.isArray(saved.selections)) {
-    selections.push(...saved.selections.slice(0, 12));
+    selections.push(...saved.selections.slice(0, config.maxSelections));
     render();
     openChat.hidden = !saved.added;
   }
@@ -87,8 +83,8 @@ try {
   notice.textContent = "Saved comments could not be restored.";
 }
 function appendSelection(selection) {
-  if (selections.length >= 12) {
-    notice.textContent = "A prompt can include at most 12 selections.";
+  if (selections.length >= config.maxSelections) {
+    notice.textContent = `A prompt can include at most ${config.maxSelections} selections.`;
     return;
   }
   selections.push(selection);
@@ -127,12 +123,17 @@ window.addEventListener("message", (event) => {
       surrounding_text: bounded(raw.surrounding_text, 6144),
       comment: "",
     });
-  else if (raw.kind === "box" && raw.rect && raw.viewport)
+  else if (raw.kind === "box" && raw.rect && raw.viewport && Array.isArray(raw.elements))
     offerSelection({
       kind: "box",
       rect: raw.rect,
       viewport: raw.viewport,
-      labels: bounded(raw.labels, 4096),
+      elements: raw.elements.slice(0, 8).map((element) => ({
+        path: bounded(element?.path, 512) || "body",
+        label: bounded(element?.label, 256),
+        text: bounded(element?.text, 512),
+        ...(element?.region ? { region: element.region } : {}),
+      })),
       comment: "",
     });
 });
@@ -142,7 +143,40 @@ if (frame) {
   frame.addEventListener("load", enableSelection);
   enableSelection();
 }
-if (boxLayer) clearImageSelection = installArtifactSelection(boxLayer, offerSelection);
+// The layer spans the canvas while the image is letterboxed inside it, so an image box
+// is re-expressed as a fraction of the image itself: that is what the server crops.
+function imageSelection(selection) {
+  const image = document.getElementById("previewImage");
+  if (!selection || !image?.naturalWidth || !image.naturalHeight) return selection;
+  const layer = boxLayer.getBoundingClientRect();
+  const scale = Math.min(layer.width / image.naturalWidth, layer.height / image.naturalHeight);
+  const width = image.naturalWidth * scale,
+    height = image.naturalHeight * scale;
+  const clamp = (value) => Math.min(1, Math.max(0, value));
+  const left = clamp((selection.rect.x * layer.width - (layer.width - width) / 2) / width);
+  const top = clamp((selection.rect.y * layer.height - (layer.height - height) / 2) / height);
+  const right = clamp(
+    ((selection.rect.x + selection.rect.width) * layer.width - (layer.width - width) / 2) / width,
+  );
+  const bottom = clamp(
+    ((selection.rect.y + selection.rect.height) * layer.height - (layer.height - height) / 2) /
+      height,
+  );
+  if (right - left <= 0 || bottom - top <= 0) return null;
+  return {
+    ...selection,
+    rect: { x: left, y: top, width: right - left, height: bottom - top },
+    viewport: {
+      width: Math.min(32768, image.naturalWidth),
+      height: Math.min(32768, image.naturalHeight),
+    },
+  };
+}
+if (boxLayer)
+  clearImageSelection = installArtifactSelection(boxLayer, (selection) => {
+    const mapped = selection && imageSelection(selection);
+    offerSelection(mapped ? { ...mapped, comment: "" } : null);
+  });
 add.addEventListener("click", () => {
   if (!config.chatAvailable) {
     notice.textContent = "The originating chat is unavailable.";

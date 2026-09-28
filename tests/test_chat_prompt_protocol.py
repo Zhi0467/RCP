@@ -10,8 +10,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.agents import AgentEvent, AgentProcessControl, prompts
-from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
+from rcp.agents import AgentEvent, AgentProcessControl, continuation_prompt
+from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.prompts import (
+    CHAT_MASTER_CONTEXT_VERSION,
+    COMMAND_CLIENT,
+    chat_master_contract_key,
+)
 from rcp.api.tasks import _validate_stored_task_request
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig
@@ -25,6 +30,9 @@ from rcp.storage import AgentTaskRecord, AppStore
 from .helpers import (
     agent_patch_json,
     append_fixture_patch,
+    changed_values,
+    current_command_client,
+    launch_contract_path,
     refresh_patch,
     seed_patch,
     wait_for_task_response,
@@ -42,29 +50,17 @@ class _RecordingLauncher:
 
     async def stream(self, _provider, prompt, **kwargs):
         if kwargs["capability"] == "work_auto":
-            tooling_path = next(
-                code for code in prompt.split("`")[1::2] if code.endswith("-execution.md")
-            )
-            execution_instructions = (Path(kwargs["cwd"]) / tooling_path).read_text()
-            command = next(
-                code
-                for code in execution_instructions.split("`")[1::2]
-                if "launch" in shlex.split(code) and "--cwd" in shlex.split(code)
-            )
-            argv = shlex.split(command)
+            # This turn's launches run through its own gate, named by the current client.
+            argv = shlex.split(current_command_client(prompt))
             gate = kwargs["invocation_gate"]
             authority = list(gate.client_arguments())
             assert argv[2 : 2 + len(authority)] == authority
             assert argv[argv.index("--workspace") + 1] == str(kwargs["cwd"])
-            assert argv[argv.index("launch") :] == [
-                "launch",
-                "--key",
-                "<idempotency-key>",
-                "--cwd",
-                "<working-directory>",
-                "--",
-                "<argv...>",
-            ]
+            launch = f"{COMMAND_CLIENT} " + shlex.join(
+                ["launch", "--key", "<idempotency-key>", "--cwd", "<working-directory>", "--"]
+            )
+            master = launch_contract_path(prompt).read_text()
+            assert any(launch in text for text in (*self.prompts, prompt, master))
         self.prompts.append(prompt)
         self.workspaces.append(Path(kwargs["cwd"]))
         self.sessions.append(kwargs.get("session_id"))
@@ -182,9 +178,11 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
     stale_snapshot["master_context_version"] = stale_version
     with pytest.MonkeyPatch.context() as older_rules:
         if stale == "graph_rules":
-            older_rules.setattr(prompts, "GRAPH_RULES_VERSION", "0" * 16)
+            older_rules.setattr(continuation_prompt, "GRAPH_RULES_VERSION", "0" * 16)
         stale_snapshot["contract_key"] = (
-            f"chat-master-v{stale_version}" if stale == "version" else chat_master_contract_key()
+            f"chat-master-v{stale_version}"
+            if stale == "version"
+            else chat_master_contract_key(ontology_extensions=False)
         )
     stale_snapshot["master_context_path"] = f"/stale/chat-master-v{stale_version}.md"
     stale_json = json.dumps(stale_snapshot, separators=(",", ":"))
@@ -223,11 +221,106 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
         pass
 
     second_prompt = launcher.prompts[1]
-    assert f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-" in second_prompt.splitlines()[1]
+    # A continuation names its replacement master last, after the turn's own parts.
+    master_line = second_prompt.split("\n\n")[-1].splitlines()[1]
+    assert f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-" in master_line
     committed = store.chat_session_context("codex", "laptop", session_id)
     assert committed is not None
     assert committed.protocol_version == CHAT_MASTER_CONTEXT_VERSION
-    assert json.loads(committed.snapshot_json)["contract_key"] == chat_master_contract_key()
+    assert json.loads(committed.snapshot_json)["contract_key"] == chat_master_contract_key(
+        ontology_extensions=False
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["recorded", "legacy_file", "legacy_missing"])
+async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
+    manifest, tmp_path, state
+) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    session_id = "session-master-native"
+    launcher = _RecordingLauncher(session_id)
+    first_request = RunRequest(
+        chat_scope="project",
+        chat_id="session-master-chat",
+        message="Start the native chat.",
+        run_truth_scope=["repo-a"],
+        mode="discuss",
+    )
+
+    async def turn(operation_id: str, request: RunRequest) -> None:
+        execution = _execution(
+            store,
+            operation_id=operation_id,
+            project_id=project_id,
+            request=request,
+            native_session_id=session_id,
+        )
+        async for _frame in stream_discuss_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            pass
+        store.complete_agent_task(operation_id, applied_revision=None, result={})
+
+    await turn("session-master-first", first_request)
+    master_path = Path(launcher.prompts[0].splitlines()[1])
+    recorded = store.agent_task_contract("session-master-first", "session_master")
+    assert recorded == master_path.read_text(encoding="utf-8")
+    baseline = store.chat_session_context("codex", "laptop", session_id)
+    assert baseline is not None
+    snapshot = json.loads(baseline.snapshot_json)
+    assert snapshot["master_operation_id"] == "session-master-first"
+    assert snapshot["master_sha256"] == hashlib.sha256(recorded.encode("utf-8")).hexdigest()
+
+    if state != "recorded":
+        # A snapshot committed before master records existed names only a path.
+        legacy = {
+            key: value
+            for key, value in snapshot.items()
+            if key not in {"master_operation_id", "master_sha256"}
+        }
+        legacy_json = json.dumps(legacy, separators=(",", ":"))
+        store.commit_chat_session_context(
+            provider="codex",
+            execution_machine="laptop",
+            native_session_id=session_id,
+            project_id=project_id,
+            kind="project_chat",
+            chat_id=first_request.chat_id,
+            node_id=None,
+            protocol_version=baseline.protocol_version,
+            snapshot_json=legacy_json,
+            snapshot_sha256=hashlib.sha256(legacy_json.encode("utf-8")).hexdigest(),
+            committed_operation_id="session-master-first",
+            expected_snapshot_sha256=baseline.snapshot_sha256,
+        )
+    if state != "legacy_file":
+        master_path.unlink()
+
+    await turn(
+        "session-master-second",
+        first_request.model_copy(update={"message": "Continue.", "session_id": session_id}),
+    )
+    last_section = launcher.prompts[1].split("\n\n")[-1]
+    captured = store.agent_task_contract("session-master-second", "session_master")
+    committed = json.loads(store.chat_session_context("codex", "laptop", session_id).snapshot_json)
+    if state == "legacy_missing":
+        # Nothing proves what the session held, so a fresh master is sent as a replacement.
+        assert last_section == SECTIONS["master_rebootstrap"].format(path=master_path)
+        assert captured == master_path.read_text(encoding="utf-8")
+        assert committed["master_operation_id"] == "session-master-second"
+        return
+    assert last_section == SECTIONS["master_pointer"].format(path=master_path)
+    assert master_path.read_text(encoding="utf-8") == recorded
+    assert recorded not in launcher.prompts[1]
+    assert captured == (recorded if state == "legacy_file" else None)
+    assert committed["master_operation_id"] == (
+        "session-master-second" if state == "legacy_file" else "session-master-first"
+    )
 
 
 @pytest.mark.asyncio
@@ -775,9 +868,9 @@ def test_mode_switch_resumes_same_native_session_and_appends_only_changed_settin
     work_artifacts = launcher.workspaces[1] / "turns" / second_id / "artifacts"
     assert str(work_artifacts) in launcher.prompts[1]
     assert launcher.prompts[1].count(work_message) == 1
-    assert '"reasoning": "high"' in launcher.prompts[1]
-    assert '"repositories"' not in launcher.prompts[1]
-    assert '"skills"' not in launcher.prompts[1]
+    delta = changed_values(launcher.prompts[1])
+    assert delta["settings.reasoning"] == "high"
+    assert not any(key.startswith(("repositories", "skills")) for key in delta)
 
 
 @pytest.mark.asyncio
@@ -862,10 +955,9 @@ def test_a_human_sync_between_turns_announces_only_the_new_revision(manifest, tm
     append_fixture_patch(service, refresh_patch())
     turn("Third question, after a Sync.", resume=True)
 
-    update = launcher.prompts[2]
-    assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in update
-    assert '"repositories"' not in update
-    assert '"settings"' not in update
+    update = changed_values(launcher.prompts[2])
+    assert update["current.graph_revision"] == str(service.graph_snapshot()["revision"])
+    assert not any(key.startswith(("repositories", "settings")) for key in update)
 
 
 class _PatchWritingLauncher(_RecordingLauncher):
@@ -921,16 +1013,15 @@ def test_a_work_turn_does_not_announce_its_own_revision_back_to_itself(manifest,
     assert service.graph_snapshot()["revision"] > before
 
     turn("Now just answer something.", resume=True)
-    prompt = launcher.prompts[1]
-    second_delta, _ = json.JSONDecoder().raw_decode(prompt[prompt.index("\n{") + 1 :])
-    assert set(second_delta) == {"patch"}
-    assert "current" not in second_delta
-    assert "rcp-agent-client-" in second_delta["patch"]["validator_command"]
+    second_delta = changed_values(launcher.prompts[1])
+    assert {key.split(".")[0] for key in second_delta} == {"patch"}
+    assert "rcp-agent-client-" in second_delta["patch.command_client"]
 
     # A Sync by someone else still reaches the conversation.
     append_fixture_patch(service, refresh_patch("rq/a-third-question"))
     turn("And after a human Sync.", resume=True)
-    assert f'"graph_revision": {service.graph_snapshot()["revision"]}' in launcher.prompts[2]
+    third_delta = changed_values(launcher.prompts[2])
+    assert third_delta["current.graph_revision"] == str(service.graph_snapshot()["revision"])
 
 
 @pytest.mark.parametrize("mode", ["work", "discuss"])

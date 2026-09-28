@@ -12,6 +12,7 @@ from pydantic import ValidationError
 import rcp.api.app as api_app_module
 import rcp.runs.tasks.auto_research_child_work as child_work_module
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import AuthorizedHuman
@@ -57,8 +58,11 @@ from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_
 
 from .helpers import (
     append_fixture_patch,
+    changed_values,
     create_named_app,
+    current_command_client,
     fabricated_authorizer,
+    launch_contract_path,
     seed_patch,
     store_test_claude_token,
     wait_for_task,
@@ -781,23 +785,19 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert wake_id is not None
     wake = wait_for_task(store, wake_id, expect="failed")
 
-    continuation_contract_path = Path(launcher.prompts[1].splitlines()[1])
-    continuation_contract = continuation_contract_path.read_text(encoding="utf-8")
+    # The wake continues its session inline, beside a pointer to the master it holds.
+    continuation_contract = launcher.prompts[1]
+    assert SECTIONS["master_pointer"].split("{path}")[0] in continuation_contract
     assert "messages.json" in continuation_contract
     wake_turn, wake_inputs = child_turns[1]
-    assert wake_turn.patch_inputs.validator_command in continuation_contract
-    assert child_turns[0][0].patch_inputs.validator_command not in continuation_contract
-    for path in (
-        wake_turn.patch_inputs.patch_path,
-        wake_turn.patch_inputs.watch_path,
-        wake_turn.patch_inputs.schema_path,
-        str(wake_inputs.artifact_directory),
-        *wake_turn.write_scope.writable_roots,
-        *wake_turn.write_scope.protected_write_paths,
-    ):
-        assert path in continuation_contract
-    for package in wake_inputs.skill_pointers:
-        assert str(package["path"]) in continuation_contract
+    # The wake sends only what changed since its master: this turn's own command client.
+    changed = changed_values(continuation_contract)
+    assert changed["patch.command_client"] == wake_turn.patch_inputs.command_client
+    assert child_turns[0][0].patch_inputs.command_client not in continuation_contract
+    assert not any(key.startswith(("skills", "repositories")) for key in changed)
+    # Only the legacy layout moves the wake to another workspace, and so to other roots.
+    assert ("work.write_roots" in changed) is legacy_layout
+    assert str(wake_inputs.artifact_directory) in continuation_contract
     assert '"name": "native-review"' in continuation_contract
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
     assert launcher.launch_kwargs[1]["invocation_gate"] is not None
@@ -860,23 +860,13 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
     assert resumed.task is not None
     resumed_task = wait_for_task(store, resumed.task.operation_id, expect="failed")
     assert resumed_task.native_session_id == "resume-session"
-    resume_contract = Path(launcher.prompts[3].splitlines()[1]).read_text(encoding="utf-8")
+    resume_contract = launcher.prompts[3]
     resume_turn, resume_inputs = child_turns[3]
-    current_path = Path(
-        next(
-            line.split("`")[1]
-            for line in resume_contract.splitlines()
-            if line.startswith("- Current authority and output contract:")
-        )
-    )
-    current_contract = current_path.read_text(encoding="utf-8")
-    assert str(current_path) in resume_contract
-    assert resume_turn.patch_inputs.validator_command in resume_contract
-    assert resume_turn.patch_inputs.schema_path in resume_contract
-    assert str(resume_inputs.artifact_directory) in current_contract
-    assert (current_path.parent / f"task-{resume_inputs.token}-human-request.txt").read_text() == (
-        resume_instruction
-    )
+    # Its session does not match, so the resume opens a fresh master holding the boundary.
+    assert current_command_client(resume_contract) == resume_turn.patch_inputs.command_client
+    master = launch_contract_path(resume_contract).read_text(encoding="utf-8")
+    assert resume_turn.patch_inputs.schema_path in master
+    assert "## Auto-research child Work boundary" in master
     assert any(
         receipt.category == "continuation_context_unavailable"
         and receipt.payload.get("reason") == "native_session_mismatch"

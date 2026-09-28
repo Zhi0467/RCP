@@ -48,10 +48,19 @@ shared context. Seeing both grants no cumulative authority: each turn carries
 one explicit mode marker. A refreshed master replaces earlier master
 instructions while retaining the conversation's native progress.
 
-Later ordinary resumes repeat only the master-context path, then send the marker,
-logical turn id, human message unchanged, resolved artifact directory, and a
-compact replacement delta only when stable context changed. The repeated path is
-a pointer, not an instruction to reread unchanged context. A new baseline commits
+Later ordinary resumes send the marker, logical turn id, human message
+unchanged, resolved artifact directory, and one line for each stable value that
+changed since the master, such as a new command client, write root, or compute
+connection. They end with one master pointer. The execution, launch-helper, and
+write-boundary instructions live in the master once; only their changing values
+travel. The pointer says
+it is the contract given at the session's start and to read it only after a
+compaction or a lost grip on the graph rules or authority; it is not an
+instruction to reread unchanged context. RCP records the master's exact bytes on
+the operation that first sent it and restores that file into the conversation's
+stage before every pointer, so the path always resolves. A master from before
+that record is kept only when its bytes match the digest in its own name;
+otherwise the session is bootstrapped with a freshly rendered master. A new baseline commits
 only after a mechanically successful turn and is bound to provider, host, native
 session, project, graph target, conversation, and focused node. Failed or
 interrupted work does not advance it.
@@ -189,6 +198,8 @@ and the main composer shows their count. Several annotations may be staged. They
 remain a per-chat draft, including after a comment is edited blank, and block
 send until completed or removed. On send, each contributes only its copied
 selected text followed by `comment: <comment>` to the ordinary human message.
+A comment on an artifact selection is the same annotation; its artifact target
+is described in [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
 There are no message references, source identifiers, offsets, durable
 annotation records, or graph authority. Staging clears when the turn is accepted
 and otherwise remains a client-side draft for that chat.
@@ -311,12 +322,15 @@ Each invocation receives a dedicated Experiment contract and compact control
 file with phase, episode, graph target, invocation counts, pinned Decisions,
 current drift, completion criteria, and delivered watcher identities. Watcher
 state is a separate exact file. The provider never receives prior chat
-transcripts. An automatic wake repeats one path to the full Experiment contract
-that initialized its exact current native session; it does not tell the provider
-to reread that unchanged contract. Current focused authority, causal guidance,
-execution instructions, control inputs, schema, and output/validator paths
-replace earlier instructions while the objective, attempt ledger, and completed
-native-session progress remain intact.
+transcripts. A wake, an Add N turns continuation, and a same-session Resume or
+Retry send only what is new, inline: why the turn started, current focused
+authority, causal guidance, execution instructions, control inputs, schema, and
+output and validator paths. They end with one pointer to the Experiment contract
+that started the session (see
+[continuation prompts](providers-and-containment.md#continuation-prompts)).
+Current inline instructions take precedence while the objective, attempt ledger,
+and completed native-session progress remain intact. The episode report gets no
+pointer, and the next operational turn on its session reopens the master.
 
 The Experiment-loop Patch may update its own attempt/status and guidance, create
 Evidence and Blockers, assert legal epistemic and output edges, and create the
