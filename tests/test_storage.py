@@ -82,6 +82,11 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (20, "lifecycle_notice_acknowledging_turn_v1"),
         (21, "provider_readiness_snapshots_v1"),
         (22, "episode_continuations_v1"),
+        (23, "agent_task_list_indexes_v1"),
+        (24, "compute_probe_routes_v1"),
+        (25, "chat_display_v1"),
+        (26, "chat_reads_and_pins_v1"),
+        (27, "space_machines_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -239,30 +244,6 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
         )
-        assert connection.execute(
-            "SELECT migration_version FROM storage_schema_migrations ORDER BY migration_version"
-        ).fetchall() == [
-            (1,),
-            (2,),
-            (3,),
-            (4,),
-            (7,),
-            (8,),
-            (9,),
-            (10,),
-            (11,),
-            (12,),
-            (13,),
-            (14,),
-            (15,),
-            (16,),
-            (17,),
-            (18,),
-            (19,),
-            (20,),
-            (21,),
-            (22,),
-        ]
 
     reopened = AppStore(path)
 
@@ -384,17 +365,47 @@ def test_space_run_projection_indexes_upgrade_an_existing_current_store(tmp_path
         assert set(index_names) <= actual_indexes
 
 
+def _task_record(now: str, **fields) -> AgentTaskRecord:
+    return AgentTaskRecord(
+        **{
+            "project_id": "project",
+            "kind": "refresh",
+            "status": "queued",
+            "request": {},
+            "created_at": now,
+            "updated_at": now,
+            "status_message": "queued",
+            **fields,
+        }
+    )
+
+
+def _commit_context(store: AppStore, **fields) -> ChatSessionContextRecord:
+    return store.commit_chat_session_context(
+        **{
+            "provider": "codex",
+            "execution_machine": "laptop",
+            "native_session_id": "native-session",
+            "project_id": "project",
+            "kind": "project_chat",
+            "chat_id": "chat",
+            "node_id": None,
+            "protocol_version": 1,
+            "committed_operation_id": "operation",
+            "expected_snapshot_sha256": None,
+            **fields,
+        }
+    )
+
+
 def _task(store: AppStore, project_id: str, operation_id: str, status: str) -> None:
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id=operation_id,
             project_id=project_id,
-            kind="refresh",
             status=status,
-            request={},
-            created_at=now,
-            updated_at=now,
             status_message=status,
         )
     )
@@ -978,16 +989,13 @@ def _create_experiment_runtime_fixture(
         display_name=owner.display_name,
     )
     store.create_experiment_episode_with_invocation(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id=operation_id,
             project_id=project_id,
             episode_id=episode_id,
             kind="node_chat",
-            status="queued",
             request=request,
-            created_at=now,
-            updated_at=now,
-            status_message="queued",
             phase="queued",
             last_activity_at=now,
             authorized_by=authorized_by,
@@ -1103,6 +1111,7 @@ def _seed_project_identity_rows(
             status_label="Ready",
             status_tone="ready",
         ),
+        "helper",
     )
     with store.connection() as connection:
         connection.execute(
@@ -1130,19 +1139,14 @@ def _seed_project_identity_rows(
             ),
         )
     snapshot_json, snapshot_digest = _snapshot(label)
-    store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
+    _commit_context(
+        store,
         native_session_id=f"chat-session-{label}",
         project_id=project_id,
-        kind="project_chat",
         chat_id=f"chat-{label}",
-        node_id=None,
-        protocol_version=1,
         snapshot_json=snapshot_json,
         snapshot_sha256=snapshot_digest,
         committed_operation_id=f"chat-operation-{label}",
-        expected_snapshot_sha256=None,
     )
     _, operation_id = _create_experiment_runtime_fixture(
         store,
@@ -1579,14 +1583,10 @@ def test_run_stage_protection_tracks_active_tasks_on_their_execution_host(tmp_pa
         ("local-terminal", "failed", None, "/data/run-stage/local-terminal"),
     ):
         store.create_agent_task(
-            AgentTaskRecord(
+            _task_record(
+                now,
                 operation_id=operation_id,
-                project_id="project",
-                kind="refresh",
                 status=status,
-                request={},
-                created_at=now,
-                updated_at=now,
                 status_message=status,
                 stage_host=stage_host,
                 stage_root=stage_root,
@@ -1602,33 +1602,24 @@ def test_committed_chat_session_owns_its_reusable_stage_after_the_task_settles(t
     now = store.now()
     stage_root = "/data/run-stage/chat-project-chat"
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="chat-turn",
-            project_id="project",
             kind="project_chat",
             status="succeeded",
             request={"chat_id": "chat", "provider": "codex", "run_on": "local"},
-            created_at=now,
-            updated_at=now,
             status_message="succeeded",
             native_session_id="native-session",
             stage_root=stage_root,
         )
     )
     snapshot_json, snapshot_sha256 = _snapshot("chat")
-    store.commit_chat_session_context(
-        provider="codex",
+    _commit_context(
+        store,
         execution_machine="local",
-        native_session_id="native-session",
-        project_id="project",
-        kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        protocol_version=1,
         snapshot_json=snapshot_json,
         snapshot_sha256=snapshot_sha256,
         committed_operation_id="chat-turn",
-        expected_snapshot_sha256=None,
     )
 
     assert store.protected_run_stage_roots("") == (stage_root,)
@@ -1653,14 +1644,13 @@ def test_has_active_chat_task_is_scoped_to_project_kind_and_chat(tmp_path) -> No
     ]
     for operation_id, project_id, kind, chat_id, status in tasks:
         store.create_agent_task(
-            AgentTaskRecord(
+            _task_record(
+                now,
                 operation_id=operation_id,
                 project_id=project_id,
                 kind=kind,
                 status=status,
                 request={"chat_id": chat_id},
-                created_at=now,
-                updated_at=now,
                 status_message=status,
             )
         )
@@ -1681,15 +1671,8 @@ def test_create_chat_task_rejects_only_an_active_turn_in_the_same_conversation(
 
     def create(operation_id: str, chat_id: str) -> None:
         store.create_agent_task(
-            AgentTaskRecord(
-                operation_id=operation_id,
-                project_id="project",
-                kind="project_chat",
-                status="queued",
-                request={"chat_id": chat_id},
-                created_at=now,
-                updated_at=now,
-                status_message="queued",
+            _task_record(
+                now, operation_id=operation_id, kind="project_chat", request={"chat_id": chat_id}
             )
         )
 
@@ -1707,9 +1690,9 @@ def test_native_chat_session_origin_requires_the_exact_rcp_binding(tmp_path) -> 
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="completed-chat-turn",
-            project_id="project",
             kind="node_chat",
             status="succeeded",
             request={
@@ -1718,8 +1701,6 @@ def test_native_chat_session_origin_requires_the_exact_rcp_binding(tmp_path) -> 
                 "provider": "codex",
                 "run_on": "local",
             },
-            created_at=now,
-            updated_at=now,
             status_message="succeeded",
             native_session_id="native-session",
         )
@@ -1749,19 +1730,13 @@ def test_chat_session_context_commit_reads_and_cas_updates_without_task_history(
     store = AppStore(tmp_path / "rcp.sqlite3")
     first_json, first_digest = _snapshot("first")
 
-    first = store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
-        native_session_id="native-session",
-        project_id="project",
+    first = _commit_context(
+        store,
         kind="node_chat",
-        chat_id="chat",
         node_id="rq/question",
-        protocol_version=1,
         snapshot_json=first_json,
         snapshot_sha256=first_digest,
         committed_operation_id="first-operation",
-        expected_snapshot_sha256=None,
     )
 
     assert first == store.chat_session_context("codex", "laptop", "native-session")
@@ -1780,13 +1755,9 @@ def test_chat_session_context_commit_reads_and_cas_updates_without_task_history(
     assert first.created_at == first.updated_at
 
     second_json, second_digest = _snapshot("second")
-    second = store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
-        native_session_id="native-session",
-        project_id="project",
+    second = _commit_context(
+        store,
         kind="node_chat",
-        chat_id="chat",
         node_id="rq/question",
         protocol_version=2,
         snapshot_json=second_json,
@@ -1807,45 +1778,23 @@ def test_chat_session_context_cas_rejects_missing_stale_or_invalid_snapshots(tmp
     first_json, first_digest = _snapshot("first")
 
     with pytest.raises(ValueError, match="prior baseline is missing"):
-        store.commit_chat_session_context(
-            provider="codex",
-            execution_machine="laptop",
-            native_session_id="native-session",
-            project_id="project",
-            kind="project_chat",
-            chat_id="chat",
-            node_id=None,
-            protocol_version=1,
+        _commit_context(
+            store,
             snapshot_json=first_json,
             snapshot_sha256=first_digest,
-            committed_operation_id="operation",
             expected_snapshot_sha256="missing-digest",
         )
 
-    store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
-        native_session_id="native-session",
-        project_id="project",
-        kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        protocol_version=1,
+    _commit_context(
+        store,
         snapshot_json=first_json,
         snapshot_sha256=first_digest,
         committed_operation_id="first-operation",
-        expected_snapshot_sha256=None,
     )
     second_json, second_digest = _snapshot("second")
     with pytest.raises(ValueError, match="prior digest changed"):
-        store.commit_chat_session_context(
-            provider="codex",
-            execution_machine="laptop",
-            native_session_id="native-session",
-            project_id="project",
-            kind="project_chat",
-            chat_id="chat",
-            node_id=None,
+        _commit_context(
+            store,
             protocol_version=2,
             snapshot_json=second_json,
             snapshot_sha256=second_digest,
@@ -1853,14 +1802,8 @@ def test_chat_session_context_cas_rejects_missing_stale_or_invalid_snapshots(tmp
             expected_snapshot_sha256="stale-digest",
         )
     with pytest.raises(ValueError, match="does not match"):
-        store.commit_chat_session_context(
-            provider="codex",
-            execution_machine="laptop",
-            native_session_id="native-session",
-            project_id="project",
-            kind="project_chat",
-            chat_id="chat",
-            node_id=None,
+        _commit_context(
+            store,
             protocol_version=2,
             snapshot_json=second_json,
             snapshot_sha256="wrong-digest",
@@ -1884,19 +1827,12 @@ def test_chat_session_context_cas_rejects_missing_stale_or_invalid_snapshots(tmp
 def test_chat_session_context_rejects_immutable_binding_conflicts(tmp_path, field, value) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     snapshot_json, snapshot_digest = _snapshot("first")
-    store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
-        native_session_id="native-session",
-        project_id="project",
+    _commit_context(
+        store,
         kind="node_chat",
-        chat_id="chat",
         node_id="rq/question",
-        protocol_version=1,
         snapshot_json=snapshot_json,
         snapshot_sha256=snapshot_digest,
-        committed_operation_id="operation",
-        expected_snapshot_sha256=None,
     )
     binding = {
         "project_id": "project",
@@ -1910,10 +1846,8 @@ def test_chat_session_context_rejects_immutable_binding_conflicts(tmp_path, fiel
         store.validate_chat_session_context_binding("codex", "laptop", "native-session", **binding)
     second_json, second_digest = _snapshot("second")
     with pytest.raises(ValueError, match=f"immutable binding conflict: {field}"):
-        store.commit_chat_session_context(
-            provider="codex",
-            execution_machine="laptop",
-            native_session_id="native-session",
+        _commit_context(
+            store,
             **binding,
             protocol_version=2,
             snapshot_json=second_json,
@@ -1932,57 +1866,26 @@ def test_chat_session_context_rejects_provider_or_machine_conflicts(
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     snapshot_json, snapshot_digest = _snapshot("first")
-    store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
-        native_session_id="native-session",
-        project_id="project",
-        kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        protocol_version=1,
-        snapshot_json=snapshot_json,
-        snapshot_sha256=snapshot_digest,
-        committed_operation_id="operation",
-        expected_snapshot_sha256=None,
-    )
+    _commit_context(store, snapshot_json=snapshot_json, snapshot_sha256=snapshot_digest)
 
     with pytest.raises(ValueError, match="provider or execution-machine conflict"):
         store.chat_session_context(provider, execution_machine, "native-session")
     with pytest.raises(ValueError, match="provider or execution-machine conflict"):
-        store.commit_chat_session_context(
+        _commit_context(
+            store,
             provider=provider,
             execution_machine=execution_machine,
-            native_session_id="native-session",
-            project_id="project",
-            kind="project_chat",
-            chat_id="chat",
-            node_id=None,
             protocol_version=2,
             snapshot_json=snapshot_json,
             snapshot_sha256=snapshot_digest,
             committed_operation_id="conflicting-operation",
-            expected_snapshot_sha256=None,
         )
 
 
 def test_chat_session_context_record_forbids_extra_fields(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     snapshot_json, snapshot_digest = _snapshot("first")
-    record = store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
-        native_session_id="native-session",
-        project_id="project",
-        kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        protocol_version=1,
-        snapshot_json=snapshot_json,
-        snapshot_sha256=snapshot_digest,
-        committed_operation_id="operation",
-        expected_snapshot_sha256=None,
-    )
+    record = _commit_context(store, snapshot_json=snapshot_json, snapshot_sha256=snapshot_digest)
 
     with pytest.raises(ValueError, match="Extra inputs are not permitted"):
         ChatSessionContextRecord.model_validate({**record.model_dump(), "transcript": []})
@@ -2057,6 +1960,9 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "paper_drafts": 1,
         "writing_sessions": 1,
         "chat_session_contexts": 1,
+        "chat_display": 0,
+        "chat_reads": 0,
+        "chat_pins": 0,
         "conversation_worktrees": 0,
         "compute_jobs": 0,
         "compute_backend_probes": 0,
@@ -2124,19 +2030,11 @@ def test_chat_session_context_project_id_migrates_with_legacy_project_data(tmp_p
     store = AppStore(tmp_path / "rcp.sqlite3")
     project_id = str(uuid.uuid4())
     snapshot_json, snapshot_digest = _snapshot("legacy")
-    store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
-        native_session_id="native-session",
+    _commit_context(
+        store,
         project_id="legacy-project",
-        kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        protocol_version=1,
         snapshot_json=snapshot_json,
         snapshot_sha256=snapshot_digest,
-        committed_operation_id="operation",
-        expected_snapshot_sha256=None,
     )
 
     with pytest.raises(ValueError, match="not an exact canonical project registration"):
@@ -2375,19 +2273,12 @@ def test_legacy_project_data_migration_allows_same_target_alias_idempotently(tmp
             (legacy_id, project_id),
         )
     snapshot_json, snapshot_digest = _snapshot("same-target-alias")
-    store.commit_chat_session_context(
-        provider="codex",
-        execution_machine="laptop",
+    _commit_context(
+        store,
         native_session_id="same-target-session",
         project_id=legacy_id,
-        kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        protocol_version=1,
         snapshot_json=snapshot_json,
         snapshot_sha256=snapshot_digest,
-        committed_operation_id="operation",
-        expected_snapshot_sha256=None,
     )
 
     store.migrate_legacy_project_data(legacy_id, project_id)
@@ -2404,14 +2295,11 @@ def test_agent_usage_is_counted_once_and_snapshot_uses_weighted_cache_share(tmp_
     store.upsert_project(_project("project"))
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="refresh-operation",
-            project_id="project",
-            kind="refresh",
             status="succeeded",
             request={"provider": "codex", "model": "gpt"},
-            created_at=now,
-            updated_at=now,
             status_message="done",
         )
     )
@@ -2446,14 +2334,12 @@ def test_recorded_agent_usage_reuses_the_original_report(tmp_path) -> None:
     store.upsert_project(_project("project"))
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="recorded-operation",
-            project_id="project",
             kind="project_chat",
             status="running",
             request={"provider": "codex", "model": "gpt"},
-            created_at=now,
-            updated_at=now,
             status_message="finalizing",
         )
     )
@@ -2477,14 +2363,11 @@ def test_concurrent_agent_usage_reports_count_one_dedupe_key_once(tmp_path) -> N
     store.upsert_project(_project("project"))
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="refresh-operation",
-            project_id="project",
-            kind="refresh",
             status="succeeded",
             request={"provider": "codex", "model": "gpt"},
-            created_at=now,
-            updated_at=now,
             status_message="done",
         )
     )
@@ -2517,14 +2400,11 @@ def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once
     store.upsert_project(_project("project"))
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="refresh-operation",
-            project_id="project",
-            kind="refresh",
             status="succeeded",
             request={"provider": "codex"},
-            created_at=now,
-            updated_at=now,
             status_message="done",
         )
     )
@@ -2573,14 +2453,12 @@ def test_agent_usage_snapshot_counts_latest_input_context_once_per_native_sessio
     store.upsert_project(_project("project"))
     now = store.now()
     tasks = [
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id=operation_id,
-            project_id="project",
             kind="node_chat",
             status="succeeded",
             request={"provider": provider, "model": "model"},
-            created_at=now,
-            updated_at=now,
             status_message="done",
             native_session_id="shared-session",
         )
@@ -2753,14 +2631,10 @@ def test_agent_task_authorizer_snapshot_round_trips_and_survives_restart(tmp_pat
     now = store.now()
 
     created = store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="authorized-operation",
-            project_id="project",
-            kind="refresh",
             status="succeeded",
-            request={},
-            created_at=now,
-            updated_at=now,
             status_message="done",
             authorized_by=authorizer,
         )
@@ -2793,14 +2667,10 @@ def test_space_user_rename_does_not_rewrite_agent_task_authorizer_snapshot(tmp_p
     )
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="before-rename",
-            project_id="project",
-            kind="refresh",
             status="succeeded",
-            request={},
-            created_at=now,
-            updated_at=now,
             status_message="done",
             authorized_by=authorizer,
         )
@@ -2859,28 +2729,22 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
     dispatch_authority = resolve_dispatch_authority("refresh", request)
     assert dispatch_authority is not None
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="parent",
-            project_id="project",
-            kind="refresh",
             status="failed",
             request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="failed",
             authorized_by=parent_authorizer,
             dispatch_authority=dispatch_authority,
         )
     )
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="explicit-child",
-            project_id="project",
-            kind="refresh",
             status="succeeded",
             request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="done",
             parent_operation_id="parent",
             authorized_by=child_authorizer,
@@ -2888,14 +2752,11 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
         )
     )
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="legacy-child",
-            project_id="project",
-            kind="refresh",
             status="succeeded",
             request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="done",
             parent_operation_id="parent",
             dispatch_authority=dispatch_authority,
@@ -3001,16 +2862,7 @@ def test_patch_recovery_output_is_bounded(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="refresh",
-            status="failed",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="failed",
-        )
+        _task_record(now, operation_id="operation", status="failed", status_message="failed")
     )
 
     store.record_agent_task_patch_output("operation", '{"kind":"refresh"}')
@@ -3024,28 +2876,10 @@ def test_agent_task_admission_persists_exact_launch_intent(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     parent = store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="parent",
-            project_id="project",
-            kind="refresh",
-            status="failed",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="failed",
-        )
+        _task_record(now, operation_id="parent", status="failed", status_message="failed")
     )
-    child = AgentTaskRecord(
-        operation_id="child",
-        project_id="project",
-        kind="refresh",
-        status="queued",
-        request={},
-        created_at=now,
-        updated_at=now,
-        status_message="queued",
-        attempt=2,
-        parent_operation_id=parent.operation_id,
+    child = _task_record(
+        now, operation_id="child", attempt=2, parent_operation_id=parent.operation_id
     )
 
     store.create_agent_task(child, continuation_cause="retry")
@@ -3075,18 +2909,7 @@ def test_agent_task_admission_rolls_back_when_its_intent_cannot_persist(
 
     monkeypatch.setattr(store, "_insert_agent_task_receipt", fail_receipt)
     with pytest.raises(RuntimeError, match="simulated admission receipt failure"):
-        store.create_agent_task(
-            AgentTaskRecord(
-                operation_id="operation",
-                project_id="project",
-                kind="refresh",
-                status="queued",
-                request={},
-                created_at=now,
-                updated_at=now,
-                status_message="queued",
-            )
-        )
+        store.create_agent_task(_task_record(now, operation_id="operation"))
 
     assert store.agent_task("operation") is None
 
@@ -3094,18 +2917,7 @@ def test_agent_task_admission_rolls_back_when_its_intent_cannot_persist(
 def test_malformed_agent_task_admission_intent_fails_closed(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="refresh",
-            status="queued",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="queued",
-        )
-    )
+    store.create_agent_task(_task_record(now, operation_id="operation"))
     with store.connection() as connection:
         connection.execute(
             """
@@ -3123,18 +2935,7 @@ def test_malformed_agent_task_admission_intent_fails_closed(tmp_path) -> None:
 def test_inconsistent_or_duplicate_agent_task_admission_intent_fails_closed(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="refresh",
-            status="queued",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="queued",
-        )
-    )
+    store.create_agent_task(_task_record(now, operation_id="operation"))
     inconsistent = {
         "kind": "seed",
         "attempt": 1,
@@ -3174,18 +2975,7 @@ def test_inconsistent_or_duplicate_agent_task_admission_intent_fails_closed(tmp_
 def test_legacy_committed_dispatch_intent_remains_readable(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="refresh",
-            status="queued",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="queued",
-        )
-    )
+    store.create_agent_task(_task_record(now, operation_id="operation"))
     with store.connection() as connection:
         connection.execute(
             """
@@ -3261,16 +3051,7 @@ def test_agent_task_events_and_tiered_receipts_are_bounded_per_operation(tmp_pat
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="refresh",
-            status="failed",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="failed",
-        )
+        _task_record(now, operation_id="operation", status="failed", status_message="failed")
     )
 
     for index in range(225):
@@ -3307,18 +3088,7 @@ def test_dispatch_proof_receipts_survive_diagnostic_retention(tmp_path) -> None:
     now = store.now()
 
     def queued(operation_id: str) -> None:
-        store.create_agent_task(
-            AgentTaskRecord(
-                operation_id=operation_id,
-                project_id="project",
-                kind="refresh",
-                status="queued",
-                request={},
-                created_at=now,
-                updated_at=now,
-                status_message="queued",
-            )
-        )
+        store.create_agent_task(_task_record(now, operation_id=operation_id))
 
     queued("started")
     store.record_agent_task_receipt(
@@ -3387,18 +3157,7 @@ def test_malformed_dispatch_proof_receipts_fail_closed(
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="refresh",
-            status="queued",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="queued",
-        )
-    )
+    store.create_agent_task(_task_record(now, operation_id="operation"))
     store.record_agent_task_receipt(
         "operation",
         "operation_dispatch_attempt",
@@ -3434,15 +3193,8 @@ def test_oversized_agent_task_receipt_omits_values_but_keeps_safe_metadata(tmp_p
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="seed",
-            status="failed",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="failed",
+        _task_record(
+            now, operation_id="operation", kind="seed", status="failed", status_message="failed"
         )
     )
     raw_evidence = "x" * (AGENT_TASK_RECEIPT_MAX_BYTES + 1)
@@ -3480,15 +3232,8 @@ def test_agent_task_contract_content_is_durable_beyond_receipt_limit(tmp_path) -
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="operation",
-            project_id="project",
-            kind="seed",
-            status="failed",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="failed",
+        _task_record(
+            now, operation_id="operation", kind="seed", status="failed", status_message="failed"
         )
     )
     content = "immutable pointer contract\n" + "x" * 20_000
@@ -3512,14 +3257,12 @@ def test_agent_task_result_messages_are_bounded(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="operation",
-            project_id="project",
             kind="paper_coach",
             status="running",
             request={"message": "Review this."},
-            created_at=now,
-            updated_at=now,
             status_message="running",
         )
     )
@@ -3545,14 +3288,12 @@ def test_agent_task_result_keeps_a_bounded_latest_tail_of_graph_updates(tmp_path
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="graph-updates",
-            project_id="project",
             kind="node_chat",
             status="running",
             request={"message": "Apply the updates."},
-            created_at=now,
-            updated_at=now,
             status_message="running",
         )
     )
@@ -3621,14 +3362,12 @@ def test_work_graph_repair_admission_rolls_back_claim_and_child_together(
         display_name="Test researcher",
     )
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="work-parent",
-            project_id="project",
             kind="project_chat",
             status="succeeded",
             request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="Graph update rejected.",
             native_session_id="repair-session",
             stage_root=str(tmp_path / "repair-stage"),
@@ -3647,14 +3386,11 @@ def test_work_graph_repair_admission_rolls_back_claim_and_child_together(
     repair_request = request.model_copy(update={"message": None, "session_id": "repair-session"})
 
     def child(operation_id: str) -> AgentTaskRecord:
-        return AgentTaskRecord(
+        return _task_record(
+            now,
             operation_id=operation_id,
-            project_id="project",
             kind="project_chat",
-            status="queued",
             request=repair_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="Waiting to repair the graph update.",
             attempt=2,
             parent_operation_id="work-parent",
@@ -3705,14 +3441,12 @@ def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_
     dispatch_authority = resolve_dispatch_authority("node_chat", request)
     assert dispatch_authority is not None
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="paused-chat",
-            project_id="project",
             kind="node_chat",
             status="paused",
             request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="paused",
             native_session_id="native-session",
             stage_host="",
@@ -3729,14 +3463,12 @@ def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_
     )
 
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="retried-chat",
-            project_id="project",
             kind="node_chat",
             status="succeeded",
             request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="complete",
             parent_operation_id="paused-chat",
             dispatch_authority=dispatch_authority,
@@ -3750,14 +3482,11 @@ def test_agent_task_result_retains_only_valid_bounded_artifact_descriptors(tmp_p
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     store.create_agent_task(
-        AgentTaskRecord(
+        _task_record(
+            now,
             operation_id="artifact-operation",
-            project_id="project",
             kind="project_chat",
             status="running",
-            request={},
-            created_at=now,
-            updated_at=now,
             status_message="running",
         )
     )

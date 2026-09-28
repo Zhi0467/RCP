@@ -805,6 +805,9 @@ def remote_pty(monkeypatch, remote_probe):
     monkeypatch.setattr(
         "rcp.transport.run_stage.RemoteRunStage.canonical_directories", canonical_directories
     )
+    monkeypatch.setattr(
+        "rcp.transport.run_stage.RemoteRunStage.legacy_stage_roots", lambda _stage: []
+    )
     monkeypatch.setattr("rcp.terminals.remote.start_remote", start)
     monkeypatch.setattr("rcp.terminals.remote.stop_remote_unit", lambda *args: None)
     yield opened

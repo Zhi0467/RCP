@@ -63,7 +63,10 @@ The shell is intentionally bare: no RCP wordmark, product logo, or revision labe
 beside the project name. Agent tasks and Refresh are icon-only accessible
 controls; project chat is **Ask**. The attention destination is **Inbox** with a
 colored count, and DAG is a subpanel of **Research** rather than a primary
-destination.
+destination. **Paper** is likewise a subpanel of **Artifacts**, reached from a
+Files | Paper switch; its route view stays `paper`, and the paper's unsynced
+badge shows on the Artifacts tab. Destination order ends Terminals, Agents,
+Settings.
 
 Group the header semantically — labeled **Sync / Ask** together, then icon-only
 **History / Refresh** together. Do not space all four as unrelated peers.
@@ -117,7 +120,7 @@ jargon. Relation rows open a focused one-hop DAG view.
 
 Node detail is a resizable floating inspection window. Its project-scoped size
 survives minimize/restore and close/reopen, remains reachable after a viewport
-change, and closes when the human enters Chats.
+change, and closes when the human enters Agents.
 
 Node wording correction is a literal human edit, not an agent request. A direct
 prose editor stages the change in the project draft and clears the draft standing
@@ -161,14 +164,66 @@ and is not addressing a running attempt, and every sent turn keeps an immutable
 visible mode label. A resumed task keeps its original mode regardless of the
 current composer setting.
 
+In the Agents workspace, a conversation has one header band: title and meta on
+the left, New session and repository scope on the right. The meta names the
+umbrella provider (`provider_label`, such as Claude or Codex), never its
+runtime; the task inspector keeps the runtime. It shows the latest turn's
+model and effort, and the chat kind. Neither the header nor an agent card
+names Discuss or Work; each turn's own label already carries it. The agent list has no title
+band: a sidebar icon beside its search folds it, a folded list leaves that
+icon at the chat band's top left, and a hairline separates list from chat.
+
+Cards share one fixed size: a one-line title and one secondary line of
+meta; the group they sit in names their state. A three-dot menu on
+the card removes an unsent draft, which exists only in the browser, or renames,
+pins, or archives a conversation with turns. Rename and archive are project
+display choices shared by every member; a pin belongs to the member who made it
+(`POST /api/projects/{project_id}/chats/{chat_id}/title`, `.../pin`, and
+`.../archive`, read together from `GET /api/projects/{project_id}/chat-display`,
+which returns the acting user's pins);
+a blank name returns the derived one. Rename edits the title in place on the
+card. An Archived filter appears when any exist, counts every archived chat
+including unloaded pages, and offers Restore. Transcripts and tasks are never
+changed or deleted.
+
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity
 row when its underlying status can already be inspected, while failures and
 recovery controls stay explicit. The composer is a calm contained writing
 surface rather than a full-width control bar.
 
-At viewport widths of 560px or less, Chats uses a single column. The conversation
-list starts closed behind a **Chats** disclosure above the conversation and
+The **Agents** destination (formerly Chats; the route view is still `chats`) lists
+conversations as an agent-hub panel. Each conversation belongs to exactly one
+group, and each group lists its conversations in recency order. The groups come
+from the backend's answers on the latest loaded turn, in this order:
+
+- **New reply**: the turn succeeded after the human last viewed this
+  conversation (the read markers in `api-web-and-desktop-projections.md`).
+- **Failed**: the turn failed.
+- **Stopped**: the turn was paused or interrupted. Both resume the same way.
+- **Working**: the turn is queued, running, or pausing.
+- **Done**: the turn succeeded and was read. An unsent draft, and a
+  conversation whose turns are not loaded, are also Done.
+
+Pinned conversations leave their group for a **Pinned** section above the
+groups, newest pin first, in the All view only; each pinned row carries its own
+status mark. Filters and their counts ignore pins.
+
+The group header carries the state: a mark and a label in the state's colour,
+plus a count. Rows carry no state dot. Each row is a raised card with a one-line
+title and a provider · repository line. Failed and Stopped rows add Retry or
+Resume when the task offers it, and a working row shows its live phase and
+elapsed time. An unread turn is the most prominent thing in the list in any
+group: a tinted card, an accent border, a bold title, and a New pill. A failed
+or stopped turn that is unread stays in its own group. Search runs in the browser over what each card
+already holds: its name, node, chat kind, latest message, and every loaded
+turn's prompt, provider, model, effort, and repositories; every word must match.
+Chips filter to All or Working. Above the conversation, a header
+names the title, provider, model, effort, repository, and chat scope; a failed or stopped turn adds a banner
+with the backend label and Resume or Retry when the task offers it.
+
+At viewport widths of 560px or less, Agents uses a single column. The conversation
+list starts closed behind an **Agents** disclosure above the conversation and
 closes after selecting a chat. Wider views retain the resizable list and its
 saved collapse preference; changing viewport size does not overwrite that
 preference or the saved list width.
@@ -207,13 +262,25 @@ with a concise save-first label until the metadata is saved. A compute-settings
 save also invalidates older in-flight readiness responses, so a late old-target
 success cannot replace the empty state left by a failed new-target probe.
 
-Settings groups provider executables and **Long-running jobs** under each
-machine. **Use Slurm** opts into direct scheduler submission; **Jobs root**
+Project Settings shows its machines as small tiles (name, host, and status dots
+for each provider, the jobs route, and the writable-path count) with a dashed
+**Add machine** tile; one machine's card is open below at a time, the first
+until another tile is clicked, grouping
+provider executables, **Long-running jobs**, and the machine's writable paths.
+The same writable-path record appears in space Settings, so the project card
+says the list applies to every project on that machine. **Add machine** opens
+a labelled box of the space's other machines as the same tiles; one click adds
+that machine under a name derived from its card and opens it. Setup picks from
+the same tiles. Both end with a dashed **New machine** tile. Writable paths are picked with a small folder picker (breadcrumbs, one
+level, name filter, **Load more**, locked protected folders, **Use this
+folder**) rather than typed. **Use Slurm** opts into direct scheduler submission; **Jobs root**
 configures helper storage. RCP exposes no scheduler resource settings. **Reset
 compute** removes the optional block through the normal Settings **Save**.
 Readiness uses the same label, tone, and pending presentation as compute
-connections. Editing masks the saved result and requires Save before Probe;
-probe and save cannot overlap.
+connections, with one row per offered route (scheduler and helper). There is
+no Probe control: a save that changes the block checks it in the background,
+and editing masks the saved result until then. A route that is not ready
+shows on Runs with its fix and **Check again**.
 
 Chat and Experiment show one external job row per shell watcher. Its log path,
 observation status, last check, and diagnostic remain visible with Cancel
@@ -238,7 +305,7 @@ lists; a watcher that becomes active again is visible regardless of the preferen
 ## Terminals
 
 **Terminals** is a project destination beside Overview, Inbox, Research, Runs,
-Artifacts, Paper, Settings, and Chats when at least one project machine can host
+Artifacts, Agents, and Settings when at least one project machine can host
 a session. Remote pending and failed probes also keep it visible so their
 status and recovery control remain reachable. It is hidden for empty projects
 or only unavailable local machines. Settings has no terminal control. The empty

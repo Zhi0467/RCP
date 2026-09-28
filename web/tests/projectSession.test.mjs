@@ -303,6 +303,53 @@ test("re-applying an unchanged snapshot keeps the staged draft and its preview",
   assert.strictEqual(controlMoved.project.graph, repolled.project.graph);
 });
 
+test("a repoll of the head a preview built on keeps the staged preview", () => {
+  const question = {
+    id: "rq/example",
+    type: "research_question",
+    title: "Question",
+    statement: "Statement",
+    standing: "accepted",
+    created_rev: 1,
+    updated_rev: 1,
+    source_refs: [],
+    extension_fields: {},
+  };
+  const hypothesis = { ...question, id: "hyp/example", type: "hypothesis", title: "Canonical" };
+  const exactHead = { target: { kind: "main" }, revision: 1, transition_id: transitionOne };
+  const polled = (syncedAt) =>
+    snapshot(1, {
+      graph: graph(1, hypothesis),
+      // A display cache written before snapshots named the transition id.
+      graph_head: { target: { kind: "main" }, revision: 1, transition_id: null },
+      // Each poll parses fresh JSON, so no object is shared between reads.
+      primary_question: structuredClone(question),
+      // Team and SSH-backed projects restamp this on every read.
+      last_remote_sync_at: syncedAt,
+    });
+  let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
+    kind: "snapshot_applied",
+    snapshot: polled("2026-09-27T20:00:00Z"),
+    preserve_readiness: false,
+  });
+  state = projectSessionReducer(state, { kind: "human_draft_loaded", draft: humanDraft(1) });
+  state = projectSessionReducer(state, {
+    kind: "preview_applied",
+    project_id: "alpha",
+    projection: { ...projection(2), base_head: exactHead },
+    base_head: exactHead,
+  });
+
+  const repolled = projectSessionReducer(state, {
+    kind: "snapshot_applied",
+    snapshot: polled("2026-09-27T20:00:06Z"),
+    preserve_readiness: false,
+  });
+
+  assert.strictEqual(repolled.draftTransitionProjection, state.draftTransitionProjection);
+  assert.deepEqual(repolled.transitionHead, exactHead);
+});
+
 test("an unchanged snapshot keeps preview status, and a moved one clears it", () => {
   let state = projectSessionReducer(emptyProjectSessionState("alpha"), {
     kind: "snapshot_applied",
@@ -844,6 +891,15 @@ test("heartbeat metadata detects same-revision reconnection without requiring a 
   );
   assert.equal(projectHeartbeatMetadataChanged(fresh, fresh), false);
   assert.equal(projectHeartbeatMetadataChanged({}, fresh), false);
+  // A background compute probe finishing is a change; an older snapshot without
+  // the field counts as never probed.
+  const probed = { ...fresh, compute_probes_probed_at: "2026-09-01T12:02:00Z" };
+  assert.equal(projectHeartbeatMetadataChanged(probed, fresh), true);
+  assert.equal(projectHeartbeatMetadataChanged(probed, probed), false);
+  assert.equal(
+    projectHeartbeatMetadataChanged({ ...fresh, compute_probes_probed_at: null }, fresh),
+    false,
+  );
   for (const renderedRevision of [7, 8]) {
     assert.deepEqual(
       projectHeartbeatSnapshotDisposition({

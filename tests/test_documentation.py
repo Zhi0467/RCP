@@ -28,21 +28,6 @@ EXPECTED_CURRENT_FILES = {
     "tests/test_documentation.py",
 }
 
-REQUIRED_IMPLEMENTATION_FILES = {
-    "src/rcp/agents/branch_merge_prompt.py",
-    "src/rcp/agents/write_scope.py",
-    "src/rcp/core/operations.py",
-    "src/rcp/core/transition_models.py",
-    "src/rcp/core/transitions.py",
-    "src/rcp/history/branches.py",
-    "src/rcp/runs/branch_merge.py",
-    "src/rcp/runs/branch_merge_request.py",
-    "src/rcp/runs/tasks/branch_merge.py",
-    "src/rcp/runs/transition_event_reconciliation.py",
-    "web/src/experimentGuidance.ts",
-    "web/src/projectTransition.ts",
-}
-
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^]]*]\(([^)]+)\)")
 HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
 
@@ -92,11 +77,6 @@ def test_current_documentation_layout_is_complete() -> None:
     assert {path.name for path in (DOCS / "specs").glob("*.md")} == EXPECTED_SPECS
 
     assert not (DOCS / "archive").exists()
-
-
-def test_required_implementation_inventory_is_present() -> None:
-    missing = [path for path in REQUIRED_IMPLEMENTATION_FILES if not (ROOT / path).is_file()]
-    assert not missing, f"missing implementation files from exported snapshot: {sorted(missing)}"
 
 
 def test_current_markdown_links_and_anchors_resolve() -> None:

@@ -35,6 +35,7 @@ from rcp.compute import (
 )
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
+    MachineConfig,
     Manifest,
     load_manifest,
 )
@@ -81,6 +82,7 @@ from rcp.storage import (
     ProjectRecord,
     ProjectStageRecord,
 )
+from rcp.storage.models import ProjectProvisioningMachineRecord
 from rcp.transport import (
     LocalStateWorkspace,
     RemoteRunStage,
@@ -212,26 +214,6 @@ def inspect_backup_project_registration(
     if manifest.name != record.name or str(manifest.path) != record.locator:
         raise BackupProjectUnavailable("The project catalog and registered manifest disagree.")
 
-    # The P6b renderer is the concrete owner of the reviewed team manifest. Reuse
-    # it here so backup cannot grow a second interpretation of that configuration.
-    from rcp.setup import render_prepared_team_manifest
-
-    try:
-        actual_document = tomlkit.parse(Path(record.locator).read_text(encoding="utf-8")).unwrap()
-        recorded_manifest = Manifest.model_validate(actual_document)
-        expected_document = tomlkit.parse(render_prepared_team_manifest(request)).unwrap()
-        expected_manifest = Manifest.model_validate(expected_document)
-    except (OSError, ValueError, tomlkit.exceptions.ParseError) as exc:
-        raise BackupProjectUnavailable(
-            "The completed provisioning record cannot reproduce its reviewed manifest."
-        ) from exc
-    if _provisioning_bound_configuration(recorded_manifest) != _provisioning_bound_configuration(
-        expected_manifest
-    ):
-        raise BackupProjectUnavailable(
-            "The canonical manifest changed after the completed provisioning proof."
-        )
-
     state_repository = manifest.repository_map[manifest.state.repository]
     state_machine = manifest.machine_map[state_repository.machine]
     expected_state_location = (
@@ -245,6 +227,9 @@ def inspect_backup_project_registration(
         raise BackupProjectUnavailable("The project catalog and canonical state location disagree.")
 
     configuration = BackupManifestConfiguration.from_manifest(manifest)
+    # Machines come from the current manifest, so one added after setup is kept.
+    # A provisioned root is reused only while the machine keeps its route.
+    provisioned = {machine.alias: machine for machine in request.machines}
     try:
         completed_at = datetime.fromisoformat(request.completed_at)
         recovery = BackupCheckoutRecoveryDescriptor(
@@ -256,14 +241,7 @@ def inspect_backup_project_registration(
             configuration=configuration,
             configuration_sha256=configuration.sha256,
             machines=tuple(
-                BackupRecoveryMachine(
-                    alias=machine.alias,
-                    location=machine.location,
-                    host=machine.host,
-                    os_account=machine.os_account,
-                    resolved_central_root=machine.resolved_central_root,
-                )
-                for machine in request.machines
+                _backup_recovery_machine(machine, provisioned) for machine in manifest.machines
             ),
             repositories=tuple(
                 BackupRecoveryRepository(
@@ -286,9 +264,7 @@ def inspect_backup_project_registration(
         raise BackupProjectUnavailable(
             "The completed provisioning record cannot reconstruct every checkout."
         ) from exc
-    if len(recovery.machines) != len(request.machines) or len(recovery.repositories) != len(
-        request.repositories
-    ):
+    if len(recovery.repositories) != len(request.repositories):
         raise BackupProjectUnavailable(
             "The completed provisioning record is missing a checkout recovery field."
         )
@@ -300,32 +276,53 @@ def inspect_backup_project_registration(
     )
 
 
-def _provisioning_bound_configuration(manifest: Manifest) -> dict[str, object]:
-    """Return the manifest fields whose authority remains the provisioning review.
+def _backup_recovery_machine(
+    machine: MachineConfig,
+    provisioned: dict[str, ProjectProvisioningMachineRecord],
+) -> BackupRecoveryMachine:
+    intent = provisioned.get(machine.alias)
+    if intent is not None and (intent.host, intent.os_account) == (
+        machine.host,
+        machine.os_account,
+    ):
+        return BackupRecoveryMachine(
+            alias=machine.alias,
+            location=intent.location,
+            host=intent.host,
+            os_account=intent.os_account,
+            resolved_central_root=intent.resolved_central_root,
+        )
+    return BackupRecoveryMachine(
+        alias=machine.alias,
+        location="ssh" if machine.host else "local",
+        host=machine.host,
+        os_account=machine.os_account,
+        resolved_central_root=None,
+    )
 
-    Project Settings intentionally rewrites provider executable paths, agent
-    profiles, skill defaults, run scope, and the Experiment invocation ceiling.
-    Backup must retain those current canonical values. Checkout placement and
-    project truth identity remain bound to the completed provisioning proof.
-    """
 
-    return {
-        "name": manifest.name,
-        "machines": tuple(
-            sorted(
-                (machine.alias, machine.host, machine.os_account) for machine in manifest.machines
-            )
-        ),
-        "repositories": tuple(
-            sorted(
-                (repository.alias, repository.machine, repository.path)
-                for repository in manifest.repositories
-            )
-        ),
-        "project_truth_scope": tuple(manifest.project.truth_scope),
-        "state_repository": manifest.state.repository,
-        "sources": manifest.sources.model_dump(mode="json"),
-    }
+def record_space_machines(store: AppStore, manifest: Manifest) -> None:
+    """Give the space a card for every machine account this manifest names."""
+
+    conflicts = store.ensure_space_machines(
+        (machine.host, machine.os_account, machine.alias) for machine in manifest.machines
+    )
+    for host in conflicts:
+        _LOGGER.warning(
+            "Projects name different accounts for machine %s; its card now names none.", host
+        )
+
+
+def fill_space_machines(store: AppStore) -> None:
+    """Fill the space machine list from every registered project's manifest."""
+
+    for project in store.projects():
+        try:
+            manifest = load_manifest(project.locator)
+        except (OSError, ValueError) as exc:
+            _LOGGER.warning("Could not read machines for project %s: %s", project.project_id, exc)
+            continue
+        record_space_machines(store, manifest)
 
 
 def rebind_restored_project_registration(
@@ -766,7 +763,7 @@ class ProjectCatalog:
         self.provider_skills = provider_skills
         self._services: dict[str, ProjectService] = {}
         self._services_lock = threading.Lock()
-        self._opening: dict[str, Future[tuple[ProjectService, GraphState]]] = {}
+        self._opening: dict[str, Future[tuple[ProjectService, MaterializationResult]]] = {}
         self._deleting: set[str] = set()
         self._snapshot_locks: dict[str, threading.Lock] = {}
         self._snapshot_generations: dict[str, int] = {}
@@ -892,6 +889,11 @@ class ProjectCatalog:
         ):
             raise RuntimeError("incoming transfer activation catalog readback differs")
         self._refresh_project_aliases()
+        # The transfer is already committed; a machine card is only a convenience.
+        try:
+            record_space_machines(self.store, load_manifest(stored.locator))
+        except (OSError, ValueError) as exc:
+            _LOGGER.warning("Could not record machines for transferred project: %s", exc)
 
     def _register(
         self,
@@ -1021,6 +1023,7 @@ class ProjectCatalog:
                 )
             self._finish_alias_file_migrations(identity.project_id)
             self._seat_first_member(stored.project_id, seat_member, seated_by=seated_by)
+            record_space_machines(self.store, manifest)
             return stored
 
     def register_degraded_read_only(
@@ -1067,6 +1070,7 @@ class ProjectCatalog:
                 }
             )
             self.store.upsert_project(record)
+            record_space_machines(self.store, manifest)
             paper = PaperService(
                 manifest,
                 self.store,
@@ -1085,7 +1089,7 @@ class ProjectCatalog:
                 task_continuation_session=self.store.agent_task_continuation_session_id,
                 chat_graph_target=self.store.chat_graph_target,
             )
-            snapshot = _snapshot_payload(service.project_snapshot(state=materialization.state))
+            snapshot = _snapshot_payload(service.project_snapshot(materialization=materialization))
             self._stamp_snapshot_identity(snapshot, project_id)
             self.mark_snapshot_fresh(snapshot)
             self.write_cached_snapshot(project_id, snapshot)
@@ -1528,9 +1532,9 @@ class ProjectCatalog:
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, _ProjectSnapshotDraft]:
         project_id = self._canonical_project_id(project_id)
-        service, initialized_state = self._service_or_open(project_id)
+        service, initialized = self._service_or_open(project_id)
         project_id = self._canonical_project_id(project_id)
-        snapshot = _snapshot_payload(service.project_snapshot(state=initialized_state))
+        snapshot = _snapshot_payload(service.project_snapshot(materialization=initialized))
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         return service, _ProjectSnapshotDraft(snapshot)
@@ -1542,14 +1546,14 @@ class ProjectCatalog:
         """Refresh canonical state and build one fresh display-snapshot candidate."""
 
         project_id = self._canonical_project_id(project_id)
-        service, initialized_state = self._service_or_open(project_id)
+        service, initialized = self._service_or_open(project_id)
         project_id = self._canonical_project_id(project_id)
-        if initialized_state is None:
+        if initialized is None:
             refreshed = service.history.workspace.refresh()
             if service.history.workspace.remote and not refreshed:
                 raise StateUnavailable("Remote canonical state has no readable manifest.")
-            initialized_state = service.history.materialize(write_outputs=False).state
-        snapshot = _snapshot_payload(service.project_snapshot(state=initialized_state))
+            initialized = service.history.materialize(write_outputs=False)
+        snapshot = _snapshot_payload(service.project_snapshot(materialization=initialized))
         self._stamp_snapshot_identity(snapshot, project_id)
         self.mark_snapshot_fresh(snapshot)
         return service, _ProjectSnapshotDraft(snapshot)
@@ -1603,7 +1607,7 @@ class ProjectCatalog:
     def _service_or_open(
         self,
         project_id: str,
-    ) -> tuple[ProjectService, GraphState | None]:
+    ) -> tuple[ProjectService, MaterializationResult | None]:
         """Open once per project while leaving snapshot work outside the lock."""
 
         project_id = self._ensure_registered_identity(project_id)
@@ -2245,7 +2249,7 @@ class ProjectCatalog:
             / (f"{(safe_project_id or 'project')[:80]}-introduction.md")
         )
 
-    def _open_service(self, project_id: str) -> tuple[ProjectService, GraphState]:
+    def _open_service(self, project_id: str) -> tuple[ProjectService, MaterializationResult]:
         project_id = self._canonical_project_id(project_id)
         record = self.store.project(project_id)
         if record is None:
@@ -2272,8 +2276,7 @@ class ProjectCatalog:
                 f"Registered project id {project_id!r} does not match canonical history "
                 f"{identity.project_id!r}."
             )
-        initialized_state = initialized.state
-        if initialized_state.replay_status != "degraded":
+        if initialized.state.replay_status != "degraded":
             self.store.migrate_legacy_project_data(history.manifest.name, project_id)
         paper = PaperService(
             history.manifest,
@@ -2293,7 +2296,7 @@ class ProjectCatalog:
             task_continuation_session=self.store.agent_task_continuation_session_id,
             chat_graph_target=self.store.chat_graph_target,
         )
-        return service, initialized_state
+        return service, initialized
 
     def update_summary(
         self,
@@ -2396,6 +2399,33 @@ class ProjectCatalog:
             "project": _ProjectSnapshotDraft(snapshot),
         }
 
+    def add_machine(
+        self,
+        project_id: str,
+        machine_id: str,
+        alias: str,
+    ) -> _ProjectSnapshotDraft:
+        """Append a space machine card's host and account to one project's manifest."""
+
+        card = self.store.space_machine(machine_id)
+        project_id = self._canonical_project_id(project_id)
+        generation = self.reserve_cached_snapshot_generation(project_id)
+        service = self.open(project_id)
+        project_id = self._canonical_project_id(project_id)
+        service.add_machine(alias, card.host, card.os_account)
+        self._persist_bootstrap_locator(project_id, service)
+        record_space_machines(self.store, service.manifest)
+        snapshot = _snapshot_payload(service.project_snapshot())
+        self._stamp_snapshot_identity(snapshot, project_id)
+        self.mark_snapshot_fresh(snapshot)
+        self.commit_cached_snapshot(
+            project_id,
+            snapshot,
+            generation=generation,
+            patch_log_head=service.history.workspace.cached_patch_log_head(),
+        )
+        return _ProjectSnapshotDraft(snapshot)
+
     def _persist_bootstrap_locator(
         self,
         project_id: str,
@@ -2491,11 +2521,17 @@ class ProjectDisplayCache:
             {
                 **machine,
                 "compute": machine.get("compute"),
-                "compute_probe": (probe.model_dump(mode="json") if probe is not None else None),
+                "compute_probes": {
+                    route: probe.model_dump(mode="json") if probe is not None else None
+                    for route in ("scheduler", "helper")
+                    for probe in [
+                        self._store.compute_backend_probe(payload["id"], machine["alias"], route)
+                    ]
+                },
             }
             for machine in payload["machines"]
-            for probe in [self._store.compute_backend_probe(payload["id"], machine["alias"])]
         ]
+        payload["compute_probes_probed_at"] = self._store.compute_probes_probed_at(payload["id"])
         return payload
 
     def open_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
@@ -2520,6 +2556,12 @@ class ProjectDisplayCache:
         return self.complete_snapshot(
             project_id,
             self._catalog.update_settings(project_id, request),
+        )
+
+    def add_machine(self, project_id: str, machine_id: str, alias: str) -> dict[str, object]:
+        return self.complete_snapshot(
+            project_id,
+            self._catalog.add_machine(project_id, machine_id, alias),
         )
 
     def resolve_provider_path(
@@ -2648,11 +2690,11 @@ class ProjectDisplayCache:
                 raise ValueError("The expected project display snapshot is missing.")
             if cached is None:
                 raise ValueError("The existing project display snapshot is invalid.")
-            state = service.history.materialize(write_outputs=False).state
+            materialization = service.history.materialize(write_outputs=False)
             paper = PaperSnapshot.model_validate(cached["paper"])
             snapshot = self.complete_snapshot(
                 project_id,
-                service.project_snapshot(state=state, paper=paper),
+                service.project_snapshot(materialization=materialization, paper=paper),
                 fresh=True,
             )
             self._catalog.commit_cached_snapshot(

@@ -5,10 +5,13 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from rcp.agents import AgentEvent
+from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import (
     AuthorizedHuman,
@@ -31,6 +34,7 @@ from rcp.runs.branch_merge import (
     BranchMergeRunOutcome,
     BranchMergeSourceChanged,
     BranchMergeStage,
+    _changed_graph_rules,
     branch_merge_can_resolve_without_patch,
     branch_merge_id,
     build_semantic_delta,
@@ -521,17 +525,19 @@ class _FakeLauncher:
         self.patch_text = patch_text
         self.sessions: list[str | None] = []
         self.write_dirs: list[list[Path]] = []
+        self.prompts: list[str] = []
 
     async def stream(
         self,
         _provider: str,
-        _prompt: str,
+        prompt: str,
         *,
         cwd: Path,
         session_id: str | None,
         write_dirs: list[Path],
         **_kwargs: object,
     ) -> AsyncIterator[AgentEvent]:
+        self.prompts.append(prompt)
         self.sessions.append(session_id)
         self.write_dirs.append(write_dirs)
         (cwd / "patch.json").write_text(self.patch_text, encoding="utf-8")
@@ -617,7 +623,7 @@ class _SequenceLauncher(_FakeLauncher):
     async def stream(
         self,
         _provider: str,
-        _prompt: str,
+        prompt: str,
         *,
         cwd: Path,
         session_id: str | None,
@@ -625,6 +631,7 @@ class _SequenceLauncher(_FakeLauncher):
         **_kwargs: object,
     ) -> AsyncIterator[AgentEvent]:
         index = len(self.sessions)
+        self.prompts.append(prompt)
         self.sessions.append(session_id)
         self.write_dirs.append(write_dirs)
         (cwd / "patch.json").write_text(self.patch_texts[index], encoding="utf-8")
@@ -887,6 +894,35 @@ async def test_moving_main_discards_candidate_and_rebases_same_session(tmp_path:
     assert launcher.sessions == [None, "native-session"]
     assert launcher.write_dirs == [[], []]
     assert any('"event":"done"' in frame for frame in frames)
+    # The rebase replaces its context inline and points back to the start contract.
+    _assert_points_to_start_contract(launcher.prompts)
+    assert first.context_id not in launcher.prompts[1]
+    assert f"- merge_context_id: `{second.context_id}`" in launcher.prompts[1]
+
+
+def _assert_points_to_start_contract(prompts: list[str]) -> None:
+    start_path = Path(prompts[0].splitlines()[1])
+    start = start_path.read_text(encoding="utf-8")
+    for prompt in prompts[1:]:
+        assert prompt.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=start_path)
+        assert start not in prompt
+        assert graph_rules(edits=True, ontology_extensions=False) not in prompt
+    assert start_path.read_text(encoding="utf-8") == start
+
+
+def test_a_merge_continuation_resends_rules_only_when_main_ontology_changed() -> None:
+    def context(extended: bool) -> Any:
+        ontology = SimpleNamespace(types=[object()] if extended else [], fields=[], relations=[])
+        return SimpleNamespace(main_graph=SimpleNamespace(ontology=ontology))
+
+    master = ("master.md", "start contract", False)
+    assert _changed_graph_rules(context(False), master) == ([], master)
+    rules, sent = _changed_graph_rules(context(True), master)
+    assert rules == [graph_rules(edits=True, ontology_extensions=True)]
+    # A later rebase back to the master's mode replaces the inline rules again.
+    assert _changed_graph_rules(context(False), sent)[0] == [
+        graph_rules(edits=True, ontology_extensions=False)
+    ]
 
 
 @pytest.mark.asyncio
@@ -926,6 +962,7 @@ async def test_semantic_conflict_uses_two_bounded_same_session_corrections(
     assert outcome.correction_rounds == 2
     assert outcome.diagnostic == "Candidate conflict 3."
     assert launcher.sessions == [None, "native-session", "native-session"]
+    _assert_points_to_start_contract(launcher.prompts)
     assert history.validation_count == 3
     assert history.append_count == 0
     assert any("Candidate conflict 3" in frame for frame in frames)

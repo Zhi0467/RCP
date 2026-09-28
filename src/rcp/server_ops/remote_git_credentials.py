@@ -466,10 +466,24 @@ def _remove(
     return {"removed": True}
 
 
+def _probe_parent(home: Path) -> Path:
+    """RCP keeps its temporary files under the account's `~/.rcp`, never `/tmp`."""
+
+    return home / ".rcp" / "tmp"
+
+
 def _prepare_probe_directory(expected_account: str, request_id: str) -> dict[str, object]:
     _uuid4(request_id, "request id")
-    account, _home = _account(expected_account)
-    path = Path(tempfile.mkdtemp(prefix=f"rcp-git-probe.{request_id}.", dir="/tmp"))
+    account, home = _account(expected_account)
+    temporary_root = _probe_parent(home)
+    _ensure_directory(home / ".rcp", uid=account.pw_uid, label="RCP account directory")
+    _ensure_directory(
+        temporary_root,
+        uid=account.pw_uid,
+        label="RCP temporary directory",
+        exact_mode=DIRECTORY_MODE,
+    )
+    path = Path(tempfile.mkdtemp(prefix=f"rcp-git-probe.{request_id}.", dir=temporary_root))
     os.chmod(path, DIRECTORY_MODE)
     _require_directory(
         path,
@@ -486,10 +500,10 @@ def _cleanup_probe_directory(
     raw_path: str,
 ) -> dict[str, object]:
     _uuid4(request_id, "request id")
-    account, _home = _account(expected_account)
+    account, home = _account(expected_account)
     path = Path(raw_path)
     prefix = f"rcp-git-probe.{request_id}."
-    if path.parent != Path("/tmp") or not path.name.startswith(prefix):
+    if path.parent != _probe_parent(home) or not path.name.startswith(prefix):
         raise ValueError("Git write-probe cleanup path is outside its request boundary")
     _require_directory(
         path,

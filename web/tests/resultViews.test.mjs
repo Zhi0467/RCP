@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import { createServer } from "vite";
 
@@ -10,26 +10,12 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const {
-  artifactContextDraft,
-  parseArtifactContextPayload,
-  updateArtifactContextDraft,
-  moveArtifactDraftSpan,
-} = await server.ssrLoadModule("/src/components/NodeChat.tsx");
+const { parseArtifactContextPayload } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const {
   handleAutoResearchDialogKeyDown,
   makeAutoResearchDialogBackgroundInert,
   restoreAutoResearchDialogFocus,
 } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
-const nodeChatSource = await readFile(
-  new URL("../src/components/NodeChat.tsx", import.meta.url),
-  "utf8",
-);
-const chatWorkspaceSource = await readFile(
-  new URL("../src/chatWorkspace.ts", import.meta.url),
-  "utf8",
-);
-const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 
 after(() => server.close());
 
@@ -55,7 +41,7 @@ const payload = {
       kind: "box",
       rect: { x: 0.5, y: 0.2, width: 0.25, height: 0.3 },
       viewport: { width: 1200, height: 800 },
-      labels: "seed three",
+      elements: [{ path: "figure#seed-3 > svg", label: "seed three", text: "" }],
       comment: "Compare this with seed one.",
     },
   ],
@@ -63,6 +49,15 @@ const payload = {
 
 test("artifact selections decode as bounded context for exactly one originating chat", () => {
   assert.deepEqual(parseArtifactContextPayload(payload), payload);
+  // A selection saved by a viewer from before elements were named still decodes.
+  const { elements: _elements, ...legacyBox } = payload.selections[1];
+  assert.deepEqual(
+    parseArtifactContextPayload({
+      ...payload,
+      selections: [{ ...legacyBox, labels: "seed three" }],
+    }).selections,
+    [{ ...legacyBox, labels: "seed three" }],
+  );
   assert.equal(parseArtifactContextPayload({ ...payload, artifact_id: "bad" }), null);
   assert.equal(parseArtifactContextPayload({ ...payload, selections: [] }), null);
   assert.equal(
@@ -90,142 +85,16 @@ test("artifact selections decode as bounded context for exactly one originating 
   );
 });
 
-test("artifact selection comments assemble into a visible annotation-style draft", () => {
-  const draft = artifactContextDraft(payload);
-  assert.match(draft, /the final spike/);
-  assert.match(draft, /Why does this happen\?/);
-  assert.match(draft, /seed three/);
-  assert.match(draft, /Compare this with seed one\./);
-  assert.match(draft, /:rcp-artifact-selection\{index="1"\}/);
-  assert.match(draft, /:rcp-artifact-selection\{index="2"\}/);
+test("no web frame is granted same-origin access", async () => {
+  // Agent HTML previews stay opaque (AGENTS.md invariant 10e): an artifact frame may
+  // run its scripts but never share RCP's origin.
+  const files = await readdir(new URL("../src/", import.meta.url), { recursive: true });
+  for (const file of files.filter((name) => /\.(ts|tsx)$/.test(name))) {
+    const source = await readFile(new URL(`../src/${file}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /allow-same-origin/, file);
+  }
 });
-
-test("re-adding edited selections replaces their generated draft and preserves user text", () => {
-  const before = "My introduction.\n\n";
-  const after = "\n\nKeep this question too.";
-  const initial = updateArtifactContextDraft(before, payload, null);
-  const withSuffix = moveArtifactDraftSpan(initial, initial.message + after);
-  const revised = {
-    ...payload,
-    selections: [{ ...payload.selections[0], comment: "Use $& literally in the explanation." }],
-  };
-  const expected = `${before}${artifactContextDraft(revised)}${after}`;
-  assert.equal(
-    updateArtifactContextDraft(withSuffix.message, revised, JSON.stringify(withSuffix)).message,
-    expected,
-  );
-  const updated = updateArtifactContextDraft(
-    withSuffix.message,
-    revised,
-    JSON.stringify(withSuffix),
-  );
-  assert.equal(
-    updateArtifactContextDraft(expected, revised, JSON.stringify(updated)).message,
-    expected,
-  );
-  const edited = moveArtifactDraftSpan(
-    withSuffix,
-    withSuffix.message.replace("Why does this happen?", "I edited this in chat."),
-  );
-  assert.equal(
-    updateArtifactContextDraft(edited.message, revised, JSON.stringify(edited)).message,
-    expected,
-  );
-  const editedAgain = moveArtifactDraftSpan(
-    edited,
-    edited.message.replace("Keep this question too.", "Keep my revised closing question."),
-  );
-  assert.equal(
-    updateArtifactContextDraft(editedAgain.message, revised, JSON.stringify(editedAgain)).message,
-    expected.replace("Keep this question too.", "Keep my revised closing question."),
-  );
-  assert.equal(
-    updateArtifactContextDraft("User text", revised, null).message,
-    `User text\n\n${artifactContextDraft(revised)}`,
-  );
-});
-
-test("the unified artifact handoff does not switch mode or dispatch automatically", () => {
-  const handoff = nodeChatSource.slice(
-    nodeChatSource.indexOf("const accept = (raw: unknown"),
-    nodeChatSource.indexOf("const stored = readStorage(artifactContextKey)"),
-  );
-  assert.match(handoff, /setArtifactContext/);
-  assert.match(handoff, /setMessage/);
-  assert.doesNotMatch(handoff, /selectMode\("work"\)/);
-  assert.doesNotMatch(handoff, /onStartTask|send\(/);
-  assert.match(nodeChatSource, /artifactContext,/);
-  assert.match(chatWorkspaceSource, /artifact_context: submission\.artifactContext/);
-});
-
-test("Experiment run conversations no longer receive special result-view props", () => {
-  const selectedConversation = appSource.slice(
-    appSource.indexOf("const selectedExperimentConversation"),
-    appSource.indexOf("return (", appSource.indexOf("const selectedExperimentConversation")),
-  );
-  assert.doesNotMatch(selectedConversation, /resultViews|onKeepResultView/);
-  assert.match(nodeChatSource, /artifact\.artifact_id, "viewer"/);
-  assert.match(nodeChatSource, /artifact\.media_type !== "text\/html"/);
-});
-
-test("artifact cards consume backend decisions and do not preflight disabled routes", () => {
-  const artifactActions = nodeChatSource.slice(
-    nodeChatSource.indexOf("const openArtifact = async"),
-    nodeChatSource.indexOf("const openRepositoryFile = async"),
-  );
-  assert.match(artifactActions, /if \(!artifact\.can_open\) return/);
-  assert.match(artifactActions, /if \(!artifact\.can_download\) return/);
-  assert.doesNotMatch(artifactActions, /method: "HEAD"|resourceIsAvailable/);
-  assert.match(nodeChatSource, /!artifact\.available && artifact\.unavailable_reason/);
-  assert.match(nodeChatSource, /artifact\.can_open &&/);
-  assert.match(nodeChatSource, /artifact\.can_download &&/);
-  assert.match(nodeChatSource, /!sourceArtifact\.can_discuss/);
-});
-
-test("artifact revision disposition refreshes the backend-owned source task", () => {
-  const decision = nodeChatSource.slice(
-    nodeChatSource.indexOf("const decideRevision = async"),
-    nodeChatSource.indexOf("const openRepositoryFile = async"),
-  );
-  assert.match(decision, /await decideArtifactRevision/);
-  assert.match(decision, /await onRefreshTask\(review\.taskId\)/);
-  assert.match(decision, /refreshedArtifact\.revision_candidate\.diagnostic/);
-  assert.doesNotMatch(nodeChatSource, /settledRevisionIds/);
-  assert.match(nodeChatSource, /revisionReviewCandidate\.can_accept/);
-  assert.match(nodeChatSource, /revisionReviewCandidate\.can_reject/);
-  assert.match(nodeChatSource, /versionedArtifactContentUrl/);
-  assert.match(appSource, /upsertTask\(next\)/);
-});
-
-test("artifact revision review remains available when its preview is unavailable", () => {
-  const artifactCard = nodeChatSource.slice(
-    nodeChatSource.indexOf("line.artifacts?.map"),
-    nodeChatSource.indexOf('line.role === "agent"', nodeChatSource.indexOf("line.artifacts?.map")),
-  );
-  assert.match(artifactCard, /unavailable && <strong>/);
-  assert.match(artifactCard, /\(!unavailable \|\| revisionCandidate\) && \(/);
-  assert.match(artifactCard, /!unavailable && artifact\.can_open/);
-  assert.match(artifactCard, /revisionCandidate && \(/);
-});
-
-test("artifact revision comparison frames stay opaque but run artifact scripts", () => {
-  const compare = nodeChatSource.slice(
-    nodeChatSource.indexOf('className="artifact-revision-compare"'),
-    nodeChatSource.indexOf("revisionReviewCandidate.diagnostic &&"),
-  );
-  assert.equal(compare.match(/<iframe/g)?.length, 2);
-  assert.equal(compare.match(/sandbox="allow-scripts"/g)?.length, 2);
-  assert.doesNotMatch(compare, /allow-same-origin/);
-});
-
 test("artifact revision review wires the proven keyboard modal lifecycle", () => {
-  assert.match(nodeChatSource, /ref=\{revisionDialogRef\}/);
-  assert.match(nodeChatSource, /ref=\{revisionCloseRef\}/);
-  assert.match(nodeChatSource, /makeAutoResearchDialogBackgroundInert/);
-  assert.match(nodeChatSource, /handleAutoResearchDialogKeyDown/);
-  assert.match(nodeChatSource, /restoreAutoResearchDialogFocus/);
-  assert.match(nodeChatSource, /tabIndex=\{-1\}/);
-
   const focused = [];
   const first = focusTarget("first", focused);
   const last = focusTarget("last", focused);

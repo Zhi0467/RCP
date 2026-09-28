@@ -6,6 +6,7 @@ mod keychain;
 mod lifecycle;
 mod local_https;
 mod navigation;
+mod pdf_preview;
 mod project_transfer;
 mod server_commands;
 mod team_connections;
@@ -71,6 +72,7 @@ pub fn run() {
             commands::desktop_status,
             commands::desktop_reconnect_backend,
             commands::desktop_show_ready,
+            commands::desktop_build_identity,
             commands::desktop_list_team_connections,
             commands::desktop_configure_server_operator_route,
             commands::desktop_probe_server_operator,
@@ -99,6 +101,7 @@ pub fn run() {
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
             commands::open_artifact_preview,
+            commands::open_artifact_pdf,
             commands::open_episode_report_preview,
             commands::open_repository_file_preview,
             commands::download_artifact,
@@ -108,6 +111,9 @@ pub fn run() {
             commands::apply_update,
         ])
         .setup(|app| {
+            if let Err(error) = pdf_preview::prepare_cache(app.handle()) {
+                eprintln!("[rcp] PDF preview cache cleanup failed: {error}");
+            }
             let local_https = local_https::LocalHttpsIdentity::load_or_create(app.handle())
                 .map_err(std::io::Error::other)?;
             let team_connections = team_connections::TeamConnectionState::for_app(app.handle())
@@ -126,7 +132,10 @@ pub fn run() {
                 )
                 .into());
             }
-            let team_sessions = team_session::TeamSessionState::new(&local_https);
+            let team_sessions = team_session::TeamSessionState::new(
+                &local_https,
+                app.state::<BackendState>().inner().clone(),
+            );
             if !app.manage(team_sessions) {
                 return Err(std::io::Error::other(
                     "RCP desktop team session state was already registered",

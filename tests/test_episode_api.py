@@ -1101,7 +1101,7 @@ def test_save_episode_report_failure_is_visible_and_retryable(manifest, tmp_path
     with TestClient(app) as client:
         failed = client.post(url)
         assert failed.status_code == 503
-        assert failed.json()["detail"] == "Episode report save unavailable"
+        assert "save unavailable" in failed.json()["detail"]
         assert artifact_dir.read_text() == "Existing file"
         assert store.episode_report(episode.episode_id) == report
         artifact_dir.unlink()

@@ -13,7 +13,18 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
-from rcp.agents.prompts import chat_master_contract_key, invoked_package_pointers
+from rcp.agents.continuation_prompt import (
+    LaunchPhase,
+    changed_since_master,
+    classify,
+    compose,
+    master_key,
+)
+from rcp.agents.prompts import (
+    DISCUSS_POLICY_VERSION,
+    chat_master_contract_key,
+    invoked_package_pointers,
+)
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -39,6 +50,9 @@ from rcp.runs.chat import (
     _stage_chat_turn_contract,
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
+    chat_continuation_master,
+    chat_prompt_values,
+    retained_work_values,
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
@@ -54,8 +68,8 @@ from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
-    _parent_task_contract_path,
     _pinned_to_profile,
     _protected_run_stage_roots,
     _ProviderOutcome,
@@ -63,8 +77,8 @@ from rcp.runs.shared import (
     _sse,
     _stage_context_paths,
     _stage_json_task_input,
+    _stage_or_reuse_task_input,
     _stage_task_contract,
-    _stage_task_input,
     _stream_agent_events,
     _swept_stage_root,
     _task_token,
@@ -128,25 +142,26 @@ def _prepare_discuss_chat_prompt(
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
+    ontology_extensions: bool,
 ) -> tuple[str, str]:
     """Prepare the session baseline behind one Discuss-local seam."""
 
     if request.message is None:
         raise ValueError("An ordinary Discuss turn requires a human message.")
-    bootstrap_path, context_delta, retained_master_path = _prepare_chat_prompt_state(
+    node, master, context_delta = _prepare_chat_prompt_state(
         execution,
         request,
         local_stage=local_stage,
         remote_stage=remote_stage,
         master_context=master_context,
-        contract_key=chat_master_contract_key(),
+        contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
         values=stable_values,
     )
     prompt = PromptFactory.discuss_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
-        master_context_path=retained_master_path,
-        bootstrap_master_context=bootstrap_path is not None,
+        node=node,
+        master=master,
         context_delta=context_delta,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,
@@ -401,7 +416,7 @@ def _settle_discuss_outcome(
                 execution,
                 attached=0,
                 candidates=0,
-                ignored={"unexpected_error": 1},
+                ignored={"discovery_unavailable": 1},
                 detail=str(exc),
             )
         artifacts = []
@@ -639,6 +654,20 @@ async def stream_discuss_run(
                     "The continued chat has no native agent session; retry it from a clean "
                     "attempt instead."
                 )
+            repositories = [
+                {"alias": item.alias, "host": item.host, "path": item.path}
+                for item in context.repositories
+            ]
+            compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
+            discuss_values = chat_prompt_values(
+                context,
+                request,
+                repositories=repositories,
+                compute_profiles=compute_profiles,
+                skill_pointers=skill_pointers,
+                experiment_watcher_resources=experiment_resource_pointers,
+                workspace=str(workspace),
+            )
             if resuming or retry_attempt:
                 assert request.message is not None
                 retry_diagnostics_path = (
@@ -651,82 +680,105 @@ async def stream_discuss_run(
                     if execution is not None and retry_attempt
                     else None
                 )
-                human_request_path = _stage_task_input(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-human-request.txt",
-                    request.message,
-                )
-                contract = PromptFactory.discuss_task_contract(
-                    project_name=context.project_name,
-                    ontology_path=f"{context.graph_path}#ontology",
-                    ontology_extensions=context.ontology_extensions,
-                    graph_path=context.graph_path,
-                    research_path=context.research_md_path,
-                    focused_node_id=str(context.node["id"]) if context.node else None,
-                    repositories=[
-                        {"alias": item.alias, "host": item.host, "path": item.path}
-                        for item in context.repositories
-                    ],
-                    introduction_path=context.introduction_path,
-                    human_request_path=human_request_path,
-                    artifact_path=str(artifact_directory),
-                    retry_diagnostics_path=retry_diagnostics_path,
-                    experiment_watcher_resources=experiment_resource_pointers,
-                    skill_pointers=skill_pointers,
-                    invoked_skill_pointers=invoked_package_pointers(
-                        skill_pointers,
-                        workflow_ids=request.invoked_workflow_ids,
-                        skill_ids=request.invoked_skill_ids,
-                    ),
-                    invoked_provider_skills=request.resolved_provider_skills,
-                    attachments=attachment_pointers,
-                    compute_connections=service.compute_prompt_profiles(
-                        request.resolved_compute_context
-                    ),
-                )
-                current_contract_path, current_prompt = _stage_task_contract(
-                    local_stage,
-                    remote_stage,
-                    f"task-{token}-base.md",
-                    contract,
-                    execution=execution,
-                    role="discuss_resume_base" if resuming else "discuss_retry_base",
-                )
-                if resuming or retrying:
-                    assert execution is not None
-                    original_contract_path = _parent_task_contract_path(
-                        execution, local_stage, remote_stage
+
+                def render_discuss_contract() -> str:
+                    assert request.message is not None
+                    human_request_path = _stage_or_reuse_task_input(
+                        local_stage,
+                        remote_stage,
+                        f"task-{token}-human-request.txt",
+                        request.message,
                     )
-                    recovery_mode = "resume" if resuming else "retry"
-                    continuation_contract = PromptFactory.continuation_task_contract(
-                        original_contract_path=original_contract_path,
-                        current_contract_path=current_contract_path,
-                        diagnostics_path=retry_diagnostics_path,
-                        mode=recovery_mode,
-                        turn_mode="discuss",
+                    return PromptFactory.discuss_task_contract(
+                        project_name=context.project_name,
+                        ontology_path=f"{context.graph_path}#ontology",
+                        ontology_extensions=context.ontology_extensions,
+                        graph_path=context.graph_path,
+                        research_path=context.research_md_path,
+                        focused_node_id=str(context.node["id"]) if context.node else None,
+                        repositories=repositories,
+                        introduction_path=context.introduction_path,
+                        human_request_path=human_request_path,
+                        artifact_path=str(artifact_directory),
+                        retry_diagnostics_path=retry_diagnostics_path,
+                        experiment_watcher_resources=experiment_resource_pointers,
+                        skill_pointers=skill_pointers,
                         invoked_skill_pointers=invoked_package_pointers(
                             skill_pointers,
                             workflow_ids=request.invoked_workflow_ids,
                             skill_ids=request.invoked_skill_ids,
                         ),
                         invoked_provider_skills=request.resolved_provider_skills,
+                        attachments=attachment_pointers,
+                        compute_connections=compute_profiles,
                     )
+
+                if resuming or retrying:
+                    assert execution is not None and request.session_id is not None
+                    recovery_mode: Literal["resume", "retry"] = "resume" if resuming else "retry"
+                    node = classify(LaunchPhase(session_id=request.session_id, phase="recovery"))
+                    master = chat_continuation_master(
+                        execution,
+                        request,
+                        session_id=request.session_id,
+                        local_stage=local_stage,
+                        remote_stage=remote_stage,
+                        policy_version=DISCUSS_POLICY_VERSION,
+                        ontology_extensions=context.ontology_extensions,
+                        render=render_discuss_contract,
+                        values=discuss_values,
+                    )
+                    # Discuss changes no Work value, so it keeps those its session holds.
+                    current = {**discuss_values, **retained_work_values(master.values)}
+                    continuation_contract = PromptFactory.inline_continuation(
+                        mode=recovery_mode,
+                        turn_mode="discuss",
+                        diagnostics_path=retry_diagnostics_path,
+                        artifact_path=str(artifact_directory),
+                    )
+                    prompt = compose(
+                        node,
+                        parts=[continuation_contract],
+                        master=master,
+                        delta=changed_since_master(master, current),
+                    )
+                    contract_path = record_inline_prompt(
+                        execution,
+                        local_stage=local_stage,
+                        remote_stage=remote_stage,
+                        label=f"task-{token}-{recovery_mode}.md",
+                        role=f"discuss_{recovery_mode}",
+                        prompt=prompt,
+                    )
+                else:
+                    # A handoff starts a new native session from the full Discuss contract.
+                    contract = render_discuss_contract()
                     contract_path, prompt = _stage_task_contract(
                         local_stage,
                         remote_stage,
-                        f"task-{token}-{recovery_mode}.md",
-                        continuation_contract,
+                        f"task-{token}-base.md",
+                        contract,
                         execution=execution,
-                        role=f"discuss_{recovery_mode}",
+                        role="discuss_retry_base",
                     )
-                else:
-                    contract_path, prompt = current_contract_path, current_prompt
+                    if execution is not None:
+                        record_session_master(
+                            execution.store,
+                            execution.operation_id,
+                            contract,
+                            master_key(
+                                DISCUSS_POLICY_VERSION,
+                                ontology_extensions=context.ontology_extensions,
+                            ),
+                            discuss_values,
+                        )
             else:
                 assert request.message is not None
                 assert artifact_scope_id is not None
-                patch_values = _retained_chat_patch_values(execution, request)
-                if patch_values is None:
+                retained = _retained_chat_patch_values(
+                    execution, request, ontology_extensions=context.ontology_extensions
+                )
+                if retained is None:
                     patch_inputs = _stage_chat_patch_inputs(
                         local_stage,
                         remote_stage,
@@ -735,41 +787,11 @@ async def stream_discuss_run(
                         task_id=execution.operation_id if execution is not None else token,
                         turn_id=f"{token}:discuss",
                     )
-                    patch_values = {
-                        "path": patch_inputs.patch_path,
-                        "watch_path": patch_inputs.watch_path,
-                        "schema_path": patch_inputs.schema_path,
-                        "validator_command": patch_inputs.validator_command,
-                        "validator_mailbox_id": patch_inputs.validator_mailbox_id,
-                    }
-                repositories = [
-                    {"alias": item.alias, "host": item.host, "path": item.path}
-                    for item in context.repositories
-                ]
-                compute_profiles = service.compute_prompt_profiles(request.resolved_compute_context)
+                    retained = {"patch": patch_inputs.prompt_values()}
+                patch_values = retained["patch"]
+                assert isinstance(patch_values, dict)
+                stable_prompt_values = {**discuss_values, **retained}
                 focused_node_id = str(context.node["id"]) if context.node else None
-                stable_prompt_values: dict[str, object] = {
-                    "project": {"name": context.project_name},
-                    "settings": {
-                        "provider": request.provider,
-                        "model": request.model,
-                        "reasoning": request.reasoning,
-                        "run_on": request.run_on,
-                    },
-                    "current": {
-                        "ontology_path": f"{context.graph_path}#ontology",
-                        "graph_revision": context.graph_revision,
-                        "graph_path": context.graph_path,
-                        "research_path": context.research_md_path,
-                        "focused_node_id": focused_node_id,
-                        "introduction_path": context.introduction_path,
-                    },
-                    "repositories": repositories,
-                    "compute": {"active": compute_profiles},
-                    "skills": {"pointers": skill_pointers},
-                    "patch": patch_values,
-                    "workspace": {"path": str(workspace)},
-                }
                 master_context = PromptFactory.chat_master_context(
                     project_name=context.project_name,
                     ontology_path=f"{context.graph_path}#ontology",
@@ -785,7 +807,7 @@ async def stream_discuss_run(
                     patch_path=patch_values["path"],
                     workspace_path=str(workspace),
                     output_schema_path=patch_values["schema_path"],
-                    validator_command=patch_values["validator_command"],
+                    command_client=patch_values["command_client"],
                     watch_path=patch_values["watch_path"],
                     execution_host=execution_host,
                     experiment_watcher_resources=experiment_resource_pointers,
@@ -802,6 +824,7 @@ async def stream_discuss_run(
                     stable_values=stable_prompt_values,
                     skill_pointers=skill_pointers,
                     attachment_pointers=attachment_pointers,
+                    ontology_extensions=context.ontology_extensions,
                 )
         except (OSError, ReplayHalted, StateUnavailable, ValueError) as exc:
             yield _sse(AgentEvent(event="error", text=str(exc)))

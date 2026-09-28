@@ -27,8 +27,6 @@ def resolve_backend(
     is_remote: bool,
     has_user_manager: bool,
 ) -> ComputeBackendProfile | None:
-    if machine_compute is not None and machine_compute.job_manager is not None:
-        return None
     name = os_name.casefold()
     if name == "linux" and has_user_manager:
         return COMPUTE_BACKENDS["systemd_user"]

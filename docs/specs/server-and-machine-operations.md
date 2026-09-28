@@ -116,6 +116,22 @@ These identities and credentials must never be collapsed:
 - the provider login belongs to the operating-system account that actually runs
   that provider, locally or through SSH.
 
+### Release check and update notices
+
+`rcp serve` owns one release-check poller in its lifespan (`release_check.py`).
+Shortly after startup and every 6 hours it reads GitHub's latest published
+stable `vX.Y.Z` release with bounded, GitHub-only transport; whenever that
+release is newer it also confirms the `desktop-vX.Y.Z` companion (published,
+same commit, zip and checksum uploaded). Routes read only the cache. A team
+space compares the installed release from the selected receipt, reports
+`pinned` for a pinned server, and never lets a failed check change the doctor's
+install-integrity `source_state`; `rcp server doctor` makes one live lookup of
+its own. `RCP_UPDATE_CHECK=off` disables every call. Requests carry no project
+data, credentials, or install identifier. A source `rcp serve` holds a shared
+lock on `<checkout>/.rcp-serve.lock`, which `scripts/update-from-source` takes
+exclusively before it checks out a release and rebuilds, restoring the start
+revision and its build if a step fails.
+
 ## Machine authority and the operator surface
 
 RCP defines no administrator member role. Installation, backup, restore, release
@@ -133,16 +149,17 @@ ordinary graph, task, chat, or project-member actions.
 
 ### Compute backend probe
 
-`rcp server compute probe --project <project_id> <machine_alias>` uses the
+`rcp server compute probe --project <project_id> <machine_alias> --route <scheduler|helper>` uses the
 installed-service control socket, entered as the service account, to run
 `probe_compute_backend` against the registered project manifest and store the
 `ComputeBackendProbe`, returned inside `ServerControlComputeProbeResult` with
-service, project, and machine identity. It prints the status label, backend id, containment,
-diagnostic, and any required action; it exits 0 when ready and 1 otherwise.
+service, project, machine, and route identity. It prints the route, status label,
+backend id, containment, diagnostic, and any required action. It exits 0 only
+when the requested route is ready, and 1 otherwise.
 The probe executes inside the running service. Generic helper readiness checks
-local cgroup separation against the server itself. With `job_manager = "slurm"`,
-it instead checks scheduler tool availability and queue access through the
-execution account's bounded login shell, without submitting a job or changing
+local cgroup separation against the server itself. The scheduler route checks
+the configured job manager. Slurm checks tool availability and queue access
+through the execution account's bounded login shell, without submitting a job or changing
 scheduler configuration. Slurm validates permission and resources when the agent
 submits its actual command. The diagnostic names missing prerequisites and asks
 an administrator to repair them. This is the only compute CLI verb.
@@ -951,9 +968,12 @@ disposable stage bytes do not. A referenced kept artifact remains openable
 and downloadable through its repository owner, but cannot Keep again or revise
 through the detached native session. An unkept artifact whose stage is excluded
 from transfer or restore is projected explicitly unavailable. Every task-artifact
-response publishes `available`, `unavailable_reason`, `can_open`, `can_download`,
-`can_keep`, and `can_revise`; the unavailable case makes every `can_*` false and
-has no stage URL. Content, download, Keep, and artifact-context admission recheck
+response publishes `available`, `unavailable_reason`, `view`, `can_open`,
+`can_download`, `can_keep`, `can_discuss`, and `can_revise`; the unavailable case
+makes every `can_*` false and has no stage URL. `view` names the backend's
+viewer for the stored type; `can_open` is false for a type with no RCP viewer,
+and `can_discuss` and `can_revise` are false for a type that does not support
+selection. Content, download, Keep, and artifact-context admission recheck
 those durable facts. The Web renders the backend answers, never infers
 availability from `history_only`, `kept_filename`, or a remembered stage path,
 and never constructs or probes a route for an unavailable action.
@@ -1257,17 +1277,15 @@ descriptor from the same captured provisioning state: repository sources and
 aliases, resolved central paths and machine/SSH-route references, canonical
 manifest configuration, and old deploy-key labels/fingerprints. This descriptor
 is enough to reconstruct the checkout set without a member checkout or personal
-Git credential. Every configured machine remains in the descriptor and restored
-manifest, including execution machines with no checkout. A resolved central root
-is required only for a machine that owns a repository; an unused machine may
-retain an unresolved root without making the project uncapturable. Host/account
-bindings remain exact for every machine. A missing, stale, credential-bearing,
-or inconsistent descriptor makes that project uncaptured. The completed
-provisioning proof continues to bind project identity and checkout topology.
-Settings-owned provider paths, agent
-profiles, skill defaults, default run scope, and Experiment invocation ceiling
-may change afterward; backup captures their current canonical manifest values
-rather than treating those supported edits as stale provisioning.
+Git credential. Backup snapshots the project as it is now: machine entries come
+from the current manifest, including machines added after setup and execution
+machines with no checkout, and later manifest edits (name, Settings values,
+added machines) are captured rather than treated as stale provisioning. The
+provisioning record supplies only what it alone proves: each provisioned
+checkout's resolved central path and deploy key. A resolved central root is
+required only for a machine that owns a repository and keeps its provisioned
+host and account. A missing, credential-bearing, or inconsistent descriptor
+makes that project uncaptured.
 
 The first archive contract accepts only a native X25519 `age1...` recipient and
 uses the upstream `age` CLI from `1.0.0` through the 1.x line. Plugin, SSH,
@@ -1504,9 +1522,10 @@ Provider-native login remains separate from data restoration.
 The private installed-service control socket retains probe, provider plan/check,
 project provisioning and transfer operations, online SQLite capture, and member
 removal. Protocol version 10 adds root-authenticated maintenance enter/status,
-verify and release. Protocol version 11 adds the compute backend probe while
-retaining versions 8, 9, and 10; older clients do not receive the new operation
-in their advertised operation list. It contains no update or restore coordinator.
+verify and release. Protocol version 12 requires an explicit compute probe route
+while retaining versions 8 through 11 for other operations. Older clients do not
+receive the probe operation in their advertised operation list. It contains no
+update or restore coordinator.
 Legacy source adoption is an explicit stopped-data path and does not pretend an older process
 supports this maintenance protocol.
 

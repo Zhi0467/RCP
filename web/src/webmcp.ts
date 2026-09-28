@@ -17,6 +17,7 @@ import { filterSkillCatalogToDefaults } from "./skillPicker";
 import type {
   AgentRunConfig,
   AgentTask,
+  ArtifactView,
   ChatMessage,
   ChatSummary,
   ChatTranscript,
@@ -578,6 +579,24 @@ export function inspectProjectNode(
   };
 }
 
+// The page shows no project or index content until the backend session is ready,
+// setup is closed, and the open has finished; the WebMCP inventory follows the
+// same gate and names one surface at a time.
+export function webMcpSurface<P extends { id: string }>(gate: {
+  backendSessionReady: boolean;
+  setupOpen: boolean;
+  loading: boolean;
+  projectId: string | null;
+  project: P | null;
+}): { project: P | null; indexAvailable: boolean; key: string | null } {
+  const pageReady = gate.backendSessionReady && !gate.setupOpen && !gate.loading;
+  const project =
+    pageReady && gate.project && gate.project.id === gate.projectId ? gate.project : null;
+  const indexAvailable = pageReady && !gate.projectId;
+  const key = project ? `project:${project.id}` : indexAvailable ? "project-index" : null;
+  return { project, indexAvailable, key };
+}
+
 export function projectReadToolDefinitions(project: ProjectSnapshot): WebMcpToolDefinition[] {
   return [
     {
@@ -622,6 +641,8 @@ type ProjectArtifactRecord = {
   kind: "task_artifact" | "episode_report";
   name: string;
   media_type: string;
+  view: ArtifactView;
+  can_download: boolean;
   available: boolean;
   can_open: boolean;
   task_id: string | null;
@@ -748,6 +769,8 @@ function projectArtifactRecords(
         kind: "task_artifact" as const,
         name: compactText(artifact.name, 120),
         media_type: artifact.media_type,
+        view: artifact.view,
+        can_download: artifact.can_download,
         available: artifact.available,
         can_open: artifact.can_open,
         task_id: task.operation_id,
@@ -775,6 +798,8 @@ function projectArtifactRecords(
       kind: "episode_report" as const,
       name: `${episode.ending ?? "Experiment"} episode report`,
       media_type: "text/html",
+      view: "html" as const,
+      can_download: false,
       available: true,
       can_open: true,
       task_id: null,
@@ -831,7 +856,11 @@ export async function openProjectArtifact(
   tasks: AgentTask[],
   episodes: Episode[],
   input: Record<string, unknown>,
-  openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
+  openViewer: (
+    viewerUrl: string,
+    contentUrl: string,
+    view: ArtifactView,
+  ) => boolean | Promise<boolean>,
   source: WebMcpArtifactSource,
 ): Promise<Record<string, unknown>> {
   const viewerId = requiredStringInput(input, "viewer_id");
@@ -851,7 +880,7 @@ export async function openProjectArtifact(
   if (!record.available || !record.can_open) {
     throw new Error(record.unavailable_reason ?? `Artifact viewer ${viewerId} is unavailable.`);
   }
-  if (!(await openViewer(record.viewer_url, record.content_url))) {
+  if (!(await openViewer(record.viewer_url, record.content_url, record.view))) {
     throw new Error("The RCP artifact viewer could not be shown.");
   }
   return {
@@ -866,7 +895,11 @@ export function projectArtifactToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   episodes: Episode[],
-  openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
+  openViewer: (
+    viewerUrl: string,
+    contentUrl: string,
+    view: ArtifactView,
+  ) => boolean | Promise<boolean>,
   source: WebMcpArtifactSource,
 ): WebMcpToolDefinition[] {
   return [
@@ -1169,6 +1202,8 @@ export async function inspectProjectConversation(
               viewer_id: `task:${latestTask.operation_id}:${artifact.artifact_id}`,
               name: compactText(artifact.name, 96),
               media_type: artifact.media_type,
+              view: artifact.view,
+              can_download: artifact.can_download,
               available: artifact.available,
               can_open: artifact.can_open,
               kept_filename: artifact.kept_filename ?? null,

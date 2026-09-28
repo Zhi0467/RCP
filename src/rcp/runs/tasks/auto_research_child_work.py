@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing, suppress
 from dataclasses import replace
 from pathlib import Path, PurePosixPath
@@ -22,21 +23,15 @@ from rcp.agents.command_protocol import (
     MessageCommandRequest,
     ValidateCommandRequest,
 )
-from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
+from rcp.agents.continuation_prompt import LaunchPhase, classify
 from rcp.agents.prompts import (
-    _CURRENT_OPERATIONAL_INSTRUCTIONS,
-    _EXTERNAL_WATCHER_FORMS,
+    COMMAND_CLIENT,
     _invoked_package_section,
-    _patch_validator_rules,
-    _repository_pointers,
     invoked_package_pointers,
     invoked_provider_skill_section,
-    selected_skill_section,
-    write_scope_section,
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
-from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_BYTES,
@@ -66,6 +61,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.patch_validator import PatchValidationBudget, PatchValidationResult
 from rcp.runs.recorded_turn import RecordedProviderTurn
+from rcp.runs.session_master import record_inline_prompt
 from rcp.runs.shared import (
     _parent_task_contract_path,
     _protected_run_stage_roots,
@@ -73,7 +69,6 @@ from rcp.runs.shared import (
     _sse,
     _stage_context_paths,
     _stage_task_contract,
-    _stage_task_input,
     _swept_stage_root,
     _task_token,
     note_link_lost_before_provider,
@@ -88,9 +83,11 @@ from rcp.runs.tasks.work import (
     WorkTurn,
     _capture_retry_deliverable_baseline,
     _close_work_validator_mailbox,
+    _compose_work_recovery_prompt,
     _ComposedWorkPrompt,
     _finalize_work_turn,
     _launch_and_stream_work_turn,
+    _maintenance_continuation,
     _prepare_work_chat_prompt,
     _record_work_finalization_context,
     _recorded_retry_deliverable_baseline,
@@ -105,8 +102,12 @@ from rcp.runs.tasks.work import (
     _StagedWorkInputs,
     _stream_work_graph_repair,
     _validate_work_patch_live,
+    _work_chat_master_context,
+    _work_continuation,
+    _work_contract_text,
     _work_execution_instructions,
     _work_finalization_context,
+    _work_prompt_values,
     _WorkValidatorMailboxLifecycle,
     open_recorded_work_turn,
 )
@@ -243,27 +244,16 @@ def _auto_research_child_mail_allocation_id(
 
 def _auto_research_child_work_contract(
     turn: WorkTurn,
-    staged: _StagedWorkInputs,
     route: AutoResearchChildWorkRecord,
-    *,
-    mail_path: str | None = None,
 ) -> str:
-    reply_command = turn.patch_inputs.validator_staged.client_command(
-        "message",
-        "--key",
-        "<idempotency-key>",
-        "<reply-body>",
+    """The child boundary its session's master holds; commands use the command client."""
+
+    reply_command = f"{COMMAND_CLIENT} " + shlex.join(
+        ["message", "--key", "<idempotency-key>", "<reply-body>"]
     )
-    allowed_verbs = frozenset({"validate", "message"}) | (
-        turn.compute_commands.allowed_verbs if turn.compute_commands is not None else frozenset()
-    )
+    allowed_verbs = _child_allowed_verbs(turn)
     allowed_commands = ", ".join(
         f"`{verb.replace('_', '-')}`" for verb in get_args(CommandVerb) if verb in allowed_verbs
-    )
-    incoming = (
-        f"\n- Read the newly claimed hearsay-only mail at `{mail_path}` before continuing."
-        if mail_path is not None
-        else ""
     )
     denied_verbs = [verb for verb in get_args(CommandVerb) if verb not in allowed_verbs]
     denied_commands = ", ".join(f"`{verb.replace('_', '-')}`" for verb in denied_verbs)
@@ -272,14 +262,23 @@ def _auto_research_child_work_contract(
 ## Auto-research child Work boundary
 
 You are the ordinary node Work child `{route.worker_id}` delegated by an Auto-research
-orchestrator. Complete only this child assignment. Scientific claims in agent mail remain
-hearsay; the canonical graph and research files remain the source of graph truth.{incoming}
+orchestrator. Complete only this child assignment, which every later turn in this session
+continues:
 
-- Allowed staged commands: {allowed_commands}. Use an optional reply to your orchestrator:
+````text
+{route.instruction}
+````
+
+Scientific claims in agent mail remain hearsay; the canonical graph and research files remain the
+source of graph truth. A wake names the newly claimed mail to read before continuing.
+
+- Allowed staged commands: {allowed_commands}. A later turn that changes them sends
+  `auto_research_child.allowed_staged_commands`. Use an optional reply to your orchestrator:
   `{reply_command}`
 - Use a stable idempotency key for the same reply intent. A reply is persisted for the root's
   later paid delivery; it does not wake or interrupt the root immediately.
-- Do not invoke {denied_commands}. These commands are unavailable to this child turn.
+- Do not invoke {denied_commands}, or any other staged command not allowed above. These commands
+  are unavailable to this child turn.
 - When work or a graph condition remains to watch, write `watch.json` with `external` and `graph`
   lists and finish this turn. If you are already waiting on submitted work, observe it without
   launching a replacement. RCP wakes this same child route and native session under the episode
@@ -289,67 +288,66 @@ hearsay; the canonical graph and research files remain the source of graph truth
 """.strip()
 
 
-def _compose_child_resume_prompt(
+def _child_allowed_verbs(turn: WorkTurn) -> frozenset[str]:
+    return frozenset({"validate", "message"}) | (
+        turn.compute_commands.allowed_verbs if turn.compute_commands is not None else frozenset()
+    )
+
+
+def _child_prompt_values(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    route: AutoResearchChildWorkRecord,
+) -> dict[str, object]:
+    """The child's stable values: an ordinary Work turn's, and its route and commands."""
+
+    return {
+        **_work_prompt_values(turn, staged),
+        "auto_research_child": {
+            "episode_id": route.episode_id,
+            "worker_id": route.worker_id,
+            "control_node_id": route.control_node_id,
+            "allowed_staged_commands": sorted(_child_allowed_verbs(turn)),
+        },
+    }
+
+
+def _child_master_render(
     turn: WorkTurn,
     staged: _StagedWorkInputs,
     route: AutoResearchChildWorkRecord,
     *,
-    mail_path: str | None,
+    retry_diagnostics_path: str | None = None,
+) -> Callable[[], str]:
+    """Render the child's full start contract, for a session that has no master to point to."""
+
+    def render() -> str:
+        assignment = replace(
+            turn, request=turn.request.model_copy(update={"message": route.instruction})
+        )
+        return (
+            _work_contract_text(assignment, staged, retry_diagnostics_path=retry_diagnostics_path)
+            + "\n\n"
+            + _auto_research_child_work_contract(turn, route)
+        )
+
+    return render
+
+
+def _compose_child_resume_prompt(
+    turn: WorkTurn,
+    staged: _StagedWorkInputs,
+    route: AutoResearchChildWorkRecord,
 ) -> _ComposedWorkPrompt:
-    assert turn.execution is not None
-    original_contract_path = _parent_task_contract_path(
-        turn.execution,
-        turn.local_stage,
-        turn.remote_stage,
-    )
-    current_contract_path = _stage_work_contract(
-        replace(turn, request=turn.request.model_copy(update={"message": route.instruction})),
-        staged,
-    )
-    contract = PromptFactory.continuation_task_contract(
-        original_contract_path=original_contract_path,
-        current_contract_path=current_contract_path,
-        mode="resume",
-        turn_mode="work",
-        write_scope=turn.write_scope,
-        output_schema_path=turn.patch_inputs.schema_path,
-        patch_path=turn.patch_inputs.patch_path,
-        watch_path=turn.patch_inputs.watch_path,
-        execution_instructions=_work_execution_instructions(turn),
-        validator_command=turn.patch_inputs.validator_command,
-        invoked_skill_pointers=invoked_package_pointers(
-            staged.skill_pointers,
-            workflow_ids=turn.request.invoked_workflow_ids,
-            skill_ids=turn.request.invoked_skill_ids,
-        ),
-        invoked_provider_skills=turn.request.resolved_provider_skills,
-        result_view_action=(
-            staged.prepared_result_view.action if staged.prepared_result_view is not None else None
-        ),
-        result_view_path=(
-            staged.prepared_result_view.prompt_path
-            if staged.prepared_result_view is not None
-            else None
-        ),
-    )
-    contract += "\n\n" + _auto_research_child_work_contract(
+    return _compose_work_recovery_prompt(
         turn,
         staged,
-        route,
-        mail_path=mail_path,
-    )
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-resume.md",
-        contract,
-        execution=turn.execution,
+        mode="resume",
+        diagnostics_path=None,
+        render=_child_master_render(turn, staged, route),
+        label=f"task-{staged.token}-resume.md",
         role="work_resume",
-    )
-    return _ComposedWorkPrompt(
-        contract_path=contract_path,
-        prompt=prompt,
-        base_contract_path=current_contract_path,
+        values=_child_prompt_values(turn, staged, route),
     )
 
 
@@ -371,8 +369,8 @@ def _compose_child_wake_prompt(
         if mail_path is None:
             raise ValueError("Child Work message wake is missing its routed mail handoff.")
         update = (
-            "The newly claimed agent mail is staged separately from the task contract. "
-            "Read it, continue the bounded assignment, and reply only if useful."
+            f"RCP claimed new agent mail for this child. Read the hearsay-only mail at "
+            f"`{mail_path}`, continue the bounded assignment, and reply only if useful."
         )
         label = "mail"
         role = "auto_research_child_message_wake"
@@ -384,51 +382,38 @@ def _compose_child_wake_prompt(
         workflow_ids=turn.request.invoked_workflow_ids,
         skill_ids=turn.request.invoked_skill_ids,
     )
-    contract = f"""# RCP Auto-research child Work wake
-
-This is a Work turn. Continue the original child assignment in the same native provider session.
-Retain completed work and the original objective; the update below is continuation context.
-The retained contract is `{original_contract_path}` if needed.
-
-{update}
-
-Current turn paths:
-- Ontology: `{turn.context.graph_path}#ontology`
-- Current graph: `{turn.context.graph_path}`
-- Current research rendering: `{turn.context.research_md_path}`
-- Patch output: `{turn.patch_inputs.patch_path}`
-- Watcher output: `{turn.patch_inputs.watch_path}`
-- Patch JSON Schema: `{turn.patch_inputs.schema_path}`
-- Optional preview files: `{staged.artifact_directory}`
-
-The current authority, paths, commands, and package pointers below apply to this turn. Keep the
-original assignment and completed progress.
-
-Current repository inputs:
-{_repository_pointers(staged.repositories)}
-{write_scope_section(turn.write_scope)}
-{render_agent_graph_authority_contract()}
-{REPEATED_RULES_NOTE}
-{graph_rules(edits=True, ontology_extensions=turn.context.ontology_extensions)}
-{selected_skill_section(staged.skill_pointers) or "No official skills or workflows are selected for this turn."}
-{_invoked_package_section(invoked_skills)}
-{invoked_provider_skill_section(turn.request.resolved_provider_skills)}
-{_patch_validator_rules(turn.patch_inputs.validator_command)}
-{_CURRENT_OPERATIONAL_INSTRUCTIONS}
-{_work_execution_instructions(turn)}
-{_EXTERNAL_WATCHER_FORMS}
-
-{_auto_research_child_work_contract(turn, staged, route, mail_path=mail_path)}
-""".strip()
-    contract_path, prompt = _stage_task_contract(
-        turn.local_stage,
-        turn.remote_stage,
-        f"task-{staged.token}-auto-research-child-{label}.md",
-        contract,
-        execution=turn.execution,
-        role=role,
+    wake = "\n\n".join(
+        part
+        for part in (
+            "# RCP Auto-research child Work wake\n\n"
+            "This is a Work turn. Continue the child assignment in this session.",
+            update,
+            f"Artifact directory for this turn: {staged.artifact_directory}",
+            _invoked_package_section(invoked_skills).strip(),
+            invoked_provider_skill_section(turn.request.resolved_provider_skills).strip(),
+        )
+        if part
     )
-    return _ComposedWorkPrompt(contract_path, prompt, original_contract_path)
+    render = _child_master_render(turn, staged, route)
+    values = _child_prompt_values(turn, staged, route)
+    session_id = turn.request.session_id
+    prompt = _work_continuation(
+        turn,
+        render,
+        session_id=session_id,
+        node=classify(LaunchPhase(session_id=session_id, phase="wake")),
+        part=wake,
+        values=values,
+    )
+    contract_path = record_inline_prompt(
+        turn.execution,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+        label=f"task-{staged.token}-auto-research-child-{label}.md",
+        role=role,
+        prompt=prompt,
+    )
+    return _ComposedWorkPrompt(contract_path, prompt, original_contract_path, render, values)
 
 
 async def _stage_auto_research_child_work_turn(
@@ -529,6 +514,7 @@ async def _stage_auto_research_child_work_turn(
             validator_command=child_staged.client_command("validate", patch_inputs.patch_path),
             validator_mailbox_id=child_staged.credential.mailbox_id,
             validator_staged=child_staged,
+            command_client=child_staged.client_command(),
         )
         if not reusing_checkpoint or continuation in {"message_wake", "watcher_wake"}:
             _prepare_auto_research_child_work_handoffs(
@@ -685,137 +671,48 @@ def _compose_child_fresh_prompt(
     staged: _StagedWorkInputs,
     route: AutoResearchChildWorkRecord,
     *,
-    mail_path: str | None,
     retry_diagnostics_path: str | None = None,
 ) -> _ComposedWorkPrompt:
     assert turn.request.message is not None
-    focused_node_id = str(turn.context.node["id"]) if turn.context.node else None
-    if not turn.uses_master_protocol:
-        human_request_path = _stage_task_input(
-            turn.local_stage,
-            turn.remote_stage,
-            f"task-{staged.token}-human-request.txt",
-            turn.request.message,
-        )
-        contract = PromptFactory.work_task_contract(
-            execution_instructions=_work_execution_instructions(turn),
-            project_name=turn.context.project_name,
-            ontology_path=f"{turn.context.graph_path}#ontology",
-            ontology_extensions=turn.context.ontology_extensions,
-            graph_path=turn.context.graph_path,
-            research_path=turn.context.research_md_path,
-            focused_node_id=focused_node_id,
-            repositories=staged.repositories,
-            introduction_path=turn.context.introduction_path,
-            human_request_path=human_request_path,
-            patch_path=turn.patch_inputs.patch_path,
-            artifact_path=str(staged.artifact_directory),
-            output_schema_path=turn.patch_inputs.schema_path,
-            retry_diagnostics_path=retry_diagnostics_path,
-            watch_path=turn.patch_inputs.watch_path,
-            execution_host=turn.execution_host,
-            experiment_watcher_resources=[],
-            validator_command=turn.patch_inputs.validator_command,
-            write_scope=turn.write_scope,
-            skill_pointers=staged.skill_pointers,
-            invoked_skill_pointers=invoked_package_pointers(
-                staged.skill_pointers,
-                workflow_ids=turn.request.invoked_workflow_ids,
-                skill_ids=turn.request.invoked_skill_ids,
-            ),
-            invoked_provider_skills=turn.request.resolved_provider_skills,
-            attachments=staged.attachment_pointers,
-        )
-        contract += "\n\n" + _auto_research_child_work_contract(
-            turn, staged, route, mail_path=mail_path
-        )
-        contract_path, prompt = _stage_task_contract(
-            turn.local_stage,
-            turn.remote_stage,
-            f"task-{staged.token}-{'base' if turn.retry_attempt else 'initial'}.md",
-            contract,
-            execution=turn.execution,
-            role="work_retry_base" if turn.retry_attempt else "work",
-        )
-        return _ComposedWorkPrompt(contract_path, prompt, contract_path)
-
-    master_context = PromptFactory.chat_master_context(
-        project_name=turn.context.project_name,
-        ontology_path=f"{turn.context.graph_path}#ontology",
-        ontology_extensions=turn.context.ontology_extensions,
-        graph_path=turn.context.graph_path,
-        research_path=turn.context.research_md_path,
-        graph_revision=turn.context.graph_revision,
-        focused_node_id=focused_node_id,
-        focused_node=turn.context.node,
-        focused_relations=[item.model_dump(mode="json") for item in turn.context.relations],
-        repositories=staged.repositories,
-        introduction_path=turn.context.introduction_path,
-        patch_path=turn.patch_inputs.patch_path,
-        workspace_path=str(turn.workspace),
-        output_schema_path=turn.patch_inputs.schema_path,
-        validator_command=turn.patch_inputs.validator_command,
-        watch_path=turn.patch_inputs.watch_path,
-        execution_host=turn.execution_host,
-        experiment_watcher_resources=[],
-        skill_pointers=staged.skill_pointers,
+    values = _child_prompt_values(turn, staged, route)
+    render = _child_master_render(
+        turn, staged, route, retry_diagnostics_path=retry_diagnostics_path
     )
-    stable_prompt_values: dict[str, object] = {
-        "project": {"name": turn.context.project_name},
-        "settings": {
-            "provider": turn.request.provider,
-            "model": turn.request.model,
-            "reasoning": turn.request.reasoning,
-            "run_on": turn.request.run_on,
-        },
-        "current": {
-            "ontology_path": f"{turn.context.graph_path}#ontology",
-            "graph_revision": turn.context.graph_revision,
-            "graph_path": turn.context.graph_path,
-            "research_path": turn.context.research_md_path,
-            "focused_node_id": focused_node_id,
-            "introduction_path": turn.context.introduction_path,
-            "experiment_watcher_resources": [],
-        },
-        "repositories": staged.repositories,
-        "skills": {"pointers": staged.skill_pointers},
-        "patch": {
-            "path": turn.patch_inputs.patch_path,
-            "watch_path": turn.patch_inputs.watch_path,
-            "schema_path": turn.patch_inputs.schema_path,
-            "validator_command": turn.patch_inputs.validator_command,
-            "validator_mailbox_id": turn.patch_inputs.validator_mailbox_id,
-        },
-        "workspace": {"path": str(turn.workspace)},
-        "auto_research_child": {
-            "episode_id": route.episode_id,
-            "worker_id": route.worker_id,
-            "control_node_id": route.control_node_id,
-            "allowed_staged_commands": sorted(
-                frozenset({"validate", "message"})
-                | (turn.compute_commands.allowed_verbs if turn.compute_commands else frozenset())
-            ),
-        },
-    }
+    if not turn.uses_master_protocol:
+        contract_path = _stage_work_contract(
+            turn,
+            staged,
+            retry_diagnostics_path=retry_diagnostics_path,
+            contract=render(),
+            values=values,
+        )
+        return _ComposedWorkPrompt(
+            contract_path,
+            PromptFactory.launch_prompt(contract_path),
+            contract_path,
+            render,
+            values,
+        )
+
     prompt, contract_path = _prepare_work_chat_prompt(
         turn.execution,
         turn.request,
-        execution_instructions=(
-            _work_execution_instructions(turn)
-            + "\n\n"
-            + _auto_research_child_work_contract(turn, staged, route, mail_path=mail_path)
-        ),
+        launch_instructions=_work_execution_instructions(turn, COMMAND_CLIENT),
         local_stage=turn.local_stage,
         remote_stage=turn.remote_stage,
         artifact_path=str(staged.artifact_directory),
-        master_context=master_context,
-        stable_values=stable_prompt_values,
+        master_context=_work_chat_master_context(
+            turn,
+            staged,
+            auto_research_child_boundary=_auto_research_child_work_contract(turn, route),
+        ),
+        stable_values=values,
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         result_view=staged.prepared_result_view,
-        write_scope=turn.write_scope,
+        ontology_extensions=turn.context.ontology_extensions,
     )
-    return _ComposedWorkPrompt(contract_path, prompt, contract_path)
+    return _ComposedWorkPrompt(contract_path, prompt, contract_path, render, values)
 
 
 def _compose_child_retry_prompt(
@@ -827,10 +724,28 @@ def _compose_child_retry_prompt(
 ) -> _ComposedWorkPrompt:
     assert turn.execution is not None
     retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
+    render = _child_master_render(
+        turn, staged, route, retry_diagnostics_path=retry_diagnostics_path
+    )
+    values = _child_prompt_values(turn, staged, route)
+    if turn.request.session_id is not None:
+        return _compose_work_recovery_prompt(
+            turn,
+            staged,
+            mode="retry",
+            diagnostics_path=retry_diagnostics_path,
+            render=render,
+            label=f"task-{staged.token}-retry.md",
+            role="work_retry",
+            values=values,
+        )
+    # A handoff starts a new native session from the full current contract.
     current_contract_path = _stage_work_contract(
-        replace(turn, request=turn.request.model_copy(update={"message": route.instruction})),
+        turn,
         staged,
         retry_diagnostics_path=retry_diagnostics_path,
+        contract=render(),
+        values=values,
     )
     result_view_handoff = bool(
         turn.continuation == "handoff" and staged.prepared_result_view is not None
@@ -869,12 +784,10 @@ def _compose_child_retry_prompt(
             else None
         ),
     )
-    retry_contract += "\n\n" + _auto_research_child_work_contract(
-        turn,
-        staged,
-        route,
-        mail_path=mail_path,
-    )
+    if mail_path is not None:
+        retry_contract += (
+            f"\n\nRead the newly claimed hearsay-only mail at `{mail_path}` before continuing."
+        )
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
@@ -887,6 +800,8 @@ def _compose_child_retry_prompt(
         contract_path=contract_path,
         prompt=prompt,
         base_contract_path=current_contract_path,
+        render_master=render,
+        prompt_values=values,
     )
 
 
@@ -898,26 +813,15 @@ def _compose_child_prompt(
     mail_path: str | None,
 ) -> _ComposedWorkPrompt:
     if turn.resuming:
-        return _compose_child_resume_prompt(
-            turn,
-            staged,
-            route,
-            mail_path=mail_path,
-        )
+        return _compose_child_resume_prompt(turn, staged, route)
     if turn.continuation in {"watcher_wake", "message_wake"}:
         return _compose_child_wake_prompt(turn, staged, route, mail_path=mail_path)
     if turn.retrying or turn.continuation == "handoff":
-        return _compose_child_retry_prompt(
-            turn,
-            staged,
-            route,
-            mail_path=mail_path,
-        )
+        return _compose_child_retry_prompt(turn, staged, route, mail_path=mail_path)
     return _compose_child_fresh_prompt(
         turn,
         staged,
         route,
-        mail_path=mail_path,
         retry_diagnostics_path=_stage_retry_diagnostics(turn, staged),
     )
 
@@ -1052,7 +956,6 @@ async def settle_child_work_deliverables(
         workspace=finalization.workspace,
         remote_stage=finalization.remote_stage,
         local_stage=finalization.local_stage,
-        base_contract_path=composed.base_contract_path if composed is not None else "",
         token=_task_token(finalization.execution),
         native_session_id=settled.native_session_id,
         read_dirs=launch_turn.read_dirs if launch_turn is not None else [],
@@ -1063,6 +966,7 @@ async def settle_child_work_deliverables(
         retry_output_digests=retry_baseline.experiment_watch_digests,
         maximum_corrections=maximum_corrections,
         supervise_remote=launch_turn.supervise_remote if launch_turn is not None else False,
+        continuation=_maintenance_continuation(launch_turn, composed),
     )
     settled.native_session_id = native_session_id
     for frame in maintenance_frames:
@@ -1121,6 +1025,10 @@ async def stream_auto_research_child_work_run(
                 request,
                 data_dir,
                 execution=execution,
+                master_for=lambda turn, staged: (
+                    _child_master_render(turn, staged, route),
+                    _child_prompt_values(turn, staged, route),
+                ),
             )
         ) as stream:
             async for frame in stream:

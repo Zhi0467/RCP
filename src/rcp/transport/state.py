@@ -25,7 +25,6 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rcp.artifact_replace import (
-    recover_regular_file_replacement_in_open_directory,
     replace_regular_file_in_open_directory,
 )
 from rcp.config import Manifest, load_manifest
@@ -45,6 +44,7 @@ from rcp.limits import (
     STATE_LOCK_POLL_INTERVAL_SECONDS,
     STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS,
 )
+from rcp.rcp_home import rcp_temp_dir
 from rcp.server_ops.backup_models import (
     BACKUP_RESEARCH_CANONICAL_ROOTS,
     BACKUP_RESEARCH_DELEGATED_ROOTS,
@@ -84,9 +84,7 @@ _LOCK_CONTENDED = "contended"
 _LOCK_LEGACY_DIRECTORY = "legacy-directory"
 _LOCK_UNSAFE_ENTRY = "unsafe-entry"
 _KEPT_VIEW_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,238})\.html")
-_KEPT_ARTIFACT_NAME_PATTERN = re.compile(
-    r"[a-z0-9](?:[a-z0-9-]{0,220})\.(?:html?|png|jpe?g|gif|webp|svg)"
-)
+_KEPT_ARTIFACT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,220}(?:\.[a-z0-9]{1,16})?")
 _ARCHIVE_TIMESTAMP_PATTERN = re.compile(r"[0-9]{8}T[0-9]{12}Z")
 _RETAINED_HISTORY_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 _RETAINED_BRANCH_PATCH_PATTERN = re.compile(r"[0-9]{6}\.json")
@@ -142,7 +140,16 @@ def _remote_turn_supervisor_script() -> str:
         .joinpath("remote_turn_fence.py")
         .read_text(encoding="utf-8")
     )
-    return f"{fence}\n{_remote_script('remote_turn_supervisor.py')}"
+    completion = (
+        importlib.resources.files("rcp.agents")
+        .joinpath("turn_completion.py")
+        .read_text(encoding="utf-8")
+    )
+    return (
+        f"exec(compile({completion!r}, 'turn_completion.py', 'exec'))\n"
+        f"exec(compile({fence!r}, 'remote_turn_fence.py', 'exec'))\n"
+        f"{_remote_script('remote_turn_supervisor.py')}"
+    )
 
 
 def remote_turn_supervisor_input_label() -> str:
@@ -190,8 +197,8 @@ def _result_view_base_name(source_name: str, project_name: str, today: date | No
 def _artifact_base_name(source_name: str, project_name: str, today: date | None) -> str:
     source_base = re.split(r"[/\\]", source_name)[-1]
     suffix = Path(source_base).suffix.casefold()
-    if suffix not in {".html", ".htm", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
-        raise ValueError("unsupported kept artifact type")
+    if re.fullmatch(r"\.[a-z0-9]{1,16}", suffix) is None:
+        suffix = ""
     source_slug = _result_view_slug(Path(source_base).stem, "artifact", max_length=80)
     project_slug = _result_view_slug(project_name, "project", max_length=64)
     current_date = today or date.today()
@@ -1505,29 +1512,7 @@ class StateWorkspace:
 
 
 class LocalStateWorkspace(StateWorkspace):
-    def recover_kept_artifact_replacement(self, name: str) -> None:
-        """Settle an interrupted kept-artifact publication before local checkpointing."""
-
-        safe_name = _validated_kept_artifact_name(name)
-        recovery_path = self.root / ".publish" / "artifact-replacements"
-        if not recovery_path.exists():
-            return
-        with self.transaction():
-            repository_fd = _repository_directory_fd(self.root.parent)
-            try:
-                artifacts_fd = _open_artifacts_directory(repository_fd, create=False)
-                try:
-                    recovery_fd = _open_artifact_recovery_directory(self.root)
-                    try:
-                        recover_regular_file_replacement_in_open_directory(
-                            artifacts_fd, recovery_fd, safe_name
-                        )
-                    finally:
-                        os.close(recovery_fd)
-                finally:
-                    os.close(artifacts_fd)
-            finally:
-                os.close(repository_fd)
+    """The canonical state repository on this machine."""
 
 
 def _advisory_lock_holder_arguments(
@@ -2464,7 +2449,9 @@ class SSHStateWorkspace(StateWorkspace):
             if prepared.returncode:
                 self._mark_unreachable(prepared.stderr)
                 raise StateUnavailable(self.error or "canonical state is unreachable")
-            with tempfile.TemporaryDirectory(prefix="rcp-kept-view-") as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-kept-view-", dir=rcp_temp_dir()
+            ) as temporary:
                 source = Path(temporary) / "content.html"
                 source.write_bytes(content)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"
@@ -2570,7 +2557,9 @@ class SSHStateWorkspace(StateWorkspace):
             if prepared.returncode:
                 self._mark_unreachable(prepared.stderr)
                 raise StateUnavailable(self.error or "canonical state is unreachable")
-            with tempfile.TemporaryDirectory(prefix="rcp-kept-artifact-") as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-kept-artifact-", dir=rcp_temp_dir()
+            ) as temporary:
                 source = Path(temporary) / "content.bin"
                 source.write_bytes(data)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"
@@ -2669,7 +2658,9 @@ class SSHStateWorkspace(StateWorkspace):
             if prepared.returncode:
                 self._mark_unreachable(prepared.stderr)
                 raise StateUnavailable(self.error or "canonical state is unreachable")
-            with tempfile.TemporaryDirectory(prefix="rcp-artifact-revision-") as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-artifact-revision-", dir=rcp_temp_dir()
+            ) as temporary:
                 source = Path(temporary) / "content.bin"
                 source.write_bytes(data)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"

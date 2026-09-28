@@ -1,0 +1,10 @@
+{
+  "type": "user",
+  "uuid": "348e6d2c-74c1-4f5a-a948-155939f716dd",
+  "message": {
+    "role": "user",
+    "content": "Use the Agent tool now with run_in_background=true and model=haiku. The agent must run Bash sleep 60 in the foreground, then reply CHILD_DONE. Immediately after launching the background agent, reply PARENT_DONE and end your turn without waiting. This is a controlled lifecycle probe; do nothing else."
+  },
+  "parent_tool_use_id": null,
+  "session_id": ""
+}

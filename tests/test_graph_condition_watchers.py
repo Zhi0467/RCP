@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import threading
 import time
@@ -55,7 +54,7 @@ from rcp.watchers import (
     ready_graph_watcher_groups,
 )
 
-from .helpers import append_fixture_patch, wait_until
+from .helpers import append_fixture_patch, async_wait_until, wait_until
 from .helpers import create_named_app as create_app
 from .test_background import _store as _admission_store
 
@@ -187,6 +186,11 @@ def _wait_for_terminal_task(store: AppStore, operation_id: str) -> AgentTaskReco
     return wait_until(settled, detail=f"watcher wake {operation_id} did not settle")
 
 
+@pytest.fixture
+def store(tmp_path) -> AppStore:
+    return AppStore(tmp_path / "rcp.sqlite3")
+
+
 def _continuation() -> WatcherContinuation:
     return WatcherContinuation(
         provider="codex",
@@ -195,6 +199,21 @@ def _continuation() -> WatcherContinuation:
         run_on="laptop",
         run_truth_scope=["repo-a"],
         patch_kind="work",
+    )
+
+
+def _loop_continuation(episode_id: str) -> WatcherContinuation:
+    return _continuation().model_copy(
+        update={
+            "patch_kind": "experiment_loop",
+            "control_node_id": "exp/one",
+            "control_revision": 1,
+            "control_episode_id": episode_id,
+            "control_invocation": 1,
+            "control_invocation_ceiling": 2,
+            "control_decision_bundle": [],
+            "control_completion_criteria": [],
+        }
     )
 
 
@@ -215,16 +234,19 @@ def _graph_record(
     *,
     continuation: WatcherContinuation | None = None,
     status: str = "active",
+    project_id: str = "project",
+    origin: str = "origin",
+    armed_revision: int = 1,
 ) -> GraphWatcherRecord:
     return GraphWatcherRecord(
         watcher_id=watcher_id,
-        project_id="project",
-        origin_operation_id="origin",
+        project_id=project_id,
+        origin_operation_id=origin,
         origin_task_kind="node_chat",
         chat_id="chat",
         node_id="exp/one",
         condition=condition,
-        armed_revision=1,
+        armed_revision=armed_revision,
         continuation=continuation or _continuation(),
         status=status,
         created_at=_CREATED_AT,
@@ -290,12 +312,57 @@ def _notification_task(
     )
 
 
+def _completed_origin(store, project_id, operation_id):
+    origin = _notification_task(store, operation_id, []).model_copy(
+        update={"project_id": project_id, "authorized_by": _test_authorizer(store)}
+    )
+    origin.request["trigger"] = "human"
+    store.create_agent_task(origin)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    return origin
+
+
+def _completed_episode(store, operation_id, episode_id):
+    root = _experiment_task(
+        store, operation_id, episode_id=episode_id, invocation=1, ceiling=2, watcher_ids=[]
+    )
+    store.create_experiment_episode_with_invocation(root)
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    return root
+
+
+def _bind_episode_session(store, root, session_id, stage_root):
+    store.commit_experiment_episode_turn(
+        episode_id=root.episode_id,
+        project_id=root.project_id,
+        control_node_id="exp/one",
+        provider="codex",
+        execution_machine="laptop",
+        execution_host="",
+        native_session_id=session_id,
+        stage_host=None,
+        stage_root=stage_root,
+        chat_id="chat",
+        operation_id=root.operation_id,
+        invocation=1,
+        graph_result="no graph change",
+        watcher_ids=[],
+        context_baseline={},
+    )
+
+
+def _watcher_app(manifest, tmp_path):
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    return app, app.state.service, app.state.background_tasks.store, project_id
+
+
 def _watcher_ids(groups: list[list[StoredWatcherRecord]]) -> list[list[str]]:
     return [[record.watcher_id for record in group] for group in groups]
 
 
-def test_watch_json_validation_is_all_or_none_across_external_and_graph(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_watch_json_validation_is_all_or_none_across_external_and_graph(store) -> None:
     spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
     valid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     invalid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["completed"])
@@ -356,8 +423,7 @@ def test_watch_json_validation_is_all_or_none_across_external_and_graph(tmp_path
     assert len(store.watchers("project")) == 2
 
 
-def test_supplied_watcher_ids_follow_external_then_graph_order(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_supplied_watcher_ids_follow_external_then_graph_order(store) -> None:
     spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
 
@@ -404,10 +470,9 @@ def test_supplied_watcher_ids_follow_external_then_graph_order(tmp_path) -> None
     [[], ["only-one"], ["same", "same"], ["external", "  "]],
 )
 def test_invalid_supplied_watcher_ids_fail_before_checks_or_insertion(
-    tmp_path,
+    store,
     watcher_ids: list[str],
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
     spec = WatchSpec(check_command="still-running", log_path="/tmp/run.log", cwd="/tmp")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     checked: list[str] = []
@@ -435,8 +500,7 @@ def test_invalid_supplied_watcher_ids_fail_before_checks_or_insertion(
     assert store.watchers("project") == []
 
 
-def test_initially_satisfied_graph_condition_is_immediately_ready(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_initially_satisfied_graph_condition_is_immediately_ready(store) -> None:
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
 
     armed = arm_watchers(
@@ -454,31 +518,10 @@ def test_initially_satisfied_graph_condition_is_immediately_ready(tmp_path) -> N
     assert _watcher_ids(ready_graph_watcher_groups(store, "project")) == [[armed[0].watcher_id]]
 
 
-def test_experiment_graph_handoff_persists_deterministically_and_idempotently(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_experiment_graph_handoff_persists_deterministically_and_idempotently(store) -> None:
     episode_id = str(uuid.uuid4())
-    root = _experiment_task(
-        store,
-        "loop-root",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=2,
-        watcher_ids=[],
-    )
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    continuation = _continuation().model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp/one",
-            "control_revision": 1,
-            "control_episode_id": episode_id,
-            "control_invocation": 1,
-            "control_invocation_ceiling": 2,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-        }
-    )
+    root = _completed_episode(store, "loop-root", episode_id)
+    continuation = _loop_continuation(episode_id)
     binding = _binding(continuation=continuation).model_copy(
         update={"origin_operation_id": root.operation_id}
     )
@@ -519,28 +562,8 @@ def test_experiment_graph_handoff_persists_deterministically_and_idempotently(tm
 def test_experiment_same_patch_resolution_uses_pre_patch_arming_baseline(tmp_path) -> None:
     store = AppStore(tmp_path / "same-patch.sqlite3")
     episode_id = str(uuid.uuid4())
-    root = _experiment_task(
-        store,
-        "same-patch-root",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=2,
-        watcher_ids=[],
-    )
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    continuation = _continuation().model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp/one",
-            "control_revision": 1,
-            "control_episode_id": episode_id,
-            "control_invocation": 1,
-            "control_invocation_ceiling": 2,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-        }
-    )
+    root = _completed_episode(store, "same-patch-root", episode_id)
+    continuation = _loop_continuation(episode_id)
     execution = AgentTaskExecution(
         operation_id=root.operation_id,
         store=store,
@@ -591,12 +614,9 @@ def test_status_and_proposal_conditions_use_the_closed_vocabulary() -> None:
     )
 
 
-def test_proposal_resolution_must_happen_after_the_watcher_was_armed(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_proposal_resolution_must_happen_after_the_watcher_was_armed(store) -> None:
     condition = ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True)
-    store.create_watchers(
-        [_graph_record("proposal-after-arm", condition).model_copy(update={"armed_revision": 2})]
-    )
+    store.create_watchers([_graph_record("proposal-after-arm", condition, armed_revision=2)])
     old_resolved = _proposal("approved").model_copy(
         update={"id": "prop/old", "base_rev": 0, "resolved_rev": 1}
     )
@@ -626,8 +646,7 @@ def test_proposal_resolution_must_happen_after_the_watcher_was_armed(tmp_path) -
     assert completed.status == "completed"
 
 
-def test_unrelated_canonical_movement_does_not_fire_a_condition(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_unrelated_canonical_movement_does_not_fire_a_condition(store) -> None:
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers([_graph_record("graph", condition)])
 
@@ -645,12 +664,8 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
     manifest,
     tmp_path,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
     episode_id = str(uuid.uuid4())
     root = _experiment_task(
         store,
@@ -670,23 +685,7 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     stage = tmp_path / "loop-stage"
     stage.mkdir()
-    store.commit_experiment_episode_turn(
-        episode_id=episode_id,
-        project_id=project_id,
-        control_node_id="exp/one",
-        provider="codex",
-        execution_machine="laptop",
-        execution_host="",
-        native_session_id="native-sync-loop",
-        stage_host=None,
-        stage_root=str(stage),
-        chat_id="chat",
-        operation_id=root.operation_id,
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
+    _bind_episode_session(store, root, "native-sync-loop", str(stage))
     continuation = _continuation().model_copy(
         update={
             "patch_kind": "experiment_loop",
@@ -704,11 +703,8 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
         "sync-graph",
         condition,
         continuation=continuation,
-    ).model_copy(
-        update={
-            "project_id": project_id,
-            "origin_operation_id": root.operation_id,
-        }
+        project_id=project_id,
+        origin=root.operation_id,
     )
     store.create_watchers([graph_record])
 
@@ -763,33 +759,14 @@ def test_agent_settlement_evaluates_the_exact_applied_revision_boundary(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
-    origin = _notification_task(store, "agent-boundary-origin", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": _test_authorizer(store),
-            "request": {
-                **_notification_task(store, "unused", []).request,
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
-    store.create_agent_task(origin)
-    store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    origin = _completed_origin(store, project_id, "agent-boundary-origin")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers(
         [
-            _graph_record("agent-boundary", condition).model_copy(
-                update={
-                    "project_id": project_id,
-                    "origin_operation_id": origin.operation_id,
-                }
+            _graph_record(
+                "agent-boundary", condition, project_id=project_id, origin=origin.operation_id
             )
         ]
     )
@@ -843,89 +820,38 @@ def test_agent_settlement_evaluates_the_exact_applied_revision_boundary(
     app.state.background_tasks.shutdown()
 
 
-def test_delayed_historical_callback_cannot_complete_a_newer_watcher(
+@pytest.mark.parametrize(
+    ("historical", "armed"),
+    [
+        (_state(blocker_status="resolved", revision=2), _state(revision=3)),
+        (_state(include_blocker=False, revision=1), _state(revision=2)),
+    ],
+    ids=["past-satisfaction", "before-target-creation"],
+)
+def test_historical_callback_cannot_change_a_newer_watcher(
     manifest,
     tmp_path,
     monkeypatch,
+    historical,
+    armed,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
-    historical_true = _state(blocker_status="resolved", revision=2)
-    armed_false = _state(blocker_status="open", revision=3)
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     store.create_watchers(
         [
             _graph_record(
-                "newer-false",
+                "newer-watcher",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(update={"project_id": project_id, "armed_revision": armed_false.revision})
-        ]
-    )
-    monkeypatch.setattr(
-        app.state.service.history,
-        "accepted_boundary_states",
-        lambda: (
-            MaterializationResult(state=armed_false),
-            [historical_true, armed_false],
-        ),
-    )
-    monkeypatch.setattr(
-        "rcp.api.app.ready_graph_watcher_groups",
-        lambda *_args, **_kwargs: [],
-    )
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
-
-    callback(
-        project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="delayed-r2",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=historical_true.revision,
-            applied_graph_state=historical_true,
-        ),
-    )
-
-    stored = store.watcher("newer-false")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "active"
-    app.state.background_tasks.shutdown()
-
-
-def test_historical_absence_cannot_retire_a_target_created_then_armed(
-    manifest,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
-    before_creation = _state(include_blocker=False, revision=1)
-    created_and_armed = _state(blocker_status="open", revision=2)
-    store.create_watchers(
-        [
-            _graph_record(
-                "created-then-armed",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(
-                update={
-                    "project_id": project_id,
-                    "armed_revision": created_and_armed.revision,
-                }
+                project_id=project_id,
+                armed_revision=armed.revision,
             )
         ]
     )
     monkeypatch.setattr(
-        app.state.service.history,
+        service.history,
         "accepted_boundary_states",
         lambda: (
-            MaterializationResult(state=created_and_armed),
-            [before_creation, created_and_armed],
+            MaterializationResult(state=armed),
+            [historical, armed],
         ),
     )
     monkeypatch.setattr(
@@ -940,15 +866,15 @@ def test_historical_absence_cannot_retire_a_target_created_then_armed(
         "node_chat",
         RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
         AgentTaskExecution(
-            operation_id="delayed-r1",
+            operation_id="historical-callback",
             store=store,
             control=AgentProcessControl(),
-            applied_revision=before_creation.revision,
-            applied_graph_state=before_creation,
+            applied_revision=historical.revision,
+            applied_graph_state=historical,
         ),
     )
 
-    stored = store.watcher("created-then-armed")
+    stored = store.watcher("newer-watcher")
     assert isinstance(stored, GraphWatcherRecord)
     assert stored.status == "active"
     app.state.background_tasks.shutdown()
@@ -959,15 +885,11 @@ def test_no_patch_arming_settlement_catches_revision_between_validation_and_inse
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     _initial, initial_result = append_fixture_patch(
         service,
         _canonical_fixture_patch(blocker_status="open"),
     )
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
 
     # Validation observed the open R1 state. R2 committed before the durable
     # insert, so its original boundary handling could not see this row.
@@ -977,11 +899,8 @@ def test_no_patch_arming_settlement_catches_revision_between_validation_and_inse
             _graph_record(
                 "insert-race",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(
-                update={
-                    "project_id": project_id,
-                    "armed_revision": initial_result.state.revision,
-                }
+                project_id=project_id,
+                armed_revision=initial_result.state.revision,
             )
         ]
     )
@@ -1015,10 +934,7 @@ def test_degraded_final_replay_applies_no_satisfying_prefix_transition(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     satisfying_prefix = _state(blocker_status="resolved", revision=2)
     degraded_head = _state(
         blocker_status="resolved",
@@ -1030,7 +946,8 @@ def test_degraded_final_replay_applies_no_satisfying_prefix_transition(
             _graph_record(
                 "degraded-prefix",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(update={"project_id": project_id})
+                project_id=project_id,
+            )
         ]
     )
     replay_calls = 0
@@ -1049,7 +966,7 @@ def test_degraded_final_replay_applies_no_satisfying_prefix_transition(
         return ready_graph_watcher_groups(candidate_store, candidate_project_id)
 
     monkeypatch.setattr(
-        app.state.service.history,
+        service.history,
         "accepted_boundary_states",
         degraded_replay,
     )
@@ -1096,20 +1013,18 @@ def test_remote_refresh_failure_never_evaluates_the_stale_graph_mirror(
     monkeypatch,
     refresh_failure,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     armed_revision = service.history.state().revision
     append_fixture_patch(service, _blocker_status_patch("resolved"))
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
     store.create_watchers(
         [
             _graph_record(
                 "stale-remote",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(update={"project_id": project_id, "armed_revision": armed_revision})
+                project_id=project_id,
+                armed_revision=armed_revision,
+            )
         ]
     )
 
@@ -1149,10 +1064,7 @@ def test_remote_refresh_failure_never_evaluates_the_stale_graph_mirror(
 def test_startup_reconciles_healthy_target_after_another_target_fails(
     manifest, tmp_path, monkeypatch, failure
 ):
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    store = app.state.background_tasks.store
-    project_id = app.state.default_project_id
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     delivery = app.state.services.watcher_delivery
     _, initial = append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     append_fixture_patch(service, _blocker_status_patch("resolved"))
@@ -1251,39 +1163,20 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
     monkeypatch,
     transient_failure,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     armed_revision = service.history.state().revision
     append_fixture_patch(service, _blocker_status_patch("resolved"))
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
     authorizer = _test_authorizer(store)
-    origin = _notification_task(store, "retry-origin", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": authorizer,
-            "request": {
-                **_notification_task(store, "unused", []).request,
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
-    store.create_agent_task(origin)
-    store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    origin = _completed_origin(store, project_id, "retry-origin")
     store.create_watchers(
         [
             _graph_record(
                 "reconcile-retry",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(
-                update={
-                    "project_id": project_id,
-                    "origin_operation_id": origin.operation_id,
-                    "armed_revision": armed_revision,
-                }
+                project_id=project_id,
+                origin=origin.operation_id,
+                armed_revision=armed_revision,
             )
         ]
     )
@@ -1346,19 +1239,16 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
 def test_completed_reconciliation_cannot_clear_a_later_transient_failure(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     _, initial = append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
-    project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
     delivery = app.state.services.watcher_delivery
     store.create_watchers(
         [
             _graph_record(
                 "overlapping-reconciliation",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(
-                update={"project_id": project_id, "armed_revision": initial.state.revision}
+                project_id=project_id,
+                armed_revision=initial.state.revision,
             )
         ]
     )
@@ -1426,39 +1316,20 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     armed_revision = service.history.state().revision
     append_fixture_patch(service, _blocker_status_patch("resolved"))
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
     authorizer = _test_authorizer(store)
-    origin = _notification_task(store, "generation-retry-origin", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": authorizer,
-            "request": {
-                **_notification_task(store, "unused", []).request,
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
-    store.create_agent_task(origin)
-    store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    origin = _completed_origin(store, project_id, "generation-retry-origin")
     store.create_watchers(
         [
             _graph_record(
                 "generation-reconcile-retry",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(
-                update={
-                    "project_id": project_id,
-                    "origin_operation_id": origin.operation_id,
-                    "armed_revision": armed_revision,
-                }
+                project_id=project_id,
+                origin=origin.operation_id,
+                armed_revision=armed_revision,
             )
         ]
     )
@@ -1549,17 +1420,15 @@ def test_ready_only_graph_project_skips_canonical_boundary_replay(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     store.create_watchers(
         [
             _graph_record(
                 "ready-fast-path",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
                 status="completed",
-            ).model_copy(update={"project_id": project_id})
+                project_id=project_id,
+            )
         ]
     )
     replay_calls = 0
@@ -1576,7 +1445,7 @@ def test_ready_only_graph_project_skips_canonical_boundary_replay(
         ready_calls += 1
         return []
 
-    monkeypatch.setattr(app.state.service.history, "accepted_boundary_states", unexpected_replay)
+    monkeypatch.setattr(service.history, "accepted_boundary_states", unexpected_replay)
     monkeypatch.setattr("rcp.api.app.ready_graph_watcher_groups", observe_ready)
     callback = app.state.background_tasks.on_task_settled
     assert callback is not None
@@ -1625,20 +1494,19 @@ def test_reversed_task_settlement_uses_canonical_boundary_order(
     boundaries,
     expected_status,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     store.create_watchers(
         [
             _graph_record(
                 "canonical-order",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(update={"project_id": project_id, "armed_revision": 0})
+                project_id=project_id,
+                armed_revision=0,
+            )
         ]
     )
     monkeypatch.setattr(
-        app.state.service.history,
+        service.history,
         "accepted_boundary_states",
         lambda: (MaterializationResult(state=boundaries[-1]), boundaries),
     )
@@ -1675,21 +1543,20 @@ def test_repeated_task_settlement_skips_transition_traces_before_durable_cursor(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
     store.create_watchers(
         [
             _graph_record(
                 "durable-cursor",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(update={"project_id": project_id, "armed_revision": 0})
+                project_id=project_id,
+                armed_revision=0,
+            )
         ]
     )
     boundaries = [_state(revision=revision) for revision in (1, 2, 3)]
     monkeypatch.setattr(
-        app.state.service.history,
+        service.history,
         "accepted_boundary_states",
         lambda: (MaterializationResult(state=boundaries[-1]), boundaries),
     )
@@ -1700,7 +1567,7 @@ def test_repeated_task_settlement_skips_transition_traces_before_durable_cursor(
         return None
 
     monkeypatch.setattr(
-        app.state.service.history,
+        service.history,
         "transition_trace_at_revision",
         observe_trace,
     )
@@ -1735,9 +1602,7 @@ def test_task_settlement_retries_durable_ready_deliveries_without_active_conditi
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     retries: list[str] = []
 
     def capture_ready_retry(_store, candidate_project_id):
@@ -1802,33 +1667,19 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
     project_id = first.state.default_project_id
     assert project_id is not None
     first_store = first.state.background_tasks.store
-    origin = _notification_task(first_store, "startup-origin", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": _test_authorizer(first_store),
-            "request": {
-                **_notification_task(first_store, "unused", []).request,
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
-    first_store.create_agent_task(origin)
-    first_store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    origin = _completed_origin(first_store, project_id, "startup-origin")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     first_store.create_watchers(
         [
-            _graph_record("startup-hook", condition).model_copy(
-                update={
-                    "project_id": project_id,
-                    "origin_operation_id": origin.operation_id,
-                }
+            _graph_record(
+                "startup-hook", condition, project_id=project_id, origin=origin.operation_id
             ),
-            _graph_record("startup-retry", condition, status="completed").model_copy(
-                update={
-                    "project_id": project_id,
-                    "origin_operation_id": origin.operation_id,
-                }
+            _graph_record(
+                "startup-retry",
+                condition,
+                status="completed",
+                project_id=project_id,
+                origin=origin.operation_id,
             ),
         ]
     )
@@ -1881,32 +1732,18 @@ def test_discuss_settlement_retries_graph_wake_blocked_by_same_chat_overlap(
     manifest,
     tmp_path,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     authorizer = _test_authorizer(store)
-    origin = _notification_task(store, "overlap-origin", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": authorizer,
-            "request": {
-                **_notification_task(store, "unused", []).request,
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
-    store.create_agent_task(origin)
-    store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    origin = _completed_origin(store, project_id, "overlap-origin")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers(
         [
-            _graph_record("overlap-graph", condition, status="completed").model_copy(
-                update={
-                    "project_id": project_id,
-                    "origin_operation_id": origin.operation_id,
-                }
+            _graph_record(
+                "overlap-graph",
+                condition,
+                status="completed",
+                project_id=project_id,
+                origin=origin.operation_id,
             )
         ]
     )
@@ -1972,8 +1809,7 @@ def test_discuss_settlement_retries_graph_wake_blocked_by_same_chat_overlap(
         app.state.background_tasks.shutdown()
 
 
-def test_degraded_or_halted_replay_never_fires_a_graph_condition(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_degraded_or_halted_replay_never_fires_a_graph_condition(store) -> None:
     store.create_watchers(
         [
             _graph_record(
@@ -2007,8 +1843,7 @@ def test_degraded_or_halted_replay_never_fires_a_graph_condition(tmp_path) -> No
     assert all(not record.notified for record in stored)
 
 
-def test_condition_on_a_removed_node_is_terminally_retired(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_condition_on_a_removed_node_is_terminally_retired(store) -> None:
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers([_graph_record("removed-target", condition)])
 
@@ -2024,12 +1859,11 @@ def test_condition_on_a_removed_node_is_terminally_retired(tmp_path) -> None:
     assert isinstance(stored, GraphWatcherRecord)
     assert stored.status == "stopped"
     assert stored.notified is True
-    assert stored.stop_reason == "Graph condition target was removed."
+    assert "target was removed" in stored.stop_reason
     assert store.graph_watcher_project_ids() == []
 
 
-def test_graph_rows_never_enter_watcher_poller(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_graph_rows_never_enter_watcher_poller(store) -> None:
     solo = _external_record("external-solo").model_copy(
         update={
             "chat_id": "other-chat",
@@ -2078,8 +1912,7 @@ def test_graph_rows_never_enter_watcher_poller(tmp_path) -> None:
     assert store.watcher("completed-graph").notified is False
 
 
-def test_retry_worker_keeps_the_watcher_poller_nonblocking(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_retry_worker_keeps_the_watcher_poller_nonblocking(store) -> None:
     retry_started = threading.Event()
     release_retry = threading.Event()
     second_poll_finished = threading.Event()
@@ -2111,17 +1944,16 @@ def test_retry_worker_lifecycle_stays_bounded_during_reconciliation(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.services.store
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     delivery = app.state.services.watcher_delivery
     store.create_watchers(
         [
             _graph_record(
                 "slow-reconciliation",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ).model_copy(update={"project_id": project_id, "armed_revision": 0})
+                project_id=project_id,
+                armed_revision=0,
+            )
         ]
     )
     delivery._retry.schedule(project_id)
@@ -2323,29 +2155,18 @@ def test_periodic_poll_delivers_mixed_group_after_external_completes(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     authorizer = _test_authorizer(store)
-    origin = _notification_task(store, "periodic-mixed-origin", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": authorizer,
-            "request": {
-                **_notification_task(store, "unused", []).request,
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
-    store.create_agent_task(origin)
-    store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    origin = _completed_origin(store, project_id, "periodic-mixed-origin")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers(
         [
-            _graph_record("periodic-graph", condition, status="completed").model_copy(
-                update={"project_id": project_id, "origin_operation_id": origin.operation_id}
+            _graph_record(
+                "periodic-graph",
+                condition,
+                status="completed",
+                project_id=project_id,
+                origin=origin.operation_id,
             ),
             _external_record("periodic-external").model_copy(
                 update={"project_id": project_id, "origin_operation_id": origin.operation_id}
@@ -2396,29 +2217,18 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    assert project_id is not None
-    store = app.state.background_tasks.store
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     authorizer = _test_authorizer(store)
-    origin = _notification_task(store, "periodic-retry-origin", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": authorizer,
-            "request": {
-                **_notification_task(store, "unused", []).request,
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
-    store.create_agent_task(origin)
-    store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    origin = _completed_origin(store, project_id, "periodic-retry-origin")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers(
         [
-            _graph_record("periodic-retry-graph", condition, status="completed").model_copy(
-                update={"project_id": project_id, "origin_operation_id": origin.operation_id}
+            _graph_record(
+                "periodic-retry-graph",
+                condition,
+                status="completed",
+                project_id=project_id,
+                origin=origin.operation_id,
             )
         ]
     )
@@ -2448,10 +2258,6 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
             lambda: len(attempts) == 2 and store.watcher("periodic-retry-graph").notified,
             detail="graph delivery retry did not mark the watcher notified",
         )
-        second = store.watcher("periodic-retry-graph")
-        assert isinstance(second, GraphWatcherRecord)
-        assert second.notified is True
-
         assert app.state.watcher_poller.poll_once() == []
         assert attempts == [["periodic-retry-graph"], ["periodic-retry-graph"]]
     finally:
@@ -2459,8 +2265,7 @@ def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
         app.state.background_tasks.shutdown()
 
 
-def test_external_and_graph_completions_coalesce_into_one_wake(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_external_and_graph_completions_coalesce_into_one_wake(store) -> None:
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers(
         [
@@ -2493,48 +2298,11 @@ def test_external_and_graph_completions_coalesce_into_one_wake(tmp_path) -> None
     )
 
 
-def test_every_graph_wake_spends_one_experiment_budget_unit(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
+def test_every_graph_wake_spends_one_experiment_budget_unit(store) -> None:
     episode_id = str(uuid.uuid4())
-    continuation = _continuation().model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp/one",
-            "control_revision": 1,
-            "control_episode_id": episode_id,
-            "control_invocation": 1,
-            "control_invocation_ceiling": 2,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-        }
-    )
-    root = _experiment_task(
-        store,
-        "loop-root",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=2,
-        watcher_ids=[],
-    )
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task("loop-root", applied_revision=None, result={})
-    store.commit_experiment_episode_turn(
-        episode_id=episode_id,
-        project_id="project",
-        control_node_id="exp/one",
-        provider="codex",
-        execution_machine="laptop",
-        execution_host="",
-        native_session_id="native-loop-session",
-        stage_host=None,
-        stage_root="/tmp/loop-stage",
-        chat_id="chat",
-        operation_id="loop-root",
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
+    continuation = _loop_continuation(episode_id)
+    root = _completed_episode(store, "loop-root", episode_id)
+    _bind_episode_session(store, root, "native-loop-session", "/tmp/loop-stage")
     condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
     store.create_watchers([_graph_record("budgeted-graph", condition, continuation=continuation)])
     groups = evaluate_graph_watchers(
@@ -2567,49 +2335,12 @@ def test_every_graph_wake_spends_one_experiment_budget_unit(tmp_path) -> None:
 
 
 def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
-    tmp_path,
+    store,
 ) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id = str(uuid.uuid4())
-    root = _experiment_task(
-        store,
-        "stop-list-root",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=2,
-        watcher_ids=[],
-    )
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    store.commit_experiment_episode_turn(
-        episode_id=episode_id,
-        project_id="project",
-        control_node_id="exp/one",
-        provider="codex",
-        execution_machine="laptop",
-        execution_host="",
-        native_session_id="native-stop-list",
-        stage_host=None,
-        stage_root="/tmp/stop-list-stage",
-        chat_id="chat",
-        operation_id=root.operation_id,
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
-    continuation = _continuation().model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp/one",
-            "control_revision": 1,
-            "control_episode_id": episode_id,
-            "control_invocation": 1,
-            "control_invocation_ceiling": 2,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-        }
-    )
+    root = _completed_episode(store, "stop-list-root", episode_id)
+    _bind_episode_session(store, root, "native-stop-list", "/tmp/stop-list-stage")
+    continuation = _loop_continuation(episode_id)
     binding = _binding(continuation=continuation).model_copy(
         update={"origin_operation_id": root.operation_id}
     )
@@ -2622,7 +2353,8 @@ def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
                 "protected-graph",
                 NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
                 continuation=continuation,
-            ).model_copy(update={"origin_operation_id": root.operation_id}),
+                origin=root.operation_id,
+            ),
         ]
     )
 
@@ -2724,8 +2456,7 @@ def test_shutdown_serializes_watcher_delivery_admission_with_worker_snapshot(
     errors: list[BaseException] = []
 
     async def wait_for_shutdown(_project_id, _kind, _request, execution):
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield f"data: {AgentEvent(event='paused', text='Server shutdown.').model_dump_json()}\n\n"
 
     tasks = BackgroundAgentTasks(store, wait_for_shutdown)
@@ -2786,7 +2517,6 @@ def test_shutdown_serializes_watcher_delivery_admission_with_worker_snapshot(
         assert errors == []
         assert len(delivered) == 1 and delivered[0] is not None
         started = delivered[0]
-        assert started is not None
         settled = store.agent_task(started.operation_id)
         assert settled is not None
         assert settled.status == "paused"

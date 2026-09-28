@@ -107,26 +107,29 @@ def _line_window(
     total = 0
     current = 1
     buffer = b""
+    # Scan position in `buffer`; slicing the chunk per line would copy it per line.
+    offset = 0
     value = b""
     while current <= last:
-        index = buffer.find(b"\n")
+        index = buffer.find(b"\n", offset)
         # One line is held at most to the byte bound, so a file with no delimiter
         # cannot grow this reader's memory with the file.
         if index < 0:
             if len(value) < max_bytes:
-                value = (value + buffer)[:max_bytes]
+                value = (value + buffer[offset:])[:max_bytes]
             # Once the cited line alone fills the budget, every later byte of it is
             # discarded anyway, so stop rather than scan to its delimiter.
             exhausted = current >= anchor and len(value) >= max_bytes
             buffer = b"" if exhausted else os.read(file_fd, CHUNK_BYTES)
+            offset = 0
             if buffer:
                 continue
             if not value:
                 break
         else:
             if len(value) < max_bytes:
-                value = (value + buffer[:index])[:max_bytes]
-            buffer = buffer[index + 1 :]
+                value = (value + buffer[offset:index])[:max_bytes]
+            offset = index + 1
         if current >= first:
             collected.append(value)
             total += len(value) + 1

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -13,13 +16,15 @@ from rcp.api import create_app
 from rcp.config import load_manifest, permissions_for
 from rcp.history import HistoryManager
 from rcp.setup import (
+    MachineBrowseFailure,
     ProjectSetupRequest,
     SetupAgentProfile,
     SetupAgents,
     SetupExecution,
     SetupRepository,
-    SshRepositoryBrowseRequest,
+    browse_machine_directory,
     render_manifest,
+    run_machine_directory_request,
 )
 from rcp.sources import project_cache_roots
 from rcp.storage import AgentTaskRecord, AppStore
@@ -85,7 +90,6 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
 
     monkeypatch.setattr(app.state.setup, "preflight", fail_if_called)
     monkeypatch.setattr(app.state.setup, "create", fail_if_called)
-    monkeypatch.setattr(app.state.setup, "browse_ssh_repository_paths", fail_if_called)
     monkeypatch.setattr(app.state.catalog, "register", fail_if_called)
     client = TestClient(app)
     payload = _local_payload(str(submitted_path))
@@ -102,15 +106,6 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
             )
         }
 
-    browse = client.post("/api/project-setup/ssh-paths", json={"host": "gpu.example"})
-    assert browse.status_code == 409
-    assert browse.json() == {
-        "detail": (
-            "Existing-checkout setup belongs to a personal space. "
-            "Create a team-project provisioning request instead."
-        )
-    }
-
     registered = client.post("/api/projects", json={"locator": "/"})
     assert registered.status_code == 409
     assert registered.json() == {
@@ -125,8 +120,7 @@ def test_team_space_rejects_personal_setup_before_interpreting_the_path(
     assert app.state.background_tasks.store.project_provisioning_requests() == []
 
 
-def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data")
+def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing() -> None:
     commands: list[list[str]] = []
     payload = {
         "path": "/home/alice",
@@ -135,11 +129,14 @@ def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing(t
             {
                 "name": "paper",
                 "path": "/home/alice/paper",
+                "resolved": "/home/alice/paper",
                 "git_repository": True,
                 "has_research": True,
             }
         ],
-        "truncated": False,
+        "home": "/home/alice",
+        "total": 1,
+        "next_offset": None,
     }
 
     def runner(command, **kwargs):
@@ -147,17 +144,13 @@ def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing(t
         assert kwargs["timeout"] == 20
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
-    result = app.state.setup.browse_ssh_repository_paths(
-        SshRepositoryBrowseRequest(host="alice@gpu.example"),
-        runner=runner,
-        rcp_machine="research-mac",
+    page = browse_machine_directory(
+        "alice@gpu.example", None, runner=runner, rcp_machine="research-mac"
     )
 
-    assert result.state == "reachable"
-    assert result.listing is not None
-    assert result.listing.path == "/home/alice"
-    assert result.listing.entries[0].git_repository is True
-    assert result.listing.entries[0].has_research is True
+    assert page.path == "/home/alice"
+    assert page.entries[0].git_repository is True
+    assert page.entries[0].has_research is True
     assert commands[0][-2] == "alice@gpu.example"
     assert "StrictHostKeyChecking=yes" in commands[0]
     assert "remote_repository_browser.py" not in commands[0][-1]
@@ -165,74 +158,56 @@ def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing(t
     assert "password" not in " ".join(commands[0]).casefold()
 
 
-def test_ssh_repository_browser_auth_failure_names_the_exact_rcp_machine(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data")
+def test_shipped_directory_browser_refuses_another_account(tmp_path) -> None:
+    def run_here(command, **kwargs):
+        # The shipped command, run on this machine instead of over SSH.
+        return subprocess.run(["sh", "-c", command[-1]], **kwargs)
 
+    me = pwd.getpwuid(os.geteuid()).pw_name
+    browse = tmp_path / "browse"
+    (browse / "folder").mkdir(parents=True)
+    # A symlinked home comes back real, like the paths checked beside it.
+    real_home = tmp_path / "homes" / "real"
+    real_home.mkdir(parents=True)
+    (tmp_path / "homes" / "link").symlink_to(real_home)
+    checked = run_machine_directory_request(
+        "worker@gpu.example",
+        {"mode": "check", "paths": []},
+        os_account=me,
+        runner=lambda command, **kwargs: subprocess.run(
+            ["sh", "-c", command[-1]],
+            env={**os.environ, "HOME": str(tmp_path / "homes" / "link")},
+            **kwargs,
+        ),
+    )
+    assert checked["home"] == os.path.realpath(real_home)
+    page = browse_machine_directory(
+        "worker@gpu.example", str(browse), os_account=me, runner=run_here
+    )
+    assert [entry.name for entry in page.entries] == ["folder"]
+    with pytest.raises(MachineBrowseFailure):
+        browse_machine_directory(
+            "worker@gpu.example", str(browse), os_account=f"{me}-other", runner=run_here
+        )
+
+
+def test_ssh_repository_browser_auth_failure_names_the_exact_rcp_machine() -> None:
     def runner(command, **_kwargs):
         return subprocess.CompletedProcess(command, 255, "", "Permission denied (publickey).")
 
-    result = app.state.setup.browse_ssh_repository_paths(
-        SshRepositoryBrowseRequest(host="alice@gpu.example", path="/home/alice"),
-        runner=runner,
-        rcp_machine="research-mac",
-    )
+    with pytest.raises(MachineBrowseFailure) as failure:
+        browse_machine_directory(
+            "alice@gpu.example", "/home/alice", runner=runner, rcp_machine="research-mac"
+        )
 
-    assert result.state == "authentication_failed"
-    assert result.listing is None
-    assert result.required_action is not None
-    assert "research-mac" in result.required_action
-
-
-def test_personal_ssh_repository_browser_endpoint_uses_existing_local_ssh_state(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    app = create_app(data_dir=tmp_path / "data")
-    commands: list[list[str]] = []
-    payload = {
-        "path": "/home/alice",
-        "parent": "/home",
-        "entries": [],
-        "truncated": False,
-    }
-
-    def runner(command, **kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
-
-    monkeypatch.setattr("rcp.setup.subprocess.run", runner)
-    monkeypatch.setattr("rcp.setup.socket.gethostname", lambda: "research-mac")
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/project-setup/ssh-paths",
-        json={"host": "alice@gpu.example"},
-    )
-
-    assert response.status_code == 200
-    assert {k: v for k, v in response.json().items() if k != "diagnostic"} == {
-        "state": "reachable",
-        "rcp_machine": "research-mac",
-        "host": "alice@gpu.example",
-        "listing": payload,
-        "required_action": None,
-    }
-    assert commands[0][0] == "ssh"
-    assert "BatchMode=yes" in commands[0]
-    assert commands[0][-2] == "alice@gpu.example"
-
-    rejected = client.post(
-        "/api/project-setup/ssh-paths",
-        json={"host": "alice@gpu.example", "password": "do-not-accept"},
-    )
-    assert rejected.status_code == 422
-    assert len(commands) == 1
+    assert failure.value.state == "authentication_failed"
+    assert failure.value.required_action is not None
+    assert "research-mac" in failure.value.required_action
 
 
 @pytest.mark.parametrize("host", ["-Ffoo", "-oProxyCommand=sh"])
 def test_setup_rejects_option_shaped_ssh_hosts_before_any_connection(host: str) -> None:
     validators = (
-        lambda: SshRepositoryBrowseRequest(host=host),
         lambda: SetupRepository(
             alias="remote",
             location="ssh",
@@ -249,8 +224,7 @@ def test_setup_rejects_option_shaped_ssh_hosts_before_any_connection(host: str) 
             validate()
 
 
-def test_ssh_repository_browser_rejects_untrusted_out_of_directory_entries(tmp_path) -> None:
-    app = create_app(data_dir=tmp_path / "data")
+def test_ssh_repository_browser_rejects_untrusted_out_of_directory_entries() -> None:
     payload = {
         "path": "/home/alice",
         "parent": "/home",
@@ -258,21 +232,21 @@ def test_ssh_repository_browser_rejects_untrusted_out_of_directory_entries(tmp_p
             {
                 "name": "escape",
                 "path": "/etc",
+                "resolved": "/etc",
                 "git_repository": False,
                 "has_research": False,
             }
         ],
-        "truncated": False,
+        "home": "/home/alice",
+        "total": 1,
+        "next_offset": None,
     }
 
     def runner(command, **_kwargs):
         return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
     with pytest.raises(ValueError, match="invalid listing"):
-        app.state.setup.browse_ssh_repository_paths(
-            SshRepositoryBrowseRequest(host="alice@gpu.example"),
-            runner=runner,
-        )
+        browse_machine_directory("alice@gpu.example", None, runner=runner)
 
 
 def test_local_wizard_preflights_without_writing_then_creates(tmp_path) -> None:
@@ -749,6 +723,10 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
     monkeypatch.setattr("rcp.setup._ssh", fake_ssh)
     app = create_app(data_dir=tmp_path / "data")
     app.state.setup.launcher = ReadyLauncher()
+    # The space's card carries the account the host route does not name.
+    app.state.background_tasks.store.create_space_machine(
+        name="GPU", host="gpu.example", os_account="carol"
+    )
     request = ProjectSetupRequest.model_validate(
         {
             "name": "remote-paper",
@@ -774,7 +752,8 @@ def test_remote_preflight_checks_ssh_without_writing(monkeypatch, tmp_path) -> N
     assert preview.can_create is True
     assert preview.remote_write is True
     assert preview.canonical_location == "gpu.example:/srv/paper/.research"
-    assert 'host = "gpu.example"' in preview.manifest_preview
+    remote = tomllib.loads(preview.manifest_preview)["machines"]
+    assert [m.get("os_account") for m in remote if m["host"]] == ["carol"]
     assert ["test", "-d", "/srv/paper"] in calls
     assert ["test", "-w", "/srv/paper"] in calls
     assert not any(arguments[0] in {"mkdir", "touch", "rm"} for arguments in calls)

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
-const NARROW_VIEWPORT = "(max-width: 560px)";
+/** The phone width. Stylesheets write the same number in their phone queries. */
+export const PHONE_MAX_WIDTH_PX = 560;
+const NARROW_VIEWPORT = `(max-width: ${PHONE_MAX_WIDTH_PX}px)`;
 
 export function useNarrowViewport(): boolean {
   const [narrow, setNarrow] = useState(

@@ -5,7 +5,6 @@ import {
   GitBranch,
   HardDrive,
   LoaderCircle,
-  Minus,
   Plus,
   RotateCcw,
   ScanSearch,
@@ -14,14 +13,16 @@ import {
   Sparkles,
   Trash2,
   TriangleAlert,
-  Type,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, clearAllProjectCaches, clearProjectCaches, probeMachineCompute } from "../api";
+import { api, clearProjectCaches } from "../api";
 import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
-import { ProviderLogins } from "../components/ProviderLogins";
-import { ServerSettings } from "../components/ServerSettings";
+import { MachineCard } from "../components/MachineCard";
+import { AddMachineTile, MachineTile, type MachineSignal } from "../components/MachineTile";
+import { AddProjectMachine } from "../components/AddProjectMachine";
+import { useSpaceMachines } from "../hooks/useSpaceMachines";
+import { machineHostLabel, spaceMachineForProject } from "../spaceMachines";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
 import { AgentConfigControls, profileRunConfig } from "../components/AgentConfigControls";
 import { AgentUsageWidgets } from "../components/AgentUsageWidgets";
@@ -42,7 +43,6 @@ import {
   settingsFingerprint,
   type MachineProviderPaths,
 } from "../settingsDraft";
-import { TEXT_SCALE_MAX, TEXT_SCALE_MIN } from "../textScale";
 import type { ProjectReadinessRetention } from "../hooks/projectSession";
 import type {
   AgentExecutionProfile,
@@ -50,7 +50,6 @@ import type {
   AgentUsageSnapshot,
   CacheMetric,
   ComputeConnection,
-  ComputeBackendProbe,
   MachineComputeConfig,
   ProjectCacheMetrics,
   ProjectSettingsRequest,
@@ -79,12 +78,8 @@ interface Props {
     providerError: string | null;
     computeError: string | null;
   };
-  /** Text size is a desktop webview zoom. */
-  showTextScale: boolean;
   spaceKind: "personal" | "team";
   onMovePersonalProjectToTeam?: (sourceProjectId: string) => void;
-  textScale: number;
-  onTextScaleChange: (action: "decrease" | "increase" | "reset") => void;
 }
 
 export function publishCacheMetrics(
@@ -94,11 +89,6 @@ export function publishCacheMetrics(
 ) {
   setVisibleMetrics(metrics);
   onCacheMetricsChange(metrics);
-}
-
-export function showClearAllCachesWarning(clearStatus: () => void, openWarning: () => void) {
-  clearStatus();
-  openWarning();
 }
 
 const executionProfiles: Array<{ id: AgentExecutionProfile; label: string }> = [
@@ -136,15 +126,6 @@ function skillDefaultsFrom(project: ProjectSnapshot): SkillDefaults {
 
 function skillCatalogFrom(project: ProjectSnapshot): SkillCatalogEntry[] {
   return project.skill_catalog ?? [];
-}
-
-function machineComputeProbeKey(machine: ProjectSnapshot["machines"][number]): string {
-  return settingsFingerprint({
-    alias: machine.alias,
-    host: machine.host,
-    os_account: machine.os_account,
-    compute: machine.compute ?? null,
-  });
 }
 
 /** The staged edits for this project, or the manifest's values when none exist. */
@@ -192,11 +173,8 @@ export function ProjectSettings({
   onCacheMetricsChange,
   onRefreshReadiness,
   readinessRequest,
-  showTextScale,
   spaceKind,
   onMovePersonalProjectToTeam,
-  textScale,
-  onTextScaleChange,
 }: Props) {
   const skillCatalog = skillCatalogFrom(project);
   const savedSkillDefaults = skillDefaultsFrom(project);
@@ -221,10 +199,6 @@ export function ProjectSettings({
   const currentRequestOwner = useRef<typeof requestOwner | null>(requestOwner);
   currentRequestOwner.current = requestOwner;
   const requestIsCurrent = () => currentRequestOwner.current === requestOwner;
-  const [probingMachine, setProbingMachine] = useState<string | null>(null);
-  const [machineProbes, setMachineProbes] = useState<
-    Record<string, { configuration: string; probe: ComputeBackendProbe }>
-  >({});
   const [skillDefaults, setSkillDefaults] = useState<SkillDefaults>(
     () => restoredSettings.skillDefaults,
   );
@@ -234,8 +208,13 @@ export function ProjectSettings({
   const [inspectedPackage, setInspectedPackage] = useState<SkillCatalogEntry | null>(null);
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
-  const [clearAllCachesOpen, setClearAllCachesOpen] = useState(false);
-  const [clearingAllCaches, setClearingAllCaches] = useState(false);
+  const spaceMachines = useSpaceMachines();
+  // Machines show as tiles; one opens at a time so the section stays short,
+  // starting with the first so its settings are one glance away.
+  const [openMachine, setOpenMachine] = useState<string | null>(
+    () => project.machines[0]?.alias ?? null,
+  );
+  const [addingMachine, setAddingMachine] = useState(false);
   const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);
   const [status, setStatus] = useState<{ kind: "saved" | "error"; text: string } | null>(null);
@@ -257,14 +236,10 @@ export function ProjectSettings({
     setProfiles(restoredSettings.profiles);
     setProviderPaths(restoredSettings.providerPaths);
     setMachineComputeEdits(restoredSettings.machineComputeEdits);
-    setMachineProbes({});
-    setProbingMachine(null);
     setSkillDefaults(restoredSettings.skillDefaults);
     setComputeConnections(restoredSettings.computeConnections);
     setSaving(false);
     setClearingCaches(false);
-    setClearAllCachesOpen(false);
-    setClearingAllCaches(false);
     setResolvingProvider(null);
     setInspectedPackage(null);
     setStatus(null);
@@ -436,7 +411,6 @@ export function ProjectSettings({
     if (
       !dirty ||
       saving ||
-      probingMachine !== null ||
       writesDisabled ||
       !autoResearchInvocationCeilingIsValid ||
       !computeConnectionsAreValid
@@ -499,25 +473,6 @@ export function ProjectSettings({
     }
   };
 
-  const probeMachine = async (alias: string) => {
-    if (probingMachine || saving || writesDisabled) return;
-    setProbingMachine(alias);
-    setStatus(null);
-    try {
-      const probe = await probeMachineCompute(apiBase, alias);
-      if (!requestIsCurrent()) return;
-      setMachineProbes((currentProbes) => ({
-        ...currentProbes,
-        [alias]: { configuration: machineComputeProbeKey(machineByAlias[alias]), probe },
-      }));
-    } catch (caught) {
-      if (!requestIsCurrent()) return;
-      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    } finally {
-      if (requestIsCurrent()) setProbingMachine(null);
-    }
-  };
-
   const updateMachineCompute = (alias: string, config: MachineComputeConfig | null) => {
     setMachineComputeEdits((currentEdits) => {
       const next = { ...currentEdits, [alias]: config };
@@ -531,6 +486,35 @@ export function ProjectSettings({
       return next;
     });
     setStatus(null);
+  };
+
+  // What a tile shows at a glance: each provider, the jobs route, and grants.
+  const machineSignals = (machine: (typeof project.machines)[number]): MachineSignal[] => {
+    const signals: MachineSignal[] = providerCatalog.map((provider) => {
+      const state = providerPathPresentation(
+        project.provider_readiness[machine.alias]?.[provider.provider],
+        providerPaths[machine.alias]?.[provider.provider] ?? "",
+        machine.provider_paths[provider.provider] ?? "",
+      );
+      return { label: provider.label || provider.provider, tone: state.kind };
+    });
+    const unsavedCompute = Boolean(
+      machineComputeUpdates(
+        { [machine.alias]: machine.compute ?? null },
+        { [machine.alias]: machineCompute[machine.alias] ?? null },
+      ),
+    );
+    const probe = machine.compute_probes?.[machine.compute?.job_manager ? "scheduler" : "helper"];
+    signals.push({
+      label: machine.compute?.job_manager === "slurm" ? "Slurm" : "Jobs",
+      tone: unsavedCompute ? "pending" : probe ? computeProbePresentation(probe).tone : "warning",
+    });
+    const record = spaceMachines.machines
+      ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
+      : null;
+    const grants = record?.writable_paths.length ?? 0;
+    if (grants) signals.push({ label: `${grants} writable`, tone: "ready" });
+    return signals;
   };
 
   const resolveProviderPath = async (machine: string, provider: ProviderId) => {
@@ -602,67 +586,10 @@ export function ProjectSettings({
     }
   };
 
-  const clearEveryProjectCache = async () => {
-    if (clearingAllCaches) return;
-    setClearingAllCaches(true);
-    setStatus(null);
-    try {
-      const metrics = await clearAllProjectCaches(project.id);
-      if (!requestIsCurrent()) return;
-      publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
-      setClearAllCachesOpen(false);
-      setStatus({ kind: "saved", text: "All project caches cleared." });
-    } catch (caught) {
-      if (!requestIsCurrent()) return;
-      setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    } finally {
-      if (requestIsCurrent()) setClearingAllCaches(false);
-    }
-  };
-
   return (
-    <section className="settings-page">
-      {spaceKind === "team" ? <ServerSettings /> : null}
+    <section className="settings-page" data-settings-level="project">
       <AgentUsageWidgets usage={usage} providers={project.providers} />
 
-      {showTextScale && (
-        <section className="settings-section display-settings">
-          <header>
-            <span>
-              <Type size={16} />
-            </span>
-            <h2>Display</h2>
-            <div className="text-scale-controls" role="group" aria-label="Interface text size">
-              <button
-                className="icon-button"
-                type="button"
-                disabled={textScale <= TEXT_SCALE_MIN}
-                onClick={() => onTextScaleChange("decrease")}
-                aria-label="Decrease text size"
-              >
-                <Minus size={15} />
-              </button>
-              <button
-                className="text-scale-value"
-                type="button"
-                onClick={() => onTextScaleChange("reset")}
-                aria-label="Reset text size to 100 percent"
-              >
-                {textScale}%
-              </button>
-              <button
-                className="icon-button"
-                type="button"
-                disabled={textScale >= TEXT_SCALE_MAX}
-                onClick={() => onTextScaleChange("increase")}
-                aria-label="Increase text size"
-              >
-                <Plus size={15} />
-              </button>
-            </div>
-          </header>
-        </section>
-      )}
       {spaceKind === "personal" && onMovePersonalProjectToTeam ? (
         <section className="settings-section project-home-settings">
           <header>
@@ -735,143 +662,199 @@ export function ProjectSettings({
           </span>
           <h2>Machines</h2>
         </header>
-        <div className="provider-machine-list">
-          {project.machines.map((machine) => {
-            const config = machineCompute[machine.alias] ?? {
-              job_manager: null,
-              jobs_root: "",
-            };
-            const needsSave = Boolean(
-              machineComputeUpdates(
-                { [machine.alias]: machine.compute ?? null },
-                { [machine.alias]: machineCompute[machine.alias] ?? null },
-              ),
-            );
-            const latestProbe = machineProbes[machine.alias];
-            const probe = needsSave
-              ? null
-              : latestProbe?.configuration === machineComputeProbeKey(machine)
-                ? latestProbe.probe
-                : machine.compute_probe;
-            const presentation = computeProbePresentation(probe);
-            const computeDisabled = writesDisabled || saving || probingMachine !== null;
-            return (
-              <article className="provider-machine" key={machine.alias}>
-                <header>
-                  <strong>{machine.alias}</strong>
-                  <span>
-                    {machine.host || (spaceKind === "team" ? "Team server" : "Local machine")}
-                  </span>
-                </header>
-                <div className="provider-path-list">
-                  {providerCatalog.map((provider) => {
-                    const recorded = machine.provider_paths[provider.provider] ?? "";
-                    const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
-                    const readiness =
-                      project.provider_readiness[machine.alias]?.[provider.provider];
-                    const state = providerPathPresentation(readiness, value, recorded);
-                    const resolveKey = `${machine.alias}:${provider.provider}`;
-                    return (
-                      <div className="provider-path-row" key={provider.provider}>
-                        <strong>{provider.label || provider.provider}</strong>
-                        <input
-                          type="text"
-                          aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
-                          value={value}
-                          disabled={writesDisabled}
-                          onChange={(event) => {
-                            const path = event.target.value;
-                            setProviderPaths((currentPaths) => ({
-                              ...currentPaths,
-                              [machine.alias]: {
-                                ...currentPaths[machine.alias],
-                                [provider.provider]: path,
-                              },
-                            }));
-                            setStatus(null);
-                          }}
-                        />
-                        <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
-                        <button
-                          className="button secondary compact"
-                          type="button"
-                          disabled={writesDisabled || Boolean(resolvingProvider)}
-                          onClick={() => void resolveProviderPath(machine.alias, provider.provider)}
-                        >
-                          {resolvingProvider === resolveKey ? (
-                            <LoaderCircle className="spin" size={13} />
-                          ) : (
-                            <ScanSearch size={13} />
-                          )}
-                          Resolve
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-                <fieldset className="machine-compute" disabled={computeDisabled}>
-                  <legend>Long-running jobs</legend>
-                  <div className="compute-connection-fields">
-                    <label>
-                      <span>Use Slurm</span>
-                      <input
-                        type="checkbox"
-                        checked={config.job_manager === "slurm"}
-                        onChange={(event) =>
-                          updateMachineCompute(machine.alias, {
-                            ...config,
-                            job_manager: event.target.checked ? "slurm" : null,
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>Jobs root</span>
-                      <input
-                        value={config.jobs_root}
-                        onChange={(event) =>
-                          updateMachineCompute(machine.alias, {
-                            ...config,
-                            jobs_root: event.target.value,
-                          })
-                        }
-                      />
-                    </label>
-                    <button
-                      className="button secondary compact"
-                      type="button"
-                      onClick={() => updateMachineCompute(machine.alias, null)}
-                    >
-                      Reset compute
-                    </button>
-                  </div>
-                  <div className={`compute-probe ${presentation.tone}`}>
-                    <span className="compute-probe-dot" aria-hidden="true" />
-                    <span>{presentation.label}</span>
-                    {probe?.backend_id && <span>{probe.backend_id}</span>}
-                    {probe?.diagnostic && <span>{probe.diagnostic}</span>}
-                    {probe?.required_action && <em>{probe.required_action}</em>}
-                    <button
-                      className="button secondary compact"
-                      type="button"
-                      disabled={needsSave}
-                      onClick={() => void probeMachine(machine.alias)}
-                    >
-                      {probingMachine === machine.alias
-                        ? "Probing…"
-                        : needsSave
-                          ? "Save before probing"
-                          : "Probe"}
-                    </button>
-                  </div>
-                </fieldset>
-              </article>
-            );
-          })}
+        <div className="machine-tiles" role="group" aria-label="Machines">
+          {project.machines.map((machine) => (
+            <MachineTile
+              key={machine.alias}
+              name={machine.alias}
+              hostLabel={machineHostLabel(machine.host, spaceKind)}
+              account={machine.os_account}
+              signals={machineSignals(machine)}
+              selected={openMachine === machine.alias}
+              onSelect={() => {
+                setAddingMachine(false);
+                setOpenMachine((current) => (current === machine.alias ? null : machine.alias));
+              }}
+            />
+          ))}
+          <AddMachineTile
+            label="Add machine"
+            selected={addingMachine}
+            disabled={writesDisabled}
+            onSelect={() => {
+              setOpenMachine(null);
+              setAddingMachine((current) => !current);
+            }}
+          />
         </div>
+        <div className="provider-machine-list">
+          {project.machines
+            .filter((machine) => machine.alias === openMachine)
+            .map((machine) => {
+              const config = machineCompute[machine.alias] ?? {
+                job_manager: null,
+                jobs_root: "",
+              };
+              const needsSave = Boolean(
+                machineComputeUpdates(
+                  { [machine.alias]: machine.compute ?? null },
+                  { [machine.alias]: machineCompute[machine.alias] ?? null },
+                ),
+              );
+              const computeDisabled = writesDisabled || saving;
+              return (
+                <MachineCard
+                  key={machine.alias}
+                  title={machine.alias}
+                  hostLabel={machineHostLabel(machine.host, spaceKind)}
+                  osAccount={machine.os_account}
+                  record={
+                    spaceMachines.machines
+                      ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
+                      : null
+                  }
+                  level="project"
+                  writesDisabled={writesDisabled}
+                  onRecordChange={spaceMachines.replace}
+                >
+                  <div className="provider-path-list">
+                    {providerCatalog.map((provider) => {
+                      const recorded = machine.provider_paths[provider.provider] ?? "";
+                      const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
+                      const readiness =
+                        project.provider_readiness[machine.alias]?.[provider.provider];
+                      const state = providerPathPresentation(readiness, value, recorded);
+                      const resolveKey = `${machine.alias}:${provider.provider}`;
+                      return (
+                        <div className="provider-path-row" key={provider.provider}>
+                          <strong>{provider.label || provider.provider}</strong>
+                          <input
+                            type="text"
+                            aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
+                            value={value}
+                            disabled={writesDisabled}
+                            onChange={(event) => {
+                              const path = event.target.value;
+                              setProviderPaths((currentPaths) => ({
+                                ...currentPaths,
+                                [machine.alias]: {
+                                  ...currentPaths[machine.alias],
+                                  [provider.provider]: path,
+                                },
+                              }));
+                              setStatus(null);
+                            }}
+                          />
+                          <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
+                          <button
+                            className="button secondary compact"
+                            type="button"
+                            disabled={writesDisabled || Boolean(resolvingProvider)}
+                            onClick={() =>
+                              void resolveProviderPath(machine.alias, provider.provider)
+                            }
+                          >
+                            {resolvingProvider === resolveKey ? (
+                              <LoaderCircle className="spin" size={13} />
+                            ) : (
+                              <ScanSearch size={13} />
+                            )}
+                            Resolve
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <fieldset className="machine-compute" disabled={computeDisabled}>
+                    <legend>Long-running jobs</legend>
+                    <div className="compute-connection-fields">
+                      <label>
+                        <span>Use Slurm</span>
+                        <input
+                          type="checkbox"
+                          checked={config.job_manager === "slurm"}
+                          onChange={(event) =>
+                            updateMachineCompute(machine.alias, {
+                              ...config,
+                              job_manager: event.target.checked ? "slurm" : null,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Jobs root</span>
+                        <input
+                          value={config.jobs_root}
+                          onChange={(event) =>
+                            updateMachineCompute(machine.alias, {
+                              ...config,
+                              jobs_root: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <button
+                        className="button secondary compact"
+                        type="button"
+                        onClick={() => updateMachineCompute(machine.alias, null)}
+                      >
+                        Reset compute
+                      </button>
+                    </div>
+                    {(machine.compute?.job_manager
+                      ? (["scheduler", "helper"] as const)
+                      : (["helper"] as const)
+                    ).map((route) => {
+                      // RCP checks each route at startup and after a compute save.
+                      const probe = needsSave ? null : (machine.compute_probes?.[route] ?? null);
+                      const presentation = probe
+                        ? computeProbePresentation(probe)
+                        : {
+                            label: needsSave ? "Checked after save" : "Not checked yet",
+                            tone: "pending" as const,
+                          };
+                      return (
+                        <div className={`compute-probe ${presentation.tone}`} key={route}>
+                          <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
+                          <span className="compute-probe-dot" aria-hidden="true" />
+                          <span>{presentation.label}</span>
+                          {probe?.backend_id && <span>{probe.backend_id}</span>}
+                          {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+                          {probe?.required_action && <em>{probe.required_action}</em>}
+                        </div>
+                      );
+                    })}
+                  </fieldset>
+                </MachineCard>
+              );
+            })}
+        </div>
+        {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
+        {addingMachine && (
+          <AddProjectMachine
+            projectId={project.id}
+            spaceKind={spaceKind}
+            takenAliases={project.machines.map((machine) => machine.alias)}
+            onClose={() => setAddingMachine(false)}
+            machines={spaceMachines.machines ?? []}
+            writesDisabled={writesDisabled}
+            onCreated={spaceMachines.replace}
+            onAdded={(saved, alias) => {
+              if (!requestIsCurrent()) return;
+              // Keep in-progress path edits; the new machine starts from its manifest values.
+              setProviderPaths((currentPaths) => ({
+                ...machineProviderPathsFrom(saved.machines),
+                ...currentPaths,
+              }));
+              onSaved(saved, { provider: false, compute: false });
+              void spaceMachines.reload();
+              void onRefreshReadiness().catch(() => {});
+              setAddingMachine(false);
+              setOpenMachine(alias);
+            }}
+          />
+        )}
       </section>
-
-      <ProviderLogins spaceKind={spaceKind} writesDisabled={writesDisabled} />
 
       <section className="settings-section compute-settings">
         <header>
@@ -1192,83 +1175,7 @@ export function ProjectSettings({
           <CacheMeter label="Remote sources" metric={cacheMetrics.remote_sources} />
           <CacheMeter label="Session slices" metric={cacheMetrics.session_slices} />
         </div>
-        {spaceKind === "personal" ? (
-          <div className="app-cache-danger-row">
-            <TriangleAlert size={16} aria-hidden="true" />
-            <strong>Every project</strong>
-            <button
-              className="button danger compact"
-              type="button"
-              disabled={clearingAllCaches}
-              onClick={() => {
-                showClearAllCachesWarning(
-                  () => setStatus(null),
-                  () => setClearAllCachesOpen(true),
-                );
-              }}
-            >
-              <Trash2 size={13} /> Clear all project caches
-            </button>
-          </div>
-        ) : null}
       </section>
-
-      {spaceKind === "personal" && clearAllCachesOpen && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !clearingAllCaches) {
-              setClearAllCachesOpen(false);
-            }
-          }}
-        >
-          <section
-            className="project-delete-dialog app-cache-clear-dialog"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="app-cache-clear-title"
-            aria-describedby="app-cache-clear-warning"
-          >
-            <header>
-              <TriangleAlert size={18} aria-hidden="true" />
-              <h2 id="app-cache-clear-title">Clear caches for every project?</h2>
-            </header>
-            <p id="app-cache-clear-warning">
-              Rebuildable remote-source copies and session slices for all projects will be removed.
-              Canonical research and original provider data are not affected.
-            </p>
-            {status?.kind === "error" && (
-              <div className="project-delete-error" role="alert">
-                {status.text}
-              </div>
-            )}
-            <footer>
-              <button
-                className="button secondary"
-                type="button"
-                autoFocus
-                disabled={clearingAllCaches}
-                onClick={() => setClearAllCachesOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="button danger"
-                type="button"
-                disabled={clearingAllCaches}
-                onClick={() => void clearEveryProjectCache()}
-              >
-                {clearingAllCaches ? (
-                  <LoaderCircle className="spin" size={13} />
-                ) : (
-                  <Trash2 size={13} />
-                )}
-                {clearingAllCaches ? "Clearing…" : "Clear all project caches"}
-              </button>
-            </footer>
-          </section>
-        </div>
-      )}
 
       {inspectedPackage && (
         <SkillPackageInspector entry={inspectedPackage} onClose={() => setInspectedPackage(null)} />
@@ -1283,11 +1190,7 @@ export function ProjectSettings({
               (dirty ? "Unsaved manifest changes" : "Manifest matches these defaults")}
           </span>
         </div>
-        <button
-          className="button secondary"
-          disabled={!dirty || saving || probingMachine !== null}
-          onClick={reset}
-        >
+        <button className="button secondary" disabled={!dirty || saving} onClick={reset}>
           <RotateCcw size={14} /> Reset
         </button>
         <button
@@ -1296,7 +1199,6 @@ export function ProjectSettings({
             writesDisabled ||
             !dirty ||
             saving ||
-            probingMachine !== null ||
             !autoResearchInvocationCeilingIsValid ||
             !computeConnectionsAreValid
           }

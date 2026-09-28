@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import (
     get_attachment_store,
     get_catalog,
     get_graph_service,
+    get_identity_access,
     get_store,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.identity import IdentityAccess
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload
 from rcp.conversation_worktrees import (
     ConversationWorktreeResponse,
@@ -20,7 +24,7 @@ from rcp.conversation_worktrees import (
     project_conversation_worktree,
     remove_conversation_worktree,
 )
-from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT
+from rcp.limits import CHAT_PAGE_DEFAULT_LIMIT, CHAT_PAGE_MAX_LIMIT, CHAT_TITLE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.chat_admission import require_chat_graph_target
 from rcp.service import ChatSummaryPage, ChatTranscript, RunRequest
@@ -30,6 +34,185 @@ router = APIRouter(dependencies=[Depends(require_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 AttachmentStoreDependency = Annotated[ChatAttachmentStore, Depends(get_attachment_store)]
+StoreDependency = Annotated[AppStore, Depends(get_store)]
+IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
+
+
+class ChatArchiveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    archived: bool
+
+
+class ChatPinBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pinned: bool
+
+
+class ChatTitleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # None or blank returns the conversation to its derived name.
+    title: str | None = Field(default=None, max_length=CHAT_TITLE_MAX_CHARS)
+
+
+class ChatDisplay(BaseModel):
+    archived: list[str]
+    titles: dict[str, str]
+    # The acting user's pins, newest first.
+    pinned: list[str]
+
+
+class ChatReadBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The finish time of the newest turn the reader saw, as the server reported it.
+    read_through: AwareDatetime
+
+
+class ChatReads(BaseModel):
+    """The acting user's read markers; a chat without one is read through `baseline`."""
+
+    baseline: str
+    reads: dict[str, str]
+    latest_finished: dict[str, str]
+    # Loaded turns of these chats never count as unread either.
+    archived: list[str]
+
+
+def _canonical_chat_id(chat_id: str) -> str:
+    try:
+        canonical = str(uuid.UUID(chat_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="chat_id must be a UUID") from exc
+    if canonical != chat_id:
+        raise HTTPException(status_code=422, detail="chat_id must be a canonical UUID")
+    return canonical
+
+
+@router.get("/api/projects/{project_id}/chat-display", response_model=ChatDisplay)
+def chat_display(
+    project_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    """Archive and names are the project's; pins are the acting user's."""
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/archive",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatDisplay,
+)
+def archive_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatArchiveBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    """Hide or restore one conversation in the agent list; nothing is deleted."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/pin",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatDisplay,
+)
+def pin_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatPinBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    """Keep one conversation at the top of the agent list, or let it go back."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    store.set_chat_pinned(project_id, chat_id, user.user_id, pinned=body.pinned)
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+
+
+@router.post(
+    "/api/projects/{project_id}/chats/{chat_id}/title",
+    dependencies=[Depends(require_project_write_admission)],
+    response_model=ChatDisplay,
+)
+def rename_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatTitleBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    """Name a conversation in the agent list; its transcript is unchanged."""
+    chat_id = _canonical_chat_id(chat_id)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    title = " ".join((body.title or "").split()) or None
+    store.set_chat_title(project_id, chat_id, user.user_id, title)
+    return ChatDisplay(**store.chat_display(project_id, user.user_id))
+
+
+@router.get("/api/projects/{project_id}/chat-reads", response_model=ChatReads)
+def chat_reads(
+    project_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    branch_id: str | None = None,
+) -> ChatReads:
+    """Latest finishes cover the same graph target as the chat list."""
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    return ChatReads(**store.chat_reads(project_id, user.user_id, service.history.graph_target))
+
+
+# A viewer's own marker, not project work, so it skips the write-admission fence.
+@router.post("/api/projects/{project_id}/chats/{chat_id}/read", response_model=ChatReads)
+def mark_chat_read(
+    project_id: str,
+    chat_id: str,
+    body: ChatReadBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    branch_id: str | None = None,
+) -> ChatReads:
+    """Record that the acting user has seen this conversation's turns up to a time."""
+    chat_id = _canonical_chat_id(chat_id)
+    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    project_id = catalog.resolve_project_id(project_id)
+    user = identity_access.acting_user(request)
+    store.mark_chat_read(project_id, chat_id, user.user_id, body.read_through)
+    return ChatReads(**store.chat_reads(project_id, user.user_id, service.history.graph_target))
 
 
 @router.post(
@@ -132,8 +315,14 @@ def chat(
 
 
 __all__ = [
+    "archive_chat",
     "chat",
+    "chat_display",
+    "chat_reads",
     "chats",
+    "mark_chat_read",
+    "pin_chat",
+    "rename_chat",
     "remove_chat_attachment",
     "router",
     "upload_chat_attachment",

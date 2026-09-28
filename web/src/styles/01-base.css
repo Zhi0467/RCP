@@ -1,0 +1,297 @@
+:root {
+  color-scheme: light;
+  --paper: #f7f0e3;
+  --paper-deep: #eee3d3;
+  --sheet: #fffdf7;
+  --walnut: #2b251f;
+  --ink-soft: #6b6258;
+  --oxblood: #873b30;
+  --oxblood-dark: #672a22;
+  --teal: #2f6f70;
+  --mustard: #d7ae48;
+  --coral: #bc5545;
+  --indigo: #3f4e79;
+  --plum: #7a4166;
+  --forest: #284b3a;
+  --forest-soft: color-mix(in srgb, var(--sheet) 88%, var(--forest));
+  --moss: #616b3d;
+  --slate: #54718c;
+  --rose-paper: #f5e5df;
+  --rule: #d8ccbb;
+  --shadow: 0 18px 52px rgba(65, 46, 29, 0.14);
+  --display: Charter, "Bitstream Charter", "Iowan Old Style", Palatino, Georgia, serif;
+  --ui: "Avenir Next", Avenir, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  /* Existing component names are aliases, not a second visual system. */
+  --ink: var(--walnut);
+  --muted: var(--ink-soft);
+  --faint: color-mix(in srgb, var(--ink-soft) 58%, var(--paper));
+  --surface: var(--sheet);
+  --surface-cool: var(--paper-deep);
+  --line: var(--rule);
+  --line-strong: color-mix(in srgb, var(--rule) 76%, var(--walnut));
+  --cobalt: var(--oxblood);
+  --cobalt-dark: var(--oxblood-dark);
+  --cobalt-soft: var(--rose-paper);
+  --amber: var(--mustard);
+  --amber-soft: color-mix(in srgb, var(--sheet) 72%, var(--mustard));
+  --red: var(--coral);
+  --red-soft: var(--rose-paper);
+  --green: var(--teal);
+  --green-soft: color-mix(in srgb, var(--sheet) 70%, var(--teal));
+  --body: var(--ui);
+  --editorial: var(--display);
+  --chat-user-message-preview-height: 12em;
+
+  /* Cast shadows and scrims from one warm dark, so dark mode can deepen them
+     in one place instead of in the fifty rules that draw them. */
+  --shadow-rgb: 58 39 25;
+  /* Text and glyphs printed on a solid accent fill. The accent brightens in
+     dark mode, so what reads on it inverts with the theme. */
+  --accent-ink: #fffaf0;
+  /* Type scale. Phone mode overrides these in one place. */
+  --type-4xs: 8px;
+  --type-3xs: 9px;
+  --type-2xs: 10px;
+  --type-xs: 11px;
+  --type-sm: 12px;
+  --type-md: 13px;
+  --type-base: 14px;
+  --type-lg: 16px;
+  --type-xl: 18px;
+  --type-2xl: 21px;
+  --type-3xl: 25px;
+  --type-4xl: 28px;
+  --type-5xl: 37px;
+}
+
+/* Dark mode.
+ *
+ * `data-color-mode` is stamped on the root before first paint and maintained by
+ * useTheme, so an explicit Light or Dark choice wins over the OS in both
+ * directions. Only the base palette is restated here: every alias and every
+ * `color-mix` above is late-bound and follows on its own. */
+:root[data-color-mode="dark"] {
+  color-scheme: dark;
+  --paper: #191512;
+  --paper-deep: #221d19;
+  --sheet: #24201b;
+  --walnut: #ece3d5;
+  --ink-soft: #a99e8e;
+  --oxblood: #d97b68;
+  /* Hover brightens on a dark ground rather than darkening, which also keeps
+     --accent-ink readable on the hover fill and --cobalt-dark on its soft tint. */
+  --oxblood-dark: #e89482;
+  --teal: #6fb3ad;
+  --mustard: #e0b95e;
+  --coral: #e08a76;
+  --indigo: #8b9bd4;
+  --plum: #c98bb4;
+  --forest: #7fb894;
+  --moss: #a8b571;
+  --slate: #8fabc4;
+  --rose-paper: #3a2723;
+  --rule: #3a332c;
+  --shadow: 0 18px 52px rgb(0 0 0 / 55%);
+  --shadow-rgb: 0 0 0;
+  --accent-ink: #191512;
+  /* The soft tints read as washes of the accent over paper, not over the
+     raised sheet, which would lift them off the surface they sit on. */
+  --faint: color-mix(in srgb, var(--ink-soft) 62%, var(--paper));
+  --line-strong: color-mix(in srgb, var(--rule) 62%, var(--walnut));
+  --forest-soft: color-mix(in srgb, var(--paper) 82%, var(--forest));
+  --amber-soft: color-mix(in srgb, var(--paper) 80%, var(--mustard));
+  --green-soft: color-mix(in srgb, var(--paper) 80%, var(--teal));
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+body {
+  background: var(--paper);
+  color: var(--walnut);
+  font-family: var(--ui);
+  font-size: var(--type-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button,
+input,
+select,
+textarea {
+  color: inherit;
+  font: inherit;
+}
+input,
+select,
+textarea {
+  background: var(--sheet);
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--teal) 45%, transparent);
+  outline-offset: 2px;
+}
+::selection {
+  background: color-mix(in srgb, var(--teal) 28%, var(--paper));
+  color: var(--walnut);
+}
+
+.app-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.acceptance-agent-indicator {
+  background: var(--walnut);
+  border: 1px solid color-mix(in srgb, var(--mustard) 72%, var(--walnut));
+  border-left: 5px solid var(--mustard);
+  border-radius: 2px 7px 7px 2px;
+  bottom: 12px;
+  box-shadow: 0 8px 24px rgb(var(--shadow-rgb) / 22%);
+  color: var(--paper);
+  display: grid;
+  gap: 1px;
+  left: 12px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 7px 11px 7px 10px;
+  pointer-events: none;
+  position: fixed;
+  z-index: 60;
+}
+.acceptance-agent-indicator strong {
+  color: #fff9ed;
+  font-size: var(--type-xs);
+  font-weight: 750;
+  letter-spacing: 0.015em;
+  line-height: 1.25;
+}
+.acceptance-agent-indicator span {
+  color: color-mix(in srgb, var(--paper) 72%, var(--mustard));
+  font: 650 var(--type-4xs)/1.35 var(--mono);
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+.brand-lockup {
+  align-items: center;
+  display: flex;
+  gap: 11px;
+}
+.brand-lockup > strong {
+  font-size: var(--type-base);
+  font-weight: 650;
+}
+.eyebrow {
+  color: var(--muted);
+  font-size: var(--type-3xs);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.mono {
+  font-family: var(--mono);
+  font-size: 0.82em;
+  font-variant-numeric: tabular-nums;
+}
+.muted {
+  color: var(--muted);
+}
+.tiny-tag,
+.status-pill,
+.sync-state,
+.standing {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: var(--type-2xs);
+  font-weight: 700;
+  gap: 5px;
+  letter-spacing: 0.045em;
+  line-height: 1;
+  padding: 5px 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.tiny-tag {
+  background: var(--cobalt-soft);
+  color: var(--cobalt-dark);
+  font-size: var(--type-4xs);
+  margin-left: auto;
+}
+.button,
+.icon-button {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  display: inline-flex;
+  font-weight: 650;
+  gap: 7px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    transform 0.15s ease;
+}
+.button:hover:not(:disabled),
+.icon-button:hover:not(:disabled) {
+  border-color: var(--oxblood);
+  background: var(--rose-paper);
+}
+.button:active:not(:disabled),
+.icon-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.button.primary,
+.icon-button.primary {
+  background: var(--oxblood);
+  border-color: var(--oxblood);
+  color: var(--accent-ink);
+}
+.button.primary:hover:not(:disabled),
+.icon-button.primary:hover:not(:disabled) {
+  background: var(--oxblood-dark);
+  border-color: var(--oxblood-dark);
+}
+.button.secondary {
+  background: var(--surface);
+}
+.button.tiny {
+  font-size: var(--type-3xs);
+  padding: 5px 9px;
+}
+.button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-soft);
+}
+.button.danger {
+  border-color: color-mix(in srgb, var(--coral) 58%, var(--rule));
+  color: var(--coral);
+}
+.button.compact {
+  font-size: var(--type-sm);
+  min-height: 28px;
+  padding: 0 7px;
+}
+.icon-button {
+  height: 34px;
+  padding: 0;
+  width: 34px;
+}

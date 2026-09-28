@@ -1,7 +1,7 @@
 """Fail the packaged backend early when required source data was omitted."""
 
 from rcp.agents.command_protocol import staged_command_broker_source, staged_command_client_source
-from rcp.artifacts import _selection_script, _viewer_script
+from rcp.artifact_comments import _comment_panel_script, _selection_script
 from rcp.skill_registry import official_registry
 from rcp.sources.indexer import _record_parsing_source
 from rcp.terminals.remote import terminal_source
@@ -11,7 +11,7 @@ from rcp.transport.state import _remote_script
 if "function installArtifactSelection" not in _selection_script():
     raise RuntimeError("The packaged artifact selection script is invalid.")
 
-if "function saveSelections" not in _viewer_script():
+if "function saveSelections" not in _comment_panel_script():
     raise RuntimeError("The packaged artifact viewer script is invalid.")
 
 if "def run_repository_transfer" not in _remote_source():

@@ -44,10 +44,10 @@ def _finished_task(
 ) -> AgentTaskRecord:
     now = store.now()
     operation_id = operation_id or str(uuid.uuid4())
-    kept = descriptor_for(operation_id, "kept.html", size_bytes=18).model_copy(
-        update={"kept_filename": "kept.html", "kept_at": now}
-    )
-    temporary = descriptor_for(operation_id, "temporary.html")
+    kept = descriptor_for(
+        operation_id, "kept.html", media_type="text/html", size_bytes=18
+    ).model_copy(update={"kept_filename": "kept.html", "kept_at": now})
+    temporary = descriptor_for(operation_id, "temporary.html", media_type="text/html")
     request = CoachRequest(
         message="Review the current introduction.",
         provider="codex",

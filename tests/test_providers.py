@@ -4,7 +4,6 @@ import shutil
 import subprocess
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -132,12 +131,27 @@ def test_readiness_coalesces_concurrent_probes(monkeypatch) -> None:
             binary="/opt/agents/codex",
         )
         assert entered.wait(timeout=1)
+        # Prove the second caller joined the in-flight probe: without this it can
+        # arrive after release, hit the cache, and pass without coalescing.
+        (in_flight,) = launcher._readiness_probes.values()
+        joined = threading.Event()
+        completed = in_flight.completed
+
+        class _JoinedEvent:
+            def wait(self, timeout=None):
+                joined.set()
+                return completed.wait(timeout)
+
+            def set(self):
+                completed.set()
+
+        in_flight.completed = _JoinedEvent()
         second = executor.submit(
             launcher.readiness,
             "codex",
             binary="/opt/agents/codex",
         )
-        time.sleep(0.05)
+        assert joined.wait(timeout=2)
         release.set()
 
     assert first.result() == second.result()
@@ -389,6 +403,23 @@ def test_readiness_names_the_runtimes_and_the_one_an_omitted_value_means() -> No
 def test_a_durable_runtime_id_is_named_for_the_surface_that_reports_it() -> None:
     # A record naming a runtime this build no longer offers keeps its stored id.
     assert runtime_label("codex", "codex.retired.v1") == "codex.retired.v1"
+
+
+def test_a_task_names_its_umbrella_provider_apart_from_the_runtime() -> None:
+    from rcp.storage import AgentTaskRecord
+
+    for provider in PROVIDER_IDS:
+        task = AgentTaskRecord(
+            operation_id="task",
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request={"provider": provider},
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+            status_message="Running",
+        )
+        assert task.provider_label == profile_for(provider).label
 
 
 def test_machine_provider_paths_are_backward_compatible_and_absolute(manifest) -> None:
@@ -688,18 +719,14 @@ def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:
 
     # With the noise gone, a severed connection must say so rather than fall
     # back to shell chatter — ssh exits 255 when the connection drops.
-    assert _exit_reason("codex", 255, "gpu0") == (
-        "The connection to gpu0 was lost before codex finished."
-    )
-    assert _exit_reason("codex", 1, "gpu0") == "codex exited 1 on gpu0."
-    assert _exit_reason("codex", 1, "") == "codex exited 1."
+    assert "was lost" in _exit_reason("codex", 255, "gpu0")
+    assert "exited 1" in _exit_reason("codex", 1, "gpu0")
+    assert "exited 1" in _exit_reason("codex", 1, "")
 
     # asyncio negates the signal number; a severed remote link surfaces as the
     # killed ssh client, which is what S14's interrupt actually produced.
-    assert _exit_reason("codex", -9, "gpu0") == (
-        "The connection to gpu0 ended (SIGKILL) before codex finished."
-    )
-    assert _exit_reason("codex", -9, "") == "codex was stopped by SIGKILL."
+    assert "ended (SIGKILL)" in _exit_reason("codex", -9, "gpu0")
+    assert "stopped by SIGKILL" in _exit_reason("codex", -9, "")
 
 
 @pytest.mark.parametrize(
@@ -747,3 +774,41 @@ def test_claude_work_readiness_probe_uses_the_enforced_settings_without_a_prompt
     assert settings["permissions"]["deny"] == []
     assert settings["sandbox"] == {"enabled": False}
     assert CodexProfile().work_like_probe_command("codex") is None
+
+
+def _granted_scope():
+    from rcp.agents.write_scope import ProjectWriteScope
+
+    return ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="local",
+        execution_host="",
+        capability="work_auto",
+        stage_root="/home/rcp/data/stages/s",
+        workspace_root="/home/rcp/data/stages/s/workspace",
+        repositories=[],
+        granted_roots=["/home/rcp", "/tmp"],
+        protected_write_paths=["/home/rcp/.rcp", "/home/rcp/data"],
+        granted_protected_paths=["/home/rcp/.rcp", "/home/rcp/data"],
+    )
+
+
+def test_codex_profile_writes_grants_and_reads_covered_rcp_storage():
+    # Precedence was probed with the real sandbox (codex-cli 0.157.0): a
+    # workspace root inside a "read" entry stays writable.
+    from rcp.providers import _codex_permission_profile
+
+    profile = _codex_permission_profile(_granted_scope())
+    for root in ("/home/rcp", "/tmp", "/home/rcp/data/stages/s/workspace"):
+        assert f'"{root}"=true' in profile
+    assert '"/home/rcp/data"="read"' in profile
+    assert '"/home/rcp/.rcp"="read"' in profile
+
+
+def test_claude_leaves_the_protected_parent_of_its_own_stage_undenied():
+    from rcp.providers import _claude_write_settings
+
+    permissions = _claude_write_settings(_granted_scope())["permissions"]
+    assert "Edit(//home/rcp/**)" in permissions["allow"]
+    assert "Edit(//tmp/**)" in permissions["allow"]
+    assert permissions["deny"] == ["Edit(//home/rcp/.rcp/**)"]

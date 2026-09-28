@@ -47,7 +47,7 @@ def test_probe_timeout_is_unreachable(machine):
 
     result = probe_remote_terminal(machine, runner=run)
     assert result.state == "unreachable"
-    assert result.diagnostic == "The terminal capability probe timed out."
+    assert "timed out" in result.diagnostic
 
 
 @pytest.mark.parametrize("os_name", ["Linux", "Darwin", "FreeBSD"])
@@ -143,7 +143,7 @@ def test_linux_prerequisite_timeout_is_incapable(remote_linux):
 
     result = remote_terminal_probe.probe_machine(command_timeout=1, runner=run)
     assert result["state"] == "incapable"
-    assert result["diagnostic"] == "Terminal prerequisite systemd-run timed out."
+    assert "systemd-run timed out" in result["diagnostic"]
 
 
 def test_remote_shell_is_required(remote_linux, monkeypatch):

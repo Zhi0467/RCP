@@ -55,3 +55,5 @@ repos:
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
+        # README recordings; the only binaries the repo carries on purpose.
+        exclude: ^docs/media/

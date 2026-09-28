@@ -42,7 +42,13 @@ function projectFor(id: string): ProjectSnapshot {
     default_auto_research_invocation_ceiling: 10,
     state_repository: "repo",
     machines: [
-      { alias: "local", host: null, provider_paths: { codex: `/${id}/codex` }, compute: null },
+      {
+        alias: "local",
+        host: null,
+        provider_paths: { codex: `/${id}/codex` },
+        compute: null,
+        compute_probes: { scheduler: null, helper: null },
+      },
     ],
     compute_connections: [
       { id: "local", name: `${id} compute`, kind: "local", ssh_target: "", access_hint: "" },
@@ -115,10 +121,7 @@ function Fixture() {
           }}
           onCacheMetricsChange={(metrics) => publications.push({ kind: "cache", metrics })}
           onRefreshReadiness={async () => undefined}
-          showTextScale={false}
           spaceKind={teamIdentity ? "team" : "personal"}
-          textScale={100}
-          onTextScaleChange={() => undefined}
         />
       )}
     </main>

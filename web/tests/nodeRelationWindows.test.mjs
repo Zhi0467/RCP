@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -48,14 +47,6 @@ test("related-node clicks target the other slot and focus an existing node", () 
     kind: "focus",
     slot: "original",
   });
-});
-
-test("App renders stable original and companion detail slots", async () => {
-  const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(source, /slot: "original" as const, selected: selectedNode/);
-  assert.match(source, /slot: "companion" as const, selected: companionNode/);
-  assert.match(source, /detailSlot=\{slot\}/);
-  assert.match(source, /focusRequestToken=\{detailFocusTokens\[slot\]\}/);
 });
 
 test("DetailDrawer renders the relation map with slot-unique dialog labels", () => {

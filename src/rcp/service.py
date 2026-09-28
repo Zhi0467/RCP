@@ -53,7 +53,7 @@ from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
 )
-from rcp.core.materialize import apply_valid_patch
+from rcp.core.materialize import MaterializationResult, apply_valid_patch
 from rcp.core.models import (
     ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
@@ -92,12 +92,14 @@ from rcp.core.validation.proposals import (
 from rcp.history import HistoryManager
 from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
+    ARTIFACT_CONTEXT_MAX_SELECTIONS,
     BACKUP_INVENTORY_MAX_ENTRIES,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
     CHAT_TITLE_MAX_CHARS,
     COMPUTE_CONNECTION_MAX_COUNT,
+    REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.paper import PaperService, PaperSnapshot
 from rcp.provider_skills import ProviderSkillInventoryManager
@@ -694,13 +696,6 @@ class ReviewRequest(BaseModel):
     standing: Literal["asserted", "accepted", "contested"]
 
 
-class NodeEditRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    base_updated_rev: int = Field(ge=0)
-    changes: dict[str, Any] = Field(min_length=1)
-
-
 class NodeEditConflict(ValueError):
     pass
 
@@ -835,12 +830,29 @@ class ArtifactTextSelection(BaseModel):
     comment: str = Field(default="", max_length=2048)
 
 
+class ArtifactBoxElement(BaseModel):
+    """One HTML element a box covers, named so the agent can find it in the source."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1, max_length=512)
+    label: str = Field(default="", max_length=256)
+    text: str = Field(default="", max_length=512)
+    # Where the box lies within this element, when the box sits inside it.
+    region: ArtifactSelectionRect | None = None
+
+
 class ArtifactBoxSelection(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["box"]
+    # A fraction of the image for an image artifact, of the visible frame for HTML.
     rect: ArtifactSelectionRect
     viewport: ArtifactViewport
+    # None marks a box from the viewer before elements were named. Its rect is a
+    # fraction of the viewer area, not of an image, so it is never cropped.
+    elements: list[ArtifactBoxElement] | None = Field(default=None, max_length=8)
+    # That older viewer's sampled nearby text, kept so its stored requests still render.
     labels: str = Field(default="", max_length=4096)
     comment: str = Field(default="", max_length=2048)
 
@@ -858,7 +870,9 @@ class ArtifactContextRequest(BaseModel):
     operation_id: str = Field(min_length=1)
     artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     episode_id: str | None = None
-    selections: list[ArtifactSelection] = Field(min_length=1, max_length=12)
+    selections: list[ArtifactSelection] = Field(
+        min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    )
 
     @model_validator(mode="after")
     def source_identity_is_coherent(self) -> ArtifactContextRequest:
@@ -1148,6 +1162,7 @@ class ProjectService:
         *,
         expected_episode_id: str | None = None,
         initialize: bool = True,
+        refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
     ) -> ProjectService:
         """Return a service whose graph reads and writes stay on one exact target."""
 
@@ -1161,6 +1176,7 @@ class ProjectService:
             expected_episode_id=expected_episode_id,
             expected_project_id=self._project_id,
             initialize=initialize,
+            refresh_max_age_seconds=refresh_max_age_seconds,
         )
         return ProjectService(
             history.manifest,
@@ -1475,15 +1491,25 @@ class ProjectService:
     def project_snapshot(
         self,
         *,
-        state: GraphState | None = None,
+        materialization: MaterializationResult | None = None,
         paper: PaperSnapshot | None = None,
         head: GraphHeadRef | None = None,
     ) -> _ProjectSnapshotDraft:
-        if state is None:
-            state = self.history.state()
+        if materialization is None:
+            materialization = self.history.current_materialization()
+        state = materialization.state
         if paper is None:
             paper = self.paper.snapshot()
-        head = head or GraphHeadRef(target=self.history.graph_target, revision=state.revision)
+        if head is None:
+            # Previews and Sync report the exact head, transition id included; a
+            # display head without it reads as a different head at the same
+            # revision and restarts the browser's staged preview on every poll.
+            # A halted replay has no transition chain to name.
+            head = (
+                self.history.head_ref(materialization)
+                if state.replay_status == "complete"
+                else GraphHeadRef(target=self.history.graph_target, revision=state.revision)
+            )
         if head.target != self.history.graph_target or head.revision != state.revision:
             raise ValueError(
                 "The graph snapshot and its head must describe the same target revision."
@@ -1789,6 +1815,18 @@ class ProjectService:
                     host=machine.host,
                     binary=current_path,
                 )
+        self.paper.manifest = self.manifest
+        self.invalidate_source_index()
+
+    def add_machine(self, alias: str, host: str, os_account: str) -> None:
+        """Append one execution machine, copied from a space machine card."""
+
+        if re.fullmatch(r"[a-z][a-z0-9-]{0,47}", alias) is None:
+            raise ValueError(
+                "machine names must start with a letter and use lowercase letters, "
+                "numbers, or hyphens"
+            )
+        self.history.add_machine(MachineConfig(alias=alias, host=host, os_account=os_account))
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
@@ -2408,64 +2446,6 @@ class ProjectService:
             ).model_dump(mode="json")
             for attempt in node.attempts
         ]
-
-    def edit_node(
-        self,
-        node_id: str,
-        request: NodeEditRequest,
-        *,
-        authorized_by: AuthorizedHuman | None = None,
-    ) -> GraphState:
-        state = self.history.state()
-        self.history.require_writable(state)
-        node = state.nodes.get(node_id)
-        if node is None:
-            raise KeyError(node_id)
-        if request.base_updated_rev != node.updated_rev:
-            raise NodeEditConflict(
-                f"{node_id} changed after this editor opened; reload it before saving."
-            )
-        disallowed = sorted(
-            set(request.changes)
-            - (
-                set(HUMAN_EDITABLE_NODE_FIELDS[node.type])
-                | ({"extension_fields"} if "extension_fields" in request.changes else set())
-            )
-        )
-        if "extension_fields" in request.changes:
-            self._validate_human_extension_fields(state, node, request.changes)
-        if disallowed:
-            raise ValueError(f"Direct edits to {node_id} cannot change: {', '.join(disallowed)}.")
-        current = node.model_dump(mode="python")
-        if all(current[field] == value for field, value in request.changes.items()):
-            raise ValueError("The submitted node wording is unchanged.")
-        candidate = {**current, **request.changes}
-        try:
-            type(node).model_validate(candidate)
-        except ValueError as exc:
-            raise ValueError(f"Invalid wording for {node_id}: {exc}") from exc
-        patch = Patch(
-            kind="approval",
-            author="human",
-            summary=f"Edited wording for “{request.changes.get('title', node.title)}”.",
-            ops=[
-                {
-                    "op": "update_nodes",
-                    "nodes": [
-                        {
-                            "id": node_id,
-                            "base_updated_rev": request.base_updated_rev,
-                            "changes": request.changes,
-                        }
-                    ],
-                }
-            ],
-            change_summary=[
-                f"Updated human-authored wording for “{request.changes.get('title', node.title)}”."
-            ],
-        )
-        _, result = self.history.append(patch, authorized_by=authorized_by)
-        return result.state
 
     @staticmethod
     def _validate_human_extension_fields(

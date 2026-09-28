@@ -25,6 +25,7 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import CommandResponse
+from rcp.agents.continuation_prompt import SECTIONS, MasterRef
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.launcher import AgentProcessControl
 from rcp.agents.prompts import PromptFactory
@@ -70,6 +71,18 @@ def _campaign_contract(
     return f"# RCP auto-research {role}{suffix}\n\nAcceptance fixture campaign turn.\n"
 
 
+def _inline_campaign_continuation(
+    role: Literal["orchestrator", "worker"],
+    *,
+    master: str,
+) -> str:
+    return (
+        _campaign_contract(role, continuation=True)
+        + "\n"
+        + SECTIONS["master_pointer"].format(path=master)
+    )
+
+
 def _result_view_contract(
     tmp_path: Path,
     *,
@@ -84,7 +97,11 @@ def _result_view_contract(
             if action == "create"
             else "Boxed selection in loss-curves-by-seed.html: late spike. Why?"
         ),
-        master_context_path=str(master_context_path) if master_context_path else None,
+        master=(
+            MasterRef(path=str(master_context_path), bootstrap=True)
+            if master_context_path
+            else None
+        ),
         result_view_action=action,
         result_view_path=str(path),
     )
@@ -223,13 +240,8 @@ def test_acceptance_campaign_actor_contracts_keep_one_session_and_report_usage(
     stage.mkdir()
     fresh_launcher = AcceptanceAgentLauncher()
 
-    fresh = asyncio.run(
-        _events(
-            fresh_launcher,
-            _prompt(stage, _campaign_contract(role)),
-            stage,
-        )
-    )
+    fresh_prompt = _prompt(stage, _campaign_contract(role))
+    fresh = asyncio.run(_events(fresh_launcher, fresh_prompt, stage))
     session_id = fresh[0].session_id
     assert session_id is not None
 
@@ -237,7 +249,7 @@ def test_acceptance_campaign_actor_contracts_keep_one_session_and_report_usage(
     continuation = asyncio.run(
         _events(
             continuation_launcher,
-            _prompt(stage, _campaign_contract(role, continuation=True)),
+            _inline_campaign_continuation(role, master=fresh_prompt.splitlines()[1]),
             stage,
             session_id=session_id,
         )
@@ -286,6 +298,41 @@ def test_acceptance_campaign_actor_contracts_keep_one_session_and_report_usage(
                 _prompt(stage, _campaign_contract(role, continuation=True)),
                 stage,
                 session_id="different-acceptance-session",
+            )
+        )
+
+
+def test_acceptance_campaign_continuation_never_takes_its_command_from_the_master(
+    tmp_path: Path,
+) -> None:
+    stage = tmp_path / "orchestrator"
+    stage.mkdir()
+    master = stage / "master.md"
+    master.write_text(
+        "# RCP auto-research orchestrator contract\n\n- Command prefix: `/expired/rcp-agent`\n",
+        encoding="utf-8",
+    )
+    (stage / ".rcp-acceptance-agent.json").write_text(
+        json.dumps(
+            {
+                "campaign_actor": {
+                    "cwd": str(stage.resolve()),
+                    "role": "orchestrator",
+                    "session_id": "acceptance-session",
+                },
+                "campaign_fixture": {"directive": "finish"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="no staged command prefix"):
+        asyncio.run(
+            _events(
+                AcceptanceAgentLauncher(),
+                _inline_campaign_continuation("orchestrator", master=str(master)),
+                stage,
+                session_id="acceptance-session",
             )
         )
 
@@ -360,7 +407,7 @@ def test_acceptance_campaign_fixture_invokes_real_staged_client_and_deduplicates
 
 - starting instruction: `{instruction}`
 - graph: `{graph}`
-- Command prefix for this turn: `{staged.client_command()}`
+- Command prefix: `{staged.client_command()}`
 """
             return await _events(
                 AcceptanceAgentLauncher(),
@@ -486,7 +533,7 @@ def test_acceptance_campaign_failure_is_an_internal_typed_exception_after_sessio
 
 - starting instruction: `{instruction}`
 - graph: `{graph}`
-- Command prefix for this turn: `{staged.client_command()}`
+- Command prefix: `{staged.client_command()}`
 """
             with pytest.raises(AutoResearchOrchestratorTerminalFailure):
                 async for event in AcceptanceAgentLauncher().stream(

@@ -1,6 +1,6 @@
 export const CHAT_LIST_DEFAULT_WIDTH = 260;
 export const CHAT_LIST_COLLAPSED_WIDTH = 0;
-export const CHAT_LIST_DIVIDER_WIDTH = 24;
+export const CHAT_LIST_DIVIDER_WIDTH = 1;
 export const CHAT_LIST_MIN_WIDTH = 190;
 export const CHAT_LIST_MIN_WIDTH_COMPACT = 110;
 export const CHAT_LIST_MAX_WIDTH = 420;

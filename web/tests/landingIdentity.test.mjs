@@ -250,16 +250,16 @@ test("the identity record names the team spaces already saved on this desktop", 
       onEdit() {},
       onAddTeamSpace() {},
       teamSpaces: [
-        { connection_id: "11111111-1111-4111-8111-111111111111", display_name: "WTH UCSD" },
+        { connection_id: "11111111-1111-4111-8111-111111111111", display_name: "Lab Alpha" },
         { connection_id: "22222222-2222-4222-8222-222222222222", display_name: "Causal Systems" },
       ],
     }),
   );
 
-  assert.match(html, /WTH UCSD/);
+  assert.match(html, /Lab Alpha/);
   assert.match(html, /Causal Systems/);
   // Entering a space stays the project index's job; the roster only names them.
-  assert.doesNotMatch(html, /<button[^>]*>[^<]*WTH UCSD/);
+  assert.doesNotMatch(html, /<button[^>]*>[^<]*Lab Alpha/);
 });
 
 test("a desktop with no saved team space still offers only the Add action", () => {

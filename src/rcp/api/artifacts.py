@@ -16,7 +16,8 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.episodes import episode_on_branch
-from rcp.artifacts import AgentArtifactDescriptor
+from rcp.api.tasks import _agent_artifact_response
+from rcp.artifacts import AgentArtifactDescriptor, ArtifactView
 from rcp.projects import ProjectCatalog
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeMode
 from rcp.transport import StateUnavailable
@@ -36,8 +37,12 @@ class SavedArtifactResponse(BaseModel):
     episode_id: str | None = None
     episode_mode: EpisodeMode | None = None
     source_chat_href: str | None = None
-    viewer_url: str
-    can_open: bool = True
+    viewer_url: str | None
+    view: ArtifactView
+    available: bool
+    can_download: bool
+    download_url: str | None
+    can_open: bool
     unavailable_reason: str | None = None
 
 
@@ -175,6 +180,10 @@ def saved_artifacts(
                 continue
             if artifact.kept_filename is None:
                 continue
+            projected = _agent_artifact_response(store, task, artifact)
+            artifact_url = (
+                f"{base}/tasks/{quote(task.operation_id, safe='')}/artifacts/{artifact.artifact_id}"
+            )
             entries.append(
                 SavedArtifactResponse(
                     id=f"artifact:{task.operation_id}:{artifact.artifact_id}",
@@ -186,10 +195,12 @@ def saved_artifacts(
                     artifact_id=artifact.artifact_id,
                     episode_mode=episode_mode,
                     source_chat_href=chat_origins.get(task.operation_id),
-                    viewer_url=(
-                        f"{base}/tasks/{quote(task.operation_id, safe='')}/artifacts/"
-                        f"{artifact.artifact_id}/viewer"
-                    ),
+                    viewer_url=f"{artifact_url}/viewer" if projected.can_open else None,
+                    view=projected.view,
+                    available=projected.available,
+                    can_open=projected.can_open,
+                    can_download=projected.can_download,
+                    download_url=f"{artifact_url}/download" if projected.can_download else None,
                 )
             )
     # _validate_new_wrapup requires a concluding operation; finish_episode_report_ready
@@ -202,6 +213,11 @@ def saved_artifacts(
                 id=f"report:{report.report_id}",
                 name=report.display_title or "Report",
                 kind="report",
+                view="html",
+                available=True,
+                can_open=True,
+                can_download=False,
+                download_url=None,
                 created_at=report.created_at,
                 episode_id=report.episode_id,
                 episode_mode=report.mode,

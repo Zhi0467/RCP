@@ -22,6 +22,7 @@ from rcp.paper.service import (
     canonical_introduction_backup_source,
     validate_canonical_introduction_backup,
 )
+from rcp.rcp_home import rcp_temp_dir
 from rcp.service import (
     ProjectService,
     canonical_chat_backup_sources,
@@ -235,7 +236,9 @@ def capture_project_transfer_files(
     try:
         operation_id_map = {task.operation_id: task.operation_id for task in records.tasks}
         workspace = service.history.workspace
-        with tempfile.TemporaryDirectory(prefix="rcp-transfer-research-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="rcp-transfer-research-", dir=rcp_temp_dir()
+        ) as temporary:
             export_root = Path(temporary)
             export_root.chmod(0o700)
             source_root = workspace.backup_source_root(export_root)

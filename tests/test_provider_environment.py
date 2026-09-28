@@ -102,6 +102,7 @@ def test_local_environment_carries_the_token_and_drops_conflicting_variables(
     environment = AgentLauncher(credentials=credentials).process_environment("claude", "")
     assert environment.local_env is not None
     assert environment.local_env[CLAUDE_TOKEN_VARIABLE] == TOKEN
+    assert environment.local_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
     assert not set(CLAUDE_CONFLICTING_VARIABLES) & set(environment.local_env)
     assert environment.remote_prefix is None
     # Codex has no RCP-managed credential; it inherits the service environment.
@@ -120,13 +121,15 @@ def test_remote_prefix_reads_the_account_file_and_never_carries_the_token(
     host = "gpu.example"
     assert (
         AgentLauncher(credentials=credentials).process_environment("claude", host).remote_prefix
-        is None
+        == "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
     )
     credentials.store_token("claude", host, TOKEN, member_id="member", now="now")
     prefix = (
         AgentLauncher(credentials=credentials).process_environment("claude", host).remote_prefix
     )
-    assert prefix == remote_claude_token_prefix()
+    assert (
+        prefix == remote_claude_token_prefix() + "; export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
+    )
     assert TOKEN not in prefix
     assert "unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN" in prefix
     assert (
@@ -365,3 +368,15 @@ def test_member_git_default_reaches_launch_and_repository_config_wins(
 
     with pytest.raises(ValueError, match="newlines"):
         write_git_identity(tmp_path / "data", GitIdentity("member", "bad\nname"))
+
+
+def test_claude_without_managed_credentials_still_runs_foreground() -> None:
+    launcher = AgentLauncher()
+    assert (
+        launcher.process_environment("claude", "").local_env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"]
+        == "1"
+    )
+    assert (
+        launcher.process_environment("claude", "remote").remote_prefix
+        == "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1"
+    )

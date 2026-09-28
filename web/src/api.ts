@@ -1,7 +1,10 @@
 import type {
-  ComputeBackendProbe,
+  UpdateNotice,
+  Machine,
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
+  ChatDisplay,
+  ChatReads,
   ChatMessage,
   SteerRequest,
   ArtifactRevisionCandidate,
@@ -12,6 +15,8 @@ import type {
   EpisodeMode,
   ExperimentLoopIndexEntry,
   IdentityResponse,
+  MachineDirectoryListing,
+  MachineDirectoryRequest,
   ProjectCacheMetrics,
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
@@ -21,6 +26,9 @@ import type {
   ProviderSignInStatus,
   ProviderResumeSummary,
   ServerStatus,
+  SpaceMachine,
+  SpaceMachineCreateRequest,
+  SpaceMachineUpdateRequest,
   SpaceRunIndexEntry,
   SpaceUserSummary,
   StartEpisodeRequest,
@@ -223,6 +231,10 @@ export function createTeamProjectProvisioning(
   });
 }
 
+export function loadUpdateNotice(): Promise<UpdateNotice> {
+  return api<UpdateNotice>("/api/update-notice");
+}
+
 export function loadServerStatus(): Promise<ServerStatus> {
   return api<ServerStatus>("/api/server-status");
 }
@@ -301,6 +313,56 @@ export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics
 export function clearAllProjectCaches(projectId: string): Promise<ProjectCacheMetrics> {
   return api<ProjectCacheMetrics>(`/api/projects/${encodeURIComponent(projectId)}/caches/all`, {
     method: "DELETE",
+  });
+}
+
+export async function loadSpaceMachines(): Promise<SpaceMachine[]> {
+  return (await api<{ machines: SpaceMachine[] }>("/api/space/machines")).machines;
+}
+
+export function createSpaceMachine(request: SpaceMachineCreateRequest): Promise<SpaceMachine> {
+  return api<SpaceMachine>("/api/space/machines", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export function updateSpaceMachine(
+  machineId: string,
+  request: SpaceMachineUpdateRequest,
+): Promise<SpaceMachine> {
+  return api<SpaceMachine>(`/api/space/machines/${encodeURIComponent(machineId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
+}
+
+export function deleteSpaceMachine(machineId: string): Promise<unknown> {
+  return api<unknown>(`/api/space/machines/${encodeURIComponent(machineId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function listMachineDirectory(
+  machineId: string,
+  request: MachineDirectoryRequest,
+  signal?: AbortSignal,
+): Promise<MachineDirectoryListing> {
+  return api<MachineDirectoryListing>(
+    `/api/space/machines/${encodeURIComponent(machineId)}/directories`,
+    { method: "POST", body: JSON.stringify(request), signal },
+  );
+}
+
+/** Appends a space machine to a project's manifest under a project alias. */
+export function addProjectMachine(
+  projectId: string,
+  machineId: string,
+  alias: string,
+): Promise<ProjectSnapshot> {
+  return api<ProjectSnapshot>(`/api/projects/${encodeURIComponent(projectId)}/machines`, {
+    method: "POST",
+    body: JSON.stringify({ machine_id: machineId, alias }),
   });
 }
 
@@ -477,8 +539,57 @@ export function steerChatTurn(
   );
 }
 
-export function probeMachineCompute(apiBase: string, alias: string): Promise<ComputeBackendProbe> {
-  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/probe`, { method: "POST" });
+export function checkMachineCompute(
+  apiBase: string,
+  alias: string,
+): Promise<Machine["compute_probes"]> {
+  return api(`${apiBase}/machines/${encodeURIComponent(alias)}/compute/check`, {
+    method: "POST",
+  });
+}
+
+export function loadChatDisplay(apiBase: string): Promise<ChatDisplay> {
+  return api(`${apiBase}/chat-display`);
+}
+
+export function setChatArchived(
+  apiBase: string,
+  chatId: string,
+  archived: boolean,
+): Promise<ChatDisplay> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ archived }),
+  });
+}
+
+/** `path` already names the graph target, as the chat list's does. */
+export function loadChatReads(path: string): Promise<ChatReads> {
+  return api(path);
+}
+
+/** `readThrough` is a turn's server-reported finish time; the marker never moves back. */
+export function markChatRead(path: string, readThrough: string): Promise<ChatReads> {
+  return api(path, { method: "POST", body: JSON.stringify({ read_through: readThrough }) });
+}
+
+export function setChatPinned(
+  apiBase: string,
+  chatId: string,
+  pinned: boolean,
+): Promise<ChatDisplay> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/pin`, {
+    method: "POST",
+    body: JSON.stringify({ pinned }),
+  });
+}
+
+/** A blank title returns the chat to its derived name. */
+export function setChatTitle(apiBase: string, chatId: string, title: string): Promise<ChatDisplay> {
+  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/title`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
 }
 
 export function cancelWatcher(apiBase: string, watcherId: string): Promise<ExternalWatcherRecord> {

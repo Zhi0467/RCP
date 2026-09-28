@@ -7,6 +7,12 @@ EPISODE_TIMELINE_HEADLINE_MAX_LENGTH = 240
 EPISODE_TIMELINE_ERROR_MAX_LENGTH = 500
 AGENT_TASK_LIST_DEFAULT_LIMIT = 20
 AGENT_TASK_LIST_MAX_LIMIT = 100
+# Chats whose latest turn is still moving or waiting on a person, listed beyond
+# the recency limit so the Chats panel never loses one.
+AGENT_TASK_LIST_OPEN_CHAT_LIMIT = 50
+# How long such a chat's turn stays listed after it finishes, so an open client
+# sees the terminal record and marks the result unread.
+AGENT_TASK_LIST_FINISHED_CHAT_SECONDS = 600
 AGENT_TASK_EVENT_LIST_DEFAULT_LIMIT = 200
 AGENT_TASK_EVENT_LIST_MAX_LIMIT = 500
 AGENT_TASK_EVENT_RETENTION_COUNT = 200
@@ -100,9 +106,17 @@ AUTO_RESEARCH_APPLY_MAX_PER_TURN = 32
 GRAPH_UPDATE_HISTORY_MAX_COUNT = AUTO_RESEARCH_APPLY_MAX_PER_TURN + 1
 
 # Temporary agent-created preview artifacts.
+ARTIFACT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024
+ARTIFACT_PREVIEW_MAX_LINES = 10_000
 CHAT_ARTIFACT_MAX_COUNT = 8
 ARTIFACT_CHAT_OPEN_TIMEOUT_MS = 5000
 ARTIFACT_DISPLAY_TITLE_MAX_CHARS = 240
+# Selections one chat turn may carry from an artifact viewer; the web mirrors it.
+ARTIFACT_CONTEXT_MAX_SELECTIONS = 50
+# A boxed region of an image artifact is cropped for the agent, scaled to fit this side.
+ARTIFACT_CROP_MAX_SIDE = 1200
+# A larger image is not decoded to crop; its boxes travel as positions only.
+ARTIFACT_CROP_MAX_PIXELS = 25_000_000
 CHAT_ARTIFACT_MAX_FILE_BYTES = 16 * 1024 * 1024
 CHAT_ARTIFACT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
 # One paid Auto-research mail wake carries only this bounded prefix. The byte limit
@@ -137,6 +151,10 @@ COMPUTE_JOB_STATUS_TIMEOUT_SECONDS = 10
 COMPUTE_PROBE_TIMEOUT_SECONDS = 15
 COMPUTE_PROBE_JOB_SECONDS = 0.5
 COMPUTE_JOB_LOG_TAIL_MAX_BYTES = 64 * 1024
+# A helper launch re-checks its job once after this delay so startup failures
+# (port in use, bad path) reach the agent in the launch response.
+COMPUTE_JOB_STARTUP_CHECK_SECONDS = 2.0
+COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES = 2048
 COMPUTE_JOB_LABEL_MAX_CHARS = 80
 COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT = 100
 COMPUTE_JOB_DIAGNOSTIC_MAX_CHARS = 600
@@ -159,9 +177,14 @@ COMPUTE_COMMAND_TIMEOUT_SECONDS = (
     + 2 * _COMPUTE_PROBE_RESPONSE_TIMEOUT_SECONDS
     + 10 * COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
     + COMPUTE_JOB_LAUNCH_TIMEOUT_SECONDS
+    # The startup check: its delay, then one refresh (alive + three reads) and a log read.
+    + COMPUTE_JOB_STARTUP_CHECK_SECONDS
+    + 5 * COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
     + COMMAND_BROKER_RESPONSE_GRACE_SECONDS
 )
-SSH_REPOSITORY_BROWSER_MAX_ENTRIES = 200
+# One page of the machine folder picker and setup's repository browser. Names
+# are filtered before paging, so every directory is reachable.
+MACHINE_DIRECTORY_PAGE_SIZE = 200
 SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS = 20
 
 # Live patch self-validation through the run-stage file mailbox.
@@ -204,6 +227,8 @@ PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024
 REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS = 3.0
 REMOTE_STATE_HEAD_PROBE_TIMEOUT_SECONDS = 5.0
 REMOTE_STATE_RECONCILE_WINDOW_SECONDS = 2.0
+# Display-only routes may read a remote-state mirror this old; gating reads keep the window above.
+REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS = 10.0
 REMOTE_SOURCE_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
 REMOTE_SOURCE_CACHE_MAX_COUNT = 256
 REMOTE_SOURCE_CACHE_MAX_BYTES = 1024 * 1024 * 1024
@@ -387,3 +412,10 @@ TERMINAL_OUTPUT_BUFFER_BYTES = 256 * 1024
 TERMINAL_SUBSCRIBER_QUEUE_SIZE = 64
 TERMINAL_IO_CHUNK_BYTES = 16 * 1024
 TERMINAL_MAX_DIMENSION = 1000
+
+# Public release metadata polling, shared by the app and the explicit doctor lookup.
+RELEASE_CHECK_START_DELAY_SECONDS = 5.0
+RELEASE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
+RELEASE_CHECK_DEADLINE_SECONDS = 10.0
+RELEASE_CHECK_MAX_BYTES = 256 * 1024
+RELEASE_CHECK_MAX_REDIRECTS = 3

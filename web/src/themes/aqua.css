@@ -152,8 +152,7 @@
     .node-window-dock,
     .detail-drawer > header,
     .chat-dock > header,
-    .paper-toolbar,
-    .conversation-list > header
+    .paper-toolbar
   ) {
   background: var(--aqua-toolbar);
   box-shadow:
@@ -167,7 +166,7 @@
   padding-bottom: 6px;
 }
 
-:root[data-theme="aqua"] .project-tabs > button:not(.project-tabs-toggle) {
+:root[data-theme="aqua"] .project-tabs > button:not(.project-tabs-toggle, .project-tabs-back) {
   background: var(--aqua-surface);
   border: 1px solid var(--rule);
   border-radius: 8px;

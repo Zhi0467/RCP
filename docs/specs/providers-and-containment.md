@@ -110,12 +110,14 @@ shutdown skips the round trip and leaves the same unfinished record rather than
 waiting on the network.
 
 The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
-with `ProtectHome=tmpfs`, `BindPaths` for the selected repository, and
-`BindReadOnlyPaths` plus `ReadOnlyPaths` for existing Git configuration and
-credentials. `ProtectSystem=strict` and a private temporary directory provide
-accident resistance to writes in the wrong place, not isolation from the
-service account. Before the interactive shell starts, the same launched profile
-checks that the checkout is writable and that every protected path exists,
+with `ProtectHome=tmpfs`, `BindPaths` for the selected repository and for the
+machine's writable paths (below), and `BindReadOnlyPaths` plus `ReadOnlyPaths`
+for existing Git configuration and credentials not covered by a writable path.
+`ProtectSystem=strict` provides accident resistance to writes in the wrong
+place, not isolation from the service account. The shell shares the real
+`/tmp` with agents on that machine. Before the interactive shell starts, the
+same launched profile checks that the checkout and every writable path are
+writable and that every protected path exists,
 rejects writes, and reports a read-only effective mount through `findmnt`.
 The PTY owner requires this check's readiness marker; an active unit alone does
 not admit a session. Unsupported mount properties or failed verification refuse
@@ -193,6 +195,22 @@ parent's provider-enforced permissions. Child notifications cannot supply the
 parent's answer or end its turn. Codex usage totals cover the parent agent only;
 neither runtime's parent summary includes descendant usage. RCP does not crawl
 Codex's private transcript/database formats to reconstruct that missing total.
+
+Every provider contract carries one shared fact: provider-native subagents must
+finish inside the turn. Wait for their results before replying. Only helper and
+scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle.
+RCP does not track descendants or hold a completed turn for them.
+
+Every local and remote Claude launch sets
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`. Claude subagents run in the foreground.
+Parallel Agent calls still work.
+
+Codex exec `error` events are retry traces. `turn.failed` or a non-zero exit
+ends a failed turn. Without `turn.failed`, the last retry error supplies the
+failure text on non-zero exit. The live decoder, host fence, and recorded replay
+treat retry notices as traces. Recovery still fails a journal with no terminal
+event without finalizing it, because the host snapshots deliverables only at a
+terminal event; the stage keeps its patch text.
 
 The preferred runtime is chosen anew from the current project profile for every
 RCP task invocation, including a continuation of an existing native session. A
@@ -279,9 +297,43 @@ canonicalized on the execution machine.
 
 The scope rejects another project's repository, a parent containing several
 projects, the application data directory, SQLite, canonical `.research`, the
-execution account's home directory, and broad temporary directories. Provider
-authentication/session/cache storage may use the provider's own runtime
-exceptions; those exceptions are not general project roots.
+execution account's home directory, and broad temporary directories as
+*repository* roots. Provider authentication/session/cache storage may use the
+provider's own runtime exceptions; those exceptions are not general project
+roots.
+
+### Machine writable paths
+
+A scope that writes repositories also receives `granted_roots`: the space
+machine card's writable paths for its execution host and account, plus `/tmp`
+and the local temporary directory. Launches without repository roots (branch
+merge, episode reports, Discuss, ingestion, paper coach) receive none. Humans
+choose the paths in Settings; code fixes which launches receive them
+([decision](../decisions/2026-09-27-machine-writable-paths-protect-only-rcp-storage.md)).
+
+The only constraint is RCP's own storage, computed at every launch by
+`rcp_owned_paths` and the scope builder: the data directory, the installed
+server's release, source, credentials, update-checkpoint, and restore folders,
+`/etc/rcp` and `/run/rcp`, `~/.rcp` on every machine, `~/.local/share/rcp` on
+remote machines, every registered repository's `.research`, this launch's
+`inputs`, and legacy `/tmp/rcp-run.*` stages. A grant equal to or inside any of
+them is refused, both when a card is saved and in the folder picker, which locks
+it; one of them inside a grant stays read-only there (`granted_protected_paths`). The launch's own workspace and job folder stay
+writable. Paths are compared by filesystem identity on the execution machine.
+Grants and the protections they add are machine settings, so they stay out of
+the scope fingerprint: changing a machine's writable paths leaves open chats
+resumable, and their next turn uses the new grants.
+
+systemd jobs render grants as `ReadWritePaths` and covered storage as
+`ReadOnlyPaths`, where the deeper writable workspace wins. Codex renders a
+deeper `write` entry inside a `read` parent, which wins (probed with codex-cli
+0.157.0). Claude's deny rules beat its allows, so a protected folder holding
+the launch's own stage is left undenied for Claude; its shell was already
+unbounded. RCP keeps its own files under `~/.rcp`: remote stages, command and
+SSH control sockets, and temporary files. Two exceptions sit in `/tmp`, and both
+are protected: when a home is too deep for a socket path, sockets use a private
+`/tmp/rcp-<id>` folder named from the home, and a saved legacy `/tmp/rcp-run.*`
+stage still resumes until a later release removes it.
 
 ## Provider enforcement
 
@@ -383,15 +435,65 @@ resumes the same native session id.
 
 Recovery retains the original assignment and completed native-session progress.
 The attempt's graph inputs, output schema and locations, validator, and command
-metadata apply to this attempt. Graph rules are repeated, not replaced: they
-replace earlier text only when their version digest differs from the one the
-session already holds (see
-[graph rules in task contracts](#graph-rules-in-task-contracts)). This refresh
-does not widen the captured task authority or authorize repeating completed
-external effects; historical diagnostics remain failure reports, not policy.
+metadata apply to this attempt and travel inline (see
+[continuation prompts](#continuation-prompts)). This refresh does not widen the
+captured task authority or authorize repeating completed external effects;
+historical diagnostics remain failure reports, not policy.
 After a completed Work-like Patch correction, RCP revalidates the retained candidate
 against current state even if its bytes did not change. A stale rejection does not
 require cosmetic edits; current schema and authority validation still govern Apply.
+
+## Continuation prompts
+
+The session id a launch hands the provider decides its prompt. A launch with no
+session id is a session start. It sends the owner's full contract, records its
+exact bytes as the session master, and tells the agent to open and retain it.
+Handoff, a provider switch, a clean Retry, a progress handoff, and a fresh
+watcher notification are all session starts.
+
+A launch with a session id is a continuation: a human turn, a wake, a recovery
+(Resume, same-session Retry, graph repair), or a correction. It sends, inline:
+why it launched; what is new for its node (the human text and invoked skills,
+the trigger and accepted handoff, the diagnostics, or the correction's exact
+restriction); and one line for each value that differs from the master. The
+master records the stable values it was rendered with (paths, the command
+client, write roots, repositories, skill pointers, execution facts), so a new
+mailbox or a changed root appears and an unchanged one does not. Static
+explanations, such as validator exit codes, the launch helper, and the write
+boundary, live only in the master. A turn lists its attachments as plain lines
+with no rules beside them: what they may do is enforced, not explained. Current values take precedence over the
+master. Every master says so: a listed value replaces its own for that launch,
+and an unlisted one is its own. A chat's graph revision is the one value
+compared with the chat's last committed turn instead, so its own Apply is not
+announced back. An Experiment watcher-maintenance correction restates the rules
+for its one resource, because that resource can be newer than the master. It ends with one pointer to the master. The pointer says this is the contract given at
+the session's start, and to read it only after a compaction or a lost grip on
+the graph rules or authority. A continuation never resends the master and never
+forces a read.
+
+RCP restores the master file from its durable record into the launch's stage
+before every pointer. The native session id alone selects the record, so an
+owner that gives each turn a fresh stage, such as the paper coach, finds it too.
+Only a master recorded by a succeeded operation counts;
+otherwise, or when the session has no record, the continuation bootstraps: it
+renders the current master, records it, and tells the agent to open it. The
+master key joins a shared master version, the graph rules version, the owner's
+policy version, and whether the project has ontology extensions. A key change bootstraps a replacement and says it
+replaces the earlier master. A branch-merge continuation re-sends the graph
+rules inline once main's ontology extensions differ from its master's.
+
+The episode report is its own node type, `report`. It reuses the operational
+session but gets no master pointer, and says the operational instructions no
+longer apply; `compose` adds both, and refuses a report with a master or any
+other continuation without one. The next operational continuation on that
+session then reopens the master, and keeps doing so until an operational attempt
+on the session succeeds.
+
+Every owner builds its own parts and calls `compose` in
+`src/rcp/agents/continuation_prompt.py`; the master record lives in
+`src/rcp/runs/session_master.py`. The
+[decision](../decisions/2026-09-27-continuations-point-to-their-master.md)
+explains the tradeoffs.
 
 ## Graph rules in task contracts
 
@@ -411,12 +513,12 @@ block beside it: the ordinary agent contract, the orchestrator profile, or the
 Experiment-loop allowlist. A skill may teach method but does not restate the
 block's definitions.
 
-The block carries a version digest over its rendered text. Continuations,
-wakes, corrections, and added turns repeat the block, so a long session keeps
-it, and state that it replaces earlier graph rules only if the digest differs.
-A chat's master-context key includes the digest, so changed rules reach an
-existing chat on its next turn. A human-started graph repair renders the current
-contract rather than relying on the one its session began with.
+The block carries a version digest over its rendered text. It lives in the
+session master, so continuations, wakes, corrections, and added turns do not
+repeat it. Every master key includes the rules version, so changed rules reach
+an existing session as a replacement master on its next continuation. A
+human-started graph repair renders the current contract rather than relying on
+the one its session began with.
 
 ## One graph output channel
 
@@ -572,7 +674,10 @@ accepted follow-up remains, RCP yields that result's answer and usage and lets
 the same process run the next turn. Otherwise it completes and stops the
 process, refusing any unacknowledged follow-ups. A result without usable command
 UUIDs fails closed to the same stop behavior. `queued_turn_count` is not used.
-Without a follow-up, the first result still ends the invocation.
+Without a follow-up, the first result still ends the invocation, with one
+exception: a successful result with `origin.kind` equal to `task-notification`
+and no message id sent by RCP stays a trace. It does not end the turn. Both the
+local decoder and the host fence apply this notice rule.
 
 The provider turns share one native session, capability, write scope, and task
 stage. Their answers are joined with a blank line into one assistant chat

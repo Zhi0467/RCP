@@ -39,6 +39,28 @@ class ProviderProcessEnvironment:
     local_env: dict[str, str] | None = None
     remote_prefix: str | None = None
 
+    def with_claude_foreground_tasks(self, *, remote: bool) -> ProviderProcessEnvironment:
+        """Keep delegated Claude work inside the invocation that owns it."""
+        if remote:
+            return ProviderProcessEnvironment(
+                local_env=self.local_env,
+                remote_prefix="; ".join(
+                    part
+                    for part in (
+                        self.remote_prefix,
+                        "export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1",
+                    )
+                    if part
+                ),
+            )
+        return ProviderProcessEnvironment(
+            local_env={
+                **(os.environ if self.local_env is None else self.local_env),
+                "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+            },
+            remote_prefix=self.remote_prefix,
+        )
+
     def with_git_identity(
         self, identity: GitIdentity, *, data_dir: Path, remote: bool = False
     ) -> ProviderProcessEnvironment:

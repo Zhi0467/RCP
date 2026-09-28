@@ -1718,6 +1718,7 @@ export interface GraphRevisionSnapshot {
   revision: number;
   snapshot_freshness?: ProjectSnapshot["snapshot_freshness"];
   last_remote_sync_at?: ProjectSnapshot["last_remote_sync_at"];
+  compute_probes_probed_at?: ProjectSnapshot["compute_probes_probed_at"];
   graph_mutation?: GraphMutationAvailability;
 }
 
@@ -1771,8 +1772,11 @@ export interface Machine {
   os_account: string;
   provider_paths: Record<ProviderId, string>;
   compute: MachineComputeConfig | null;
-  compute_probe: ComputeBackendProbe | null;
+  // Absent from a project cached by a version before split readiness.
+  compute_probes?: Record<ComputeRoute, ComputeBackendProbe | null>;
 }
+
+export type ComputeRoute = "scheduler" | "helper";
 
 export type ComputeContainment = "mirrored" | "cooperative";
 
@@ -2071,18 +2075,42 @@ export interface HistoryEpisodeDecoration {
 export interface AgentTaskResult {
   messages?: string[];
   artifacts?: AgentArtifactDescriptor[];
+  artifact_omissions?: ArtifactOmissions;
   graph_update?: GraphUpdateResult;
   graph_updates?: GraphUpdateResult[];
   [key: string]: unknown;
 }
 
+export type ArtifactView = "html" | "image" | "markdown" | "text" | "pdf" | "file";
+
+export interface ArtifactOmissions {
+  count_limit?: number;
+  file_size_limit?: number;
+  total_size_limit?: number;
+  empty?: number;
+  invalid_or_unavailable?: number;
+  discovery_failed: boolean;
+}
+
 export type AgentArtifactMediaType =
-  "text/html" | "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml";
+  | "text/html"
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp"
+  | "image/svg+xml"
+  | "text/markdown"
+  | "text/plain"
+  | "text/csv"
+  | "application/json"
+  | "application/pdf"
+  | "application/octet-stream";
 
 export interface AgentArtifactDescriptor {
   artifact_id: string;
   name: string;
   media_type: AgentArtifactMediaType;
+  view: ArtifactView;
   size_bytes?: number | null;
   kept_filename?: string | null;
   kept_at?: string | null;
@@ -2125,9 +2153,20 @@ export type ArtifactSelection =
       kind: "box";
       rect: { x: number; y: number; width: number; height: number };
       viewport: { width: number; height: number };
-      labels: string;
+      /** The HTML elements the box covers; empty for an image, absent from an older viewer. */
+      elements?: ArtifactBoxElement[];
+      /** Sampled text from a viewer before elements were named. */
+      labels?: string;
       comment: string;
     };
+
+export interface ArtifactBoxElement {
+  path: string;
+  label: string;
+  text: string;
+  /** Where the box lies within this element, when the box sits inside it. */
+  region?: { x: number; y: number; width: number; height: number };
+}
 
 export interface ArtifactContextRequest {
   source?: "task" | "episode_report";
@@ -2162,6 +2201,7 @@ export interface AgentTask {
   episode_id?: string | null;
   runtime_id: string;
   runtime_label: string;
+  provider_label: string;
   native_session_id?: string | null;
   history_only: boolean;
   stage_host?: string | null;
@@ -2514,6 +2554,24 @@ export interface ChatSummary {
   last_message_preview: string;
 }
 
+/** Per-project display choices: archived chats and human-given names. */
+export interface ChatDisplay {
+  archived: string[];
+  titles: Record<string, string>;
+  /** Newest pin first. */
+  pinned: string[];
+}
+
+/** The viewer's read markers; a chat without one is read through `baseline`. */
+export interface ChatReads {
+  baseline: string;
+  reads: Record<string, string>;
+  /** Each unarchived chat's newest finished turn, however old. */
+  latest_finished: Record<string, string>;
+  /** Archived chats never count as unread, even from a loaded turn. */
+  archived: string[];
+}
+
 export interface ChatSummaryPage {
   items: ChatSummary[];
   total: number;
@@ -2651,6 +2709,8 @@ export interface ProjectSnapshot {
   revision: number;
   snapshot_freshness: "fresh" | "reconciling" | "stale";
   last_remote_sync_at: string | null;
+  /** Latest stored compute probe; absent from snapshots cached by older versions. */
+  compute_probes_probed_at?: string | null;
   state_repository: string;
   canonical_state: {
     remote: boolean;
@@ -2760,27 +2820,56 @@ export interface SetupExecution {
   host: string;
 }
 
-export interface SshRepositoryBrowseEntry {
+/** One execution account in the space, shared by every project that uses it. */
+export interface SpaceMachine {
+  machine_id: string;
+  name: string;
+  /** Empty for the machine RCP itself runs on. */
+  host: string;
+  os_account: string;
+  writable_paths: string[];
+  projects: SpaceMachineProject[];
+  /** Null when the server could not tell. */
+  in_use: boolean | null;
+}
+
+export interface SpaceMachineProject {
+  project_id: string;
+  project_name: string;
+  alias: string;
+}
+
+export interface SpaceMachineCreateRequest {
+  name: string;
+  host: string;
+  os_account: string;
+}
+
+export interface SpaceMachineUpdateRequest {
+  name?: string;
+  writable_paths?: string[];
+}
+
+export interface MachineDirectoryRequest {
+  /** Null opens the account's home folder. */
+  path: string | null;
+  filter?: string;
+  offset?: number;
+}
+
+export interface MachineDirectoryEntry {
   name: string;
   path: string;
-  git_repository: boolean;
-  has_research: boolean;
+  /** RCP's own data: it stays read-only and cannot be granted. */
+  protected: boolean;
 }
 
-export interface SshRepositoryDirectoryListing {
+export interface MachineDirectoryListing {
   path: string;
   parent: string | null;
-  entries: SshRepositoryBrowseEntry[];
-  truncated: boolean;
-}
-
-export interface SshRepositoryBrowseResponse {
-  state: "reachable" | "unreachable" | "authentication_failed" | "host_key_failed";
-  rcp_machine: string;
-  host: string;
-  listing: SshRepositoryDirectoryListing | null;
-  diagnostic: string;
-  required_action: string | null;
+  entries: MachineDirectoryEntry[];
+  total: number;
+  next_offset: number | null;
 }
 
 export interface SetupAgentProfile {
@@ -2867,6 +2956,7 @@ export interface WritingSession {
   provider: ProviderId;
   runtime_id: string;
   runtime_label: string;
+  provider_label: string;
   native_session_id: string;
   execution_machine: string;
   project_id: string;
@@ -2891,7 +2981,11 @@ export interface ProjectArtifact {
   episode_id: string | null;
   episode_mode: EpisodeMode | null;
   source_chat_href: string | null;
-  viewer_url: string;
+  viewer_url: string | null;
+  view: ArtifactView;
+  available: boolean;
+  can_download: boolean;
+  download_url: string | null;
   can_open: boolean;
   unavailable_reason: string | null;
 }
@@ -2981,4 +3075,17 @@ export interface TerminalSession {
   path: string;
   state: "live" | "idle";
   running_work: TerminalWorkTurn[];
+}
+
+export interface UpdateNotice {
+  space: "team" | "personal";
+  status: "update_available" | "current" | "pinned" | "unchecked" | "failed" | "off" | "unknown";
+  current_version: string | null;
+  latest_version: string | null;
+  checked_at: string | null;
+  last_success_at: string | null;
+  companion_ready: boolean;
+  download_url: string | null;
+  source_checkout: boolean;
+  update_command: string | null;
 }

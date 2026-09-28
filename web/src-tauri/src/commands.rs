@@ -16,7 +16,7 @@ use crate::{
     backend::{self, BackendState},
     dictation,
     lifecycle::DesktopStatus,
-    navigation,
+    navigation, pdf_preview,
     project_transfer::{
         self, ProjectTransferAdvanceResult, ProjectTransferBundle, ProjectTransferCoordinatorState,
         ProjectTransferExportCleanupResult, ProjectTransferExportResult,
@@ -214,6 +214,27 @@ fn select_resource_target(
         return Ok(ResourceTarget::Personal(personal));
     }
     Err("the displayed desktop origin has no verified RCP session".into())
+}
+
+#[derive(Serialize)]
+pub struct DesktopBuildIdentity {
+    kind: &'static str,
+    version: &'static str,
+    checkout: Option<PathBuf>,
+}
+
+#[tauri::command]
+pub fn desktop_build_identity() -> Result<DesktopBuildIdentity, String> {
+    let kind = backend::desktop_build_kind();
+    Ok(DesktopBuildIdentity {
+        kind,
+        version: env!("CARGO_PKG_VERSION"),
+        checkout: if kind == "source" {
+            Some(backend::source_checkout()?)
+        } else {
+            None
+        },
+    })
 }
 
 #[tauri::command]
@@ -1010,6 +1031,59 @@ pub async fn open_artifact_preview(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn open_artifact_pdf(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, BackendState>,
+    connections: State<'_, TeamConnectionState>,
+    sessions: State<'_, TeamSessionState>,
+    project_id: String,
+    task_id: String,
+    artifact_id: String,
+) -> Result<OpenResult, String> {
+    let target = current_resource_target(&window, &state, &sessions)?;
+    let root = pdf_preview::prepare_cache(&app)?;
+    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
+    let url = artifact_url(
+        target.base_url(),
+        &project_id,
+        &task_id,
+        &artifact_id,
+        "download",
+    )?;
+    let mut response = access
+        .response(Method::GET, url, "PDF download", Duration::from_secs(30))
+        .await?;
+    pdf_preview::validate_headers(
+        response.status(),
+        response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        response.content_length(),
+    )?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("PDF download was interrupted: {error}"))?
+    {
+        pdf_preview::append_chunk(&mut bytes, &chunk)?;
+    }
+    let directory = pdf_preview::write(&root, &bytes)?;
+    app.opener()
+        .open_path(
+            directory.path().join("artifact.pdf").to_string_lossy(),
+            None::<&str>,
+        )
+        .map_err(|error| format!("could not open system PDF viewer: {error}"))?;
+    // Keep successful previews until retention pruning; TempDir removes failures.
+    let _ = directory.keep();
+    Ok(OpenResult { opened: true })
+}
+
+#[tauri::command]
 pub async fn open_episode_report_preview(
     app: AppHandle,
     window: WebviewWindow,
@@ -1316,6 +1390,22 @@ mod tests {
                 },
             },
             connection,
+        }
+    }
+
+    #[test]
+    fn desktop_identity_reports_native_version_and_source_checkout() {
+        let identity = serde_json::to_value(desktop_build_identity().unwrap()).unwrap();
+        assert_eq!(identity["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(identity["kind"], backend::desktop_build_kind());
+        if backend::desktop_build_kind() == "prebuilt" {
+            assert!(identity["checkout"].is_null());
+        } else {
+            assert_eq!(
+                identity["checkout"],
+                backend::source_checkout().unwrap().to_str().unwrap()
+            );
+            assert!(Path::new(identity["checkout"].as_str().unwrap()).is_absolute());
         }
     }
 

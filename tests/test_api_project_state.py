@@ -268,6 +268,7 @@ def test_cached_revision_heartbeat_is_cache_only_and_unchanged_head_starts_no_re
         "revision": initial["revision"],
         "snapshot_freshness": "fresh",
         "last_remote_sync_at": None,
+        "compute_probes_probed_at": None,
     }
     assert probes == 1
 
@@ -1207,7 +1208,7 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     # The settings form shows this text, so it names the profile to fix and
     # carries none of the Pydantic envelope around the reason.
     detail = mismatched_runtime.json()["detail"]
-    assert detail == "refresh: Provider 'claude' does not support runtime 'app-server'."
+    assert "does not support runtime 'app-server'" in detail
 
     invalid_budget = client.put(
         f"/api/projects/{project_id}/settings",

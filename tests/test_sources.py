@@ -18,9 +18,6 @@ from rcp.service import ProjectService, RunRequest
 from rcp.sources import ConversationIndexer, record_parsing
 from rcp.sources.indexer import (
     _REMOTE_INDEX_SCRIPT,
-    _REMOTE_SLICE_SCRIPT,
-    ConversationRecord,
-    _normalize_record,
 )
 from rcp.storage import AppStore
 from rcp.transport import SSHStateWorkspace
@@ -779,30 +776,6 @@ def test_remote_index_counts_claude_records_before_first_cwd(tmp_path) -> None:
     assert metadata["last_uuid"] == "terminal"
     assert summary == {"kind": "summary", "unmatched_files": 0, "malformed_files": 0}
 
-    slice_payload = json.dumps(
-        {
-            "path": str(source),
-            "provider": "claude",
-            "record_count": metadata["record_count"],
-            "last_uuid": metadata["last_uuid"],
-            "from_uuid": None,
-            "session_key": "repo/remote-1/claude/claude-session",
-        }
-    )
-    sliced = subprocess.run(
-        [sys.executable, "-c", _REMOTE_SLICE_SCRIPT, slice_payload],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-    assert [json.loads(line)["uuid"] for line in sliced.stdout.splitlines()] == [
-        "queued",
-        "title",
-        "question",
-        "terminal",
-    ]
-
 
 def test_remote_execution_keeps_same_machine_sources_out_of_permanent_cache(
     manifest, tmp_path, monkeypatch
@@ -870,101 +843,3 @@ def test_shared_record_parser_imports_only_the_standard_library() -> None:
             imported.add(node.module.partition(".")[0])
 
     assert imported <= allowed, f"non-stdlib imports in {source_path}: {sorted(imported - allowed)}"
-
-
-@pytest.mark.parametrize(
-    ("provider", "records"),
-    [
-        (
-            "codex",
-            [
-                {
-                    "type": "response_item",
-                    "payload": {
-                        "id": "first",
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "question"}],
-                        "timestamp": "2026-07-27T00:00:00Z",
-                    },
-                },
-                # A payload that is not a dict at all; the parser must not crash.
-                {"type": "response_item", "payload": ["unexpected", "shape"]},
-                # No id anywhere, so the line-digest fallback id has to run.
-                {
-                    "type": "event_msg",
-                    "payload": {
-                        "type": "agent_message",
-                        "message": "answer",
-                        "timestamp": "2026-07-27T00:00:01Z",
-                    },
-                },
-                {
-                    "type": "response_item",
-                    "payload": {
-                        "id": "terminal",
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "done"}],
-                        "timestamp": "2026-07-27T00:00:02Z",
-                    },
-                },
-            ],
-        ),
-        (
-            "claude",
-            [
-                {
-                    "type": "user",
-                    "uuid": "first",
-                    "timestamp": "2026-07-27T00:00:00Z",
-                    "message": {"content": [{"type": "text", "text": "question"}]},
-                },
-                # No uuid, so the line-digest fallback id has to run.
-                {"type": "assistant", "message": {"content": "plain string content"}},
-                {
-                    "type": "assistant",
-                    "uuid": "terminal",
-                    "timestamp": "2026-07-27T00:00:02Z",
-                    "message": {"content": [{"type": "text", "text": "answer"}]},
-                },
-            ],
-        ),
-    ],
-)
-def test_remote_slice_program_normalizes_exactly_like_the_local_path(
-    tmp_path, provider, records
-) -> None:
-    """The shipped program and the in-process path share one parser.
-
-    Both used to be hand-maintained copies, which is how the local one lost the
-    non-dict `payload` guard the remote one had.
-    """
-
-    source = tmp_path / "conversation.jsonl"
-    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
-    expected = [
-        _normalize_record(record, provider, line_number)
-        for line_number, record in enumerate(records, start=1)
-    ]
-    payload = json.dumps(
-        {
-            "path": str(source),
-            "provider": provider,
-            "record_count": len(records),
-            "last_uuid": expected[-1].uuid,
-            "from_uuid": None,
-            "session_key": f"repo/remote/{provider}/session",
-        }
-    )
-
-    result = subprocess.run(
-        [sys.executable, "-c", _REMOTE_SLICE_SCRIPT, payload],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-    emitted = [ConversationRecord.model_validate_json(line) for line in result.stdout.splitlines()]
-    assert emitted == expected
-    assert [record.uuid for record in emitted if record.uuid.startswith("line-")]

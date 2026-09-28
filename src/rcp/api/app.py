@@ -65,11 +65,13 @@ from rcp.api.project_state import router as project_state_router
 from rcp.api.provider_login import router as provider_login_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
+from rcp.api.space_machines import router as space_machines_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
 from rcp.api.tasks import router as tasks_router
 from rcp.api.team import router as team_router
 from rcp.api.terminals import router as terminals_router
+from rcp.api.update_notice import router as update_notice_router
 from rcp.api.watchers import router as watchers_router
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import (
@@ -78,7 +80,8 @@ from rcp.background import (
     BackgroundAgentTasks,
     StartupEffectFence,
 )
-from rcp.compute_jobs.probe import probe_compute_backend
+from rcp.build_identity import build_identity
+from rcp.compute_jobs.probe import probe_compute_backend, refresh_compute_probes
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
 from rcp.control import admit_experiment_watcher_invocation
@@ -90,9 +93,10 @@ from rcp.limits import (
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
-from rcp.projects import ProjectCatalog, ProjectDisplayCache
+from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import configured_runtime_id
+from rcp.release_check import ReleaseCheck
 from rcp.runs.auto_research import (
     AutoResearchCommandContext,
     AutoResearchCommandDispatcher,
@@ -160,7 +164,11 @@ from rcp.server_ops.control import (
     ServerControlRequest,
     ServerControlServer,
 )
-from rcp.server_ops.doctor import LinuxServerDoctorMachine, ServerDoctorReport
+from rcp.server_ops.doctor import (
+    LinuxServerDoctorMachine,
+    ServerDoctorReport,
+    read_installed_release_identity,
+)
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.maintenance import (
     MaintenanceAdmissionClosed,
@@ -179,6 +187,7 @@ from rcp.service import (
     RunRequest,
 )
 from rcp.setup import ProjectSetupManager
+from rcp.source_checkout import source_checkout_root
 from rcp.sources import (
     REMOTE_SOURCE_CACHE_LIMITS,
     SESSION_SLICE_CACHE_LIMITS,
@@ -438,7 +447,7 @@ def create_app(
                             for operation in SERVER_CONTROL_OPERATIONS
                             if (request.protocol_version >= 10 or operation not in root_operations)
                             and (
-                                request.protocol_version >= 11
+                                request.protocol_version >= 12
                                 or operation != "compute_backend_probe"
                             )
                         ),
@@ -462,6 +471,7 @@ def create_app(
                     )
                 case "compute_backend_probe":
                     assert request.selector_id is not None and request.machine_alias is not None
+                    assert request.compute_route is not None
                     record = store.project(request.selector_id)
                     if record is None or record.home_space_id != store.space_id:
                         raise ServerControlError("operation_refused", "Project not found.")
@@ -472,7 +482,7 @@ def create_app(
                     except (OSError, ValueError) as exc:
                         raise ServerControlError("operation_refused", str(exc)) from exc
                     probe = probe_compute_backend(
-                        manifest, request.machine_alias, data_dir=app_data
+                        manifest, request.machine_alias, request.compute_route, data_dir=app_data
                     )
                     return ServerControlComputeProbeResult(
                         instance_id=identity.instance_id,
@@ -482,7 +492,10 @@ def create_app(
                         selector_kind="project",
                         selector_id=record.project_id,
                         machine_alias=request.machine_alias,
-                        probe=store.record_compute_backend_probe(record.project_id, probe),
+                        compute_route=request.compute_route,
+                        probe=store.record_compute_backend_probe(
+                            record.project_id, probe, request.compute_route
+                        ),
                     )
                 case "provider_readiness_plan":
                     assert provider_readiness_coordinator is not None
@@ -692,7 +705,14 @@ def create_app(
     )
     refresh_cached_project_after_stream = project_display_cache.refresh_cached_project_after_stream
 
-    setup = ProjectSetupManager(app_data, catalog, launcher)
+    setup = ProjectSetupManager(
+        app_data,
+        catalog,
+        launcher,
+        machine_account=lambda host: (
+            card.os_account if (card := store.space_machine_for(host)) else ""
+        ),
+    )
     if control_server is not None:
         target_transfer_activation_coordinator = TargetTransferActivationCoordinator(
             store,
@@ -1314,6 +1334,17 @@ def create_app(
                 expected_uid=os.geteuid(),
             )
 
+    current_version = build_identity().base_version
+    pinned = False
+    if space_kind == "team":
+        current_version, pinned = read_installed_release_identity(server_layout)
+    release_check = ReleaseCheck(
+        space_kind,
+        current_version,
+        pinned=pinned,
+        source_checkout=source_checkout_root() is not None,
+    )
+
     server_status_composition = ServerStatusComposition(
         doctor_reader=server_doctor_reader,
         protected_backup_reader=server_protected_backup_reader,
@@ -1348,6 +1379,7 @@ def create_app(
         experiment_admission=experiment_admission,
         health_composition=health_composition,
         server_status_composition=server_status_composition,
+        release_check=release_check,
         provider_credentials=provider_credentials,
         provider_sign_ins=provider_sign_ins,
         episode_reconciliation=reconcile_episodes,
@@ -1436,6 +1468,27 @@ def create_app(
             except Exception:
                 logger.exception("Could not reconcile compute jobs for project %s", project_id)
 
+    async def probe_compute_routes() -> None:
+        # Readiness is checked here rather than on request, so a route that
+        # cannot run (no user manager, unreachable Slurm) is already reported
+        # with its fix when someone opens Runs or Settings.
+        for record in store.projects():
+            if record.home_space_id != store.space_id:
+                continue
+            try:
+                manifest = await asyncio.to_thread(load_manifest, record.locator)
+                await asyncio.to_thread(
+                    refresh_compute_probes,
+                    store,
+                    manifest,
+                    record.project_id,
+                    data_dir=app_data,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not check compute routes for project %s: %s", record.project_id, exc
+                )
+
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
 
@@ -1514,6 +1567,8 @@ def create_app(
                     member_removal_coordinator.reconcile_pending()
                 background_tasks.accept_watcher_notifications()
                 store.prune_operational_storage()
+                # Registered projects' machines appear without opening each project.
+                await asyncio.to_thread(fill_space_machines, store)
                 await asyncio.to_thread(
                     reconcile_reserved_auto_research_roots,
                     background_tasks,
@@ -1623,12 +1678,14 @@ def create_app(
                 if default_state_host:
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
+                startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()
                 if control_server is not None and not control_started:
                     control_server.start()
                     control_started = True
+                release_check.start()
                 runtime_started = True
                 app.state.startup_effect_runtime_started = True
                 startup_effect_runtime_event.set()
@@ -1695,6 +1752,7 @@ def create_app(
                 await terminals.close()
             except Exception:
                 logger.exception("Terminal shutdown cleanup failed; startup will retry it.")
+            await asyncio.to_thread(release_check.stop)
             watcher_poller.stop()
             graph_watcher_retry_worker.stop()
             background_tasks.shutdown()
@@ -1925,8 +1983,10 @@ def create_app(
     app.state.project_membership_dependency = require_project_membership
 
     app.include_router(provider_login_router)
+    app.include_router(space_machines_router)
     app.include_router(health_router)
     app.include_router(server_status_router)
+    app.include_router(update_notice_router)
     app.include_router(team_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)

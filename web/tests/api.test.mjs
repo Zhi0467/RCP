@@ -610,8 +610,8 @@ test("steering never retries after identity refusal or a disconnected response",
   }
 });
 
-test("compute probes and watcher cancellation preserve responses and encode identifiers", async () => {
-  const { probeMachineCompute, cancelWatcher } = await import("../src/api.ts");
+test("watcher cancellation preserves the response and encodes identifiers", async () => {
+  const { cancelWatcher } = await import("../src/api.ts");
   const originalFetch = globalThis.fetch;
   const requests = [];
   const response = { watcher_id: "watcher/1", status: "active", cancel_requested_by: "human-1" };
@@ -620,12 +620,8 @@ test("compute probes and watcher cancellation preserve responses and encode iden
     return new Response(JSON.stringify(response), { status: 200 });
   };
   try {
-    assert.deepEqual(await probeMachineCompute("/api/projects/project-1", "machine/1"), response);
     assert.deepEqual(await cancelWatcher("/api/projects/project-1", "watcher/1"), response);
-    assert.deepEqual(requests, [
-      ["/api/projects/project-1/machines/machine%2F1/compute/probe", "POST"],
-      ["/api/projects/project-1/watchers/watcher%2F1/cancel", "POST"],
-    ]);
+    assert.deepEqual(requests, [["/api/projects/project-1/watchers/watcher%2F1/cancel", "POST"]]);
   } finally {
     globalThis.fetch = originalFetch;
   }

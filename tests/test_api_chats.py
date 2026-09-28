@@ -196,3 +196,73 @@ def test_non_main_project_route_does_not_build_project_snapshot(
 
     assert response.status_code == 200
     assert response.json()["items"] == []
+
+
+def test_chat_archive_and_title_are_project_display_choices(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    url = f"/api/projects/{app.state.default_project_id}"
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+
+    def archive(chat_id, archived):
+        return client.post(f"{url}/chats/{chat_id}/archive", json={"archived": archived})
+
+    def rename(chat_id, title):
+        return client.post(f"{url}/chats/{chat_id}/title", json={"title": title})
+
+    def pin(chat_id, pinned):
+        return client.post(f"{url}/chats/{chat_id}/pin", json={"pinned": pinned})
+
+    assert archive(first, True).json() == {"archived": [first], "titles": {}, "pinned": []}
+    assert archive(first, True).json()["archived"] == [first]
+    assert archive(second, True).status_code == 200
+    assert set(client.get(f"{url}/chat-display").json()["archived"]) == {first, second}
+    assert archive(first, False).json()["archived"] == [second]
+    assert archive("not-a-uuid", True).status_code == 422
+    # A title survives an archive round trip and clears back to the derived name.
+    assert rename(second, "  Loss   sweep ").json() == {
+        "archived": [second],
+        "titles": {second: "Loss sweep"},
+        "pinned": [],
+    }
+    assert archive(second, False).json() == {
+        "archived": [],
+        "titles": {second: "Loss sweep"},
+        "pinned": [],
+    }
+    assert rename(second, "x" * 121).status_code == 422
+    assert rename(second, " ").json() == {"archived": [], "titles": {}, "pinned": []}
+    # Pins list newest first, and an unpinned chat with no other choice leaves no row.
+    assert pin(first, True).json()["pinned"] == [first]
+    assert pin(second, True).json()["pinned"] == [second, first]
+    assert pin(first, False).json()["pinned"] == [second]
+    assert pin(second, False).json() == {"archived": [], "titles": {}, "pinned": []}
+    assert client.get(f"{url}/chat-display").json() == {"archived": [], "titles": {}, "pinned": []}
+
+
+def test_chat_read_marker_only_moves_forward(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    url = f"/api/projects/{app.state.default_project_id}"
+    chat_id = str(uuid.uuid4())
+
+    def mark(read_through):
+        return client.post(f"{url}/chats/{chat_id}/read", json={"read_through": read_through})
+
+    initial = client.get(f"{url}/chat-reads").json()
+    assert initial["reads"] == {} and initial["latest_finished"] == {} and initial["baseline"]
+    client.post(f"{url}/chats/{chat_id}/archive", json={"archived": True})
+    assert client.get(f"{url}/chat-reads").json()["archived"] == [chat_id]
+    later = "2026-09-27T12:00:00.000000+00:00"
+    assert mark(later).json()["reads"] == {chat_id: later}
+    # 09:00-02:00 is 11:00 UTC and 13:00+01:00 is 12:00 UTC, so neither moves it.
+    assert mark("2026-09-27T09:00:00-02:00").json()["reads"] == {chat_id: later}
+    assert mark("2026-09-27T13:00:00+01:00").json()["reads"] == {chat_id: later}
+    assert mark("2026-09-27T12:30:00Z").json()["reads"] == {
+        chat_id: "2026-09-27T12:30:00.000000+00:00"
+    }
+    assert mark("2026-09-27T12:30:00").status_code == 422
+    assert (
+        client.post(f"{url}/chats/not-a-uuid/read", json={"read_through": later}).status_code == 422
+    )
+    assert client.get(f"{url}/chat-reads").json()["baseline"] == initial["baseline"]

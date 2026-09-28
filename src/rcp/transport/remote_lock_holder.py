@@ -211,7 +211,7 @@ def restore_exact(command: dict, lock_path: str) -> dict:
         if len(path.parts) != 2 or path.parts[0] not in {"artifacts", "views"}:
             raise ValueError("invalid external exact-restore path")
         if path.parts[0] == "artifacts":
-            pattern = r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)"
+            pattern = r"[a-z0-9][a-z0-9-]{0,220}(?:\.[a-z0-9]{1,16})?"
         else:
             pattern = r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html"
         if re.fullmatch(pattern, path.name) is None or expected_size > 16 * 1024 * 1024:
@@ -349,7 +349,7 @@ def keep_staged_view(command: dict, lock_path: str) -> dict:
     content_name = "content.bin" if artifact else "content.html"
     stage_pattern = r"artifact-[0-9]+-[0-9]+" if artifact else r"view-[0-9]+-[0-9]+"
     name_pattern = (
-        r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)"
+        r"[a-z0-9][a-z0-9-]{0,220}(?:\.[a-z0-9]{1,16})?"
         if artifact
         else r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html"
     )
@@ -474,9 +474,7 @@ def replace_staged_artifact(command: dict, lock_path: str) -> dict:
                 or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
             )
         )
-        or not re.fullmatch(
-            r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)", name
-        )
+        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,220}(?:\.[a-z0-9]{1,16})?", name)
     ):
         raise ValueError("invalid artifact replacement root, stage, or name")
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW

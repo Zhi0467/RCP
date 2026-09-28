@@ -5,6 +5,7 @@ import type {
   AgentTaskStatus,
   ArtifactContextRequest,
   ChatMessage,
+  ChatReads,
   ChatSummary,
   ConversationMode,
   SkillDefaults,
@@ -21,6 +22,8 @@ export interface ChatConversation {
   title: string;
   tasks: AgentTask[];
   updatedAt: string;
+  /** The latest message's text from the stored summary, for search. */
+  preview?: string;
 }
 
 export interface DraftConversation {
@@ -218,6 +221,7 @@ export function groupChatConversations(
       title,
       tasks: [],
       updatedAt: summary.updated_at,
+      preview: summary.last_message_preview,
     });
   }
   for (const draft of drafts) {
@@ -264,6 +268,139 @@ export function groupChatConversations(
   );
 }
 
+/** What a conversation's latest turn asks of the human, for the Agents panel. */
+export type ConversationAgentState = "stopped" | "working" | "unread" | "failed" | "done" | "draft";
+export type ConversationAgentGroup = "new_reply" | "failed" | "stopped" | "working" | "done";
+export interface ConversationAgentStatus {
+  state: ConversationAgentState;
+  group: ConversationAgentGroup;
+  latest: AgentTask | null;
+  unread: boolean;
+}
+
+export const CONVERSATION_AGENT_GROUPS: readonly ConversationAgentGroup[] = [
+  "new_reply",
+  "failed",
+  "stopped",
+  "working",
+  "done",
+];
+
+export function conversationAgentStatus(
+  conversation: ChatConversation,
+  unreadChatIds: ReadonlySet<string>,
+): ConversationAgentStatus {
+  const latest = conversation.tasks.at(-1) ?? null;
+  const unread = conversationHasUnread(conversation, unreadChatIds);
+  const result = { latest, unread };
+  if (latest?.failed) return { ...result, state: "failed", group: "failed" };
+  // After failures, the backend attention flag covers paused and interrupted turns.
+  if (latest?.paused || latest?.awaiting_human) {
+    return { ...result, state: "stopped", group: "stopped" };
+  }
+  if (latest?.active) return { ...result, state: "working", group: "working" };
+  if (!latest) {
+    if (unread) return { ...result, state: "unread", group: "new_reply" };
+    return { ...result, state: conversation.updatedAt ? "done" : "draft", group: "done" };
+  }
+  if (latest.settled && unread) return { ...result, state: "unread", group: "new_reply" };
+  return { ...result, state: "done", group: "done" };
+}
+
+/** The list's sections: pinned conversations first, then each status group. */
+export type AgentListSection = "pinned" | ConversationAgentGroup;
+export const AGENT_LIST_SECTIONS: readonly AgentListSection[] = [
+  "pinned",
+  ...CONVERSATION_AGENT_GROUPS,
+];
+
+export interface ConversationAgentRow {
+  conversation: ChatConversation;
+  status: ConversationAgentStatus;
+}
+
+/**
+ * Everything the browser already holds about a conversation, lower-cased: its
+ * name, node, chat kind, latest message, and each loaded turn's prompt,
+ * provider, model, effort, and repositories. Every search word must appear.
+ */
+export function conversationSearchText(conversation: ChatConversation): string {
+  const parts: (string | null | undefined)[] = [
+    conversation.title,
+    conversation.nodeId,
+    conversation.kind === "project_chat" ? "project chat" : "node chat",
+    conversation.preview,
+  ];
+  for (const task of conversation.tasks) {
+    const request = task.request;
+    parts.push(
+      typeof request.message === "string" ? request.message : null,
+      task.provider_label,
+      request.provider,
+      request.model,
+      request.reasoning,
+      ...(request.run_truth_scope ?? []),
+    );
+  }
+  return parts.filter(Boolean).join("\n").toLocaleLowerCase();
+}
+
+/**
+ * Rows grouped by latest turn status; each group keeps recency order. Pinned
+ * conversations leave their status group for the pinned section, newest pin first.
+ */
+export function groupConversationAgents(
+  conversations: ChatConversation[],
+  unreadChatIds: ReadonlySet<string>,
+  query = "",
+  pinnedChatIds: readonly string[] = [],
+): Record<AgentListSection, ConversationAgentRow[]> {
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const pinOrder = new Map(pinnedChatIds.map((chatId, index) => [chatId, index]));
+  const groups: Record<AgentListSection, ConversationAgentRow[]> = {
+    pinned: [],
+    new_reply: [],
+    failed: [],
+    stopped: [],
+    working: [],
+    done: [],
+  };
+  for (const conversation of conversations) {
+    if (terms.length) {
+      const text = conversationSearchText(conversation);
+      if (!terms.every((term) => text.includes(term))) continue;
+    }
+    const status = conversationAgentStatus(conversation, unreadChatIds);
+    groups[pinOrder.has(conversation.chatId) ? "pinned" : status.group].push({
+      conversation,
+      status,
+    });
+  }
+  groups.pinned.sort(
+    (left, right) =>
+      (pinOrder.get(left.conversation.chatId) ?? 0) -
+      (pinOrder.get(right.conversation.chatId) ?? 0),
+  );
+  return groups;
+}
+
+/** A draft nobody has sent a turn in; opening a new chat reuses it. */
+export function unsentConversation(
+  conversations: ChatConversation[],
+  kind: ChatKind,
+  nodeId: string | null = null,
+): ChatConversation | null {
+  return (
+    conversations.find(
+      (conversation) =>
+        conversation.kind === kind &&
+        conversation.nodeId === nodeId &&
+        conversation.tasks.length === 0 &&
+        !conversation.updatedAt,
+    ) ?? null
+  );
+}
+
 export function latestConversation(
   conversations: ChatConversation[],
   kind: ChatKind,
@@ -279,12 +416,10 @@ export function latestConversation(
 
 export function chatIndicator(
   tasks: AgentTask[],
-  unreadTaskIds: Set<string>,
+  unreadChatIds: ReadonlySet<string>,
 ): "active" | "unread" | null {
   if (tasks.some((task) => chatIdForTask(task) && chatTaskNeedsAttention(task))) return "active";
-  if (tasks.some((task) => unreadTaskIds.has(task.operation_id) && chatIdForTask(task)))
-    return "unread";
-  return null;
+  return unreadChatIds.size > 0 ? "unread" : null;
 }
 
 export function chatTaskNeedsAttention(task: AgentTask): boolean {
@@ -294,7 +429,7 @@ export function chatTaskNeedsAttention(task: AgentTask): boolean {
 export function chatEntryConversationId(
   conversations: ChatConversation[],
   activityTask: AgentTask | null,
-  unreadTaskIds: Set<string>,
+  unreadChatIds: ReadonlySet<string>,
   previousChatId: string | null,
 ): string | null {
   if (previousChatId && conversations.some((item) => item.chatId === previousChatId))
@@ -303,32 +438,89 @@ export function chatEntryConversationId(
     activityTask && chatTaskNeedsAttention(activityTask) ? chatIdForTask(activityTask) : null;
   if (activeChatId && conversations.some((item) => item.chatId === activeChatId))
     return activeChatId;
-  const unread = conversations.find((conversation) =>
-    conversation.tasks.some((task) => unreadTaskIds.has(task.operation_id)),
-  );
+  const unread = conversations.find((conversation) => unreadChatIds.has(conversation.chatId));
   if (unread) return unread.chatId;
   return conversations[0]?.chatId ?? null;
 }
 
-export function newlyUnreadChatTaskIds(
+/** Chat turns this page saw change into a settled state; their summaries are stale. */
+export function newlyFinishedChatTaskIds(
   tasks: AgentTask[],
   previousStatuses: ReadonlyMap<string, AgentTaskStatus>,
-  visibleChatId: string | null,
 ): string[] {
   return tasks.flatMap((task) => {
     const chatId = chatIdForTask(task);
     const previous = previousStatuses.get(task.operation_id);
     const becameTerminal =
       previous !== undefined && previous !== task.status && !chatTaskNeedsAttention(task);
-    return chatId && chatId !== visibleChatId && becameTerminal ? [task.operation_id] : [];
+    return chatId && becameTerminal ? [task.operation_id] : [];
   });
+}
+
+function laterTime(left: string | null | undefined, right: string | null | undefined) {
+  if (!left) return right ?? null;
+  if (!right) return left;
+  return Date.parse(right) > Date.parse(left) ? right : left;
+}
+
+/**
+ * Each chat's newest turn end: the server's durable answer, advanced by any
+ * loaded turn that finished since it was read.
+ */
+function latestChatFinishes(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads,
+): Record<string, string> {
+  const latest: Record<string, string> = { ...chatReads.latest_finished };
+  const archived = new Set(chatReads.archived);
+  for (const task of tasks) {
+    const chatId = chatIdForTask(task);
+    if (!chatId || archived.has(chatId)) continue;
+    if (!task.finished || !task.finished_at || chatTaskNeedsAttention(task)) continue;
+    latest[chatId] = laterTime(latest[chatId], task.finished_at) ?? task.finished_at;
+  }
+  return latest;
+}
+
+/** A chat is unread when its newest turn ended after the viewer's marker for it. */
+export function unreadChatIdsFromReads(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads | null,
+): Set<string> {
+  if (!chatReads) return new Set();
+  const latest = latestChatFinishes(tasks, chatReads);
+  return new Set(
+    Object.keys(latest).filter(
+      (chatId) =>
+        Date.parse(latest[chatId]) > Date.parse(chatReads.reads[chatId] ?? chatReads.baseline),
+    ),
+  );
+}
+
+/** The newest turn end in a chat, which is what reading it marks. */
+export function chatReadThrough(
+  tasks: readonly AgentTask[],
+  chatReads: ChatReads,
+  chatId: string,
+): string | null {
+  return latestChatFinishes(tasks, chatReads)[chatId] ?? null;
+}
+
+/** Markers only move forward, so a stale snapshot cannot unread a viewed reply. */
+export function mergeChatReads(current: ChatReads | null, incoming: ChatReads): ChatReads {
+  if (!current) return incoming;
+  const reads = { ...incoming.reads };
+  for (const [chatId, readThrough] of Object.entries(current.reads)) {
+    reads[chatId] = laterTime(reads[chatId], readThrough) ?? readThrough;
+  }
+  return { ...incoming, reads };
 }
 
 export function conversationHasUnread(
   conversation: ChatConversation,
-  unreadTaskIds: ReadonlySet<string>,
+  unreadChatIds: ReadonlySet<string>,
 ): boolean {
-  return conversation.tasks.some((task) => unreadTaskIds.has(task.operation_id));
+  return unreadChatIds.has(conversation.chatId);
 }
 
 function comparableTime(value: string): number {

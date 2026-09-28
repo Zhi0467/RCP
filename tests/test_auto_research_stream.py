@@ -17,8 +17,10 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import MessageCommandRequest
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.invocation_broker import ProviderInvocationGate
+from rcp.agents.prompts import PromptFactory
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.config import load_manifest
 from rcp.core.authority import (
@@ -45,6 +47,7 @@ from rcp.runs.auto_research_mail import (
     auto_research_mail_delivery,
     parse_auto_research_mail_delivery,
 )
+from rcp.runs.session_master import session_master_label
 from rcp.runs.tasks import auto_research_stream as auto_research_stream_module
 from rcp.runs.tasks.auto_research_stream import (
     _HANDOFFS_CLEARED_RECEIPT,
@@ -393,8 +396,22 @@ def _dispatcher(store: AppStore, replies: list[str] | None = None) -> AutoResear
 
 
 def _contract(prompt: str) -> str:
-    path = next(Path(line) for line in prompt.splitlines() if line.startswith("/"))
-    return path.read_text(encoding="utf-8")
+    """A session start is read from its staged file; a continuation is the prompt itself."""
+
+    lines = prompt.splitlines()
+    if lines[0] == PromptFactory.launch_prompt("").splitlines()[0]:
+        return Path(lines[1]).read_text(encoding="utf-8")
+    return prompt
+
+
+def _with_opened_master(prompt: str) -> str:
+    """A continuation plus the master it opens now, which is what the agent then reads."""
+
+    opener = SECTIONS["master_bootstrap"].split("{path}")[0]
+    if opener not in prompt:
+        return prompt
+    path = Path(prompt.partition(opener)[2].splitlines()[0].strip())
+    return f"{prompt}\n\n{path.read_text(encoding='utf-8')}"
 
 
 def _command_argv(contract: str, *, verb: str | None = None) -> list[str]:
@@ -413,6 +430,34 @@ async def _events(stream) -> list[AgentEvent]:
         AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
         async for frame in stream
     ]
+
+
+async def _worker_events(
+    service, launcher, store, task, data_dir, *, continuation="fresh", replies=None
+):
+    return await _events(
+        stream_auto_research_worker_run(
+            service,
+            launcher,
+            AutoResearchRunRequest.model_validate(task.request),
+            data_dir,
+            _execution(store, task, continuation=continuation),
+            command_dispatcher=_dispatcher(store, replies),
+        )
+    )
+
+
+async def _orchestrator_events(service, launcher, store, task, data_dir, *, continuation="fresh"):
+    return await _events(
+        stream_auto_research_orchestrator_run(
+            service,
+            launcher,
+            AutoResearchRunRequest.model_validate(task.request),
+            data_dir,
+            _execution(store, task, continuation=continuation),
+            command_dispatcher=_dispatcher(store),
+        )
+    )
 
 
 def _capture_served_invocation_gates(monkeypatch) -> list[ProviderInvocationGate | None]:
@@ -630,6 +675,9 @@ class _LocalBackedRemoteStage:
             canonical[raw] = str(resolved)
         return canonical, str(Path.home().resolve())
 
+    def legacy_stage_roots(self) -> list[str]:
+        return []
+
 
 def _record_original_contract(
     store: AppStore,
@@ -637,14 +685,15 @@ def _record_original_contract(
     stage: Path,
     *,
     content: str = "# original worker contract\n",
+    role: str = "worker",
 ) -> None:
     inputs = stage / "inputs"
     inputs.mkdir(parents=True, exist_ok=True)
-    original = inputs / "original-worker-contract.md"
+    original = inputs / f"original-{role}-contract.md"
     original.write_text(content, encoding="utf-8")
     store.record_agent_task_contract(
         worker.operation_id,
-        "auto_research_worker",
+        f"auto_research_{role}",
         content,
         hashlib.sha256(content.encode("utf-8")).hexdigest(),
     )
@@ -653,6 +702,24 @@ def _record_original_contract(
         "agent_prompt",
         {"contract_path": str(original)},
         tier="diagnostic",
+    )
+
+
+def _continuation_record(store, episode, predecessor, request, **fields):
+    now = store.now()
+    return AgentTaskRecord(
+        project_id=predecessor.project_id,
+        episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
+        kind="auto_research",
+        status="running",
+        request=request.model_dump(mode="json"),
+        created_at=now,
+        updated_at=now,
+        parent_operation_id=predecessor.operation_id,
+        authorized_by=episode.authorized_by,
+        dispatch_authority=predecessor.dispatch_authority,
+        **fields,
     )
 
 
@@ -671,41 +738,38 @@ def _recovery_task(
             "session_id": worker.native_session_id,
         }
     )
-    now = store.now()
     recovery = store.create_auto_research_recovery_task(
-        AgentTaskRecord(
+        _continuation_record(
+            store,
+            auto_research,
+            worker,
+            request,
             operation_id=operation_id,
-            project_id=worker.project_id,
-            episode_id=auto_research.episode_id,
-            graph_target=auto_research.graph_target,
-            kind="auto_research",
-            status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="retry running",
             attempt=worker.attempt + 1,
-            parent_operation_id=worker.operation_id,
             native_session_id=worker.native_session_id,
             stage_host=worker.stage_host,
             stage_root=worker.stage_root,
-            authorized_by=auto_research.authorized_by,
-            dispatch_authority=worker.dispatch_authority,
         ),
         continuation_cause=continuation_cause,
     )
     return recovery
 
 
-def _claimed_mail_recovery(tmp_path: Path):
+def _saved_worker(tmp_path, *, status):
     stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
     stage.mkdir(parents=True)
-    store, auto_research, root, worker = _setup_auto_research(
+    records = _setup_auto_research(
         tmp_path,
-        worker_status="succeeded",
+        worker_status=status,
         native_session_id="worker-session",
         stage_root=str(stage),
     )
+    return stage, *records
+
+
+def _claimed_mail_recovery(tmp_path: Path):
+    stage, store, auto_research, root, worker = _saved_worker(tmp_path, status="succeeded")
     message = record_auto_research_message(
         store,
         episode_id=auto_research.episode_id,
@@ -719,24 +783,16 @@ def _claimed_mail_recovery(tmp_path: Path):
     request = AutoResearchRunRequest.model_validate(worker.request).model_copy(
         update={"instruction": None, "wake_cause": "message"}
     )
-    now = store.now()
     wake = store.create_auto_research_message_wake_task(
-        AgentTaskRecord(
+        _continuation_record(
+            store,
+            auto_research,
+            worker,
+            request,
             operation_id="mail-wake",
-            project_id=worker.project_id,
-            episode_id=auto_research.episode_id,
-            graph_target=auto_research.graph_target,
-            kind="auto_research",
-            status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="mail wake running",
-            parent_operation_id=worker.operation_id,
             native_session_id=worker.native_session_id,
             stage_root=worker.stage_root,
-            authorized_by=auto_research.authorized_by,
-            dispatch_authority=worker.dispatch_authority,
         ),
         role="worker",
         recipient_task_id=worker.operation_id,
@@ -1311,15 +1367,8 @@ async def test_orchestrator_result_orders_applied_invalid_and_valid_empty_dispos
             )
         )
 
-    events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            _WorkerLauncher(session_id="orchestrator-session"),
-            AutoResearchRunRequest.model_validate(root.request),
-            tmp_path / "data",
-            _execution(store, root),
-            command_dispatcher=_dispatcher(store),
-        )
+    events = await _orchestrator_events(
+        service, _WorkerLauncher(session_id="orchestrator-session"), store, root, tmp_path / "data"
     )
 
     payload = json.loads(next(event.text for event in events if event.event == "message"))
@@ -1376,16 +1425,7 @@ async def test_orchestrator_stream_rejects_direct_existing_belief_change(
 
     served_gates = _capture_served_invocation_gates(monkeypatch)
     launcher = _WorkerLauncher(session_id="orchestrator-session", writer=writer)
-    events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            launcher,
-            AutoResearchRunRequest.model_validate(root.request),
-            tmp_path / "data",
-            _execution(store, root),
-            command_dispatcher=_dispatcher(store),
-        )
-    )
+    events = await _orchestrator_events(service, launcher, store, root, tmp_path / "data")
 
     updates = [
         json.loads(event.text)["graph_update"] for event in events if event.event == "message"
@@ -1401,22 +1441,14 @@ async def test_orchestrator_stream_rejects_direct_existing_belief_change(
 async def test_orchestrator_continuation_preserves_actor_session_stage_and_handoff_fence(
     manifest,
     tmp_path,
+    monkeypatch,
 ) -> None:
     service = _service(manifest, tmp_path)
     store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
     data_dir = tmp_path / "data"
     fresh_launcher = _WorkerLauncher(session_id="orchestrator-session")
 
-    fresh_events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            fresh_launcher,
-            AutoResearchRunRequest.model_validate(root.request),
-            data_dir,
-            _execution(store, root),
-            command_dispatcher=_dispatcher(store),
-        )
-    )
+    fresh_events = await _orchestrator_events(service, fresh_launcher, store, root, data_dir)
     assert fresh_events[-1].event == "done"
     stage = data_dir / "run-stage" / _orchestrator_stage_name("project", root.operation_id)
     stored_root = store.agent_task(root.operation_id)
@@ -1432,24 +1464,16 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
             "session_id": "orchestrator-session",
         }
     )
-    now = store.now()
     continuation = store.create_auto_research_agent_task(
-        AgentTaskRecord(
+        _continuation_record(
+            store,
+            auto_research,
+            root,
+            continuation_request,
             operation_id="orchestrator-continuation",
-            project_id=root.project_id,
-            episode_id=auto_research.episode_id,
-            graph_target=auto_research.graph_target,
-            kind="auto_research",
-            status="running",
-            request=continuation_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="orchestrator continuation running",
-            parent_operation_id=root.operation_id,
             native_session_id="orchestrator-session",
             stage_root=str(stage),
-            authorized_by=auto_research.authorized_by,
-            dispatch_authority=root.dispatch_authority,
         ),
         role="orchestrator",
         continuation_cause="auto_research_continuation",
@@ -1457,15 +1481,13 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     for name in ("patch.json", "watch.json", "messages.json"):
         (stage / name).write_text("stale", encoding="utf-8")
     continuation_launcher = _WorkerLauncher(session_id="orchestrator-session")
-    continuation_events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            continuation_launcher,
-            AutoResearchRunRequest.model_validate(continuation.request),
-            data_dir,
-            _execution(store, continuation, continuation="auto_research_continuation"),
-            command_dispatcher=_dispatcher(store),
-        )
+    continuation_events = await _orchestrator_events(
+        service,
+        continuation_launcher,
+        store,
+        continuation,
+        data_dir,
+        continuation="auto_research_continuation",
     )
     assert continuation_events[-1].event == "done"
     assert continuation_launcher.requested_session_ids == ["orchestrator-session"]
@@ -1474,6 +1496,23 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     fresh_prefix = _command_argv(fresh_contract)
     continuation_prefix = _command_argv(continuation_contract)
     assert continuation_prefix != fresh_prefix
+    # The session start is the master; the continuation carries only current parts and a
+    # pointer to the master restored from its durable record.
+    assert store.agent_task_contract(root.operation_id, "session_master") == fresh_contract
+    master_file = (
+        stage / "inputs" / session_master_label("auto_research-orchestrator-master", fresh_contract)
+    )
+    assert continuation_contract.endswith(SECTIONS["master_pointer"].format(path=str(master_file)))
+    assert master_file.read_text(encoding="utf-8") == fresh_contract
+    rules = graph_rules(edits=True, ontology_extensions=False)
+    assert rules not in continuation_contract
+    assert fresh_contract.partition("\n")[0] not in continuation_contract
+    assert (
+        store.agent_task_contract(
+            continuation.operation_id, "auto_research_orchestrator_auto_research_continuation"
+        )
+        == continuation_contract
+    )
     assert all(
         not (stage / name).exists() for name in ("patch.json", "watch.json", "messages.json")
     )
@@ -1502,18 +1541,26 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
         session_id="orchestrator-session",
         writer=inspect_recovery,
     )
-    retry_events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            retry_launcher,
-            AutoResearchRunRequest.model_validate(retry.request),
-            data_dir,
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store),
-        )
+    # A recovery on a session an episode report used re-opens the operational master.
+    monkeypatch.setattr(store, "episode_report_rebootstrap_pending", lambda *_a, **_k: True)
+    retry_events = await _orchestrator_events(
+        service, retry_launcher, store, retry, data_dir, continuation="retry"
     )
     assert retry_events[-1].event == "done"
     assert retry_launcher.requested_session_ids == ["orchestrator-session"]
+    retry_contract = retry_launcher.contracts[0]
+    rebootstrapped = store.agent_task_contract(retry.operation_id, "session_master")
+    assert rebootstrapped is not None and rules in rebootstrapped
+    report_rebootstrap = SECTIONS["report_rebootstrap"].format(
+        path=str(
+            stage
+            / "inputs"
+            / session_master_label("auto_research-orchestrator-master", rebootstrapped)
+        )
+    )
+    assert retry_contract.endswith(report_rebootstrap)
+    assert SECTIONS["master_pointer"].split("{path}")[0] not in retry_contract
+    assert rules not in retry_contract
     reused_stage_gates = [
         fresh_launcher.invocation_gates[0],
         continuation_launcher.invocation_gates[0],
@@ -1522,88 +1569,6 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
     assert all(gate is not None for gate in reused_stage_gates)
     assert len({id(gate) for gate in reused_stage_gates}) == 3
     assert store.auto_research_handoffs_cleared(continuation.operation_id) is True
-
-
-def test_a_rebound_orchestrator_retry_launches_on_a_clean_session(manifest, tmp_path) -> None:
-    """A human who changed the binding gets a turn, not an exact-session refusal."""
-
-    service = _service(manifest, tmp_path)
-    store, _auto_research, root, _worker = _setup_auto_research(
-        tmp_path / "store",
-        root_status="running",
-    )
-    data_dir = tmp_path / "data"
-    stage = data_dir / "run-stage" / _orchestrator_stage_name("project", root.operation_id)
-    stage.mkdir(parents=True)
-    # An ordinary failure over a live session and stage: nothing about the turn
-    # itself asks for a clean retry, so only the rebinding can authorize one.
-    store.checkpoint_agent_task(
-        root.operation_id,
-        native_session_id="live-session",
-        stage_host=None,
-        stage_root=str(stage),
-    )
-    contract = "# original auto_research orchestrator contract\n"
-    contract_path = stage / "inputs" / "original-orchestrator-contract.md"
-    contract_path.parent.mkdir(parents=True)
-    contract_path.write_text(contract, encoding="utf-8")
-    store.record_agent_task_contract(
-        root.operation_id,
-        "auto_research_orchestrator",
-        contract,
-        hashlib.sha256(contract.encode("utf-8")).hexdigest(),
-    )
-    store.record_agent_task_receipt(
-        root.operation_id,
-        "agent_prompt",
-        {"contract_path": str(contract_path)},
-        tier="diagnostic",
-    )
-    store.fail_agent_task(root.operation_id, "The provider exited before finishing its turn.")
-    root = store.agent_task(root.operation_id)
-    assert root is not None
-
-    def writer(_contract_text: str, workspace: Path) -> None:
-        workspace.joinpath("patch.json").write_text(
-            json.dumps(
-                {
-                    "summary": "No graph change was required after recovery.",
-                    "ops": [],
-                    "repositories_read": [],
-                }
-            ),
-            encoding="utf-8",
-        )
-
-    launcher = _WorkerLauncher(session_id="replacement-session", writer=writer)
-
-    async def stream(_project_id, kind, request, execution):
-        assert kind == "auto_research"
-        async for frame in stream_auto_research_orchestrator_run(
-            service,
-            launcher,
-            request,
-            data_dir,
-            execution,
-            command_dispatcher=_dispatcher(store),
-        ):
-            yield frame
-
-    tasks = BackgroundAgentTasks(store, stream)
-    tasks.recover_at_startup()
-    retry = tasks.retry(root.operation_id, reasoning="high")
-    retry = wait_for_task(store, retry.operation_id, expect="succeeded")
-
-    assert AutoResearchRunRequest.model_validate(retry.request).reasoning == "high"
-    assert launcher.requested_session_ids == [None]
-    assert retry.native_session_id == "replacement-session"
-    assert retry.stage_root == str(stage)
-    receipt = next(
-        receipt
-        for receipt in store.agent_task_receipts(retry.operation_id)
-        if receipt.category == "auto_research_orchestrator_clean_retry"
-    )
-    assert receipt.payload["classification"] == "binding_changed"
 
 
 @pytest.mark.parametrize("recovery", ["rebind", "session_limit"])
@@ -1650,45 +1615,28 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
             "wake_cause": "lifecycle",
         }
     )
-    now = store.now()
     wake = store.create_auto_research_lifecycle_wake_task(
-        AgentTaskRecord(
+        _continuation_record(
+            store,
+            auto_research,
+            root,
+            wake_request,
             operation_id="lifecycle-wake",
-            project_id=root.project_id,
-            episode_id=auto_research.episode_id,
-            graph_target=auto_research.graph_target,
-            kind="auto_research",
-            status="running",
-            request=wake_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="lifecycle wake running",
-            parent_operation_id=root.operation_id,
             native_session_id=root.native_session_id,
             stage_host=root.stage_host,
             stage_root=root.stage_root,
-            authorized_by=auto_research.authorized_by,
-            dispatch_authority=root.dispatch_authority,
         ),
         lifecycle_notice_ids=[notice.notice_id],
         message_ids=[],
     )
     assert wake is not None
-    contract = "# original auto_research orchestrator contract\n"
-    contract_path = stage / "inputs" / "original-orchestrator-contract.md"
-    contract_path.parent.mkdir(parents=True)
-    contract_path.write_text(contract, encoding="utf-8")
-    store.record_agent_task_contract(
-        wake.operation_id,
-        "auto_research_orchestrator",
-        contract,
-        hashlib.sha256(contract.encode("utf-8")).hexdigest(),
-    )
-    store.record_agent_task_receipt(
-        wake.operation_id,
-        "agent_prompt",
-        {"contract_path": str(contract_path)},
-        tier="diagnostic",
+    _record_original_contract(
+        store,
+        wake,
+        stage,
+        role="orchestrator",
+        content="# original auto_research orchestrator contract\n",
     )
     store.fail_agent_task(
         wake.operation_id,
@@ -1751,7 +1699,7 @@ def test_an_orchestrator_wake_retry_launches_on_the_clean_session_it_needs(
 
 @pytest.mark.parametrize(
     "failure_point",
-    ["session-limit", "saved-stage", "pre-stage"],
+    ["session-limit", "saved-stage", "pre-stage", "rebind"],
 )
 def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream(
     manifest,
@@ -1769,30 +1717,29 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
         stage.mkdir(parents=True)
         store.checkpoint_agent_task(
             root.operation_id,
-            native_session_id=("spent-session" if failure_point == "session-limit" else None),
+            native_session_id=(
+                "spent-session"
+                if failure_point == "session-limit"
+                else "live-session"
+                if failure_point == "rebind"
+                else None
+            ),
             stage_host=None,
             stage_root=str(stage),
         )
-        original_contract = "# original auto_research orchestrator contract\n"
-        original_path = stage / "inputs" / "original-orchestrator-contract.md"
-        original_path.parent.mkdir(parents=True)
-        original_path.write_text(original_contract, encoding="utf-8")
-        store.record_agent_task_contract(
-            root.operation_id,
-            "auto_research_orchestrator",
-            original_contract,
-            hashlib.sha256(original_contract.encode("utf-8")).hexdigest(),
-        )
-        store.record_agent_task_receipt(
-            root.operation_id,
-            "agent_prompt",
-            {"contract_path": str(original_path)},
-            tier="diagnostic",
+        _record_original_contract(
+            store,
+            root,
+            stage,
+            role="orchestrator",
+            content="# original auto_research orchestrator contract\n",
         )
     store.fail_agent_task(
         root.operation_id,
         "provider session limit"
         if failure_point == "session-limit"
+        else "The provider exited before finishing its turn."
+        if failure_point == "rebind"
         else "Network connection failed before session creation.",
     )
     root = store.agent_task(root.operation_id)
@@ -1826,9 +1773,13 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
 
     tasks = BackgroundAgentTasks(store, stream)
     tasks.recover_at_startup()
-    retry = tasks.retry(root.operation_id)
+    retry = tasks.retry(
+        root.operation_id, **({"reasoning": "high"} if failure_point == "rebind" else {})
+    )
     retry = wait_for_task(store, retry.operation_id, expect="succeeded")
 
+    if failure_point == "rebind":
+        assert AutoResearchRunRequest.model_validate(retry.request).reasoning == "high"
     assert launcher.requested_session_ids == [None]
     assert retry.native_session_id == "replacement-session"
     assert retry.stage_root == str(stage)
@@ -1839,7 +1790,11 @@ def test_orchestrator_clean_retry_binds_replacement_session_in_production_stream
     )
     assert clean_retry_receipt.payload == {
         "classification": (
-            "session_limit" if failure_point == "session-limit" else "checkpoint_missing"
+            "session_limit"
+            if failure_point == "session-limit"
+            else "binding_changed"
+            if failure_point == "rebind"
+            else "checkpoint_missing"
         ),
         "same_allocation": True,
         "actor_operation_id": root.operation_id,
@@ -1875,40 +1830,25 @@ async def test_orchestrator_null_session_resume_is_not_a_clean_retry(
     assert root is not None
     root_request = AutoResearchRunRequest.model_validate(root.request)
     clean_request = root_request.model_copy(update={"session_id": None})
-    now = store.now()
     resumed = store.create_auto_research_recovery_task(
-        AgentTaskRecord(
+        _continuation_record(
+            store,
+            auto_research,
+            root,
+            clean_request,
             operation_id="orchestrator-null-resume",
-            project_id=root.project_id,
-            episode_id=auto_research.episode_id,
-            graph_target=auto_research.graph_target,
-            kind="auto_research",
-            status="running",
-            request=clean_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="clean retry running",
             attempt=root.attempt + 1,
-            parent_operation_id=root.operation_id,
             native_session_id=None,
             stage_host=root.stage_host,
             stage_root=root.stage_root,
-            authorized_by=auto_research.authorized_by,
-            dispatch_authority=root.dispatch_authority,
         ),
         continuation_cause="resume",
     )
 
     launcher = _WorkerLauncher(session_id="replacement-session")
-    events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            launcher,
-            AutoResearchRunRequest.model_validate(resumed.request),
-            data_dir,
-            _execution(store, resumed, continuation="resume"),
-            command_dispatcher=_dispatcher(store),
-        )
+    events = await _orchestrator_events(
+        service, launcher, store, resumed, data_dir, continuation="resume"
     )
 
     assert events[-1].event == "error"
@@ -2035,16 +1975,7 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
     monkeypatch.setattr(auto_research_stream_module, "_serve_worker_commands", tracked_serve)
     monkeypatch.setattr(auto_research_stream_module, "_worker_prompt", fail_prompt)
 
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(),
-            AutoResearchRunRequest.model_validate(worker.request),
-            tmp_path / "data",
-            _execution(store, worker),
-            command_dispatcher=_dispatcher(store),
-        )
-    )
+    events = await _worker_events(service, _WorkerLauncher(), store, worker, tmp_path / "data")
 
     assert events[-1].event == "error"
     assert events[-1].text == "prompt failed after command mailbox staging"
@@ -2089,16 +2020,7 @@ async def test_main_mailbox_preserves_prompt_failure_over_server_and_cleanup_fai
     monkeypatch.setattr(auto_research_stream_module, "_worker_prompt", fail_prompt)
     monkeypatch.setattr(StagedCommandMailbox, "cleanup", fail_cleanup)
 
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(),
-            AutoResearchRunRequest.model_validate(worker.request),
-            tmp_path / "data",
-            _execution(store, worker),
-            command_dispatcher=_dispatcher(store),
-        )
-    )
+    events = await _worker_events(service, _WorkerLauncher(), store, worker, tmp_path / "data")
 
     assert events[-1].event == "error"
     assert events[-1].text == "primary prompt failure"
@@ -2239,15 +2161,8 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
         )
 
     fresh_launcher = _WorkerLauncher(writer=fresh_writer)
-    fresh_events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            fresh_launcher,
-            AutoResearchRunRequest.model_validate(worker.request),
-            tmp_path / "fresh-data",
-            _execution(store, worker),
-            command_dispatcher=_dispatcher(store),
-        )
+    fresh_events = await _worker_events(
+        service, fresh_launcher, store, worker, tmp_path / "fresh-data"
     )
     assert fresh_events[-1].event == "done"
     assert fresh_launcher.workspaces == [stage]
@@ -2303,15 +2218,13 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
         assert not (workspace / "messages.json").exists()
         assert str(workspace / "messages.json") not in contract_text
 
-    retry_events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(writer=retry_writer),
-            AutoResearchRunRequest.model_validate(retry.request),
-            tmp_path / "retry-data",
-            _execution(retry_store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(retry_store),
-        )
+    retry_events = await _worker_events(
+        service,
+        _WorkerLauncher(writer=retry_writer),
+        retry_store,
+        retry,
+        tmp_path / "retry-data",
+        continuation="retry",
     )
     assert retry_events[-1].event == "done"
     assert not (retry_root / "messages.json").exists()
@@ -2322,14 +2235,7 @@ async def test_recovery_repeats_fail_closed_clear_when_interruption_left_no_fenc
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
-    stage.mkdir(parents=True)
-    store, auto_research, _root, worker = _setup_auto_research(
-        tmp_path,
-        worker_status="failed",
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
+    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
     _record_original_contract(store, worker, stage)
     for name in ("patch.json", "watch.json", "messages.json"):
         (stage / name).write_text("stale", encoding="utf-8")
@@ -2345,15 +2251,8 @@ async def test_recovery_repeats_fail_closed_clear_when_interruption_left_no_fenc
         "_clear_stale_turn_handoffs",
         interrupted_clear,
     )
-    interrupted = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(session_id="worker-session"),
-            AutoResearchRunRequest.model_validate(worker.request),
-            tmp_path / "data",
-            _execution(store, worker),
-            command_dispatcher=_dispatcher(store),
-        )
+    interrupted = await _worker_events(
+        service, _WorkerLauncher(session_id="worker-session"), store, worker, tmp_path / "data"
     )
     assert interrupted[-1].event == "error"
     assert store.auto_research_handoffs_cleared(worker.operation_id) is False
@@ -2374,15 +2273,13 @@ async def test_recovery_repeats_fail_closed_clear_when_interruption_left_no_fenc
             (workspace / name).exists() for name in ("patch.json", "watch.json", "messages.json")
         )
 
-    recovered = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(session_id="worker-session", writer=retry_writer),
-            AutoResearchRunRequest.model_validate(retry.request),
-            tmp_path / "data",
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store),
-        )
+    recovered = await _worker_events(
+        service,
+        _WorkerLauncher(session_id="worker-session", writer=retry_writer),
+        store,
+        retry,
+        tmp_path / "data",
+        continuation="retry",
     )
     assert recovered[-1].event == "done"
     assert store.auto_research_handoffs_cleared(worker.operation_id) is True
@@ -2397,14 +2294,7 @@ async def test_worker_continuation_replaces_original_repository_pointers(
     manifest, tmp_path
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
-    stage.mkdir(parents=True)
-    store, auto_research, _root, worker = _setup_auto_research(
-        tmp_path,
-        worker_status="failed",
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
+    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
     _record_original_contract(
         store,
         worker,
@@ -2416,19 +2306,19 @@ async def test_worker_continuation_replaces_original_repository_pointers(
     retry = _recovery_task(store, auto_research, worker)
 
     def writer(contract_text, _workspace):
-        assert str(manifest.repository_map["repo-a"].path) in contract_text
-        assert "retired.example" not in contract_text
-        assert "/retired/repo-a" not in contract_text
+        read = _with_opened_master(contract_text)
+        assert read != contract_text
+        assert str(manifest.repository_map["repo-a"].path) in read
+        assert "retired.example" not in read
+        assert "/retired/repo-a" not in read
 
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(session_id="worker-session", writer=writer),
-            AutoResearchRunRequest.model_validate(retry.request),
-            tmp_path / "data",
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store),
-        )
+    events = await _worker_events(
+        service,
+        _WorkerLauncher(session_id="worker-session", writer=writer),
+        store,
+        retry,
+        tmp_path / "data",
+        continuation="retry",
     )
     assert events[-1].event == "done"
 
@@ -2436,14 +2326,7 @@ async def test_worker_continuation_replaces_original_repository_pointers(
 @pytest.mark.asyncio
 async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path) -> None:
     service = _service(manifest, tmp_path)
-    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
-    stage.mkdir(parents=True)
-    store, auto_research, root, worker = _setup_auto_research(
-        tmp_path,
-        worker_status="succeeded",
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
+    stage, store, auto_research, root, worker = _saved_worker(tmp_path, status="succeeded")
     _record_original_contract(store, worker, stage)
     message = record_auto_research_message(
         store,
@@ -2458,24 +2341,16 @@ async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path
     request = AutoResearchRunRequest.model_validate(worker.request).model_copy(
         update={"instruction": None, "wake_cause": "message"}
     )
-    now = store.now()
     wake = store.create_auto_research_message_wake_task(
-        AgentTaskRecord(
+        _continuation_record(
+            store,
+            auto_research,
+            worker,
+            request,
             operation_id="mail-wake",
-            project_id=worker.project_id,
-            episode_id=auto_research.episode_id,
-            graph_target=auto_research.graph_target,
-            kind="auto_research",
-            status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="mail wake running",
-            parent_operation_id=worker.operation_id,
             native_session_id=worker.native_session_id,
             stage_root=worker.stage_root,
-            authorized_by=auto_research.authorized_by,
-            dispatch_authority=worker.dispatch_authority,
         ),
         role="worker",
         recipient_task_id=worker.operation_id,
@@ -2493,15 +2368,13 @@ async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path
         assert delivery.graph_authority == "none"
         assert str(workspace / "messages.json") in contract_text
 
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(session_id="worker-session", writer=writer),
-            AutoResearchRunRequest.model_validate(wake.request),
-            tmp_path / "data",
-            _execution(store, wake, continuation="message_wake"),
-            command_dispatcher=_dispatcher(store),
-        )
+    events = await _worker_events(
+        service,
+        _WorkerLauncher(session_id="worker-session", writer=writer),
+        store,
+        wake,
+        tmp_path / "data",
+        continuation="message_wake",
     )
     assert events[-1].event == "done"
     expected_handoff = (stage / "messages.json").read_text(encoding="utf-8")
@@ -2518,15 +2391,13 @@ async def test_claimed_mail_is_staged_exactly_for_worker_wake(manifest, tmp_path
         assert (workspace / "messages.json").read_text(encoding="utf-8") == expected_handoff
         assert str(workspace / "messages.json") in contract_text
 
-    recovery_events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(session_id="worker-session", writer=recovery_writer),
-            AutoResearchRunRequest.model_validate(retry.request),
-            tmp_path / "data",
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store),
-        )
+    recovery_events = await _worker_events(
+        service,
+        _WorkerLauncher(session_id="worker-session", writer=recovery_writer),
+        store,
+        retry,
+        tmp_path / "data",
+        continuation="retry",
     )
     assert recovery_events[-1].event == "done"
 
@@ -2539,15 +2410,8 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
     service = _service(manifest, tmp_path)
     store, auto_research, root, _worker = _setup_auto_research(tmp_path / "store")
     data_dir = tmp_path / "data"
-    fresh_events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            _WorkerLauncher(session_id="orchestrator-session"),
-            AutoResearchRunRequest.model_validate(root.request),
-            data_dir,
-            _execution(store, root),
-            command_dispatcher=_dispatcher(store),
-        )
+    fresh_events = await _orchestrator_events(
+        service, _WorkerLauncher(session_id="orchestrator-session"), store, root, data_dir
     )
     assert fresh_events[-1].event == "done"
     stage = data_dir / "run-stage" / _orchestrator_stage_name("project", root.operation_id)
@@ -2586,25 +2450,17 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
             "wake_cause": "lifecycle",
         }
     )
-    now = store.now()
     wake = store.create_auto_research_lifecycle_wake_task(
-        AgentTaskRecord(
+        _continuation_record(
+            store,
+            auto_research,
+            root,
+            request,
             operation_id="lifecycle-wake",
-            project_id=root.project_id,
-            episode_id=auto_research.episode_id,
-            graph_target=auto_research.graph_target,
-            kind="auto_research",
-            status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="lifecycle wake running",
-            parent_operation_id=root.operation_id,
             native_session_id=root.native_session_id,
             stage_host=root.stage_host,
             stage_root=root.stage_root,
-            authorized_by=auto_research.authorized_by,
-            dispatch_authority=root.dispatch_authority,
         ),
         lifecycle_notice_ids=[notice.notice_id],
         message_ids=[message.message_id],
@@ -2626,15 +2482,13 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         assert mail.message_ids == [message.message_id]
         assert mail.epistemic_status == "hearsay"
 
-    events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            _WorkerLauncher(session_id="orchestrator-session", writer=writer),
-            AutoResearchRunRequest.model_validate(wake.request),
-            data_dir,
-            _execution(store, wake, continuation="lifecycle_wake"),
-            command_dispatcher=_dispatcher(store),
-        )
+    events = await _orchestrator_events(
+        service,
+        _WorkerLauncher(session_id="orchestrator-session", writer=writer),
+        store,
+        wake,
+        data_dir,
+        continuation="lifecycle_wake",
     )
     assert events[-1].event == "done"
     retained_lifecycle = (stage / "lifecycle.json").read_text(encoding="utf-8")
@@ -2651,15 +2505,13 @@ async def test_claimed_lifecycle_and_mail_are_separate_and_reused_on_exact_recov
         assert (workspace / "lifecycle.json").read_text(encoding="utf-8") == (retained_lifecycle)
         assert (workspace / "messages.json").read_text(encoding="utf-8") == retained_mail
 
-    recovery_events = await _events(
-        stream_auto_research_orchestrator_run(
-            service,
-            _WorkerLauncher(session_id="orchestrator-session", writer=recovery_writer),
-            AutoResearchRunRequest.model_validate(retry.request),
-            data_dir,
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store),
-        )
+    recovery_events = await _orchestrator_events(
+        service,
+        _WorkerLauncher(session_id="orchestrator-session", writer=recovery_writer),
+        store,
+        retry,
+        data_dir,
+        continuation="retry",
     )
     assert recovery_events[-1].event == "done"
 
@@ -2752,16 +2604,7 @@ async def test_worker_on_another_machine_gets_staged_current_graph_and_resolved_
             yield AgentEvent(event="answer", text="Remote worker read current project state.")
             yield AgentEvent(event="done")
 
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            Launcher(),
-            AutoResearchRunRequest.model_validate(worker.request),
-            tmp_path / "data",
-            _execution(store, worker),
-            command_dispatcher=_dispatcher(store),
-        )
-    )
+    events = await _worker_events(service, Launcher(), store, worker, tmp_path / "data")
 
     assert events[-1].event == "done", [(event.event, event.text) for event in events]
     assert observed == {
@@ -2781,14 +2624,7 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
-    stage.mkdir(parents=True)
-    store, auto_research, _root, worker = _setup_auto_research(
-        tmp_path,
-        worker_status="failed",
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
+    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     replies: list[str] = []
@@ -2805,7 +2641,11 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
     )
 
     async def writer(contract_text, _workspace):
-        argv = [*_command_argv(contract_text, verb="message"), "Recovered worker result"]
+        read = _with_opened_master(contract_text)
+        (reply_key,) = [
+            line.split("`")[1] for line in read.splitlines() if line.startswith("- Reply key: `")
+        ]
+        argv = [*_command_argv(read), "message", "--key", reply_key, "Recovered worker result"]
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE,
@@ -2815,15 +2655,14 @@ async def test_worker_reply_command_uses_one_auto_research_mailbox_and_stable_al
         assert process.returncode == 0, stderr.decode()
         command_outputs.append(json.loads(stdout))
 
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(session_id="worker-session", writer=writer),
-            AutoResearchRunRequest.model_validate(retry.request),
-            tmp_path / "data",
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store, replies),
-        )
+    events = await _worker_events(
+        service,
+        _WorkerLauncher(session_id="worker-session", writer=writer),
+        store,
+        retry,
+        tmp_path / "data",
+        continuation="retry",
+        replies=replies,
     )
 
     expected_digest = hashlib.sha256(
@@ -2846,14 +2685,7 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
-    stage.mkdir(parents=True)
-    store, auto_research, _root, worker = _setup_auto_research(
-        tmp_path,
-        worker_status="failed",
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
+    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     replies: list[str] = []
@@ -2877,9 +2709,9 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
                 encoding="utf-8",
             )
             return
-        validate_argv = _command_argv(contract_text, verb="validate")
-        assert validate_argv[-2:] == ["validate", str(workspace / "patch.json")]
-        prefix = validate_argv[:-2]
+        prefix = _command_argv(contract_text)
+        assert f"- command_prefix: `{shlex.join(prefix)}`" in contract_text.splitlines()
+        validate_argv = [*prefix, "validate", str(workspace / "patch.json")]
         message = await asyncio.create_subprocess_exec(
             *prefix,
             "message",
@@ -2905,19 +2737,23 @@ async def test_patch_correction_uses_fresh_validate_only_auto_research_gate(
 
     served_gates = _capture_served_invocation_gates(monkeypatch)
     launcher = _WorkerLauncher(session_id="worker-session", writer=writer)
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            launcher,
-            AutoResearchRunRequest.model_validate(retry.request),
-            tmp_path / "data",
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store, replies),
-        )
+    events = await _worker_events(
+        service, launcher, store, retry, tmp_path / "data", continuation="retry", replies=replies
     )
 
     assert launcher.requested_session_ids == ["worker-session", "worker-session"]
     _assert_fresh_matching_invocation_gates(served_gates, launcher.invocation_gates)
+    # The session predates master records, so the retry bootstraps one explicitly; the
+    # correction then points to it and carries only its own validate-only authority.
+    master = store.agent_task_contract(retry.operation_id, "session_master")
+    assert master is not None
+    master_file = stage / "inputs" / session_master_label("auto_research-worker-master", master)
+    recovery_prompt, correction_prompt = launcher.contracts
+    assert recovery_prompt.endswith(SECTIONS["master_bootstrap"].format(path=str(master_file)))
+    assert correction_prompt.endswith(SECTIONS["master_pointer"].format(path=str(master_file)))
+    rules = graph_rules(edits=True, ontology_extensions=False)
+    assert rules in master
+    assert rules not in recovery_prompt and rules not in correction_prompt
     assert replies == []
     assert command_results[0][1]["status"] == "invalid"
     assert "validation only" in str(command_results[0][1]["message"])
@@ -2945,14 +2781,7 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
-    stage.mkdir(parents=True)
-    store, auto_research, _root, worker = _setup_auto_research(
-        tmp_path,
-        worker_status="failed",
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
+    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     staged_mailboxes = []
@@ -2994,15 +2823,13 @@ async def test_patch_correction_mailbox_closes_when_post_stage_receipt_fails(
         "_record_agent_launch_receipt",
         fail_correction_receipt,
     )
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(session_id="worker-session", writer=writer),
-            AutoResearchRunRequest.model_validate(retry.request),
-            tmp_path / "data",
-            _execution(store, retry, continuation="retry"),
-            command_dispatcher=_dispatcher(store),
-        )
+    events = await _worker_events(
+        service,
+        _WorkerLauncher(session_id="worker-session", writer=writer),
+        store,
+        retry,
+        tmp_path / "data",
+        continuation="retry",
     )
 
     assert events[-1].event == "error"
@@ -3027,14 +2854,7 @@ async def test_patch_correction_setup_failure_survives_secondary_cleanup_failure
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    stage = tmp_path / "data" / "run-stage" / _worker_stage_name("project", "worker")
-    stage.mkdir(parents=True)
-    store, auto_research, _root, worker = _setup_auto_research(
-        tmp_path,
-        worker_status="failed",
-        native_session_id="worker-session",
-        stage_root=str(stage),
-    )
+    stage, store, auto_research, _root, worker = _saved_worker(tmp_path, status="failed")
     _record_original_contract(store, worker, stage)
     retry = _recovery_task(store, auto_research, worker)
     staged_mailboxes: list[StagedCommandMailbox] = []
@@ -3068,15 +2888,13 @@ async def test_patch_correction_setup_failure_survives_secondary_cleanup_failure
     monkeypatch.setattr(StagedCommandMailbox, "cleanup", fail_correction_cleanup)
 
     with pytest.raises(RuntimeError, match="primary correction setup failure"):
-        await _events(
-            stream_auto_research_worker_run(
-                service,
-                _WorkerLauncher(session_id="worker-session", writer=writer),
-                AutoResearchRunRequest.model_validate(retry.request),
-                tmp_path / "data",
-                _execution(store, retry, continuation="retry"),
-                command_dispatcher=_dispatcher(store),
-            )
+        await _worker_events(
+            service,
+            _WorkerLauncher(session_id="worker-session", writer=writer),
+            store,
+            retry,
+            tmp_path / "data",
+            continuation="retry",
         )
 
     assert len(staged_mailboxes) == 2
@@ -3119,15 +2937,8 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
     def writer(_contract_text, workspace):
         (workspace / "patch.json").write_text(agent_patch_json(patch), encoding="utf-8")
 
-    events = await _events(
-        stream_auto_research_worker_run(
-            service,
-            _WorkerLauncher(writer=writer),
-            AutoResearchRunRequest.model_validate(worker.request),
-            tmp_path / "data",
-            _execution(store, worker),
-            command_dispatcher=_dispatcher(store),
-        )
+    events = await _worker_events(
+        service, _WorkerLauncher(writer=writer), store, worker, tmp_path / "data"
     )
 
     graph_messages = [event for event in events if event.event == "message"]
@@ -3144,9 +2955,10 @@ async def test_worker_patch_applies_with_ordinary_attribution_after_stop_intent(
 
 def test_orchestrator_receives_the_project_settings_package_paths() -> None:
     from rcp.agents.auto_research_prompt import (
-        auto_research_orchestrator_continuation_contract,
         auto_research_orchestrator_task_contract,
+        auto_research_prompt_values,
     )
+    from rcp.agents.continuation_prompt import MasterRef, changed_since_master
     from rcp.agents.write_scope import ProjectWriteScope
 
     package_path = "/stage/inputs/bundle/graph-audit"
@@ -3165,7 +2977,6 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
         research_path="/s/research.md",
         patch_path="/s/patch.json",
         output_schema_path="/s/schema.json",
-        validator_command="/stage/rcp-agent validate",
         command_client="/stage/rcp-agent",
         write_scope=ProjectWriteScope.create(
             project_id="project",
@@ -3178,18 +2989,26 @@ def test_orchestrator_receives_the_project_settings_package_paths() -> None:
             protected_write_paths=["/stage/inputs"],
         ),
         repositories=[],
-        skill_pointers=pointers,
     )
-    fresh = auto_research_orchestrator_task_contract(project_name="project", **common)
-    continuation = auto_research_orchestrator_continuation_contract(
-        original_contract_path="/s/original.md",
-        mode="continuation",
-        **common,
+    fresh = auto_research_orchestrator_task_contract(
+        project_name="project", skill_pointers=pointers, **common
     )
     assert package_path in fresh
-    assert package_path in continuation
-    rules = graph_rules(edits=True, ontology_extensions=False)
-    assert rules in fresh and rules in continuation
+    assert graph_rules(edits=True, ontology_extensions=False) in fresh
+    # A continuation sends the packages again only when one of them changed.
+    master = MasterRef(
+        path="/stage/inputs/master.md",
+        bootstrap=False,
+        values=auto_research_prompt_values(skill_pointers=pointers, **common),
+    )
+    unchanged = auto_research_prompt_values(skill_pointers=pointers, **common)
+    upgraded = auto_research_prompt_values(
+        skill_pointers=[{**pointers[0], "version": "1.1.0"}], **common
+    )
+    assert changed_since_master(master, unchanged) is None
+    assert changed_since_master(master, upgraded) == {
+        "skills": {"graph-audit": {"version": "1.1.0"}}
+    }
 
 
 def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:

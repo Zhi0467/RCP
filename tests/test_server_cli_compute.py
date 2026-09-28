@@ -22,8 +22,9 @@ PROJECT_ID = "123e4567-e89b-42d3-b456-426614174001"
 
 
 @pytest.mark.parametrize("ready", [True, False])
+@pytest.mark.parametrize("route", ["helper", "scheduler"])
 def test_server_compute_probe_runs_through_installed_service_and_stores_result(
-    tmp_path, manifest, monkeypatch, ready
+    tmp_path, manifest, monkeypatch, ready, route
 ) -> None:
     import rcp.api.app as app_module
 
@@ -43,7 +44,7 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
     )
     result = ComputeBackendProbe(
         execution_machine="laptop",
-        backend_id="systemd_user",
+        backend_id="systemd_user" if route == "helper" else "slurm",
         state="ready" if ready else "failed",
         ready=ready,
         containment="mirrored" if ready else "cooperative",
@@ -52,10 +53,19 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
         status_label="Ready" if ready else "Failed",
         status_tone="ready" if ready else "error",
     )
+    other_route = "scheduler" if route == "helper" else "helper"
+    other_probe = result.model_copy(
+        update={
+            "backend_id": "slurm" if other_route == "scheduler" else "systemd_user",
+            "ready": not ready,
+            "state": "failed" if ready else "ready",
+        }
+    )
+    store.record_compute_backend_probe(PROJECT_ID, other_probe, other_route)
     calls = []
 
-    def probe(loaded, machine_alias, *, data_dir):
-        calls.append((loaded.path, machine_alias, data_dir))
+    def probe(loaded, machine_alias, selected_route, *, data_dir):
+        calls.append((loaded.path, machine_alias, selected_route, data_dir))
         return result
 
     monkeypatch.setattr(app_module, "probe_compute_backend", probe)
@@ -71,7 +81,7 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
         )
         app = create_app(data_dir=data_dir, instance_metadata=metadata)
         args = build_parser().parse_args(
-            ["server", "compute", "probe", "--project", PROJECT_ID, "laptop"]
+            ["server", "compute", "probe", "--project", PROJECT_ID, "laptop", "--route", route]
         )
         output = StringIO()
         exchange = ServerControlClient._exchange
@@ -107,11 +117,13 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
                 selector_kind="project",
                 selector_id=PROJECT_ID,
                 machine_alias="laptop",
+                compute_route=route,
                 probe=result,
             )
         ]
-    assert calls == [(manifest.path, "laptop", data_dir)]
-    assert store.compute_backend_probe(PROJECT_ID, "laptop") == result
+    assert calls == [(manifest.path, "laptop", route, data_dir)]
+    assert store.compute_backend_probe(PROJECT_ID, "laptop", route) == result
+    assert store.compute_backend_probe(PROJECT_ID, "laptop", other_route) == other_probe
     for text in (result.status_label, result.backend_id, result.containment, result.diagnostic):
         assert text in output.getvalue()
 
@@ -119,7 +131,7 @@ def test_server_compute_probe_runs_through_installed_service_and_stores_result(
 def test_compute_probe_requires_the_service_account() -> None:
     output = StringIO()
     args = build_parser().parse_args(
-        ["server", "compute", "probe", "--project", PROJECT_ID, "laptop"]
+        ["server", "compute", "probe", "--project", PROJECT_ID, "laptop", "--route", "helper"]
     )
     code = run_server_command(
         args,
@@ -131,7 +143,8 @@ def test_compute_probe_requires_the_service_account() -> None:
     assert "rcp" in output.getvalue()
 
 
-def test_compute_control_preserves_old_wire_shape_and_requires_new_protocol() -> None:
+@pytest.mark.parametrize("old_version", [10, 11])
+def test_compute_control_preserves_old_wire_shape_and_requires_new_protocol(old_version) -> None:
     import json
     import uuid
 
@@ -140,12 +153,14 @@ def test_compute_control_preserves_old_wire_shape_and_requires_new_protocol() ->
     fields = dict(request_id=str(uuid.uuid4()), instance_id=str(uuid.uuid4()))
     ordinary = ServerControlRequest(operation="probe", protocol_version=10, **fields)
     assert "machine_alias" not in json.loads(ordinary.model_dump_json())
+    assert "compute_route" not in json.loads(ordinary.model_dump_json())
     with pytest.raises(ValueError, match="project and machine alias"):
         ServerControlRequest(
             operation="compute_backend_probe",
-            protocol_version=10,
+            protocol_version=old_version,
             selector_kind="project",
             selector_id=PROJECT_ID,
             machine_alias="laptop",
+            compute_route="helper",
             **fields,
         )

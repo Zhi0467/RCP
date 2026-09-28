@@ -142,7 +142,7 @@ def resolve_context(
         raise RuntimeError("The compute machine returned an invalid user id.")
     context = replace(context, os_name=os_result.stdout.strip(), uid=uid)
     has_user_manager = False
-    if context.os_name == "Linux" and context.compute.job_manager is None:
+    if context.os_name == "Linux":
         try:
             manager = context.run(
                 [

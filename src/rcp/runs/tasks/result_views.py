@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from rcp.artifacts import validate_artifact_bytes, validate_result_view_id
+from rcp.artifacts import classify_artifact_bytes, validate_result_view_id
 from rcp.background import AgentTaskExecution
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, RUN_STAGE_RETENTION_DAYS
 from rcp.runs.shared import _touch_local_stage
@@ -210,7 +210,7 @@ def discover_result_view(
             max_bytes=max_bytes,
         )
     )
-    if validate_artifact_bytes(name, data) != "text/html":
+    if classify_artifact_bytes(name, data) != "text/html":
         raise ValueError("result view must be HTML")
     return ResultViewSnapshot(
         name=name,

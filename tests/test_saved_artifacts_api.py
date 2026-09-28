@@ -37,7 +37,9 @@ def create_saved_artifact(
     operation_id = str(uuid.uuid4())
     data = b"<!doctype html><h1>Saved comparison</h1>"
     now = store.now()
-    artifact = descriptor_for(operation_id, "comparison.html", size_bytes=len(data))
+    artifact = descriptor_for(
+        operation_id, "comparison.html", media_type="text/html", size_bytes=len(data)
+    )
     if kept:
         workspace = app.state.catalog.open(project_id).history.workspace
         filename = workspace.keep_artifact(
@@ -102,7 +104,9 @@ def _keep_task_artifact(app, task):
         {"kind": "node_chat", "attempt": 1, "has_parent": False, "resumed": False},
     )
     data = b"<!doctype html><h1>Episode comparison</h1>"
-    artifact = descriptor_for(task.operation_id, "comparison.html", size_bytes=len(data))
+    artifact = descriptor_for(
+        task.operation_id, "comparison.html", media_type="text/html", size_bytes=len(data)
+    )
     workspace = app.state.catalog.open(task.project_id).history.workspace
     filename = workspace.keep_artifact(
         source_name=artifact.name,

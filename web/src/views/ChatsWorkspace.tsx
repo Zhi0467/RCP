@@ -1,14 +1,24 @@
 import {
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Circle,
+  Ellipsis,
   LoaderCircle,
   MessageCircle,
+  PanelLeft,
+  Pause,
+  Pin,
+  Search,
+  X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { isActiveTask } from "../agentTasks";
-import { conversationHasUnread, type ChatConversation } from "../chatWorkspace";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  AGENT_LIST_SECTIONS,
+  conversationAgentStatus,
+  groupConversationAgents,
+  type ChatConversation,
+  type AgentListSection,
+  type ConversationAgentStatus,
+} from "../chatWorkspace";
 import type { GlossaryIndex } from "../glossary";
 import {
   CHAT_LIST_DEFAULT_WIDTH,
@@ -22,12 +32,14 @@ import {
 } from "../chatLayout";
 import type {
   AgentTask,
+  ChatDisplay,
   ChatTranscript,
   GraphNode,
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
 } from "../types";
+import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../api";
 import { NodeChat } from "../components/NodeChat";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
@@ -41,7 +53,7 @@ interface Props {
   tasks: AgentTask[];
   watchers: WatcherRecord[];
   graphChangesDisabled: boolean;
-  unreadTaskIds: ReadonlySet<string>;
+  unreadChatIds: ReadonlySet<string>;
   chatTranscripts: ReadonlyMap<string, ChatTranscript>;
   hasMore: boolean;
   loadingMore: boolean;
@@ -57,6 +69,11 @@ interface Props {
   onRepairGraphUpdate: (taskId: string) => Promise<void>;
   onStopWatcher?: (watcherId: string) => void;
   onNewSession: (conversation: ChatConversation) => void;
+  onRemoveDraft: (chatId: string) => void;
+  /** Archive moves a chat in or out of the unread count, which the server derives. */
+  onArchiveChange?: () => void;
+  /** Fetches conversations the loaded pages do not reach, such as old pinned ones. */
+  onEnsureListed?: (chatIds: readonly string[]) => void;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -88,9 +105,65 @@ function readChatListCollapsed(projectId: string): boolean {
   }
 }
 
+type AgentFilter = "all" | "working" | "archived";
+
+const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {}, pinned: [] };
+
+const GROUP_LABELS: Record<AgentListSection, string> = {
+  pinned: "Pinned",
+  new_reply: "New reply",
+  failed: "Failed",
+  stopped: "Stopped",
+  working: "Working",
+  done: "Done",
+};
+
+function needsHuman(status: ConversationAgentStatus): boolean {
+  return status.state === "failed" || status.state === "stopped";
+}
+
+function AgentGroupIcon({ group }: { group: AgentListSection }) {
+  const Icon = {
+    pinned: Pin,
+    new_reply: MessageCircle,
+    failed: X,
+    stopped: Pause,
+    working: Circle,
+    done: null,
+  }[group];
+  return Icon ? <Icon className="agent-group-icon" size={13} aria-hidden="true" /> : null;
+}
+
+function sinceLabel(timestamp: string | null | undefined, now: number): string {
+  const at = timestamp ? Date.parse(timestamp) : Number.NaN;
+  if (!Number.isFinite(at)) return "";
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 24 * 60) return `${Math.round(minutes / 60)}h`;
+  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function agentMeta(status: ConversationAgentStatus): string {
+  const latest = status.latest;
+  if (!latest) return "";
+  const parts: (string | null | undefined)[] = [latest.provider_label];
+  if (status.state === "working") {
+    parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
+  } else {
+    parts.push(latest.request.run_truth_scope?.join(", "));
+    if (status.state === "failed" && latest.can_retry) parts.push("Retry");
+    if (status.state === "stopped") {
+      if (latest.can_resume) parts.push("Resume");
+      else if (latest.can_retry) parts.push("Retry");
+    }
+  }
+  return parts.filter(Boolean).join(" · ");
+}
+
 export function ChatsWorkspace({
   project,
-  conversations,
+  conversations: storedConversations,
   selectedChatId,
   nodes,
   glossaryIndex,
@@ -98,9 +171,11 @@ export function ChatsWorkspace({
   tasks,
   watchers,
   graphChangesDisabled,
-  unreadTaskIds,
+  unreadChatIds,
   chatTranscripts,
   hasMore,
+  onArchiveChange,
+  onEnsureListed,
   loadingMore,
   onSelect,
   onLoadMore,
@@ -114,23 +189,137 @@ export function ChatsWorkspace({
   onRepairGraphUpdate,
   onStopWatcher,
   onNewSession,
+  onRemoveDraft,
 }: Props) {
   const narrow = useNarrowViewport();
   const [mobileListOpen, setMobileListOpen] = useState(false);
+  const [filter, setFilter] = useState<AgentFilter>("all");
+  const [query, setQuery] = useState("");
   const [listWidth, setListWidth] = useState(() => readChatListWidth(project.id));
   const [listCollapsed, setListCollapsed] = useState(() => readChatListCollapsed(project.id));
   const [widthBounds, setWidthBounds] = useState<ChatListWidthBounds>(() =>
     chatListWidthBounds(typeof window === "undefined" ? 1200 : window.innerWidth),
   );
   const workspace = useRef<HTMLElement>(null);
+  const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const [display, setDisplay] = useState<ChatDisplay>(EMPTY_CHAT_DISPLAY);
+  const archivedChatIds = useMemo(() => new Set(display.archived), [display.archived]);
+  // A human-given name replaces the derived one everywhere in this workspace.
+  const conversations = useMemo(
+    () =>
+      storedConversations.map((conversation) =>
+        display.titles[conversation.chatId]
+          ? { ...conversation, title: display.titles[conversation.chatId] }
+          : conversation,
+      ),
+    [storedConversations, display.titles],
+  );
+  const [menuChatId, setMenuChatId] = useState<string | null>(null);
+  const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
+  const showingArchived = filter === "archived";
+  const listed = conversations.filter(
+    (conversation) => archivedChatIds.has(conversation.chatId) === showingArchived,
+  );
+  // Count every archived chat, including ones on pages not loaded yet; the
+  // Archived view pages through them with Load more.
+  const archivedCount = archivedChatIds.size;
+  // Pins lead only the All view; a filter shows each pinned chat in its status group.
+  const groups = groupConversationAgents(
+    listed,
+    unreadChatIds,
+    query,
+    filter === "all" ? display.pinned : [],
+  );
+  // Filter counts ignore pins, so Working counts every working agent.
+  const activeGroups = groupConversationAgents(
+    conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
+    unreadChatIds,
+    query,
+  );
+  const pinnedChatIds = new Set(display.pinned);
+  useEffect(() => {
+    onEnsureListed?.(display.pinned);
+  }, [display.pinned, onEnsureListed]);
+  const visibleGroups = AGENT_LIST_SECTIONS.filter(
+    (group) => filter === "all" || showingArchived || group === filter,
+  );
+  const now = Date.now();
   const selected =
     conversations.find((conversation) => conversation.chatId === selectedChatId) ??
     conversations[0] ??
     null;
 
+  // Every read or edit of the display set returns the whole set, so only the
+  // latest request's answer may apply; a project switch starts a new request.
+  const displayRequest = useRef(0);
+  useEffect(() => {
+    let current = true;
+    const request = ++displayRequest.current;
+    setDisplay(EMPTY_CHAT_DISPLAY);
+    loadChatDisplay(apiBase)
+      .then((response) => {
+        if (current && displayRequest.current === request) setDisplay(response);
+      })
+      .catch(() => {
+        // Archive and names are display choices; an unreadable set shows every
+        // conversation under its derived name.
+      });
+    return () => {
+      current = false;
+    };
+  }, [apiBase]);
+
+  useEffect(() => {
+    if (menuChatId === null) return;
+    const close = (event: Event) => {
+      if (event instanceof KeyboardEvent && event.key !== "Escape") return;
+      if (event.target instanceof Element && event.target.closest(".agent-row-menu")) return;
+      setMenuChatId(null);
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", close);
+    };
+  }, [menuChatId]);
+
+  const updateDisplay = async (change: () => Promise<ChatDisplay>) => {
+    const request = ++displayRequest.current;
+    setMenuChatId(null);
+    setArchiveError(null);
+    try {
+      const response = await change();
+      if (displayRequest.current === request) setDisplay(response);
+    } catch (failure) {
+      if (displayRequest.current === request)
+        setArchiveError(failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+  const archive = (chatId: string, archived: boolean) => {
+    // An archived chat leaves the open list, so it must not stay selected there
+    // where a new turn would run out of sight.
+    const next = conversations.find(
+      (item) => item.chatId !== chatId && !archivedChatIds.has(item.chatId),
+    );
+    if (archived && !showingArchived && selected?.chatId === chatId && next) onSelect(next.chatId);
+    return updateDisplay(() => setChatArchived(apiBase, chatId, archived)).then(() =>
+      onArchiveChange?.(),
+    );
+  };
+  const pin = (chatId: string, pinned: boolean) =>
+    updateDisplay(() => setChatPinned(apiBase, chatId, pinned));
+  const rename = (chatId: string, title: string) => {
+    setRenamingChatId(null);
+    return updateDisplay(() => setChatTitle(apiBase, chatId, title));
+  };
+
   useEffect(() => {
     setListWidth(readChatListWidth(project.id));
     setListCollapsed(readChatListCollapsed(project.id));
+    setQuery("");
+    setFilter("all");
   }, [project.id]);
 
   useEffect(() => {
@@ -180,11 +369,55 @@ export function ChatsWorkspace({
     return () => observer.disconnect();
   }, [project.id, narrow]);
 
+  const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
+  const selectedLatest = selectedStatus?.latest ?? null;
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();
     if (!bounds) return;
     setListWidth(clampChatListWidth(clientX - bounds.left, widthBounds));
   };
+
+  const conversationHeading =
+    selected && selectedStatus ? (
+      <>
+        <strong>{selected.title}</strong>
+        <span className="conversation-header-meta">
+          {[
+            selectedLatest?.provider_label ??
+              project.providers?.[project.agent_profiles?.[selected.kind]?.provider]?.label,
+            selectedLatest?.request.model,
+            selectedLatest?.request.reasoning,
+            selectedLatest?.request.run_truth_scope?.join(", "),
+            selected.kind === "project_chat" ? "Project chat" : "Node chat",
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </span>
+        {needsHuman(selectedStatus) && selectedLatest && (
+          <div className="conversation-header-banner" role="status">
+            <span>{selectedLatest.status_label}</span>
+            {selectedLatest.can_resume && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onResumeTask(selectedLatest)}
+              >
+                Resume
+              </button>
+            )}
+            {!selectedLatest.can_resume && selectedLatest.can_retry && (
+              <button
+                className="button compact"
+                type="button"
+                onClick={() => onRetryTask(selectedLatest)}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+      </>
+    ) : null;
 
   return (
     <section
@@ -193,7 +426,9 @@ export function ChatsWorkspace({
       style={{
         gridTemplateColumns: narrow
           ? undefined
-          : `${listCollapsed ? CHAT_LIST_COLLAPSED_WIDTH : listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
+          : listCollapsed
+            ? `${CHAT_LIST_COLLAPSED_WIDTH}px 0px minmax(0, 1fr)`
+            : `${listWidth}px ${CHAT_LIST_DIVIDER_WIDTH}px minmax(0, 1fr)`,
       }}
     >
       <button
@@ -204,7 +439,7 @@ export function ChatsWorkspace({
         onClick={() => setMobileListOpen((current) => !current)}
       >
         <MessageCircle size={14} />
-        <span>Chats</span>
+        <span>Agents</span>
         <ChevronDown size={14} />
       </button>
       <aside
@@ -213,48 +448,235 @@ export function ChatsWorkspace({
         hidden={narrow ? !mobileListOpen : listCollapsed}
         id="conversation-list-panel"
       >
-        <header>
-          <MessageCircle size={16} />
-          <strong>Chats</strong>
-        </header>
+        <div className="agent-list-tools">
+          <div className="agent-list-top">
+            <button
+              aria-controls="conversation-list-panel"
+              aria-expanded
+              aria-keyshortcuts="Meta+B"
+              aria-label="Collapse conversation list"
+              className="conversation-list-fold"
+              onClick={() => setListCollapsed(true)}
+              title="Collapse conversation list"
+              type="button"
+            >
+              <PanelLeft size={15} />
+            </button>
+            <label className="agent-list-search">
+              <Search size={13} aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="Search agents"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+          </div>
+          <div className="agent-list-filters" role="group" aria-label="Filter agents">
+            {(archivedCount > 0 || showingArchived
+              ? (["all", "working", "archived"] as const)
+              : (["all", "working"] as const)
+            ).map((value) => {
+              const count =
+                value === "archived"
+                  ? archivedCount
+                  : value === "all"
+                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0)
+                    : activeGroups[value].length;
+              return (
+                <button
+                  type="button"
+                  key={value}
+                  data-filter={value}
+                  aria-pressed={filter === value}
+                  onClick={() => setFilter(value)}
+                >
+                  {value === "all"
+                    ? "All"
+                    : value === "archived"
+                      ? "Archived"
+                      : GROUP_LABELS[value]}{" "}
+                  <span>{count}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        {archiveError && (
+          <p className="agent-list-error" role="alert">
+            {archiveError}
+          </p>
+        )}
         <div role="listbox" aria-label="Conversations">
-          {conversations.map((conversation) => {
-            const latest = conversation.tasks.at(-1);
-            const active = conversation.tasks.some(isActiveTask);
-            const unread = conversationHasUnread(conversation, unreadTaskIds);
-            const selectedConversation = conversation.chatId === selected?.chatId;
-            return (
-              <button
-                type="button"
-                role="option"
-                aria-selected={selectedConversation}
-                aria-current={selectedConversation ? "page" : undefined}
-                aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
-                className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
-                title={conversation.title}
-                onClick={() => {
-                  onSelect(conversation.chatId);
-                  if (narrow) setMobileListOpen(false);
-                }}
-                key={conversation.chatId}
+          {visibleGroups.map((group) =>
+            groups[group].length === 0 ? null : (
+              <div
+                className="agent-group"
+                role="group"
+                aria-label={GROUP_LABELS[group]}
+                data-group={group}
+                key={group}
               >
-                <span>{conversation.title}</span>
-                <small>{conversation.kind === "project_chat" ? "Project" : "Node"}</small>
-                {active && <Circle className="conversation-active" size={8} fill="currentColor" />}
-                {!active && unread && (
-                  <Circle
-                    className="conversation-unread"
-                    size={8}
-                    fill="currentColor"
-                    aria-hidden="true"
-                  />
-                )}
-                {!active && !unread && latest && (
-                  <time>{new Date(latest.updated_at).toLocaleDateString()}</time>
-                )}
-              </button>
-            );
-          })}
+                <div className="agent-group-heading" aria-hidden="true">
+                  <span className="agent-group-label">
+                    <AgentGroupIcon group={group} />
+                    {GROUP_LABELS[group]}
+                  </span>
+                  <span>{groups[group].length}</span>
+                </div>
+                {groups[group].map(({ conversation, status }) => {
+                  const selectedConversation = conversation.chatId === selected?.chatId;
+                  const unread = status.unread;
+                  const latest = status.latest;
+                  const draft = conversation.tasks.length === 0 && !conversation.updatedAt;
+                  const archived = archivedChatIds.has(conversation.chatId);
+                  const menuOpen = menuChatId === conversation.chatId;
+                  return (
+                    <div
+                      className={`agent-row${menuOpen ? " menu-open" : ""}`}
+                      key={conversation.chatId}
+                    >
+                      {renamingChatId === conversation.chatId ? (
+                        <form
+                          className="agent-row-rename"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            const value = new FormData(event.currentTarget).get("title");
+                            const title = typeof value === "string" ? value.trim() : "";
+                            if (title === conversation.title) setRenamingChatId(null);
+                            else void rename(conversation.chatId, title);
+                          }}
+                        >
+                          {/* Blank returns the chat to its derived name. */}
+                          <input
+                            name="title"
+                            aria-label="Agent name"
+                            autoFocus
+                            defaultValue={conversation.title}
+                            onFocus={(event) => event.currentTarget.select()}
+                            onBlur={(event) => event.currentTarget.form?.requestSubmit()}
+                            onKeyDown={(event) => {
+                              if (event.key === "Escape") setRenamingChatId(null);
+                            }}
+                          />
+                        </form>
+                      ) : (
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={selectedConversation}
+                          aria-current={selectedConversation ? "page" : undefined}
+                          aria-label={`${conversation.title}, ${conversation.kind === "project_chat" ? "project" : "node"} conversation${unread ? ", unread result" : ""}`}
+                          className={`${selectedConversation ? "active" : ""}${unread ? " unread" : ""}`}
+                          data-state={status.state}
+                          title={conversation.title}
+                          onClick={() => {
+                            onSelect(conversation.chatId);
+                            if (narrow) setMobileListOpen(false);
+                          }}
+                        >
+                          <span className="agent-row-body">
+                            <span className="agent-row-title">
+                              {/* A pinned row sits outside its status group, so it carries the mark. */}
+                              {group === "pinned" && <AgentGroupIcon group={status.group} />}
+                              {unread && <span className="agent-new-pill">New</span>}
+                              {conversation.title}
+                            </span>
+                            <span className="agent-row-meta">{agentMeta(status) || "\u00a0"}</span>
+                          </span>
+                          <time>
+                            {status.state === "working"
+                              ? "live"
+                              : sinceLabel(
+                                  latest?.last_activity_at ?? conversation.updatedAt ?? null,
+                                  now,
+                                )}
+                          </time>
+                        </button>
+                      )}
+                      {renamingChatId !== conversation.chatId && (
+                        <div className="agent-row-menu">
+                          <button
+                            type="button"
+                            className="agent-row-menu-button"
+                            aria-label={`More actions for ${conversation.title}`}
+                            aria-haspopup="menu"
+                            aria-expanded={menuOpen}
+                            onClick={() => setMenuChatId(menuOpen ? null : conversation.chatId)}
+                          >
+                            <Ellipsis size={14} />
+                          </button>
+                          {menuOpen && (
+                            <div className="agent-row-menu-list" role="menu">
+                              {draft ? (
+                                <button
+                                  type="button"
+                                  role="menuitem"
+                                  onClick={() => {
+                                    setMenuChatId(null);
+                                    onRemoveDraft(conversation.chatId);
+                                    // Move the selection off the removed draft so the
+                                    // shown chat is the one that loads.
+                                    const next = conversations.find(
+                                      (item) => item.chatId !== conversation.chatId,
+                                    );
+                                    if (selected?.chatId === conversation.chatId && next)
+                                      onSelect(next.chatId);
+                                  }}
+                                >
+                                  Remove
+                                </button>
+                              ) : (
+                                <>
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() => {
+                                      setMenuChatId(null);
+                                      setRenamingChatId(conversation.chatId);
+                                    }}
+                                  >
+                                    Rename
+                                  </button>
+                                  {!archived && (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() =>
+                                        void pin(
+                                          conversation.chatId,
+                                          !pinnedChatIds.has(conversation.chatId),
+                                        )
+                                      }
+                                    >
+                                      {pinnedChatIds.has(conversation.chatId) ? "Unpin" : "Pin"}
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    disabled={!archived && status.state === "working"}
+                                    title={
+                                      !archived && status.state === "working"
+                                        ? "Archive after this agent finishes"
+                                        : undefined
+                                    }
+                                    onClick={() => void archive(conversation.chatId, !archived)}
+                                  >
+                                    {archived ? "Restore" : "Archive"}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ),
+          )}
         </div>
         {hasMore && (
           <footer className="conversation-list-more">
@@ -270,86 +692,65 @@ export function ChatsWorkspace({
           </footer>
         )}
       </aside>
-      <div className={`conversation-divider${listCollapsed ? " is-collapsed" : ""}`}>
+      <div className="conversation-divider" hidden={listCollapsed}>
         <div
           aria-controls="conversation-list-panel conversation-surface-panel"
-          aria-hidden={listCollapsed}
           aria-label="Resize conversation list"
           aria-orientation="vertical"
           aria-valuemax={widthBounds.maximum}
           aria-valuemin={widthBounds.minimum}
           aria-valuenow={Math.round(listWidth)}
           className="conversation-resize-handle"
-          onKeyDown={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-                    event.preventDefault();
-                    setListWidth((current) =>
-                      clampChatListWidth(
-                        current + (event.key === "ArrowLeft" ? -16 : 16),
-                        widthBounds,
-                      ),
-                    );
-                  }
-                  if (event.key === "Home" || event.key === "End") {
-                    event.preventDefault();
-                    setListWidth(event.key === "Home" ? widthBounds.minimum : widthBounds.maximum);
-                  }
-                }
-          }
-          onPointerCancel={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  }
-                }
-          }
-          onPointerDown={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  event.currentTarget.setPointerCapture(event.pointerId);
-                  resizeFromPointer(event.clientX);
-                }
-          }
-          onPointerMove={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    resizeFromPointer(event.clientX);
-                  }
-                }
-          }
-          onPointerUp={
-            listCollapsed
-              ? undefined
-              : (event) => {
-                  if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-                    event.currentTarget.releasePointerCapture(event.pointerId);
-                  }
-                }
-          }
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+              event.preventDefault();
+              setListWidth((current) =>
+                clampChatListWidth(current + (event.key === "ArrowLeft" ? -16 : 16), widthBounds),
+              );
+            }
+            if (event.key === "Home" || event.key === "End") {
+              event.preventDefault();
+              setListWidth(event.key === "Home" ? widthBounds.minimum : widthBounds.maximum);
+            }
+          }}
+          onPointerCancel={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+          }}
+          onPointerDown={(event) => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            resizeFromPointer(event.clientX);
+          }}
+          onPointerMove={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              resizeFromPointer(event.clientX);
+            }
+          }}
+          onPointerUp={(event) => {
+            if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId);
+            }
+          }}
           role="separator"
-          tabIndex={listCollapsed ? -1 : 0}
+          tabIndex={0}
         />
-        <button
-          aria-controls="conversation-list-panel"
-          aria-expanded={!listCollapsed}
-          aria-keyshortcuts="Meta+B"
-          aria-label={listCollapsed ? "Expand conversation list" : "Collapse conversation list"}
-          className="conversation-divider-toggle"
-          onClick={() => setListCollapsed((current) => !current)}
-          type="button"
-        >
-          {listCollapsed ? <ChevronRight size={13} /> : <ChevronLeft size={13} />}
-        </button>
       </div>
       <div className="conversation-surface" id="conversation-surface-panel">
+        {!narrow && listCollapsed && (
+          <button
+            aria-controls="conversation-list-panel"
+            aria-expanded={false}
+            aria-keyshortcuts="Meta+B"
+            aria-label="Expand conversation list"
+            className="conversation-list-fold is-floating"
+            onClick={() => setListCollapsed(false)}
+            title="Expand conversation list"
+            type="button"
+          >
+            <PanelLeft size={15} />
+          </button>
+        )}
         {selected ? (
           <NodeChat
             key={selected.chatId}
@@ -358,6 +759,8 @@ export function ChatsWorkspace({
             nodes={nodes}
             glossaryIndex={glossaryIndex}
             conversationTitle={selected.kind === "node_chat" ? selected.title : undefined}
+            header={conversationHeading}
+            headerState={selectedStatus?.state}
             runScope={runScope}
             tasks={tasks}
             watchers={watchers}

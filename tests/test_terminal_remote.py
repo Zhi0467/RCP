@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import errno
 import inspect
 import json
 import os
 import shlex
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
-from rcp import git_identity
+from rcp import git_identity, rcp_home
+from rcp.agents import grant_paths
 from rcp.terminals import git_access, launch, profile, remote
 from rcp.terminals.models import TerminalUnavailable
 from rcp.transport import remote_terminal
@@ -314,46 +317,58 @@ def test_shipped_wrapper_has_job_control_and_hangs_up_with_local_pty(tmp_path):
     )
     os.close(slave)
     output = bytearray()
+    # Bash's default prompt ends in "# " for root and "$ " otherwise.
+    PROMPTS = (b"$ ", b"# ")
 
     def read_until(marker, seconds=10, start=0):
+        markers = marker if isinstance(marker, tuple) else (marker,)
         deadline = time.monotonic() + seconds
-        while marker not in output[start:]:
+        while not any(each in output[start:] for each in markers):
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
                 return False
-            output.extend(os.read(master, 4096))
+            try:
+                chunk = os.read(master, 4096)
+            except OSError as error:
+                # EIO: the session hung up. Report it through the caller's
+                # assertion, which prints everything the shell wrote.
+                if error.errno != errno.EIO:
+                    raise
+                return False
+            output.extend(chunk)
         return True
 
     def require(marker, seconds=10):
         assert read_until(marker, seconds), output.decode(errors="replace")
 
     def interrupt():
-        """Send INTR and wait for its own echo before anything else is typed.
+        """Send INTR and wait until it is handled before anything else is typed.
 
         The tty flushes its input queue while processing INTR, so a command
-        written before that echo loses its leading characters — which reads as
-        `bash: rintf: command not found` rather than as a lost interrupt.
+        written before then loses its leading characters — which reads as
+        `bash: rintf: command not found` rather than as a lost interrupt. The
+        tty echoes `^C` while a job runs; at the prompt, bash 3.2's readline
+        prints only a fresh prompt.
         """
         mark = len(output)
         os.write(master, b"\x03")
-        assert read_until(b"^C", 5, mark), output.decode(errors="replace")
+        assert read_until((b"^C", *PROMPTS), 5, mark), output.decode(errors="replace")
 
     try:
         require(profile._READY_MARKER)
-        os.write(master, b"sleep 30\n")
-        require(b"sleep 30\r\n")
+        # The marker is printed just before bash starts. Type nothing until bash
+        # prompts: CI once lost the whole session to an interrupt sent in that gap.
+        assert read_until(PROMPTS, 10, output.index(profile._READY_MARKER)), output.decode(
+            errors="replace"
+        )
+        # Interrupt a job that is already running: it prints only once the shell
+        # has forked it into the foreground, so the interrupt cannot race the fork.
+        os.write(master, b"sh -c 'printf \"job-%s\\n\" started; exec sleep 30'\n")
+        require(b"job-started\r\n")
         interrupt()
-        # An interrupt delivered while the shell is still forking its job can
-        # arrive before that job exists, leaving it running and swallowing what
-        # follows. Ask again, interrupting once more, until the shell answers.
-        deadline = time.monotonic() + 30
-        while True:
-            mark = len(output)
-            os.write(master, b"printf 'job-%s\\n' control\n")
-            if read_until(b"job-control\r\n", 3, mark):
-                break
-            assert time.monotonic() < deadline, output.decode(errors="replace")
-            interrupt()
+        # The shell survived the interrupt and still runs commands.
+        os.write(master, b"printf 'job-%s\\n' control\n")
+        require(b"job-control\r\n")
         assert b"no job control" not in output
         os.close(master)
         master = -1
@@ -388,6 +403,8 @@ def test_remote_source_shipping_does_not_require_inspectable_module_files(tmp_pa
     payload = json.loads(shipped[4])
     assert "def launch_command" in payload["profile_source"]
     assert "def terminal_git_access" in payload["git_access_source"]
+    assert "def refuse_grants_inside" in payload["grant_paths_source"]
+    assert payload["writable_paths"] == ["/tmp"]
 
 
 def test_remote_launch_carries_the_deploy_key_path_to_the_far_side(monkeypatch):
@@ -417,3 +434,67 @@ def test_remote_launch_carries_the_deploy_key_path_to_the_far_side(monkeypatch):
     )
     blob = " ".join(captured["command"])
     assert "projects/p1/code/id_ed25519" in blob
+
+
+def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_path, monkeypatch):
+    home = tmp_path / "remote-home"
+    (home / ".ssh").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    commands = []
+
+    class Child:
+        def wait(self, **kwargs):
+            return 0
+
+        def poll(self):
+            return 0
+
+    def capture(command, **kwargs):
+        commands.append(command)
+        return Child()
+
+    monkeypatch.setattr(remote_terminal.subprocess, "Popen", capture)
+    monkeypatch.setattr(remote_terminal, "stop_unit", lambda *args: None)
+    monkeypatch.setattr(remote_terminal.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(remote_terminal.os, "write", lambda *args: None)
+    request = settings(tmp_path, "mirrored")
+    request.update(
+        writable_paths=[str(home)],
+        rcp_owned_paths=["~/.rcp", "~/.local/share/rcp"],
+        grant_paths_source=inspect.getsource(grant_paths),
+        rcp_home_source=inspect.getsource(rcp_home),
+    )
+    remote_terminal.run_session(request)
+    command = commands[0]
+    assert f'BindPaths="{home.resolve()}"' in command
+    owned = home.resolve() / ".rcp"
+    # Read-only whether the launcher already created it or it is masked absent.
+    assert any(arg.endswith(f'"{owned}"') and "ReadOnly" in arg for arg in command)
+    assert str(owned) in command[command.index("--", command.index("rcp-terminal")) :]
+    assert f'ReadOnlyPaths="{home / ".ssh"}"' not in command
+    request.update(writable_paths=[str(home / ".rcp")])
+    (home / ".rcp").mkdir(exist_ok=True)
+    with pytest.raises(ValueError, match="RCP's own storage"):
+        remote_terminal.run_session(request)
+    history = tmp_path / ".research" / "history"
+    history.mkdir(parents=True)
+    request.update(writable_paths=[str(history)])
+    with pytest.raises(ValueError, match="inside"):
+        remote_terminal.run_session(request)
+    # A home too deep for sockets moves them to a short /tmp folder, named on
+    # the far side from the expanded home; a grant cannot reopen it.
+    long_home = tmp_path / ("h" * 80)
+    long_home.mkdir()
+    monkeypatch.setenv("HOME", str(long_home))
+    short_root = type(tmp_path)(rcp_home.short_socket_root(str(long_home)))
+    short_root.mkdir(mode=0o700, exist_ok=True)
+    neighbour = type(tmp_path)(tempfile.mkdtemp(dir="/tmp"))
+    try:
+        request.update(writable_paths=[str(neighbour)])
+        remote_terminal.run_session(request)
+        request.update(writable_paths=[str(short_root)])
+        with pytest.raises(ValueError):
+            remote_terminal.run_session(request)
+    finally:
+        short_root.rmdir()
+        neighbour.rmdir()

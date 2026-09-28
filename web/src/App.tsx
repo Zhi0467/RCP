@@ -1,3 +1,5 @@
+import { UpdateNotice } from "./components/UpdateNotice";
+import { useUpdateNotice } from "./hooks/useUpdateNotice";
 import { TerminalTab } from "./components/TerminalTab";
 import { branchMergeStateLabel } from "./components/CampaignRuns";
 import {
@@ -12,7 +14,6 @@ import type { GraphEditingProps } from "./components/GraphEditingControls";
 import {
   AlertTriangle,
   ArrowLeft,
-  CircleArrowUp,
   CloudUpload,
   ChevronDown,
   ChevronUp,
@@ -29,6 +30,7 @@ import {
   Network,
   RefreshCw,
   RotateCcw,
+  Settings,
   Settings2,
   Telescope,
   TerminalSquare,
@@ -50,9 +52,11 @@ import { loadChatTranscript } from "./chatApi";
 import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
 import {
   chatIndicator,
+  unreadChatIdsFromReads,
   chatEntryConversationId,
   groupChatConversations,
   startConversationTurn,
+  unsentConversation,
   type ChatKind,
   type ConversationTurnSubmission,
 } from "./chatWorkspace";
@@ -79,7 +83,6 @@ import {
   returnDesktopToPersonal,
   TEAM_TRANSPORT_RECOVERED,
   type BackendIdentityEventDetail,
-  type DesktopUpdate,
 } from "./desktopRuntime";
 import {
   projectGraphMutationFailureLabel,
@@ -197,6 +200,7 @@ import {
   type HumanSyncRequest,
 } from "./humanDraft";
 import type {
+  ArtifactView,
   AgentExecutionProfile,
   AgentRunConfig,
   AgentTask,
@@ -226,6 +230,8 @@ import type {
 } from "./types";
 import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./types";
 import { ProjectLanding } from "./views/ProjectLanding";
+import { SpaceSettings } from "./views/SpaceSettings";
+import { LandingIdentityMenu } from "./components/LandingIdentityMenu";
 import { ProjectOverview } from "./views/ProjectOverview";
 import { ProjectSetup } from "./views/ProjectSetup";
 import {
@@ -252,6 +258,7 @@ import {
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
   type WebMcpToolRegistry,
+  webMcpSurface,
 } from "./webmcp";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
@@ -438,12 +445,53 @@ const navItems: Array<{ view: AppView; label: string; icon: React.ReactNode }> =
   { view: "attention", label: "Inbox", icon: <Inbox size={14} /> },
   { view: "scientific", label: "Research", icon: <GitBranch size={14} /> },
   { view: "execution", label: "Runs", icon: <FlaskConical size={14} /> },
+  // Paper is a sub-panel of Artifacts; its route stays `paper`.
   { view: "artifacts", label: "Artifacts", icon: <Files size={14} /> },
-  { view: "paper", label: "Paper", icon: <FileText size={14} /> },
   { view: "terminals", label: "Terminals", icon: <TerminalSquare size={14} /> },
+  { view: "chats", label: "Agents", icon: <MessageCircle size={14} /> },
   { view: "settings", label: "Settings", icon: <Settings2 size={14} /> },
-  { view: "chats", label: "Chats", icon: <MessageCircle size={14} /> },
 ];
+
+/** A tab stays highlighted while one of its sub-views is open. */
+function navItemActive(item: AppView, view: AppView): boolean {
+  return (
+    view === item ||
+    (item === "scientific" && view === "dag") ||
+    (item === "artifacts" && view === "paper")
+  );
+}
+
+function ArtifactsSubnav({
+  view,
+  paperUnsynced,
+  onChange,
+}: {
+  view: AppView;
+  paperUnsynced: boolean;
+  onChange: (view: AppView) => void;
+}) {
+  return (
+    <div className="artifacts-subnav" role="group" aria-label="Artifacts sections">
+      {(
+        [
+          ["artifacts", "Files"],
+          ["paper", "Paper"],
+        ] as const
+      ).map(([target, label]) => (
+        <button
+          key={target}
+          type="button"
+          aria-pressed={view === target}
+          onClick={() => onChange(target)}
+        >
+          {target === "paper" ? <FileText size={13} /> : <Files size={13} />}
+          {label}
+          {target === "paper" && paperUnsynced && <small>1</small>}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export async function loadGraphRevision(
   fetchJson: <T>(path: string) => Promise<T>,
@@ -830,7 +878,9 @@ export default function App() {
   // same verified identity, actor, and team-session state that gates the page.
   const backendSessionReady =
     identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired;
+  const releaseUpdate = useUpdateNotice(backendSessionReady);
   const {
+    buildIdentity,
     reconnecting,
     desktopUpdate,
     updateExpanded,
@@ -853,18 +903,22 @@ export default function App() {
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
     string | null
   >(null);
-  const showWebMcpArtifactViewer = useCallback(async (viewerUrl: string, contentUrl: string) => {
-    const response = await fetch(contentUrl, {
-      method: "HEAD",
-      cache: "no-store",
-      credentials: "same-origin",
-    });
-    if (!response.ok) {
-      throw new Error(`Artifact content is unavailable (${response.status}).`);
-    }
-    setWebMcpArtifactViewerUrl(viewerUrl);
-    return true;
-  }, []);
+  const showWebMcpArtifactViewer = useCallback(
+    async (viewerUrl: string, contentUrl: string, view: ArtifactView) => {
+      if (view === "pdf" || view === "file") return false;
+      const response = await fetch(contentUrl, {
+        method: "HEAD",
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!response.ok) {
+        throw new Error(`Artifact content is unavailable (${response.status}).`);
+      }
+      setWebMcpArtifactViewerUrl(viewerUrl);
+      return true;
+    },
+    [],
+  );
   const reportErrorNotice = useCallback((text: string) => {
     setNotice({ kind: "error", text });
   }, []);
@@ -924,6 +978,7 @@ export default function App() {
     restoreProjectHeader,
     toggleProjectHeader,
     cacheProjectState,
+    rememberLeftGraphTarget,
     cachedProjectStateForOpen,
     inactiveCachedProjectState,
     isProjectTabOpen,
@@ -949,6 +1004,9 @@ export default function App() {
     window.location.hash = projectMoveSetupHash({ sourceProjectId });
   }, []);
   const [textScale, setTextScale] = useState(readTextScale);
+  const [spaceSettingsOpen, setSpaceSettingsOpen] = useState(false);
+  // Space settings is a page over the current route; any navigation leaves it.
+  useEffect(() => setSpaceSettingsOpen(false), [projectId, setupOpen]);
   const appearance = useTheme();
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
@@ -1114,15 +1172,19 @@ export default function App() {
     visibleChatSummaries,
     selectChat,
     selectCanonicalChat,
+    selectListedConversation,
     setFloatingChat,
     reconcileFloatingChat,
     startConversation,
+    discardDraft,
     ensureConversation,
     refreshChatSummaries,
     loadMoreChatSummaries,
     recordTaskUpdates,
     recordWatcherResults,
     markVisibleChatRead,
+    refreshChatReads,
+    ensureListedChats,
     resetProjectChats,
     restoreProjectChats,
   } = useChatState({
@@ -1140,7 +1202,7 @@ export default function App() {
     floatingChat,
     draftConversations,
     selectedChatId,
-    unreadChatTaskIds,
+    chatReads,
     chatSummaryTotal,
     chatSummaryNextOffset,
     chatTranscripts,
@@ -1224,6 +1286,8 @@ export default function App() {
   const rememberProjectState = useCallback(
     (id: string | null) => {
       if (!id) return;
+      // The routed target, so a branch still loading is remembered too.
+      rememberLeftGraphTarget(id, activeGraphTargetRef.current);
       const current = currentProjectStateRef.current;
       if (!current || current.project.id !== id) return;
       const selection = captureProjectSelection(id, current.project.graph_target);
@@ -1236,7 +1300,7 @@ export default function App() {
         watchers: [...current.watchers],
       });
     },
-    [cacheProjectState, captureProjectSelection],
+    [cacheProjectState, captureProjectSelection, rememberLeftGraphTarget],
   );
 
   useEffect(() => {
@@ -2496,7 +2560,22 @@ export default function App() {
     transitionManifest,
     transitionRulesetTag,
   ]);
-  const chatsIndicator = chatIndicator(tasks, unreadChatTaskIds);
+  // Only a listed conversation can be opened and so marked read; counting any
+  // other chat would leave the badge stuck.
+  const readUnreadChatIds = useMemo(
+    () => unreadChatIdsFromReads(tasks, chatReads),
+    [chatReads, tasks],
+  );
+  // An unread chat past the loaded pages is fetched into the list; one whose
+  // transcript was never written cannot be, and is left out of the count.
+  useEffect(() => {
+    ensureListedChats([...readUnreadChatIds]);
+  }, [ensureListedChats, readUnreadChatIds]);
+  const unreadChatIds = useMemo(() => {
+    const listed = new Set(conversations.map((conversation) => conversation.chatId));
+    return new Set([...readUnreadChatIds].filter((chatId) => listed.has(chatId)));
+  }, [conversations, readUnreadChatIds]);
+  const chatsIndicator = chatIndicator(tasks, unreadChatIds);
   const hasActiveTasks = projectTasks.some(isActiveTask);
 
   const changeAppTextScale = (action: TextScaleAction) => {
@@ -2506,7 +2585,7 @@ export default function App() {
   const openChats = (preferredChatId?: string | null) => {
     const nextChatId =
       preferredChatId ??
-      chatEntryConversationId(conversations, activityTask, unreadChatTaskIds, selectedChatId);
+      chatEntryConversationId(conversations, activityTask, unreadChatIds, selectedChatId);
     selectChat(nextChatId);
     setFloatingChat(null);
     clearNodeSelections();
@@ -2593,8 +2672,7 @@ export default function App() {
   }, [mutationsDisabled]);
 
   useEffect(() => {
-    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
-    if (recordTaskUpdates(tasks, visibleChatId)) {
+    if (recordTaskUpdates(tasks)) {
       if (projectId) {
         void refreshChatSummaries(projectId, apiBase).catch((error) => {
           setNotice({
@@ -2604,22 +2682,13 @@ export default function App() {
         });
       }
     }
-  }, [
-    apiBase,
-    graphPath,
-    isActiveGraph,
-    projectId,
-    refreshChatSummaries,
-    selectedChatId,
-    selectedExperimentChatId,
-    tasks,
-    view,
-  ]);
+  }, [apiBase, graphPath, isActiveGraph, projectId, refreshChatSummaries, tasks]);
 
   useEffect(() => {
     const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
     markVisibleChatRead(tasks, visibleChatId);
-  }, [selectedChatId, selectedExperimentChatId, tasks, view]);
+    // chatReads is a dependency so a chat already open when the markers load is marked.
+  }, [chatReads, markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
 
   useEffect(() => {
     if (!projectId || !hasActiveTasks) return;
@@ -3557,12 +3626,11 @@ export default function App() {
       ),
     [],
   );
-  // The page shows no project or index content until the backend identity is
-  // verified, the actor is known, any team login is complete, setup is closed,
-  // and the open has finished; the WebMCP inventory follows the same gate.
-  const webMcpPageReady = backendSessionReady && !setupOpen && !loading;
-  const projectIndexWebMcpAvailable = webMcpPageReady && !projectId;
-  const webMcpProject = webMcpPageReady && project && project.id === projectId ? project : null;
+  const {
+    project: webMcpProject,
+    indexAvailable: projectIndexWebMcpAvailable,
+    key: webMcpSurfaceKey,
+  } = webMcpSurface({ backendSessionReady, setupOpen, loading, projectId, project });
   const webMcpTools = useMemo(() => {
     if (webMcpProject) {
       const project = webMcpProject;
@@ -3631,11 +3699,6 @@ export default function App() {
     webMcpExperimentStartProjectId,
     webMcpProject,
   ]);
-  const webMcpSurfaceKey = webMcpProject
-    ? `project:${webMcpProject.id}`
-    : projectIndexWebMcpAvailable
-      ? "project-index"
-      : null;
   const webMcpRegistryRef = useRef<{
     surfaceKey: string;
     registry: WebMcpToolRegistry;
@@ -3753,19 +3816,21 @@ export default function App() {
     });
   };
 
-  const updateSurface =
-    desktop && (desktopUpdate || updateError) ? (
-      <DesktopUpdateNotice
-        update={desktopUpdate}
-        activeWork={updateHasActiveWork}
-        expanded={updateExpanded}
-        applying={updateApplying}
-        error={updateError}
-        onExpand={expandUpdate}
-        onApply={() => void applyUpdate()}
-        onDismiss={dismissUpdate}
-      />
-    ) : null;
+  const updateSurface = (
+    <UpdateNotice
+      notice={releaseUpdate}
+      identity={buildIdentity}
+      desktop={desktop}
+      update={desktopUpdate}
+      activeWork={updateHasActiveWork}
+      expanded={updateExpanded}
+      applying={updateApplying}
+      error={updateError}
+      onExpand={expandUpdate}
+      onApply={() => void applyUpdate()}
+      onDismiss={dismissUpdate}
+    />
+  );
   const desktopAccessSurface = pendingDesktopProject ? (
     <div className="modal-backdrop desktop-access-backdrop">
       <section
@@ -3927,9 +3992,33 @@ export default function App() {
         <ProjectSetup
           key={projectSetupRouteKey(setupRoute)}
           projectCreation={verifiedHealth!.project_creation}
+          spaceKind={verifiedHealth!.space_kind}
           onCancel={returnToProjects}
           onCreated={openProject}
           setupRoute={setupRoute}
+        />
+        {updateSurface}
+        {desktopAccessSurface}
+        {actorNameSurface}
+        {acceptanceAgentSurface}
+      </>
+    );
+  if (spaceSettingsOpen)
+    return (
+      <>
+        <SpaceSettings
+          spaceKind={verifiedHealth?.space_kind ?? "personal"}
+          updateNotice={releaseUpdate}
+          cacheProjectId={projectId ?? projects[0]?.id ?? null}
+          cacheClearDisabled={Boolean(activeTask)}
+          onAllCachesCleared={(clearedProjectId, cacheMetrics) => {
+            if (project?.id !== clearedProjectId) return;
+            updateProject((current) =>
+              current ? { ...current, cache_metrics: cacheMetrics } : current,
+            );
+          }}
+          onLoginChanged={() => void refreshReadiness().catch(() => {})}
+          onClose={() => setSpaceSettingsOpen(false)}
         />
         {updateSurface}
         {desktopAccessSurface}
@@ -3964,6 +4053,8 @@ export default function App() {
           identityError={actorIdentityError}
           onRequestIdentityName={requestActorName}
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
+          onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
+          textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
           <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
@@ -4184,7 +4275,9 @@ export default function App() {
                 className="button secondary"
                 disabled={projectReconciliation !== "authoritative"}
                 onClick={() => {
-                  const chatId = startConversation("project_chat", null, project.name);
+                  const chatId =
+                    unsentConversation(conversations, "project_chat")?.chatId ??
+                    startConversation("project_chat", null, project.name);
                   openChats(chatId);
                 }}
               >
@@ -4236,6 +4329,27 @@ export default function App() {
               >
                 <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={15} />
               </button>
+              <button
+                className="icon-button space-settings-control"
+                aria-label="Space settings"
+                title="Space settings"
+                onClick={() => setSpaceSettingsOpen(true)}
+              >
+                <Settings size={15} />
+              </button>
+              <LandingIdentityMenu
+                compact
+                identity={actorIdentity}
+                identityError={actorIdentityError}
+                onRequestName={requestActorName}
+                appearance={{
+                  themeChoice: appearance.theme,
+                  colorModeChoice: appearance.mode,
+                  onThemeChoiceChange: appearance.setTheme,
+                  onColorModeChoiceChange: appearance.setMode,
+                }}
+                textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
+              />
             </div>
           </div>
         </header>
@@ -4243,23 +4357,15 @@ export default function App() {
 
       <nav className="project-tabs" aria-label="Project panels">
         {projectHeaderCollapsed && (
-          <>
-            <button
-              className="project-tabs-back project-back"
-              onClick={returnToProjects}
-              aria-label="All projects"
-            >
-              <ArrowLeft size={16} />
-            </button>
-            <ProjectDock
-              className="project-tabs-project-dock"
-              tabs={openProjectTabs}
-              activeProjectId={projectId}
-              onActivate={activateProjectTab}
-              onClose={closeDockedProject}
-            />
-          </>
+          <button
+            className="project-tabs-back project-back"
+            onClick={returnToProjects}
+            aria-label="All projects"
+          >
+            <ArrowLeft size={16} />
+          </button>
         )}
+        {/* Folded, the expand control sits beside the back arrow it came from. */}
         <button
           aria-expanded={!projectHeaderCollapsed}
           aria-controls={!projectHeaderCollapsed ? "project-header-actions" : undefined}
@@ -4270,6 +4376,15 @@ export default function App() {
         >
           {projectHeaderCollapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
         </button>
+        {projectHeaderCollapsed && (
+          <ProjectDock
+            className="project-tabs-project-dock"
+            tabs={openProjectTabs}
+            activeProjectId={projectId}
+            onActivate={activateProjectTab}
+            onClose={closeDockedProject}
+          />
+        )}
         {navItems.map((item) =>
           item.view === "terminals" ? (
             <TerminalTab
@@ -4283,14 +4398,8 @@ export default function App() {
           ) : (
             <button
               key={item.view}
-              className={
-                view === item.view || (item.view === "scientific" && view === "dag") ? "active" : ""
-              }
-              aria-current={
-                view === item.view || (item.view === "scientific" && view === "dag")
-                  ? "page"
-                  : undefined
-              }
+              className={navItemActive(item.view, view) ? "active" : ""}
+              aria-current={navItemActive(item.view, view) ? "page" : undefined}
               onClick={() =>
                 item.view === "chats"
                   ? openChats()
@@ -4304,7 +4413,7 @@ export default function App() {
               {item.view === "attention" && attentionCount > 0 && (
                 <small className="inbox-count">{attentionCount}</small>
               )}
-              {item.view === "paper" && paper.sync_state !== "synced" && <small>1</small>}
+              {item.view === "artifacts" && paper.sync_state !== "synced" && <small>1</small>}
               {item.view === "chats" && chatsIndicator && (
                 <small
                   className={`chats-indicator ${chatsIndicator}`}
@@ -4312,7 +4421,7 @@ export default function App() {
                     chatsIndicator === "active" ? "Chat task active" : "Unread chat result"
                   }
                 >
-                  {chatsIndicator === "active" ? "•" : unreadChatTaskIds.size}
+                  {chatsIndicator === "active" ? "•" : unreadChatIds.size}
                 </small>
               )}
             </button>
@@ -4572,13 +4681,25 @@ export default function App() {
               onSelectNode={openNode}
             />
           )}
-          {view === "artifacts" && <Artifacts key={project.id} projectId={project.id} />}
+          {view === "artifacts" && (
+            <div className="artifacts-shell">
+              <ArtifactsSubnav
+                view={view}
+                paperUnsynced={paper.sync_state !== "synced"}
+                onChange={changeView}
+              />
+              <Artifacts key={project.id} projectId={project.id} />
+            </div>
+          )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
           {view === "execution" && (
             <div className="combined-runs-view">
               <ExecutionView
                 providerLogins={runsProviderLogins}
                 onProviderLoginVerified={() => void refreshProviderLogins()}
+                machines={project.machines}
+                computeApiBase={apiBase}
+                onOpenSettings={() => changeView("settings")}
                 graph={presentedGraph}
                 episodes={episodes}
                 episodeAction={episodeAction}
@@ -4635,15 +4756,22 @@ export default function App() {
             </div>
           )}
           {view === "paper" && (
-            <PaperWorkspace
-              key={project.id}
-              apiBase={apiBase}
-              project={project}
-              initialPaper={paper}
-              tasks={projectTasks}
-              onStartTask={startAgentTask}
-              onPaperChange={updatePaper}
-            />
+            <div className="artifacts-shell">
+              <ArtifactsSubnav
+                view={view}
+                paperUnsynced={paper.sync_state !== "synced"}
+                onChange={changeView}
+              />
+              <PaperWorkspace
+                key={project.id}
+                apiBase={apiBase}
+                project={project}
+                initialPaper={paper}
+                tasks={projectTasks}
+                onStartTask={startAgentTask}
+                onPaperChange={updatePaper}
+              />
+            </div>
           )}
           {view === "settings" && (
             <ProjectSettings
@@ -4660,10 +4788,7 @@ export default function App() {
               onRefreshUsage={refreshUsage}
               cacheClearDisabled={Boolean(activeTask)}
               writesDisabled={mutationsDisabled}
-              showTextScale={desktop}
               spaceKind={verifiedHealth?.space_kind ?? "personal"}
-              textScale={textScale}
-              onTextScaleChange={changeAppTextScale}
               onRefreshReadiness={refreshReadiness}
               readinessRequest={providerReadinessRequests[project.id]}
               onMovePersonalProjectToTeam={movePersonalProjectToTeam}
@@ -4702,11 +4827,11 @@ export default function App() {
               tasks={tasks}
               watchers={watchers}
               graphChangesDisabled={mutationsDisabled}
-              unreadTaskIds={unreadChatTaskIds}
+              unreadChatIds={unreadChatIds}
               chatTranscripts={chatTranscripts}
               hasMore={chatSummaryNextOffset < chatSummaryTotal}
               loadingMore={chatSummariesLoading}
-              onSelect={selectChat}
+              onSelect={selectListedConversation}
               onOpenNode={openNodeById}
               onLoadMore={() => void loadMoreChatSummaries()}
               onStartTask={startAgentTask}
@@ -4717,11 +4842,23 @@ export default function App() {
               onOpenInbox={() => changeView("attention")}
               onRepairGraphUpdate={repairGraphUpdate}
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
+              onRemoveDraft={discardDraft}
+              onEnsureListed={ensureListedChats}
+              onArchiveChange={() =>
+                void refreshChatReads().catch((error) =>
+                  reportErrorNotice(
+                    `Unread chats could not be refreshed: ${error instanceof Error ? error.message : String(error)}`,
+                  ),
+                )
+              }
               onNewSession={(conversation) => {
                 const node = conversation.nodeId
                   ? (presentedGraph.nodes[conversation.nodeId] ?? null)
                   : null;
-                selectChat(startConversation(conversation.kind, node, project.name));
+                selectChat(
+                  unsentConversation(conversations, conversation.kind, conversation.nodeId)
+                    ?.chatId ?? startConversation(conversation.kind, node, project.name),
+                );
               }}
             />
           )}
@@ -4854,7 +4991,9 @@ export default function App() {
               onStopWatcher={(watcherId) => void stopWatcher(watcherId)}
               onNewSession={() => {
                 const node = presentedGraph.nodes[floatingChat.nodeId] ?? null;
-                const chatId = startConversation("node_chat", node, project.name);
+                const chatId =
+                  unsentConversation(conversations, "node_chat", floatingChat.nodeId)?.chatId ??
+                  startConversation("node_chat", node, project.name);
                 selectChat(chatId);
                 setFloatingChat({ chatId, nodeId: floatingChat.nodeId });
               }}
@@ -5105,52 +5244,4 @@ function projectSetupRouteKey(route: ProjectSetupRoute): string {
   }
   if (route.kind === "create") return `${route.kind}:${route.requestId ?? ""}`;
   return route.kind;
-}
-
-interface DesktopUpdateNoticeProps {
-  update: DesktopUpdate | null;
-  activeWork: boolean;
-  expanded: boolean;
-  applying: boolean;
-  error: string | null;
-  onExpand: () => void;
-  onApply: () => void;
-  onDismiss: () => void;
-}
-
-function DesktopUpdateNotice({
-  update,
-  activeWork,
-  expanded,
-  applying,
-  error,
-  onExpand,
-  onApply,
-  onDismiss,
-}: DesktopUpdateNoticeProps) {
-  if (update && activeWork && !expanded && !error) {
-    return (
-      <button className="desktop-update-marker" type="button" onClick={onExpand}>
-        <CircleArrowUp size={13} /> Update ready
-      </button>
-    );
-  }
-  return (
-    <div
-      className={`desktop-update-notice${error ? " error" : ""}`}
-      role={error ? "alert" : "status"}
-    >
-      <CircleArrowUp size={15} />
-      <strong>{error || `RCP ${update?.version || "update"} is ready`}</strong>
-      {update && (
-        <button className="button secondary" type="button" disabled={applying} onClick={onApply}>
-          {applying ? <LoaderCircle className="spin" size={13} /> : null}
-          {activeWork ? "Update now" : "Update"}
-        </button>
-      )}
-      <button className="desktop-update-dismiss" type="button" onClick={onDismiss}>
-        Later
-      </button>
-    </div>
-  );
 }

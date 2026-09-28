@@ -86,7 +86,9 @@ The deterministic hostname binds browser state to the durable connection
 identity while leaving the local port available to the desktop-owned proxy. A
 single desktop identity is sufficient because origin isolation comes from the
 hostnames; the pin authenticates the local proxy boundary, not an individual
-team server.
+team server. Cookies ignore ports, so each team listener forwards only TLS
+connections whose SNI names its own hostname; otherwise another team's page
+could send a victim alias to its own port and receive that alias's cookie.
 
 ## Rejected alternatives
 

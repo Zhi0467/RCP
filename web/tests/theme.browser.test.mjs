@@ -40,12 +40,17 @@ async function openFixture(
   // Nothing in the real landing or Settings components can reach a human backend.
   await page.route("**/api/**", (route) => route.fulfill({ json: [] }));
   await page.goto(`${origin}/tests/fixtures/appearance.html`);
-  await page.getByRole("button", { name: "Display", exact: true }).waitFor();
+  await identityTrigger(page).waitFor();
   return page;
 }
 
+// Display lives in the identity menu beside the user profile.
+function identityTrigger(page) {
+  return page.locator(".landing-identity-trigger");
+}
+
 async function openDisplay(page) {
-  await page.getByRole("button", { name: "Display", exact: true }).click();
+  await identityTrigger(page).click();
   return page.getByRole("region", { name: "Display", exact: true });
 }
 
@@ -159,7 +164,7 @@ test("landing Display fits narrow screens, exposes keyboard focus, and dismisses
     { width: 360, height: 780 },
   ]) {
     const page = await openFixture(t, { viewport });
-    const trigger = page.getByRole("button", { name: "Display", exact: true });
+    const trigger = identityTrigger(page);
     await trigger.focus();
     await page.keyboard.press("Enter");
     const panel = page.getByRole("region", { name: "Display", exact: true });
@@ -198,11 +203,11 @@ test("landing Display fits narrow screens, exposes keyboard focus, and dismisses
     assert.notEqual(focus.style, "none");
     assert.ok(focus.width > 0);
     await page.keyboard.press("Escape");
-    await panel.waitFor({ state: "detached" });
+    await panel.waitFor({ state: "hidden" });
     assert.equal(await trigger.evaluate((button) => document.activeElement === button), true);
     await trigger.click();
-    await page.getByRole("button", { name: /Use existing checkout/ }).click();
-    await panel.waitFor({ state: "detached" });
+    await page.locator(".landing-main").click({ position: { x: 4, y: 4 } });
+    await panel.waitFor({ state: "hidden" });
   }
 });
 

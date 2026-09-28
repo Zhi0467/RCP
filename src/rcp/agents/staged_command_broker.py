@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import pwd
 import re
 import socket
 import stat
@@ -65,15 +66,54 @@ def _bootstrap(mailbox_id):
     return token
 
 
+_SOCKET_DIRECTORY = "~/.rcp/sockets/"
+
+
 def _safe_socket_path(path):
-    absolute = os.path.abspath(path)
-    if not absolute.startswith("/tmp/rcp-command-") or not absolute.endswith(".sock"):
-        raise BrokerError("broker socket is outside the bounded temporary namespace")
-    if len(os.fsencode(absolute)) >= 100:
-        raise BrokerError("broker socket path is too long")
+    """Resolve `~/.rcp/sockets/rcp-command-*.sock` against this account's home.
+
+    The home comes from the password database, not `HOME`, so the provider's
+    client resolves the same path whatever environment it runs in.
+    """
+
+    name = path[len(_SOCKET_DIRECTORY) :] if path.startswith(_SOCKET_DIRECTORY) else ""
+    if not name.startswith("rcp-command-") or not name.endswith(".sock") or "/" in name:
+        raise BrokerError("broker socket is outside the RCP socket directory")
+    directory = _socket_directory(pwd.getpwuid(os.geteuid()).pw_dir)
+    absolute = os.path.join(directory, name)
+    # The short root sits in shared /tmp, so it must be ours and private too.
+    _private_directory(os.path.dirname(directory), exact=directory.startswith("/tmp/"))
+    _private_directory(directory, exact=True)
     if os.path.lexists(absolute):
         raise BrokerError("broker socket path is already occupied")
     return absolute
+
+
+def _socket_directory(home):
+    """`~/.rcp/sockets`, or a short `/tmp/rcp-<id>/sockets` when that is too deep.
+
+    Mirrors `rcp.rcp_home.command_socket_directory`; this file ships alone.
+    """
+
+    default = os.path.join(home, ".rcp", "sockets")
+    if len(os.fsencode(default)) + 1 + len("rcp-command-") + 32 + len(".sock") < 100:
+        return default
+    root = "/tmp/rcp-" + hashlib.sha256(home.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(root, "sockets")
+
+
+def _private_directory(path, *, exact=False):
+    with suppress(FileExistsError):
+        os.mkdir(path, 0o700)
+    info = os.lstat(path)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or (exact and stat.S_IMODE(info.st_mode) != 0o700)
+        # Another user who can write the parent could swap the socket folder.
+        or info.st_mode & 0o022
+    ):
+        raise BrokerError(f"RCP socket directory {path} is unsafe")
 
 
 def _peer_identity(connection):

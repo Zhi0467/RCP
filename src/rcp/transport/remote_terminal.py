@@ -53,6 +53,10 @@ def stop_unit(unit: str, timeout: float) -> None:
             raise RuntimeError(f"Could not stop terminal unit {unit}: {result.stderr.strip()}")
 
 
+def _default_interrupt() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 def hangup(signum: int, _frame: Any) -> None:
     raise InterruptedError(f"SSH terminal received signal {signum}.")
 
@@ -97,13 +101,40 @@ def run_session(settings: dict[str, Any]) -> int:
     mirrored = settings["containment"] == "mirrored"
     if settings["containment"] not in {"mirrored", "cooperative"}:
         raise ValueError("Unknown terminal profile.")
+    granted: list[str] = []
+    declared = settings.get("writable_paths") or []
+    if mirrored and declared:
+        # Grants resolve here, on the filesystem they are mounted from. RCP's
+        # own storage arrives relative to this account's home; the short socket
+        # folder is named from the expanded home, so it is added here.
+        home = str(Path.home())
+        homes = load_source(settings["rcp_home_source"])
+        sockets = homes["command_socket_directory"](home)
+        granted, owned_inside = profile["resolve_grants"](
+            declared,
+            [
+                *(str(Path(path).expanduser()) for path in settings["rcp_owned_paths"]),
+                *(
+                    [homes["short_socket_root"](home)]
+                    if sockets != os.path.join(home, ".rcp", "sockets")
+                    else []
+                ),
+                *protected,
+            ],
+            load_source(settings["grant_paths_source"]),
+        )
+        protected = list(dict.fromkeys([*protected, *owned_inside]))
     child: subprocess.Popen[bytes] | None = None
     signal.signal(signal.SIGHUP, hangup)
     signal.signal(signal.SIGTERM, hangup)
     # The shell handles Ctrl-C itself, including while a foreground job runs.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        with tempfile.TemporaryDirectory(prefix="rcp-terminal-") as empty:
+        # The read-only masks' empty source lives in RCP's own storage, not
+        # the /tmp the shell shares with agents.
+        temporary_root = Path.home() / ".rcp" / "tmp"
+        temporary_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="rcp-terminal-", dir=temporary_root) as empty:
             # The far side is the only place that knows this account's home,
             # so the server sends the key's path relative to it. A team
             # repository's deploy key is the only Git credential a remote
@@ -138,6 +169,7 @@ def run_session(settings: dict[str, Any]) -> int:
                     git_environment=environment,
                     empty_directory=Path(empty),
                     stop_timeout=timeout,
+                    granted_paths=granted,
                     expand_environment_option=bool(settings.get("expand_environment_option", True)),
                 )
             else:
@@ -149,7 +181,16 @@ def run_session(settings: dict[str, Any]) -> int:
                     "-c",
                     "printf '\\036rcp-terminal-ready\\037'; exec /bin/bash --noprofile --norc -i",
                 ]
-            child = subprocess.Popen(command, cwd=repository, env=manager_environment())
+            child = subprocess.Popen(
+                command,
+                cwd=repository,
+                env=manager_environment(),
+                # This wrapper ignores SIGINT, and an ignored signal survives exec:
+                # a cooperative shell started directly would pass that on to every
+                # job, so Ctrl-C could never stop one. systemd starts a mirrored
+                # shell fresh.
+                preexec_fn=None if mirrored else _default_interrupt,
+            )
             status = child.wait()
             status = status if status >= 0 else 128 - status
             # Shell completion remains evidence even if subsequent cleanup fails.

@@ -35,14 +35,14 @@ def test_probe_storage_is_latest_per_project_and_machine(tmp_path):
         status_label="Ready",
         status_tone="ready",
     )
-    assert store.compute_backend_probe("project", "local") is None
-    store.record_compute_backend_probe("project", probe)
+    assert store.compute_backend_probe("project", "local", "helper") is None
+    store.record_compute_backend_probe("project", probe, "helper")
     failed = probe.model_copy(update={"ready": False, "state": "failed", "diagnostic": "Offline"})
-    store.record_compute_backend_probe("project", failed)
+    store.record_compute_backend_probe("project", failed, "helper")
     reopened = AppStore(store.path)
-    assert reopened.compute_backend_probe("project", "local") == failed
-    assert reopened.compute_backend_probe("other", "local") is None
-    assert reopened.compute_backend_probe("project", "other") is None
+    assert reopened.compute_backend_probe("project", "local", "helper") == failed
+    assert reopened.compute_backend_probe("other", "local", "helper") is None
+    assert reopened.compute_backend_probe("project", "other", "helper") is None
     with reopened.connection() as connection:
         rows = connection.execute("SELECT probed_at FROM compute_backend_probes").fetchall()
     assert len(rows) == 1 and rows[0][0]

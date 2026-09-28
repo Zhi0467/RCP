@@ -26,6 +26,13 @@ def account_credential_lock_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture(autouse=True)
+def rcp_home_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep RCP's own `~/.rcp` temporary files out of the human's home."""
+
+    monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: tmp_path / "rcp-home")
+
+
+@pytest.fixture(autouse=True)
 def ssh_control_socket_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the mux-socket sweep out of the human's own live connections.
 
@@ -75,6 +82,19 @@ def unconfigured_local_providers(
 
 
 @pytest.fixture(autouse=True)
+def unprobed_compute_routes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep app startup from launching real helper and scheduler probe jobs.
+
+    A lifespan and a compute settings save check compute routes, and a helper
+    probe starts a real launchd or systemd job. A test of the refresh restores
+    the real function and stubs the probe itself.
+    """
+
+    for owner in ("rcp.api.app", "rcp.api.project_state"):
+        monkeypatch.setattr(f"{owner}.refresh_compute_probes", lambda *args, **kwargs: None)
+
+
+@pytest.fixture(autouse=True)
 def terminated_background_tasks(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Stop every provider worker a test started, whether or not it ran a lifespan.
 
@@ -83,7 +103,7 @@ def terminated_background_tasks(monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
     unentered `TestClient`, so no lifespan ever runs; their workers are daemon
     threads, so interpreter exit drops them without unwinding and the staged
     broker plus its provider child are reparented and left running, holding a
-    `/tmp/rcp-command-*.sock` for as long as they live. Registering at
+    `~/.rcp/sockets/rcp-command-*.sock` for as long as they live. Registering at
     construction covers every engine a test creates, including the ones reached
     through `create_app` and server-operation validation.
     """
@@ -180,3 +200,9 @@ default_reasoning = "medium"
         encoding="utf-8",
     )
     return load_manifest(path)
+
+
+@pytest.fixture(autouse=True)
+def disabled_release_checks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test apps never contact GitHub; transport tests opt in against loopback."""
+    monkeypatch.setenv("RCP_UPDATE_CHECK", "off")

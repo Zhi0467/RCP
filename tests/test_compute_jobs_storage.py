@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.compute_jobs.models import ComputeJobRecord
+from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord
 from rcp.server_ops.application_validation import (
     CandidateRehearsalRefused,
     _rebind_local_stage_paths,
@@ -117,3 +117,56 @@ def test_compute_job_label_migration_preserves_existing_rows(tmp_path) -> None:
     labelled = job_record("labelled", label="Training run")
     upgraded.create_compute_job(labelled)
     assert AppStore(path).compute_job("labelled") == labelled
+
+
+@pytest.mark.parametrize(
+    ("backend_id", "route", "other_route"),
+    [
+        ("slurm", "scheduler", "helper"),
+        ("systemd_user", "helper", "scheduler"),
+        ("launchd", "helper", "scheduler"),
+    ],
+)
+def test_probe_route_migration_retains_backend_readiness(tmp_path, backend_id, route, other_route):
+    path = tmp_path / "app.sqlite"
+    previous = AppStore(path)
+    probe = ComputeBackendProbe(
+        execution_machine="local",
+        backend_id=backend_id,
+        state="ready",
+        ready=True,
+        diagnostic="Ready",
+        containment="cooperative",
+        status_label="Ready",
+        status_tone="ready",
+    )
+    with previous.connection() as connection:
+        connection.execute("DROP TABLE compute_backend_probes")
+        connection.execute(
+            "CREATE TABLE compute_backend_probes ("
+            "project_id TEXT NOT NULL, execution_machine TEXT NOT NULL, "
+            "probe_json TEXT NOT NULL, probed_at TEXT NOT NULL, "
+            "PRIMARY KEY (project_id, execution_machine))"
+        )
+        connection.execute(
+            "INSERT INTO compute_backend_probes VALUES (?, ?, ?, ?)",
+            ("project", "local", probe.model_dump_json(), previous.now()),
+        )
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 24")
+    upgraded = AppStore(path)
+    assert upgraded.compute_backend_probe("project", "local", route) == probe
+    assert upgraded.compute_backend_probe("project", "local", other_route) is None
+    failed = probe.model_copy(
+        update={
+            "backend_id": "slurm" if other_route == "scheduler" else "systemd_user",
+            "ready": False,
+            "state": "failed",
+        }
+    )
+    upgraded.record_compute_backend_probe("project", failed, other_route)
+    reopened = AppStore(path)
+    assert reopened.compute_backend_probe("project", "local", route) == probe
+    assert reopened.compute_backend_probe("project", "local", other_route) == failed
+    reopened.delete_compute_backend_probe("project", "local")
+    assert reopened.compute_backend_probe("project", "local", route) is None
+    assert reopened.compute_backend_probe("project", "local", other_route) is None

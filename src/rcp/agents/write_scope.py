@@ -14,6 +14,7 @@ from rcp.agents.context import RepositoryPointer
 from rcp.config import Manifest, RepositoryConfig
 from rcp.core.models import ConversationWorktreeBinding
 from rcp.providers import AgentCapability
+from rcp.rcp_home import command_socket_directory, short_socket_root
 from rcp.transport.run_stage import RemoteRunStage
 
 
@@ -53,7 +54,13 @@ class ProjectWriteScope(BaseModel):
     workspace_root: str = Field(min_length=1)
     repositories: list[WritableRepositoryRoot] = Field(default_factory=list)
     git_metadata_roots: list[str] = Field(default_factory=list)
+    # Space-machine writable paths plus the default temporary roots. Present
+    # only on launches that also write repositories.
+    granted_roots: list[str] = Field(default_factory=list)
     protected_write_paths: list[str] = Field(default_factory=list)
+    # The subset of protected paths present only because a grant covers RCP's
+    # own storage; kept apart so a pre-grant fingerprint can be derived.
+    granted_protected_paths: list[str] = Field(default_factory=list)
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -77,6 +84,14 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("Git metadata roots must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.git_metadata_roots):
             raise ValueError("Git metadata roots must be absolute")
+        if self.granted_roots != sorted(set(self.granted_roots)):
+            raise ValueError("granted roots must be sorted and unique")
+        if any(not PurePosixPath(item).is_absolute() for item in self.granted_roots):
+            raise ValueError("granted roots must be absolute")
+        if self.granted_protected_paths != sorted(set(self.granted_protected_paths)):
+            raise ValueError("granted protected paths must be sorted and unique")
+        if not set(self.granted_protected_paths).issubset(self.protected_write_paths):
+            raise ValueError("granted protected paths must be protected write paths")
         if self.protected_write_paths != sorted(set(self.protected_write_paths)):
             raise ValueError("protected write paths must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.protected_write_paths):
@@ -99,6 +114,8 @@ class ProjectWriteScope(BaseModel):
         repositories: list[WritableRepositoryRoot],
         protected_write_paths: list[str],
         git_metadata_roots: list[str] | None = None,
+        granted_roots: list[str] | None = None,
+        granted_protected_paths: list[str] | None = None,
     ) -> ProjectWriteScope:
         payload: dict[str, object] = {
             "schema_generation": 1,
@@ -119,7 +136,13 @@ class ProjectWriteScope(BaseModel):
         }
         if git_metadata_roots:
             payload["git_metadata_roots"] = sorted(set(git_metadata_roots))
-        return cls.model_validate({**payload, "fingerprint": _scope_fingerprint(payload)})
+        if granted_roots:
+            payload["granted_roots"] = sorted(set(granted_roots))
+        if granted_protected_paths:
+            payload["granted_protected_paths"] = sorted(set(granted_protected_paths))
+        return cls.model_validate(
+            {**payload, "fingerprint": _scope_fingerprint(_without_grants(payload))}
+        )
 
     @property
     def repository_roots(self) -> list[str]:
@@ -128,7 +151,14 @@ class ProjectWriteScope(BaseModel):
     @property
     def writable_roots(self) -> list[str]:
         return list(
-            dict.fromkeys([self.workspace_root, *self.repository_roots, *self.git_metadata_roots])
+            dict.fromkeys(
+                [
+                    self.workspace_root,
+                    *self.repository_roots,
+                    *self.git_metadata_roots,
+                    *self.granted_roots,
+                ]
+            )
         )
 
     def _fingerprint_payload(self) -> dict[str, object]:
@@ -137,7 +167,7 @@ class ProjectWriteScope(BaseModel):
         excluded = {"fingerprint"}
         if not self.git_metadata_roots:
             excluded.add("git_metadata_roots")
-        return self.model_dump(mode="json", exclude=excluded)
+        return _without_grants(self.model_dump(mode="json", exclude=excluded))
 
 
 def resolve_project_write_scope(
@@ -156,8 +186,14 @@ def resolve_project_write_scope(
     additional_protected_write_paths: list[str] | None = None,
     conversation_worktree: ConversationWorktreeBinding | None = None,
     include_shared_checkout: bool = False,
+    machine_writable_paths: list[str] | None = None,
 ) -> ProjectWriteScope:
-    """Resolve and verify one exact Work-like scope on its execution machine."""
+    """Resolve and verify one exact Work-like scope on its execution machine.
+
+    A scope that writes repositories also receives the execution machine's
+    space-level writable paths and the default temporary roots. RCP's own
+    storage inside any of them stays read-only.
+    """
 
     if capability not in {"work_auto", "orchestrate"}:
         raise ValueError(f"capability {capability!r} has no project write scope")
@@ -230,6 +266,17 @@ def resolve_project_write_scope(
         declared_paths.extend([repository.path, pointer.path])
     if binding is not None:
         declared_paths.extend([binding.shared_path, binding.worktree_path, binding.git_common_dir])
+    # Grants join the one canonicalization round trip. Only a scope that writes
+    # repositories receives them.
+    declared_grants = (
+        [
+            *(machine_writable_paths or []),
+            *default_temporary_roots(remote=remote_stage is not None),
+        ]
+        if eligible
+        else []
+    )
+    declared_paths.extend(declared_grants)
 
     canonical, account_home = _canonical_directories(
         declared_paths,
@@ -323,12 +370,54 @@ def resolve_project_write_scope(
             for root in roots
         )
 
-    protected = protected_repository_paths(
+    granted_input = sorted({canonical[path] for path in declared_grants})
+    legacy_stages = [
+        root
+        for root in (
+            remote_stage.legacy_stage_roots() if remote_stage is not None and granted_input else []
+        )
+        if root != canonical_stage
+    ]
+    granted, rcp_protected = _granted_roots(
+        granted_input,
+        owned=[
+            *rcp_owned_paths(
+                account_home=account_home,
+                app_data_dir=app_data_dir,
+                remote=remote_stage is not None,
+            ),
+            # Canonical state of every repository on this host, admitted or not,
+            # declared and resolved on the execution host (it may be a symlink).
+            *(
+                protected_repository_paths(
+                    manifest=manifest,
+                    repository_roots=sorted(
+                        {
+                            path
+                            for item in execution_inventory
+                            for path in (item.path, canonical_inventory[item.path])
+                        }
+                    ),
+                    remote_stage=remote_stage,
+                )
+                if granted_input
+                else []
+            ),
+            # This launch's own immutable inputs, and other tasks' legacy stages.
+            str(PurePosixPath(canonical_stage) / "inputs"),
+            *legacy_stages,
+        ],
+        path_semantics=path_semantics,
+    )
+
+    base_protected = protected_repository_paths(
         manifest=manifest,
         repository_roots=[item.path for item in repository_roots],
         remote_stage=remote_stage,
         additional_paths=[*explicit_protected, *(canonical[path] for path in explicit_protected)],
     )
+    granted_protected = sorted(set(rcp_protected) - set(base_protected))
+    protected = sorted({*base_protected, *granted_protected})
 
     return ProjectWriteScope.create(
         project_id=project_id,
@@ -339,7 +428,9 @@ def resolve_project_write_scope(
         workspace_root=canonical_workspace,
         repositories=repository_roots,
         git_metadata_roots=[binding.git_common_dir] if binding else [],
+        granted_roots=granted,
         protected_write_paths=protected,
+        granted_protected_paths=granted_protected,
     )
 
 
@@ -377,6 +468,109 @@ def protected_repository_paths(
                 continue
             protected.append(resolved[path])
     return sorted(set(protected))
+
+
+def default_temporary_roots(*, remote: bool) -> list[str]:
+    """Temporary roots every repository-writing launch may write.
+
+    RCP keeps none of its own state in them.
+    """
+
+    roots = ["/tmp"]
+    if not remote:
+        roots.append(tempfile.gettempdir())
+    return roots
+
+
+def rcp_owned_paths(
+    *,
+    account_home: str,
+    app_data_dir: Path | None,
+    remote: bool,
+) -> list[str]:
+    """RCP's own storage on one execution machine; never writable by a grant.
+
+    Each path comes from the owner that creates it: the running data directory,
+    the installed server layout, and the per-account `~/.rcp` and
+    `~/.local/share/rcp` roots.
+    """
+
+    home = PurePosixPath(account_home)
+    paths = [str(home / ".rcp")]
+    if command_socket_directory(account_home) != str(home / ".rcp" / "sockets"):
+        paths.append(short_socket_root(account_home))
+    if remote:
+        paths.append(str(home / ".local" / "share" / "rcp"))
+        return paths
+    from rcp.transport.ssh import control_directory_candidate
+
+    paths.append(str(control_directory_candidate()))
+    if app_data_dir is not None:
+        data_dir = app_data_dir.expanduser().resolve()
+        paths.append(str(data_dir))
+        paths.extend(_installed_server_paths(data_dir))
+    return paths
+
+
+def _installed_server_paths(data_dir: Path) -> list[str]:
+    from rcp.server_ops.config import load_installed_server_config
+    from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT
+
+    config_path = DEFAULT_SERVER_LAYOUT.config_path
+    if not os.path.lexists(config_path):
+        return []
+    config = load_installed_server_config(config_path)
+    paths = config.paths
+    if Path(paths.data_dir).resolve() != data_dir:
+        return []
+    return [
+        paths.releases_root,
+        paths.source_checkout,
+        paths.credentials_root,
+        paths.update_checkpoints_root,
+        paths.restore_operations_root,
+        str(PurePosixPath(paths.config_path).parent),
+        paths.runtime_dir,
+    ]
+
+
+def _granted_roots(
+    grants: list[str],
+    *,
+    owned: list[str],
+    path_semantics: _ExecutionPathSemantics,
+) -> tuple[list[str], list[str]]:
+    """Refuse grants inside protected storage; return the protected paths they cover.
+
+    Locally, identity is filesystem identity: resolved forms are compared too,
+    and `samefile` catches case-insensitive and symlinked aliases.
+    """
+
+    if not grants:
+        return [], []
+    candidates = list(dict.fromkeys(owned))
+    if not path_semantics.remote:
+        candidates = list(
+            dict.fromkeys([*candidates, *(str(Path(path).resolve()) for path in candidates)])
+        )
+    for grant in grants:
+        for path in candidates:
+            if path_semantics.equal(grant, path) or any(
+                path_semantics.equal(parent, path) for parent in PurePosixPath(grant).parents
+            ):
+                raise ValueError(f"writable path {grant} is inside protected storage at {path}")
+    covered = sorted(
+        {
+            path
+            for path in candidates
+            if any(
+                path_semantics.equal(parent, grant)
+                for grant in grants
+                for parent in PurePosixPath(path).parents
+            )
+        }
+    )
+    return grants, covered
 
 
 def registered_repository_roots(
@@ -531,6 +725,27 @@ def _reject_repository_ownership_overlap(
             f"repository {alias!r} overlaps {relation} on this execution host: "
             f"{owner.project_id}/{owner.alias}"
         )
+
+
+def _without_grants(payload: dict[str, object]) -> dict[str, object]:
+    """The fingerprinted form: machine grants are machine settings, not session identity.
+
+    A human may change a machine's writable paths while a chat is open; its next
+    turn resumes with the new grants rather than being refused.
+    """
+
+    granted = set(payload.get("granted_protected_paths") or [])  # type: ignore[arg-type]
+    result = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"granted_roots", "granted_protected_paths"}
+    }
+    result["protected_write_paths"] = [
+        path
+        for path in result["protected_write_paths"]  # type: ignore[union-attr]
+        if path not in granted
+    ]
+    return result
 
 
 def _scope_fingerprint(payload: dict[str, object]) -> str:

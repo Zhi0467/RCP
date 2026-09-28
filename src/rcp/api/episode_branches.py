@@ -5,6 +5,7 @@ from typing import Literal
 from rcp.api.dependencies import get_project_service
 from rcp.core.models import BranchMergeReceipt, GraphBranchMetadata, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef
+from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.projects import ProjectCatalog
 from rcp.runs.task_policy import task_graph_capable
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore, EpisodeRecord
@@ -46,6 +47,7 @@ def graph_branch_summaries(
     *,
     store: AppStore,
     catalog: ProjectCatalog,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> dict[str, GraphBranchSummary]:
     """One summary per episode; every member of a chain shares its branch's summary."""
 
@@ -71,7 +73,8 @@ def graph_branch_summaries(
     for project_id, roots in grouped.items():
         service = get_project_service(catalog, project_id)
         snapshots = service.history.branch_read_snapshots(
-            [(root.episode_id, root.episode_id, root.project_id) for root in roots]
+            [(root.episode_id, root.episode_id, root.project_id) for root in roots],
+            refresh_max_age_seconds=refresh_max_age_seconds,
         )
         for root in roots:
             snapshot = snapshots[root.episode_id]
@@ -216,8 +219,14 @@ def graph_branch_summary(
     *,
     store: AppStore,
     catalog: ProjectCatalog,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> GraphBranchSummary:
-    return graph_branch_summaries([episode], store=store, catalog=catalog)[episode.episode_id]
+    return graph_branch_summaries(
+        [episode],
+        store=store,
+        catalog=catalog,
+        refresh_max_age_seconds=refresh_max_age_seconds,
+    )[episode.episode_id]
 
 
 __all__ = [

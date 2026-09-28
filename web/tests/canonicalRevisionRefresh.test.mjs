@@ -29,6 +29,7 @@ const {
   inactiveProjectTabState,
   mergeProjectExperimentLoops,
   projectIdsForCacheHeartbeat,
+  projectReturnHash,
   projectTabStateForOpen,
   singleFlightProjectCacheHeartbeat,
   startProjectCachePolling,
@@ -73,6 +74,16 @@ test("the per-project display cache is bounded and refreshed as an LRU", () => {
 
   assert.deepEqual([...cache.keys()], ["alpha", "gamma"]);
   assert.deepEqual(cache.get("alpha"), { revision: 3 });
+});
+
+test("a project reopens on the graph target it was last left on", () => {
+  const left = new Map([
+    ["alpha", { kind: "branch", branch_id: "episode-1" }],
+    ["beta", { kind: "main" }],
+  ]);
+  assert.equal(projectReturnHash(left, "alpha"), "/projects/alpha?branch_id=episode-1");
+  assert.equal(projectReturnHash(left, "beta"), "/projects/beta");
+  assert.equal(projectReturnHash(left, "never-opened"), "/projects/never-opened");
 });
 
 test("a scoped Experiment refresh replaces only that project's entries", () => {

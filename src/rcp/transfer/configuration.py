@@ -23,6 +23,7 @@ from rcp.limits import (
     PROJECT_TRANSFER_INVENTORY_MAX_ENTRIES,
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
 )
+from rcp.rcp_home import rcp_temp_dir
 from rcp.setup import render_prepared_team_manifest
 from rcp.storage import (
     ProjectProvisioningRequestRecord,
@@ -463,7 +464,9 @@ def _replay_archive(
     archive_root: Path,
     archive: TransferArchiveManifest,
 ) -> None:
-    with tempfile.TemporaryDirectory(prefix="rcp-transfer-config-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="rcp-transfer-config-", dir=rcp_temp_dir()
+    ) as temporary:
         temporary_root = Path(temporary)
         research_root = temporary_root / ".research"
         research_root.mkdir(mode=0o700)

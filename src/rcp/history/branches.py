@@ -39,6 +39,7 @@ from rcp.core.transitions import (
 )
 from rcp.core.validation import ValidationReport
 from rcp.history.delta import RevisionSummary, render_revision_summary
+from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.transport import BatchPublishFailed, StateUnavailable
 
 if TYPE_CHECKING:
@@ -167,10 +168,14 @@ class BranchHistoryManager:
             self.require_writable(result.state)
             return result.state
 
-    def current_materialization(self) -> MaterializationResult:
+    def current_materialization(
+        self,
+        *,
+        refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
+    ) -> MaterializationResult:
         with self._process_lock:
             with suppress(StateUnavailable):
-                self.workspace.refresh_if_stale()
+                self.workspace.refresh_if_stale(refresh_max_age_seconds)
             self.parent._reload_manifest()
             self.manifest = self.parent.manifest
             self._metadata = self._read_metadata()
@@ -1131,6 +1136,8 @@ def existing_receipt_for_main_append(
 def read_branch_snapshots(
     parent: HistoryManager,
     identities: list[tuple[str, str, str]],
+    *,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> dict[str, BranchReadSnapshot | None]:
     """Read branch heads and receipts without taking a publication transaction.
 
@@ -1153,7 +1160,7 @@ def read_branch_snapshots(
         return {}
 
     with parent._process_lock:
-        if not parent.workspace.refresh_if_stale():
+        if not parent.workspace.refresh_if_stale(refresh_max_age_seconds):
             raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
         parent._reload_manifest()
         accepted_main_states: dict[int, GraphState] = {}
@@ -1491,12 +1498,13 @@ def open_branch(
     expected_episode_id: str | None = None,
     expected_project_id: str | None = None,
     initialize: bool = True,
+    refresh_max_age_seconds: float = REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 ) -> BranchHistoryManager:
     canonical_branch_id(branch_id)
     with parent._process_lock:
         main = None
         if not initialize:
-            if not parent.workspace.refresh_if_stale():
+            if not parent.workspace.refresh_if_stale(refresh_max_age_seconds):
                 raise StateUnavailable("canonical state refresh did not confirm a current snapshot")
             parent._reload_manifest()
             main = parent.materialize(write_outputs=False)

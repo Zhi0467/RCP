@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import threading
 import uuid
 from collections.abc import Mapping
@@ -33,16 +34,20 @@ from rcp.api.dependencies import (
 from rcp.api.graph_changes import require_graph_edit_admission
 from rcp.api.identity import IdentityAccess
 from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
+from rcp.artifact_comments import comment_panel, selection_frame_addon, supports_comments
 from rcp.artifact_replace import ArtifactReplacementConflict
+from rcp.artifact_views import artifact_viewer_document, markdown_document, text_document
 from rcp.artifacts import (
-    ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
-    artifact_viewer_document,
-    descriptor_for,
+    ArtifactView,
+    artifact_view,
+    classify_artifact_bytes,
     html_preview_document,
     read_local_regular_file,
     replace_local_regular_file,
-    validate_artifact_bytes,
+)
+from rcp.artifacts import (
+    artifact_id as scoped_artifact_id,
 )
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
@@ -52,7 +57,11 @@ from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.chat import _local_chat_artifact_directory, _logical_chat_turn_operation_id
+from rcp.runs.chat import (
+    _local_chat_artifact_directory,
+    _logical_chat_turn_operation_id,
+    artifact_omissions,
+)
 from rcp.runs.chat_admission import admit_fresh_chat_turn
 from rcp.runs.steering import (
     begin_chat_steer,
@@ -68,6 +77,7 @@ from rcp.skill_registry import SkillSelection
 from rcp.storage import (
     AgentTaskAdmissionConflict,
     AgentTaskKind,
+    AgentTaskReceiptRecord,
     AgentTaskRecord,
     AppStore,
     ArtifactRevisionCandidateRecord,
@@ -132,6 +142,7 @@ class SteerAgentTaskRequest(BaseModel):
 class AgentArtifactResponse(AgentArtifactDescriptor):
     """One stored descriptor plus backend-owned availability decisions."""
 
+    view: ArtifactView
     available: bool
     unavailable_reason: str | None
     can_open: bool
@@ -176,6 +187,8 @@ def _agent_artifact_response(
     )
     can_discuss = (
         available
+        and supports_comments(descriptor.media_type)
+        and isinstance(record.request.get("chat_id"), str)
         and not record.history_only
         and bool(record.native_session_id)
         and bool(record.stage_root)
@@ -184,7 +197,8 @@ def _agent_artifact_response(
         **descriptor.model_dump(mode="python"),
         available=available,
         unavailable_reason=unavailable_reason,
-        can_open=available,
+        view=artifact_view(descriptor.media_type),
+        can_open=available and artifact_view(descriptor.media_type) not in {"pdf", "file"},
         can_download=available,
         can_keep=available and not kept and not record.history_only,
         can_discuss=can_discuss,
@@ -209,6 +223,7 @@ def _agent_task_response(
     record: AgentTaskRecord,
     background_tasks: BackgroundAgentTasks,
     degradations: Mapping[str, str] | None = None,
+    discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     steering = chat_steering_state(background_tasks, record)
@@ -226,6 +241,9 @@ def _agent_task_response(
     stored_artifacts = record.result.get("artifacts") if record.result else None
     if not isinstance(result, dict):
         return response
+    receipt = (discoveries or {}).get(record.operation_id)
+    if receipt is not None:
+        result["artifact_omissions"] = artifact_omissions(receipt)
     if record.history_only:
         graph_update = result.get("graph_update")
         if isinstance(graph_update, dict):
@@ -400,8 +418,10 @@ def agent_tasks(
     )
     records = store.agent_tasks(project_id, graph_target=target)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
+    discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
     return [
-        _agent_task_response(store, record, background_tasks, degradations) for record in records
+        _agent_task_response(store, record, background_tasks, degradations, discoveries)
+        for record in records
     ]
 
 
@@ -419,7 +439,11 @@ def agent_task(
     if record is None or record.project_id != project_id or not record.visible:
         raise HTTPException(status_code=404, detail="Agent task not found")
     detail = _agent_task_response(
-        store, record, background_tasks, store.agent_task_degradations([operation_id])
+        store,
+        record,
+        background_tasks,
+        store.agent_task_degradations([operation_id]),
+        store.agent_task_artifact_discoveries([operation_id]),
     )
     detail["events"] = [
         event.model_dump(mode="json") for event in store.agent_task_events(operation_id)
@@ -495,7 +519,9 @@ async def content_agent_artifact(
     }
     if descriptor.media_type == "text/html":
         try:
-            document, csp = html_preview_document(data)
+            document, csp = html_preview_document(
+                data, frame_addon=selection_frame_addon() if descriptor.can_discuss else None
+            )
         except Exception as exc:
             # Rendering is an optional preview boundary. A malformed document
             # or renderer defect makes only this attachment unavailable.
@@ -505,6 +531,16 @@ async def content_agent_artifact(
             b"" if request.method == "HEAD" else document,
             media_type="text/html",
             headers=headers,
+        )
+    if descriptor.view in {"markdown", "text"}:
+        document, csp = (
+            markdown_document(data)
+            if descriptor.view == "markdown"
+            else text_document(descriptor.name, data)
+        )
+        headers["Content-Security-Policy"] = csp
+        return Response(
+            b"" if request.method == "HEAD" else document, media_type="text/html", headers=headers
         )
     headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
     return Response(
@@ -531,7 +567,13 @@ async def preview_agent_artifact(
     # A browser image request is distinguishable from a viewer navigation by
     # its Accept header, so keep that bounded compatibility without restoring
     # the old raw-preview entrance for ordinary navigation.
-    if "image/" in request.headers.get("accept", "").casefold():
+    record = store.agent_task(operation_id)
+    image_request = (
+        record is not None
+        and record.project_id == project_id
+        and artifact_view(_agent_artifact_descriptor(record, artifact_id).media_type) == "image"
+    )
+    if image_request and "image/" in request.headers.get("accept", "").casefold():
         return await content_agent_artifact(
             project_id,
             operation_id,
@@ -572,7 +614,7 @@ async def download_agent_artifact(
         "download",
     )
     suffix = Path(descriptor.name).suffix.casefold()
-    fallback = f"artifact{suffix}" if suffix in ARTIFACT_MEDIA_TYPES else "artifact"
+    fallback = f"artifact{suffix}" if re.fullmatch(r"\.[a-z0-9]{1,16}", suffix) else "artifact"
     disposition = (
         f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(descriptor.name, safe='')}"
     )
@@ -627,8 +669,6 @@ async def _artifact_viewer_response(
     )
     record = store.agent_task(operation_id)
     chat_id = record.request.get("chat_id") if record is not None else None
-    if not isinstance(chat_id, str):
-        raise HTTPException(status_code=410, detail="Artifact chat unavailable")
     content_url = (
         f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
         f"/artifacts/{quote(artifact_id, safe='')}/content"
@@ -639,14 +679,29 @@ async def _artifact_viewer_response(
         if descriptor.can_keep
         else None
     )
+    panel = (
+        comment_panel(
+            {
+                "projectId": project_id,
+                "chatId": chat_id,
+                "operationId": operation_id,
+                "artifactId": descriptor.artifact_id,
+                "artifactName": descriptor.name,
+                "mediaType": descriptor.media_type,
+                "source": "task",
+                "episodeId": None,
+                "branchId": record.graph_target.branch_id if record else None,
+            }
+        )
+        if descriptor.can_discuss
+        else None
+    )
     document, csp = artifact_viewer_document(
-        preview_url=content_url,
+        descriptor,
+        content_url=content_url,
         keep_url=keep_url,
-        project_id=project_id,
-        chat_id=chat_id if descriptor.can_discuss else None,
-        operation_id=operation_id,
-        descriptor=descriptor,
-        branch_id=record.graph_target.branch_id,
+        state="kept" if descriptor.is_kept() else "temporary",
+        panel=panel,
     )
     return Response(
         b"" if head else document,
@@ -1172,8 +1227,7 @@ def _artifact_revision_candidate_bytes(
         or revision.stage_root != candidate.stage_root
     ):
         raise FileNotFoundError(candidate.source_name)
-    expected = descriptor_for(candidate.artifact_scope_id, candidate.source_name)
-    if expected.media_type != candidate.media_type:
+    if not supports_comments(candidate.media_type):
         raise ValueError("artifact revision candidate descriptor changed")
     if candidate.stage_host:
         stage = RemoteRunStage(candidate.stage_host).attach_artifact_source(candidate.stage_root)
@@ -1194,7 +1248,7 @@ def _artifact_revision_candidate_bytes(
         )
     if (
         len(data) != candidate.candidate_size_bytes
-        or validate_artifact_bytes(candidate.source_name, data) != candidate.media_type
+        or classify_artifact_bytes(candidate.source_name, data) != candidate.media_type
         or hashlib.sha256(data).hexdigest() != candidate.candidate_sha256
     ):
         raise ValueError("artifact revision candidate bytes changed")
@@ -1261,8 +1315,10 @@ def _load_agent_artifact(
             artifact_id,
             action,
         )
-        media_type = validate_artifact_bytes(projected.name, data)
-        if media_type != projected.media_type:
+        if (
+            projected.media_type != "application/octet-stream"
+            and classify_artifact_bytes(projected.name, data) != projected.media_type
+        ):
             raise ValueError("artifact media type changed")
     except FileNotFoundError as exc:
         raise HTTPException(status_code=410, detail="Preview unavailable") from exc
@@ -1296,18 +1352,15 @@ def _read_agent_artifact_bytes(
         "download": projected.can_download,
         "keep": projected.can_keep,
     }[action]
+    if action == "open" and projected.view in {"pdf", "file"}:
+        raise HTTPException(status_code=404, detail="Artifact has no viewer")
     if not allowed:
         raise HTTPException(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
     scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
-    expected_descriptor = descriptor_for(scope_id, descriptor.name)
-    if (
-        expected_descriptor.artifact_id != descriptor.artifact_id
-        or expected_descriptor.name != descriptor.name
-        or expected_descriptor.media_type != descriptor.media_type
-    ):
+    if scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
         raise ValueError("artifact descriptor does not match its task scope")
     if descriptor.kept_filename is not None:
         data = workspace.read_kept_artifact(
@@ -1453,6 +1506,8 @@ def _admit_artifact_context_request(
         raise ValueError("The artifact is unavailable.")
     if context.source == "task":
         assert descriptor is not None
+        if not supports_comments(descriptor.media_type):
+            raise ValueError("Artifact type does not support comments.")
         unresolved_revision = store.unresolved_artifact_revision_candidate(
             origin.operation_id,
             descriptor.artifact_id,

@@ -361,7 +361,7 @@ class ClaudeAuthentication(ProviderAuthentication):
                 remote_prefix=remote_claude_token_prefix()
                 if self.credential_available(credentials, host)
                 else None
-            )
+            ).with_claude_foreground_tasks(remote=True)
         environment = {
             name: value
             for name, value in os.environ.items()
@@ -371,7 +371,9 @@ class ClaudeAuthentication(ProviderAuthentication):
         environment.pop(CLAUDE_TOKEN_VARIABLE, None)
         if token:
             environment[CLAUDE_TOKEN_VARIABLE] = token
-        return ProviderProcessEnvironment(local_env=environment)
+        return ProviderProcessEnvironment(local_env=environment).with_claude_foreground_tasks(
+            remote=False
+        )
 
     def validate_token(self, token: str) -> str:
         return validate_claude_token(token)

@@ -11,6 +11,7 @@ from pathlib import PurePosixPath
 
 from rcp import repository_window
 from rcp.config import Manifest
+from rcp.escaped_lines import escaped_lines
 from rcp.limits import (
     REPOSITORY_PREVIEW_MAX_BYTES,
     REPOSITORY_PREVIEW_TIMEOUT_SECONDS,
@@ -126,12 +127,6 @@ def repository_source_document(source: RepositorySource, *, line: int | None = N
     last_line = source.start_line + len(lines) - 1
     if line is not None and (line < source.start_line or line > last_line):
         raise ValueError("Requested line is outside the repository file")
-    rendered_lines = []
-    for number, value in enumerate(lines, start=source.start_line):
-        selected = ' class="line selected"' if number == line else ' class="line"'
-        rendered_lines.append(
-            f'<span id="L{number}"{selected}>{html.escape(value, quote=True)}</span>'
-        )
     title = html.escape(
         f"{source.repository_alias}: {source.relative_path}",
         quote=True,
@@ -144,7 +139,7 @@ def repository_source_document(source: RepositorySource, *, line: int | None = N
             f"of a {source.total_bytes:,}-byte file</span>"
         )
     )
-    source_html = "\n".join(rendered_lines)
+    source_html = escaped_lines(source.text, source.start_line, line)
     document = f"""<!doctype html>
 <html lang="en">
 <head>

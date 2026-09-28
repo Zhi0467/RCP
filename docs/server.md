@@ -5,7 +5,7 @@ written for the machine operator who has `sudo` on a disposable or dedicated
 Ubuntu host. The supported host is Ubuntu 22.04 LTS or Ubuntu 24.04 LTS on
 x86-64 with systemd.
 
-The root [README](../README.md#team-server) points here;
+The [install guide](install.md#team-server) points here;
 this document is the single complete server setup and operations procedure.
 
 The `rcp server` CLI is the complete machine workflow and is itself a continuous
@@ -484,11 +484,13 @@ history.
 ## Opt into Slurm for long-running work
 
 After creating the project, open **Project Settings → Long-running jobs** for
-its execution machine, enable **Use Slurm**, and Save. Run **Probe**, or use the
-installed-service check from the server operator session:
+its execution machine, enable **Use Slurm**, and Save. RCP checks the scheduler
+and helper routes right after the save, and again at every startup; a route
+that is not ready shows a notice on **Runs** with its fix and a **Check again**
+control. An operator can run the same check from the server operator session:
 
 ```bash
-sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias>
+sudo -u rcp -H /usr/local/bin/rcp server compute probe --project <project-id> <machine-alias> --route scheduler
 ```
 
 The check runs through the actual execution account: `rcp` for server-local

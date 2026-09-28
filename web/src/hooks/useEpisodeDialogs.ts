@@ -79,6 +79,37 @@ export function applyEpisodeRefreshResponse(
   };
 }
 
+const EMPTY_EPISODE_STATE: Omit<EpisodeState, "projectId"> = { episodes: [], messages: {} };
+
+/** The state to show when `projectId` becomes current: its own, kept, or empty. */
+export function restoreEpisodeState(
+  current: EpisodeState,
+  kept: ReadonlyMap<string, EpisodeState>,
+  projectId: string,
+): EpisodeState {
+  if (current.projectId === projectId) return current;
+  return kept.get(projectId) ?? { projectId, ...EMPTY_EPISODE_STATE };
+}
+
+export interface EpisodeRequestSlot {
+  current: { projectId: string; request: Promise<boolean> } | null;
+}
+
+/** Record `request` as the project's in-flight episode list request until it settles. */
+export function trackEpisodeRequest(
+  slot: EpisodeRequestSlot,
+  projectId: string,
+  request: Promise<boolean>,
+): Promise<boolean> {
+  const entry = { projectId, request };
+  slot.current = entry;
+  const clear = () => {
+    if (slot.current === entry) slot.current = null;
+  };
+  request.then(clear, clear);
+  return request;
+}
+
 export function useEpisodeDialogs({
   projectId,
   apiBase,
@@ -97,6 +128,13 @@ export function useEpisodeDialogs({
     messages: {},
   });
   const episodeRefreshGeneration = useRef(0);
+  // Each project's last episode state, shown at once when its tab comes back.
+  const keptEpisodeStates = useRef(new Map<string, EpisodeState>());
+  const episodeRequest = useRef<EpisodeRequestSlot["current"]>(null);
+
+  useEffect(() => {
+    if (episodeState.projectId) keptEpisodeStates.current.set(episodeState.projectId, episodeState);
+  }, [episodeState]);
 
   const episodes = episodeState.projectId === projectId ? episodeState.episodes : [];
   const episodeMessages = episodeState.projectId === projectId ? episodeState.messages : {};
@@ -107,43 +145,46 @@ export function useEpisodeDialogs({
     episodes.filter((episode) => episode.mode === "auto_research"),
   );
 
-  const refreshEpisodes = useCallback(async () => {
-    if (!projectId || !apiBase) return false;
+  const refreshEpisodes = useCallback(() => {
+    if (!projectId || !apiBase) return Promise.resolve(false);
     const requestedProjectId = projectId;
     const requestGeneration = ++episodeRefreshGeneration.current;
-    let nextEpisodes: Episode[];
-    try {
-      nextEpisodes = await loadEpisodes(apiBase);
-      if (
-        selectedAutoResearchEpisodeId &&
-        !nextEpisodes.some((episode) => episode.episode_id === selectedAutoResearchEpisodeId)
-      ) {
-        const exact = await loadEpisodes(apiBase, "auto_research", selectedAutoResearchEpisodeId);
-        nextEpisodes = mergeExactEpisode(nextEpisodes, exact);
+    const load = async () => {
+      let nextEpisodes: Episode[];
+      try {
+        nextEpisodes = await loadEpisodes(apiBase);
+        if (
+          selectedAutoResearchEpisodeId &&
+          !nextEpisodes.some((episode) => episode.episode_id === selectedAutoResearchEpisodeId)
+        ) {
+          const exact = await loadEpisodes(apiBase, "auto_research", selectedAutoResearchEpisodeId);
+          nextEpisodes = mergeExactEpisode(nextEpisodes, exact);
+        }
+      } catch (error) {
+        if (
+          !isActiveProject(requestedProjectId) ||
+          requestGeneration !== episodeRefreshGeneration.current
+        )
+          return false;
+        throw error;
       }
-    } catch (error) {
       if (
         !isActiveProject(requestedProjectId) ||
         requestGeneration !== episodeRefreshGeneration.current
       )
         return false;
-      throw error;
-    }
-    if (
-      !isActiveProject(requestedProjectId) ||
-      requestGeneration !== episodeRefreshGeneration.current
-    )
-      return false;
-    setEpisodeState((current) =>
-      applyEpisodeRefreshResponse(
-        current,
-        requestedProjectId,
-        requestGeneration,
-        episodeRefreshGeneration.current,
-        nextEpisodes,
-      ),
-    );
-    return true;
+      setEpisodeState((current) =>
+        applyEpisodeRefreshResponse(
+          current,
+          requestedProjectId,
+          requestGeneration,
+          episodeRefreshGeneration.current,
+          nextEpisodes,
+        ),
+      );
+      return true;
+    };
+    return trackEpisodeRequest(episodeRequest, requestedProjectId, load());
   }, [apiBase, projectId, selectedAutoResearchEpisodeId]);
 
   const refreshEpisodeMessages = useCallback(
@@ -174,9 +215,7 @@ export function useEpisodeDialogs({
     const requestedProjectId = projectId;
     setEpisodeRefreshError(null);
     setEpisodeState((current) =>
-      current.projectId === requestedProjectId
-        ? current
-        : { projectId: requestedProjectId, episodes: [], messages: {} },
+      restoreEpisodeState(current, keptEpisodeStates.current, requestedProjectId),
     );
     void refreshEpisodes()
       .then((applied) => {
@@ -199,8 +238,11 @@ export function useEpisodeDialogs({
         clearTimeout: (timeoutId) => window.clearTimeout(timeoutId),
       },
       async () => {
+        // Join a list request already in flight for this project rather than overlap it.
+        const inFlight =
+          episodeRequest.current?.projectId === projectId ? episodeRequest.current.request : null;
         await Promise.all([
-          refreshEpisodes(),
+          inFlight ?? refreshEpisodes(),
           pollingAutoResearchEpisode
             ? refreshEpisodeMessages(pollingAutoResearchEpisode.episode_id)
             : Promise.resolve(),
@@ -216,6 +258,7 @@ export function useEpisodeDialogs({
   }, [
     pollingAutoResearchEpisode?.episode_id,
     pollingEpisode?.episode_id,
+    projectId,
     refreshEpisodeMessages,
     refreshEpisodes,
     runsVisible,

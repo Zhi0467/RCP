@@ -3,6 +3,8 @@ name = "rcp"
 dynamic = ["version"]
 description = "RCP: a human comprehension surface for agent-driven research projects"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.28.1",
@@ -15,6 +17,8 @@ dependencies = [
   "tomlkit>=0.13.3",
   "uvicorn[standard]>=0.35.0",
   "anyio>=4.0",
+  "markdown-it-py>=4.2.0",
+  "pillow>=12.3.0",
 ]
 
 [project.scripts]

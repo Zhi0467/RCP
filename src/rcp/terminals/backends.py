@@ -40,6 +40,7 @@ class TerminalBackend:
         git_read_paths: tuple[str, ...],
         git_environment: dict[str, str],
         empty_directory: Path,
+        granted_paths: list[str] | None = None,
         expand_environment_option: bool = True,
     ) -> tuple[subprocess.Popen[bytes], int]:
         if self.containment == "cooperative":
@@ -51,6 +52,7 @@ class TerminalBackend:
             git_read_paths=git_read_paths,
             git_environment=git_environment,
             empty_directory=empty_directory,
+            granted_paths=granted_paths,
             # A local host has no probe to carry its version, so read it here.
             expand_environment_option=(
                 expand_environment_option and launch.local_systemd_version() >= 254

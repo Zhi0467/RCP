@@ -4,9 +4,9 @@ import asyncio
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import (
     get_background_tasks,
@@ -27,13 +27,14 @@ from rcp.api.graph_changes import (
     merge_fenced_mutation_availability,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.api.space_machines import MACHINE_ATTACHMENT_LOCK
 from rcp.background import BackgroundAgentTasks
-from rcp.compute_jobs.models import ComputeBackendProbe
-from rcp.compute_jobs.probe import probe_compute_backend
+from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
 from rcp.core.attention import project_graph_mutation_availability
 from rcp.core.transition_models import GraphMutationAvailability
 from rcp.history.branches import BranchHistoryManager
+from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import profile_for
 from rcp.repository_preview import (
@@ -119,7 +120,7 @@ def _branch_snapshot(
     materialization, changes = branch_changes(service.history)
     snapshot = project_display_cache.complete_snapshot(
         project_id,
-        service.project_snapshot(state=materialization.state, head=changes.head),
+        service.project_snapshot(materialization=materialization, head=changes.head),
         fresh=True,
     )
     snapshot["graph_changes"] = changes.model_dump(mode="json")
@@ -143,12 +144,18 @@ _BRANCH_HEARTBEATS: dict[
 def _branch_revision(
     project_id: str, branch_id: str, catalog: ProjectCatalog, store: AppStore
 ) -> dict[str, object]:
-    service = get_graph_service(catalog, project_id, branch_id, initialize=False)
+    service = get_graph_service(
+        catalog,
+        project_id,
+        branch_id,
+        initialize=False,
+        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+    )
     history = service.history
     assert isinstance(history, BranchHistoryManager)
     canonical_project_id = catalog.resolve_project_id(project_id)
     with history.workspace.snapshot_lock:
-        if not history.workspace.refresh_if_stale():
+        if not history.workspace.refresh_if_stale(REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS):
             raise StateUnavailable("The episode graph could not confirm a current snapshot.")
         signature = history.retained_patch_signature()
         remembered = _BRANCH_HEARTBEATS.get((canonical_project_id, branch_id))
@@ -304,6 +311,9 @@ async def cached_project_revision(
         "revision": snapshot["revision"],
         "snapshot_freshness": snapshot["snapshot_freshness"],
         "last_remote_sync_at": snapshot["last_remote_sync_at"],
+        # Probes finish in the background after startup or a settings save;
+        # a change here tells an open page to reload their results.
+        "compute_probes_probed_at": snapshot["compute_probes_probed_at"],
     }
 
 
@@ -400,7 +410,10 @@ def preview_repository_file(
 def update_project_settings(
     project_id: str,
     body: ProjectSettingsRequest,
+    background: BackgroundTasks,
     *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
     project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
     try:
@@ -409,7 +422,57 @@ def update_project_settings(
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if body.machine_compute:
+        # The save cleared these machines' readiness; check them again now.
+        background.add_task(
+            _refresh_machine_compute_probes, catalog, store, project_id, list(body.machine_compute)
+        )
     return snapshot
+
+
+def _refresh_machine_compute_probes(
+    catalog: ProjectCatalog, store: AppStore, project_id: str, machines: list[str]
+) -> None:
+    project_id = catalog.resolve_project_id(project_id)
+    try:
+        manifest = get_project_service(catalog, project_id).manifest
+        refresh_compute_probes(
+            store, manifest, project_id, data_dir=catalog.data_dir, machines=machines
+        )
+    except Exception as exc:
+        logger.warning("Could not check compute routes for project %s: %s", project_id, exc)
+
+
+class AddProjectMachineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine_id: str = Field(min_length=1, max_length=64)
+    alias: str = Field(min_length=1, max_length=48)
+
+
+@router.post(
+    "/api/projects/{project_id}/machines",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def add_project_machine(
+    project_id: str,
+    body: AddProjectMachineRequest,
+    *,
+    store: StoreDependency,
+    project_display_cache: DisplayCacheDependency,
+) -> dict[str, object]:
+    """Append a space machine card to this project's manifest; returns the project snapshot."""
+
+    try:
+        with MACHINE_ATTACHMENT_LOCK:
+            store.space_machine(body.machine_id)
+            return project_display_cache.add_machine(project_id, body.machine_id, body.alias)
+    except KeyError as exc:
+        if exc.args == (body.machine_id,):
+            raise HTTPException(status_code=404, detail="Machine not found") from exc
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post(
@@ -438,23 +501,29 @@ def resolve_project_provider_path(
 
 
 @router.post(
-    "/api/projects/{project_id}/machines/{machine_alias}/compute/probe",
+    "/api/projects/{project_id}/machines/{machine_alias}/compute/check",
     dependencies=[Depends(require_project_write_admission)],
-    response_model=ComputeBackendProbe,
 )
-def probe_project_compute_backend(
+def check_machine_compute(
     project_id: str,
     machine_alias: str,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
-) -> ComputeBackendProbe:
+) -> dict[str, object]:
+    """Re-check every route of one machine after a human fixed what a notice named."""
     project_id = catalog.resolve_project_id(project_id)
-    service = get_project_service(catalog, project_id)
-    if machine_alias not in service.manifest.machine_map:
+    manifest = get_project_service(catalog, project_id).manifest
+    if machine_alias not in manifest.machine_map:
         raise HTTPException(status_code=422, detail=f"unknown execution machine: {machine_alias}")
-    probe = probe_compute_backend(service.manifest, machine_alias, data_dir=catalog.data_dir)
-    return store.record_compute_backend_probe(project_id, probe)
+    refresh_compute_probes(
+        store, manifest, project_id, data_dir=catalog.data_dir, machines=[machine_alias]
+    )
+    return {
+        route: probe.model_dump(mode="json") if probe else None
+        for route in ("scheduler", "helper")
+        for probe in [store.compute_backend_probe(project_id, machine_alias, route)]
+    }
 
 
 @router.get("/api/projects/{project_id}/sources")
@@ -497,6 +566,7 @@ def agent_usage(
 
 __all__ = [
     "ProjectInviteRequest",
+    "add_project_machine",
     "agent_usage",
     "cached_project",
     "cached_project_revision",

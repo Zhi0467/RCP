@@ -10,7 +10,6 @@ import {
   buildTeamProvisioningRequest,
   formatCommandArgv,
   invalidProjectProvisioningHash,
-  latestSshBrowseRequestCanApply,
   parseProjectSetupRoute,
   projectMoveSetupHash,
   projectProvisioningHash,
@@ -18,9 +17,9 @@ import {
   repositoryPickerPresentation,
   routeProvedBy,
   selectedProjectCreationIntent,
-  sshBrowseTargetIdentity,
   stateRepositoryAfterRemoval,
 } from "../src/projectSetup.ts";
+import { appStylesheet, withResolvedTypeScale } from "./appStylesheet.mjs";
 
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
@@ -110,50 +109,10 @@ test("SSH repositories retain manual paths and offer the bounded remote browser"
   assert.match(html, /value="\/home\/alice\/paper"/);
 });
 
-test("a deferred SSH browse response cannot apply after the target inputs change", async () => {
-  let completeRequest;
-  const deferredResponse = new Promise((resolve) => {
-    completeRequest = resolve;
-  });
-  let currentGeneration = 1;
-  const requestGeneration = currentGeneration;
-  const requestTarget = sshBrowseTargetIdentity("ssh", "alice@gpu.example", "/home/alice");
-  let currentTarget = requestTarget;
-  const applied = [];
-  const consume = deferredResponse.then((response) => {
-    if (
-      latestSshBrowseRequestCanApply(
-        requestGeneration,
-        currentGeneration,
-        requestTarget,
-        currentTarget,
-      )
-    ) {
-      applied.push(response);
-    }
-  });
-
-  currentGeneration += 1; // Editing location, host, or path invalidates the request.
-  currentTarget = sshBrowseTargetIdentity("ssh", "alice@gpu-2.example", "/home/alice");
-  completeRequest({ listing: { path: "/stale" } });
-  await consume;
-
-  assert.deepEqual(applied, []);
-  assert.equal(
-    latestSshBrowseRequestCanApply(
-      currentGeneration,
-      currentGeneration,
-      currentTarget,
-      currentTarget,
-    ),
-    true,
-  );
-});
-
-test("the SSH repository browser does not introduce sub-10px primary or status text", async () => {
-  const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
-  const start = styles.indexOf(".ssh-repository-browser {");
-  const end = styles.indexOf(".setup-field > input", start);
+test("the folder picker does not introduce sub-10px primary or status text", async () => {
+  const styles = withResolvedTypeScale(appStylesheet());
+  const start = styles.indexOf(".path-picker {");
+  const end = styles.indexOf(".machine-writable-paths {", start);
 
   assert.ok(start >= 0 && end > start);
   assert.doesNotMatch(styles.slice(start, end), /font-size:\s*[0-9](?:\.[0-9]+)?px/);
@@ -545,7 +504,14 @@ function settingsProject() {
     default_run_truth_scope: ["research"],
     default_auto_research_invocation_ceiling: 10,
     repositories: [{ alias: "research", machine: "local", path: "/repo" }],
-    machines: [{ alias: "local", host: "", provider_paths: { codex: "codex" } }],
+    machines: [
+      {
+        alias: "local",
+        host: "",
+        provider_paths: { codex: "codex" },
+        compute_probes: { scheduler: null, helper: null },
+      },
+    ],
     agent_profiles: {
       seed: profile,
       refresh: profile,
@@ -847,7 +813,6 @@ test("the provisioning view renders backend answers and hides native actions in 
     "utf8",
   );
   assert.doesNotMatch(source, /request\.status\b/);
-  assert.match(source, /role="log"[\s\S]*aria-live="polite"[\s\S]*aria-relevant="additions"/);
 
   assert.doesNotMatch(operatorHtml, /provisioning-final-review/);
   assert.match(readyHtml, /class="provisioning-final-review"/);
@@ -915,11 +880,8 @@ test("Project Settings opens the move route only for a personal project", () => 
         onSaved() {},
         onCacheMetricsChange() {},
         onRefreshReadiness: async () => {},
-        showDisplaySettings: false,
         spaceKind,
         onMovePersonalProjectToTeam: onMove,
-        textScale: 100,
-        onTextScaleChange() {},
       }),
     );
 

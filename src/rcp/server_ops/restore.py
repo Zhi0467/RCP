@@ -98,6 +98,21 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # whose graph_runs kept the rebuilt column order has the second.
         "657bf07e3bdb4358fdb7d243a774d3596b2c91c9b65445b648e85426559484cc",
         "25b83f855aa94e284a3e41efd60b222977c3f3a5cea94a402bee35cfdcf127fa",
+        # Agent task list indexes on graph_runs, fresh and upgraded in place.
+        "8ea330738b081a038f99313df5387d73b93437a11c3f90f8f18b8765f6cff9c5",
+        "6060e34cbafc7686da7b7bc0b3c2c20d7635568530bb08108b455c2f2bcfa8bb",
+        # Separate scheduler/helper probe keys, fresh and upgraded in place.
+        "f2ea827430563c4baf89aaa64b62df5bc56aca98fed98843c0581ad64698c4b9",
+        "a740aa10daaf191482999132a03617f16429f47b8b923ef9a4976f6619dd3fa4",
+        # Chat display (archive and title), fresh and upgraded in place.
+        "ab05d5a356e78f8fac814b2b5d0d73d84fad1880373265878c44ee592f363d0f",
+        "dfa7f6dbaeb5fe3cbe9073f8a62861f4c76fe6da58be5b48daa0ec7eb85478a8",
+        # Per-user chat read markers and chat pins, fresh and upgraded in place.
+        "2e9faec20d33214a6697f2c595c169af76d55ad33a6ebe5fed50369560fea185",
+        "a89a5484892c392ee414a410cc132484c99791497ea15e80257a574b0d096ae1",
+        # Space machine cards, fresh and upgraded in place.
+        "0f0456bec7bb95895d5d7287684b03aa4b97c605fa36ef8fec17459948fbb967",
+        "4c04efc71d0177fdb58875e26a4a77b61bef36a2e2253c30fc05aab8b41e9f62",
     }
 )
 

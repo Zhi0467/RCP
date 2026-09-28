@@ -6,6 +6,7 @@ import os
 import shlex
 import socket
 import stat
+import sys
 from contextlib import suppress
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from rcp.limits import (
     SSH_SERVER_ALIVE_COUNT_MAX,
     SSH_SERVER_ALIVE_INTERVAL_SECONDS,
 )
+from rcp.rcp_home import private_directory, rcp_home, short_socket_root
 from rcp.ssh_validation import validate_ssh_destination
 
 # Callers with no work of their own to lose share one master.
@@ -143,20 +145,47 @@ def _require_control_directory() -> Path:
     """Create and prove the private local owner of SSH mux sockets."""
 
     directory = _control_directory_path()
-    with suppress(FileExistsError):
-        directory.mkdir(mode=0o700)
-    try:
-        info = directory.lstat()
-    except OSError as exc:
-        raise RuntimeError("RCP SSH control directory is unavailable") from exc
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.geteuid()
-        or stat.S_IMODE(info.st_mode) != 0o700
-    ):
-        raise RuntimeError("RCP SSH control directory is unsafe")
-    return directory
+    if directory.parent.parent == Path("/tmp"):
+        # The short root sits in shared /tmp, so it must be ours and private too.
+        private_directory(directory.parent, "SSH control directory")
+    return private_directory(directory, "SSH control directory")
+
+
+# sizeof(sun_path), minus the terminator and OpenSSH's bind suffix.
+_CONTROL_PATH_CEILING = (104 if sys.platform == "darwin" else 108) - 1 - 17
 
 
 def _control_directory_path() -> Path:
-    return Path("/tmp") / f"rcp-ssh-{os.geteuid()}"
+    directory = control_directory_candidate()
+    if not _fits_socket_limit(directory):
+        raise RuntimeError(f"RCP SSH control directory path is too long: {directory}")
+    return directory
+
+
+def _fits_socket_limit(directory: Path) -> bool:
+    # A master binds `<ControlPath>.<16 random chars>`, so the room this
+    # directory leaves for `/<token>-<%C>` has a hard ceiling.
+    widest = len(os.fsencode(directory)) + len(f"/{control_partition_token('x')}-") + 40
+    return widest <= _CONTROL_PATH_CEILING
+
+
+def control_directory_candidate() -> Path:
+    """Where this account's SSH mux sockets live.
+
+    Linux's private `/run/user/<uid>` first, then `~/.rcp/ssh`. A home too long
+    for the socket limit uses the short `/tmp/rcp-<id>/ssh`, which write scopes
+    protect like the rest of RCP's own storage.
+    """
+
+    runtime = Path(f"/run/user/{os.geteuid()}")
+    try:
+        info = runtime.stat()
+    except OSError:
+        pass
+    else:
+        if info.st_uid == os.geteuid() and (info.st_mode & 0o077) == 0:
+            return runtime / "rcp-ssh"
+    home = rcp_home() / "ssh"
+    if _fits_socket_limit(home):
+        return home
+    return Path(short_socket_root(str(Path.home()))) / "ssh"

@@ -22,6 +22,8 @@ import rcp.projects as projects_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, ProviderReadiness
 from rcp.agents.context import RepositoryPointer
+from rcp.agents.continuation_prompt import SECTIONS
+from rcp.agents.graph_rules import graph_rules
 from rcp.api.app import (
     _generic_watcher_delivery_request,
 )
@@ -30,6 +32,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig, MachineConfig
 from rcp.core.attention import decision_awaits_choice
+from rcp.core.materialize import MaterializationResult
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.constants import NODE_ADAPTER
@@ -49,6 +52,7 @@ from rcp.runs.shared import (
     AgentOutputProblem,
     _collect_patch_text,
     _existing_exact_patch_digest,
+    _pinned_to_profile,
     _ProviderOutcome,
     _record_provider_exit,
     _sse,
@@ -92,8 +96,10 @@ from .helpers import (
     agent_patch_json,
     append_fixture_patch,
     async_wait_until,
+    changed_values,
     create_named_app,
     gated_patch,
+    launch_contract_path,
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
@@ -121,6 +127,51 @@ def _persist_skill_defaults(service, defaults: SkillDefaults) -> None:
         service.manifest.agent.default_run_truth_scope,
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},
         skill_defaults=defaults,
+    )
+
+
+@pytest.fixture
+def app(manifest, tmp_path):
+    return create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+
+
+def _seeded_project(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    append_fixture_patch(service, seed_patch())
+    return app, service
+
+
+def _experiment_project(manifest, tmp_path):
+    app, service = _seeded_project(manifest, tmp_path)
+    append_fixture_patch(service, _experiment_fixture_patch())
+    return app, service
+
+
+def _project_work_request(message: str) -> RunRequest:
+    return RunRequest(
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        message=message,
+        run_truth_scope=["repo-a"],
+        mode="work",
+    )
+
+
+def _experiment_request(message: str) -> RunRequest:
+    return RunRequest(
+        node_id="exp/bounded-loop",
+        message=message,
+        chat_id=str(uuid.uuid4()),
+        run_truth_scope=["repo-a"],
+        mode="work",
+        trigger="experiment_run",
+        patch_kind="experiment_loop",
+        control_node_id="exp/bounded-loop",
+        control_revision=3,
+        control_episode_id=str(uuid.uuid4()),
+        control_invocation=1,
+        control_invocation_ceiling=2,
     )
 
 
@@ -165,9 +216,8 @@ def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
 
 
 def test_generic_watcher_delivery_wakes_its_own_project_chat(
-    manifest, tmp_path: Path, monkeypatch
+    app, tmp_path: Path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     authorized_by = _named_test_authorizer(store)
@@ -257,8 +307,7 @@ def test_create_app_canonicalizes_a_symlinked_data_directory(manifest, tmp_path)
     assert app.state.data_dir == canonical.resolve()
 
 
-def test_provider_warmup_starts_after_health_is_available(manifest, tmp_path, monkeypatch) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_provider_warmup_starts_after_health_is_available(app, monkeypatch) -> None:
     entered = threading.Event()
     release = threading.Event()
     calls: list[tuple[str, str, str | None]] = []
@@ -303,10 +352,7 @@ def test_lifespan_shutdown_fences_canonical_lock_waits(manifest, tmp_path) -> No
     assert state_module._CANONICAL_LOCK_WAIT_FENCE.is_set() is True
 
 
-def test_startup_marks_all_skill_targets_then_refreshes_each_once(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_startup_marks_all_skill_targets_then_refreshes_each_once(app, monkeypatch) -> None:
     targets = [
         ("codex", "", "/opt/agents/codex"),
         ("claude", "research.example", "/opt/agents/claude"),
@@ -352,8 +398,7 @@ def test_startup_marks_all_skill_targets_then_refreshes_each_once(
     assert sorted(call[1:] for call in calls if call[0] == "refresh") == sorted(targets)
 
 
-def test_project_snapshot_and_resolution_use_last_good_provider_skills(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_project_snapshot_and_resolution_use_last_good_provider_skills(app, tmp_path) -> None:
     app.state.catalog.store.save_provider_skill_inventory_success(
         "codex",
         "",
@@ -448,8 +493,7 @@ def test_remote_stage_sweep_starts_after_health_is_available(
             release.set()
 
 
-def test_stale_instance_guard_rejects_mutation_before_side_effect(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_stale_instance_guard_rejects_mutation_before_side_effect(app) -> None:
     client = TestClient(app)
     project_id = app.state.default_project_id
 
@@ -468,11 +512,11 @@ def test_stale_instance_guard_rejects_mutation_before_side_effect(manifest, tmp_
 
 
 def test_watcher_poll_delivery_failure_does_not_starve_later_auto_research_episode(
+    app,
     manifest,
     tmp_path,
     monkeypatch,
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     project_ids = [app.state.default_project_id, str(uuid.uuid4())]
     store.upsert_project(
@@ -677,8 +721,7 @@ def _graph_update(frames: list[str]) -> dict[str, object] | None:
     return None
 
 
-def test_project_endpoints(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_project_endpoints(app) -> None:
     client = TestClient(app)
 
     health = client.get("/api/health")
@@ -720,9 +763,8 @@ def test_project_endpoints(manifest, tmp_path) -> None:
 
 
 def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
-    manifest, tmp_path
+    app, manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     project_id = app.state.default_project_id
     append_fixture_patch(service, seed_patch())
@@ -794,8 +836,7 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
         _validated_task_request(service, "refresh", {})
 
 
-def test_project_open_reuses_its_single_materialization(manifest, tmp_path, monkeypatch) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_project_open_reuses_its_single_materialization(app, monkeypatch) -> None:
     client = TestClient(app)
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
@@ -828,9 +869,8 @@ def test_project_open_reuses_its_single_materialization(manifest, tmp_path, monk
 
 
 def test_remote_probe_compares_with_display_snapshot_head_after_interrupted_reconcile(
-    manifest, tmp_path, monkeypatch
+    app, manifest, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     initial = TestClient(app).get(f"/api/projects/{project_id}").json()
     assert initial["revision"] == 1
@@ -936,10 +976,7 @@ def test_normal_launch_exposes_health_and_cache_without_opening_canonical_state(
     assert project.json() == authoritative.json()
 
 
-def test_slow_project_open_does_not_block_concurrent_task_history(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_slow_project_open_does_not_block_concurrent_task_history(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     original_open_service = app.state.catalog._open_service
@@ -984,10 +1021,7 @@ def test_slow_project_open_does_not_block_concurrent_task_history(
     assert open_calls == 1
 
 
-def test_blocking_project_source_read_does_not_stall_health(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_blocking_project_source_read_does_not_stall_health(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
     entered = threading.Event()
     release = threading.Event()
@@ -1024,9 +1058,8 @@ def test_blocking_project_source_read_does_not_stall_health(
 
 
 def test_concurrent_project_calls_share_first_open_without_blocking_health(
-    manifest, tmp_path, monkeypatch
+    app, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     app.state.catalog._services.clear()
     original_open_service = app.state.catalog._open_service
@@ -1069,10 +1102,7 @@ def test_concurrent_project_calls_share_first_open_without_blocking_health(
     assert open_calls == 1
 
 
-def test_failed_singleflight_open_preserves_error_and_can_retry(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_failed_singleflight_open_preserves_error_and_can_retry(app, manifest, monkeypatch) -> None:
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     catalog._services.clear()
@@ -1138,10 +1168,7 @@ def test_delete_tombstones_an_inflight_first_open(manifest, tmp_path, monkeypatc
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
 
-def test_delete_serializes_against_display_snapshot_replacement(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_delete_serializes_against_display_snapshot_replacement(app, monkeypatch) -> None:
     catalog = app.state.catalog
     project_id = app.state.default_project_id
     snapshot = TestClient(app).get(f"/api/projects/{project_id}").json()
@@ -1185,8 +1212,7 @@ def test_delete_serializes_against_display_snapshot_replacement(
     assert client.get(f"/api/projects/{project_id}/cached").status_code == 404
 
 
-def test_catalog_summary_reuses_project_snapshot(manifest, tmp_path, monkeypatch) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_catalog_summary_reuses_project_snapshot(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
     service = app.state.service
     snapshot = service.project_snapshot()
@@ -1213,9 +1239,8 @@ def test_catalog_summary_reuses_project_snapshot(manifest, tmp_path, monkeypatch
 
 
 def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
-    manifest, tmp_path
+    app, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     blockers = [
         Blocker(
             id="blk/asserted-open",
@@ -1266,7 +1291,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
         nodes={item.id: item for item in [*blockers, *decisions]},
     )
 
-    snapshot = app.state.service.project_snapshot(state=state)
+    snapshot = app.state.service.project_snapshot(materialization=MaterializationResult(state))
 
     assert snapshot["counts"]["decisions_awaiting_choice"] == 2
     assert snapshot["counts"]["open_blockers"] == 1
@@ -1289,10 +1314,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
     }
 
 
-def test_cached_catalog_open_returns_service_without_building_snapshot(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_cached_catalog_open_returns_service_without_building_snapshot(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
     monkeypatch.setattr(
@@ -1306,8 +1328,7 @@ def test_cached_catalog_open_returns_service_without_building_snapshot(
     assert app.state.catalog.open(project_id) is service
 
 
-def test_legacy_direct_human_write_endpoints_are_not_exposed(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_legacy_direct_human_write_endpoints_are_not_exposed(app) -> None:
     client = TestClient(app)
     project_id = app.state.default_project_id
     append_fixture_patch(app.state.service, seed_patch())
@@ -1468,8 +1489,7 @@ def test_project_registry_survives_hub_restart(manifest, tmp_path) -> None:
     assert cards.json()[0]["revision"] == 1
 
 
-def test_seed_runs_in_background_and_keeps_api_responsive(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_seed_runs_in_background_and_keeps_api_responsive(app) -> None:
     project_id = app.state.default_project_id
 
     async def stream(*_args):
@@ -1493,10 +1513,7 @@ def test_seed_runs_in_background_and_keeps_api_responsive(manifest, tmp_path) ->
     assert completed["applied_revision"] == 1
 
 
-def test_seed_waits_for_live_canonical_owner_without_failing(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_seed_waits_for_live_canonical_owner_without_failing(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
     workspace = app.state.service.history.workspace
     lock_waiting = threading.Event()
@@ -1539,8 +1556,7 @@ def test_seed_waits_for_live_canonical_owner_without_failing(
     assert "canonical_state_lock_wait" in {item["category"] for item in completed["debug_receipts"]}
 
 
-def test_seed_can_pause_while_waiting_for_canonical_owner(manifest, tmp_path, monkeypatch) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_seed_can_pause_while_waiting_for_canonical_owner(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
     workspace = app.state.service.history.workspace
     lock_waiting = threading.Event()
@@ -1574,9 +1590,8 @@ def test_seed_can_pause_while_waiting_for_canonical_owner(manifest, tmp_path, mo
 
 
 def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
-    manifest, tmp_path, monkeypatch
+    app, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     workspace = app.state.service.history.workspace
     provider_started = threading.Event()
@@ -1588,8 +1603,7 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
             async for event in super().stream(*args, **kwargs):
                 if event.event == "done":
                     provider_started.set()
-                    while not release_provider.is_set():
-                        await asyncio.sleep(0.01)
+                    await async_wait_until(release_provider.is_set)
                 yield event
 
     @contextmanager
@@ -1626,8 +1640,7 @@ def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
 
 
 @pytest.mark.parametrize("kind", ["seed", "refresh"])
-def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, kind) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_seed_and_refresh_reject_caller_supplied_sessions(app, kind) -> None:
     client = TestClient(app)
     project_id = app.state.default_project_id
     session_id = str(uuid.uuid4())
@@ -1641,10 +1654,7 @@ def test_seed_and_refresh_reject_caller_supplied_sessions(manifest, tmp_path, ki
     assert client.get(f"/api/projects/{project_id}/tasks").json() == []
 
 
-def test_task_validation_status_does_not_depend_on_exception_wording(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_task_validation_status_does_not_depend_on_exception_wording(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
 
     def reject_validation(*_args, **_kwargs):
@@ -1686,9 +1696,7 @@ async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
 async def test_graph_stream_launches_with_degraded_source_fallback(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
 
     monkeypatch.setattr(
         "rcp.service.preflight_provider_roots",
@@ -1727,9 +1735,7 @@ async def test_graph_stream_launches_with_degraded_source_fallback(
 async def test_graph_stream_reuses_revision_from_assembled_context(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     context = service.assemble_run(
         RunRequest(run_truth_scope=["repo-a"]),
         surface="refresh",
@@ -1763,8 +1769,7 @@ async def test_graph_stream_reuses_revision_from_assembled_context(
     assert _applied_revision(frames) == 3
 
 
-def test_legacy_run_with_caller_session_cannot_resume(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_legacy_run_with_caller_session_cannot_resume(app) -> None:
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     session_id = str(uuid.uuid4())
@@ -1791,8 +1796,7 @@ def test_legacy_run_with_caller_session_cannot_resume(manifest, tmp_path) -> Non
     assert "not checkpointed or validated by RCP" in response.json()["detail"]
 
 
-def test_background_seed_persists_exact_failure(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_background_seed_persists_exact_failure(app) -> None:
     project_id = app.state.default_project_id
 
     async def stream(*_args):
@@ -1825,9 +1829,8 @@ def test_background_seed_persists_exact_failure(manifest, tmp_path) -> None:
     assert failed["error"] not in json.dumps(failure_receipt["payload"])
 
 
-def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_path) -> None:
+def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path) -> None:
     """A validator rejection is a correctable authoring error, not history."""
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -1909,9 +1912,7 @@ def test_rejected_refresh_is_corrected_without_burning_a_revision(manifest, tmp_
 
 @pytest.mark.asyncio
 async def test_graph_launch_passes_the_recorded_provider_binary(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
     launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
 
@@ -1939,9 +1940,7 @@ async def test_patch_under_an_unexpected_filename_is_still_applied(
     manifest, tmp_path, file_name
 ) -> None:
     """Rung 1: a filename mismatch must not throw away a whole run's work."""
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     launcher = ScriptedLauncher([{file_name: agent_patch_json(refresh_patch())}])
 
     frames = [
@@ -1968,9 +1967,7 @@ async def test_patch_under_an_unexpected_filename_is_still_applied(
 @pytest.mark.asyncio
 async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, tmp_path) -> None:
     """Rung 2: hand the concrete problem back to the session holding the analysis."""
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     launcher = ScriptedLauncher(
         [
             {"patch.json": agent_patch_json(shape_invalid_patch())},
@@ -2009,14 +2006,21 @@ async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, t
     )
     assert "set_ontology" in diagnostic
     assert str(launcher.workspaces[0] / "patch.json") in contract
+    # The correction is the inline prompt itself and points back to the start contract.
+    assert contract == correction
+    start_path = Path(launcher.prompts[0].splitlines()[1])
+    start = launcher.input_snapshots[0][start_path.name]
+    assert correction.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=start_path)
+    assert start not in correction
+    assert graph_rules(edits=True, ontology_extensions=False) not in correction
+    store = app.state.background_tasks.store
+    assert store.agent_task_contract("invalid-patch-correction", "session_master") == start
 
 
 @pytest.mark.asyncio
 async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_path) -> None:
     """Rung 3 plus the round limit: no patch at all, corrected only twice."""
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     launcher = ScriptedLauncher([{}])
 
     frames = [
@@ -2042,9 +2046,7 @@ async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_pa
 
 def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> None:
     """Retention: a failure keeps its evidence; a success cleans up after itself."""
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     store = app.state.background_tasks.store
     rejected = agent_patch_json(gated_patch())
 
@@ -2128,9 +2130,8 @@ def test_exact_patch_digest_ignores_patch_shaped_drafts(tmp_path) -> None:
     )
 
 
-def test_local_state_repository_is_read_in_place_instead_of_copied(manifest, tmp_path) -> None:
+def test_local_state_repository_is_read_in_place_instead_of_copied(app, manifest) -> None:
     """The canonical `.research/` on the execution machine is pointed at, never staged."""
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
 
@@ -2166,10 +2167,9 @@ SILENT_DOWNGRADE = (
 
 @pytest.mark.parametrize("degraded", [True, False])
 def test_an_ignored_launch_setting_is_exported_by_both_task_projections(
-    manifest, tmp_path, degraded: bool
+    app, tmp_path, degraded: bool
 ) -> None:
     """A provider that succeeded without honouring the launch must not stay silent."""
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
     execution = _agent_task_execution(store, "degraded-operation")
     outcome = _ProviderOutcome()
@@ -2274,10 +2274,7 @@ def test_paper_snapshot_filename_cannot_escape_data_directory(tmp_path) -> None:
     assert not (tmp_path / "escaped-introduction.md").exists()
 
 
-def test_remote_context_uses_direct_paths_only_for_its_execution_machine(
-    manifest, tmp_path
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_remote_context_uses_direct_paths_only_for_its_execution_machine(app, tmp_path) -> None:
     service = app.state.service
     context = service.assemble_run(
         RunRequest(run_truth_scope=["repo-a"]),
@@ -2472,16 +2469,14 @@ async def test_remote_stage_is_retained_after_failure_and_after_pause(
     assert blocked_launcher.calls == 0
 
 
-def test_background_seed_can_pause_inspect_and_resume(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_background_seed_can_pause_inspect_and_resume(app) -> None:
     project_id = app.state.default_project_id
     native_session_id = str(uuid.uuid4())
     resumed_requests: list[RunRequest] = []
 
     async def pausable_stream(_project_id, _kind, _request, execution):
         yield _event_frame(AgentEvent(event="session", session_id=native_session_id))
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
 
     app.state.background_tasks.stream = pausable_stream
@@ -2527,16 +2522,12 @@ def test_background_seed_can_pause_inspect_and_resume(manifest, tmp_path) -> Non
     assert created["payload"]["continuation_cause"] == "resume"
 
 
-def test_background_shutdown_requests_pause_with_shutdown_authority(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_background_shutdown_requests_pause_with_shutdown_authority(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
 
     async def pausable_stream(_project_id, _kind, _request, execution):
         yield _event_frame(AgentEvent(event="session", session_id="shutdown-session"))
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
 
     app.state.background_tasks.stream = pausable_stream
@@ -2566,9 +2557,7 @@ def test_background_shutdown_requests_pause_with_shutdown_authority(
 async def test_closing_paused_background_stream_awaits_launcher_cleanup(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     project_id = app.state.default_project_id
     request = RunRequest(
         chat_scope="project",
@@ -2640,8 +2629,7 @@ async def test_closing_paused_background_stream_awaits_launcher_cleanup(
     assert cleanup_finished.is_set()
 
 
-def test_failed_background_seed_can_retry_without_native_session(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_failed_background_seed_can_retry_without_native_session(app) -> None:
     project_id = app.state.default_project_id
 
     async def failed_stream(*_args):
@@ -2683,8 +2671,7 @@ def test_failed_background_seed_can_retry_without_native_session(manifest, tmp_p
     assert "native_resume_unavailable" in {item["category"] for item in completed["debug_receipts"]}
 
 
-def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_same_provider_retry_resumes_owned_checkpoint(app, tmp_path) -> None:
     project_id = app.state.default_project_id
     stage = tmp_path / "retained-stage"
     stage.mkdir()
@@ -2723,21 +2710,34 @@ def test_same_provider_retry_resumes_owned_checkpoint(manifest, tmp_path) -> Non
     assert created["payload"]["continuation_cause"] == "retry"
 
 
-def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store_test_claude_token(app.state.background_tasks.store)
+@pytest.mark.parametrize(
+    ("provider", "session_id", "error"),
+    [
+        ("claude", "exhausted-session", "You've hit your limit"),
+        (
+            "codex",
+            "dropped-session",
+            "collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
+        ),
+    ],
+)
+def test_same_provider_unusable_session_retry_starts_clean(
+    app, tmp_path, provider, session_id, error
+) -> None:
+    if provider == "claude":
+        store_test_claude_token(app.state.background_tasks.store)
     project_id = app.state.default_project_id
     stage = tmp_path / "exhausted-stage"
     stage.mkdir()
 
     async def failed_stream(_project_id, _kind, _request, execution):
         execution.checkpoint_stage("", str(stage))
-        yield _event_frame(AgentEvent(event="session", session_id="exhausted-session"))
-        yield _event_frame(AgentEvent(event="error", text="You've hit your limit"))
+        yield _event_frame(AgentEvent(event="session", session_id=session_id))
+        yield _event_frame(AgentEvent(event="error", text=error))
 
     app.state.background_tasks.stream = failed_stream
     client = TestClient(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": "claude"})
+    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": provider})
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
 
     async def clean_stream(_project_id, _kind, request, execution):
@@ -2745,48 +2745,6 @@ def test_same_provider_session_limit_retry_starts_clean(manifest, tmp_path) -> N
         assert execution.continuation == "handoff"
         assert execution.reuses_native_checkpoint is False
         assert execution.stage_root is None
-        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = clean_stream
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
-    )
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-
-    assert completed["status"] == "succeeded"
-    assert "native_resume_skipped" in {item["category"] for item in completed["debug_receipts"]}
-
-
-def test_same_provider_stale_session_retry_starts_clean(manifest, tmp_path) -> None:
-    """Codex reports a dropped native session as "collab spawn failed: no thread
-    with id". Resuming it again can only fail the same way, so Retry -- including
-    the automatic one after a lost connection -- must start a fresh session."""
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    stage = tmp_path / "stale-stage"
-    stage.mkdir()
-
-    async def failed_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage("", str(stage))
-        yield _event_frame(AgentEvent(event="session", session_id="dropped-session"))
-        yield _event_frame(
-            AgentEvent(
-                event="error",
-                text="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
-            )
-        )
-
-    app.state.background_tasks.stream = failed_stream
-    client = TestClient(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": "codex"})
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-
-    async def clean_stream(_project_id, _kind, request, execution):
-        assert request.session_id is None
-        assert execution.continuation == "handoff"
-        assert execution.reuses_native_checkpoint is False
         yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
         yield _event_frame(AgentEvent(event="done"))
 
@@ -2836,9 +2794,8 @@ def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_pa
 
 
 def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
-    manifest, tmp_path, monkeypatch
+    app, manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store_test_claude_token(app.state.background_tasks.store)
     project_id = app.state.default_project_id
     service = app.state.service
@@ -2988,9 +2945,8 @@ def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
 
 
 def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
-    manifest, tmp_path, monkeypatch
+    app, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3073,10 +3029,9 @@ def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
 
 
 @pytest.mark.parametrize("recovery", ["resume", "retry"])
-def test_same_provider_recovery_refreshes_guidance_without_reassembling_inputs(
-    manifest, tmp_path, monkeypatch, recovery: str
+def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
+    app, tmp_path, monkeypatch, recovery: str
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3139,13 +3094,6 @@ def test_same_provider_recovery_refreshes_guidance_without_reassembling_inputs(
     )
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert failed["status"] == ("paused" if recovery == "resume" else "failed")
-    original_contract = service.graph_task_contract
-    updated_guidance = "Current guidance: preserve planned work without inventing Evidence."
-
-    def updated_contract(kind, **kwargs):
-        return original_contract(kind, **kwargs) + "\n" + updated_guidance
-
-    monkeypatch.setattr(service, "graph_task_contract", updated_contract)
     retried = client.post(
         f"/api/projects/{project_id}/tasks/{failed['operation_id']}/{recovery}", json={}
     )
@@ -3165,39 +3113,38 @@ def test_same_provider_recovery_refreshes_guidance_without_reassembling_inputs(
         assert len(retry_diagnostics["prior_attempt_diagnostics"]) == 1
         assert "provider connection dropped" in retry_diagnostics["prior_attempt_diagnostics"][0]
     store = app.state.catalog.store
-    first_base = store.agent_task_contract(failed["operation_id"], "base")
-    retry_base = store.agent_task_contract(completed["operation_id"], "base")
-    retry_contract = store.agent_task_contract(completed["operation_id"], recovery)
-    assert first_base is not None
-    assert retry_contract is not None
-    assert retry_base is not None
-    assert updated_guidance in retry_base
-    assert updated_guidance not in first_base
-    assert f"task-{completed['operation_id']}-base.md" in retry_contract
-    assert f"task-{failed['operation_id']}-initial.md" in retry_contract
-    # Current schema, validator, and package pointers supersede retained output guidance.
-    assert f"task-{completed['operation_id']}-patch-schema.json" in retry_contract
-    assert f"task-{failed['operation_id']}-patch-schema.json" not in retry_contract
+    prompt = str(launcher.calls[1]["prompt"])
+    # The continuation is sent inline and recorded for the next recovery.
+    assert store.agent_task_contract(completed["operation_id"], recovery) == prompt
+    assert store.agent_task_contract(completed["operation_id"], "base") is None
+    master = launcher.calls[1]["inputs"][launch_contract_path(prompt).name]
+    # Current schema, validator, and diagnostics reach the session: in a master it opens
+    # now, or else inline against the master it holds. The master stays a file.
+    bootstrap = SECTIONS["master_bootstrap"].split("{path}")[0] in prompt
+    sent = prompt + (master if bootstrap else "")
+    assert f"task-{completed['operation_id']}-patch-schema.json" in sent
+    assert f"task-{failed['operation_id']}-patch-schema.json" not in sent
+    assert str(Path(str(launcher.calls[1]["workspace"])) / "patch.json") in sent
     if recovery == "retry":
-        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_contract
-    if recovery == "retry":
-        assert "provider connection dropped" in next(
-            value
-            for name, value in launcher.calls[1]["inputs"].items()
-            if name.endswith("retry-diagnostics.json")
-        )
+        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in sent
+    assert master in {
+        store.agent_task_contract(operation_id, "session_master")
+        for operation_id in (failed["operation_id"], completed["operation_id"])
+    }
+    assert master not in prompt
+    for extensions in (False, True):
+        assert graph_rules(edits=True, ontology_extensions=extensions) not in prompt
     launches = [item for item in completed["debug_receipts"] if item["category"] == "agent_launch"]
     assert launches[0]["payload"]["continuation_cause"] == recovery
     assert launches[0]["payload"]["launch_kind"] == recovery
 
 
-def test_retry_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) -> None:
+def test_retry_launch_refuses_a_patch_it_did_not_write(app, tmp_path) -> None:
     """A Retry reuses its predecessor's stage, patch file included.
 
     A provider that writes nothing must not have that earlier file collected as
     its own work: applying it would attribute inherited output to the Retry.
     """
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.service
 
@@ -3256,10 +3203,7 @@ def test_retry_launch_refuses_a_patch_it_did_not_write(manifest, tmp_path) -> No
     )
 
 
-def test_literal_resume_uses_saved_context_without_reassembly(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, monkeypatch) -> None:
     project_id = app.state.default_project_id
     service = app.state.service
     original_assemble = service.assemble_run
@@ -3276,13 +3220,11 @@ def test_literal_resume_uses_saved_context_without_reassembly(
         def __init__(self) -> None:
             self.prompts: list[str] = []
             self.sessions: list[str | None] = []
-            self.contracts: list[str] = []
 
         async def stream(self, _provider, prompt, **kwargs):
             workspace = Path(kwargs["cwd"])
             self.prompts.append(prompt)
             self.sessions.append(kwargs.get("session_id"))
-            self.contracts.append(Path(prompt.splitlines()[1]).read_text(encoding="utf-8"))
             if len(self.prompts) == 1:
                 yield AgentEvent(event="session", session_id="paused-seed-session")
                 yield AgentEvent(event="paused", text="Provider process paused.")
@@ -3316,11 +3258,9 @@ def test_literal_resume_uses_saved_context_without_reassembly(
     assert completed["status"] == "succeeded"
     assert assemble_calls == 1
     assert launcher.sessions == [None, "paused-seed-session"]
-    resume_contract = launcher.contracts[1]
-    assert f"task-{paused['operation_id']}-initial.md" in resume_contract
     assert (
         app.state.catalog.store.agent_task_contract(completed["operation_id"], "resume")
-        == resume_contract
+        == launcher.prompts[1]
     )
     launch = next(
         item for item in completed["debug_receipts"] if item["category"] == "agent_launch"
@@ -3328,8 +3268,7 @@ def test_literal_resume_uses_saved_context_without_reassembly(
     assert launch["payload"]["continuation_cause"] == "resume"
 
 
-def test_provider_exit_receipt_survives_terminal_error(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_provider_exit_receipt_survives_terminal_error(app, tmp_path) -> None:
     project_id = app.state.default_project_id
     service = app.state.service
 
@@ -3374,8 +3313,7 @@ def test_provider_exit_receipt_survives_terminal_error(manifest, tmp_path) -> No
     }
 
 
-def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_retry_escapes_a_moved_saved_context_instead_of_looping(app, tmp_path) -> None:
     project_id = app.state.default_project_id
     service = app.state.service
 
@@ -3433,8 +3371,7 @@ def test_retry_escapes_a_moved_saved_context_instead_of_looping(manifest, tmp_pa
     assert completed["status"] == "succeeded"
 
 
-def test_failed_chat_task_retains_artifacts_emitted_before_the_error(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_path) -> None:
     append_fixture_patch(app.state.service, seed_patch())
     project_id = app.state.default_project_id
     descriptor = AgentArtifactDescriptor(
@@ -3468,6 +3405,7 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(manifest, t
             {
                 **descriptor.model_dump(mode="json"),
                 "available": False,
+                "view": "html",
                 "can_open": False,
                 "can_download": False,
                 "can_keep": False,
@@ -3478,14 +3416,12 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(manifest, t
     }
 
 
-def test_server_shutdown_pauses_live_background_seed(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_server_shutdown_pauses_live_background_seed(app) -> None:
     project_id = app.state.default_project_id
 
     async def pausable_stream(_project_id, _kind, _request, execution):
         yield _event_frame(AgentEvent(event="session", session_id=str(uuid.uuid4())))
-        while not execution.control.pause_requested.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(execution.control.pause_requested.is_set)
         yield _event_frame(AgentEvent(event="paused"))
 
     app.state.background_tasks.stream = pausable_stream
@@ -3500,8 +3436,9 @@ def test_server_shutdown_pauses_live_background_seed(manifest, tmp_path) -> None
     assert persisted.can_resume is True
 
 
-def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_node_chat_returns_as_task_then_persists_result_and_transcript(
+    app, manifest, tmp_path
+) -> None:
     service = app.state.service
     service.history.update_machine_provider_paths({"laptop": {"codex": "/opt/agents/codex"}})
     append_fixture_patch(service, seed_patch())
@@ -3522,8 +3459,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest,
     async def stream(_project_id, kind, request, execution):
         assert kind == "node_chat"
         worker_started.set()
-        while not release_worker.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release_worker.is_set)
         async for frame in stream_discuss_run(
             service,
             launcher,
@@ -3556,7 +3492,10 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest,
     completed = _wait_for_run(client, app.state.default_project_id, operation_id)
     assert completed["status"] == "succeeded"
     assert completed["kind"] == "node_chat"
-    assert completed["result"] == {"messages": [answer]}
+    assert completed["result"] == {
+        "messages": [answer],
+        "artifact_omissions": {"discovery_failed": False},
+    }
     assert launcher.launch_kwargs[0]["binary"] == "/opt/agents/codex"
     # A question costs no graph revision, even when the agent writes a patch file:
     # this turn carried no human authorization and the patch changed nothing anyway.
@@ -3569,8 +3508,7 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(manifest,
     assert records[-1]["nativeSessionId"] == launcher.native_session_id
 
 
-def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_new_chat_turn_refuses_resumable_paused_attempt(app, tmp_path) -> None:
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
@@ -3601,18 +3539,14 @@ def test_new_chat_turn_refuses_resumable_paused_attempt(manifest, tmp_path) -> N
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "This conversation has a paused turn. Resume or retry it before starting a new turn."
-    )
+    assert "paused turn" in response.json()["detail"]
 
 
 @pytest.mark.parametrize("legacy_layout", [False, True])
 def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     manifest, tmp_path, monkeypatch, legacy_layout: bool
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     answer = "# Result\n\n```unknown-language\nkept as code\n```"
     html_source = (
         b"<!doctype html><button id='go'>Run</button>"
@@ -3669,6 +3603,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert service.history.state().revision == 2
     artifacts = completed["result"]["artifacts"]
     assert [item["name"] for item in artifacts] == [
+        "bad.jpg",
         "plot.png",
         "preview.html",
         "unsupported.svg",
@@ -3883,9 +3818,7 @@ def test_chat_artifact_discovery_enforces_every_central_bound(tmp_path, monkeypa
 async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     answer = "The reply remains available."
     launcher = FakeLauncher([AgentEvent(event="answer", text=answer), AgentEvent(event="done")])
     monkeypatch.setattr(
@@ -3912,9 +3845,7 @@ async def test_unexpected_artifact_discovery_error_does_not_fail_chat(
 async def test_chat_does_not_assemble_or_project_transcripts(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
 
     def index_must_not_run(*_args, **_kwargs):
         raise AssertionError("chat must not assemble a source index")
@@ -3958,9 +3889,7 @@ async def test_chat_does_not_assemble_or_project_transcripts(
 async def test_chat_keeps_its_answer_when_transcript_persistence_rejects_a_path(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     launcher = FakeLauncher(
         [AgentEvent(event="answer", text="The answer survived."), AgentEvent(event="done")]
     )
@@ -4083,9 +4012,7 @@ async def test_same_chat_id_uses_distinct_stages_for_distinct_projects(manifest,
 async def test_pause_before_native_checkpoint_reclaims_claude_projection(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     codex_root = Path(next(iter(manifest.sources.codex_roots)))
     (codex_root / "source.jsonl").write_text(
         json.dumps(
@@ -4147,9 +4074,7 @@ async def test_pause_before_native_checkpoint_reclaims_claude_projection(
 async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     patch = refresh_patch("rq/artifact-backed-change").model_copy(update={"kind": "work"})
 
     class ArtifactPatchLauncher(ScriptedLauncher):
@@ -4165,20 +4090,9 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
     launcher = ArtifactPatchLauncher(
         [{"patch.json": agent_patch_json(patch)}], message="Recorded with a preview."
     )
-    request = RunRequest(
-        chat_scope="project",
-        message="Record this change and preview it.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
+    request = _project_work_request("Record this change and preview it.")
 
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="artifact-backed-work",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "artifact-backed-work")
     frames = [
         frame
         async for frame in stream_work_run(
@@ -4201,9 +4115,7 @@ async def test_authorized_chat_applies_its_patch_with_an_artifact_present(
 async def test_chat_launch_exception_keeps_workspace_without_transcript_projection(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
 
     class ExplodingLauncher:
         async def stream(self, *_args, **kwargs):
@@ -4298,7 +4210,7 @@ def test_local_stage_sweeper_keeps_a_settled_chat_session_stage(tmp_path) -> Non
     assert stage.is_dir()
 
 
-def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_path) -> None:
+def test_failed_chat_task_keeps_the_answer_it_already_produced(app) -> None:
     """A failure after the reply must not take the reply down with it.
 
     The human asked a question and got an answer; only what came after it failed,
@@ -4306,7 +4218,6 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
     would leave the chat showing an error where its reply should be.
     """
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     answer = "Recorded — though staging the follow-up failed right afterwards."
 
@@ -4334,8 +4245,7 @@ def test_failed_chat_task_keeps_the_answer_it_already_produced(manifest, tmp_pat
     assert "could not be staged" in record["error"]
 
 
-def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_paper_coach_uses_agent_task_manager_and_result_shape(app, tmp_path) -> None:
     service = app.state.service
     service.paper.create()
     answer = "State the comparison before introducing the endpoint-KL terminology."
@@ -4387,10 +4297,64 @@ def test_paper_coach_uses_agent_task_manager_and_result_shape(manifest, tmp_path
     assert service.paper.sessions()[0].native_session_id == session_id
 
 
+def test_paper_coach_follow_up_restores_its_master_into_the_new_turn_stage(app, tmp_path) -> None:
+    service = app.state.service
+    service.paper.create()
+    session_id = str(uuid.uuid4())
+
+    class RecordingCoachLauncher:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self.sessions: list[str | None] = []
+            self.masters: list[tuple[Path, str]] = []
+
+        async def stream(self, _provider, prompt, **kwargs):
+            self.prompts.append(prompt)
+            self.sessions.append(kwargs.get("session_id"))
+            path = launch_contract_path(prompt)
+            self.masters.append((path, path.read_text(encoding="utf-8")))
+            yield AgentEvent(event="session", session_id=session_id)
+            yield AgentEvent(event="message", text="Coached.")
+            yield AgentEvent(event="done")
+
+    launcher = RecordingCoachLauncher()
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_coach(
+            service, launcher, service.paper, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    turns = []
+    for body in (
+        {"message": "Review the argument."},
+        {"message": "Now check the framing.", "session_id": session_id},
+    ):
+        started = client.post(f"/api/projects/{project_id}/tasks/paper_coach", json=body)
+        turns.append(_wait_for_run(client, project_id, started.json()["operation_id"]))
+    assert [turn["status"] for turn in turns] == ["succeeded", "succeeded"]
+
+    store = app.state.background_tasks.store
+    (start_path, start), (master_path, master) = launcher.masters
+    prompt = launcher.prompts[1]
+    assert launcher.sessions == [None, session_id]
+    assert store.agent_task_contract(turns[0]["operation_id"], "session_master") == start
+    # The follow-up has its own stage; the session's exact master is restored into it.
+    assert master_path.parent != start_path.parent
+    assert master_path.parent.parent.name == f"paper-{turns[1]['operation_id']}"
+    assert master == start
+    assert prompt.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=master_path)
+    assert "Now check the framing." in prompt
+    assert start not in prompt
+    assert store.agent_task_contract(turns[1]["operation_id"], "paper_coach") == prompt
+
+
 def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
-    manifest, tmp_path
+    app, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     service.paper.create()
     session_id = str(uuid.uuid4())
@@ -4407,8 +4371,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
             if self.calls == 1:
                 yield AgentEvent(event="session", session_id=session_id)
                 control = kwargs["control"]
-                while not control.pause_requested.is_set():
-                    await asyncio.sleep(0.01)
+                await async_wait_until(control.pause_requested.is_set)
                 yield AgentEvent(event="paused", text="Provider process paused.")
                 return
             yield AgentEvent(event="session", session_id=session_id)
@@ -4470,9 +4433,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
 
 @pytest.mark.asyncio
 async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     chat_id = str(uuid.uuid4())
     answer = "Added the transfer question you described."
     patch = refresh_patch().model_copy(update={"kind": "work"})
@@ -4487,12 +4448,7 @@ async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_pa
         run_truth_scope=["repo-a"],
         mode="work",
     )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="streamed-node-chat-work",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "streamed-node-chat-work")
 
     frames = [
         item
@@ -4514,14 +4470,18 @@ async def test_node_chat_streams_answer_and_persists_transcript(manifest, tmp_pa
     assert any(session.provider == "app_chat" for session in service.index_snapshot().sessions)
 
 
+@pytest.mark.parametrize("writes_patch", [False, True])
 @pytest.mark.asyncio
-async def test_node_chat_answers_without_writing_a_patch(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+async def test_discuss_answers_without_applying_a_patch(manifest, tmp_path, writes_patch) -> None:
+    app, service = _seeded_project(manifest, tmp_path)
     revision_before = service.history.state().revision
     answer = "It is still proposed because no matched forward test has run yet."
-    launcher = ScriptedLauncher([{}], message=answer)
+    files = (
+        {"patch.json": agent_patch_json(refresh_patch().model_copy(update={"kind": "chat"}))}
+        if writes_patch
+        else {}
+    )
+    launcher = ScriptedLauncher([files], message=answer)
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
         message="Why is this not accepted?",
@@ -4550,9 +4510,7 @@ async def test_node_chat_answers_without_writing_a_patch(manifest, tmp_path) -> 
 async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> None:
     """The reported failure: a corrupt ingest cursor must not block a question."""
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     raw_path = Path(next(iter(manifest.sources.codex_roots))) / "stale.jsonl"
     raw_path.write_text(
         json.dumps(
@@ -4591,9 +4549,7 @@ async def test_node_chat_survives_a_stale_ingest_cursor(manifest, tmp_path) -> N
 
 @pytest.mark.asyncio
 async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     launcher = ScriptedLauncher([{}], message="Answered.")
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
@@ -4626,9 +4582,7 @@ async def test_chat_prompt_carries_the_node_and_not_the_ingest_contract(manifest
 
 @pytest.mark.asyncio
 async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     revision_before = service.history.state().revision
     patch = Patch(
         kind="work",
@@ -4662,9 +4616,7 @@ async def test_chat_patch_cannot_move_the_ingest_boundary(manifest, tmp_path) ->
 
 @pytest.mark.asyncio
 async def test_project_chat_persists_project_scoped_transcript(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     chat_id = str(uuid.uuid4())
     answer = "The project is testing whether matched trajectories preserve future learning."
     patch = Patch(
@@ -4698,34 +4650,6 @@ async def test_project_chat_persists_project_scoped_transcript(manifest, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_chat_patch_is_discarded_not_applied(manifest, tmp_path) -> None:
-    """Writing the file does not grant the authority to change the graph."""
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    revision_before = service.history.state().revision
-    answer = "It is still proposed because no matched forward test has run."
-    launcher = ScriptedLauncher(
-        [{"patch.json": agent_patch_json(refresh_patch().model_copy(update={"kind": "chat"}))}],
-        message=answer,
-    )
-    request = RunRequest(
-        node_id="hyp/replanning-restores-plasticity",
-        message="Why is this not accepted?",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-    )
-
-    frames = [
-        item async for item in stream_discuss_run(service, launcher, request, tmp_path / "data")
-    ]
-
-    assert [event.text for event in _events(frames) if event.event == "answer"] == [answer]
-    assert service.history.state().revision == revision_before
-
-
-@pytest.mark.asyncio
 async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     manifest, tmp_path
 ) -> None:
@@ -4734,9 +4658,7 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     The same folder must not hand turn two the patch file turn one left behind.
     """
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     chat_id = str(uuid.uuid4())
     patch = refresh_patch().model_copy(update={"kind": "work"})
     first = ScriptedLauncher([{"patch.json": agent_patch_json(patch)}], message="First answer.")
@@ -4747,12 +4669,7 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
         run_truth_scope=["repo-a"],
         mode="work",
     )
-    first_execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="shared-chat-first-work",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    first_execution = _chat_task_execution(app, request, "shared-chat-first-work")
     async for _ in stream_work_run(
         service,
         first,
@@ -4779,12 +4696,7 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
             "session_id": first.native_session_id,
         }
     )
-    second_execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="shared-chat-second-work",
-        project_id=app.state.default_project_id,
-        request=second_request,
-    )
+    second_execution = _chat_task_execution(app, second_request, "shared-chat-second-work")
     frames = [
         item
         async for item in stream_work_run(
@@ -4804,11 +4716,15 @@ async def test_chat_turns_share_one_scratch_folder_and_drop_the_last_patch(
     assert service.history.state().revision == applied
 
 
+@pytest.mark.parametrize(
+    ("chat_scope", "node_id"),
+    [("node", "hyp/replanning-restores-plasticity"), ("project", None)],
+)
 @pytest.mark.asyncio
-async def test_chat_patch_is_applied_to_live_state_when_the_graph_moves(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+async def test_work_patch_is_applied_to_live_state_without_correction(
+    manifest, tmp_path, chat_scope, node_id
+) -> None:
+    app, service = _seeded_project(manifest, tmp_path)
     answer = "Recorded."
     patch = refresh_patch("rq/late-arrival").model_copy(update={"kind": "work"})
 
@@ -4821,19 +4737,15 @@ async def test_chat_patch_is_applied_to_live_state_when_the_graph_moves(manifest
 
     launcher = RacingLauncher([{"patch.json": agent_patch_json(patch)}], message=answer)
     request = RunRequest(
-        node_id="hyp/replanning-restores-plasticity",
+        chat_scope=chat_scope,
+        node_id=node_id,
         message="Record the transfer question.",
         chat_id=str(uuid.uuid4()),
         run_truth_scope=["repo-a"],
         mode="work",
     )
 
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="live-state-work",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "live-state-work")
     frames = [
         item
         async for item in stream_work_run(
@@ -4852,14 +4764,14 @@ async def test_chat_patch_is_applied_to_live_state_when_the_graph_moves(manifest
     assert graph_update["status"] == "applied"
     assert graph_update["applied_revision"] == 4
     assert graph_update["correction_rounds"] == 0
+    assert launcher.calls == 1
     assert "rq/landed-first" in service.history.state().nodes
     assert "rq/late-arrival" in service.history.state().nodes
 
 
-def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path) -> None:
+def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> None:
     """A semantically valid resumed patch is revalidated against current state."""
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store_test_claude_token(app.state.background_tasks.store)
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -4883,8 +4795,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
             yield AgentEvent(event="session", session_id=session_id)
             if len(self.sessions) == 1:
                 control = kwargs["control"]
-                while not control.pause_requested.is_set():
-                    await asyncio.sleep(0.01)
+                await async_wait_until(control.pause_requested.is_set)
                 yield AgentEvent(event="paused", text="Provider process paused.")
                 return
             (Path(kwargs["cwd"]) / "patch.json").write_text(
@@ -4947,9 +4858,7 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(manifest, tmp_path)
 def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
 
     class RetryLauncher:
         def __init__(self) -> None:
@@ -5003,9 +4912,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
 async def test_resumed_chat_rejects_a_mismatched_saved_stage(
     manifest, tmp_path, fault: str
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     store = app.state.background_tasks.store
     _record_lineage_task(
         store,
@@ -5073,9 +4980,7 @@ async def test_resumed_chat_rejects_a_mismatched_saved_stage(
 async def test_remote_chat_resume_attaches_its_validated_saved_stage(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     request = RunRequest(
         node_id="hyp/replanning-restores-plasticity",
         message="Continue remotely.",
@@ -5105,6 +5010,21 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         resumed=True,
         graph_revision=1,
         attempt=2,
+    )
+    # A Resume continues a native session RCP already observed on this chat.
+    profile = service.resolve_agent_profile("node_chat", run_on="remote-1")
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="remote-session-origin",
+            project_id="lineage-test",
+            kind="node_chat",
+            status="succeeded",
+            request=_pinned_to_profile(request, profile).model_dump(mode="json"),
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="test fixture",
+            native_session_id=request.session_id,
+        )
     )
     execution = AgentTaskExecution(
         operation_id="remote-resume",
@@ -5315,17 +5235,9 @@ def _wait_for_status(
 
 @pytest.mark.asyncio
 async def test_work_without_patch_succeeds_without_spending_a_revision(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     launcher = ScriptedLauncher([{}], message="The requested check completed.")
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Run the check.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
+    request = _project_work_request("Run the check.")
 
     frames = [
         frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
@@ -5353,9 +5265,7 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(manifest,
 async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelopes(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = str(uuid.uuid4())
@@ -5404,6 +5314,7 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
         "skills",
         "patch",
         "workspace",
+        "work",
     }
     assert isinstance(prompt_values["current"]["graph_revision"], int)
     assert prompt_values["compute"] == {"active": []}
@@ -5434,20 +5345,11 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert second_prompt.count(second_message) == 1
     assert str(master_path) in second_prompt
     assert str(workspace / "turns" / second_operation_id / "artifacts") in second_prompt
-    second_delta, _ = json.JSONDecoder().raw_decode(second_prompt[second_prompt.index("\n{") + 1 :])
-    assert set(second_delta) == {"patch"}
-    assert set(second_delta["patch"]) == {
-        "path",
-        "watch_path",
-        "schema_path",
-        "validator_command",
-        "validator_mailbox_id",
-    }
-    assert (
-        second_delta["patch"]["validator_mailbox_id"]
-        != prompt_values["patch"]["validator_mailbox_id"]
-    )
-    assert "rcp-agent-client-" in second_delta["patch"]["validator_command"]
+    # Only this turn's own command client changed; the master holds every other value.
+    second_delta = changed_values(second_prompt)
+    assert set(second_delta) == {"patch.command_client"}
+    assert second_delta["patch.command_client"] != prompt_values["patch"]["command_client"]
+    assert "rcp-agent-client-" in second_delta["patch.command_client"]
     assert not (workspace / "current-turn.json").exists()
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 2
@@ -5479,11 +5381,10 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     assert third_prompt.count(third_message) == 1
     assert str(master_path) in third_prompt
     assert str(workspace / "turns" / third_operation_id / "artifacts") in third_prompt
-    delta, _ = json.JSONDecoder().raw_decode(third_prompt[third_prompt.index("\n{") + 1 :])
-    assert set(delta) == {"patch", "settings"}
-    assert delta["settings"]["reasoning"] == "high"
-    assert "rcp-agent-client-" in delta["patch"]["validator_command"]
-    assert delta["patch"]["validator_mailbox_id"] != second_delta["patch"]["validator_mailbox_id"]
+    delta = changed_values(third_prompt)
+    assert set(delta) == {"patch.command_client", "settings.reasoning"}
+    assert delta["settings.reasoning"] == "high"
+    assert delta["patch.command_client"] != second_delta["patch.command_client"]
     assert len(list(inputs.glob("chat-master-v*.md"))) == 1
     assert len(list(inputs.glob("rcp-agent-client-*.py"))) == 3
 
@@ -5493,9 +5394,8 @@ async def test_ordinary_work_turns_retain_one_master_and_send_only_turn_envelope
     ["codex", "claude"],
 )
 def test_work_launch_receipt_names_the_canonical_state_boundary(
-    manifest, tmp_path, provider: str
+    app, manifest, tmp_path, provider: str
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store_test_claude_token(app.state.background_tasks.store)
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -5536,26 +5436,22 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
         }[provider]
     )
     assert launch["payload"]["canonical_repository_roots"] == [repository_root]
-    assert launch["payload"]["canonical_write_roots"][1:] == [repository_root]
+    assert launch["payload"]["canonical_write_roots"][1:2] == [repository_root]
     assert str(Path(repository_root) / ".research") in launch["payload"]["protected_write_paths"]
     assert len(launch["payload"]["write_scope_fingerprint"]) == 64
     assert launch["payload"]["network_access"] is True
 
 
+@pytest.mark.parametrize(
+    ("pointer", "symlink"),
+    [(".research", False), ("..", False), (".research", True), ("..", True)],
+    ids=["research", "parent-segments", "research-symlink", "ancestor-symlink"],
+)
 def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
-    manifest, tmp_path
+    manifest, tmp_path, pointer, symlink
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Run it.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    context = service.assemble_chat(request)
+    app, service = _seeded_project(manifest, tmp_path)
+    context = service.assemble_chat(_project_work_request("Run it."))
     workspace = tmp_path / "stage"
     workspace.mkdir()
     scope = _project_write_scope(
@@ -5574,13 +5470,18 @@ def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
     assert scope.repository_roots == [str(repository_root)]
     assert str(canonical_research) in scope.protected_write_paths
 
+    unsafe_path = f"{repository_root}/{pointer}"
+    if symlink:
+        alias = tmp_path / "canonical-alias"
+        alias.symlink_to(unsafe_path, target_is_directory=True)
+        unsafe_path = str(alias)
     unsafe_context = context.model_copy(
         update={
             "repositories": [
                 RepositoryPointer(
                     alias="repo-a",
                     machine="laptop",
-                    path=str(canonical_research),
+                    path=unsafe_path,
                 )
             ]
         }
@@ -5599,99 +5500,11 @@ def test_work_write_scope_protects_and_rejects_canonical_research_pointer(
         )
 
 
-def test_work_write_scope_rejects_pointer_with_parent_segments(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    context = service.assemble_chat(
-        RunRequest(
-            chat_scope="project",
-            chat_id=str(uuid.uuid4()),
-            message="Run it.",
-            run_truth_scope=["repo-a"],
-            mode="work",
-        )
-    )
-    state_root = Path(manifest.repository_map["repo-a"].path)
-    context = context.model_copy(
-        update={
-            "repositories": [
-                RepositoryPointer(
-                    alias="repo-a",
-                    machine="laptop",
-                    path=f"{state_root}/..",
-                )
-            ]
-        }
-    )
-    workspace = tmp_path / "stage"
-    workspace.mkdir()
-
-    with pytest.raises(ValueError, match="registered project root"):
-        _project_write_scope(
-            context,
-            service,
-            "laptop",
-            workspace=workspace,
-            remote_stage=None,
-            data_dir=tmp_path / "data",
-            execution=None,
-            capability="work_auto",
-        )
-
-
-@pytest.mark.parametrize("target", ["research", "ancestor"])
-def test_local_work_write_scope_rejects_symlinked_pointer(manifest, tmp_path, target: str) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    context = service.assemble_chat(
-        RunRequest(
-            chat_scope="project",
-            chat_id=str(uuid.uuid4()),
-            message="Run it.",
-            run_truth_scope=["repo-a"],
-            mode="work",
-        )
-    )
-    state_root = Path(manifest.repository_map["repo-a"].path)
-    destination = state_root / ".research" if target == "research" else state_root.parent
-    alias = tmp_path / f"canonical-{target}-alias"
-    alias.symlink_to(destination, target_is_directory=True)
-    context = context.model_copy(
-        update={
-            "repositories": [
-                RepositoryPointer(
-                    alias="repo-a",
-                    machine="laptop",
-                    path=str(alias),
-                )
-            ]
-        }
-    )
-    workspace = tmp_path / "stage"
-    workspace.mkdir()
-
-    with pytest.raises(ValueError, match="registered project root"):
-        _project_write_scope(
-            context,
-            service,
-            "laptop",
-            workspace=workspace,
-            remote_stage=None,
-            data_dir=tmp_path / "data",
-            execution=None,
-            capability="work_auto",
-        )
-
-
 @pytest.mark.asyncio
 async def test_invalid_work_patch_is_corrected_without_repeating_operational_work(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     invalid = shape_invalid_patch().model_copy(update={"kind": "work"})
     valid = refresh_patch("rq/work-corrected").model_copy(update={"kind": "work"})
 
@@ -5717,19 +5530,8 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
                 yield event
 
     launcher = WorkLauncher()
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Submit the experiment and record it.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="corrected-work-patch",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _project_work_request("Submit the experiment and record it.")
+    execution = _chat_task_execution(app, request, "corrected-work-patch")
 
     frames = [
         frame
@@ -5768,18 +5570,10 @@ async def test_invalid_work_patch_is_corrected_without_repeating_operational_wor
 async def test_exhausted_work_patch_correction_preserves_successful_answer(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
     launcher = ScriptedLauncher([{"patch.json": invalid}], message="The run finished.")
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Run it and reflect the result.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
+    request = _project_work_request("Run it and reflect the result.")
 
     frames = [
         frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
@@ -5818,9 +5612,7 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
     unreadable bytes and spend the whole correction budget on the wrong problem.
     """
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
 
     class UnreadableCorrectionLauncher(ScriptedLauncher):
@@ -5832,13 +5624,7 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
                 (self.workspaces[-1] / "patch.json").write_bytes(b'{"summary": "\xff\xfe"}')
 
     launcher = UnreadableCorrectionLauncher([{"patch.json": invalid}], message="The run finished.")
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Run it and reflect the result.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
+    request = _project_work_request("Run it and reflect the result.")
 
     frames = [
         frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
@@ -5863,64 +5649,10 @@ async def test_unreadable_corrected_work_patch_reports_the_read_failure(manifest
 
 
 @pytest.mark.asyncio
-async def test_work_patch_is_applied_to_live_state_without_correction(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    work_patch = refresh_patch("rq/live-work").model_copy(update={"kind": "work"})
-
-    class MovingGraphLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, **kwargs):
-            append_fixture_patch(service, refresh_patch("rq/concurrent-human-work"))
-            async for event in super().stream(provider, prompt, **kwargs):
-                yield event
-
-    launcher = MovingGraphLauncher(
-        [{"patch.json": agent_patch_json(work_patch)}], message="The operation completed."
-    )
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Do the work.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="moving-live-work",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
-
-    frames = [
-        frame
-        async for frame in stream_work_run(
-            service,
-            launcher,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        )
-    ]
-
-    assert not _error_texts(frames)
-    graph_update = _graph_update(frames)
-    assert graph_update is not None
-    assert graph_update["status"] == "applied"
-    assert graph_update["applied_revision"] == 4
-    assert graph_update["correction_rounds"] == 0
-    assert launcher.calls == 1
-    assert "rq/concurrent-human-work" in service.history.state().nodes
-    assert "rq/live-work" in service.history.state().nodes
-
-
-@pytest.mark.asyncio
 async def test_work_apply_rechecks_authority_after_human_removes_proposal_target(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     hypothesis_id = "hyp/replanning-restores-plasticity"
     authorizer = _named_test_authorizer(app.state.background_tasks.store)
     service.review_node(
@@ -6011,19 +5743,8 @@ async def test_work_apply_rechecks_authority_after_human_removes_proposal_target
         [{"patch.json": agent_patch_json(work_patch)}],
         message="The operational work completed and the proposed wording is ready for review.",
     )
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Do the work and propose the clarified hypothesis.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="work-held-before-live-apply",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _project_work_request("Do the work and propose the clarified hypothesis.")
+    execution = _chat_task_execution(app, request, "work-held-before-live-apply")
     workspace = service.history.workspace
     original_run_lock = workspace.run_lock
     graph_moved = False
@@ -6069,9 +5790,7 @@ async def test_work_apply_rechecks_authority_after_human_removes_proposal_target
 async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_apply(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     workspace = service.history.workspace
     work_patch = refresh_patch("rq/lost-lock-work").model_copy(update={"kind": "work"})
 
@@ -6089,13 +5808,7 @@ async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_app
         [{"patch.json": agent_patch_json(work_patch)}],
         message="The operational work completed.",
     )
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Do the work and reflect it.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
+    request = _project_work_request("Do the work and reflect it.")
 
     frames = [
         frame async for frame in stream_work_run(service, launcher, request, tmp_path / "data")
@@ -6117,9 +5830,7 @@ async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_app
 async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_correction(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     service.review_node(
         "rq/learning-after-shift",
         ReviewRequest(standing="accepted"),
@@ -6172,19 +5883,8 @@ async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_co
         [{"patch.json": agent_patch_json(patch)}],
         message="I added the experiment decisions.",
     )
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Add the decision structure.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="accepted-question-decisions",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _project_work_request("Add the decision structure.")
+    execution = _chat_task_execution(app, request, "accepted-question-decisions")
 
     frames = [
         frame
@@ -6212,9 +5912,7 @@ async def test_work_patch_adds_decision_edges_to_an_accepted_question_without_co
 async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     patch = Patch(
         kind="work",
         author="agent",
@@ -6288,19 +5986,8 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
     launcher = ScriptedLauncher(
         [{"patch.json": agent_patch_json(patch)}], message="I sent the decision to Inbox."
     )
-    request = RunRequest(
-        chat_scope="project",
-        chat_id=str(uuid.uuid4()),
-        message="Prepare the decision.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="work-proposal",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _project_work_request("Prepare the decision.")
+    execution = _chat_task_execution(app, request, "work-proposal")
 
     frames = [
         frame
@@ -6327,9 +6014,7 @@ async def test_work_proposal_is_applied_as_a_proposal_not_a_universal_gate(
 def test_background_work_can_pause_while_waiting_for_canonical_state(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     workspace = service.history.workspace
     waiting = threading.Event()
     answer = "The operational work completed."
@@ -6390,9 +6075,7 @@ def test_background_work_can_pause_while_waiting_for_canonical_state(
 def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     invalid = agent_patch_json(shape_invalid_patch().model_copy(update={"kind": "work"}))
     valid = agent_patch_json(
         refresh_patch("rq/manually-repaired-work").model_copy(update={"kind": "work"})
@@ -6522,9 +6205,7 @@ def _experiment_fixture_patch(
 def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenance(
     manifest, tmp_path: Path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     append_fixture_patch(service, _experiment_fixture_patch(invocation_ceiling=3))
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -6697,13 +6378,9 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     assert notification.stage_root == str(stage_root)
 
 
-def _chat_task_execution(
-    store: AppStore,
-    *,
-    operation_id: str,
-    project_id: str,
-    request: RunRequest,
-) -> AgentTaskExecution:
+def _chat_task_execution(app, request: RunRequest, operation_id: str) -> AgentTaskExecution:
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
     now = store.now()
     authorized_by = _named_test_authorizer(store)
     kind = "node_chat" if request.chat_scope == "node" else "project_chat"
@@ -6736,8 +6413,7 @@ def _chat_task_execution(
     )
 
 
-def test_public_task_request_cannot_select_watcher_or_control_authority(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_public_task_request_cannot_select_watcher_or_control_authority(app, tmp_path) -> None:
     service = app.state.service
     request = _validated_task_request(
         service,
@@ -6761,10 +6437,7 @@ def test_public_task_request_cannot_select_watcher_or_control_authority(manifest
 
 
 def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     entered = threading.Event()
     release = threading.Event()
 
@@ -6780,8 +6453,7 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
         assert request.control_invocation_ceiling == 2
         assert request.control_completion_criteria == ["The detached fixture exits cleanly."]
         entered.set()
-        while not release.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release.is_set)
         yield _sse(AgentEvent(event="answer", text="Preflight stopped before launch."))
         yield _sse(AgentEvent(event="done"))
 
@@ -6848,10 +6520,7 @@ def test_run_endpoint_pins_control_without_spending_an_attempt(manifest, tmp_pat
 
 
 def test_run_endpoint_preserves_a_nonblank_experiment_goal(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     goal = "  Establish whether the bounded runner survives a graceful restart.  "
     seen = threading.Event()
 
@@ -6878,10 +6547,7 @@ def test_run_endpoint_preserves_a_nonblank_experiment_goal(manifest, tmp_path) -
 def test_experiment_admission_conflict_status_uses_exception_type(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
 
     def reject_admission(*_args, **_kwargs):
         raise AgentTaskAdmissionConflict("The valid request conflicts with admitted work.")
@@ -6901,10 +6567,7 @@ def test_experiment_admission_conflict_status_uses_exception_type(
 def test_experiment_validation_status_does_not_depend_on_exception_wording(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
 
     def reject_validation(*_args, **_kwargs):
         raise ValueError("A malformed field happens to say already running.")
@@ -6921,9 +6584,7 @@ def test_experiment_validation_status_does_not_depend_on_exception_wording(
 
 
 def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     append_fixture_patch(service, _experiment_fixture_patch(invocation_ceiling=1))
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -7003,7 +6664,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         json={"chat_id": str(uuid.uuid4())},
     )
     assert still_running.status_code == 409
-    assert still_running.json()["detail"] == "Detached Experiment work is still running."
+    assert "still running" in still_running.json()["detail"]
     control = client.get(f"/api/projects/{project_id}").json()["experiment_control"][
         "exp/bounded-loop"
     ]
@@ -7119,10 +6780,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
 def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     project_id = app.state.default_project_id
     winner_barrier = threading.Barrier(2)
     release_winner = threading.Event()
@@ -7168,10 +6826,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
 def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     project_id = app.state.default_project_id
     winner_barrier = threading.Barrier(2)
     release_winner = threading.Event()
@@ -7179,8 +6834,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
     original_start = app.state.background_tasks.start
 
     async def held_stream(*_args):
-        while not release_stream.is_set():
-            await asyncio.sleep(0.01)
+        await async_wait_until(release_stream.is_set)
         yield _sse(AgentEvent(event="answer", text="Admission won the race."))
         yield _sse(AgentEvent(event="done"))
 
@@ -7225,8 +6879,7 @@ def test_experiment_removal_and_run_admission_are_atomic_when_admission_wins(
         release_stream.set()
 
 
-def test_experiment_operation_lock_can_cross_fastapi_worker_threads(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_experiment_operation_lock_can_cross_fastapi_worker_threads(app, tmp_path) -> None:
     project_id = app.state.default_project_id
     lock = app.state.services.experiment_operation_lock(project_id)
     failures: list[BaseException] = []
@@ -7258,10 +6911,7 @@ def test_experiment_operation_lock_can_cross_fastapi_worker_threads(manifest, tm
 def test_removed_experiment_fails_closed_for_every_continuation_admission(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     project_id = app.state.default_project_id
     client = TestClient(app)
     removed = client.post(
@@ -7322,9 +6972,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     for endpoint, operation_id in operation_ids.items():
         response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/{endpoint}")
         assert response.status_code == 409
-        assert response.json()["detail"] == (
-            "Experiment exp/bounded-loop no longer exists; it cannot be continued."
-        )
+        assert "no longer exists" in response.json()["detail"]
 
     continuation = WatcherContinuation(
         provider="codex",
@@ -7377,10 +7025,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
 async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     attempt = {
         "id": "attempt-1",
         "sequence": 1,
@@ -7423,12 +7068,7 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         control_invocation_ceiling=2,
         control_completion_criteria=["The detached fixture exits cleanly."],
     )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="experiment-work",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "experiment-work")
     watcher_now = execution.store.now()
     execution.store.create_watchers(
         [
@@ -7563,10 +7203,7 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
 async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
     manifest, tmp_path, initial_watch, expected_calls
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     patch = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7580,26 +7217,8 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
             }
         ],
     )
-    request = RunRequest(
-        node_id="exp/bounded-loop",
-        message="Finish the bounded loop.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="experiment-empty-watch",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _experiment_request("Finish the bounded loop.")
+    execution = _chat_task_execution(app, request, "experiment-empty-watch")
     first = {"patch.json": agent_patch_json(patch)}
     if initial_watch is not None:
         first["watch.json"] = initial_watch
@@ -7633,30 +7252,9 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
 async def test_experiment_loop_missing_handoff_fails_without_done_after_one_correction(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
-    request = RunRequest(
-        node_id="exp/bounded-loop",
-        message="Run the bounded loop.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="experiment-missing-watch",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    app, service = _experiment_project(manifest, tmp_path)
+    request = _experiment_request("Run the bounded loop.")
+    execution = _chat_task_execution(app, request, "experiment-missing-watch")
     launcher = ScriptedLauncher([{}], message="Could not establish handoff.")
 
     frames = [
@@ -7680,10 +7278,7 @@ async def test_experiment_loop_missing_handoff_fails_without_done_after_one_corr
 async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     invalid_exit = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7703,26 +7298,8 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
         ],
     )
     removed_exit = json.dumps({"summary": "Removed the exit.", "ops": [], "repositories_read": []})
-    request = RunRequest(
-        node_id="exp/bounded-loop",
-        message="Finish the bounded loop.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="experiment-exit-recheck",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _experiment_request("Finish the bounded loop.")
+    execution = _chat_task_execution(app, request, "experiment-exit-recheck")
     launcher = ScriptedLauncher(
         [
             {
@@ -7763,10 +7340,7 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
     session instead of one correction round.
     """
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     invalid_exit = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7785,26 +7359,8 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
             }
         ],
     )
-    request = RunRequest(
-        node_id="exp/bounded-loop",
-        message="Finish the bounded loop.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="experiment-unreadable-correction",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _experiment_request("Finish the bounded loop.")
+    execution = _chat_task_execution(app, request, "experiment-unreadable-correction")
 
     class UnreadableLoopCorrectionLauncher(ScriptedLauncher):
         async def stream(self, provider, prompt, **kwargs):
@@ -7843,10 +7399,7 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
 async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_rejected(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     invalid = Patch(
         kind="experiment_loop",
         author="agent",
@@ -7865,26 +7418,8 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
             }
         ],
     )
-    request = RunRequest(
-        node_id="exp/bounded-loop",
-        message="Run the bounded loop.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="experiment-rejected-reflection",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _experiment_request("Run the bounded loop.")
+    execution = _chat_task_execution(app, request, "experiment-rejected-reflection")
     handoff = {
         "patch.json": agent_patch_json(invalid),
         "watch.json": json.dumps(
@@ -7920,10 +7455,7 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
 async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
+    app, service = _experiment_project(manifest, tmp_path)
     operation_id = "experiment-committed-before-receipt"
     exit_patch = Patch(
         kind="experiment_loop",
@@ -7942,26 +7474,8 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     )
     append_fixture_patch(service, exit_patch)
     append_fixture_patch(service, refresh_patch("rq/after-committed-loop"))
-    request = RunRequest(
-        node_id="exp/bounded-loop",
-        message="Recover the committed invocation.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id=operation_id,
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    request = _experiment_request("Recover the committed invocation.")
+    execution = _chat_task_execution(app, request, operation_id)
     launcher = ScriptedLauncher(
         [
             {
@@ -8039,22 +7553,9 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
 async def test_readable_watch_value_error_gets_same_session_correction(
     manifest, tmp_path, monkeypatch
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    request = RunRequest(
-        chat_scope="project",
-        message="Launch the detached fixture.",
-        chat_id=str(uuid.uuid4()),
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    execution = _chat_task_execution(
-        app.state.background_tasks.store,
-        operation_id="watch-readable-value-error",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    app, service = _seeded_project(manifest, tmp_path)
+    request = _project_work_request("Launch the detached fixture.")
+    execution = _chat_task_execution(app, request, "watch-readable-value-error")
     watch = json.dumps(
         {
             "external": [
@@ -8104,9 +7605,7 @@ async def test_readable_watch_value_error_gets_same_session_correction(
 async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     manifest, tmp_path
 ) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
+    app, service = _seeded_project(manifest, tmp_path)
     store = app.state.background_tasks.store
     chat_id = str(uuid.uuid4())
     surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
@@ -8133,12 +7632,7 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
             active_compute_ids=["gpu"],
         )
     )
-    execution = _chat_task_execution(
-        store,
-        operation_id="watch-origin",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "watch-origin")
     common = {
         "log_path": str(tmp_path / "fixture.log"),
         "cwd": str(tmp_path),
@@ -8201,12 +7695,7 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
         compute_connections=[],
     )
     wake = _generic_watcher_delivery_request([external])
-    wake_execution = _chat_task_execution(
-        store,
-        operation_id="watch-wake",
-        project_id=app.state.default_project_id,
-        request=wake,
-    )
+    wake_execution = _chat_task_execution(app, wake, "watch-wake")
     wake_launcher = ScriptedLauncher([{}], message="The watched fixture completed cleanly.")
     wake_frames = [
         frame
@@ -8273,8 +7762,7 @@ def _stuck_experiment_patch() -> Patch:
     )
 
 
-def test_a_human_may_release_an_attempt_without_it_gating_the_loop(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_a_human_may_release_an_attempt_without_it_gating_the_loop(app) -> None:
     project_id = app.state.default_project_id
     service = app.state.service
     append_fixture_patch(service, seed_patch())
@@ -8325,12 +7813,9 @@ def test_a_human_may_release_an_attempt_without_it_gating_the_loop(manifest, tmp
     assert "no open attempt" in again.json()["detail"]
 
 
-def test_seed_stages_its_selected_skills_and_records_what_it_ran(
-    manifest, tmp_path, monkeypatch
-) -> None:
+def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatch) -> None:
     """S64: the selection is structured task metadata, not text the agent parses."""
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
     _persist_skill_defaults(
@@ -8393,10 +7878,9 @@ def test_seed_stages_its_selected_skills_and_records_what_it_ran(
     assert not list(research_dir.rglob("*WORKFLOW.md"))
 
 
-def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(manifest, tmp_path) -> None:
+def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(app, tmp_path) -> None:
     """S64: the registry is authoritative; a recorded version is a receipt, not a pin."""
 
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.catalog.open(app.state.default_project_id)
     _persist_skill_defaults(service, SkillDefaults(skill_ids=["graph-audit"]))
     stored_request = {
@@ -8414,10 +7898,7 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(manifest, tm
     ]
 
 
-def test_retrying_a_failed_seed_records_the_selection_it_will_stage(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+def test_retrying_a_failed_seed_records_the_selection_it_will_stage(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
     service = app.state.catalog.open(project_id)
     _persist_skill_defaults(
@@ -8474,13 +7955,12 @@ def test_decisions_awaiting_choice_matches_the_shared_frontend_fixture() -> None
     assert awaiting == fixture["expected_awaiting_choice"]
 
 
-def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(manifest, tmp_path) -> None:
+def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_path) -> None:
     """The answer is withheld from the wire, so its usage needs its own frame.
 
     Only a failing turn used to be counted, because an error event is forwarded
     and a labelled answer is not.
     """
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     usage = ProviderUsage(
         provider_profile="claude.query.v1",

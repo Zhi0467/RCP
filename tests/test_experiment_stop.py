@@ -136,6 +136,50 @@ class _Loop:
             control_completion_criteria=["The detached fixture exits cleanly."],
         )
 
+    def task_record(self, request: RunRequest, **fields) -> AgentTaskRecord:
+        now = self.store.now()
+        return AgentTaskRecord(
+            project_id=self.project_id,
+            kind="node_chat",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            dispatch_authority=_task_authority(request),
+            **fields,
+        )
+
+    def watcher_request(self, watcher_ids: list[str]) -> RunRequest:
+        return self.root_request(invocation=2).model_copy(
+            update={
+                "trigger": "watcher",
+                "session_id": "native-session-abc",
+                "watcher_ids": watcher_ids,
+            }
+        )
+
+    def seed_wake(self, operation_id, watcher_id, stage, **fields):
+        self.arm_watcher(watcher_id, status="completed")
+        request = self.watcher_request([watcher_id])
+        self.create_watcher_invocation(
+            self.task_record(
+                request,
+                operation_id=operation_id,
+                native_session_id="native-session-abc",
+                stage_root=str(stage),
+                **fields,
+            ),
+            [watcher_id],
+        )
+        return request
+
+    def record_context_candidate(self, operation_id: str) -> None:
+        self.store.record_agent_task_contract(
+            operation_id,
+            "experiment_episode_context_candidate",
+            "{}",
+            hashlib.sha256(b"{}").hexdigest(),
+        )
+
     def _set_task_status(self, record: AgentTaskRecord) -> AgentTaskRecord:
         if record.status == "running":
             self.store.mark_agent_task_running(record.operation_id)
@@ -475,6 +519,18 @@ class _Loop:
             if record.request.get("patch_kind") == "experiment_loop"
         }
 
+    def capture_turn(self):
+        observed = Event()
+        captured: dict[str, object] = {}
+
+        async def stream(_project_id, _kind, request, execution):
+            captured.update(request=request, continuation=execution.continuation)
+            observed.set()
+            yield _sse(AgentEvent(event="done"))
+
+        self.app.state.background_tasks.stream = stream
+        return observed, captured
+
     def record_answers(self) -> list[RunRequest]:
         """Replace agent execution with a stub that only records its request."""
 
@@ -489,10 +545,14 @@ class _Loop:
         return seen
 
 
+@pytest.fixture
+def loop(manifest, tmp_path):
+    return _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+
+
 def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
-    manifest, tmp_path
+    loop, tmp_path
 ) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode(status="running")
     watcher = loop.arm_watcher("live-watcher")
 
@@ -504,19 +564,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
     assert operational["task_active"] is True
     assert control["ready"] is False
     projected = loop.control()
-    assert {
-        field: projected[field]
-        for field in (
-            "health",
-            "recommendation",
-            "run_section",
-            "live",
-            "can_start",
-            "can_stop",
-            "stop_pending",
-            "task_control",
-        )
-    } == {
+    expected = {
         "health": "stopping",
         "recommendation": "wait",
         "run_section": "running",
@@ -526,6 +574,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
         "stop_pending": True,
         "task_control": None,
     }
+    assert {field: projected[field] for field in expected} == expected
     # The authorized turn is untouched, and its observers stay live until it ends.
     task = loop.store.agent_task("loop-root")
     assert task is not None and task.status == "running"
@@ -546,10 +595,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
     assert loop.store.watcher(watcher.watcher_id).status == "stopped"
 
 
-def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(
-    manifest, tmp_path
-) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(loop, tmp_path) -> None:
     loop.start_episode()
     loop.arm_watcher("still-running")
     loop.arm_watcher("finished-unclaimed", status="completed")
@@ -570,9 +616,8 @@ def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(
 
 
 def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization_fails(
-    manifest, tmp_path, monkeypatch
+    loop, tmp_path, monkeypatch
 ) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode(status="running")
     loop.arm_watcher("atomic-stop-watcher")
     stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
@@ -603,8 +648,7 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
     assert loop.store.watcher("atomic-stop-watcher").status == "stopped"  # type: ignore[union-attr]
 
 
-def test_stop_is_idempotent(manifest, tmp_path) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_stop_is_idempotent(loop, tmp_path) -> None:
     loop.start_episode()
     loop.arm_watcher("finished-unclaimed", status="completed")
 
@@ -628,9 +672,8 @@ def test_stop_is_idempotent(manifest, tmp_path) -> None:
 
 
 def test_closed_experiment_outranks_a_stopped_episode_until_the_node_is_reopened(
-    manifest, tmp_path
+    loop, tmp_path
 ) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     append_fixture_patch(loop.service, _experiment_status_patch("completed"))
     loop.start_episode()
 
@@ -664,11 +707,10 @@ def test_closed_experiment_outranks_a_stopped_episode_until_the_node_is_reopened
 
 
 def test_experiment_control_projection_reads_runtime_and_episode_from_one_snapshot(
-    manifest,
+    loop,
     tmp_path,
     monkeypatch,
 ) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode()
     original = loop.store._experiment_episode_projection_snapshot_in_connection
     stop_written = False
@@ -725,13 +767,7 @@ def test_restart_recovers_a_healthy_authorized_turn_behind_the_stop_fence(
         native_session_id=f"restart-{status}-session",
         stage_root=str(stage),
     )
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
-        "loop-root",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode()).hexdigest(),
-    )
+    loop.record_context_candidate("loop-root")
     # It launched: the candidate went out with a prompt.
     loop.store.record_agent_task_contract(
         "loop-root", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
@@ -793,13 +829,7 @@ def test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertai
         stage_host="worker.example",
         stage_root="/remote/rcp-stage",
     )
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
-        "loop-root",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode()).hexdigest(),
-    )
+    loop.record_context_candidate("loop-root")
     stopping = loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
     assert stopping is not None and stopping.stop_settled_at is None
     monkeypatch.setattr(
@@ -820,11 +850,7 @@ def test_restart_keeps_stop_recovery_pending_when_remote_stage_probe_is_uncertai
     assert episode.stop_settled_at is None
 
 
-def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(loop, tmp_path) -> None:
     loop.start_episode()
     loop.arm_watcher("finished-unclaimed", status="completed")
     loop.stop()
@@ -846,11 +872,7 @@ def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(
     assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
 
 
-def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(loop, tmp_path) -> None:
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher("finished-unclaimed", status="completed")
@@ -867,11 +889,7 @@ def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(
     assert runtime.invocations_used == 1
 
 
-def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(loop, tmp_path) -> None:
     loop.start_episode(status="running")
     loop.arm_watcher("still-running")
     assert loop.stop()["operational"]["stop_settled"] is False
@@ -896,11 +914,7 @@ def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(
     assert control["ready"] is True
 
 
-def test_a_wake_without_a_committed_binding_never_claims_or_spends_budget(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_a_wake_without_a_committed_binding_never_claims_or_spends_budget(loop, tmp_path) -> None:
     loop.start_episode()
     loop.arm_watcher("finished-unclaimed", status="completed")
 
@@ -916,9 +930,7 @@ def test_a_wake_without_a_committed_binding_never_claims_or_spends_budget(
     assert control["operational"]["session"]["native_session_bound"] is False
 
 
-def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -> None:
     loop.start_episode()
     stage = tmp_path / "stage"
     loop.bind_session(stage)
@@ -938,9 +950,7 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(manifest, tmp_pat
     assert loop.store.experiment_loop_runtime(loop.project_id, EXPERIMENT_ID).invocations_used == 1
 
 
-def test_provider_provenance_does_not_block_current_episode_delivery(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_provider_provenance_does_not_block_current_episode_delivery(loop, tmp_path) -> None:
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
     loop.record_answers()
@@ -969,11 +979,7 @@ def test_provider_provenance_does_not_block_current_episode_delivery(manifest, t
     assert loop.control()["operational"]["session"]["diagnostic"] is None
 
 
-def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, tmp_path) -> None:
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher("finished-unclaimed", status="completed")
@@ -1011,11 +1017,7 @@ def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(
     assert loop.store.watcher("finished-unclaimed").notified is True
 
 
-def test_control_state_exposes_the_operational_block_without_the_session_id(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_control_state_exposes_the_operational_block_without_the_session_id(loop, tmp_path) -> None:
     loop.start_episode(status="running")
     loop.bind_session(tmp_path / "stage")
 
@@ -1043,9 +1045,7 @@ def test_control_state_exposes_the_operational_block_without_the_session_id(
     assert "native-session-abc" not in json.dumps(control)
 
 
-def test_stop_on_a_node_that_is_not_an_experiment_is_not_found(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_stop_on_a_node_that_is_not_an_experiment_is_not_found(loop, tmp_path) -> None:
 
     response = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/rq%2Flearning-after-shift/stop"
@@ -1054,9 +1054,7 @@ def test_stop_on_a_node_that_is_not_an_experiment_is_not_found(manifest, tmp_pat
     assert response.status_code == 404
 
 
-def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(loop, tmp_path) -> None:
     loop.start_episode()
     loop.arm_watcher("still-running")
 
@@ -1072,21 +1070,7 @@ def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(manifest, tm
     assert episode.session_bound is False
 
 
-def test_individual_stop_rejects_experiment_watcher(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
-    loop.start_episode()
-    loop.arm_watcher("loop-watcher")
-
-    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/loop-watcher/stop")
-
-    assert response.status_code == 409
-    assert "Use Stop loop" in response.json()["detail"]
-    assert loop.store.watcher("loop-watcher").status == "active"
-
-
-def test_episode_binding_is_immutable_after_first_success(manifest, tmp_path) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_episode_binding_is_immutable_after_first_success(loop, tmp_path) -> None:
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
 
@@ -1128,47 +1112,24 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
             "session_id": None,
         }
     )
-    now = loop.store.now()
-    loop.arm_watcher("failed-switch-watcher", status="completed")
-    failed_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["failed-switch-watcher"],
-        }
-    )
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="failed-wake-for-switch",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=failed_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Provider limit reached.",
-            error="Usage limit exceeded",
-            native_session_id="native-session-abc",
-            stage_root=str(old_stage),
-            dispatch_authority=_task_authority(failed_request),
-        ),
-        ["failed-switch-watcher"],
+    loop.seed_wake(
+        "failed-wake-for-switch",
+        "failed-switch-watcher",
+        old_stage,
+        status="failed",
+        status_message="Provider limit reached.",
+        error="Usage limit exceeded",
     )
     loop.create_recovery_task(
-        AgentTaskRecord(
+        loop.task_record(
+            request,
             operation_id="successful-provider-switch",
-            project_id=loop.project_id,
-            kind="node_chat",
             status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="Switching provider.",
             attempt=2,
             parent_operation_id="failed-wake-for-switch",
             native_session_id="new-claude-session",
             stage_root=str(new_stage),
-            dispatch_authority=_task_authority(request),
         ),
         continuation_cause="handoff",
     )
@@ -1233,8 +1194,7 @@ def test_explicit_recovery_atomically_replaces_binding_and_runtime_profile(
         )
 
 
-def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_path) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_same_episode_roots_cannot_change_provider_configuration(loop, tmp_path) -> None:
     loop.start_episode()
     stage = tmp_path / "stage"
     loop.bind_session(stage)
@@ -1247,31 +1207,23 @@ def test_same_episode_roots_cannot_change_provider_configuration(manifest, tmp_p
             "watcher_ids": ["changed-config-watcher"],
         }
     )
-    now = loop.store.now()
 
     with pytest.raises(ValueError, match="episode binding: model"):
         loop.store.create_experiment_watcher_invocation(
-            AgentTaskRecord(
+            loop.task_record(
+                changed,
                 operation_id="changed-config",
-                project_id=loop.project_id,
                 episode_id=loop.episode_id,
-                kind="node_chat",
                 status="queued",
-                request=changed.model_dump(mode="json"),
-                created_at=now,
-                updated_at=now,
                 status_message="Should not start.",
                 native_session_id="native-session-abc",
                 stage_root=str(stage),
-                dispatch_authority=_task_authority(changed),
             ),
             ["changed-config-watcher"],
         )
 
 
-def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_automatic_wake_requires_session_and_exact_episode_stage(loop, tmp_path) -> None:
     loop.start_episode()
     stage = tmp_path / "stage"
     loop.bind_session(stage)
@@ -1283,20 +1235,14 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
             "watcher_ids": ["ready"],
         }
     )
-    now = loop.store.now()
-    record = AgentTaskRecord(
+    record = loop.task_record(
+        request,
         operation_id="wrong-binding",
-        project_id=loop.project_id,
         episode_id=loop.episode_id,
-        kind="node_chat",
         status="queued",
-        request=request.model_dump(mode="json"),
-        created_at=now,
-        updated_at=now,
         status_message="Should not start.",
         native_session_id="wrong-session",
         stage_root=str(stage),
-        dispatch_authority=_task_authority(request),
     )
 
     with pytest.raises(ValueError, match="episode binding"):
@@ -1306,7 +1252,7 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
     no_session = request.model_copy(update={"session_id": None})
     with pytest.raises(ValueError, match="session and exact stage"):
         start_watcher_notification(
-            app.state.background_tasks,
+            loop.app.state.background_tasks,
             loop.project_id,
             "node_chat",
             no_session,
@@ -1316,9 +1262,7 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(manifest, tmp_p
         )
 
 
-def test_automatic_compatibility_ignores_model_reasoning_and_packages(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_automatic_compatibility_ignores_model_reasoning_and_packages(loop, tmp_path) -> None:
     loop.start_episode()
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher(
@@ -1344,7 +1288,7 @@ def test_automatic_compatibility_ignores_model_reasoning_and_packages(manifest, 
         ),
     )
 
-    groups = app.state.background_tasks.store.completed_watcher_groups()
+    groups = loop.app.state.background_tasks.store.completed_watcher_groups()
     experiment_group = next(group for group in groups if group[0].watcher_id == "old-config")
     assert {item.watcher_id for item in experiment_group} == {"old-config", "new-config"}
 
@@ -1359,9 +1303,7 @@ def test_automatic_compatibility_ignores_model_reasoning_and_packages(manifest, 
     assert task.request["reasoning"] == "medium"
 
 
-def test_provider_default_model_stays_pinned_after_settings_change(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_provider_default_model_stays_pinned_after_settings_change(loop, tmp_path) -> None:
     root_request = loop.root_request().model_copy(update={"model": ""})
     loop.start_episode(request=root_request)
     loop.bind_session(tmp_path / "stage")
@@ -1397,10 +1339,8 @@ def test_provider_default_model_stays_pinned_after_settings_change(manifest, tmp
 
 @pytest.mark.parametrize("requested_scope", [None, []])
 def test_default_truth_scope_is_pinned_before_watcher_completion(
-    manifest, tmp_path, requested_scope
+    loop, tmp_path, requested_scope
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
     resolved = _resolved_graph_request(
         loop.service,
         "node_chat",
@@ -1449,30 +1389,12 @@ def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
         native_session_id="native-session-abc",
         stage_root=str(stage),
     )
-    loop.arm_watcher("second-invocation-watcher", status="completed")
-    second_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["second-invocation-watcher"],
-        }
-    )
-    now = loop.store.now()
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="loop-second",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="succeeded",
-            request=second_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Second invocation completed.",
-            native_session_id="native-session-abc",
-            stage_root=str(stage),
-            dispatch_authority=_task_authority(second_request),
-        ),
-        ["second-invocation-watcher"],
+    loop.seed_wake(
+        "loop-second",
+        "second-invocation-watcher",
+        stage,
+        status="succeeded",
+        status_message="Second invocation completed.",
     )
 
     with pytest.raises(ValueError, match="newest Experiment invocation"):
@@ -1486,9 +1408,7 @@ def test_old_experiment_graph_repair_is_rejected_after_progress_or_new_episode(
         loop.store.claim_agent_task_graph_repair("loop-root")
 
 
-def test_stopped_experiment_episode_cannot_start_an_old_graph_repair(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_stopped_experiment_episode_cannot_start_an_old_graph_repair(loop, tmp_path) -> None:
     loop.start_episode(status="running")
     loop.store.complete_agent_task(
         "loop-root",
@@ -1518,9 +1438,8 @@ def test_stopped_experiment_episode_cannot_start_an_old_graph_repair(manifest, t
 
 
 def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
-    manifest, tmp_path, monkeypatch
+    loop, tmp_path, monkeypatch
 ) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
     loop.start_episode(status="running")
     loop.store.complete_agent_task(
         "loop-root",
@@ -1546,18 +1465,13 @@ def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
     repair_request = loop.root_request().model_copy(
         update={"message": None, "session_id": "native-session-abc"}
     )
-    now = loop.store.now()
 
     def child(operation_id: str) -> AgentTaskRecord:
-        return AgentTaskRecord(
+        return loop.task_record(
+            repair_request,
             operation_id=operation_id,
-            project_id=loop.project_id,
             episode_id=loop.episode_id,
-            kind="node_chat",
             status="queued",
-            request=repair_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="Waiting to repair the graph update.",
             attempt=2,
             parent_operation_id="loop-root",
@@ -1565,7 +1479,6 @@ def test_experiment_graph_repair_admission_rolls_back_claim_child_and_receipt(
             stage_root=str(stage),
             graph_target=episode.graph_target,
             authorized_by=loop.authorizer,
-            dispatch_authority=_task_authority(repair_request),
         )
 
     original_insert = loop.store._insert_agent_task
@@ -1709,39 +1622,15 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
     loop.start_episode()
     stage = tmp_path / "wake-stage"
     loop.bind_session(stage)
-    loop.arm_watcher("failed-wake-watcher", status="completed")
-    wake_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["failed-wake-watcher"],
-        }
-    )
-    now = loop.store.now()
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="failed-wake",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status=task_status,
-            request=wake_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Automatic wake failed.",
-            error=None if task_status == "paused" else "provider connection dropped",
-            native_session_id="native-session-abc",
-            stage_root=str(stage),
-            dispatch_authority=_task_authority(wake_request),
-        ),
-        ["failed-wake-watcher"],
-    )
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
+    loop.seed_wake(
         "failed-wake",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+        "failed-wake-watcher",
+        stage,
+        status=task_status,
+        status_message="Automatic wake failed.",
+        error=None if task_status == "paused" else "provider connection dropped",
     )
+    loop.record_context_candidate("failed-wake")
     stage.rmdir()
 
     stopping = loop.stop()
@@ -1792,58 +1681,21 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
     loop.start_episode()
     stage = tmp_path / "wake-stage"
     loop.bind_session(stage)
-    loop.arm_watcher("limited-wake-watcher", status="completed")
-    wake_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["limited-wake-watcher"],
-        }
-    )
-    now = loop.store.now()
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="limited-wake",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=wake_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Provider limit reached.",
-            error="You've hit your session limit",
-            native_session_id="native-session-abc",
-            stage_root=str(stage),
-            dispatch_authority=_task_authority(wake_request),
-        ),
-        ["limited-wake-watcher"],
-    )
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
+    loop.seed_wake(
         "limited-wake",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+        "limited-wake-watcher",
+        stage,
+        status="failed",
+        status_message="Provider limit reached.",
+        error="You've hit your session limit",
     )
+    loop.record_context_candidate("limited-wake")
     # It launched: the candidate went out with a prompt.
     loop.store.record_agent_task_contract(
         "limited-wake", "work", "task contract", hashlib.sha256(b"task contract").hexdigest()
     )
     control = loop.control()
-    assert {
-        field: control[field]
-        for field in (
-            "health",
-            "recommendation",
-            "run_section",
-            "live",
-            "can_start",
-            "can_stop",
-            "stop_pending",
-            "task_control",
-            "can_switch_provider",
-        )
-    } == {
+    expected = {
         "health": "needs_action",
         "recommendation": "retry",
         "run_section": "actionable",
@@ -1854,15 +1706,8 @@ def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path)
         "task_control": "retry",
         "can_switch_provider": True,
     }
-    observed = Event()
-    captured: dict[str, object] = {}
-
-    async def stream(_project_id, _kind, request, execution):
-        captured.update(request=request, continuation=execution.continuation)
-        observed.set()
-        yield _sse(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = stream
+    assert {field: control[field] for field in expected} == expected
+    observed, captured = loop.capture_turn()
     retried = app.state.background_tasks.retry(
         "limited-wake",
         authorized_by=loop.authorizer,
@@ -1890,60 +1735,23 @@ def test_a_wake_that_lost_its_link_before_composing_reruns_as_that_wake(manifest
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
-        "loop-root",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
-    )
+    loop.record_context_candidate("loop-root")
     stage = tmp_path / "wake-stage"
     loop.bind_session(stage)
-    loop.arm_watcher("dropped-wake-watcher", status="completed")
-    wake_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["dropped-wake-watcher"],
-        }
-    )
-    now = loop.store.now()
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="dropped-wake",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=wake_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="could not list remote run workspace",
-            error="could not list remote run workspace",
-            native_session_id="native-session-abc",
-            stage_root=str(stage),
-            dispatch_authority=_task_authority(wake_request),
-        ),
-        ["dropped-wake-watcher"],
-    )
-    loop.store.record_agent_task_contract(
+    loop.seed_wake(
         "dropped-wake",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+        "dropped-wake-watcher",
+        stage,
+        status="failed",
+        status_message="could not list remote run workspace",
+        error="could not list remote run workspace",
     )
+    loop.record_context_candidate("dropped-wake")
 
     assert loop.store.experiment_episode_recovery_context_problem("dropped-wake") is None
     control = loop.control()
     assert (control["live"], control["task_control"]) == (True, "retry")
-    observed = Event()
-    captured: dict[str, object] = {}
-
-    async def stream(_project_id, _kind, request, execution):
-        captured.update(request=request, continuation=execution.continuation)
-        observed.set()
-        yield _sse(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = stream
+    observed, captured = loop.capture_turn()
     retried = app.state.background_tasks.retry("dropped-wake", authorized_by=loop.authorizer)
 
     assert observed.wait(timeout=2)
@@ -1960,13 +1768,7 @@ def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tm
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
-        "loop-root",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
-    )
+    loop.record_context_candidate("loop-root")
     loop.bind_session(tmp_path / "wake-stage")
     loop.arm_watcher("finished-job", status="completed")
     delivery = app.state.services.watcher_delivery
@@ -2004,48 +1806,16 @@ def test_a_stale_episode_session_retries_clean_rather_than_refusing(manifest, tm
     loop.start_episode()
     stage = tmp_path / "stale-stage"
     loop.bind_session(stage)
-    loop.arm_watcher("stale-wake-watcher", status="completed")
-    wake_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["stale-wake-watcher"],
-        }
-    )
-    now = loop.store.now()
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="stale-wake",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=wake_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="The provider dropped the session.",
-            error="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
-            native_session_id="native-session-abc",
-            stage_root=str(stage),
-            dispatch_authority=_task_authority(wake_request),
-        ),
-        ["stale-wake-watcher"],
-    )
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
+    loop.seed_wake(
         "stale-wake",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+        "stale-wake-watcher",
+        stage,
+        status="failed",
+        status_message="The provider dropped the session.",
+        error="collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
     )
-    observed = Event()
-    captured: dict[str, object] = {}
-
-    async def stream(_project_id, _kind, request, execution):
-        captured.update(request=request, continuation=execution.continuation)
-        observed.set()
-        yield _sse(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = stream
+    loop.record_context_candidate("stale-wake")
+    observed, captured = loop.capture_turn()
     retried = app.state.background_tasks.retry("stale-wake", authorized_by=loop.authorizer)
 
     assert observed.wait(timeout=2)
@@ -2080,45 +1850,25 @@ def test_a_revoked_login_is_recommended_a_sign_in_without_losing_its_controls(
     loop.start_episode()
     stage = tmp_path / "revoked-stage"
     loop.bind_session(stage)
-    loop.arm_watcher("revoked-wake-watcher", status="completed")
-    wake_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["revoked-wake-watcher"],
-        }
-    )
-    now = loop.store.now()
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="revoked-wake",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=wake_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="The provider login is no longer valid.",
-            error="You are not logged in. Run codex login to authenticate.",
-            failure_kind="provider_auth",
-            native_session_id="native-session-abc",
-            stage_root=str(stage),
-            dispatch_authority=_task_authority(wake_request),
-        ),
-        ["revoked-wake-watcher"],
+    loop.seed_wake(
+        "revoked-wake",
+        "revoked-wake-watcher",
+        stage,
+        status="failed",
+        status_message="The provider login is no longer valid.",
+        error="You are not logged in. Run codex login to authenticate.",
+        failure_kind="provider_auth",
     )
 
     control = loop.control()
 
-    assert {
-        field: control[field]
-        for field in ("health", "recommendation", "task_control", "can_switch_provider")
-    } == {
+    expected = {
         "health": "needs_action",
         "recommendation": "reauthenticate_provider",
         "task_control": "retry",
         "can_switch_provider": True,
     }
+    assert {field: control[field] for field in expected} == expected
 
 
 def test_provider_switch_is_provisional_until_successful_episode_handoff(
@@ -2130,39 +1880,15 @@ def test_provider_switch_is_provisional_until_successful_episode_handoff(
     loop.start_episode()
     old_stage = tmp_path / "old-stage"
     loop.bind_session(old_stage)
-    loop.arm_watcher("provider-switch-watcher", status="completed")
-    failed_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["provider-switch-watcher"],
-        }
-    )
-    now = loop.store.now()
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="failed-wake",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=failed_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Provider limit reached.",
-            error="Quota exceeded",
-            native_session_id="native-session-abc",
-            stage_root=str(old_stage),
-            dispatch_authority=_task_authority(failed_request),
-        ),
-        ["provider-switch-watcher"],
-    )
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
+    loop.seed_wake(
         "failed-wake",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+        "provider-switch-watcher",
+        old_stage,
+        status="failed",
+        status_message="Provider limit reached.",
+        error="Quota exceeded",
     )
+    loop.record_context_candidate("failed-wake")
     observed = Event()
     captured: dict[str, object] = {}
 
@@ -2208,39 +1934,15 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
     loop.start_episode()
     old_stage = tmp_path / "old-stage"
     loop.bind_session(old_stage)
-    candidate = "{}"
-    now = loop.store.now()
-    loop.arm_watcher("provisional-switch-watcher", status="completed")
-    failed_wake_request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["provisional-switch-watcher"],
-        }
-    )
-    loop.create_watcher_invocation(
-        AgentTaskRecord(
-            operation_id="failed-wake-before-switch",
-            project_id=loop.project_id,
-            kind="node_chat",
-            status="failed",
-            request=failed_wake_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Provider limit reached.",
-            error="Usage limit exceeded",
-            native_session_id="native-session-abc",
-            stage_root=str(old_stage),
-            dispatch_authority=_task_authority(failed_wake_request),
-        ),
-        ["provisional-switch-watcher"],
-    )
-    loop.store.record_agent_task_contract(
+    failed_wake_request = loop.seed_wake(
         "failed-wake-before-switch",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
+        "provisional-switch-watcher",
+        old_stage,
+        status="failed",
+        status_message="Provider limit reached.",
+        error="Usage limit exceeded",
     )
+    loop.record_context_candidate("failed-wake-before-switch")
     # It launched: the candidate went out with a prompt.
     loop.store.record_agent_task_contract(
         "failed-wake-before-switch",
@@ -2259,33 +1961,20 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
         }
     )
     loop.create_recovery_task(
-        AgentTaskRecord(
+        loop.task_record(
+            provisional_request,
             operation_id="failed-provisional-switch",
-            project_id=loop.project_id,
-            kind="node_chat",
             status="failed",
-            request=provisional_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="Provisional provider failed.",
             error="provider temporarily unavailable",
             attempt=2,
             parent_operation_id="failed-wake-before-switch",
             native_session_id="provisional-claude-session",
             stage_root=str(provisional_stage),
-            dispatch_authority=_task_authority(provisional_request),
         ),
         continuation_cause="handoff",
     )
-    observed = Event()
-    captured: dict[str, object] = {}
-
-    async def stream(_project_id, _kind, request, execution):
-        captured.update(request=request, continuation=execution.continuation)
-        observed.set()
-        yield _sse(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = stream
+    observed, captured = loop.capture_turn()
     retried = app.state.background_tasks.retry(
         "failed-provisional-switch",
         authorized_by=loop.authorizer,
@@ -2332,10 +2021,8 @@ def test_retry_of_failed_provisional_switch_keeps_its_provider_and_can_commit(
     [("paused", "resume"), ("failed", "retry")],
 )
 def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launch(
-    manifest, tmp_path, status, action
+    loop, tmp_path, status, action
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
     loop.start_episode(status=status)
     stage = tmp_path / "legacy-stage"
     stage.mkdir()
@@ -2355,10 +2042,10 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
         launched.set()
         yield _sse(AgentEvent(event="done"))
 
-    app.state.background_tasks.stream = stream
+    loop.app.state.background_tasks.stream = stream
 
     with pytest.raises(ValueError, match="did not retain its episode context"):
-        getattr(app.state.background_tasks, action)("loop-root")
+        getattr(loop.app.state.background_tasks, action)("loop-root")
 
     assert not launched.is_set()
     assert not [
@@ -2379,10 +2066,8 @@ def test_legacy_missing_context_candidate_refuses_recovery_before_provider_launc
 
 
 def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
-    manifest, tmp_path
+    loop, tmp_path
 ) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
     loop.start_episode(status="paused")
     stage = tmp_path / "legacy-stage"
     stage.mkdir()
@@ -2429,7 +2114,7 @@ def test_restart_settles_an_already_stuck_legacy_recovery_and_enables_fresh_run(
         )
 
     before = loop.loop_task_ids()
-    BackgroundAgentTasks(loop.store, app.state.background_tasks.stream).recover_at_startup()
+    BackgroundAgentTasks(loop.store, loop.app.state.background_tasks.stream).recover_at_startup()
 
     episode = loop.store.experiment_episode(loop.episode_id)
     assert episode is not None
@@ -2473,39 +2158,21 @@ def test_bound_provider_limit_records_diagnostic_before_direct_stop(
     stage = tmp_path / "bound-stage"
     loop.bind_session(stage)
     loop.arm_watcher("bound-limit-watcher", status="completed")
-    request = loop.root_request(invocation=2).model_copy(
-        update={
-            "trigger": "watcher",
-            "session_id": "native-session-abc",
-            "watcher_ids": ["bound-limit-watcher"],
-        }
-    )
-    now = loop.store.now()
+    request = loop.watcher_request(["bound-limit-watcher"])
     task = loop.store.create_experiment_watcher_invocation(
-        AgentTaskRecord(
+        loop.task_record(
+            request,
             operation_id="limited-wake",
-            project_id=loop.project_id,
             episode_id=loop.episode_id,
-            kind="node_chat",
             status="queued",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
             status_message="Waiting for the provider.",
             native_session_id="native-session-abc",
             stage_root=str(stage),
-            dispatch_authority=_task_authority(request),
         ),
         ["bound-limit-watcher"],
     )
     assert task is not None
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
-        task.operation_id,
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
-    )
+    loop.record_context_candidate(task.operation_id)
 
     async def stream(*_args, **_kwargs):
         yield _sse(AgentEvent(event="error", text=provider_error))
@@ -2549,26 +2216,18 @@ def test_bound_provider_limit_records_diagnostic_before_direct_stop(
     assert response.json()["request"]["control_episode_id"] != loop.episode_id
 
 
-def test_unbound_initial_provider_limit_remains_clean_retry_eligible(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_unbound_initial_provider_limit_remains_clean_retry_eligible(loop, tmp_path) -> None:
     loop.start_episode(status="queued")
     task = loop.store.agent_task("loop-root")
     assert task is not None
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
-        task.operation_id,
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
-    )
+    loop.record_context_candidate(task.operation_id)
 
     async def limited_stream(*_args, **_kwargs):
         yield _sse(AgentEvent(event="session", session_id="unbound-session"))
         yield _sse(AgentEvent(event="error", text="Quota exceeded"))
 
-    app.state.background_tasks.stream = limited_stream
-    app.state.background_tasks._run(
+    loop.app.state.background_tasks.stream = limited_stream
+    loop.app.state.background_tasks._run(
         task,
         loop.root_request(),
         AgentProcessControl(),
@@ -2589,8 +2248,8 @@ def test_unbound_initial_provider_limit_remains_clean_retry_eligible(manifest, t
         yield _sse(AgentEvent(event="answer", text="Clean retry started."))
         yield _sse(AgentEvent(event="done"))
 
-    app.state.background_tasks.stream = clean_retry_stream
-    child = app.state.background_tasks.retry(
+    loop.app.state.background_tasks.stream = clean_retry_stream
+    child = loop.app.state.background_tasks.retry(
         task.operation_id,
         authorized_by=loop.authorizer,
     )
@@ -2602,11 +2261,7 @@ def test_unbound_initial_provider_limit_remains_clean_retry_eligible(manifest, t
     assert loop.store.agent_task_continuation_cause(child.operation_id) == "handoff"
 
 
-def test_initial_run_uses_current_node_chat_profile_not_client_overrides(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_initial_run_uses_current_node_chat_profile_not_client_overrides(loop, tmp_path) -> None:
     loop.record_answers()
 
     response = loop.client.post(
@@ -2687,13 +2342,7 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
     store_test_claude_token(app.state.background_tasks.store)
     loop = _Loop(app)
     loop.start_episode(status="failed")
-    candidate = "{}"
-    loop.store.record_agent_task_contract(
-        "loop-root",
-        "experiment_episode_context_candidate",
-        candidate,
-        hashlib.sha256(candidate.encode("utf-8")).hexdigest(),
-    )
+    loop.record_context_candidate("loop-root")
     seen = loop.record_answers()
 
     response = loop.client.post(
@@ -2719,10 +2368,7 @@ def test_experiment_retry_allows_provider_overrides_but_rejects_run_on(manifest,
     assert "must run on canonical state machine 'laptop'" in pinned.json()["detail"]
 
 
-def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(
-    manifest, tmp_path
-) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(loop, tmp_path) -> None:
     loop.start_episode(operation_id="old-root")
     loop.arm_watcher("old-watcher", origin_operation_id="old-root")
     loop.stop()
@@ -2737,10 +2383,7 @@ def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(
     assert loop.store.watcher("old-watcher").status == "stopped"
 
 
-def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(
-    manifest, tmp_path
-) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(loop, tmp_path) -> None:
     loop.start_episode(operation_id="old-root")
     loop.arm_watcher("old-watcher", origin_operation_id="old-root")
     old_episode_id = loop.episode_id
@@ -2766,11 +2409,7 @@ def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(
     assert current.notified is False
 
 
-def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(
-    manifest, tmp_path
-) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(loop, tmp_path) -> None:
     loop.start_episode(operation_id="old-root")
     old_episode = loop.episode_id
     loop.arm_watcher("adopted-watcher", origin_operation_id="old-root")
@@ -2803,25 +2442,10 @@ def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(
     assert response.json()["request"]["watcher_ids"] == []
 
 
-def test_final_handoff_is_born_stopped_when_stop_wins_transaction(manifest, tmp_path) -> None:
-    loop = _Loop(create_app(str(manifest.path), data_dir=tmp_path / "data"))
+def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path) -> None:
     loop.start_episode(status="running")
     loop.store.request_experiment_loop_stop(loop.project_id, EXPERIMENT_ID)
-    now = loop.store.now()
-    desired = WatcherRecord(
-        watcher_id="final-handoff",
-        project_id=loop.project_id,
-        origin_operation_id="loop-root",
-        origin_task_kind="node_chat",
-        chat_id=loop.chat_id,
-        node_id=EXPERIMENT_ID,
-        execution_host="",
-        check_command="true",
-        log_path="/tmp/final-handoff.log",
-        cwd="/tmp",
-        continuation=loop.continuation(),
-        created_at=now,
-    )
+    desired = loop._watcher("final-handoff")
 
     stored = loop.store.persist_experiment_watchers_idempotently(
         [desired],
@@ -2932,9 +2556,7 @@ def test_human_stops_a_watcher_left_live_by_an_ended_episode(manifest, tmp_path)
     assert control["can_start"] is True
 
 
-def test_live_episode_still_routes_watcher_stop_through_stop_loop(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_live_episode_still_routes_watcher_stop_through_stop_loop(loop, tmp_path) -> None:
     loop.start_episode()
     loop.arm_watcher("live-watcher")
 
@@ -2949,11 +2571,9 @@ def test_live_episode_still_routes_watcher_stop_through_stop_loop(manifest, tmp_
     assert loop.store.watcher("live-watcher").status == "active"
 
 
-def test_reauthorized_run_pins_its_ceiling_without_a_graph_revision(manifest, tmp_path) -> None:
+def test_reauthorized_run_pins_its_ceiling_without_a_graph_revision(loop, tmp_path) -> None:
     """The authorized count travels with the Run instead of a staged node edit."""
 
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
     loop.start_episode()
     loop.settle_exhausted_ending()
     before = loop.service.history.state()
@@ -2972,9 +2592,7 @@ def test_reauthorized_run_pins_its_ceiling_without_a_graph_revision(manifest, tm
     assert node.invocation_ceiling == loop.invocation_ceiling
 
 
-def test_run_rejects_a_nonpositive_authorized_ceiling(manifest, tmp_path) -> None:
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app)
+def test_run_rejects_a_nonpositive_authorized_ceiling(loop, tmp_path) -> None:
     loop.start_episode()
     loop.settle_exhausted_ending()
 
@@ -3001,12 +2619,7 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     loop.arm_watcher("detached-observer")
     loop.settle_exhausted_ending(report=True)
 
-    def control() -> dict:
-        return loop.client.get(f"/api/projects/{loop.project_id}").json()["experiment_control"][
-            EXPERIMENT_ID
-        ]
-
-    blocked = control()
+    blocked = loop.control()
     assert blocked["health"] == "paused_at_limit"
     assert blocked["can_open_report"] is True
     # While the observer holds the loop shut the report really is the next step.
@@ -3016,7 +2629,7 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     stopped = loop.client.post(f"/api/projects/{loop.project_id}/watchers/detached-observer/stop")
     assert stopped.status_code == 200, stopped.text
 
-    resumable = control()
+    resumable = loop.control()
     assert resumable["health"] == "paused_at_limit"
     assert resumable["can_start"] is True
     assert resumable["recommendation"] == "start_episode"
@@ -3226,19 +2839,13 @@ def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> 
         mode="work",
         node_id=EXPERIMENT_ID,
     )
-    now = loop.store.now()
     loop.store.create_agent_task(
-        AgentTaskRecord(
+        loop.task_record(
+            branch_request,
             operation_id="branch-root",
-            project_id=loop.project_id,
-            kind="node_chat",
             status="succeeded",
-            request=branch_request.model_dump(mode="json"),
             graph_target=branch_target,
-            created_at=now,
-            updated_at=now,
             status_message="Observing on a branch.",
-            dispatch_authority=_task_authority(branch_request),
         )
     )
     loop.arm_watcher(

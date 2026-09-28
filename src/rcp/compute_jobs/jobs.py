@@ -28,7 +28,7 @@ from rcp.compute_jobs.files import (
 from rcp.compute_jobs.models import ComputeBackendProbe, ComputeJobRecord, ComputeLaunchRequest
 from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.config import Manifest
-from rcp.limits import COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
+from rcp.limits import COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
 from rcp.storage import AppStore
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,8 @@ def launch_compute_job(
             f"({context.os_name}). {UNAVAILABLE_BACKEND_GUIDANCE}"
         )
     job_id = uuid.uuid4().hex
+    if probe is None:
+        probe = store.compute_backend_probe(project_id, execution_machine, "helper")
     if probe is not None:
         if not probe.ready:
             raise ValueError("Compute probe does not match the resolved ready backend.")
@@ -223,3 +225,24 @@ def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
         # The retained job root outlives an ephemeral task workspace used as the job cwd.
         "cwd": job.job_root,
     }
+
+
+def helper_startup_state(manifest: Manifest | None, job: ComputeJobRecord) -> dict[str, object]:
+    """The job's state just after launch, read by RCP outside any agent sandbox."""
+    if job.status == "running":
+        # A fresh job's running record carries a diagnostic only when the refresh
+        # could not observe it; that is not evidence the job survived startup.
+        if job.diagnostic:
+            return {"status": "unknown", "diagnostic": job.diagnostic}
+        return {"status": "running"}
+    state: dict[str, object] = {"status": job.status}
+    state["exit_status"] = job.exit_status
+    state["diagnostic"] = job.diagnostic
+    try:
+        state["log_tail"] = read_job_file(
+            recorded_job_context(manifest, job), job.log_path, COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES
+        )
+    except (ComputeTransportError, subprocess.TimeoutExpired, OSError) as exc:
+        state["log_tail"] = None
+        state["diagnostic"] = safe_compute_diagnostic(f"Could not read the job log: {exc}")
+    return state

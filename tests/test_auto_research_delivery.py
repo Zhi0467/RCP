@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import threading
 import time
@@ -51,7 +50,7 @@ from rcp.storage import (
 )
 from rcp.storage.models import _required_timestamp
 
-from .helpers import fabricated_authorizer, wait_for_task
+from .helpers import async_wait_until, fabricated_authorizer, wait_for_task
 
 
 def _sse(event: AgentEvent) -> str:
@@ -613,8 +612,7 @@ def test_busy_auto_research_actor_leaves_completed_watcher_unclaimed_and_unspent
         )
         if execution.operation_id == "busy-turn":
             busy_entered.set()
-            while not release_busy.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release_busy.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -1353,8 +1351,7 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
                 body="The delegated result is ready.",
             )
             reply_written.set()
-            while not release_child.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release_child.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -1458,8 +1455,7 @@ def test_busy_root_leaves_lifecycle_and_mail_unclaimed(tmp_path) -> None:
         )
         if execution.operation_id == "busy-turn":
             busy_entered.set()
-            while not release_busy.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release_busy.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)
@@ -1741,8 +1737,7 @@ def test_busy_auto_research_actor_leaves_pending_mail_unclaimed_and_unspent(tmp_
         )
         if execution.operation_id == "busy-turn":
             busy_entered.set()
-            while not release_busy.is_set():
-                await asyncio.sleep(0.01)
+            await async_wait_until(release_busy.is_set)
         yield _sse(AgentEvent(event="done"))
 
     tasks = BackgroundAgentTasks(store, stream)

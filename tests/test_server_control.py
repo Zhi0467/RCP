@@ -1191,7 +1191,7 @@ def test_previous_console_protocol_probe_does_not_advertise_unknown_maintenance_
             )
 
 
-@pytest.mark.parametrize("mismatch", [None, "machine", "project", "pid", "instance"])
+@pytest.mark.parametrize("mismatch", [None, "machine", "project", "pid", "instance", "route"])
 def test_compute_probe_control_envelope(tmp_path, control_root, mismatch):
     metadata = ServerMetadata.create(
         tmp_path / "data",
@@ -1212,6 +1212,7 @@ def test_compute_probe_control_envelope(tmp_path, control_root, mismatch):
         selector_kind="project",
         selector_id=str(uuid.uuid4()) if mismatch == "project" else project_id,
         machine_alias=probe.execution_machine,
+        compute_route="scheduler" if mismatch == "route" else "helper",
         probe=probe,
     )
     server = ServerControlServer(
@@ -1226,11 +1227,16 @@ def test_compute_probe_control_envelope(tmp_path, control_root, mismatch):
     try:
         if mismatch is None:
             assert (
-                client.probe_compute_backend(project_id=project_id, machine_alias="laptop") == probe
+                client.probe_compute_backend(
+                    project_id=project_id, machine_alias="laptop", route="helper"
+                )
+                == probe
             )
         else:
             with pytest.raises(ServerControlError):
-                client.probe_compute_backend(project_id=project_id, machine_alias="laptop")
+                client.probe_compute_backend(
+                    project_id=project_id, machine_alias="laptop", route="helper"
+                )
     finally:
         server.stop()
 
@@ -1252,10 +1258,11 @@ def test_compute_probe_client_rejects_another_machine(tmp_path, monkeypatch):
         selector_kind="project",
         selector_id=project_id,
         machine_alias="other",
+        compute_route="helper",
         probe=_result("other", "systemd_user", "ready", "Passed."),
     )
     client = ServerControlClient(metadata, expected_server_uid=os.geteuid())
     monkeypatch.setattr(client, "_exchange", lambda _: result)
     with pytest.raises(ServerControlError) as caught:
-        client.probe_compute_backend(project_id=project_id, machine_alias="laptop")
+        client.probe_compute_backend(project_id=project_id, machine_alias="laptop", route="helper")
     assert caught.value.code == "invalid_response"

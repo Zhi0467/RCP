@@ -143,9 +143,14 @@ Graph, snapshot, history, Sync/preview, and ordinary chat/task routes accept an
 optional `branch_id` query naming an existing episode branch. Omitting it selects
 main; project-wide task and watcher lists retain their project-wide default.
 Snapshots publish `graph_target`, `graph_head`, and `graph_changes` (null on main).
+`graph_head` is the exact head, transition id included, that Sync/preview builds
+on. Display caches written before it named the id carry null there; the Web keeps
+the head it already observed at that revision.
 `graph/changes?branch_id=...` publishes the same canonical base-to-head semantic
 delta, changed and neighboring node ids, before/after values, and Patch/task
 provenance. The backend derives that read model from one coherent branch replay.
+A project tab reopened from the space page or another tab returns to the graph
+target it was last left on, main or branch.
 
 The durable project display cache remains main-only. A branch cached-snapshot
 request returns an explicit cache miss, and the authoritative snapshot endpoint
@@ -161,15 +166,16 @@ available with its ordinary read-only capability.
 
 ## Compute setup and job APIs
 
-Project machine entries expose the manifest `compute` block and a live
-`compute_probe`, serialized as `ComputeBackendProbe` or null. The latter is
+Project machine entries expose the manifest `compute` block and live
+`compute_probes`, one `ComputeBackendProbe` or null per route. The latter is
 read from storage even when the graph snapshot is cached. Settings updates
 accept `machine_compute`, a partial alias-to-`MachineComputeConfig` map; null
 removes a block, omission preserves it. Validation and TOML persistence belong
-to the machine configuration owner. A changed block invalidates its stored probe.
-`POST /api/projects/{project_id}/machines/{machine_alias}/compute/probe` uses
-project write admission, stores a fresh probe, and returns that same model with
-its backend-owned label and tone.
+to the machine configuration owner. A changed block invalidates its stored
+probes and schedules a fresh background check of that machine.
+`POST /api/projects/{project_id}/machines/{machine_alias}/compute/check` uses
+project write admission, re-probes every route that machine offers, and
+returns both route slots.
 
 `GET /api/projects/{project_id}/watchers` supplies the external job rows for both
 scheduler and helper work. Every external row includes its required shell check,
@@ -190,8 +196,10 @@ Settings stages per-machine `job_manager` and optional helper `jobs_root` beside
 provider paths. **Use Slurm** opts into direct scheduler submission; RCP exposes
 no resource-argument inputs. Only changed aliases are saved. Draft storage keeps
 explicit machine edits, so an unrelated draft cannot restore an older full
-compute configuration. Unsaved machine edits mask readiness and require Save
-before Probe. The response supplies its own label, tone, and diagnostic.
+compute configuration. Unsaved machine edits mask readiness. A save that
+changes a machine's block probes its offered routes in the background; Runs
+offers **Check again** through `POST .../machines/{machine_alias}/compute/check`.
+Each stored probe supplies its own label, tone, and diagnostic.
 
 Chat and Experiment use the existing watcher refreshes to show one external job
 row. It displays the log path, observation state, check diagnostic, and Cancel
@@ -477,11 +485,16 @@ evaluation only for `rcp.localhost` and its direct subdomains. This does not
 permit HTTP application navigation: the proxy speaks TLS, navigation still
 requires one exact saved HTTPS origin, and the native handler accepts only the
 pinned leaf after hostname, validity, and server-use evaluation.
+Each team's TLS listener closes any connection whose SNI is not that team's
+alias before opening its upstream, so a shared wildcard leaf never routes one
+team's host-bound cookie to another team's server.
 The tool ACL solves source-rebuild stability; because a same-UID process can
 invoke the same general-purpose Apple tool, it is not same-account read
-isolation. That limitation is accepted only under the current cooperative
-provider model and must be replaced by app-bound credential access for wider
-public distribution. Team tokens use the versioned service
+isolation. That limitation is accepted under the current cooperative provider
+model for source builds and for the unsigned prebuilt app alike: an unsigned
+app has no stable signing identity to bind access to, and neither kind of build
+is more exposed than the other. App-bound credential access is later work.
+Team tokens use the versioned service
 `app.researchcontrolpanel.rcp.team-member-token.source-v1` and a distinct
 connection account. The immediately preceding D4 checkpoint never created a
 saved team registry or a token in its unversioned pre-live namespace, so this
@@ -656,7 +669,20 @@ Artifact and report listing and opening use the recent task and episode windows
 the page holds and report both window sizes; an exact `task_id`, task viewer id,
 or `episode_id` outside those windows is fetched from the existing task or
 episodes route rather than reported missing. Artifact opening uses the existing backend
-viewer inside the page after confirming current availability.
+viewer inside the page after confirming current availability. A listed file with
+no viewer reports `can_open` false with its `view` and `can_download`; visual
+opening refuses it rather than navigating to a download.
+
+Task artifacts project a `view` (`html`, `image`, `markdown`, `text`, `pdf`, or
+`file`) alongside the independent `can_open`, `can_download`, `can_keep`, and
+`can_discuss` capabilities. `result.artifact_omissions` carries known reason
+counts and `discovery_failed`; transcript reconstruction and history
+reconciliation preserve it even for a turn with no cards or answer. Saved
+artifacts also project `view`, `available`, `can_download`, and a nullable
+`download_url`. `can_open` always means an RCP viewer, including in the desktop
+app; the system PDF action separately requires `view` of `pdf` and
+`can_download`.
+
 Conversation Send starts one asynchronous ordinary Discuss or Work turn through
 the same provider profile, native-session, skill, task-admission, and local or
 SSH execution path as the visible composer; it returns the durable task id rather
@@ -706,7 +732,7 @@ The node detail is a persistent, resizable, viewport-clamped inspection window.
 Its stable vertical one-hop relation map shows incoming neighbors, focus, and
 outgoing neighbors without a nested scroll area. At most two comparison windows
 remain open. Full-screen relation inspection does not navigate or add authoring
-authority. Entering Chats closes node detail.
+authority. Entering Agents closes node detail.
 
 ### Runs
 
@@ -762,7 +788,7 @@ uses). While any account is `signed_out`, the project Runs view and the space
 landing render one `ProviderLoginNotice` per account naming the provider,
 machine, time, bounded diagnostic, and a **Verify sign-in** control, and point
 at Settings for the sign-in; the Experiment board's `reauthenticate_provider`
-copy points at it. Project Settings carries a **Provider logins** card
+copy points at it. Space Settings carries a **Provider logins** card
 (`ProviderLogins`) for both space kinds with one row per account: state, who
 changed it and when, **Sign in with device code** when `device_code` is supported
 (the code and link render while `GET .../sign-in/{login_id}` is polled), a token
@@ -833,6 +859,9 @@ non-null. Main-target entries consume the completed project snapshot's
 Experiment-control map; branch entries consume the exact branch read model.
 Episode task rows publish durable actor `role` and lineage `depth`, and episode
 cards consume those fields without interpreting persisted task requests.
+The page keeps each project's episode list, so returning to a project tab shows
+that list at once while it refreshes. A poll never overlaps a list request
+already in flight for the same project; it waits for that request instead.
 Project Runs refreshes this index while visible, so an Experiment dispatched on
 an Auto-research graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped
@@ -927,9 +956,9 @@ fields. Its seven-day completed window is presentation-only; active and
 actionable parents remain visible regardless of age, and project-scoped Runs and
 History retain their existing complete records.
 
-### Chats
+### Agents
 
-Chats groups project and node conversations. Every human and assistant turn
+Agents (route view `chats`) groups project and node conversations. Every human and assistant turn
 keeps its immutable Discuss/Work label; progress stays inline under the triggering
 message. There is no global task banner. The composer and history remain usable
 while unrelated background tasks run.
@@ -944,11 +973,47 @@ choice; RCP supplies the integration instruction and target. Unsent drafts remai
 intact when an integration turn is dispatched. A removed binding remains visible
 and cannot silently become a shared-checkout chat.
 
+`GET /api/projects/{project_id}/tasks` returns the newest tasks up to the list
+limit, plus the latest turn of every chat whose latest turn is still running or
+waiting on a person (queued, running, pausing, paused, failed, or interrupted),
+up to `AGENT_TASK_LIST_OPEN_CHAT_LIMIT`. A chat that needs a human therefore
+stays visible however many newer tasks exist; a failure followed by a later turn
+in the same chat does not count. Such a latest turn also stays listed for
+`AGENT_TASK_LIST_FINISHED_CHAT_SECONDS` after it finishes, so a client sees the
+terminal record.
+
+Read state is stored per user on the server, so it survives a reload, a closed
+app, and a second device. `GET /api/projects/{project_id}/chat-reads` returns
+the acting user's markers, one finish time per chat, plus a `baseline`: the
+time the markers were introduced, which stands in for any chat without one. It
+also returns `latest_finished`, each unarchived chat's newest finished turn, so a
+reply older than the task list window is still found. A chat is unread when its
+newest finished turn ended after its marker. Viewing a chat
+posts its newest finish time to `POST .../chats/{chat_id}/read`; the marker only
+moves forward. Markers are not moved with a transferred project.
+
 ### Paper, Settings, and History
 
-Paper owns human Markdown Write/Preview and read-only coaching. Settings owns
-repositories, execution profiles, compute connections, packages, caches, project
-membership, and prospective episode limits, not ontology authoring. Project
+Paper owns human Markdown Write/Preview and read-only coaching. Settings has two
+levels. Space Settings, opened from the gear beside the identity menu, owns the
+server status (team spaces), machine cards with their names (renamed in place) and
+writable paths, provider logins, and the
+personal space's clear-all-caches. Project Settings owns repositories, this
+project's machine cards (provider paths, compute, and the same writable-path
+record), execution profiles, compute connections, packages, caches, project
+membership, and prospective episode limits, not ontology authoring. Display
+preferences live in the identity menu.
+
+`/api/space/machines` lists, creates, renames, and deletes machine cards; a card
+in use by any project, or whose use cannot be established, cannot be deleted,
+and host and account never change. A `PATCH` of `writable_paths` validates each
+path on its machine: absolute, an existing directory, no `:` or `$` or control
+characters, not `/`, and not inside RCP's own storage.
+`/api/space/machines/{id}/directories` lists one directory level on the machine,
+filtered then paged, marking protected entries; project setup's folder browser
+uses the same endpoint. `POST /api/projects/{id}/machines` appends a machine
+alias to the project manifest through the state workspace. Existing projects
+fill the machine list at startup and on registration. Project
 snapshots expose non-secret compute metadata; readiness exposes a backend-owned
 execution-machine/connection matrix with distinct unreachable, authentication,
 and host-key states. Normal readiness reads reuse the last result; only an
@@ -1019,7 +1084,13 @@ launcher, not manual PID cleanup.
 Preview links open the shell's secondary bounded window rather than navigating
 the main project WebView. Desktop repository links and result/report artifacts
 therefore cannot strand the main project window. Native downloads resolve
-through shell-controlled destinations.
+through shell-controlled destinations. A PDF artifact opens in the system PDF
+viewer through one main-window command that takes only project, task, and
+artifact ids, fetches the artifact's Download route itself, checks that the
+bytes are a bounded PDF, and writes them to a private app-owned temporary
+directory; failed opens are removed at once and copies older than the named
+one-day `PDF_PREVIEW_RETENTION` are pruned on startup and each open. It
+never opens an arbitrary path or URL, and preview windows cannot call it.
 
 In personal project setup, every local repository path has a native folder
 action in the desktop shell. Selecting a folder fills its absolute path;
@@ -1047,6 +1118,23 @@ A local Codex thread created through RCP's app-server runtime is stored by Codex
 and may therefore appear in the Codex Desktop task list. RCP uses that as an
 inspection surface only. Sidebar ordering, loading, takeover, and concurrency
 remain Codex Desktop behavior rather than RCP product state.
+
+### Update notice
+
+`GET /api/update-notice` returns the cached release check: space, status
+(`update_available`, `current`, `pinned`, `unchecked`, `failed`, `off`,
+`unknown`), current and latest versions, check times, companion readiness, a
+locally built download URL, and the update command. The one update surface,
+shown on the project index, setup screens, and every project view, renders it:
+a team space shows `sudo rcp server update`; a source checkout shows
+`scripts/update-from-source vX.Y.Z` (with `--desktop` from a source app); a
+prebuilt app shows a Download button only once the companion is confirmed.
+The native shell reports its build kind, version, and checkout through
+`desktop_build_identity`, because a desktop may reuse a backend of the other
+kind. A visible page polls the endpoint (30 s while `unchecked`, then 10 min,
+and on becoming visible); dismissal is per release. A protocol mismatch names
+the confirmed download, the releases page when the check is unavailable, or the
+update script for a source build.
 
 ## Frontend trust boundary
 

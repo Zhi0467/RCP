@@ -13,6 +13,7 @@ from rcp.storage.artifact_revisions import ArtifactRevisionStoreMixin
 from rcp.storage.auto_research import AutoResearchStoreMixin
 from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
 from rcp.storage.base import AppStoreBase
+from rcp.storage.chat_display import ChatDisplayStoreMixin
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
 from rcp.storage.episodes import EpisodeStoreMixin
@@ -25,14 +26,17 @@ from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from rcp.storage.result_views import ResultViewStoreMixin
 from rcp.storage.rows import RowMappingMixin
+from rcp.storage.space_machines import SpaceMachineStoreMixin
 from rcp.storage.spaces import SpaceStoreMixin
 from rcp.storage.transfer import ProjectTransferStoreMixin
 from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    SpaceMachineStoreMixin,
     ProviderLoginStoreMixin,
     ComputeJobStoreMixin,
+    ChatDisplayStoreMixin,
     ConversationWorktreeStoreMixin,
     ArtifactRevisionStoreMixin,
     ProjectTransferStoreMixin,

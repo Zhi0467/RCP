@@ -36,13 +36,7 @@ def _discuss_app(root: Path):
         run_truth_scope=["repo-a"],
         mode="discuss",
     )
-    store = app.state.background_tasks.store
-    execution = _chat_task_execution(
-        store,
-        operation_id="discuss-one-result",
-        project_id=app.state.default_project_id,
-        request=request,
-    )
+    execution = _chat_task_execution(app, request, "discuss-one-result")
     return app.state.service, request, execution
 
 

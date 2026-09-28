@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
+
 
 def episode_report_task_contract(
     *,
@@ -36,6 +38,8 @@ Report correction:
     )
 
     return f"""# RCP episode report contract
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
 This turn is an exact native-session resume in the episode's exact retained stage. It is report
 generation only, not an operational episode invocation. Produce the durable report for project

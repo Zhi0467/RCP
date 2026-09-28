@@ -22,7 +22,7 @@ from pydantic import (
     model_validator,
 )
 
-from rcp.artifacts import validate_artifact_bytes
+from rcp.artifacts import classify_artifact_bytes
 from rcp.config import (
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
     AgentExecutionProfile,
@@ -52,6 +52,7 @@ from rcp.providers import (
     ProviderId,
     ProviderSkill,
     legacy_runtime_id,
+    profile_for,
     require_runtime_id,
     runtime_label,
 )
@@ -1994,6 +1995,9 @@ _NON_PROMPT_CONTRACT_ROLES = frozenset(
         "discuss_finalization_context",
         "work_correction_session",
         "work_primary_answer",
+        "session_master",
+        "session_master_key",
+        "session_master_values",
     }
 )
 # An ended episode shows these next to Add turns and Start new episode, and a live
@@ -2156,6 +2160,8 @@ class AgentTaskRecord(BaseModel):
     #: How that runtime is named to a human. Derived here so a surface reporting
     #: what actually ran never maps a durable id back to the registry itself.
     runtime_label: str = ""
+    #: The umbrella provider name surfaces show; the runtime is a detail.
+    provider_label: str = ""
     native_session_id: str | None = None
     history_only: bool = False
     stage_host: str | None = None
@@ -2205,6 +2211,7 @@ class AgentTaskRecord(BaseModel):
             self.runtime_id = legacy
         require_runtime_id(provider, self.runtime_id)
         self.runtime_label = runtime_label(provider, self.runtime_id)
+        self.provider_label = profile_for(provider).label
         return self
 
 
@@ -3678,7 +3685,7 @@ def _validated_result_view_html(record: ResultViewRecord, data: bytes) -> str:
         raise ValueError("result view HTML size does not match its metadata")
     if hashlib.sha256(data).hexdigest() != record.content_sha256:
         raise ValueError("result view HTML digest does not match its metadata")
-    if validate_artifact_bytes(record.source_name, data) != "text/html":
+    if classify_artifact_bytes(record.source_name, data) != "text/html":
         raise ValueError("result view must be HTML")
     return data.decode("utf-8")
 
@@ -3723,7 +3730,22 @@ class ProviderReadinessSnapshotRecord(BaseModel):
     probed_at: str
 
 
+class SpaceMachineRecord(BaseModel):
+    """One machine account this space runs on, and the paths granted on it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    machine_id: str
+    name: str
+    host: str
+    os_account: str
+    writable_paths: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
 __all__ = [
+    "SpaceMachineRecord",
     "ProviderLoginStateRecord",
     "ProviderReadinessSnapshotRecord",
     "ArtifactRevisionCandidateRecord",

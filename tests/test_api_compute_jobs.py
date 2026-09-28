@@ -25,30 +25,65 @@ def settings_body(snapshot):
     }
 
 
-def test_compute_probe_route_stores_and_updates_cached_project(compute_api, monkeypatch):
+def test_compute_settings_save_checks_every_route_of_the_saved_machine(compute_api, monkeypatch):
+    from rcp.compute_jobs import probe as probe_module
+
     app, client, url = compute_api
-    before = client.get(url).json()
-    assert before["machines"][0]["compute_probe"] is None
-    probe = _result("laptop", "systemd_user", "ready", "Passed.")
     calls = []
 
-    def run(manifest, machine, *, data_dir):
-        calls.append((machine, data_dir))
-        return probe
+    def run(manifest, machine, route, *, data_dir):
+        calls.append((machine, route, data_dir))
+        return _result(
+            machine, {"helper": "systemd_user", "scheduler": "slurm"}[route], "ready", ""
+        )
 
-    monkeypatch.setattr("rcp.api.project_state.probe_compute_backend", run)
-    response = client.post(f"{url}/machines/laptop/compute/probe")
-    assert response.status_code == 200
-    assert response.json() == probe.model_dump(mode="json")
-    assert calls == [("laptop", app.state.catalog.data_dir)]
-    assert (
-        app.state.services.store.compute_backend_probe(app.state.default_project_id, "laptop")
-        == probe
+    monkeypatch.setattr(probe_module, "probe_compute_backend", run)
+    monkeypatch.setattr(
+        "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
     )
-    for suffix in ("", "/cached"):
-        assert client.get(url + suffix).json()["machines"][0]["compute_probe"] == response.json()
-    assert client.post(f"{url}/machines/missing/compute/probe").status_code == 422
-    assert len(calls) == 1
+    body = settings_body(client.get(url).json())
+    for compute, routes in (
+        ({"job_manager": "slurm"}, ["scheduler", "helper"]),
+        (None, ["helper"]),
+    ):
+        calls.clear()
+        response = client.put(
+            f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}}
+        )
+        assert response.status_code == 200, response.text
+        assert calls == [("laptop", route, app.state.catalog.data_dir) for route in routes]
+        probes = client.get(url).json()["machines"][0]["compute_probes"]
+        assert [route for route, probe in probes.items() if probe] == sorted(
+            routes, key=["scheduler", "helper"].index
+        )
+        # The heartbeat carries the probe time so an open page reloads the results.
+        heartbeat = client.get(f"{url}/cached/revision").json()
+        assert heartbeat["compute_probes_probed_at"] is not None
+        assert (
+            heartbeat["compute_probes_probed_at"]
+            == client.get(url).json()["compute_probes_probed_at"]
+        )
+
+
+def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch):
+    from rcp.compute_jobs import probe as probe_module
+
+    app, client, url = compute_api
+    calls = []
+
+    def run(manifest, machine, route, *, data_dir):
+        calls.append((machine, route))
+        return _result(machine, "launchd", "ready", "")
+
+    monkeypatch.setattr(probe_module, "probe_compute_backend", run)
+    monkeypatch.setattr(
+        "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
+    )
+    response = client.post(f"{url}/machines/laptop/compute/check")
+    assert response.status_code == 200, response.text
+    assert calls == [("laptop", "helper")]
+    assert response.json()["scheduler"] is None and response.json()["helper"]["ready"]
+    assert client.post(f"{url}/machines/missing/compute/check").status_code == 422
 
 
 def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_api, manifest):
@@ -57,7 +92,9 @@ def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_
     project_id = app.state.default_project_id
     body = settings_body(client.get(url).json())
     probe = _result("laptop", "systemd_user", "ready", "Passed.")
-    store.record_compute_backend_probe(project_id, probe)
+    scheduler = _result("laptop", "slurm", "ready", "Passed.")
+    store.record_compute_backend_probe(project_id, probe, "helper")
+    store.record_compute_backend_probe(project_id, scheduler, "scheduler")
     compute = {
         "job_manager": "slurm",
         "jobs_root": "/shared/jobs",
@@ -65,17 +102,21 @@ def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_
     response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": compute}})
     assert response.status_code == 200, response.text
     assert response.json()["machines"][0]["compute"] == compute
-    assert response.json()["machines"][0]["compute_probe"] is None
+    assert response.json()["machines"][0]["compute_probes"] == {"helper": None, "scheduler": None}
     assert load_manifest(manifest.path).machine_map["laptop"].compute.model_dump() == compute
-    assert store.compute_backend_probe(project_id, "laptop") is None
-    store.record_compute_backend_probe(project_id, probe)
+    assert store.compute_backend_probe(project_id, "laptop", "helper") is None
+    assert store.compute_backend_probe(project_id, "laptop", "scheduler") is None
+    store.record_compute_backend_probe(project_id, probe, "helper")
+    store.record_compute_backend_probe(project_id, scheduler, "scheduler")
     for extra in ({}, {"machine_compute": {"laptop": compute}}):
         assert client.put(f"{url}/settings", json={**body, **extra}).status_code == 200
-        assert store.compute_backend_probe(project_id, "laptop") == probe
+        assert store.compute_backend_probe(project_id, "laptop", "helper") == probe
+        assert store.compute_backend_probe(project_id, "laptop", "scheduler") == scheduler
     response = client.put(f"{url}/settings", json={**body, "machine_compute": {"laptop": None}})
     assert response.status_code == 200
     assert load_manifest(manifest.path).machine_map["laptop"].compute is None
-    assert store.compute_backend_probe(project_id, "laptop") is None
+    assert store.compute_backend_probe(project_id, "laptop", "helper") is None
+    assert store.compute_backend_probe(project_id, "laptop", "scheduler") is None
 
 
 @pytest.mark.parametrize("unknown_alias", [False, True])

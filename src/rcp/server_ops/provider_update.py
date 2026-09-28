@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import pwd
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -233,7 +235,9 @@ def _update_provider(
                 f"Claude's native update failed: {_bounded_diagnostic(result)}"
             )
         return
-    temporary = Path(tempfile.mkdtemp(prefix="rcp-provider-codex-"))
+    # Agents may write /tmp, so the installer is staged in the account's own
+    # `~/.rcp/tmp`, which their write scopes keep read-only.
+    temporary = Path(tempfile.mkdtemp(prefix="rcp-provider-codex-", dir=_account_temp_dir(account)))
     try:
         os.chown(temporary, account.pw_uid, account.pw_gid)
         os.chmod(temporary, 0o700)
@@ -258,6 +262,19 @@ def _update_provider(
             )
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _account_temp_dir(account: pwd.struct_passwd) -> Path:
+    directory = Path(account.pw_dir)
+    for name in (".rcp", "tmp"):
+        directory = directory / name
+        with contextlib.suppress(FileExistsError):
+            directory.mkdir(mode=0o700)
+            os.chown(directory, account.pw_uid, account.pw_gid)
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != account.pw_uid or info.st_mode & 0o022:
+            raise ProviderUpdateRefused(f"RCP's temporary directory is unsafe: {directory}")
+    return directory
 
 
 def _run_provider_process(

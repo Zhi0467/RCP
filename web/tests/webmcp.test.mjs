@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { after, test } from "node:test";
 import { createServer } from "vite";
 
@@ -38,6 +37,7 @@ const {
   sendProjectConversationMessage,
   startProjectExperiment,
   stopProjectExperimentEpisode,
+  webMcpSurface,
   webMcpTextResult,
 } = await server.ssrLoadModule("/src/webmcp.ts");
 
@@ -269,6 +269,7 @@ function conversationFixtures() {
           artifact_id: "artifact-1",
           name: "calibration.html",
           media_type: "text/html",
+          view: "html",
           kept_filename: null,
           available: true,
           unavailable_reason: null,
@@ -356,6 +357,7 @@ function artifactFixtures() {
             artifact_id: "artifact-1",
             name: "calibration.html",
             media_type: "text/html",
+            view: "html",
             kept_filename: "calibration.html",
             available: true,
             unavailable_reason: null,
@@ -381,6 +383,7 @@ function artifactFixtures() {
             artifact_id: "artifact-2",
             name: "expired.png",
             media_type: "image/png",
+            view: "image",
             available: false,
             unavailable_reason: "Artifact bytes expired.",
             can_open: false,
@@ -1174,6 +1177,8 @@ test("conversation inspection returns bounded transcript, latest result, and cur
         viewer_id: "task:task-chat-1:artifact-1",
         name: "calibration.html",
         media_type: "text/html",
+        view: "html",
+        can_download: true,
         available: true,
         can_open: true,
         kept_filename: null,
@@ -1988,20 +1993,26 @@ test("all WebMCP metadata stays descriptive and within model-facing budgets", ()
   }
 });
 
-test("the App exposes the project surface only behind the same backend-session gate as the index", async () => {
-  const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(
-    appSource,
-    /const backendSessionReady =\s*identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired;/,
-  );
-  assert.match(appSource, /const webMcpPageReady = backendSessionReady && !setupOpen && !loading;/);
-  assert.match(appSource, /const projectIndexWebMcpAvailable = webMcpPageReady && !projectId;/);
-  assert.match(
-    appSource,
-    /const webMcpProject =\s*webMcpPageReady && project && project\.id === projectId \? project : null;/,
-  );
-  assert.match(appSource, /const webMcpSurfaceKey = webMcpProject\s*\?/);
-  assert.doesNotMatch(appSource, /webMcpSurfaceKey =\s*project\?\.id === projectId/);
+test("the WebMCP surface opens only behind the page's backend-session gate", () => {
+  const project = { id: "project" };
+  const ready = { backendSessionReady: true, setupOpen: false, loading: false };
+
+  assert.deepEqual(webMcpSurface({ ...ready, projectId: "project", project }), {
+    project,
+    indexAvailable: false,
+    key: "project:project",
+  });
+  assert.deepEqual(webMcpSurface({ ...ready, projectId: null, project: null }), {
+    project: null,
+    indexAvailable: true,
+    key: "project-index",
+  });
+  // A route that has moved to another project must not keep the old project's tools.
+  assert.equal(webMcpSurface({ ...ready, projectId: "other", project }).key, null);
+  for (const closed of [{ backendSessionReady: false }, { setupOpen: true }, { loading: true }]) {
+    assert.equal(webMcpSurface({ ...ready, ...closed, projectId: "project", project }).key, null);
+    assert.equal(webMcpSurface({ ...ready, ...closed, projectId: null, project: null }).key, null);
+  }
 });
 
 test("ordinary branch conversations can send from their matching graph view", async () => {
@@ -2033,4 +2044,37 @@ test("ordinary branch conversations can send from their matching graph view", as
     },
   );
   assert.equal(started.length, 1);
+});
+
+test("download-only files and PDFs are listed but never sent to the visual opener", async () => {
+  const project = projectFixture();
+  const { tasks } = artifactFixtures();
+  for (const view of ["file", "pdf"]) {
+    tasks[0].result.artifacts[0] = {
+      ...tasks[0].result.artifacts[0],
+      view,
+      can_open: false,
+      can_download: true,
+    };
+    const listed = await listProjectArtifacts(project, [tasks[0]], [], {}, noArtifactFetch);
+    assert.equal(listed.artifacts.length, 1);
+    assert.equal(listed.artifacts[0].view, view);
+    assert.equal(listed.artifacts[0].can_open, false);
+    assert.equal(listed.artifacts[0].can_download, true);
+    let opened = false;
+    await assert.rejects(
+      openProjectArtifact(
+        project,
+        [tasks[0]],
+        [],
+        { viewer_id: listed.artifacts[0].viewer_id },
+        () => {
+          opened = true;
+          return true;
+        },
+        noArtifactFetch,
+      ),
+    );
+    assert.equal(opened, false);
+  }
 });

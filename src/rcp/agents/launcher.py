@@ -707,7 +707,12 @@ class AgentLauncher:
         """The environment for one provider process; every Claude start goes through it."""
 
         if self.credentials is None:
-            return ProviderProcessEnvironment()
+            environment = ProviderProcessEnvironment()
+            return (
+                environment.with_claude_foreground_tasks(remote=bool(host))
+                if provider == "claude"
+                else environment
+            )
         return profile_for(provider).authentication.process_environment(self.credentials, host)
 
     def _login_refusal(self, provider: str, host: str) -> str | None:
@@ -1761,7 +1766,7 @@ class AgentLauncher:
                 self.invalidate_readiness(provider, host=host, binary=binary)
             elif return_code and not stopped_at_result:
                 self.invalidate_readiness(provider, host=host, binary=binary)
-                detail = stderr or _exit_reason(provider, return_code, host)
+                detail = turn.last_error or stderr or _exit_reason(provider, return_code, host)
                 yield AgentEvent(event="error", text=detail)
             elif turn.requires_protocol_completion and not protocol_complete:
                 self.invalidate_readiness(provider, host=host, binary=binary)

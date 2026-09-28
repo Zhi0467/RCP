@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import threading
 import time
 import uuid
@@ -12,6 +13,7 @@ from typing import Any, TypeVar
 
 from pydantic import TypeAdapter
 
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import create_app
 from rcp.core.models import AuthorizedHuman, Patch
@@ -55,6 +57,41 @@ _RCP_OWNED_ITEM_FIELDS = {
     ),
     "upsert_glossary": ("terms", {"updated_rev"}),
 }
+
+
+def launch_contract_path(prompt: str) -> Path:
+    """The contract file a launch names: its master pointer or bootstrap, else line two."""
+
+    named = re.search(
+        re.escape(SECTIONS["master_pointer"].split("{path}")[0]) + r"([^`]+)`", prompt
+    ) or re.search(re.escape(SECTIONS["master_bootstrap"].split("{path}")[0]) + r"(.+)", prompt)
+    return Path(named[1] if named else prompt.splitlines()[1].strip())
+
+
+def changed_values(prompt: str) -> dict[str, str]:
+    """The changed values a continuation sends, by dotted key; strings lose their backticks."""
+
+    header = SECTIONS["context_delta"]
+    if header not in prompt:
+        return {}
+    lines = prompt[prompt.index(header) + len(header) :].split("\n\n", 1)[0].splitlines()
+    return {
+        key: value.strip("`")
+        for key, value in (line[2:].split(": ", 1) for line in lines if line.startswith("- "))
+    }
+
+
+def current_command_client(prompt: str) -> str:
+    """The command client a launch runs staged commands through.
+
+    A continuation that changed it sends it; otherwise the session's master names it.
+    """
+
+    changed = changed_values(prompt).get("patch.command_client")
+    if changed is not None:
+        return changed
+    master = launch_contract_path(prompt).read_text(encoding="utf-8")
+    return re.search(r"^- Command client: `([^`]+)`$", master, re.MULTILINE)[1]  # type: ignore[index]
 
 
 def create_named_app(*args: Any, **kwargs: Any):

@@ -76,6 +76,39 @@ class ProviderSignInStatus(BaseModel):
     resumed: dict[str, int] | None = None
 
 
+class ProviderPathSource(BaseModel):
+    """Which project's saved provider path sign-in uses on one account."""
+
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    project_id: str
+    project_name: str
+    machine_alias: str
+
+
+def provider_path_sources(store: AppStore) -> dict[tuple[str, str], list[ProviderPathSource]]:
+    """Every saved provider path by `(provider, host)`, in registered-project order."""
+
+    sources: dict[tuple[str, str], list[ProviderPathSource]] = {}
+    for project in store.projects():
+        try:
+            manifest = load_manifest(project.locator)
+        except (OSError, ValueError):
+            _LOGGER.warning("Provider login skipped an unavailable project manifest.")
+            continue
+        for machine in manifest.machines:
+            for provider, path in machine.provider_paths.items():
+                sources.setdefault((provider, machine.host), []).append(
+                    ProviderPathSource(
+                        path=path,
+                        project_id=project.project_id,
+                        project_name=project.name,
+                        machine_alias=machine.alias,
+                    )
+                )
+    return sources
+
+
 class ProviderSignInRunner:
     """Sign in, verify, and sign out accounts, then resume the work they parked.
 
@@ -132,26 +165,29 @@ class ProviderSignInRunner:
         return True
 
     def provider_binary(self, provider: str, host: str) -> tuple[str, set[str]]:
-        """The executable RCP would launch on this account, and every path a manifest saved."""
+        """The executable RCP would launch on this account, and every path a manifest saved.
 
-        machines = []
-        for project in self.store.projects():
-            try:
-                manifest = load_manifest(project.locator)
-            except (OSError, ValueError):
-                _LOGGER.warning("Provider login skipped an unavailable project manifest.")
-                continue
-            machines.extend(machine for machine in manifest.machines if machine.host == host)
-        if host and not machines:
+        The account must be a space machine. A project's saved provider path on
+        that host is used when one exists (the first, as `provider_path_sources`
+        orders them); otherwise the machine's PATH resolves the provider.
+        """
+
+        card = self.store.space_machine_for(host) if host else None
+        if host and card is None:
             raise ProviderLoginRefused("Unknown provider execution host.")
-        binaries = {
-            machine.provider_paths[provider]
-            for machine in machines
-            if provider in machine.provider_paths
-        }
-        if len(binaries) > 1:
-            raise ProviderLoginRefused("Provider paths disagree for this account.")
-        binary = next(iter(binaries), None)
+        if card is not None and card.os_account:
+            # A host naming no user takes its account from SSH configuration;
+            # never touch another account's provider state.
+            reached = self.launcher.execution_account(host=host)
+            if not reached.reachable:
+                raise ProviderLoginRefused(reached.reason or "The machine is unreachable.")
+            if reached.os_account != card.os_account:
+                raise ProviderLoginRefused(
+                    f"{host} reached account {reached.os_account}, not {card.os_account}."
+                )
+        sources = provider_path_sources(self.store).get((provider, host), [])
+        binaries = {source.path for source in sources}
+        binary = sources[0].path if sources else None
         if binary is None:
             # Read through the module so the suite's discovery seam covers sign-in too.
             binary = provider if host else launcher_module._discover_local_provider(provider)
@@ -273,11 +309,12 @@ class ProviderSignInRunner:
             raise ProviderLoginRefused(
                 "Device sign-in is not supported by this provider.", status_code=422
             )
+        # Resolved before the lock: it may probe the machine over SSH.
+        binary, _ = self.provider_binary(provider, host)
         with self._lock:
             running = self._running(provider, host)
             if running is not None:
                 return running
-            binary, _ = self.provider_binary(provider, host)
             status = ProviderSignInStatus(
                 login_id=str(uuid.uuid4()),
                 provider=provider,
