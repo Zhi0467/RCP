@@ -84,7 +84,16 @@ def test_local_writable_paths_must_be_folders_outside_rcp_storage(app, manifest,
     inside_data.mkdir()
     research = Path(load_manifest(manifest.path).repositories[0].path) / ".research"
     research.mkdir(exist_ok=True)
-    for refused in (tmp_path / "missing", inside_data, research, Path("relative")):
+    # A clean spelling whose folder no launcher can mount.
+    (tmp_path / "cache:v1").mkdir()
+    (tmp_path / "cache").symlink_to(tmp_path / "cache:v1")
+    for refused in (
+        tmp_path / "missing",
+        inside_data,
+        research,
+        Path("relative"),
+        tmp_path / "cache",
+    ):
         assert client.patch(path, json={"writable_paths": [str(refused)]}).status_code == 422
     assert _machine(client, "laptop")["writable_paths"] == sorted([str(shared), str(tmp_path)])
 

@@ -85,23 +85,26 @@ class SpaceMachineStoreMixin:
         name: str | None = None,
         writable_paths: list[str] | None = None,
     ) -> SpaceMachineRecord:
-        current = self.space_machine(machine_id)
+        # Write only the fields given, so a rename and a path edit racing on one
+        # card both land.
         with self.connection() as connection:
-            connection.execute(
+            updated = connection.execute(
                 """
                 UPDATE space_machines
-                SET name = ?, writable_paths_json = ?, updated_at = ?
+                SET name = COALESCE(?, name),
+                    writable_paths_json = COALESCE(?, writable_paths_json),
+                    updated_at = ?
                 WHERE machine_id = ?
                 """,
                 (
-                    current.name if name is None else name,
-                    json.dumps(
-                        current.writable_paths if writable_paths is None else writable_paths
-                    ),
+                    name,
+                    None if writable_paths is None else json.dumps(writable_paths),
                     self.now(),
                     machine_id,
                 ),
-            )
+            ).rowcount
+        if not updated:
+            raise KeyError(machine_id)
         return self.space_machine(machine_id)
 
     def delete_space_machine(self, machine_id: str) -> None:

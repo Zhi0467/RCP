@@ -209,7 +209,9 @@ def _validated_writable_paths(
         real = resolved[path]
         if not isinstance(real, str):
             raise ValueError(f"{path} is not a folder on {machine.name}")
-        # A symlink must not route a grant into RCP's own storage.
+        # Launchers mount the resolved folder, so it must pass the same text rule,
+        # and a symlink must not route a grant into RCP's own storage.
+        check_writable_path_text(real)
         refuse_grants_inside([path, real], owned)
     return paths
 
