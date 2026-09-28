@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -25,6 +26,7 @@ from rcp.limits import (
 )
 from rcp.rcp_home import rcp_temp_dir
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
+from rcp.transport import remote_stage_root
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
     StateMissing,
@@ -62,30 +64,12 @@ def _ssh_failure(
     return answered(detail)
 
 
-_REMOTE_TREE_HELPERS = """\
-import os,shutil
-def make_writable(path):
-    if os.path.islink(path):
-        return
-    os.chmod(path, 0o700)
-    if not os.path.isdir(path):
-        return
-    with os.scandir(path) as entries:
-        for entry in entries:
-            child=entry.path
-            if entry.is_dir(follow_symlinks=False):
-                make_writable(child)
-            elif not entry.is_symlink():
-                os.chmod(child, 0o600)
-def remove_tree(path):
-    if not os.path.lexists(path):
-        return
-    if os.path.islink(path) or not os.path.isdir(path):
-        os.unlink(path)
-        return
-    make_writable(path)
-    shutil.rmtree(path)
-"""
+# Older inline scripts share the one tree removal the stage module ships.
+_REMOTE_TREE_HELPERS = (
+    "import os,shutil\n"
+    + inspect.getsource(remote_stage_root.make_writable)
+    + inspect.getsource(remote_stage_root.remove_tree)
+)
 
 
 @dataclass(frozen=True)
@@ -148,27 +132,12 @@ class RemoteRunStage:
         protected = tuple(dict.fromkeys(protected_roots))
         if any(not _safe_root(root) for root in protected):
             raise ValueError("protected remote run stage is outside the staging boundary")
-        script = (
-            _REMOTE_TREE_HELPERS
-            + """
-import glob,json,sys,time
-cutoff=time.time()-(int(sys.argv[1])*86400)
-protected=set(json.loads(sys.argv[2]))
-# /tmp holds stages made before RCP moved them under ~/.rcp; a later release drops it.
-targets=glob.glob(os.path.expanduser('~/.rcp/stages/rcp-run.*'))+glob.glob('/tmp/rcp-run.*')
-for target in targets:
-    try:
-        if target not in protected and os.path.isdir(target) and os.path.getmtime(target) < cutoff:
-            remove_tree(target)
-    except OSError:
-        pass
-"""
-        )
         self._ssh(
             [
                 "python3",
                 "-c",
-                script,
+                _remote_script("remote_stage_root.py"),
+                "sweep",
                 str(int(retain_days)),
                 json.dumps(protected, separators=(",", ":")),
             ]

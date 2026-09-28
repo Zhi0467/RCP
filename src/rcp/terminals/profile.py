@@ -201,7 +201,7 @@ def legacy_stage_roots() -> list[str]:
     return sorted(
         str(path.resolve())
         for path in Path("/tmp").glob("rcp-run.*")
-        if re.fullmatch(r"rcp-run\.[A-Za-z0-9_-]+", path.name)
+        if re.fullmatch(r"rcp-run\.[A-Za-z0-9._-]+", path.name)
         and path.is_dir()
         and not path.is_symlink()
     )

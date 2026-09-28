@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import stat
@@ -20,7 +19,7 @@ from rcp.agents import staged_command_broker, staged_command_client
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.runs.tasks import auto_research_stream
 from rcp.terminals import profile as terminal_profile
-from rcp.transport import StateMissing, StateUnavailable, ssh
+from rcp.transport import StateMissing, StateUnavailable, remote_stage_root, ssh
 from rcp.transport.run_stage import RemoteRunStage
 
 # Captured before conftest swaps it out for a per-test directory.
@@ -104,46 +103,31 @@ def test_attach_refuses_a_stage_outside_this_accounts_rcp_home(
         stage.attach(str(other))
 
 
-def test_sweep_ages_out_new_and_legacy_stages_but_keeps_protected_ones(
+def test_the_sweep_also_ages_out_legacy_stages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    home = tmp_path / "home"
-    new_parent = home / ".rcp" / "stages"
     # Stands in for /tmp, so the test never sweeps real stages on this machine.
     legacy_parent = tmp_path / "legacy-tmp"
-    stale_new, kept_new = new_parent / "rcp-run.stale", new_parent / "rcp-run.kept"
-    stale_legacy = legacy_parent / "rcp-run.stale"
+    monkeypatch.setattr(remote_stage_root, "LEGACY_PARENT", str(legacy_parent))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    stale, kept = legacy_parent / "rcp-run.stale", legacy_parent / "rcp-run.kept"
     old = time.time() - 30 * 86400
-    for root in (stale_new, kept_new, stale_legacy):
+    for root in (stale, kept):
         root.mkdir(parents=True)
         os.utime(root, (old, old))
 
-    stage = RemoteRunStage("research.example")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(stage, "_ssh", lambda arguments: calls.append(arguments))
-    stage.sweep(retain_days=7, protected_roots=[])
-    script = calls[0][2]
-    assert script.count("'/tmp/rcp-run.*'") == 1
-    script = script.replace("'/tmp/rcp-run.*'", repr(f"{legacy_parent}/rcp-run.*"))
+    remote_stage_root.sweep_stages(7, {str(kept)})
 
-    swept = subprocess.run(
-        [sys.executable, "-c", script, "7", json.dumps([str(kept_new)])],
-        env={**os.environ, "HOME": str(home)},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert swept.returncode == 0, swept.stderr
-    assert not stale_new.exists()
-    assert not stale_legacy.exists()
-    assert kept_new.exists()
+    assert not stale.exists() and kept.exists()
 
 
 def test_legacy_stage_roots_lists_only_tmp_stage_directories(monkeypatch) -> None:
     label = f"test-{uuid.uuid4().hex}"
     legacy = Path("/tmp") / f"rcp-run.{label}"
     legacy.mkdir(mode=0o700)
+    # Operation labels may carry dots.
+    dotted = Path("/tmp") / f"rcp-run.{label}.turn"
+    dotted.mkdir(mode=0o700)
     # Anyone who can write /tmp can make this; no mount can carry its colon.
     stray = Path("/tmp") / f"rcp-run.{label}:stray"
     stray.mkdir(mode=0o700)
@@ -153,12 +137,44 @@ def test_legacy_stage_roots_lists_only_tmp_stage_directories(monkeypatch) -> Non
         terminal_roots = terminal_profile.legacy_stage_roots()
     finally:
         legacy.rmdir()
+        dotted.rmdir()
         stray.rmdir()
 
     for listed in (roots, terminal_roots):
         assert os.path.realpath(legacy) in listed
+        assert os.path.realpath(dotted) in listed
         assert os.path.realpath(stray) not in listed
     assert roots == sorted(roots)
+
+
+def test_the_sweep_removes_only_old_unprotected_stages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    stages = home / ".rcp" / "stages"
+    stages.mkdir(parents=True)
+    old = time.time() - 10 * 86400
+    made = {}
+    for name in ("rcp-run.old", "rcp-run.kept", "rcp-run.fresh", "rcp-run.odd:name"):
+        made[name] = stages / name
+        (made[name] / "workspace").mkdir(parents=True)
+        # A read-only result must not stop its stage being removed.
+        (made[name] / "workspace" / "result").write_text("", encoding="utf-8")
+        (made[name] / "workspace" / "result").chmod(0o400)
+        (made[name] / "workspace").chmod(0o500)
+        if name != "rcp-run.fresh":
+            os.utime(made[name], (old, old))
+    stage = _local_stage(monkeypatch, home)
+
+    stage.sweep(retain_days=7, protected_roots=[str(made["rcp-run.kept"])])
+
+    assert sorted(path.name for path in stages.iterdir()) == [
+        "rcp-run.fresh",
+        "rcp-run.kept",
+        "rcp-run.odd:name",
+    ]
+    for path in stages.iterdir():
+        (path / "workspace").chmod(0o700)
 
 
 @pytest.mark.parametrize(

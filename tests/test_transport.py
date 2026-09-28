@@ -2421,25 +2421,6 @@ def test_remote_stage_close_keeps_root_when_deletion_failed(
     assert stage.root == PurePosixPath(str(root))
 
 
-def test_remote_stage_sweeper_uses_read_only_tree_cleanup(monkeypatch) -> None:
-    stage = RemoteRunStage("research.example")
-    calls: list[list[str]] = []
-
-    def fake_ssh(arguments):
-        calls.append(arguments)
-        return subprocess.CompletedProcess([], 0, "", "")
-
-    monkeypatch.setattr(stage, "_ssh", fake_ssh)
-
-    stage.sweep(retain_days=7, protected_roots=["/tmp/rcp-run.episode-live"])
-
-    assert calls[0][:2] == ["python3", "-c"]
-    assert "make_writable" in calls[0][2]
-    assert "remove_tree(target)" in calls[0][2]
-    assert "target not in protected" in calls[0][2]
-    assert json.loads(calls[0][4]) == ["/tmp/rcp-run.episode-live"]
-
-
 def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:
     stage = RemoteRunStage("research.example")
 
