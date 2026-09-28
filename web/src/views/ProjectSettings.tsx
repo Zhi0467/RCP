@@ -1269,6 +1269,7 @@ function AddProjectMachine({
       {creating ? (
         <NewMachineForm
           writesDisabled={writesDisabled}
+          accountRequired={spaceKind === "team"}
           onCancel={() => setCreating(false)}
           onCreated={(machine) => {
             onCreated(machine);

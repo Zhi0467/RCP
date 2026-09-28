@@ -194,11 +194,14 @@ export function WritablePaths({
 /** Adds one machine account to the space list, for setup and project Settings to pick. */
 export function NewMachineForm({
   writesDisabled = false,
+  accountRequired = false,
   onCreated,
   onCancel,
   create = createSpaceMachine,
 }: {
   writesDisabled?: boolean;
+  /** Team spaces back up each machine's account, so the server requires it. */
+  accountRequired?: boolean;
   onCreated: (machine: SpaceMachine) => void;
   onCancel: () => void;
   create?: (request: SpaceMachineCreateRequest) => Promise<SpaceMachine>;
@@ -210,7 +213,10 @@ export function NewMachineForm({
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const valid = draft.name.trim() !== "" && draft.host.trim() !== "";
+  const valid =
+    draft.name.trim() !== "" &&
+    draft.host.trim() !== "" &&
+    (!accountRequired || draft.os_account.trim() !== "");
   return (
     <div className="new-machine-form" data-new-machine-form="">
       <label>
@@ -234,7 +240,7 @@ export function NewMachineForm({
         <span>Account</span>
         <input
           value={draft.os_account}
-          placeholder="Optional"
+          placeholder={accountRequired ? "Required" : "Optional"}
           onChange={(event) => setDraft({ ...draft, os_account: event.target.value })}
         />
       </label>
