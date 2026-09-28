@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal
 
 from rcp.control import ExperimentControlState
@@ -129,3 +130,63 @@ def start_experiment_continuation(
     if record is None:
         raise RuntimeError("Experiment continuation admission returned no task")
     return record
+
+
+def proven_reserved_experiment_branch_roots(
+    tasks: BackgroundAgentTasks,
+) -> list[tuple[EpisodeRecord, AgentTaskRecord]]:
+    """Graph-isolated Experiments admitted but interrupted before their branch existed."""
+
+    reserved: list[tuple[EpisodeRecord, AgentTaskRecord]] = []
+    for project in tasks.store.projects():
+        for episode in tasks.store.episodes(project.project_id):
+            if (
+                episode.mode != "experiment_loop"
+                or episode.root_operation_id is None
+                or episode.graph_target.kind != "branch"
+                or episode.graph_target.branch_id != episode.episode_id
+                or episode.status not in {"queued", "running"}
+            ):
+                continue
+            task = tasks.store.agent_task(episode.root_operation_id)
+            if (
+                task is None
+                or task.episode_id != episode.episode_id
+                or task.graph_target != episode.graph_target
+                or task.status != "queued"
+                or not tasks.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
+            ):
+                continue
+            reserved.append((episode, task))
+    return reserved
+
+
+def reconcile_reserved_experiment_branch_roots(
+    tasks: BackgroundAgentTasks,
+    ensure_graph_target: Callable[[EpisodeRecord], None],
+) -> list[str]:
+    """Finish branch creation and launch Experiment roots reserved before an interruption."""
+
+    from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
+
+    started: list[str] = []
+    for episode, task in proven_reserved_experiment_branch_roots(tasks):
+        try:
+            ensure_graph_target(episode)
+        except Exception as exc:
+            tasks.store.fail_agent_task(task.operation_id, str(exc))
+            begin_episode_report_wrapup(
+                tasks.store,
+                EpisodeWrapupSpec(
+                    episode_id=episode.episode_id,
+                    ending="failed",
+                    partial=True,
+                    continuation_operation_id=task.operation_id,
+                    receipt={"reason": "graph_branch_unavailable_before_launch"},
+                    diagnostic=str(exc),
+                ),
+            )
+            continue
+        tasks.launch_admitted(task.operation_id)
+        started.append(task.operation_id)
+    return started

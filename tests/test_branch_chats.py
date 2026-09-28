@@ -406,3 +406,42 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
         in main.for_graph_target(branch_episode.graph_target).history.state().nodes
     )
     assert "ev/experiment-review" not in main.history.state().nodes
+
+
+def test_restart_creates_and_launches_a_reserved_experiment_branch(
+    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from functools import partial
+
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.experiment_admission import reconcile_reserved_experiment_branch_roots
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.catalog.open(app.state.default_project_id)
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+    tasks = app.state.background_tasks
+    # The process stops after admission commits and before the branch exists.
+    with (
+        patch("rcp.api.experiments.ensure_episode_graph_target", lambda *a, **kw: None),
+        patch.object(tasks, "_spawn_record", side_effect=lambda record, *a, **kw: record),
+    ):
+        response = TestClient(app).post(
+            f"/api/projects/{app.state.default_project_id}/experiments/exp%2Fbounded-loop/run",
+            json={"chat_id": str(uuid.uuid4()), "graph_isolation": True},
+        )
+    assert response.status_code == 202, response.json()
+    root = tasks.store.agent_task(response.json()["operation_id"])
+    assert root.status == "queued"
+    with pytest.raises(KeyError):
+        service.history.branch(root.episode_id)
+
+    restarted = BackgroundAgentTasks(tasks.store, tasks.stream)
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        restarted, "_spawn_record", lambda record, *a, **kw: spawned.append(record.operation_id)
+    )
+    ensure = partial(ensure_episode_graph_target, catalog=app.state.catalog)
+    assert reconcile_reserved_experiment_branch_roots(restarted, ensure) == [root.operation_id]
+    assert spawned == [root.operation_id]
+    assert service.history.branch(root.episode_id).head_ref().target.branch_id == root.episode_id

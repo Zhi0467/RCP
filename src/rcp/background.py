@@ -524,10 +524,14 @@ class BackgroundAgentTasks:
             self._transport_retry_admissions = 0
         preserved_dispatches = proven_committed_auto_research_dispatches(self)
         reserved_roots = proven_reserved_auto_research_roots(self)
+        from rcp.runs.experiment_admission import proven_reserved_experiment_branch_roots
+
+        reserved_experiments = proven_reserved_experiment_branch_roots(self)
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
                 *[item.operation_id for item in preserved_dispatches],
                 *[task.operation_id for _episode, task, _request in reserved_roots],
+                *[task.operation_id for _episode, task in reserved_experiments],
             }
         )
         restart_stopping_experiment_recoveries(self)

@@ -120,6 +120,7 @@ from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.reconcile import EpisodeReconciler
+from rcp.runs.experiment_admission import reconcile_reserved_experiment_branch_roots
 from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
@@ -1596,6 +1597,11 @@ def create_app(
                 await asyncio.to_thread(fill_space_machines, store)
                 await asyncio.to_thread(
                     reconcile_reserved_auto_research_roots,
+                    background_tasks,
+                    ensure_episode_graph_target,
+                )
+                await asyncio.to_thread(
+                    reconcile_reserved_experiment_branch_roots,
                     background_tasks,
                     ensure_episode_graph_target,
                 )
