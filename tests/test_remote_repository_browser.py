@@ -15,21 +15,29 @@ def test_remote_repository_browser_lists_only_one_bounded_directory_level(tmp_pa
     ordinary.mkdir()
     (tmp_path / "file.txt").write_text("not a directory", encoding="utf-8")
 
-    listing = browse_directory(str(tmp_path), max_entries=200)
+    listing = browse_directory(str(tmp_path), limit=200)
 
     by_name = {entry["name"]: entry for entry in listing["entries"]}
     assert set(by_name) == {"ordinary", "paper"}
     assert by_name["paper"]["git_repository"] is True
     assert by_name["paper"]["has_research"] is True
     assert "nested" not in by_name
-    assert listing["truncated"] is False
+    assert listing["next_offset"] is None
 
 
-def test_remote_repository_browser_caps_directory_iteration(tmp_path) -> None:
+def test_remote_repository_browser_pages_directories_after_skipping_files(tmp_path) -> None:
     for name in ("one", "two", "three"):
         (tmp_path / name).mkdir()
+    for index in range(5):
+        (tmp_path / f"file-{index}").write_text("", encoding="utf-8")
 
-    listing = browse_directory(str(tmp_path), max_entries=2)
+    first = browse_directory(str(tmp_path), limit=2)
+    rest = browse_directory(str(tmp_path), offset=first["next_offset"], limit=2)
 
-    assert len(listing["entries"]) == 2
-    assert listing["truncated"] is True
+    assert first["total"] == 3
+    assert [entry["name"] for entry in [*first["entries"], *rest["entries"]]] == [
+        "one",
+        "three",
+        "two",
+    ]
+    assert rest["next_offset"] is None

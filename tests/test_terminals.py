@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import tty
@@ -270,9 +271,10 @@ def test_grants_mount_writable_and_keep_rcp_storage_read_only_inside(monkeypatch
     identity = data / "identity.gitconfig"
     identity.write_text("[user]\n")
     monkeypatch.setattr(Path, "home", lambda: home)
-    with pytest.raises(TerminalUnavailable):
-        local_grants([str(data / "cache")], data)
-    granted, owned_inside = local_grants([str(home)], data)
+    (data / "cache").mkdir()
+    with pytest.raises(TerminalUnavailable, match="inside"):
+        local_grants([str(data / "cache")], data, [])
+    granted, owned_inside = local_grants([str(home)], data, [])
     assert str(home.resolve()) in granted
     assert {str(data.resolve()), str((home / ".rcp").resolve())} <= set(owned_inside)
     repository = tmp_path / "repo"
@@ -294,6 +296,23 @@ def test_grants_mount_writable_and_keep_rcp_storage_read_only_inside(monkeypatch
     separator = argv.index("--", argv.index("rcp-terminal"))
     assert set(granted) <= set(argv[argv.index("rcp-terminal") + 1 : separator])
     assert argv[separator + 1 :] == owned_inside
+
+
+def test_a_grant_cannot_reopen_canonical_state_and_legacy_stages_stay_read_only(tmp_path):
+    history = tmp_path / "repo" / ".research" / "history"
+    history.mkdir(parents=True)
+    with pytest.raises(TerminalUnavailable, match="inside"):
+        local_grants([str(history)], tmp_path / "data", [str(tmp_path / "repo" / ".research")])
+    stage = Path(tempfile.mkdtemp(prefix="rcp-run.test-", dir="/tmp"))
+    link = Path(f"{stage}-link")
+    link.symlink_to(stage, target_is_directory=True)
+    try:
+        _granted, read_only = local_grants([], tmp_path / "data", [])
+    finally:
+        link.unlink()
+        stage.rmdir()
+    assert str(stage.resolve()) in read_only
+    assert not any(path.endswith("-link") for path in read_only)
 
 
 def test_preflight_refuses_an_unwritable_grant(tmp_path):

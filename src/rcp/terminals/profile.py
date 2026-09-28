@@ -168,8 +168,11 @@ def launch_command(
 def resolve_grants(
     declared: list[str], owned: list[str], rules: dict[str, Any]
 ) -> tuple[list[str], list[str]]:
-    """Canonicalize grants on this machine; return them and the owned paths inside.
+    """Canonicalize grants on this machine; return them and the paths to keep read-only.
 
+    ``owned`` is everything a grant may not reopen: RCP's storage and the
+    terminal's canonical-state denies. A grant inside one is refused; one a
+    grant covers stays read-only, as does every legacy task stage in `/tmp`.
     ``rules`` is the shared grant-path module's namespace: this profile is also
     shipped as source, so it cannot import it.
     """
@@ -179,10 +182,24 @@ def resolve_grants(
         if not resolved.is_dir():
             raise ValueError(f"writable path is not a directory: {raw}")
         grants.add(rules["check_writable_path_text"](str(resolved)))
-    canonical_owned = sorted({str(Path(path).resolve()) for path in owned})
+    legacy = legacy_stage_roots()
+    canonical_owned = sorted({*owned, *(str(Path(path).resolve()) for path in owned), *legacy})
     ordered = sorted(grants)
     rules["refuse_grants_inside"](ordered, canonical_owned)
-    return ordered, rules["owned_paths_covered"](ordered, canonical_owned)
+    covered = rules["owned_paths_covered"](ordered, canonical_owned)
+    return ordered, sorted({*covered, *legacy})
+
+
+def legacy_stage_roots() -> list[str]:
+    """Task stages left in `/tmp` from before `~/.rcp/stages`; symlinks skipped.
+
+    A later release removes this with the legacy stage location.
+    """
+    return sorted(
+        str(path.resolve())
+        for path in Path("/tmp").glob("rcp-run.*")
+        if path.is_dir() and not path.is_symlink()
+    )
 
 
 def _within(child: str, parent: str) -> bool:

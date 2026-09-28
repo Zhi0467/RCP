@@ -627,7 +627,7 @@ class TerminalManager:
         granted: list[str] = []
         if not machine.host and capability.backend.containment == "mirrored":
             granted, owned_inside = await asyncio.to_thread(
-                local_grants, machine_writable_paths, self.data_dir
+                local_grants, machine_writable_paths, self.data_dir, protected
             )
             protected = sorted({*protected, *owned_inside})
         if not machine.host:

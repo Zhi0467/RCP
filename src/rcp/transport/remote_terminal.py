@@ -108,7 +108,10 @@ def run_session(settings: dict[str, Any]) -> int:
         # own storage arrives relative to this account's home.
         granted, owned_inside = profile["resolve_grants"](
             declared,
-            [str(Path(path).expanduser()) for path in settings["rcp_owned_paths"]],
+            [
+                *(str(Path(path).expanduser()) for path in settings["rcp_owned_paths"]),
+                *protected,
+            ],
             load_source(settings["grant_paths_source"]),
         )
         protected = list(dict.fromkeys([*protected, *owned_inside]))
@@ -118,7 +121,11 @@ def run_session(settings: dict[str, Any]) -> int:
     # The shell handles Ctrl-C itself, including while a foreground job runs.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        with tempfile.TemporaryDirectory(prefix="rcp-terminal-") as empty:
+        # The read-only masks' empty source lives in RCP's own storage, not
+        # the /tmp the shell shares with agents.
+        temporary_root = Path.home() / ".rcp" / "tmp"
+        temporary_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="rcp-terminal-", dir=temporary_root) as empty:
             # The far side is the only place that knows this account's home,
             # so the server sends the key's path relative to it. A team
             # repository's deploy key is the only Git credential a remote

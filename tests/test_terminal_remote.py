@@ -466,10 +466,16 @@ def test_shipped_launcher_resolves_grants_and_keeps_rcp_storage_read_only(tmp_pa
     command = commands[0]
     assert f'BindPaths="{home.resolve()}"' in command
     owned = home.resolve() / ".rcp"
-    assert any(arg.endswith(f':"{owned}"') for arg in command)
+    # Read-only whether the launcher already created it or it is masked absent.
+    assert any(arg.endswith(f'"{owned}"') and "ReadOnly" in arg for arg in command)
     assert str(owned) in command[command.index("--", command.index("rcp-terminal")) :]
     assert f'ReadOnlyPaths="{home / ".ssh"}"' not in command
     request.update(writable_paths=[str(home / ".rcp")])
-    (home / ".rcp").mkdir()
+    (home / ".rcp").mkdir(exist_ok=True)
     with pytest.raises(ValueError, match="RCP's own storage"):
+        remote_terminal.run_session(request)
+    history = tmp_path / ".research" / "history"
+    history.mkdir(parents=True)
+    request.update(writable_paths=[str(history)])
+    with pytest.raises(ValueError, match="inside"):
         remote_terminal.run_session(request)

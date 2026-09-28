@@ -75,12 +75,20 @@ def resolve_repository(
     return root, protected
 
 
-def local_grants(writable_paths: list[str], data_dir: Path) -> tuple[list[str], list[str]]:
-    """This machine's canonical grants and the RCP-owned paths they cover."""
+def local_grants(
+    writable_paths: list[str], data_dir: Path, protected: list[str]
+) -> tuple[list[str], list[str]]:
+    """This machine's canonical grants and the extra paths to keep read-only.
 
-    owned = rcp_owned_paths(
-        account_home=str(Path.home().resolve()), app_data_dir=data_dir, remote=False
-    )
+    No grant may reopen RCP's storage or the terminal's `protected` denies.
+    """
+
+    owned = [
+        *rcp_owned_paths(
+            account_home=str(Path.home().resolve()), app_data_dir=data_dir, remote=False
+        ),
+        *protected,
+    ]
     try:
         return profile.resolve_grants(
             [*writable_paths, *default_temporary_roots(remote=False)],
