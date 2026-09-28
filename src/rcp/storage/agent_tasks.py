@@ -2223,6 +2223,32 @@ class AgentTaskStoreMixin:
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
+    def agent_task_artifact_discoveries(
+        self, operation_ids: Sequence[str]
+    ) -> dict[str, AgentTaskReceiptRecord]:
+        """Read the latest discovery receipt for each projected task in one query."""
+        if not operation_ids:
+            return {}
+        placeholders = ",".join("?" for _ in operation_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM graph_run_receipts WHERE receipt_id IN (
+                    SELECT MAX(receipt_id) FROM graph_run_receipts
+                    WHERE operation_id IN ({placeholders}) AND category = 'artifact_discovery'
+                    GROUP BY operation_id
+                )
+                """,  # noqa: S608 - placeholders are generated, never caller text
+                tuple(operation_ids),
+            ).fetchall()
+        receipts = {}
+        for row in rows:
+            data = dict(row)
+            data["payload"] = json.loads(data.pop("payload_json"))
+            receipt = AgentTaskReceiptRecord.model_validate(data)
+            receipts[receipt.operation_id] = receipt
+        return receipts
+
     def agent_task_degradations(self, operation_ids: Sequence[str]) -> dict[str, str]:
         """Return the named tasks' provider-degradation notes, keyed by operation.
 

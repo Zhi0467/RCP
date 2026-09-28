@@ -83,9 +83,7 @@ _LOCK_CONTENDED = "contended"
 _LOCK_LEGACY_DIRECTORY = "legacy-directory"
 _LOCK_UNSAFE_ENTRY = "unsafe-entry"
 _KEPT_VIEW_NAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,238})\.html")
-_KEPT_ARTIFACT_NAME_PATTERN = re.compile(
-    r"[a-z0-9](?:[a-z0-9-]{0,220})\.(?:html?|png|jpe?g|gif|webp|svg)"
-)
+_KEPT_ARTIFACT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]{0,220}(?:\.[a-z0-9]{1,16})?")
 _ARCHIVE_TIMESTAMP_PATTERN = re.compile(r"[0-9]{8}T[0-9]{12}Z")
 _RETAINED_HISTORY_FINGERPRINT_PATTERN = re.compile(r"[0-9a-f]{64}")
 _RETAINED_BRANCH_PATCH_PATTERN = re.compile(r"[0-9]{6}\.json")
@@ -198,8 +196,8 @@ def _result_view_base_name(source_name: str, project_name: str, today: date | No
 def _artifact_base_name(source_name: str, project_name: str, today: date | None) -> str:
     source_base = re.split(r"[/\\]", source_name)[-1]
     suffix = Path(source_base).suffix.casefold()
-    if suffix not in {".html", ".htm", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}:
-        raise ValueError("unsupported kept artifact type")
+    if re.fullmatch(r"\.[a-z0-9]{1,16}", suffix) is None:
+        suffix = ""
     source_slug = _result_view_slug(Path(source_base).stem, "artifact", max_length=80)
     project_slug = _result_view_slug(project_name, "project", max_length=64)
     current_date = today or date.today()

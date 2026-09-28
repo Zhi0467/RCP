@@ -2137,7 +2137,7 @@ def _finalize_work_artifacts(
                 turn.execution,
                 attached=0,
                 candidates=0,
-                ignored={"unexpected_error": 1},
+                ignored={"discovery_unavailable": 1},
                 detail=str(exc),
             )
         artifacts = []

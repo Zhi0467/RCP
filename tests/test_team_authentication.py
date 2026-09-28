@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.api import create_app
-from rcp.artifacts import VIEWER_MUTATION_INIT
+from rcp.artifact_views import VIEWER_MUTATION_INIT
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
     TEAM_CODE_FAILED_ATTEMPT_LIMIT,

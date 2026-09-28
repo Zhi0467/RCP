@@ -13,14 +13,15 @@ from fastapi.testclient import TestClient
 
 import rcp.artifact_replace as artifact_replace_module
 from rcp.agents import AgentProcessControl
+from rcp.artifact_comments import comment_panel
 from rcp.artifact_replace import ArtifactReplacementConflict
+from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import (
     AgentArtifactDescriptor,
-    artifact_viewer_document,
+    classify_artifact_bytes,
     descriptor_for,
     read_local_regular_file,
     replace_local_regular_file,
-    validate_artifact_bytes,
 )
 from rcp.background import AgentTaskExecution
 from rcp.runs.chat import (
@@ -98,7 +99,9 @@ def _seed_pending_local_candidate(
         if kept
         else None
     )
-    source = descriptor_for(origin_id, name, size_bytes=len(first)).model_copy(
+    source = descriptor_for(
+        origin_id, name, media_type="text/html", size_bytes=len(first)
+    ).model_copy(
         update={
             "kept_filename": kept_filename,
             "kept_at": store.now() if kept_filename else None,
@@ -269,7 +272,9 @@ def test_remote_temporary_revision_protects_the_exact_source_output_directory(
     origin_id = "75aa25d5-20ee-48e0-9fe6-baf370e3db27"
     revision_id = "267e12d4-b0cb-4c47-91f0-d04360d5e7b6"
     source_bytes = b"<!doctype html><p>remote source</p>"
-    source = descriptor_for(origin_id, "remote.html", size_bytes=len(source_bytes))
+    source = descriptor_for(
+        origin_id, "remote.html", media_type="text/html", size_bytes=len(source_bytes)
+    )
     base_request = RunRequest(
         provider="codex",
         model="",
@@ -384,9 +389,12 @@ def test_remote_temporary_revision_protects_the_exact_source_output_directory(
 def test_svg_is_an_ordinary_bounded_artifact() -> None:
     data = b'<svg xmlns="http://www.w3.org/2000/svg"><text>result</text></svg>'
 
-    assert validate_artifact_bytes("result.svg", data) == "image/svg+xml"
+    assert classify_artifact_bytes("result.svg", data) == "image/svg+xml"
     descriptor = descriptor_for(
-        "01234567-89ab-cdef-0123-456789abcdef", "result.svg", size_bytes=len(data)
+        "01234567-89ab-cdef-0123-456789abcdef",
+        "result.svg",
+        media_type="image/svg+xml",
+        size_bytes=len(data),
     )
 
     assert descriptor.media_type == "image/svg+xml"
@@ -1161,13 +1169,20 @@ def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
     )
 
     document, csp = artifact_viewer_document(
-        preview_url="/preview",
+        content_url="/preview",
         keep_url="/keep",
-        project_id="project",
-        chat_id="chat",
-        operation_id="operation",
+        state="temporary",
+        panel=comment_panel(
+            {
+                "projectId": "project",
+                "chatId": "chat",
+                "operationId": "operation",
+                "source": "task",
+                "artifactId": "0123456789abcdef01234567",
+                "branchId": "branch/id",
+            }
+        ),
         descriptor=descriptor,
-        branch_id="branch/id",
     )
 
     assert "rcp-artifact-context" in document
@@ -1190,11 +1205,9 @@ def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
 
 def test_readonly_artifact_viewer_does_not_enable_selection() -> None:
     document, _csp = artifact_viewer_document(
-        preview_url="/preview",
+        content_url="/preview",
         keep_url=None,
-        project_id="project",
-        chat_id=None,
-        operation_id="operation",
+        state="temporary",
         descriptor=AgentArtifactDescriptor(
             artifact_id="0123456789abcdef01234567",
             name="curves.html",
@@ -1213,12 +1226,23 @@ def test_readonly_artifact_viewer_does_not_enable_selection() -> None:
 def test_viewer_filename_cannot_add_preview_attributes(chat_id: str | None, suffix: str) -> None:
     name = f'x" onload="alert(1)" onerror="alert(1){suffix}'
     document, _csp = artifact_viewer_document(
-        preview_url="/preview",
+        content_url="/preview",
         keep_url="/keep",
-        project_id="project",
-        chat_id=chat_id,
-        operation_id="operation",
-        descriptor=descriptor_for("scope", name),
+        state="temporary",
+        panel=comment_panel(
+            {
+                "projectId": "project",
+                "chatId": chat_id,
+                "operationId": "operation",
+                "source": "task",
+                "artifactId": "0123456789abcdef01234567",
+            }
+        )
+        if chat_id
+        else None,
+        descriptor=descriptor_for(
+            "scope", name, media_type="text/html" if suffix == ".html" else "image/png"
+        ),
     )
 
     class Preview(HTMLParser):
@@ -1244,14 +1268,10 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
     )
 
     document, csp = artifact_viewer_document(
-        preview_url="/preview",
+        content_url="/preview",
         keep_url=None,
-        project_id="project",
-        chat_id=None,
-        operation_id="operation",
+        state="report",
         descriptor=descriptor,
-        source="episode_report",
-        episode_id="episode",
         save_url="/save",
     )
 
@@ -1265,14 +1285,20 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
     assert "connect-src 'self'" in csp
 
     with_chat, _csp = artifact_viewer_document(
-        preview_url="/preview",
+        content_url="/preview",
         keep_url=None,
-        project_id="project",
-        chat_id="chat",
-        operation_id="operation",
+        state="report",
+        panel=comment_panel(
+            {
+                "projectId": "project",
+                "chatId": "chat",
+                "operationId": "operation",
+                "source": "task",
+                "artifactId": "0123456789abcdef01234567",
+                "branchId": "branch/id",
+            }
+        ),
         descriptor=descriptor,
-        source="episode_report",
-        episode_id="episode",
         save_url="/save",
     )
     assert 'id="pending"' in with_chat
@@ -1319,9 +1345,9 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
         data=first,
         today=date(2026, 8, 27),
     )
-    source = descriptor_for(origin_id, name, size_bytes=len(first)).model_copy(
-        update={"kept_filename": kept_filename, "kept_at": store.now()}
-    )
+    source = descriptor_for(
+        origin_id, name, media_type="text/html", size_bytes=len(first)
+    ).model_copy(update={"kept_filename": kept_filename, "kept_at": store.now()})
     origin_request = RunRequest(
         provider="codex",
         model="",
@@ -1398,7 +1424,11 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
         extra_name = f"a-extra-{index}.html"
         extra_data = f"<!doctype html><p>extra {index}</p>".encode()
         (artifact_directory / extra_name).write_bytes(extra_data)
-        extras.append(descriptor_for(revision_id, extra_name, size_bytes=len(extra_data)))
+        extras.append(
+            descriptor_for(
+                revision_id, extra_name, media_type="text/html", size_bytes=len(extra_data)
+            )
+        )
     store.record_agent_task_receipt(
         revision_id,
         "artifact_revision_base",
@@ -1418,7 +1448,7 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
         artifacts=extras,
     )
 
-    assert remaining == []
+    assert remaining == extras
     assert service.history.workspace.read_kept_artifact(kept_filename) == first
     pending = store.unresolved_artifact_revision_candidate(origin_id, source.artifact_id)
     assert pending is not None and pending.status == "pending"
@@ -1874,7 +1904,7 @@ def test_remote_temporary_candidate_accept_uses_its_exact_source_and_candidate_s
     name = "remote.html"
     first = b"<!doctype html><p>remote base</p>"
     second = b"<!doctype html><p>remote candidate</p>"
-    source = descriptor_for(origin_id, name, size_bytes=len(first))
+    source = descriptor_for(origin_id, name, media_type="text/html", size_bytes=len(first))
     request = RunRequest(
         provider="codex",
         model="",

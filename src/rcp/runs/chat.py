@@ -22,13 +22,13 @@ from rcp.agents.write_scope import (
     WritableRepositoryRoot,
     resolve_project_write_scope,
 )
+from rcp.artifact_comments import supports_comments
 from rcp.artifacts import (
-    ARTIFACT_MEDIA_TYPES,
     AgentArtifactDescriptor,
+    classify_artifact_bytes,
     descriptor_for,
     list_local_regular_files,
     read_local_regular_file,
-    validate_artifact_bytes,
 )
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
@@ -646,19 +646,19 @@ def _discover_chat_artifacts(
     total_bytes = 0
     allowed_candidates = 0
     for name, advertised_size in sorted(candidates):
-        if Path(name).suffix.casefold() not in ARTIFACT_MEDIA_TYPES:
-            ignore("unsupported_type")
-            continue
-        if allowed_candidates >= CHAT_ARTIFACT_MAX_COUNT:
-            ignore("count_limit")
-            continue
-        allowed_candidates += 1
         if advertised_size < 0 or advertised_size > CHAT_ARTIFACT_MAX_FILE_BYTES:
             ignore("file_size_limit")
             continue
         if total_bytes + advertised_size > CHAT_ARTIFACT_MAX_TOTAL_BYTES:
             ignore("total_size_limit")
             continue
+        if advertised_size == 0:
+            ignore("empty")
+            continue
+        if allowed_candidates >= CHAT_ARTIFACT_MAX_COUNT:
+            ignore("count_limit")
+            continue
+        allowed_candidates += 1
         try:
             data = (
                 remote_stage.read_artifact_bytes(
@@ -672,10 +672,11 @@ def _discover_chat_artifacts(
             if total_bytes + len(data) > CHAT_ARTIFACT_MAX_TOTAL_BYTES:
                 ignore("total_size_limit")
                 continue
-            media_type = validate_artifact_bytes(name, data)
-            descriptor = descriptor_for(scope_id, name, size_bytes=len(data))
-            if descriptor.media_type != media_type:
-                raise ValueError("artifact media type mismatch")
+            if not data:
+                ignore("empty")
+                continue
+            media_type = classify_artifact_bytes(name, data)
+            descriptor = descriptor_for(scope_id, name, media_type=media_type, size_bytes=len(data))
         except (FileNotFoundError, OSError, StateUnavailable, ValueError):
             ignore("invalid_or_unavailable")
             continue
@@ -737,6 +738,8 @@ def stage_artifact_context(
             raise ValueError("The artifact context is unavailable.")
         scope_id = _logical_chat_turn_operation_id(execution.store, origin.operation_id)
     assert descriptor is not None
+    if not supports_comments(descriptor.media_type):
+        raise ValueError("The artifact type does not support comments or revisions.")
     if context.source == "episode_report":
         pass
     elif descriptor.kept_filename is not None:
@@ -759,7 +762,7 @@ def stage_artifact_context(
         )
     else:
         raise ValueError("The artifact's source stage is unavailable.")
-    if validate_artifact_bytes(descriptor.name, data) != descriptor.media_type:
+    if classify_artifact_bytes(descriptor.name, data) != descriptor.media_type:
         raise ValueError("The current artifact no longer matches its declared type.")
     base_sha256 = hashlib.sha256(data).hexdigest()
     protected_write_paths: tuple[str, ...] = ()
@@ -870,6 +873,9 @@ def finalize_artifact_revision(
                 break
     if source is None:
         raise ValueError("The artifact revision origin is unavailable.")
+    if not supports_comments(source.media_type):
+        raise ValueError("The artifact type does not support revisions.")
+    other_artifacts = [artifact for artifact in artifacts if artifact.name != source.name]
     try:
         data = (
             remote_stage.read_artifact_bytes(
@@ -885,8 +891,8 @@ def finalize_artifact_revision(
             )
         )
     except FileNotFoundError:
-        return []
-    if validate_artifact_bytes(source.name, data) != source.media_type:
+        return other_artifacts
+    if classify_artifact_bytes(source.name, data) != source.media_type:
         raise ValueError("The artifact revision changed its file type.")
     base_receipt = next(
         (
@@ -915,7 +921,7 @@ def finalize_artifact_revision(
                 },
                 tier="summary",
             )
-        return []
+        return other_artifacts
     current = execution.store.agent_task(execution.operation_id)
     if current is None or not current.stage_root:
         raise ValueError("The artifact revision candidate stage is unavailable.")
@@ -950,7 +956,7 @@ def finalize_artifact_revision(
                 },
                 tier="summary",
             )
-        return []
+        return other_artifacts
     now = execution.store.now()
     candidate = ArtifactRevisionCandidateRecord(
         candidate_id=hashlib.sha256(
@@ -984,7 +990,28 @@ def finalize_artifact_revision(
         },
         tier="summary",
     )
-    return []
+    return other_artifacts
+
+
+def artifact_omissions(receipt: AgentTaskReceiptRecord) -> dict[str, int | bool]:
+    """Project only omission counts, never diagnostic paths or errors."""
+    ignored = receipt.payload.get("ignored")
+    if not isinstance(ignored, dict):
+        ignored = {}
+    result: dict[str, int | bool] = {}
+    for reason in (
+        "count_limit",
+        "file_size_limit",
+        "total_size_limit",
+        "empty",
+        "invalid_or_unavailable",
+    ):
+        count = ignored.get(reason)
+        if type(count) is int and count >= 0:
+            result[reason] = count
+    failure = ignored.get("discovery_unavailable")
+    result["discovery_failed"] = type(failure) is int and failure > 0
+    return result
 
 
 def _record_artifact_discovery_receipt(
@@ -1004,16 +1031,16 @@ def _record_artifact_discovery_receipt(
     }
     if detail:
         payload["detail"] = " ".join(detail.split())[:400]
-    if any(
-        receipt.category == "artifact_discovery" and receipt.payload == payload
-        for receipt in execution.store.agent_task_receipts(execution.operation_id)
-    ):
+    latest = execution.store.agent_task_artifact_discoveries([execution.operation_id]).get(
+        execution.operation_id
+    )
+    if latest is not None and latest.payload == payload:
         return
     execution.store.record_agent_task_receipt(
         execution.operation_id,
         "artifact_discovery",
         payload,
-        tier="diagnostic",
+        tier="summary",
     )
 
 

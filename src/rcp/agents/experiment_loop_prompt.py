@@ -396,7 +396,7 @@ Reply and artifacts:
   suffix to point at one line of a repository file. Only an authorized repository file or a file
   you wrote in the artifact directory opens in RCP's bounded preview; a relative path, a line
   suffix on an artifact, or any other location does not.
-- A preview is optional. RCP discovers only direct regular HTML or raster-image files in
+- A preview is optional. RCP discovers bounded direct regular files of every type in
   `{artifact_path}`. Do not use nested directories, symlinks, provider directives, or other paths.
   HTML must be self-contained; ordinary HTTP(S) links are allowed, but external resource loads do
   not work in the preview.

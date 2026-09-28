@@ -401,7 +401,7 @@ def _settle_discuss_outcome(
                 execution,
                 attached=0,
                 candidates=0,
-                ignored={"unexpected_error": 1},
+                ignored={"discovery_unavailable": 1},
                 detail=str(exc),
             )
         artifacts = []

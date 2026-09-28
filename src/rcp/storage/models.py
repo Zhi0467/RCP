@@ -22,7 +22,7 @@ from pydantic import (
     model_validator,
 )
 
-from rcp.artifacts import validate_artifact_bytes
+from rcp.artifacts import classify_artifact_bytes
 from rcp.config import (
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
     AgentExecutionProfile,
@@ -3682,7 +3682,7 @@ def _validated_result_view_html(record: ResultViewRecord, data: bytes) -> str:
         raise ValueError("result view HTML size does not match its metadata")
     if hashlib.sha256(data).hexdigest() != record.content_sha256:
         raise ValueError("result view HTML digest does not match its metadata")
-    if validate_artifact_bytes(record.source_name, data) != "text/html":
+    if classify_artifact_bytes(record.source_name, data) != "text/html":
         raise ValueError("result view must be HTML")
     return data.decode("utf-8")
 

@@ -16,7 +16,7 @@ from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import resolve_project_write_scope
-from rcp.artifacts import validate_artifact_bytes
+from rcp.artifacts import classify_artifact_bytes
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.runs.shared import (
@@ -639,7 +639,7 @@ def _reconcile_running_attempt(
 def _read_valid_report(mailbox: RunStageMailbox, output_name: str) -> str:
     text = mailbox.read_text(output_name, max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES)
     data = text.encode("utf-8")
-    if validate_artifact_bytes(output_name, data) != "text/html":
+    if classify_artifact_bytes(output_name, data) != "text/html":
         raise ValueError("episode report output is not HTML")
     if not text.strip():
         raise ValueError("episode report output is empty")

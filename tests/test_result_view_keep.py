@@ -322,3 +322,30 @@ def test_keep_does_not_modify_caller_source_file(tmp_path) -> None:
         before.st_size,
         before.st_mtime_ns,
     )
+
+
+@pytest.mark.parametrize(
+    "source_name", ["result.csv", "result", "result.abcdefghijklmnopq", "result.odd!"]
+)
+def test_artifact_keep_read_restore_and_collision_accept_general_files(tmp_path, source_name):
+    import hashlib
+
+    workspace, repository = _local_workspace(tmp_path)
+    content = b"a,b\n1,2\n"
+    first, second = (
+        workspace.keep_artifact(source_name=source_name, project_name="demo", data=content)
+        for _ in range(2)
+    )
+    assert Path(first).suffix == (".csv" if source_name.endswith(".csv") else "")
+    assert second == f"{Path(first).stem}-2{Path(first).suffix}"
+    assert workspace.read_kept_artifact(first) == content
+    source = tmp_path / "restore.bin"
+    source.write_bytes(content)
+    (repository / "artifacts" / first).unlink()
+    workspace.restore_kept_artifact(
+        first,
+        source,
+        expected_sha256=hashlib.sha256(content).hexdigest(),
+        expected_size=len(content),
+    )
+    assert workspace.read_kept_artifact(first) == content

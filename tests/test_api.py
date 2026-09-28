@@ -3402,6 +3402,7 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_pa
             {
                 **descriptor.model_dump(mode="json"),
                 "available": False,
+                "view": "html",
                 "can_open": False,
                 "can_download": False,
                 "can_keep": False,
@@ -3488,7 +3489,10 @@ def test_node_chat_returns_as_task_then_persists_result_and_transcript(
     completed = _wait_for_run(client, app.state.default_project_id, operation_id)
     assert completed["status"] == "succeeded"
     assert completed["kind"] == "node_chat"
-    assert completed["result"] == {"messages": [answer]}
+    assert completed["result"] == {
+        "messages": [answer],
+        "artifact_omissions": {"discovery_failed": False},
+    }
     assert launcher.launch_kwargs[0]["binary"] == "/opt/agents/codex"
     # A question costs no graph revision, even when the agent writes a patch file:
     # this turn carried no human authorization and the patch changed nothing anyway.
@@ -3596,6 +3600,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert service.history.state().revision == 2
     artifacts = completed["result"]["artifacts"]
     assert [item["name"] for item in artifacts] == [
+        "bad.jpg",
         "plot.png",
         "preview.html",
         "unsupported.svg",

@@ -102,10 +102,10 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         project_name="History project",
         data=b"<p>kept</p>",
     )
-    kept = descriptor_for(chat_operation_id, "kept.html").model_copy(
+    kept = descriptor_for(chat_operation_id, "kept.html", media_type="text/html").model_copy(
         update={"kept_filename": kept_filename, "kept_at": store.now()}
     )
-    temporary = descriptor_for(chat_operation_id, "temporary.html")
+    temporary = descriptor_for(chat_operation_id, "temporary.html", media_type="text/html")
     chat_request = RunRequest(
         provider="codex",
         model="",
@@ -331,6 +331,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         **kept.model_dump(mode="json"),
         "available": True,
         "unavailable_reason": None,
+        "view": "html",
         "can_open": True,
         "can_download": True,
         "can_keep": False,
@@ -341,6 +342,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     assert artifacts["temporary.html"] == {
         **temporary.model_dump(mode="json"),
         "available": False,
+        "view": "html",
         "can_open": False,
         "can_download": False,
         "can_keep": False,

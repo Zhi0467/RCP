@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from html import unescape
 from pathlib import Path
 
 import pytest
@@ -68,13 +67,8 @@ def test_ordinary_html_preview_uses_a_private_port_for_trusted_actions() -> None
         "value.kind!=='rcp-reference'"
     )
     assert "event.isTrusted" in document
-    assert "new TextEncoder()" in document
-    assert "type:'rcp-artifact-selection'" in document
-    assert "installArtifactSelection(document" in document
-    assert "event.data?.kind==='rcp-artifact-selection-enable' && !clearSelection" in unescape(
-        document
-    )
-    assert "window.parent===window || event.source!==window.parent" in document
+    assert "installArtifactSelection" not in document
+    assert "rcp-artifact-selection" not in document
     assert "value.kind!=='rcp-reference'" in document
     assert "artifact.contentWindow?.postMessage" not in document
     assert "rcp-artifact-box-start" not in document
@@ -86,9 +80,9 @@ def test_selection_runtime_is_included_in_the_frozen_backend() -> None:
     hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text()
     assert 'SOURCE_ROOT / "rcp" / "artifact_selection.js"' in sidecar
     assert '(str(ARTIFACT_SELECTION), "rcp")' in sidecar
-    assert '(str(ARTIFACT_VIEWER), "rcp")' in sidecar
+    assert '(str(ARTIFACT_COMMENT_PANEL), "rcp")' in sidecar
     assert "_selection_script()" in hook
-    assert "_viewer_script()" in hook
+    assert "_comment_panel_script()" in hook
 
 
 def test_result_view_preview_strictly_bridges_bounded_gestures_outward() -> None:

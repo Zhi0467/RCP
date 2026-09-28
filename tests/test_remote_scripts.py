@@ -457,3 +457,61 @@ class TestLockHolder:
         assert len(lines) == 3
         for line in lines[1:]:
             assert "unsupported lock-holder command" in json.loads(line)["error"]
+
+
+@pytest.mark.parametrize("source_name", ["result.csv", "result", "result.abcdefghijklmnopq"])
+def test_remote_general_artifact_keep_read_replace_and_restore(tmp_path: Path, source_name: str):
+    from rcp.transport.state import _artifact_base_name
+
+    root = tmp_path / ".research"
+    base_name = _artifact_base_name(source_name, "demo", None)
+    content = b"a,b\n1,2\n"
+    names = []
+    for index in range(2):
+        stage = root / ".publish" / f"artifact-1-{index}"
+        stage.mkdir(parents=True)
+        (stage / "content.bin").write_bytes(content)
+        command = {
+            "op": "keep-artifact",
+            "root": str(root),
+            "stage": str(stage),
+            "base_name": base_name,
+        }
+        result = run_script(
+            "remote_lock_holder.py", str(root / ".refresh.lock"), stdin=json.dumps(command) + "\n"
+        )
+        response = json.loads(result.stdout.splitlines()[1])
+        assert response["ok"] is True
+        names.append(response["name"])
+    assert names[1] == f"{Path(base_name).stem}-2{Path(base_name).suffix}"
+    read = run_script("remote_read_kept_view.py", str(tmp_path), "artifacts", names[0], "1024")
+    assert read.returncode == 0
+    assert read.stdout.encode() == content
+    for operation in ("replace-artifact", "restore-exact"):
+        stage = (
+            root
+            / ".publish"
+            / ("artifact-2-1" if operation == "replace-artifact" else "restore-2-1")
+        )
+        stage.mkdir(parents=True)
+        (stage / "content.bin").write_bytes(content)
+        target = tmp_path / "artifacts" / names[0]
+        if operation == "restore-exact":
+            target.unlink()
+        command = {
+            "op": operation,
+            "root": str(root),
+            "stage": str(stage),
+            "name": names[0],
+            "path": f"artifacts/{names[0]}",
+            "external": True,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+        }
+        result = run_script(
+            "remote_lock_holder.py", str(root / ".refresh.lock"), stdin=json.dumps(command) + "\n"
+        )
+        assert json.loads(result.stdout.splitlines()[1])["ok"] is True
+        assert target.read_bytes() == content
+    legacy = run_script("remote_read_kept_view.py", str(tmp_path), "views", names[0], "1024")
+    assert legacy.returncode == UNSAFE

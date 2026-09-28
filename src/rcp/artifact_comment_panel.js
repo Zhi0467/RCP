@@ -1,6 +1,22 @@
 const selections = [];
-const frame = document.getElementById("preview"),
-  boxLayer = document.getElementById("boxLayer");
+const frame = document.getElementById("preview");
+const image = document.getElementById("previewImage");
+const boxLayer = image ? document.createElement("div") : null;
+if (boxLayer) {
+  boxLayer.id = "boxLayer";
+  boxLayer.setAttribute("aria-hidden", "true");
+  image.parentElement.append(boxLayer);
+  const sizeOverlay = () => {
+    const scale = Math.min(image.clientWidth / image.naturalWidth, image.clientHeight / image.naturalHeight);
+    const width = image.naturalWidth * scale, height = image.naturalHeight * scale;
+    Object.assign(boxLayer.style, {left: `${(image.clientWidth-width)/2}px`, top: `${(image.clientHeight-height)/2}px`, width: `${width}px`, height: `${height}px`});
+  };
+  image.addEventListener("load", sizeOverlay);
+  const observer = new ResizeObserver(sizeOverlay);
+  observer.observe(image);
+  if (image.complete && image.naturalWidth) sizeOverlay();
+  window.addEventListener("pagehide", () => { observer.disconnect(); boxLayer.remove(); }, {once:true});
+}
 const items = document.getElementById("items"),
   empty = document.getElementById("empty"),
   add = document.getElementById("add"),
