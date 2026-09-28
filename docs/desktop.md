@@ -227,7 +227,8 @@ release unchanged and can be rerun; a published companion is never replaced.
 A second job then points the updater at the new release. It writes `latest.json` (`packaging/release_build.py updater-manifest`),
 and uploads it to the fixed `mac-latest` pre-release, creating that release the
 first time. It refuses to replace a `latest.json` that names a newer version,
-and runs one at a time across tags. If only this job fails, rerun it alone with
+and runs one at a time across tags. A failed upload puts the previous
+`latest.json` back. If only this job fails, rerun it alone with
 **Re-run failed jobs**; it reads everything from the published companion.
 
 `scripts/install-macos.sh` is the README's one-command install. It follows the

@@ -228,4 +228,15 @@ jobs:
               --title "RCP Mac updater pointer" \
               --notes "Holds latest.json for the Mac app's updater. To install RCP, use the latest desktop-vX.Y.Z release."
           fi
-          gh release upload mac-latest updater/latest.json --clobber
+          # --clobber deletes the old asset before uploading; if the upload then
+          # fails, put the verified previous manifest back so installed apps
+          # keep a working feed, and fail so the job can be rerun.
+          if ! gh release upload mac-latest updater/latest.json --clobber; then
+            if [ -f "$RUNNER_TEMP/previous.json" ]; then
+              mkdir -p restore
+              cp "$RUNNER_TEMP/previous.json" restore/latest.json
+              gh release upload mac-latest restore/latest.json --clobber ||
+                echo "::error::latest.json is missing from mac-latest; rerun this job"
+            fi
+            exit 1
+          fi
