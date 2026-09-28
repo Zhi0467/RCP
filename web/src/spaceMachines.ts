@@ -46,12 +46,16 @@ export function machineHostLabel(host: string, spaceKind: "personal" | "team"): 
   return host || (spaceKind === "team" ? "Team server" : "This machine");
 }
 
+/** The backend's `AddProjectMachineRequest.alias` limit. */
+export const MACHINE_ALIAS_MAX_LENGTH = 48;
+
 /** A manifest alias suggested from a machine's display name. */
 export function suggestedMachineAlias(name: string): string {
   return name
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, MACHINE_ALIAS_MAX_LENGTH)
     .replace(/^-+|-+$/g, "");
 }
 

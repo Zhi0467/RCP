@@ -185,3 +185,24 @@ def test_team_machines_name_only_the_viewers_projects_and_need_an_account(tmp_pa
     body = {"name": "GPU", "host": "gpu.example"}
     assert client.post("/api/space/machines", json=body).status_code == 422
     assert client.post("/api/space/machines", json={**body, "os_account": "bob"}).status_code == 200
+
+
+def test_a_project_machine_finds_its_card_by_host(app) -> None:
+    store = _store(app)
+    card = store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+    store.ensure_space_machines([("gpu.example", "", "gpu")])
+
+    assert [machine.machine_id for machine in store.space_machines() if machine.host] == [
+        card.machine_id
+    ]
+    assert store.space_machine_for("gpu.example") == card
+
+
+def test_the_picker_locks_repository_state(app, manifest) -> None:
+    client = TestClient(app)
+    repository = Path(load_manifest(manifest.path).repositories[0].path)
+    path = f"/api/space/machines/{_machine(client, 'laptop')['machine_id']}/directories"
+
+    entries = client.post(path, json={"path": str(repository)}).json()["entries"]
+
+    assert {entry["name"]: entry["protected"] for entry in entries}[".research"] is True

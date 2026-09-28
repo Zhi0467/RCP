@@ -25,6 +25,7 @@ import {
   machineHostLabel,
   machinesToAdd,
   spaceMachineForProject,
+  MACHINE_ALIAS_MAX_LENGTH,
   suggestedMachineAlias,
 } from "../spaceMachines";
 import { EMPTY_SKILL_SELECTION } from "../skillPicker";
@@ -1239,7 +1240,7 @@ function AddProjectMachine({
             <span>Alias in this project</span>
             <input
               value={alias}
-              maxLength={64}
+              maxLength={MACHINE_ALIAS_MAX_LENGTH}
               disabled={writesDisabled || adding || !machineId}
               onChange={(event) => setAlias(event.target.value)}
             />

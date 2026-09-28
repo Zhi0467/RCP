@@ -696,11 +696,8 @@ def write_added_machine(manifest: Manifest, machine: MachineConfig) -> Manifest:
 
     if machine.alias in manifest.machine_map:
         raise ValueError(f"this project already has a machine named {machine.alias}")
-    if any(
-        (existing.host, existing.os_account) == (machine.host, machine.os_account)
-        for existing in manifest.machines
-    ):
-        raise ValueError("this project already uses that machine account")
+    if any(existing.host == machine.host for existing in manifest.machines):
+        raise ValueError("this project already uses that machine")
     document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
     table = tomlkit.table()
     table.add("alias", machine.alias)

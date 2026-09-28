@@ -29,10 +29,12 @@ members; RCP defines no administrator product role.
 
 ### Space machines
 
-A space keeps one machine card per `(host, os_account)` it runs on, with a name
-and writable paths. Project manifests stay the source of truth for a project's
-machines: setup and **Add machine** copy a card's host and account into the
-manifest, and nothing on the space page writes a manifest. The list fills from
+A space keeps one machine card per host route, with a name, account, and
+writable paths; SSH picks the account from the route and provider sign-in is
+keyed by host, so a second account on one host is refused. Project manifests
+stay the source of truth for a project's machines: setup copies a card's host,
+**Add machine** copies its host and account, and a project machine finds its
+card by host. Nothing on the space page writes a manifest. The list fills from
 registered projects' accepted manifests at startup, on registration, and when a
 machine is added; raw manifest loads, preflight, history reload, backup, and
 rehearsals never write it. The table is space data: backup keeps it, and project

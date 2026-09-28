@@ -27,31 +27,35 @@ class SpaceMachineStoreMixin:
             raise KeyError(machine_id)
         return _record(row)
 
-    def space_machine_for(self, host: str, os_account: str) -> SpaceMachineRecord | None:
+    def space_machine_for(self, host: str) -> SpaceMachineRecord | None:
+        """The card for `host`; a space keeps one card per host route."""
+
         with self.connection() as connection:
             row = connection.execute(
-                "SELECT * FROM space_machines WHERE host = ? AND os_account = ?",
-                (host, os_account),
+                "SELECT * FROM space_machines WHERE host = ? ORDER BY created_at, machine_id",
+                (host,),
             ).fetchone()
         return _record(row) if row else None
 
     def ensure_space_machines(self, machines: Iterable[tuple[str, str, str]]) -> None:
-        """Insert a card for each `(host, os_account, name)` the space lacks.
+        """Insert a card for each host the space lacks.
 
-        Idempotent: an existing card keeps its name and writable paths.
+        Idempotent: an existing card for the host keeps its name, account, and
+        writable paths, even when a manifest leaves the account empty.
         """
 
         now = self.now()
         with self.connection() as connection:
             connection.executemany(
                 """
-                INSERT OR IGNORE INTO space_machines
+                INSERT INTO space_machines
                     (machine_id, name, host, os_account, writable_paths_json,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, '[]', ?, ?)
+                SELECT ?, ?, ?, ?, '[]', ?, ?
+                WHERE NOT EXISTS (SELECT 1 FROM space_machines WHERE host = ?)
                 """,
                 [
-                    (uuid.uuid4().hex, name, host, os_account, now, now)
+                    (uuid.uuid4().hex, name, host, os_account, now, now, host)
                     for host, os_account, name in machines
                 ],
             )

@@ -1253,7 +1253,7 @@ def _machine_writable_paths(
     if store is None:
         return []
     machine = service.manifest.machine_map[execution_machine]
-    card = store.space_machine_for(machine.host, machine.os_account)
+    card = store.space_machine_for(machine.host)
     return list(card.writable_paths) if card is not None else []
 
 

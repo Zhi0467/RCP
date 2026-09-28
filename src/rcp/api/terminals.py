@@ -187,7 +187,7 @@ async def open_session(
             remote_git_key_relative=remote_key_relative,
             machine_writable_paths=(
                 list(card.writable_paths)
-                if (card := services.store.space_machine_for(machine.host, machine.os_account))
+                if (card := services.store.space_machine_for(machine.host))
                 else []
             ),
         )

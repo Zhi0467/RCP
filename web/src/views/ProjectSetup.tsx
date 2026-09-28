@@ -1122,11 +1122,6 @@ export function RepositoryEditor({
   const selectedMachine = host
     ? setupMachineSelection(remoteMachines, chosenMachineId, host)
     : null;
-  // The setup request carries a host only; an account outside it is not saved yet.
-  const accountNotCarried =
-    selectedMachine?.os_account && !host.startsWith(`${selectedMachine.os_account}@`)
-      ? selectedMachine.os_account
-      : null;
 
   const changeRepository = (patch: Partial<SetupRepository>) => {
     if (patch.location !== undefined || patch.host !== undefined || patch.path !== undefined) {
@@ -1292,12 +1287,6 @@ export function RepositoryEditor({
           {pickerError && (
             <small id={`${pathInputId}-error`} className="repository-path-error" role="alert">
               {pickerError}
-            </small>
-          )}
-          {accountNotCarried && (
-            <small className="repository-path-hint" data-setup-account-not-carried="">
-              Setup saves the host only; the account {accountNotCarried} is not carried into the
-              project yet.
             </small>
           )}
           {browsing && selectedMachine && (

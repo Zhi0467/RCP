@@ -91,10 +91,10 @@ class MachineDirectoriesRequest(BaseModel):
 
 def _machine_usage(
     store: AppStore,
-) -> tuple[dict[tuple[str, str], list[dict[str, str]]], bool]:
+) -> tuple[dict[str, list[dict[str, str]]], bool]:
     """Which registered projects name each machine account, and whether every manifest read."""
 
-    usage: dict[tuple[str, str], list[dict[str, str]]] = {}
+    usage: dict[str, list[dict[str, str]]] = {}
     complete = True
     for project in store.projects():
         try:
@@ -104,7 +104,7 @@ def _machine_usage(
             complete = False
             continue
         for machine in manifest.machines:
-            usage.setdefault((machine.host, machine.os_account), []).append(
+            usage.setdefault(machine.host, []).append(
                 {
                     "project_id": project.project_id,
                     "project_name": project.name,
@@ -116,11 +116,11 @@ def _machine_usage(
 
 def _machine_view(
     machine: SpaceMachineRecord,
-    usage: dict[tuple[str, str], list[dict[str, str]]],
+    usage: dict[str, list[dict[str, str]]],
     complete: bool,
     visible: set[str],
 ) -> dict[str, object]:
-    projects = usage.get((machine.host, machine.os_account), [])
+    projects = usage.get(machine.host, [])
     return {
         "machine_id": machine.machine_id,
         "name": machine.name,
@@ -168,21 +168,26 @@ def _is_protected(path: str, owned: list[str]) -> bool:
     return False
 
 
-def _validated_writable_paths(
-    machine: SpaceMachineRecord, requested: list[str], catalog: ProjectCatalog
-) -> list[str]:
-    paths = sorted({check_writable_path_text(path) for path in requested})
-    if not paths:
-        return []
-    # Every registered repository's canonical state on this host, admitted or
-    # not; resolved on the machine because `.research` may be a symlink.
-    research = sorted(
+def _repository_state_paths(catalog: ProjectCatalog, machine: SpaceMachineRecord) -> list[str]:
+    """Every registered repository's canonical state on this host, admitted or not."""
+
+    return sorted(
         {
             str(PurePosixPath(item.path) / ".research")
             for item in catalog.repository_ownership_inventory()
             if item.execution_host == machine.host
         }
     )
+
+
+def _validated_writable_paths(
+    machine: SpaceMachineRecord, requested: list[str], catalog: ProjectCatalog
+) -> list[str]:
+    paths = sorted({check_writable_path_text(path) for path in requested})
+    if not paths:
+        return []
+    # Resolved on the machine too, because `.research` may be a symlink.
+    research = _repository_state_paths(catalog, machine)
     result = run_machine_directory_request(
         machine.host,
         {"mode": "check", "paths": sorted({*paths, *research})},
@@ -328,7 +333,10 @@ def list_machine_directories(
         )
     except (MachineBrowseFailure, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    owned = _owned_paths(machine, page.home, catalog.data_dir)
+    owned = [
+        *_owned_paths(machine, page.home, catalog.data_dir),
+        *_repository_state_paths(catalog, machine),
+    ]
     return {
         "path": page.path,
         "parent": page.parent,
