@@ -70,43 +70,56 @@ function installArtifactSelection(surface, publish) {
 
   const ignored = new Set(["SCRIPT", "STYLE", "HEAD", "META", "LINK", "TEMPLATE", "NOSCRIPT"]);
 
-  // The outermost elements lying mostly inside the box; when none does, the
-  // smallest element that holds the whole box.
+  // The first outermost elements lying mostly inside the box; when none does, the
+  // smallest element that holds the whole box, with where the box lies within it.
+  // One walk skips each chosen subtree, so a large page is visited at most once.
   function coveredElements(box) {
     const inside = [];
-    for (const element of doc.body.querySelectorAll("*")) {
-      if (ignored.has(element.tagName) || element.dataset.rcpSelection) continue;
-      if (inside.some((outer) => outer.contains(element))) continue;
-      const rect = element.getBoundingClientRect();
-      const area = rect.width * rect.height;
-      if (!area) continue;
-      const overlap =
-        Math.max(0, Math.min(rect.right, box.right) - Math.max(rect.left, box.left)) *
-        Math.max(0, Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top));
-      if (overlap / area >= 0.5) inside.push(element);
-    }
-    let chosen = inside;
-    if (inside.length > 8) {
-      let common = inside[0];
-      while (common && !inside.every((element) => common.contains(element)))
-        common = common.parentElement;
-      chosen = common ? [common] : inside.slice(0, 8);
-    } else if (!inside.length) {
-      let holder = doc.elementFromPoint((box.left + box.right) / 2, (box.top + box.bottom) / 2);
-      while (holder && holder !== doc.body && holder !== doc.documentElement) {
-        const rect = holder.getBoundingClientRect();
-        if (
-          rect.left <= box.left &&
-          rect.top <= box.top &&
-          rect.right >= box.right &&
-          rect.bottom >= box.bottom
-        )
-          break;
-        holder = holder.parentElement;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT);
+    let element = walker.nextNode();
+    while (element && inside.length < 8) {
+      let skip = ignored.has(element.tagName) || Boolean(element.dataset?.rcpSelection);
+      if (!skip) {
+        const rect = element.getBoundingClientRect();
+        const area = rect.width * rect.height;
+        const overlap =
+          Math.max(0, Math.min(rect.right, box.right) - Math.max(rect.left, box.left)) *
+          Math.max(0, Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top));
+        if (area && overlap / area >= 0.5) {
+          inside.push(element);
+          skip = true;
+        }
       }
-      chosen = holder && holder !== doc.body && holder !== doc.documentElement ? [holder] : [];
+      if (skip) {
+        let next = walker.nextSibling();
+        while (!next && walker.parentNode()) next = walker.nextSibling();
+        element = next;
+      } else element = walker.nextNode();
     }
-    return chosen.map(describeElement);
+    if (inside.length) return inside.map(describeElement);
+    let holder = doc.elementFromPoint((box.left + box.right) / 2, (box.top + box.bottom) / 2);
+    while (holder && holder !== doc.body && holder !== doc.documentElement) {
+      const rect = holder.getBoundingClientRect();
+      if (
+        rect.width &&
+        rect.height &&
+        rect.left <= box.left &&
+        rect.top <= box.top &&
+        rect.right >= box.right &&
+        rect.bottom >= box.bottom
+      ) {
+        // Rounded down so a region never reads as reaching past its element's edge.
+        const floor = (value) => Math.floor(Math.min(1, Math.max(0, value)) * 1e6) / 1e6;
+        const x = floor((box.left - rect.left) / rect.width);
+        const y = floor((box.top - rect.top) / rect.height);
+        const width = floor(Math.min(1 - x, (box.right - box.left) / rect.width));
+        const height = floor(Math.min(1 - y, (box.bottom - box.top) / rect.height));
+        const described = describeElement(holder);
+        return [width && height ? { ...described, region: { x, y, width, height } } : described];
+      }
+      holder = holder.parentElement;
+    }
+    return [];
   }
 
   function endDrag() {
@@ -351,8 +364,15 @@ function installSelectionConfirmation(container, confirm, clearSelection) {
 // One short line for a selection, shared by the viewer rail and the chat draft.
 function describeSelection(selection) {
   if (selection.kind === "text") return `"${selection.text}"`;
-  const [first, ...rest] = selection.elements || [];
-  if (!first) return selection.labels || "Boxed area";
+  const elements = selection.elements;
+  if (!elements) return selection.labels || "Boxed area";
+  const [first, ...rest] = elements;
+  if (!first) return `Boxed area ${describeRegion(selection.rect)}`;
   const name = first.label || first.text.slice(0, 80) || first.path;
   return rest.length ? `${name} and ${rest.length} more` : name;
+}
+
+function describeRegion(rect) {
+  const percent = (value) => `${Math.round(value * 100)}%`;
+  return `x ${percent(rect.x)}–${percent(rect.x + rect.width)}, y ${percent(rect.y)}–${percent(rect.y + rect.height)}`;
 }

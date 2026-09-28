@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, urlencode, urlsplit
 
-from PIL import Image
+from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.artifact_replace import (
@@ -190,22 +190,31 @@ def validate_artifact_bytes(name: str, data: bytes) -> ArtifactMediaType:
 CROPPABLE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 
 
-def crop_artifact_region(data: bytes, *, x: float, y: float, width: float, height: float) -> bytes:
-    """Cut one boxed region, given as fractions of the image, out of a raster artifact.
+def croppable_frame(data: bytes) -> tuple[Image.Image | None, bool]:
+    """Decode a raster artifact once, as the viewer shows it, for its boxed regions.
 
-    A GIF is cropped from its first frame. The crop is scaled down to fit the maximum
-    side and returned as PNG.
+    The frame is the first one, turned by the image's own orientation as a browser
+    turns it. The flag says the image is animated, so a crop shows only that frame.
+    An image over the pixel bound returns no frame: its boxes travel as positions.
     """
 
     try:
         with Image.open(io.BytesIO(data)) as image:
             columns, rows = image.size
+            animated = getattr(image, "n_frames", 1) > 1
             if columns * rows > ARTIFACT_CROP_MAX_PIXELS:
-                raise ValueError("The image is too large to crop a selection from.")
+                return None, animated
             image.seek(0)
-            frame = image.convert("RGBA")
+            frame = ImageOps.exif_transpose(image).convert("RGBA")
     except (OSError, Image.DecompressionBombError) as exc:
         raise ValueError("The image could not be decoded to crop a selection.") from exc
+    return frame, animated
+
+
+def crop_region(frame: Image.Image, *, x: float, y: float, width: float, height: float) -> bytes:
+    """Cut one region, given as fractions of the frame, scaled to fit, as PNG."""
+
+    columns, rows = frame.size
     left = min(columns - 1, math.floor(x * columns))
     top = min(rows - 1, math.floor(y * rows))
     right = max(left + 1, min(columns, math.ceil((x + width) * columns)))

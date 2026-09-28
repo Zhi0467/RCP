@@ -116,6 +116,7 @@ window.addEventListener("message", (event) => {
         path: bounded(element?.path, 512) || "body",
         label: bounded(element?.label, 256),
         text: bounded(element?.text, 512),
+        ...(element?.region ? { region: element.region } : {}),
       })),
       comment: "",
     });

@@ -61,7 +61,7 @@ test("artifact selections decode as bounded context for exactly one originating 
       ...payload,
       selections: [{ ...legacyBox, labels: "seed three" }],
     }).selections,
-    [{ ...legacyBox, labels: "seed three", elements: [] }],
+    [{ ...legacyBox, labels: "seed three" }],
   );
   assert.equal(parseArtifactContextPayload({ ...payload, artifact_id: "bad" }), null);
   assert.equal(parseArtifactContextPayload({ ...payload, selections: [] }), null);

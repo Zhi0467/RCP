@@ -323,7 +323,8 @@ export function parseArtifactContextPayload(value: unknown): ArtifactContextPayl
         kind: "box",
         rect: selection.rect,
         viewport: selection.viewport,
-        elements: selection.elements ?? [],
+        // A box from the older viewer carries no elements; the server must see that.
+        ...(selection.elements !== undefined ? { elements: selection.elements } : {}),
         ...(selection.labels ? { labels: selection.labels } : {}),
         comment: selection.comment,
       });
@@ -366,10 +367,11 @@ function isArtifactBoxElements(value: unknown): value is ArtifactBoxElement[] {
         element &&
         typeof element === "object" &&
         !Array.isArray(element) &&
-        Object.keys(element).every((key) => ["path", "label", "text"].includes(key)) &&
+        Object.keys(element).every((key) => ["path", "label", "text", "region"].includes(key)) &&
         isBoundedArtifactText(element.path, 1, 512) &&
         isBoundedArtifactText(element.label, 0, 256) &&
-        isBoundedArtifactText(element.text, 0, 512),
+        isBoundedArtifactText(element.text, 0, 512) &&
+        (element.region === undefined || isArtifactSelectionRect(element.region)),
     )
   );
 }
@@ -398,8 +400,13 @@ export function artifactContextDraft(payload: ArtifactContextPayload): string {
 
 function describeArtifactSelection(selection: ArtifactSelection): string {
   if (selection.kind === "text") return `"${selection.text}"`;
+  if (!selection.elements) return `boxed ${selection.labels || "area"}`;
   const [first, ...rest] = selection.elements;
-  if (!first) return selection.labels || "boxed area";
+  if (!first) {
+    const { x, y, width, height } = selection.rect;
+    const percent = (value: number) => `${Math.round(value * 100)}%`;
+    return `boxed area at x ${percent(x)}–${percent(x + width)}, y ${percent(y)}–${percent(y + height)}`;
+  }
   const name = first.label || first.text.slice(0, 80) || first.path;
   return `boxed ${rest.length ? `${name} and ${rest.length} more` : name}`;
 }

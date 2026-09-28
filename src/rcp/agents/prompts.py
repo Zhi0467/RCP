@@ -475,12 +475,18 @@ def _one_line(value: object) -> str:
 
 
 def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[str]:
-    """Name what a box covers: its cropped image, the HTML elements, or where it lies."""
+    """Name what a box covers and where: its crop, the HTML elements, or its position."""
 
-    if isinstance(selection.get("crop_path"), str):
-        return [f"  Selection {index}, boxed region of the image: `{selection['crop_path']}`"]
     elements = selection.get("elements")
-    if isinstance(elements, list) and elements:
+    if elements is None:
+        # A box from the viewer before elements were named: its position was measured
+        # on the viewer area, so only its sampled text says what it covered.
+        labels = _one_line(selection.get("labels", ""))
+        return [f"  Selection {index}, boxed area" + (f" covering: {labels}" if labels else "")]
+    assert isinstance(elements, list)
+    if html:
+        if not elements:
+            return [f"  Selection {index}, boxed area with no element inside"]
         lines = [f"  Selection {index}, boxed area covering:"]
         for element in elements:
             described = f"`{element['path']}`"
@@ -488,25 +494,30 @@ def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[
             if label:
                 described += f' "{label}"'
             text = _one_line(element.get("text", ""))
-            lines.append(f"    {described}: {text}" if text else f"    {described}")
+            if text:
+                described += f": {text}"
+            if isinstance(element.get("region"), dict):
+                described += f" (the box covers {_region(element['region'])} of it)"
+            lines.append(f"    {described}")
         return lines
-    labels = _one_line(selection.get("labels", ""))
-    if labels:
-        return [f"  Selection {index}, boxed area covering: {labels}"]
-    if html:
-        return [f"  Selection {index}, boxed area with no element inside"]
-    # An image that is not cropped (SVG) is located by fractions of its own size.
-    rect = selection["rect"]
+    where = f"  Selection {index}, boxed region {_region(selection['rect'])} of the image"
+    crop = selection.get("crop_path")
+    if not isinstance(crop, str):
+        return [where]
+    frame = ", first frame of the animation" if selection.get("first_frame_only") else ""
+    return [f"{where}{frame}: `{crop}`"]
+
+
+def _region(rect: object) -> str:
     assert isinstance(rect, dict)
-    return [
-        f"  Selection {index}, boxed area {_percent(rect['x'])}–"
-        f"{_percent(rect['x'] + rect['width'])} across and {_percent(rect['y'])}–"
-        f"{_percent(rect['y'] + rect['height'])} down the image"
-    ]
+    return (
+        f"x {_percent(rect['x'])}–{_percent(rect['x'] + rect['width'])}, "
+        f"y {_percent(rect['y'])}–{_percent(rect['y'] + rect['height'])}"
+    )
 
 
 def _percent(fraction: float) -> str:
-    return f"{round(fraction * 100)}%"
+    return f"{fraction * 100:.1f}".removesuffix(".0") + "%"
 
 
 def _attachment_items(attachments: list[dict[str, object]] | None) -> str:

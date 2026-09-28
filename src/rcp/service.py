@@ -838,6 +838,8 @@ class ArtifactBoxElement(BaseModel):
     path: str = Field(min_length=1, max_length=512)
     label: str = Field(default="", max_length=256)
     text: str = Field(default="", max_length=512)
+    # Where the box lies within this element, when the box sits inside it.
+    region: ArtifactSelectionRect | None = None
 
 
 class ArtifactBoxSelection(BaseModel):
@@ -847,9 +849,10 @@ class ArtifactBoxSelection(BaseModel):
     # A fraction of the image for an image artifact, of the visible frame for HTML.
     rect: ArtifactSelectionRect
     viewport: ArtifactViewport
-    elements: list[ArtifactBoxElement] = Field(default_factory=list, max_length=8)
-    # Sampled text a viewer sent before it named elements; kept so a stored request
-    # from that release still validates and renders.
+    # None marks a box from the viewer before elements were named. Its rect is a
+    # fraction of the viewer area, not of an image, so it is never cropped.
+    elements: list[ArtifactBoxElement] | None = Field(default=None, max_length=8)
+    # That older viewer's sampled nearby text, kept so its stored requests still render.
     labels: str = Field(default="", max_length=4096)
     comment: str = Field(default="", max_length=2048)
 

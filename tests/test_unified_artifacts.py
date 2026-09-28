@@ -1985,9 +1985,13 @@ def test_remote_temporary_candidate_accept_uses_its_exact_source_and_candidate_s
     assert remote_files[("/remote/source-stage", origin_id, name)] == second
 
 
+# A box from the viewer before elements were named measured the viewer area, not the
+# image, so it is described but never cropped.
+@pytest.mark.parametrize("current_viewer", [True, False])
 def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
     manifest,
     tmp_path: Path,
+    current_viewer: bool,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -2054,6 +2058,7 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
                         "kind": "box",
                         "rect": {"x": 0.5, "y": 0, "width": 0.5, "height": 1},
                         "viewport": {"width": 100, "height": 50},
+                        **({"elements": []} if current_viewer else {"labels": "right"}),
                         "comment": "What is this?",
                     }
                 ],
@@ -2076,6 +2081,9 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
     )
 
     assert staged is not None
+    if not current_viewer:
+        assert "crop_path" not in staged.pointer["selections"][0]
+        return
     crop_path = Path(staged.pointer["selections"][0]["crop_path"])
     with Image.open(crop_path) as crop:
         assert crop.size == (50, 50)

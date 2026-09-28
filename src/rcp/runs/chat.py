@@ -35,7 +35,8 @@ from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
     CROPPABLE_MEDIA_TYPES,
     AgentArtifactDescriptor,
-    crop_artifact_region,
+    crop_region,
+    croppable_frame,
     descriptor_for,
     list_local_regular_files,
     read_local_regular_file,
@@ -986,24 +987,35 @@ def stage_artifact_context(
                 )
             protected_write_paths = (str(source_directory),)
 
-    # Each box on a raster image is cropped from the exact bytes staged beside it, so a
-    # recovery restages the same crops.
-    crops = {
-        index: crop_artifact_region(
-            data,
-            x=selection.rect.x,
-            y=selection.rect.y,
-            width=selection.rect.width,
-            height=selection.rect.height,
-        )
+    # Each box the current viewer drew on a raster image is cropped from the exact bytes
+    # staged beside it, so a recovery restages the same crops.
+    boxes = {
+        index: selection.rect
         for index, selection in enumerate(context.selections, 1)
-        if selection.kind == "box" and descriptor.media_type in CROPPABLE_MEDIA_TYPES
+        if selection.kind == "box" and selection.elements is not None
     }
-    label = f"artifact-context-v1-{execution.operation_id}-{descriptor.artifact_id}"
+    frame, animated = (
+        croppable_frame(data)
+        if boxes and descriptor.media_type in CROPPABLE_MEDIA_TYPES
+        else (None, False)
+    )
+    crops = sorted(boxes) if frame is not None else []
+
+    def write_crops(folder: Path) -> None:
+        assert frame is not None
+        for index in crops:
+            rect = boxes[index]
+            path = folder / f"{index}.png"
+            path.write_bytes(
+                crop_region(frame, x=rect.x, y=rect.y, width=rect.width, height=rect.height)
+            )
+            path.chmod(0o400)
+
+    label = f"artifact-context-v2-{execution.operation_id}-{descriptor.artifact_id}"
     if remote_stage is not None:
         with tempfile.TemporaryDirectory(prefix="rcp-artifact-context-") as temporary:
             root = Path(temporary)
-            _write_artifact_context(root, descriptor.name, data, crops)
+            _write_artifact_context(root, descriptor.name, data, write_crops if crops else None)
             staged_root = Path(remote_stage.put_directory(root, label, reuse=True))
     else:
         assert local_stage is not None
@@ -1020,7 +1032,9 @@ def stage_artifact_context(
             staged_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix=f".{label}-", dir=staged_root.parent))
             try:
-                _write_artifact_context(temporary, descriptor.name, data, crops)
+                _write_artifact_context(
+                    temporary, descriptor.name, data, write_crops if crops else None
+                )
                 os.replace(temporary, staged_root)
             finally:
                 if temporary.exists():
@@ -1039,7 +1053,10 @@ def stage_artifact_context(
             {
                 **item.model_dump(mode="json"),
                 **(
-                    {"crop_path": str(staged_root / _SELECTION_CROPS / f"{index}.png")}
+                    {
+                        "crop_path": str(staged_root / _SELECTION_CROPS / f"{index}.png"),
+                        "first_frame_only": animated,
+                    }
                     if index in crops
                     else {}
                 ),
@@ -1060,17 +1077,17 @@ def stage_artifact_context(
 _SELECTION_CROPS = "selections"
 
 
-def _write_artifact_context(root: Path, name: str, data: bytes, crops: dict[int, bytes]) -> None:
+def _write_artifact_context(
+    root: Path, name: str, data: bytes, write_crops: Callable[[Path], None] | None
+) -> None:
     """Write the artifact copy and its selection crops as one read-only tree."""
 
     (root / name).write_bytes(data)
     (root / name).chmod(0o400)
-    if crops:
+    if write_crops is not None:
         folder = root / _SELECTION_CROPS
         folder.mkdir()
-        for index, crop in crops.items():
-            (folder / f"{index}.png").write_bytes(crop)
-            (folder / f"{index}.png").chmod(0o400)
+        write_crops(folder)
         folder.chmod(0o500)
     root.chmod(0o500)
 

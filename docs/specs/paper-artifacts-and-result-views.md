@@ -190,11 +190,17 @@ window forward; in a browser it follows the chat link in the current tab.
 An expired desktop navigation cannot later select the chat or focus the window.
 
 RCP carries selected text with limited surrounding text. A box on HTML names
-the elements it covers the way a reader of the source finds them: a CSS path,
-the element's own or its chart's label, and its bounded text. A box on a raster
-image (PNG, JPEG, GIF, WebP) is a fraction of the image itself; the server crops
-that region from the staged copy and stages the crop beside it, so a recovery
-restages the same crop. An SVG box is located by fractions of the image. A turn
+up to eight elements it covers the way a reader of the source finds them: a CSS
+path, the element's own or its chart's label, and its bounded text. When the box
+sits inside one element, such as a canvas or chart, it also says where within
+that element. A box on an image is a fraction of the image as displayed, with
+its orientation applied. On a raster image (PNG, JPEG, GIF, WebP) the server
+also crops that region from the staged copy, decoding it once, and stages the
+crop beside it, so a recovery restages the same crop. An animated image is
+cropped from its first frame and the prompt says so; SVG and an image over the
+crop pixel bound travel as positions only. A box saved by the viewer before
+elements were named measured the viewer area, so it is described by its old
+sampled text and never cropped. A turn
 carries at most 50 selections. The composer draft numbers each selection with
 its comment in plain text, and the prompt lists the same numbers with what each
 selection covers; no markup is added. The selection payload, comments, and final
