@@ -176,8 +176,20 @@ RCP_LIVE_SSH_TARGET=<ssh-alias-or-user@host> \
 To test the exact bytes a promotion would publish, run the `desktop-candidate.yml`
 workflow on the build, as described in [docs/release.md](release.md#what-to-check-before-promoting).
 Rename the unzipped `RCP.app` to `RCP Candidate.app` and keep it out of
-`/Applications`; `RCP.app` there is always the released download. The local
-steps below build the same app from a checkout; open it where it is built.
+`/Applications`; `RCP.app` there is always the released download.
+
+Do not open the candidate through Finder. It shares the working app's bundle
+identifier, port, and default data directory, so a running working app would be
+focused or its backend reused instead. Quit the working app with Cmd+Q, confirm
+nothing answers on the port, then launch the candidate on throwaway data:
+
+```bash
+curl -fsS -m 3 http://127.0.0.1:8421/api/health && echo "quit the running RCP first"
+open -n "RCP Candidate.app" --env RCP_DATA_DIR="$(mktemp -d)"
+```
+
+The local steps below build the same app from a checkout; launch that bundle
+the same way.
 
 Before packaging, verify that the intended revision is checked out, the version is
 intentional, no unrelated changes will enter the artifact, and the baseline and desktop
@@ -203,7 +215,7 @@ uv run python packaging/smoke-backend.py \
   web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
 ```
 
-Then open that bundle through Finder and exercise the desktop workflows affected by
+Then launch that bundle as above, with a throwaway `RCP_DATA_DIR`, and exercise the desktop workflows affected by
 the candidate. Confirm that the project index opens, a project can be read, provider
 readiness is truthful, desktop-only interactions work, and the app owns or reuses the
 expected backend. Source behavior is not evidence for the packaged artifact.
