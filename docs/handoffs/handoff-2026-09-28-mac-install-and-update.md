@@ -2,8 +2,9 @@
 
 Date: 2026-09-28
 Status: implemented on this PR's branch on 2026-09-28, after one xhigh design
-review. Remaining: the human generates the updater key (see Updater), and the
-three real-hardware journeys below. Push notifications stay in their own
+review. The updater key exists: both secrets are set and the public key is
+checked in. Remaining: the three real-hardware journeys below, which need two
+real releases. Push notifications stay in their own
 handoff and PR.
 
 Close this handoff when all three hold on real hardware:
