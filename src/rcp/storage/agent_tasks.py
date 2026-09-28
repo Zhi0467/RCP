@@ -92,6 +92,8 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "operation_dispatch_started",
     "operation_dispatch_reset",
     "chat_stage_layout",
+    # The latest discovery outcome is projected as the turn's omission notice.
+    "artifact_discovery",
     "compute_command_started",
     "compute_command_result",
     "remote_provider_started",

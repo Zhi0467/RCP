@@ -249,11 +249,13 @@ def read_local_regular_file(directory: Path, name: str, *, max_bytes: int) -> by
     """Read one direct regular child without following a symlink."""
     if Path(name).name != name or name in {"", ".", ".."}:
         raise ValueError("artifact name must be a plain base name")
-    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps a FIFO swapped in after listing from blocking the open;
+    # the regular-file check below then refuses it, and regular reads ignore it.
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
     directory_fd = _open_local_directory(directory)
     try:
         try:
-            file_fd = os.open(name, os.O_RDONLY | no_follow, dir_fd=directory_fd)
+            file_fd = os.open(name, flags, dir_fd=directory_fd)
         except FileNotFoundError:
             raise
         except OSError as exc:

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentProcessControl
 from rcp.background import AgentTaskExecution
+from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.runs.chat import (
     _discover_chat_artifacts,
     _record_artifact_discovery_receipt,
@@ -90,6 +91,11 @@ def test_discovery_latest_receipt_wins_and_is_retained(app):
     ]
     assert len(receipts) == 3
     assert all(r.tier == "summary" for r in receipts)
+    # A long turn's later summary receipts cannot prune the omission notice.
+    for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 1):
+        execution.store.record_agent_task_receipt(
+            execution.operation_id, "later_summary", {"index": index}, tier="summary"
+        )
     execution.store.prune_operational_storage(now=datetime.now(UTC) + timedelta(days=366))
     latest = execution.store.agent_task_artifact_discoveries([execution.operation_id, "missing"])
     assert set(latest) == {execution.operation_id}
@@ -110,6 +116,13 @@ def test_discovery_failure_keeps_answer_and_projects_no_private_detail(app, tmp_
     ]
     assert artifact_omissions(receipt) == {"discovery_failed": True}
     assert execution.store.agent_task(execution.operation_id).result["messages"] == ["answer"]
+    _record_artifact_discovery_receipt(
+        execution, attached=0, candidates=0, ignored={"unexpected_error": 1}
+    )
+    receipt = execution.store.agent_task_artifact_discoveries([execution.operation_id])[
+        execution.operation_id
+    ]
+    assert artifact_omissions(receipt) == {"discovery_failed": True}
 
 
 def test_omissions_filters_unknown_negative_and_noninteger_counts(app):

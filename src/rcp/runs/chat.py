@@ -1009,8 +1009,10 @@ def artifact_omissions(receipt: AgentTaskReceiptRecord) -> dict[str, int | bool]
         count = ignored.get(reason)
         if type(count) is int and count >= 0:
             result[reason] = count
-    failure = ignored.get("discovery_unavailable")
-    result["discovery_failed"] = type(failure) is int and failure > 0
+    result["discovery_failed"] = any(
+        type(ignored.get(reason)) is int and ignored[reason] > 0
+        for reason in ("discovery_unavailable", "unexpected_error")
+    )
     return result
 
 

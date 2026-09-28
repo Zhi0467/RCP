@@ -1060,7 +1060,7 @@ try:
     fd=os.open(root,flags); fds.append(fd)
     for part in ('workspace','turns',scope,'artifacts'):
         fd=os.open(part,flags,dir_fd=fd); fds.append(fd)
-    file_fd=os.open(name,os.O_RDONLY|getattr(os,'O_NOFOLLOW',0),dir_fd=fd); fds.append(file_fd)
+    file_fd=os.open(name,os.O_RDONLY|os.O_NONBLOCK|getattr(os,'O_NOFOLLOW',0),dir_fd=fd); fds.append(file_fd)
     info=os.fstat(file_fd)
     if not stat.S_ISREG(info.st_mode) or info.st_size>limit: raise SystemExit(45)
     remaining=limit+1

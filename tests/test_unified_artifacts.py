@@ -4,6 +4,8 @@ import errno
 import hashlib
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -442,6 +444,22 @@ def test_local_artifact_read_preserves_transient_operational_errors(
     monkeypatch.setattr(os, "open", fail_target_open)
     with pytest.raises(OSError, match="simulated read failure"):
         read_local_regular_file(artifacts, target.name, max_bytes=1024)
+
+
+def test_local_artifact_read_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    fifo = artifacts / "result.csv"
+    os.mkfifo(fifo)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(read_local_regular_file, artifacts, fifo.name, max_bytes=1024)
+        try:
+            with pytest.raises(ValueError):
+                pending.result(timeout=10)
+        finally:
+            # Release a reader stuck in open() so a failure cannot hang the suite.
+            with suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
 
 
 def test_temporary_artifact_revision_checks_digest_after_staging(
