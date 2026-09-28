@@ -1,10 +1,6 @@
 # Active implementation handoffs
 
-- [Show every artifact, and keep commenting separate](handoff-2026-09-27-universal-artifact-viewing.md):
-  every file an agent leaves gets a card with Download and a read-only view
-  by type; select-and-comment stays an opt-in layer for the six current
-  types. Implementation and automated/served verification complete; the live
-  native journey and human merge remain.
+None.
 
 Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
 and the refusal-explains-itself handoff (a refused dispatch or Apply reported
@@ -49,5 +45,9 @@ stands in for it. Run one on disposable data, then delete its line here.
 - Pushes: the live team-space push run and real remote-machine SSH.
 - Phone UI: the real-iPhone journey and its screenshot review.
 - Runs loading: the team-server measurement of first open against the 2 s target.
+- Artifact viewing: in the desktop app, a PDF card's Open launches the
+  system PDF viewer and leaves a private copy that is pruned after a day; a
+  Markdown and a CSV artifact open in the preview window; Download still saves
+  every type.
 - Update notices: a `publish-desktop.yml` rerun after a failed upload; in the
   prebuilt app, the Download button, quit and reopen, and a team connection.

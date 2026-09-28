@@ -115,7 +115,7 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
   }
 });
 
-test("an established selection is clipped to the answer when the pointer is released outside it", async () => {
+test("a pointer selection opens the composer even when the pointer is released outside the answer", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -134,39 +134,22 @@ test("an established selection is clipped to the answer when the pointer is rele
     const box = await answer.boundingBox();
     assert.ok(box);
 
-    // Establish the overshooting selection independently of native drag behavior;
-    // the regression is document-level pointer release and clipping to the answer.
-    await page.mouse.move(box.x + 160, box.y + box.height + 60);
+    // Drag from inside the answer text and release well below the answer element,
+    // as a reader does when sweeping a selection downward.
+    await page.mouse.move(box.x + 12, box.y + box.height / 2);
     await page.mouse.down();
-    await answer.evaluate((element) => {
-      const text = element.querySelector("p").firstChild;
-      const next = element.nextElementSibling;
-      const range = document.createRange();
-      range.setStart(text, 1);
-      range.setEndAfter(next);
-      const selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-    });
+    await page.mouse.move(box.x + 160, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.move(box.x + 160, box.y + box.height + 60, { steps: 4 });
     await page.mouse.up();
 
-    const composer = page.getByRole("form");
+    const composer = page.getByRole("form", { name: "Add annotation" });
     await composer.waitFor({ state: "visible", timeout: 2000 });
-    const selection = await answer.evaluate((element) => {
-      const range = window.getSelection().getRangeAt(0);
-      const text = element.querySelector("p").firstChild;
-      return {
-        nonempty: !range.collapsed,
-        startsInside: element.contains(range.startContainer),
-        endsInside: element.contains(range.endContainer),
-        selectedLength: range.toString().trim().length,
-        expectedLength: text.textContent.slice(1).length,
-      };
-    });
-    assert.equal(selection.nonempty, true);
-    assert.equal(selection.startsInside, true);
-    assert.equal(selection.endsInside, true);
-    assert.equal(selection.selectedLength, selection.expectedLength);
+    // The sweep overshot into the Comment button; the staged text stops at the answer's end.
+    const selectedText = await page.evaluate(() => window.getSelection()?.toString().trim());
+    assert.equal(
+      selectedText,
+      "he reported improvement needs a stronger comparison and a variance estimate.",
+    );
   } finally {
     await browser?.close();
     await server.close();
