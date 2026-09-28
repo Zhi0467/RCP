@@ -17,6 +17,9 @@ no provider turn:
 - otherwise by building the commit and moving the target with a
   compare-and-swap `git update-ref`, refusing if the target moved.
 
+A target checked out in any other linked worktree, or equal to the episode
+branch, refuses Merge.
+
 If either side has residue, one merge task runs. Its agent lands the code with
 chat Integrate's local-merge write scope, and RCP makes the single graph commit.
 

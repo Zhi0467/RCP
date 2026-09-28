@@ -84,6 +84,10 @@ merges both sides.
   worktree fails before launch. It never falls back to the shared checkout.
 - An episode with the code toggle on writes only its worktree. The shared
   checkout is outside its write roots.
+- Concurrent turns inside one episode (Auto-research workers, child and branch
+  Experiments) share the one worktree, just as they share the shared checkout
+  today. Isolation adds no per-turn writer fence; only Merge fences the
+  binding.
 - The binding fixes the code side: the repository alias and the execution host.
   Graph truth membership stays separate and unchanged. A child or branch
   Experiment whose Work profile runs on another host refuses at admission.
@@ -118,7 +122,11 @@ each have their own delivered state. Merge is offered while either side has
 undelivered work: a code-only owner, or a branch whose graph was already
 delivered but whose code moved on, can merge.
 
-One **Merge** click runs the **pre-merge**, RCP's automatic first step:
+One **Merge** click first persists the reservation and a **merge attempt**
+record in phase `pre_merge`, before any Git write. A reservation whose attempt
+never progressed past `pre_merge` is reclaimed by the next Merge or at startup,
+after the attempt's recorded state is reconciled. Then it runs the
+**pre-merge**, RCP's automatic first step:
 
 1. **Leftovers.** If the episode worktree has uncommitted changes, RCP commits
    them as one leftovers commit on the episode branch. Gitignored files stay
@@ -141,10 +149,10 @@ One **Merge** click runs the **pre-merge**, RCP's automatic first step:
    runs as a new operation of the shipped worktree script. It touches no
    checkout and moves no ref.
 
-Then RCP persists a **merge attempt** before any Git write: the owner, the
-source commit, the target ref and its commit, the graph head, the history mode,
-and the cleanup choices. Just before landing it rechecks those commits and the
-checkout's identity and cleanliness.
+Then RCP advances the attempt to phase `landing` with the owner, the source
+commit (after leftovers), the target ref and its commit, the graph head, the
+history mode, and the cleanup choices. Just before landing it rechecks those
+commits and the checkout's identity and cleanliness.
 
 - **No residue on either side:** RCP lands the code, then commits the graph,
   with no provider turn.
@@ -250,12 +258,12 @@ ResearchDiffRow
   change: created | updated | removed
   neighbours: [id]              # one-hop context
   revision                      # branch revision that last touched it
-  delivered: bool               # covered by an earlier merge receipt
   paths: [ResearchDiffPath]
 
 ResearchDiffPath
   field_path
   base, branch, main            # values, as the change views keep today
+  delivered: bool               # covered by an earlier merge receipt
   conflict: bool
   needs_agent: bool
   residue_reason: <MERGE_RESIDUE_REASONS key> | None
@@ -278,7 +286,7 @@ already carries. Classification is per path, not per entity: one node can need
 a Proposal and hold a conflict at once. The flags come from the same call to
 `build_deterministic_merge_ops` that Merge uses, against the same delivered
 baseline, so the diff and the merge cannot disagree. Rows an earlier merge
-already delivered stay in the diff, marked `delivered`. A node's mark in the
+already delivered stay in the diff, with those paths marked `delivered`. A node's mark in the
 graph is its most severe path.
 
 ## Rules this changes

@@ -1604,7 +1604,7 @@ def _project_write_scope(
             binding = isolation.worktree
             if binding is not None:
                 context.repositories = [
-                    pointer.model_copy(update={"path": binding.worktree_path, "host": ""})
+                    pointer.model_copy(update={"path": binding.worktree_path})
                     if pointer.alias == binding.repository_alias
                     else pointer
                     for pointer in context.repositories
