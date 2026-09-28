@@ -346,7 +346,9 @@ def list_machine_directories(
             {
                 "name": entry.name,
                 "path": entry.path,
-                "protected": _is_protected(entry.path, owned),
+                # A symlink is judged by where it lands too, as saving does.
+                "protected": _is_protected(entry.path, owned)
+                or _is_protected(entry.resolved, owned),
             }
             for entry in page.entries
         ],

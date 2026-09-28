@@ -147,9 +147,13 @@ def test_directories_filter_before_paging_and_lock_rcp_storage(app, tmp_path, mo
     assert filtered["parent"] == str(tmp_path)
 
     monkeypatch.setattr("rcp.setup.MACHINE_DIRECTORY_PAGE_SIZE", 200)
+    # A shortcut is judged by where it lands, the same way saving judges it.
+    (tmp_path / "data-link").symlink_to(tmp_path / "data")
+    (tmp_path / "browse-link").symlink_to(browse)
     top = client.post(path, json={"path": str(tmp_path)}).json()
     protected = {entry["name"]: entry["protected"] for entry in top["entries"]}
     assert protected["data"] is True and protected["browse"] is False
+    assert protected["data-link"] is True and protected["browse-link"] is False
     assert client.post(path, json={"path": str(tmp_path / "missing")}).status_code == 422
 
 

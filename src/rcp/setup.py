@@ -104,6 +104,7 @@ def _setup_remote_path(value: str, *, label: str) -> str:
 class SshRepositoryBrowseEntry(_StrictSetupModel):
     name: str = Field(min_length=1, max_length=255)
     path: str = Field(max_length=1024)
+    resolved: str = Field(max_length=1024)
     git_repository: bool
     has_research: bool
 
@@ -116,6 +117,7 @@ class SshRepositoryBrowseEntry(_StrictSetupModel):
         ):
             raise ValueError("SSH repository browser returned an invalid directory name")
         self.path = _setup_remote_path(self.path, label="SSH repository browser entry")
+        self.resolved = _setup_remote_path(self.resolved, label="SSH repository browser entry")
         return self
 
 

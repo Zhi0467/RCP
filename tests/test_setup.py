@@ -126,6 +126,7 @@ def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing()
             {
                 "name": "paper",
                 "path": "/home/alice/paper",
+                "resolved": "/home/alice/paper",
                 "git_repository": True,
                 "has_research": True,
             }
@@ -195,6 +196,7 @@ def test_ssh_repository_browser_rejects_untrusted_out_of_directory_entries() -> 
             {
                 "name": "escape",
                 "path": "/etc",
+                "resolved": "/etc",
                 "git_repository": False,
                 "has_research": False,
             }

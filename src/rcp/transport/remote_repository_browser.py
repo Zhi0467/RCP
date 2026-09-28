@@ -47,6 +47,8 @@ def browse_directory(
             {
                 "name": name,
                 "path": entry_path,
+                # A symlink's target, so a caller can judge where a pick lands.
+                "resolved": os.path.realpath(entry_path),
                 "git_repository": os.path.exists(os.path.join(entry_path, ".git")),
                 "has_research": os.path.isdir(os.path.join(entry_path, ".research")),
             }
