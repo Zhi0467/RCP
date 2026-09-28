@@ -82,6 +82,8 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "space_identity",
         "space_machines",
         "notification_devices",
+        "notification_vapid_key",
+        "notification_web_push_subscriptions",
         "space_users",
         "storage_schema_migrations",
         "team_bootstrap_codes",

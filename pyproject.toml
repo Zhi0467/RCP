@@ -19,6 +19,7 @@ dependencies = [
   "anyio>=4.0",
   "markdown-it-py>=4.2.0",
   "pillow>=12.3.0",
+  "cryptography>=45",
 ]
 
 [project.scripts]
@@ -26,6 +27,7 @@ rcp = "rcp.__main__:main"
 
 [dependency-groups]
 dev = [
+  "http-ece>=1.2.1",
   "pre-commit>=4.0",
   "pyinstaller>=6.21.0",
   "pytest>=8.4.0",

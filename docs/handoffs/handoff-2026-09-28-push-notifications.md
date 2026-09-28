@@ -8,8 +8,8 @@ Implementation started in this PR on 2026-09-28. Done: the Mac adapter
 (`web/src-tauri/src/notifications.m`) and its gate probe, below; slice 2's
 SQLite preferences/devices/outbox, migration and persistence boundaries,
 shared episode health, watcher-independent main reconciliation, owner loop,
-and preferences/desktop delivery APIs. Remaining: Web Push and VAPID,
-notify-only pairing/listener, Web settings and lifecycle, native client
+and preferences/desktop delivery APIs; slice 3's Web Push encryption, VAPID key,
+outbound limits, and phone routes. Remaining: notify-only pairing/listener, Web settings and lifecycle, native client
 integration and deep-link handling, and the real-hardware journeys below.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which landed first (#216): the Mac check below

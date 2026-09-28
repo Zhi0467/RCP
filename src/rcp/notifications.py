@@ -11,9 +11,12 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+import httpx
+
 if TYPE_CHECKING:
     from rcp.background import StartupEffectFence
 
+from rcp import web_push
 from rcp.core.attention import project_graph_attention
 from rcp.core.models import GraphState
 from rcp.episode_health import load_episode_health
@@ -81,7 +84,12 @@ class NotificationSender:
         *,
         admission: RuntimeAdmissionGate,
         startup_effect_fence: StartupEffectFence | None = None,
+        resolve: web_push.Resolver | None = None,
+        transport: httpx.BaseTransport | None = None,
     ) -> None:
+        # Tests replace DNS and the HTTP transport; production uses neither.
+        self.resolve = resolve or web_push.resolve_host
+        self.transport = transport
         self.store = store
         self.catalog = catalog
         self.admission = admission
@@ -161,6 +169,7 @@ class NotificationSender:
             self.store.prune_notification_devices()
             for row in self.store.pending_notification_rows():
                 self.store.guard_notification_delivery(row["device_id"], row["notification_id"])
+            self._deliver_web_push()
 
     def reconcile_project(self, project_id: str) -> None:
         if not self.store.notification_graph_enabled(project_id):
@@ -291,57 +300,159 @@ class NotificationSender:
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open("notification delivery")
         with self.admission.mutation("desktop notification delivery"), self._lock:
-            output = []
-            now = datetime.fromisoformat(self.store.now())
-            for row in self.store.pending_notification_rows(device_id):
-                notification_id = row["notification_id"]
-                if not self.store.guard_notification_delivery(device_id, notification_id):
+            return [
+                {
+                    key: row[key]
+                    for key in ("notification_id", "reason", "project_name", "deep_link")
+                }
+                for row in self._lease_due(device_id)
+            ]
+
+    def _deliver_web_push(self) -> None:
+        devices = {row["device_id"] for row in self.store.pending_notification_rows()} & {
+            device["device_id"]
+            for device in self.store.notification_devices()
+            if device["kind"] == "web_push"
+        }
+        if not devices:
+            return
+        key = web_push.VapidKey.from_pem(self.store.notification_vapid_key())
+        for device_id in sorted(devices):
+            subscription = self.store.web_push_subscription(device_id)
+            if subscription is None:
+                continue
+            for row in self._lease_due(device_id):
+                self._send_web_push(key, device_id, subscription, row)
+
+    def _send_web_push(
+        self,
+        key: web_push.VapidKey,
+        device_id: str,
+        subscription: dict[str, object],
+        row: dict[str, object],
+    ) -> None:
+        now = datetime.fromisoformat(self.store.now())
+        age = (now - datetime.fromisoformat(str(row["created_at"]))).total_seconds()
+        payload = {
+            "notification_id": row["notification_id"],
+            "reason": row["reason"],
+            "project_name": row["project_name"],
+        }
+        # A notify-only phone has no read access, so it gets nothing to open.
+        if subscription["opens_links"]:
+            payload["deep_link"] = row["deep_link"]
+        try:
+            result = web_push.send(
+                web_push.Subscription(
+                    endpoint=str(subscription["endpoint"]),
+                    p256dh=str(subscription["p256dh"]),
+                    auth=str(subscription["auth"]),
+                    origin=str(subscription["origin"]),
+                ),
+                payload,
+                key=key,
+                topic=str(row["notification_id"]),
+                ttl_seconds=int(NOTIFICATION_TTL_SECONDS - age),
+                resolve=self.resolve,
+                transport=self.transport,
+            )
+        except web_push.WebPushRefused:
+            _LOG.warning("A phone subscription is no longer an allowed push destination")
+            self.store.fail_notification(device_id, str(row["notification_id"]))
+            return
+        notification_id = str(row["notification_id"])
+        if result.outcome == "posted":
+            self.store.acknowledge_notification(device_id, notification_id, posted=True)
+        elif result.outcome == "gone":
+            self.store.delete_notification_device(device_id)
+        elif result.outcome == "failed":
+            self.store.fail_notification(device_id, notification_id)
+        elif result.retry_after_seconds is not None:
+            self.store.defer_notification(
+                device_id,
+                notification_id,
+                (now + timedelta(seconds=result.retry_after_seconds)).isoformat(),
+            )
+
+    def send_test(self, device_id: str) -> str:
+        """Send one test push now; its outcome sets the device status."""
+        subscription = self.store.web_push_subscription(device_id)
+        if subscription is None:
+            return "gone"
+        key = web_push.VapidKey.from_pem(self.store.notification_vapid_key())
+        try:
+            result = web_push.send(
+                web_push.Subscription(
+                    endpoint=str(subscription["endpoint"]),
+                    p256dh=str(subscription["p256dh"]),
+                    auth=str(subscription["auth"]),
+                    origin=str(subscription["origin"]),
+                ),
+                {"reason": "test"},
+                key=key,
+                topic="test",
+                ttl_seconds=60,
+                resolve=self.resolve,
+                transport=self.transport,
+            )
+        except web_push.WebPushRefused:
+            result = web_push.SendResult("failed")
+        if result.outcome == "gone":
+            self.store.delete_notification_device(device_id)
+        else:
+            self.store.set_notification_device_status(
+                device_id, "on" if result.outcome == "posted" else "delivery_failed"
+            )
+        return result.outcome
+
+    def _lease_due(self, device_id: str) -> list[dict[str, object]]:
+        """Drop items that no longer qualify, then lease the rest with backoff."""
+        output = []
+        now = datetime.fromisoformat(self.store.now())
+        for row in self.store.pending_notification_rows(device_id):
+            notification_id = row["notification_id"]
+            if not self.store.guard_notification_delivery(device_id, notification_id):
+                continue
+            if (
+                now - datetime.fromisoformat(row["created_at"])
+            ).total_seconds() >= NOTIFICATION_TTL_SECONDS:
+                self.store.drop_notification(device_id, notification_id)
+                continue
+            if row["kind"] in _GRAPH_KINDS:
+                # The marker holds the attention of the last reconciled
+                # revision, so a pull never replays canonical history.
+                marker = self.store.notification_graph_marker(row["project_id"])
+                if marker is None:
                     continue
-                if (
-                    now - datetime.fromisoformat(row["created_at"])
-                ).total_seconds() >= NOTIFICATION_TTL_SECONDS:
-                    self.store.drop_notification(device_id, notification_id)
-                    continue
-                if row["kind"] in _GRAPH_KINDS:
-                    # The marker holds the attention of the last reconciled
-                    # revision, so a pull never replays canonical history.
-                    marker = self.store.notification_graph_marker(row["project_id"])
-                    if marker is None:
-                        continue
-                    attention = json.loads(marker["attention_json"])
-                    unresolved = row["item_id"] in attention.get(row["kind"], [])
+                attention = json.loads(marker["attention_json"])
+                unresolved = row["item_id"] in attention.get(row["kind"], [])
+            else:
+                episode = self.store.episode(row["item_id"])
+                if episode is None:
+                    unresolved = False
                 else:
-                    episode = self.store.episode(row["item_id"])
-                    if episode is None:
-                        unresolved = False
-                    else:
-                        health, _, _, blocked = load_episode_health(self.store, [episode])[
-                            episode.episode_id
-                        ]
-                        unresolved = (health, blocked) == (
-                            row["observed_health"],
-                            row["observed_blocked_reason"],
-                        ) and (
-                            health in _TERMINAL
-                            if row["kind"] == "episode_finished"
-                            else health == "needs_action"
-                            or (health == "wrapping_up" and blocked == "sign_in")
-                        )
-                if not unresolved:
-                    self.store.drop_notification(device_id, notification_id)
-                    continue
-                delay = min(
-                    NOTIFICATION_RETRY_MAX_SECONDS,
-                    NOTIFICATION_RETRY_BASE_SECONDS * 2 ** row["attempts"],
-                )
-                if not self.store.begin_notification_attempt(
-                    device_id, notification_id, (now + timedelta(seconds=delay)).isoformat()
-                ):
-                    continue
-                output.append(
-                    {
-                        key: row[key]
-                        for key in ("notification_id", "reason", "project_name", "deep_link")
-                    }
-                )
-            return output
+                    health, _, _, blocked = load_episode_health(self.store, [episode])[
+                        episode.episode_id
+                    ]
+                    unresolved = (health, blocked) == (
+                        row["observed_health"],
+                        row["observed_blocked_reason"],
+                    ) and (
+                        health in _TERMINAL
+                        if row["kind"] == "episode_finished"
+                        else health == "needs_action"
+                        or (health == "wrapping_up" and blocked == "sign_in")
+                    )
+            if not unresolved:
+                self.store.drop_notification(device_id, notification_id)
+                continue
+            delay = min(
+                NOTIFICATION_RETRY_MAX_SECONDS,
+                NOTIFICATION_RETRY_BASE_SECONDS * 2 ** row["attempts"],
+            )
+            if not self.store.begin_notification_attempt(
+                device_id, notification_id, (now + timedelta(seconds=delay)).isoformat()
+            ):
+                continue
+            output.append(row)
+        return output

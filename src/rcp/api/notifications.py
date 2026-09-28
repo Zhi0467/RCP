@@ -3,8 +3,9 @@ from __future__ import annotations
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from rcp import web_push
 from rcp.api.dependencies import (
     get_catalog,
     get_identity_access,
@@ -15,6 +16,7 @@ from rcp.api.dependencies import (
     require_registered_project,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.limits import WEB_PUSH_MAX_ENDPOINT_BYTES
 from rcp.notifications import NotificationSender
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
@@ -49,6 +51,22 @@ class NotificationAcknowledgment(BaseModel):
     status: Literal["posted", "failed"]
 
 
+class WebPushKeys(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    p256dh: str = Field(min_length=1, max_length=128)
+    auth: str = Field(min_length=1, max_length=64)
+
+
+class WebPushRegistration(BaseModel):
+    """The browser's ``PushSubscription.toJSON()`` shape."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    endpoint: str = Field(min_length=1, max_length=WEB_PUSH_MAX_ENDPOINT_BYTES)
+    keys: WebPushKeys
+
+
 def _device_identity(
     request: Request, store: AppStore, identity: IdentityAccess
 ) -> tuple[str, str | None]:
@@ -64,17 +82,22 @@ def _device_identity(
 
 
 def _require_device(
-    device_id: str, request: Request, store: AppStore, identity: IdentityAccess
-) -> None:
+    device_id: str,
+    request: Request,
+    store: AppStore,
+    identity: IdentityAccess,
+    kind: str | None = "desktop",
+) -> dict[str, object]:
     user_id, session_id = _device_identity(request, store, identity)
     device = store.notification_device(device_id)
     if (
         device is None
         or device["user_id"] != user_id
         or device["session_id"] != session_id
-        or device["kind"] != "desktop"
+        or (kind is not None and device["kind"] != kind)
     ):
         raise HTTPException(status_code=404, detail="Notification device not found.")
+    return device
 
 
 @router.post("/api/notifications/devices/desktop")
@@ -159,3 +182,72 @@ def update_notification_preferences(
         identity.acting_user(request).user_id,
         body.model_dump(exclude_none=True),
     )
+
+
+@router.get("/api/notifications/web-push/key")
+def web_push_key(*, store: StoreDependency) -> dict[str, str]:
+    key = web_push.VapidKey.from_pem(store.notification_vapid_key())
+    return {"application_server_key": key.application_server_key}
+
+
+@router.post("/api/notifications/devices/web-push")
+def register_web_push(
+    body: WebPushRegistration,
+    request: Request,
+    *,
+    store: StoreDependency,
+    identity: IdentityDependency,
+    sender: SenderDependency,
+) -> dict[str, object]:
+    user_id, session_id = _device_identity(request, store, identity)
+    if session_id is None:
+        # A personal space's phones register only through the notify-only listener.
+        raise HTTPException(status_code=403, detail="Phones join a personal space by pairing.")
+    subscription = web_push.Subscription(
+        endpoint=body.endpoint,
+        p256dh=body.keys.p256dh,
+        auth=body.keys.auth,
+        origin=request.headers.get("origin", ""),
+    )
+    try:
+        web_push.validate_subscription(subscription, resolve=sender.resolve)
+    except web_push.WebPushRefused as exc:
+        raise HTTPException(status_code=422, detail="This push subscription is refused.") from exc
+    store.notification_vapid_key()
+    try:
+        device = store.register_web_push_device(
+            user_id,
+            session_id=session_id,
+            endpoint=subscription.endpoint,
+            p256dh=subscription.p256dh,
+            auth=subscription.auth,
+            origin=subscription.origin,
+            opens_links=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=401, detail="An active device session is required."
+        ) from exc
+    return {"device_id": device["device_id"], "kind": device["kind"]}
+
+
+@router.delete("/api/notifications/devices/{device_id}")
+def remove_device(
+    device_id: str, request: Request, *, store: StoreDependency, identity: IdentityDependency
+) -> dict[str, bool]:
+    _require_device(device_id, request, store, identity, kind=None)
+    store.delete_notification_device(device_id)
+    return {"ok": True}
+
+
+@router.post("/api/notifications/devices/{device_id}/test")
+def test_web_push(
+    device_id: str,
+    request: Request,
+    *,
+    store: StoreDependency,
+    identity: IdentityDependency,
+    sender: SenderDependency,
+) -> dict[str, str]:
+    _require_device(device_id, request, store, identity, kind="web_push")
+    return {"outcome": sender.send_test(device_id)}

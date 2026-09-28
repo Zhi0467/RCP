@@ -42,6 +42,14 @@ def migrate_notifications(connection: sqlite3.Connection) -> None:
         "project_id TEXT NOT NULL, health TEXT NOT NULL, blocked_reason TEXT, updated_at TEXT NOT NULL)",
         "CREATE TABLE IF NOT EXISTS notification_project_baselines (project_id TEXT PRIMARY KEY, "
         "baseline_at TEXT NOT NULL)",
+        # One space-wide VAPID signing key. Living in SQLite makes it atomic,
+        # under the data directory, and part of every backup snapshot.
+        "CREATE TABLE IF NOT EXISTS notification_vapid_key (singleton INTEGER PRIMARY KEY "
+        "CHECK(singleton=1), private_pem TEXT NOT NULL, created_at TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS notification_web_push_subscriptions (device_id TEXT PRIMARY KEY "
+        "REFERENCES notification_devices(device_id) ON DELETE CASCADE, endpoint TEXT NOT NULL UNIQUE, "
+        "p256dh TEXT NOT NULL, auth TEXT NOT NULL, origin TEXT NOT NULL, "
+        "opens_links INTEGER NOT NULL CHECK(opens_links IN (0,1)))",
     )
     for statement in statements:
         connection.execute(statement)
@@ -130,6 +138,123 @@ class NotificationStoreMixin:
                     "SELECT * FROM notification_devices WHERE device_id=?",
                     (device_id,),
                 ).fetchone()
+            )
+
+    def notification_vapid_key(self) -> str:
+        """Return the VAPID key PEM, creating it only while no phone depends on one."""
+        from rcp.web_push import VapidKey
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute("SELECT private_pem FROM notification_vapid_key").fetchone()
+            if row is not None:
+                return row[0]
+            if connection.execute(
+                "SELECT 1 FROM notification_devices WHERE kind='web_push'"
+            ).fetchone():
+                # Devices signed against a lost key must subscribe again.
+                raise RuntimeError("the VAPID key is missing while phone subscriptions exist")
+            pem = VapidKey.generate().to_pem()
+            connection.execute(
+                "INSERT INTO notification_vapid_key VALUES (1,?,?)", (pem, self.now())
+            )
+            return pem
+
+    def register_web_push_device(
+        self,
+        user_id: str,
+        *,
+        session_id: str | None,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        origin: str,
+        opens_links: bool,
+    ) -> dict[str, Any]:
+        """Replace this session's phone, or add a notify-only phone, for one endpoint."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("SELECT 1 FROM notification_vapid_key").fetchone() is None:
+                raise RuntimeError("the VAPID key must exist before a phone subscribes")
+            user = connection.execute(
+                "SELECT * FROM space_users WHERE user_id=?", (user_id,)
+            ).fetchone()
+            if user is None or user["removal_started_at"] or user["removed_at"]:
+                raise ValueError("notification member is inactive")
+            if user["identity_kind"] == "team_member":
+                if (
+                    session_id is None
+                    or connection.execute(
+                        "SELECT 1 FROM team_sessions WHERE session_id=? AND user_id=? "
+                        "AND expires_at>?",
+                        (session_id, user_id, self.now()),
+                    ).fetchone()
+                    is None
+                ):
+                    raise ValueError("a phone subscription requires an active session")
+                connection.execute(
+                    "DELETE FROM notification_devices WHERE kind='web_push' AND session_id=?",
+                    (session_id,),
+                )
+            elif session_id is not None:
+                raise ValueError("personal notification device cannot own a team session")
+            connection.execute(
+                "DELETE FROM notification_devices WHERE device_id IN (SELECT device_id FROM "
+                "notification_web_push_subscriptions WHERE endpoint=?)",
+                (endpoint,),
+            )
+            device_id = str(uuid.uuid4())
+            connection.execute(
+                "INSERT INTO notification_devices(device_id,user_id,kind,session_id,created_at) "
+                "VALUES (?,?,'web_push',?,?)",
+                (device_id, user_id, session_id, self.now()),
+            )
+            connection.execute(
+                "INSERT INTO notification_web_push_subscriptions VALUES (?,?,?,?,?,?)",
+                (device_id, endpoint, p256dh, auth, origin, int(opens_links)),
+            )
+            return dict(
+                connection.execute(
+                    "SELECT * FROM notification_devices WHERE device_id=?", (device_id,)
+                ).fetchone()
+            )
+
+    def web_push_subscription(self, device_id: str) -> dict[str, Any] | None:
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM notification_web_push_subscriptions WHERE device_id=?",
+                (device_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def defer_notification(
+        self, device_id: str, notification_id: str, next_attempt_at: str
+    ) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE notification_outbox SET next_attempt_at=max(next_attempt_at,?) "
+                "WHERE device_id=? AND notification_id=?",
+                (next_attempt_at, device_id, notification_id),
+            )
+
+    def set_notification_device_status(self, device_id: str, status: str) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE notification_devices SET last_status=? WHERE device_id=?",
+                (status, device_id),
+            )
+
+    def fail_notification(self, device_id: str, notification_id: str) -> None:
+        """Drop an item the push service refused for good; the device shows it."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM notification_outbox WHERE device_id=? AND notification_id=?",
+                (device_id, notification_id),
+            )
+            connection.execute(
+                "UPDATE notification_devices SET last_status='delivery_failed' WHERE device_id=?",
+                (device_id,),
             )
 
     def notification_device(self, device_id: str) -> dict[str, Any] | None:

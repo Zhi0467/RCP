@@ -96,8 +96,35 @@ directly, without an identity-refresh request before each poll.
 `GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
 calling member's five toggles: `proposal`, `decision`, `blocker`,
 `episode_needs_action`, and `episode_finished`. All default on except
-`episode_finished`. These routes require project membership. This backend
-contract does not yet provide Web Push or a Web/native delivery client.
+`episode_finished`. These routes require project membership.
+
+## Phone push delivery
+
+Phones use standard Web Push with VAPID. `GET /api/notifications/web-push/key`
+returns the space's application server key; the signing key lives in SQLite,
+so it is part of every backup, and restore keeps it while detaching every
+device. A missing key is never silently replaced while phones still depend on
+it.
+
+`POST /api/notifications/devices/web-push` takes the browser's
+`PushSubscription.toJSON()` shape and binds it to the calling team session,
+replacing that session's previous phone. A personal space refuses it on the
+owner API. The endpoint must be `https` on the default port at an allowlisted
+push service, and every resolved address must be public; anything else is
+refused before a connection. The request's HTTPS `Origin` becomes the VAPID
+subject. Each send validates again, connects to the checked address with TLS
+verified against the push service's name, and never follows a redirect.
+
+The sender loop delivers due phone items with the same qualification, TTL, and
+backoff as the desktop pull. The stable notification id is the `Topic`. A 2xx
+reply means the push service accepted the message; display is best effort. A
+404 or 410 deletes the device, 429 and 5xx retry (honoring `Retry-After`), and
+any other reply drops the item and marks the device Delivery failed.
+`POST /api/notifications/devices/{device_id}/test` sends one test push now and
+sets the device status from its outcome. `DELETE
+/api/notifications/devices/{device_id}` removes the caller's own device of
+either kind. The encrypted payload holds the notification id, reason code,
+project name, and, for a device that may open items, the deep link.
 
 ## API composition and mutation boundary
 
