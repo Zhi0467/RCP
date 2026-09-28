@@ -101,6 +101,17 @@ def run_session(settings: dict[str, Any]) -> int:
     mirrored = settings["containment"] == "mirrored"
     if settings["containment"] not in {"mirrored", "cooperative"}:
         raise ValueError("Unknown terminal profile.")
+    granted: list[str] = []
+    declared = settings.get("writable_paths") or []
+    if mirrored and declared:
+        # Grants resolve here, on the filesystem they are mounted from. RCP's
+        # own storage arrives relative to this account's home.
+        granted, owned_inside = profile["resolve_grants"](
+            declared,
+            [str(Path(path).expanduser()) for path in settings["rcp_owned_paths"]],
+            load_source(settings["grant_paths_source"]),
+        )
+        protected = list(dict.fromkeys([*protected, *owned_inside]))
     child: subprocess.Popen[bytes] | None = None
     signal.signal(signal.SIGHUP, hangup)
     signal.signal(signal.SIGTERM, hangup)
@@ -142,6 +153,7 @@ def run_session(settings: dict[str, Any]) -> int:
                     git_environment=environment,
                     empty_directory=Path(empty),
                     stop_timeout=timeout,
+                    granted_paths=granted,
                     expand_environment_option=bool(settings.get("expand_environment_option", True)),
                 )
             else:

@@ -293,7 +293,9 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
 
     handler = replace(
         commands.handler,
-        remote_stage=SimpleNamespace(canonical_directories=canonical_directories),
+        remote_stage=SimpleNamespace(
+            canonical_directories=canonical_directories, legacy_stage_roots=lambda: []
+        ),
     )
     monkeypatch.setattr(
         patch_validator,
@@ -549,3 +551,28 @@ def test_inline_short_work_needs_no_watcher(commands):
     commands.handler.validate_handoff(set())
     prose = commands.handler.execution_instructions("helper launch")
     assert "helper launch" in prose
+
+
+def test_compute_cwd_in_own_workspace_passes_a_granted_rcp_parent(commands, tmp_path):
+    scope = commands.handler.write_scope
+    covered = str(tmp_path)
+    handler = replace(
+        commands.handler,
+        write_scope=ProjectWriteScope.create(
+            project_id=scope.project_id,
+            execution_machine=scope.execution_machine,
+            execution_host=scope.execution_host,
+            capability=scope.capability,
+            stage_root=scope.stage_root,
+            workspace_root=scope.workspace_root,
+            repositories=[],
+            granted_roots=[covered],
+            protected_write_paths=[*scope.protected_write_paths, covered],
+            granted_protected_paths=[covered],
+        ),
+    )
+    for cwd, status in ((commands.workspace, "ok"), (commands.protected, "invalid")):
+        response = handler(
+            _request("launch", f"key-{status}", cwd=str(cwd), argv=["true"]), commands.identity
+        )
+        assert response.status == status, response.message

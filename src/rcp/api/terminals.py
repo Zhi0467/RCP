@@ -185,6 +185,11 @@ async def open_session(
             git_read_paths=paths,
             git_environment=environment,
             remote_git_key_relative=remote_key_relative,
+            machine_writable_paths=(
+                list(card.writable_paths)
+                if (card := services.store.space_machine_for(machine.host, machine.os_account))
+                else []
+            ),
         )
     except PermissionError as exc:
         # PermissionError is an OSError; catching it second would report a

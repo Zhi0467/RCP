@@ -51,7 +51,12 @@ from rcp.terminals.runtime import (
     release_runtime,
     sweep_loop,
 )
-from rcp.terminals.utilities import resolve_repository, save_metadata, timestamp
+from rcp.terminals.utilities import (
+    local_grants,
+    resolve_repository,
+    save_metadata,
+    timestamp,
+)
 from rcp.transport.run_stage import RemoteRunStage
 
 logger = logging.getLogger(__name__)
@@ -507,7 +512,9 @@ class TerminalManager:
         remote_git_key_relative: str | None = None,
         git_identity: GitIdentity | None = None,
         git_key: Path | None = None,
+        machine_writable_paths: list[str] | None = None,
     ) -> TerminalSession:
+        """Open one shell; ``machine_writable_paths`` are its machine card's grants."""
         key = (project_id, repository_alias)
         async with self._lock:
             if not self._started:
@@ -532,6 +539,7 @@ class TerminalManager:
                 remote_git_key_relative=remote_git_key_relative,
                 git_identity=git_identity,
                 git_key=git_key,
+                machine_writable_paths=machine_writable_paths or [],
             )
         finally:
             self._opening.discard(key)
@@ -593,6 +601,7 @@ class TerminalManager:
         remote_git_key_relative: str | None,
         git_identity: GitIdentity | None,
         git_key: Path | None,
+        machine_writable_paths: list[str],
     ) -> TerminalSession:
         """Probe, resolve and launch without the manager lock.
 
@@ -615,6 +624,12 @@ class TerminalManager:
             data_dir=self.data_dir,
             remote_stage=RemoteRunStage(machine.host) if machine.host else None,
         )
+        granted: list[str] = []
+        if not machine.host and capability.backend.containment == "mirrored":
+            granted, owned_inside = await asyncio.to_thread(
+                local_grants, machine_writable_paths, self.data_dir
+            )
+            protected = sorted({*protected, *owned_inside})
         if not machine.host:
             if git_key is not None:
                 resolved = await asyncio.to_thread(
@@ -667,6 +682,7 @@ class TerminalManager:
                     git_key_relative=remote_git_key_relative,
                     git_identity=git_identity,
                     os_account=machine.os_account,
+                    writable_paths=machine_writable_paths,
                 )
             else:
                 start = asyncio.to_thread(
@@ -677,6 +693,7 @@ class TerminalManager:
                     git_read_paths=git_read_paths,
                     git_environment=git_environment or {},
                     empty_directory=self.directory / "empty",
+                    granted_paths=granted,
                 )
             pending = asyncio.create_task(start)
             try:

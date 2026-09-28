@@ -7,8 +7,15 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rcp.agents.write_scope import RegisteredRepositoryRoot, protected_repository_paths
+from rcp.agents import grant_paths
+from rcp.agents.write_scope import (
+    RegisteredRepositoryRoot,
+    default_temporary_roots,
+    protected_repository_paths,
+    rcp_owned_paths,
+)
 from rcp.config import Manifest
+from rcp.terminals import profile
 from rcp.terminals.models import TerminalSession, TerminalUnavailable
 from rcp.transport.run_stage import RemoteRunStage
 
@@ -66,6 +73,35 @@ def resolve_repository(
     if any(root == Path(path) or Path(path) in root.parents for path in protected):
         raise TerminalUnavailable("Canonical state cannot be a terminal repository.")
     return root, protected
+
+
+def local_grants(writable_paths: list[str], data_dir: Path) -> tuple[list[str], list[str]]:
+    """This machine's canonical grants and the RCP-owned paths they cover."""
+
+    owned = rcp_owned_paths(
+        account_home=str(Path.home().resolve()), app_data_dir=data_dir, remote=False
+    )
+    try:
+        return profile.resolve_grants(
+            [*writable_paths, *default_temporary_roots(remote=False)],
+            owned,
+            vars(grant_paths),
+        )
+    except (OSError, ValueError) as exc:
+        raise TerminalUnavailable(f"A writable path cannot be granted: {exc}") from exc
+
+
+def remote_grant_request(writable_paths: list[str]) -> tuple[list[str], list[str]]:
+    """Declared grants and home-relative owned paths for the far side to resolve.
+
+    Only the execution machine knows its account home, so owned paths travel
+    under `~` and the shipped launcher expands them.
+    """
+
+    return (
+        [*writable_paths, *default_temporary_roots(remote=True)],
+        rcp_owned_paths(account_home="~", app_data_dir=None, remote=True),
+    )
 
 
 def _resolve_remote_repository(

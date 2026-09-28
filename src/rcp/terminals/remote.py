@@ -12,6 +12,7 @@ from rcp.git_identity import GitIdentity
 from rcp.limits import TERMINAL_STOP_TIMEOUT_SECONDS
 from rcp.terminals import launch
 from rcp.terminals.models import TerminalUnavailable
+from rcp.terminals.utilities import remote_grant_request
 from rcp.transport import remote_terminal
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import _remote_script
@@ -42,11 +43,15 @@ def start_remote(
     git_key_relative: str | None = None,
     git_identity: GitIdentity | None = None,
     os_account: str = "",
+    writable_paths: list[str] | None = None,
 ) -> tuple[subprocess.Popen[bytes], int]:
+    grants, owned = remote_grant_request(writable_paths or [])
     settings = {
         "unit": unit,
         "repository": str(repository),
         "protected_paths": protected_paths,
+        "writable_paths": grants,
+        "rcp_owned_paths": owned,
         "containment": containment,
         "expand_environment_option": expand_environment_option,
         "git_key_relative": git_key_relative,
@@ -65,6 +70,9 @@ def start_remote(
         "stop_timeout": TERMINAL_STOP_TIMEOUT_SECONDS,
         "profile_source": terminal_source("profile.py"),
         "git_access_source": terminal_source("git_access.py"),
+        "grant_paths_source": importlib.resources.files("rcp.agents")
+        .joinpath("grant_paths.py")
+        .read_text(encoding="utf-8"),
     }
     return launch.launch(_command(host, settings, pty=True), None, label="SSH PTY")
 
