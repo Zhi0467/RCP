@@ -30,6 +30,7 @@ import {
   Network,
   RefreshCw,
   RotateCcw,
+  Settings,
   Settings2,
   Telescope,
   TerminalSquare,
@@ -4322,12 +4323,19 @@ export default function App() {
               >
                 <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={15} />
               </button>
+              <button
+                className="icon-button space-settings-control"
+                aria-label="Space settings"
+                title="Space settings"
+                onClick={() => setSpaceSettingsOpen(true)}
+              >
+                <Settings size={15} />
+              </button>
               <LandingIdentityMenu
                 compact
                 identity={actorIdentity}
                 identityError={actorIdentityError}
                 onRequestName={requestActorName}
-                onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
                 appearance={{
                   themeChoice: appearance.theme,
                   colorModeChoice: appearance.mode,

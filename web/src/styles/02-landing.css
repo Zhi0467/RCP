@@ -614,21 +614,23 @@
   min-height: 32px;
   padding: 2px;
 }
-.landing-identity-space-settings {
+.landing-space-settings {
   align-items: center;
-  background: transparent;
-  border: 0;
-  border-top: 1px solid var(--landing-rule);
+  background: color-mix(in srgb, var(--landing-sheet) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--landing-rule) 84%, var(--landing-paper));
+  border-radius: 3px;
   color: var(--landing-ink);
-  display: flex;
-  font-size: var(--type-xs);
-  font-weight: 700;
-  gap: 7px;
-  min-height: 40px;
-  padding: 0 18px;
-  text-align: left;
-  width: 100%;
+  display: inline-flex;
+  flex: none;
+  height: 38px;
+  justify-content: center;
+  margin-left: auto;
+  width: 38px;
 }
-.landing-identity-space-settings:hover {
+.landing-space-settings:hover {
   background: var(--landing-sheet);
+  border-color: color-mix(in srgb, var(--landing-rule) 72%, var(--landing-ink));
+}
+.landing-space-settings + .landing-identity-menu {
+  margin-left: 8px;
 }

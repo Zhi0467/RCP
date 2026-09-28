@@ -285,7 +285,7 @@ test("space-wide sections render on space Settings and project sections on proje
   }
 });
 
-test("the identity menu opens space Settings and holds Display", () => {
+test("the identity menu holds Display, and Space settings sits beside it", () => {
   const identity = {
     space_id: "space",
     space_kind: "personal",
@@ -302,7 +302,6 @@ test("the identity menu opens space Settings and holds Display", () => {
       identity,
       identityError: null,
       onRequestName() {},
-      onOpenSpaceSettings() {},
       appearance: {
         themeChoice: "classic",
         colorModeChoice: "system",
@@ -312,7 +311,7 @@ test("the identity menu opens space Settings and holds Display", () => {
       textScale: { value: 100, onChange() {} },
     }),
   );
-  assert.match(html, /data-identity-action="space-settings"/);
+  assert.doesNotMatch(html, /data-identity-action="space-settings"/);
   assert.match(html, /class="appearance-picker"/);
   assert.match(html, /class="text-scale-controls"/);
 });

@@ -2992,7 +2992,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   }
 }
 
-/* Space settings: a page of its own, reached from the identity menu. */
+/* Space settings: a page of its own, reached from the gear beside the identity menu. */
 .space-settings-shell {
   background: var(--paper);
   color: var(--ink);

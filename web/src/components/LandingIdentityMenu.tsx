@@ -5,7 +5,6 @@ import {
   Link2,
   Pencil,
   RefreshCw,
-  Settings2,
   Smartphone,
   UserPlus,
   UserRound,
@@ -43,7 +42,6 @@ interface Props {
   identityError: string | null;
   onRequestName: () => Promise<boolean> | void;
   onAddTeamSpace?: () => void;
-  onOpenSpaceSettings?: () => void;
   appearance?: AppearancePickerProps;
   textScale?: TextScaleControl;
   /** Inside a project the trigger shows the initial alone. */
@@ -679,7 +677,6 @@ export function LandingIdentityMenu({
   identityError,
   onRequestName,
   onAddTeamSpace,
-  onOpenSpaceSettings,
   appearance,
   textScale,
   compact = false,
@@ -812,20 +809,6 @@ export function LandingIdentityMenu({
             teamSpaces={teamSpaces}
             onAddTeamSpace={onAddTeamSpace}
           />
-          {onOpenSpaceSettings && (
-            <button
-              className="landing-identity-space-settings"
-              type="button"
-              data-identity-action="space-settings"
-              onClick={() => {
-                setOpen(false);
-                onOpenSpaceSettings();
-              }}
-            >
-              <Settings2 size={13} aria-hidden="true" />
-              Space settings
-            </button>
-          )}
           {appearance && <AppearancePicker {...appearance} textScale={textScale} />}
         </section>
       )}
