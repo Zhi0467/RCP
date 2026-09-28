@@ -116,7 +116,12 @@ Both the Mac and the phone deliver the same items, from one outbox.
 The first draft failed an xhigh review. Each point below answers one of its
 requirements.
 
-1. **At-least-once delivery.** There is one outbox row per (subscription,
+1. **At-least-once submission.** For a phone, a push service's success
+   response means it accepted the message, not that the phone showed it;
+   the service can still drop or expire it. So the outbox guarantees
+   at-least-once submission to the push service across local crashes, and
+   display on the phone is best effort. The Mac adapter reports display
+   itself. There is one outbox row per (subscription,
    notification id). It records the attempt count, next attempt time, and
    last status. A stable notification id is the Web Push `Topic`, the Web
    Notification `tag` passed to `showNotification`, and the Mac request
@@ -163,7 +168,9 @@ requirements.
 7. **Server operations.** Write the VAPID key atomically, under the data
    directory, and include it in backup. New tables get a schema migration, a
    restore fingerprint, a transfer disposition, and a boundary fixture.
-   Restore and transfer detach every subscription. A lost key is recovered by
+   Restore detaches every subscription. Transfer of one project deletes only
+   that project's notification preferences and outbox rows; device
+   subscriptions belong to the space and stay. A lost key is recovered by
    devices subscribing again, never by silently making a new key.
 8. **Subscriptions belong to a device.** On a team space, logout, session
    revocation, or session expiry deletes the subscription. Every team send
@@ -171,8 +178,9 @@ requirements.
    finds it expired deletes the subscription instead. Pushes alone do not
    refresh a session, so a phone that is never opened stops receiving pushes
    after `TEAM_SESSION_IDLE_DAYS`, and the Devices card says so. On a personal
-   space, Remove deletes it. Project membership is checked again before every
-   send.
+   space, Remove deletes it. Before every send, including a retry, project
+   membership and the member's current toggle for that project and kind are
+   checked again; a send that finds the toggle off drops the row.
 9. **Deep links.** Add hash routes for a Proposal, Decision, Blocker, or
    episode on its target. Handle a cold launch, an expired session (sign in,
    then continue to the link), and an item already resolved (open it read-only
@@ -216,6 +224,8 @@ requirements.
 - The personal-space phone listener refuses every route outside its allowlist,
   and a redeemed pairing code grants no read access.
 - Backup and restore keep the key; restore does not resume old subscriptions.
+  Transferring one project leaves the space's other projects notifying.
+- Turning a kind off stops a row that is already queued or retrying.
 - The payload contains only allowed sources.
 - Tests assert ids, states, and counts, never wording.
 - The four real-hardware journeys in the closing condition.
