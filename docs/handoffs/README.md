@@ -1,7 +1,7 @@
 # Active implementation handoffs
 
 - [Install and update the Mac app without Open Anyway](handoff-2026-09-28-mac-install-and-update.md)
-  — implemented 2026-09-28; waiting on live checks across two releases.
+  — shipped in v0.4.5; install checks passed, one-click update waits for v0.4.6.
 
 ## Open live checks
 
