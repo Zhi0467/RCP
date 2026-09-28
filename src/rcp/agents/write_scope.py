@@ -61,9 +61,6 @@ class ProjectWriteScope(BaseModel):
     # The subset of protected paths present only because a grant covers RCP's
     # own storage; kept apart so a pre-grant fingerprint can be derived.
     granted_protected_paths: list[str] = Field(default_factory=list)
-    # Other tasks' legacy /tmp stages: enforced, but they come and go as stages
-    # are swept, so they stay out of the fingerprint.
-    transient_protected_paths: list[str] = Field(default_factory=list)
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
@@ -95,10 +92,6 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("granted protected paths must be sorted and unique")
         if not set(self.granted_protected_paths).issubset(self.protected_write_paths):
             raise ValueError("granted protected paths must be protected write paths")
-        if self.transient_protected_paths != sorted(set(self.transient_protected_paths)):
-            raise ValueError("transient protected paths must be sorted and unique")
-        if not set(self.transient_protected_paths).issubset(self.granted_protected_paths):
-            raise ValueError("transient protected paths must be granted protected paths")
         if self.protected_write_paths != sorted(set(self.protected_write_paths)):
             raise ValueError("protected write paths must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.protected_write_paths):
@@ -123,7 +116,6 @@ class ProjectWriteScope(BaseModel):
         git_metadata_roots: list[str] | None = None,
         granted_roots: list[str] | None = None,
         granted_protected_paths: list[str] | None = None,
-        transient_protected_paths: list[str] | None = None,
     ) -> ProjectWriteScope:
         payload: dict[str, object] = {
             "schema_generation": 1,
@@ -148,28 +140,8 @@ class ProjectWriteScope(BaseModel):
             payload["granted_roots"] = sorted(set(granted_roots))
         if granted_protected_paths:
             payload["granted_protected_paths"] = sorted(set(granted_protected_paths))
-        transient = sorted(set(transient_protected_paths or []))
-        fingerprinted = _without_transient(payload, transient)
-        if transient:
-            payload["transient_protected_paths"] = transient
-        return cls.model_validate({**payload, "fingerprint": _scope_fingerprint(fingerprinted)})
-
-    def without_grants(self) -> ProjectWriteScope:
-        """This scope as a build without machine grants would have resolved it."""
-
-        granted_protected = set(self.granted_protected_paths)
-        return ProjectWriteScope.create(
-            project_id=self.project_id,
-            execution_machine=self.execution_machine,
-            execution_host=self.execution_host,
-            capability=self.capability,
-            stage_root=self.stage_root,
-            workspace_root=self.workspace_root,
-            repositories=self.repositories,
-            git_metadata_roots=self.git_metadata_roots,
-            protected_write_paths=[
-                path for path in self.protected_write_paths if path not in granted_protected
-            ],
+        return cls.model_validate(
+            {**payload, "fingerprint": _scope_fingerprint(_without_grants(payload))}
         )
 
     @property
@@ -195,14 +167,7 @@ class ProjectWriteScope(BaseModel):
         excluded = {"fingerprint"}
         if not self.git_metadata_roots:
             excluded.add("git_metadata_roots")
-        if not self.granted_roots:
-            excluded.add("granted_roots")
-        if not self.granted_protected_paths:
-            excluded.add("granted_protected_paths")
-        excluded.add("transient_protected_paths")
-        return _without_transient(
-            self.model_dump(mode="json", exclude=excluded), self.transient_protected_paths
-        )
+        return _without_grants(self.model_dump(mode="json", exclude=excluded))
 
 
 def resolve_project_write_scope(
@@ -466,7 +431,6 @@ def resolve_project_write_scope(
         granted_roots=granted,
         protected_write_paths=protected,
         granted_protected_paths=granted_protected,
-        transient_protected_paths=sorted(set(granted_protected) & set(legacy_stages)),
     )
 
 
@@ -763,18 +727,24 @@ def _reject_repository_ownership_overlap(
         )
 
 
-def _without_transient(payload: dict[str, object], transient: list[str]) -> dict[str, object]:
-    if not transient:
-        return payload
-    dropped = set(transient)
-    result = dict(payload)
-    for key in ("protected_write_paths", "granted_protected_paths"):
-        if key in result:
-            kept = [path for path in result[key] if path not in dropped]  # type: ignore[union-attr]
-            if kept or key == "protected_write_paths":
-                result[key] = kept
-            else:
-                del result[key]
+def _without_grants(payload: dict[str, object]) -> dict[str, object]:
+    """The fingerprinted form: machine grants are machine settings, not session identity.
+
+    A human may change a machine's writable paths while a chat is open; its next
+    turn resumes with the new grants rather than being refused.
+    """
+
+    granted = set(payload.get("granted_protected_paths") or [])  # type: ignore[arg-type]
+    result = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"granted_roots", "granted_protected_paths"}
+    }
+    result["protected_write_paths"] = [
+        path
+        for path in result["protected_write_paths"]  # type: ignore[union-attr]
+        if path not in granted
+    ]
     return result
 
 

@@ -120,9 +120,8 @@ def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
     assert str(shared.resolve()) in scope.writable_roots
     assert str((shared / "app-data").resolve()) in scope.granted_protected_paths
     assert str((shared / "app-data").resolve()) in scope.protected_write_paths
-    legacy = scope.without_grants()
-    assert legacy.granted_roots == []
-    assert str((shared / "app-data").resolve()) not in legacy.protected_write_paths
+    # Grants are machine settings: changing them keeps an open chat resumable.
+    assert scope.fingerprint == _resolve_local(manifest, tmp_path).fingerprint
 
 
 def test_a_grant_keeps_unadmitted_repositories_research_read_only(
@@ -133,19 +132,6 @@ def test_a_grant_keeps_unadmitted_repositories_research_read_only(
     research_a = str(Path(manifest.repository_map["repo-a"].path).resolve() / ".research")
     assert any(research_a == path for path in scope.protected_write_paths)
     assert str((tmp_path / "stage" / "inputs").resolve()) in scope.protected_write_paths
-
-
-def test_previous_fingerprints_cover_pre_grant_and_pre_inputs_bindings(
-    manifest: Manifest, tmp_path: Path
-) -> None:
-    from rcp.background import previous_scope_fingerprints
-
-    stage = tmp_path / "stage"
-    scope = _resolve_local(manifest, tmp_path, stage_root=stage, workspace_root=stage)
-    previous = previous_scope_fingerprints(scope)
-
-    assert previous == (scope.without_grants().fingerprint,)
-    assert scope.fingerprint not in previous
 
 
 def test_a_grant_inside_rcp_data_is_refused(manifest: Manifest, tmp_path: Path) -> None:
@@ -1495,26 +1481,3 @@ def test_a_sessionless_fresh_launch_still_rebinds_a_finished_stage(tmp_path: Pat
     ).bind_write_scope(wider, resumes_native_session=False)
 
     assert store.agent_task("later").write_scope_fingerprint == wider.fingerprint
-
-
-def test_legacy_stage_protection_stays_out_of_the_fingerprint() -> None:
-    def create(transient: list[str]) -> ProjectWriteScope:
-        return ProjectWriteScope.create(
-            project_id="project",
-            execution_machine="gpu",
-            execution_host="gpu.example",
-            capability="work_auto",
-            stage_root="/home/a/.rcp/stages/rcp-run.x",
-            workspace_root="/home/a/.rcp/stages/rcp-run.x/workspace",
-            repositories=[],
-            granted_roots=["/tmp"],
-            protected_write_paths=["/srv/r/.research", *transient],
-            granted_protected_paths=transient,
-            transient_protected_paths=transient,
-        )
-
-    swept = create([])
-    live = create(["/tmp/rcp-run.other"])
-
-    assert "/tmp/rcp-run.other" in live.protected_write_paths
-    assert live.fingerprint == swept.fingerprint

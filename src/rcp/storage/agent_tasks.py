@@ -3290,7 +3290,7 @@ class AgentTaskStoreMixin:
         fingerprint: str,
         continuation_binding: bool,
         scope_repositories: Sequence[str] = (),
-        compatible_previous_fingerprints: tuple[str, ...] = (),
+        compatible_previous_fingerprint: str | None = None,
         compatible_related_fingerprints: frozenset[str] = frozenset(),
     ) -> None:
         """Compare-and-set the durable filesystem scope before provider launch.
@@ -3326,7 +3326,7 @@ class AgentTaskStoreMixin:
             if row["stage_host"] != normalized_host or row["stage_root"] != stage_root:
                 raise ValueError("agent task write scope does not match its saved execution stage")
             existing = row["write_scope_fingerprint"]
-            if existing not in {None, fingerprint, *compatible_previous_fingerprints}:
+            if existing not in {None, fingerprint, compatible_previous_fingerprint}:
                 raise ValueError("agent task write scope changed after it was durably bound")
 
             clauses = ["(COALESCE(stage_host, '') = ? AND stage_root = ?)"]
@@ -3337,7 +3337,7 @@ class AgentTaskStoreMixin:
                 values.append(native_session_id)
             admissible = {
                 fingerprint,
-                *compatible_previous_fingerprints,
+                compatible_previous_fingerprint,
                 *compatible_related_fingerprints,
             }
             if continuation_binding:

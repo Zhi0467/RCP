@@ -320,8 +320,9 @@ remote machines, every registered repository's `.research`, this launch's
 them is refused; one of them inside a grant stays read-only there
 (`granted_protected_paths`). The launch's own workspace and job folder stay
 writable. Paths are compared by filesystem identity on the execution machine.
-Scopes without grants keep their earlier fingerprint, and a task bound before
-grants existed continues through its pre-grant fingerprint.
+Grants and the protections they add are machine settings, so they stay out of
+the scope fingerprint: changing a machine's writable paths leaves open chats
+resumable, and their next turn uses the new grants.
 
 systemd jobs render grants as `ReadWritePaths` and covered storage as
 `ReadOnlyPaths`, where the deeper writable workspace wins. Codex renders a
