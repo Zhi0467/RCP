@@ -27,6 +27,17 @@ A personal space has one durable local owner and no team credential. A team
 space authenticates every human request and gives equal product authority to its
 members; RCP defines no administrator product role.
 
+### Space machines
+
+A space keeps one machine card per `(host, os_account)` it runs on, with a name
+and writable paths. Project manifests stay the source of truth for a project's
+machines: setup and **Add machine** copy a card's host and account into the
+manifest, and nothing on the space page writes a manifest. The list fills from
+registered projects' accepted manifests at startup, on registration, and when a
+machine is added; raw manifest loads, preflight, history reload, backup, and
+rehearsals never write it. The table is space data: backup keeps it, and project
+transfer excludes it, so a target space grants its own paths.
+
 ## Team initialization and enrollment
 
 `rcp space init --team` deliberately creates a team space and requires an

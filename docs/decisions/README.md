@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Machine writable paths protect only RCP's own storage](2026-09-27-machine-writable-paths-protect-only-rcp-storage.md)
+  records why machine cards grant extra writable paths and `/tmp` to every
+  repository-writing launch, why only RCP's own storage stays read-only, and
+  why Claude's file tools lose their bound inside a grant covering a stage.
+
 - [Desktop installs follow releases](2026-09-26-desktop-installs-follow-releases.md)
   records why desktop and local Web installs follow promoted releases like
   team servers, why each release ships an unsigned prebuilt app in a companion

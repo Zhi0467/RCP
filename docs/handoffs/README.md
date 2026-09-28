@@ -1,9 +1,6 @@
 # Active implementation handoffs
 
-Active:
-
-- [Space settings: machine cards and writable paths](handoff-2026-09-27-space-settings-and-writable-paths.md)
-  — confirmed 2026-09-27; ready to implement. Nothing implemented.
+None.
 
 Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
 and the refusal-explains-itself handoff (a refused dispatch or Apply reported
@@ -16,6 +13,13 @@ These are manual drives the closed handoffs left unexecuted. Each needs real
 hardware, a real provider login, or a disposable server, so no unit test
 stands in for it. Run one on disposable data, then delete its line here.
 
+- Machine writable paths: on the team server, pick `/data/shared/huggingface`
+  with the folder picker on a machine card, then write into it from a new
+  terminal, a Codex Work turn, and a systemd compute job; confirm a write into
+  the RCP data folder under a `/home/rcp` grant fails, `/tmp` is writable from
+  Codex Work, a remote chat started before the update resumes on its legacy
+  `/tmp` stage, and command sockets under `~/.rcp/sockets` stay reachable from
+  both providers' sandboxes.
 - Worktree execution: two chats editing one repository; Discuss in the bound
   chat seeing the worktree's edits; native session continuation, Pause,
   Resume, Retry, and app restart finding the same worktree; the same over SSH;

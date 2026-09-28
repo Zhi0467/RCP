@@ -110,12 +110,14 @@ shutdown skips the round trip and leaves the same unfinished record rather than
 waiting on the network.
 
 The mirrored Linux launch uses its existing `systemd-run --user --pty` profile
-with `ProtectHome=tmpfs`, `BindPaths` for the selected repository, and
-`BindReadOnlyPaths` plus `ReadOnlyPaths` for existing Git configuration and
-credentials. `ProtectSystem=strict` and a private temporary directory provide
-accident resistance to writes in the wrong place, not isolation from the
-service account. Before the interactive shell starts, the same launched profile
-checks that the checkout is writable and that every protected path exists,
+with `ProtectHome=tmpfs`, `BindPaths` for the selected repository and for the
+machine's writable paths (below), and `BindReadOnlyPaths` plus `ReadOnlyPaths`
+for existing Git configuration and credentials not covered by a writable path.
+`ProtectSystem=strict` provides accident resistance to writes in the wrong
+place, not isolation from the service account. The shell shares the real
+`/tmp` with agents on that machine. Before the interactive shell starts, the
+same launched profile checks that the checkout and every writable path are
+writable and that every protected path exists,
 rejects writes, and reports a read-only effective mount through `findmnt`.
 The PTY owner requires this check's readiness marker; an active unit alone does
 not admit a session. Unsupported mount properties or failed verification refuse
@@ -295,9 +297,40 @@ canonicalized on the execution machine.
 
 The scope rejects another project's repository, a parent containing several
 projects, the application data directory, SQLite, canonical `.research`, the
-execution account's home directory, and broad temporary directories. Provider
-authentication/session/cache storage may use the provider's own runtime
-exceptions; those exceptions are not general project roots.
+execution account's home directory, and broad temporary directories as
+*repository* roots. Provider authentication/session/cache storage may use the
+provider's own runtime exceptions; those exceptions are not general project
+roots.
+
+### Machine writable paths
+
+A scope that writes repositories also receives `granted_roots`: the space
+machine card's writable paths for its execution host and account, plus `/tmp`
+and the local temporary directory. Launches without repository roots (branch
+merge, episode reports, Discuss, ingestion, paper coach) receive none. Humans
+choose the paths in Settings; code fixes which launches receive them
+([decision](../decisions/2026-09-27-machine-writable-paths-protect-only-rcp-storage.md)).
+
+The only constraint is RCP's own storage, computed at every launch by
+`rcp_owned_paths` and the scope builder: the data directory, the installed
+server's release, source, credentials, update-checkpoint, and restore folders,
+`/etc/rcp` and `/run/rcp`, `~/.rcp` on every machine, `~/.local/share/rcp` on
+remote machines, every registered repository's `.research`, this launch's
+`inputs`, and legacy `/tmp/rcp-run.*` stages. A grant equal to or inside any of
+them is refused; one of them inside a grant stays read-only there
+(`granted_protected_paths`). The launch's own workspace and job folder stay
+writable. Paths are compared by filesystem identity on the execution machine.
+Scopes without grants keep their earlier fingerprint, and a task bound before
+grants existed continues through its pre-grant fingerprint.
+
+systemd jobs render grants as `ReadWritePaths` and covered storage as
+`ReadOnlyPaths`, where the deeper writable workspace wins. Codex renders a
+deeper `write` entry inside a `read` parent, which wins (probed with codex-cli
+0.157.0). Claude's deny rules beat its allows, so a protected folder holding
+the launch's own stage is left undenied for Claude; its shell was already
+unbounded. RCP keeps none of its own files in `/tmp`: remote stages, command
+and SSH control sockets, and temporary files live under `~/.rcp`, and a saved
+legacy `/tmp/rcp-run.*` stage still resumes until a later release removes it.
 
 ## Provider enforcement
 

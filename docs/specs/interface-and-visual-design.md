@@ -246,8 +246,13 @@ with a concise save-first label until the metadata is saved. A compute-settings
 save also invalidates older in-flight readiness responses, so a late old-target
 success cannot replace the empty state left by a failed new-target probe.
 
-Settings groups provider executables and **Long-running jobs** under each
-machine. **Use Slurm** opts into direct scheduler submission; **Jobs root**
+Project Settings shows each machine as a card that groups provider executables,
+**Long-running jobs**, and the machine's writable paths; the same card appears
+in space Settings, and both edit one record, so the project card says the list
+applies to every project on that machine. Writable paths are picked with a small
+folder picker (breadcrumbs, one level, name filter, **Load more**, locked
+protected folders, **Use this folder**) rather than typed. Setup picks a machine
+card the same way. **Use Slurm** opts into direct scheduler submission; **Jobs root**
 configures helper storage. RCP exposes no scheduler resource settings. **Reset
 compute** removes the optional block through the normal Settings **Save**.
 Readiness uses the same label, tone, and pending presentation as compute
