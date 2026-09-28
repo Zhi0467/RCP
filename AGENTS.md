@@ -76,6 +76,24 @@ before `uv sync` because the Python wheel includes it. Browser tests require the
 Playwright-managed Chromium installation described there. Run the app with
 `uv run rcp serve --host 127.0.0.1 --port 8421` using disposable data for tests.
 
+### Three desktop builds
+
+The released app freezes the backend with PyInstaller; a source build runs it
+from the checkout. Frozen-only paths (bundled files, `sys.frozen` branches) are
+exercised only by the packaged app, so source behavior is no evidence for it.
+
+| Build | Command | Use |
+| --- | --- | --- |
+| Released download | the `desktop-vX.Y.Z` release | the human's daily app, on their real data |
+| Packaged candidate | `npm --prefix web run desktop:build`, or the `desktop-candidate.yml` workflow | packaging, frozen-only, and pre-promotion checks |
+| Source build | `npm --prefix web run desktop:build-dev` or `desktop:dev` | branch work |
+
+All three share one app identifier and default data directory, and one process
+owns a data directory (invariant 8). Run the candidate and source builds with a
+throwaway `RCP_DATA_DIR`, never the human's. A file the backend reads at runtime
+must also be listed in `packaging/rcp_backend.spec` and checked in
+`packaging/hooks/validate_frozen_resources.py`.
+
 ## Stable invariants
 
 This numbered registry is cited from source and tests. Never

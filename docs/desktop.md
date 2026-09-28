@@ -173,6 +173,10 @@ RCP_LIVE_SSH_TARGET=<ssh-alias-or-user@host> \
 
 ## Build and test a release candidate
 
+To test the exact bytes a promotion would publish, run the `desktop-candidate.yml`
+workflow on the build, as described in [docs/release.md](release.md#what-to-check-before-promoting).
+The local steps below build the same app from a checkout.
+
 Before packaging, verify that the intended revision is checked out, the version is
 intentional, no unrelated changes will enter the artifact, and the baseline and desktop
 checks pass. Building requires Python and `uv`, Node.js and npm, and Rust.

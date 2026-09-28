@@ -135,6 +135,17 @@ remain explicit follow-up evidence.
 
 - The build's CI run is green on all jobs, including the aggregate old-data upgrade check.
 - `__version__` in that build equals the tag you intend.
+- The desktop app you are about to publish works. Build it from that build
+  without publishing anything, then download and open it:
+
+  ```bash
+  gh workflow run desktop-candidate.yml --repo Zhi0467/RCP -f build=<N>
+  gh run download <run-id> --repo Zhi0467/RCP -n desktop-app
+  ```
+
+  It is built by the same `build-desktop.yml` job that promotion's companion
+  release uses. Test it with a throwaway data directory; see
+  [docs/desktop.md](desktop.md#build-and-test-a-release-candidate).
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.
 - If the change touched `src/rcp/storage/`, a frozen fixture exists for the new
