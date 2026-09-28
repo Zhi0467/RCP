@@ -5,6 +5,7 @@ local or SSH execution stage, where no RCP installation is assumed.
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -426,7 +427,20 @@ def _broker_socket_path(path):
     name = path[len(prefix) :] if path.startswith(prefix) else ""
     if not name.startswith("rcp-command-") or not name.endswith(".sock") or "/" in name:
         raise ClientInputError("broker path is outside the RCP socket directory")
-    return os.path.join(pwd.getpwuid(os.geteuid()).pw_dir, ".rcp", "sockets", name)
+    return os.path.join(_socket_directory(pwd.getpwuid(os.geteuid()).pw_dir), name)
+
+
+def _socket_directory(home):
+    """`~/.rcp/sockets`, or a short `/tmp/rcp-<id>/sockets` when that is too deep.
+
+    Mirrors `rcp.rcp_home.command_socket_directory`; this file ships alone.
+    """
+
+    default = os.path.join(home, ".rcp", "sockets")
+    if len(os.fsencode(default)) + 1 + len("rcp-command-") + 32 + len(".sock") < 100:
+        return default
+    root = "/tmp/rcp-" + hashlib.sha256(home.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(root, "sockets")
 
 
 def _run(namespace):

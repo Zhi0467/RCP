@@ -15,7 +15,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from rcp import rcp_home
 from rcp.agents import staged_command_broker, staged_command_client
+from rcp.agents.write_scope import rcp_owned_paths
 from rcp.runs.tasks import auto_research_stream
 from rcp.transport import StateMissing, ssh
 from rcp.transport.run_stage import RemoteRunStage
@@ -205,16 +207,34 @@ def test_command_sockets_resolve_under_the_account_rcp_home(short_home: Path, mo
             staged_command_client._broker_socket_path(outside)
 
 
-def test_over_long_socket_paths_are_refused_not_moved_to_tmp(monkeypatch) -> None:
+def test_a_long_home_moves_sockets_to_one_protected_short_folder(monkeypatch) -> None:
     long_home = "/home/" + "u" * 80
+    short_root = rcp_home.short_socket_root(long_home)
+    name = f"rcp-command-{'a' * 32}.sock"
+    for module in (staged_command_broker, staged_command_client):
+        monkeypatch.setattr(module.pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_dir=long_home))
+    created: list[tuple[str, bool]] = []
     monkeypatch.setattr(
-        staged_command_broker.pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_dir=long_home)
+        staged_command_broker,
+        "_private_directory",
+        lambda path, *, exact=False: created.append((path, exact)),
     )
-    with pytest.raises(staged_command_broker.BrokerError):
-        staged_command_broker._safe_socket_path(f"~/.rcp/sockets/rcp-command-{'a' * 32}.sock")
+
+    broker = staged_command_broker._safe_socket_path(f"~/.rcp/sockets/{name}")
+    assert broker == staged_command_client._broker_socket_path(f"~/.rcp/sockets/{name}")
+    assert broker == f"{rcp_home.command_socket_directory(long_home)}/{name}"
+    assert broker.startswith(f"{short_root}/") and len(broker.encode()) < 100
+    assert created[0] == (short_root, True)
+    assert short_root in rcp_owned_paths(account_home=long_home, app_data_dir=None, remote=True)
+    short_home = "/home/worker"
+    assert rcp_home.command_socket_directory(short_home) == "/home/worker/.rcp/sockets"
+    assert rcp_home.short_socket_root(short_home) not in rcp_owned_paths(
+        account_home=short_home, app_data_dir=None, remote=True
+    )
 
     monkeypatch.setattr(ssh, "rcp_home", lambda: Path("/home/worker/.rcp"))
+    monkeypatch.setattr(ssh.Path, "home", classmethod(lambda _cls: Path(long_home)))
+    monkeypatch.setattr(ssh.os, "geteuid", lambda: 99999)  # no /run/user/99999
     assert _CONTROL_DIRECTORY_PATH() == Path("/home/worker/.rcp/ssh")
     monkeypatch.setattr(ssh, "rcp_home", lambda: Path(long_home) / ".rcp")
-    with pytest.raises(RuntimeError):
-        _CONTROL_DIRECTORY_PATH()
+    assert _CONTROL_DIRECTORY_PATH() == Path(short_root) / "ssh"

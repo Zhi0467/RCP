@@ -79,17 +79,27 @@ def _safe_socket_path(path):
     name = path[len(_SOCKET_DIRECTORY) :] if path.startswith(_SOCKET_DIRECTORY) else ""
     if not name.startswith("rcp-command-") or not name.endswith(".sock") or "/" in name:
         raise BrokerError("broker socket is outside the RCP socket directory")
-    directory = os.path.join(pwd.getpwuid(os.geteuid()).pw_dir, ".rcp", "sockets")
+    directory = _socket_directory(pwd.getpwuid(os.geteuid()).pw_dir)
     absolute = os.path.join(directory, name)
-    # sun_path is 104 bytes on macOS and 108 on Linux. Refuse instead of
-    # falling back to a shorter shared directory such as /tmp.
-    if len(os.fsencode(absolute)) >= 100:
-        raise BrokerError(f"broker socket path is too long: {absolute}")
-    _private_directory(os.path.dirname(directory))
+    # The short root sits in shared /tmp, so it must be ours and private too.
+    _private_directory(os.path.dirname(directory), exact=directory.startswith("/tmp/"))
     _private_directory(directory, exact=True)
     if os.path.lexists(absolute):
         raise BrokerError("broker socket path is already occupied")
     return absolute
+
+
+def _socket_directory(home):
+    """`~/.rcp/sockets`, or a short `/tmp/rcp-<id>/sockets` when that is too deep.
+
+    Mirrors `rcp.rcp_home.command_socket_directory`; this file ships alone.
+    """
+
+    default = os.path.join(home, ".rcp", "sockets")
+    if len(os.fsencode(default)) + 1 + len("rcp-command-") + 32 + len(".sock") < 100:
+        return default
+    root = "/tmp/rcp-" + hashlib.sha256(home.encode("utf-8")).hexdigest()[:12]
+    return os.path.join(root, "sockets")
 
 
 def _private_directory(path, *, exact=False):

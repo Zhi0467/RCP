@@ -14,6 +14,7 @@ from rcp.agents.context import RepositoryPointer
 from rcp.config import Manifest, RepositoryConfig
 from rcp.core.models import ConversationWorktreeBinding
 from rcp.providers import AgentCapability
+from rcp.rcp_home import command_socket_directory, short_socket_root
 from rcp.transport.run_stage import RemoteRunStage
 
 
@@ -532,6 +533,8 @@ def rcp_owned_paths(
 
     home = PurePosixPath(account_home)
     paths = [str(home / ".rcp")]
+    if command_socket_directory(account_home) != str(home / ".rcp" / "sockets"):
+        paths.append(short_socket_root(account_home))
     if remote:
         paths.append(str(home / ".local" / "share" / "rcp"))
         return paths
