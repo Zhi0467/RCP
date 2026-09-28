@@ -251,9 +251,11 @@ backup of the private key; a GitHub secret cannot be read back.
 Installed apps trust only the public key they shipped with. To replace the key:
 
 1. Generate a new pair.
-2. Put the new public key in `updater.pub` and release it, still signed with the
-   old private key.
-3. Replace both secrets with the new private key and password.
+2. Move the old public key to `web/src-tauri/updater-signing.pub`, put the new
+   one in `updater.pub`, and release that, still signed with the old private
+   key. The publish check verifies against `updater-signing.pub` when it exists.
+3. Replace both secrets with the new private key and password, and delete
+   `updater-signing.pub` in the next release.
 
 Apps that skipped the release in step 2 reinstall once with the install command.
 
