@@ -161,6 +161,20 @@ class ProjectWriteScope(BaseModel):
             )
         )
 
+    @property
+    def enforced_protected_paths(self) -> list[str]:
+        """Protected paths a provider can deny without denying this launch's own stage.
+
+        A provider whose deny outranks its allow would otherwise block the stage
+        when a protected folder (RCP storage inside a grant) holds it.
+        """
+        own = [PurePosixPath(self.stage_root), PurePosixPath(self.workspace_root)]
+        return [
+            path
+            for path in self.protected_write_paths
+            if not any(PurePosixPath(path) in item.parents for item in own)
+        ]
+
     def _fingerprint_payload(self) -> dict[str, object]:
         # Retain every existing unbound scope fingerprint across this additive
         # field: only worktree scopes carry Git metadata outside their checkout.

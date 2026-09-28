@@ -1348,7 +1348,9 @@ class AgentLauncher:
         try:
             if reason := self._login_refusal(provider, host):
                 raise ValueError(reason)
-            environment = self.process_environment(provider, host)
+            environment = self.process_environment(provider, host).with_variables(
+                turn.environment, remote=bool(host)
+            )
             if git_access is not None:
                 if git_access.host != host:
                     raise ValueError("Git access does not match the provider execution host.")

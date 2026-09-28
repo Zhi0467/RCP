@@ -163,7 +163,8 @@ records the accepted coupling and rejected extractions.
 ## Provider runtime selection
 
 Each project agent profile selects a provider-owned runtime. An omitted value is
-backward compatible: Codex uses `exec` and Claude uses `stream-json`. Provider
+backward compatible: Codex uses `exec`, Claude uses `stream-json`, and OpenCode
+uses `run-json`. Provider
 readiness exports the allowed names and the one an omitted value resolves to;
 project setup and Project Settings render those answers, and the backend
 validates the saved provider/runtime pair. No surface derives that default from
@@ -382,6 +383,34 @@ bound `Bash`. A Work turn's shell can therefore write outside its admitted roots
 on its execution machine. That is an accepted accidental-write gap for this
 provider, not a claim of containment; Codex's native permission profile still
 bounds both. Nothing here widens graph authority, which stays with `patch.json`.
+
+### OpenCode
+
+Every OpenCode launch carries its rules in `OPENCODE_CONFIG_CONTENT`, which
+OpenCode merges last, and sets `OPENCODE_DISABLE_PROJECT_CONFIG`. The rules
+belong to an RCP agent that the launch selects with `--agent`. OpenCode applies
+agent rules after top-level ones, so neither the user's global rules nor their
+own agents can widen them. The agent is named after a digest of its rules, so no
+user agent can share the name and be merged in. Work and orchestrate also pass
+`--pure`, because a plugin's config hook could rewrite the rules.
+
+Edit rules deny everything, then allow the exact workspace and admitted roots,
+then deny protected paths; OpenCode applies the last rule that matches. OpenCode
+matches them against paths relative to its project root, which is the enclosing
+Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
+path rules therefore refuses to start inside a Git work tree, rather than let
+the rules name the wrong paths. Task stages are outside Git. The paper coach runs
+inside the project and denies every edit and the shell outright, so it needs no
+path rules. Discuss may edit only its workspace and its own write folders.
+
+Like Claude's rules, these bound every file-editing tool and do not bound the
+shell. A rule that would ask is rejected, because `opencode run` cannot ask. The
+same accepted accidental-write gap applies.
+
+OpenCode prints no event when a turn ends, and a step that stops can be followed
+by another. The launch wrapper therefore prints one `rcp.provider_exit` line
+after the process exits; that line ends the turn locally and in the remote
+fence. Every text part is part of the reply, as Codex's agent messages are.
 
 ### Version failure
 
@@ -1117,7 +1146,8 @@ The agent reads logs in place. RCP performs only bounded existence/readability
 preflight and reports exact failures without blocking launch. RCP does not parse,
 index, normalize, slice, hash, cache, transfer, or project provider conversation
 content and maintains no per-log cursor or coverage truth. There is no agent-written
-coverage report or coverage-warning banner.
+coverage report or coverage-warning banner. OpenCode keeps its sessions in one
+SQLite database rather than in log files, so RCP names no log roots for it yet.
 
 That is the implemented ordinary-run path, not a promise to abandon source
 history during a pending personal-to-team transfer. The confirmed transfer
@@ -1160,7 +1190,8 @@ A profile probes whatever its CLI can enumerate and declares only the rest.
 Codex reports its models and their per-model reasoning efforts from its own
 catalog. Claude Code cannot enumerate models, so its aliases stay declared and
 dated to the CLI they were read from, while the reasoning efforts it accepts are
-probed from the CLI itself and are provider-wide. A probe that cannot be read
+probed from the CLI itself and are provider-wide. OpenCode lists its models,
+each with the reasoning variants it takes, and many take none. A probe that cannot be read
 falls back to the declared list rather than leaving a surface with no models.
 Navigation never owns provider warmup and ordinary application use remains
 available while it runs.
