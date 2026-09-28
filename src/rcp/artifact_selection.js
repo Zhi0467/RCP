@@ -72,12 +72,14 @@ function installArtifactSelection(surface, publish) {
 
   // The first outermost elements lying mostly inside the box; when none does, the
   // smallest element that holds the whole box, with where the box lies within it.
-  // One walk skips each chosen subtree, so a large page is visited at most once.
+  // One walk skips each chosen subtree and stops after a bounded number of elements,
+  // so a huge or generated page cannot stall the selection.
   function coveredElements(box) {
     const inside = [];
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT);
     let element = walker.nextNode();
-    while (element && inside.length < 8) {
+    let visited = 0;
+    while (element && inside.length < 8 && visited++ < 5000) {
       let skip = ignored.has(element.tagName) || Boolean(element.dataset?.rcpSelection);
       if (!skip) {
         const rect = element.getBoundingClientRect();
