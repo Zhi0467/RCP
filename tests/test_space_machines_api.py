@@ -52,6 +52,8 @@ def test_a_new_machine_card_is_created_renamed_and_deleted(app) -> None:
     machine = created.json()
     assert machine["in_use"] is False and machine["projects"] == []
     assert client.post("/api/space/machines", json=body).status_code == 409
+    assert client.post("/api/space/machines", json={**body, "os_account": "bob"}).status_code == 409
+    assert client.post("/api/space/machines", json={**body, "host": ""}).status_code == 409
     assert (
         client.post("/api/space/machines", json={**body, "host": "-oProxyCommand=sh"}).status_code
         == 422

@@ -242,6 +242,11 @@ def create_space_machine(
     except ValidationError as exc:
         detail = exc.errors()[0]["msg"].removeprefix("Value error, ")
         raise HTTPException(status_code=422, detail=detail) from None
+    # SSH picks the account from the host route and sign-in is keyed by host, so
+    # a second account on one host could not be told apart. The local card is
+    # filled from the running server's own account.
+    if not machine.host or any(card.host == machine.host for card in store.space_machines()):
+        raise HTTPException(status_code=409, detail="This space already has that machine.")
     try:
         created = store.create_space_machine(
             name=body.name, host=machine.host, os_account=machine.os_account
