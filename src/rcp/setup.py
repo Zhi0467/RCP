@@ -149,6 +149,7 @@ class MachineDirectoryPage(_StrictSetupModel):
     entries: list[SshRepositoryBrowseEntry] = Field(max_length=MACHINE_DIRECTORY_PAGE_SIZE)
     total: int = Field(ge=0)
     next_offset: int | None = Field(default=None, ge=1)
+    protected_targets: list[str] = Field(default_factory=list, max_length=1024)
 
     @model_validator(mode="after")
     def validate_page(self) -> MachineDirectoryPage:
@@ -265,6 +266,7 @@ def browse_machine_directory(
     os_account: str = "",
     name_filter: str = "",
     offset: int = 0,
+    protect: list[str] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
     rcp_machine: str | None = None,
 ) -> MachineDirectoryPage:
@@ -276,6 +278,7 @@ def browse_machine_directory(
             "filter": name_filter,
             "offset": offset,
             "limit": MACHINE_DIRECTORY_PAGE_SIZE,
+            "protect": protect or [],
         },
         os_account=os_account,
         runner=runner,

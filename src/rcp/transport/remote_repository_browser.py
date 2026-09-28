@@ -98,7 +98,12 @@ def handle(request: dict[str, object]) -> dict[str, object]:
         or not isinstance(limit, int)
     ):
         raise ValueError("directory browser request is invalid")
-    return browse_directory(path, name_filter=name_filter, offset=offset, limit=limit)
+    page = browse_directory(path, name_filter=name_filter, offset=offset, limit=limit)
+    protect = request.get("protect") or []
+    if not isinstance(protect, list) or not all(isinstance(item, str) for item in protect):
+        raise ValueError("directory browser request is invalid")
+    # Where each protected folder really lives, so a caller can lock its target.
+    return {**page, "protected_targets": sorted({os.path.realpath(item) for item in protect})}
 
 
 def main(argv: list[str]) -> int:

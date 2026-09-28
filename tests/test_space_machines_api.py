@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -214,7 +215,7 @@ def test_a_project_machine_finds_its_card_by_host(app) -> None:
     assert store.space_machine_for("gpu.example") == card
 
 
-def test_the_picker_locks_repository_state(app, manifest) -> None:
+def test_the_picker_locks_repository_state(app, manifest, tmp_path) -> None:
     client = TestClient(app)
     repository = Path(load_manifest(manifest.path).repositories[0].path)
     path = f"/api/space/machines/{_machine(client, 'laptop')['machine_id']}/directories"
@@ -222,3 +223,14 @@ def test_the_picker_locks_repository_state(app, manifest) -> None:
     entries = client.post(path, json={"path": str(repository)}).json()["entries"]
 
     assert {entry["name"]: entry["protected"] for entry in entries}[".research"] is True
+
+    # State kept elsewhere through a symlink is locked where it really lives.
+    research = repository / ".research"
+    elsewhere = tmp_path / "state-home"
+    elsewhere.mkdir()
+    shutil.move(research, elsewhere / "state")
+    research.symlink_to(elsewhere / "state")
+    (elsewhere / "ordinary").mkdir()
+    entries = client.post(path, json={"path": str(elsewhere)}).json()["entries"]
+    locked = {entry["name"]: entry["protected"] for entry in entries}
+    assert locked == {"state": True, "ordinary": False}

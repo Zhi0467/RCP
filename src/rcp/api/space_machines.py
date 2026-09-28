@@ -325,6 +325,7 @@ def list_machine_directories(
 
     identity_access.acting_user(request)
     machine = _machine_or_404(store, machine_id)
+    research = _repository_state_paths(catalog, machine)
     try:
         page = browse_machine_directory(
             machine.host,
@@ -332,12 +333,15 @@ def list_machine_directories(
             os_account=machine.os_account,
             name_filter=body.filter,
             offset=body.offset,
+            protect=research,
         )
     except (MachineBrowseFailure, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Saving locks a state folder's symlink target too, so the picker does.
     owned = [
         *_owned_paths(machine, page.home, catalog.data_dir),
-        *_repository_state_paths(catalog, machine),
+        *research,
+        *page.protected_targets,
     ]
     return {
         "path": page.path,
