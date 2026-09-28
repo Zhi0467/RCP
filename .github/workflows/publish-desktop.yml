@@ -111,7 +111,7 @@ jobs:
     needs: [identity, build]
     # `build` is skipped when a tested candidate is published instead.
     if: >-
-      always() && needs.identity.result == 'success'
+      !cancelled() && needs.identity.result == 'success'
       && (needs.build.result == 'success' || needs.build.result == 'skipped')
     permissions:
       contents: write
@@ -137,6 +137,13 @@ jobs:
           run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN" --jq '[.path, .conclusion] | join(" ")')
           if [ "$run" != ".github/workflows/desktop-candidate.yml success" ]; then
             echo "run $CANDIDATE_RUN is not a successful desktop candidate: $run"
+            exit 1
+          fi
+          # A rerun of the candidate uploads a second app, and the download
+          # takes the newest; refuse rather than guess which one was tested.
+          apps=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN/artifacts" --jq '[.artifacts[] | select(.name == "desktop-app")] | length')
+          if [ "$apps" != "1" ]; then
+            echo "run $CANDIDATE_RUN holds $apps desktop apps; dispatch a fresh candidate and test that"
             exit 1
           fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

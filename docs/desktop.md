@@ -216,10 +216,13 @@ cargo clean --manifest-path web/src-tauri/Cargo.toml
 ## Publish the desktop companion release
 
 Each promotion ends by calling `.github/workflows/publish-desktop.yml`, which
-can also be run by hand for the same tag. It builds the exact commit of the
+can also be run by hand for the same tag. Given a desktop candidate run, it
+publishes that run's tested app after checking it was built from the release's
+build; the candidate's app expires 14 days after it was built, and a candidate
+run more than once is refused. Otherwise it builds the exact commit of the
 published `vX.Y.Z` release on an Apple Silicon runner, checks that the native
 versions equal the tag (`packaging/release_build.py check-desktop-version`),
-smoke-tests the bundled backend, and uploads `RCP-vX.Y.Z-macos-arm64.zip` and
+and smoke-tests the bundled backend. Either way it uploads `RCP-vX.Y.Z-macos-arm64.zip` and
 its `.sha256` to a draft `desktop-vX.Y.Z` release. It downloads both back,
 verifies them, and only then publishes the draft as a pre-release that is not
 latest. The app cannot live in `vX.Y.Z` itself: installed supervisors accept a
