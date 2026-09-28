@@ -7,11 +7,20 @@ on:
         description: Published release tag in vX.Y.Z form
         required: true
         type: string
+      candidate_run:
+        description: Desktop candidate run id whose tested app to publish; empty builds fresh
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       tag:
         required: true
         type: string
+      candidate_run:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -21,17 +30,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: publish unsigned desktop companion
+  identity:
+    name: check the promoted release
     # Runs after the server release is published, so a failure here leaves it
     # unchanged. A failed companion remains a draft and can be retried.
     permissions:
       contents: write
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
+      build: ${{ steps.release.outputs.build }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - name: Read the promoted release identity
         id: release
@@ -55,7 +68,8 @@ jobs:
           if not promotion or promotion[2] != commit:
               raise SystemExit("release has no matching promoted build receipt")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"commit={commit}\n")
+              output.write(f"commit={commit}\nbuild={promotion[1]}\n")
+              output.write(f"version={os.environ['RELEASE_TAG'][1:]}\n")
           with open(os.environ["GITHUB_ENV"], "a") as output:
               output.write(f"TARGET_COMMIT={commit}\nBUILD_NUMBER={promotion[1]}\n")
           PY
@@ -83,38 +97,82 @@ jobs:
               subprocess.run(["gh", "api", "--method", "DELETE", f"repos/{os.environ['GITHUB_REPOSITORY']}/releases/{release['id']}"], check=True)
           PY
 
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.release.outputs.commit }}
-          persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - uses: astral-sh/setup-uv@v9.0.0
-        with:
-          enable-cache: true
-          python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
+  build:
+    needs: [identity]
+    if: inputs.candidate_run == ''
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      commit: ${{ needs.identity.outputs.commit }}
+      build: ${{ needs.identity.outputs.build }}
+      version: ${{ needs.identity.outputs.version }}
 
-      - name: Check the desktop version and stamp the Python build
+  publish:
+    name: publish unsigned desktop companion
+    needs: [identity, build]
+    # `build` is skipped when a tested candidate is published instead.
+    if: >-
+      !cancelled() && needs.identity.result == 'success'
+      && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    permissions:
+      contents: write
+      actions: read
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      TARGET_COMMIT: ${{ needs.identity.outputs.commit }}
+      BUILD_NUMBER: ${{ needs.identity.outputs.build }}
+      DESKTOP_VERSION: ${{ needs.identity.outputs.version }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Refuse a candidate run that is not a successful desktop candidate
+        if: inputs.candidate_run != ''
+        shell: bash
         run: |
-          uv run --no-project python packaging/release_build.py check-desktop-version "${RELEASE_TAG#v}"
-          uv run --no-project python packaging/release_build.py stamp-version \
-            --run-number "$BUILD_NUMBER" --sha "$TARGET_COMMIT"
-      - run: npm --prefix web ci
-      - run: npm --prefix web run desktop:build
-      - name: Smoke-test the bundled backend
-        run: uv run python packaging/smoke-backend.py web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
-      - name: Archive the app with macOS metadata
+          if ! [[ "$CANDIDATE_RUN" =~ ^[0-9]+$ ]]; then
+            echo "invalid candidate run $CANDIDATE_RUN"
+            exit 1
+          fi
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN" --jq '[.path, .conclusion] | join(" ")')
+          if [ "$run" != ".github/workflows/desktop-candidate.yml success" ]; then
+            echo "run $CANDIDATE_RUN is not a successful desktop candidate: $run"
+            exit 1
+          fi
+          # A rerun of the candidate uploads a second app, and the download
+          # takes the newest; refuse rather than guess which one was tested.
+          apps=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN/artifacts" --jq '[.artifacts[] | select(.name == "desktop-app")] | length')
+          if [ "$apps" != "1" ]; then
+            echo "run $CANDIDATE_RUN holds $apps desktop apps; dispatch a fresh candidate and test that"
+            exit 1
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-app
+          path: artifact
+          run-id: ${{ inputs.candidate_run || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Check the artifact was built from this release's build
+        shell: bash
         run: |
-          mkdir desktop-assets
-          ditto -c -k --sequesterRsrc --keepParent \
-            web/src-tauri/target/release/bundle/macos/RCP.app \
-            "desktop-assets/RCP-$RELEASE_TAG-macos-arm64.zip"
-          cd desktop-assets
-          shasum -a 256 "RCP-$RELEASE_TAG-macos-arm64.zip" > "RCP-$RELEASE_TAG-macos-arm64.zip.sha256"
+          python3 - <<'PY'
+          import json, os
+          found = json.load(open("artifact/desktop-identity.json"))
+          expected = {
+              "commit": os.environ["TARGET_COMMIT"],
+              "build": os.environ["BUILD_NUMBER"],
+              "version": os.environ["DESKTOP_VERSION"],
+          }
+          if found != expected:
+              raise SystemExit(f"desktop artifact identity {found} differs from {expected}")
+          PY
+          mv artifact/desktop-assets desktop-assets
+          (cd desktop-assets && shasum -a 256 -c "RCP-$RELEASE_TAG-macos-arm64.zip.sha256")
+          if [ -n "$CANDIDATE_RUN" ]; then
+            echo "Published the tested app from desktop candidate run $CANDIDATE_RUN." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No candidate run was given; published an app built fresh in this run." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload a draft companion
         run: |
           gh release create "desktop-$RELEASE_TAG" desktop-assets/* \
@@ -132,6 +190,11 @@ jobs:
           shasum -a 256 -c "RCP-$RELEASE_TAG-macos-arm64.zip.sha256"
       - name: Publish the verified companion
         run: gh release edit "desktop-$RELEASE_TAG" --draft=false --prerelease --latest=false
-      - name: Report a desktop failure
-        if: failure()
-        run: echo "Desktop publication failed; the server release is unchanged. Retry this workflow with the same tag." >> "$GITHUB_STEP_SUMMARY"
+
+  report:
+    name: report a desktop failure
+    needs: [identity, build, publish]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Desktop publication failed; the server release is unchanged. Retry this workflow with the same tag." >> "$GITHUB_STEP_SUMMARY"

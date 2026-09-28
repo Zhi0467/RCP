@@ -73,7 +73,7 @@ run by hand. The app in `/Applications` is never replaced, and no local branch i
 reset.
 
 For the Web app, restart with `uv run rcp serve`. For the desktop app, replace
-`/Applications/RCP.app` with `web/src-tauri/target/debug/bundle/macos/RCP.app` and
+`/Applications/RCP Dev.app` with `web/src-tauri/target/debug/bundle/macos/RCP Dev.app` and
 reopen it, as described below.
 
 ## Run the local Web app
@@ -133,17 +133,20 @@ npm --prefix web run desktop:build-dev
 The app is written to:
 
 ```text
-web/src-tauri/target/debug/bundle/macos/RCP.app
+web/src-tauri/target/debug/bundle/macos/RCP Dev.app
 ```
 
 Launch that exact bundle. If you keep a Dock/Finder copy at
-`/Applications/RCP.app`, rebuilding does not update it: quit RCP with Cmd+Q,
+`/Applications/RCP Dev.app`, rebuilding does not update it: quit RCP with Cmd+Q,
 then replace the installed copy before reopening it:
 
 ```bash
-ditto web/src-tauri/target/debug/bundle/macos/RCP.app /Applications/RCP.app
-open /Applications/RCP.app
+ditto "web/src-tauri/target/debug/bundle/macos/RCP Dev.app" "/Applications/RCP Dev.app"
+open "/Applications/RCP Dev.app"
 ```
+
+`/Applications/RCP.app` is reserved for the released download; see
+[AGENTS.md](../AGENTS.md#three-desktop-builds) for the naming.
 
 Closing the red window hides RCP. Use **Quit RCP** or Cmd+Q to end the
 desktop-owned backend. See [docs/desktop.md](desktop.md) for native build,
