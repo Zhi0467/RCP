@@ -215,7 +215,8 @@ Each promotion ends by calling `.github/workflows/publish-desktop.yml`, which
 can also be run by hand for the same tag. It builds the exact commit of the
 published `vX.Y.Z` release on an Apple Silicon runner, checks that the native
 versions equal the tag (`packaging/release_build.py check-desktop-version`),
-smoke-tests the bundled backend, and uploads `RCP-vX.Y.Z-macos-arm64.zip`, its
+smoke-tests the bundled backend, verifies the updater bundle's signature against
+`web/src-tauri/updater.pub` with `minisign`, and uploads `RCP-vX.Y.Z-macos-arm64.zip`, its
 `.sha256`, and the signed updater bundle `RCP-vX.Y.Z-macos-arm64.app.tar.gz`
 with its `.sig` to a draft `desktop-vX.Y.Z` release. It downloads them back,
 verifies them, and only then publishes the draft as a pre-release that is not
@@ -223,9 +224,7 @@ latest. The app cannot live in `vX.Y.Z` itself: installed supervisors accept a
 server release only with exactly its five files. A failed run leaves the server
 release unchanged and can be rerun; a published companion is never replaced.
 
-A second job then points the updater at the new release. It verifies the
-published bundle's signature against `web/src-tauri/updater.pub` with
-`minisign`, writes `latest.json` (`packaging/release_build.py updater-manifest`),
+A second job then points the updater at the new release. It writes `latest.json` (`packaging/release_build.py updater-manifest`),
 and uploads it to the fixed `mac-latest` pre-release, creating that release the
 first time. It refuses to replace a `latest.json` that names a newer version,
 and runs one at a time across tags. If only this job fails, rerun it alone with

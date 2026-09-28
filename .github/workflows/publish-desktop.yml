@@ -123,6 +123,15 @@ jobs:
           npm --prefix web run desktop:build-signed
       - name: Smoke-test the bundled backend
         run: uv run python packaging/smoke-backend.py web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
+      - name: Verify the updater signature against the checked-in key
+        # Before anything is published: a key mismatch must fail while the
+        # companion can still be rebuilt.
+        run: |
+          brew install minisign
+          bundle=web/src-tauri/target/release/bundle/macos
+          base64 -d < web/src-tauri/updater.pub > "$RUNNER_TEMP/updater.pub"
+          base64 -d < "$bundle/RCP.app.tar.gz.sig" > "$RUNNER_TEMP/updater.minisig"
+          minisign -V -m "$bundle/RCP.app.tar.gz" -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/updater.minisig"
       - name: Archive the app with macOS metadata
         run: |
           mkdir desktop-assets
@@ -183,15 +192,11 @@ jobs:
       - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
-      - run: sudo apt-get install -y minisign
-      - name: Verify the published updater bundle against the checked-in key
+      - name: Download the published updater signature
         run: |
           mkdir updater
-          app="RCP-$RELEASE_TAG-macos-arm64.app.tar.gz"
-          gh release download "desktop-$RELEASE_TAG" --dir updater --pattern "$app" --pattern "$app.sig"
-          base64 -d < web/src-tauri/updater.pub > updater/key.pub
-          base64 -d < "updater/$app.sig" > updater/app.minisig
-          minisign -V -m "updater/$app" -p updater/key.pub -x updater/app.minisig
+          gh release download "desktop-$RELEASE_TAG" --dir updater \
+            --pattern "RCP-$RELEASE_TAG-macos-arm64.app.tar.gz.sig"
       - name: Write latest.json, refusing to point back at an older release
         run: |
           # An API failure must not look like a missing pointer release.

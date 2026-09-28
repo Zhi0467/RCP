@@ -75,9 +75,9 @@ Close this handoff when all three hold on real hardware:
   `latest.json`. Not `macos-latest`, which is a GitHub runner label. The app
   reads `https://github.com/Zhi0467/RCP/releases/download/mac-latest/latest.json`.
 - **Publish order.** `publish-desktop.yml` builds with the endpoint and public
-  key set, signs the updater bundle, and finishes publishing `desktop-vX.Y.Z`.
-  A second job, rerunnable alone, verifies the bundle with `minisign` and only
-  then replaces `latest.json`. It runs one at a time across tags and refuses to
+  key set, signs the updater bundle, verifies it with `minisign` while the
+  companion is still a draft, and finishes publishing `desktop-vX.Y.Z`. A
+  second job, rerunnable alone, then replaces `latest.json`. It runs one at a time across tags and refuses to
   replace a newer version.
 - **Key rotation.** `docs/desktop.md` holds the procedure: ship one release
   signed with the old key that carries the new public key, then switch the
@@ -87,11 +87,11 @@ Close this handoff when all three hold on real hardware:
 
 ### Decision and docs
 
-- This amends the
-  [desktop installs decision](../decisions/2026-09-26-desktop-installs-follow-releases.md):
-  the approval step is no longer an accepted cost, and one-click update is
-  in scope for the prebuilt app. The same PR updates it.
-- Current-behavior docs change with the code: the README, `docs/install.md`,
+- This revises the
+  [desktop installs decision](../decisions/2026-09-26-desktop-installs-follow-releases.md)
+  in place: the approval step is no longer an accepted cost, and one-click
+  update is in scope for the prebuilt app.
+- Current-behavior docs change with the code: the README,
   `docs/desktop.md` (updater no longer disabled, key and publish steps), and the
   update-notice section of `docs/specs/api-web-and-desktop-projections.md`.
 
