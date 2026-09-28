@@ -236,12 +236,51 @@ build; the candidate's app expires 14 days after it was built, and a candidate
 run more than once is refused. Otherwise it builds the exact commit of the
 published `vX.Y.Z` release on an Apple Silicon runner, checks that the native
 versions equal the tag (`packaging/release_build.py check-desktop-version`),
-and smoke-tests the bundled backend. Either way it uploads `RCP-vX.Y.Z-macos-arm64.zip` and
-its `.sha256` to a draft `desktop-vX.Y.Z` release. It downloads both back,
+and smoke-tests the bundled backend. Every build, candidate or fresh, is the
+updater-enabled app: it verifies the updater bundle's signature against the
+signing key with `minisign` before anything is uploaded. Either way it uploads
+`RCP-vX.Y.Z-macos-arm64.zip`, its `.sha256`, and the signed updater bundle
+`RCP-vX.Y.Z-macos-arm64.app.tar.gz` with its `.sig` to a draft
+`desktop-vX.Y.Z` release. It downloads them back,
 verifies them, and only then publishes the draft as a pre-release that is not
 latest. The app cannot live in `vX.Y.Z` itself: installed supervisors accept a
 server release only with exactly its five files. A failed run leaves the server
 release unchanged and can be rerun; a published companion is never replaced.
+
+A final job then points the updater at the new release. It writes
+`latest.json` (`packaging/release_build.py updater-manifest`) and uploads it to the fixed `mac-latest` pre-release, creating that release the
+first time. It refuses to replace a `latest.json` that names a newer version,
+and runs one at a time across tags. A failed upload puts the previous
+`latest.json` back. If only this job fails, rerun it alone with
+**Re-run failed jobs**; it reads everything from the published companion.
+
+`scripts/install-macos.sh` is the README's one-command install. It follows the
+`releases/latest` redirect to the version, downloads that companion's zip and
+`.sha256`, checks the checksum and the unpacked app's signature, and swaps
+`/Applications/RCP.app` with a backup and rollback. It refuses Intel Macs,
+macOS before 13, a running RCP, and an `/Applications` the account cannot
+write, and it never uses `sudo`. `curl` sets no quarantine flag, so the app
+opens without Open Anyway.
+
+### Updater signing key
+
+The updater key is a free minisign key pair, not Apple signing, and it does not
+expire. The private key and its password are the `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` Actions secrets, which the desktop
+candidate and promotion both forward to `build-desktop.yml`; the public key is `web/src-tauri/updater.pub`. A human made the
+pair with `npm --prefix web exec -- tauri signer generate -w <path>` and keeps a
+backup of the private key; a GitHub secret cannot be read back.
+
+Installed apps trust only the public key they shipped with. To replace the key:
+
+1. Generate a new pair.
+2. Move the old public key to `web/src-tauri/updater-signing.pub`, put the new
+   one in `updater.pub`, and release that, still signed with the old private
+   key. The publish check verifies against `updater-signing.pub` when it exists.
+3. Replace both secrets with the new private key and password, and delete
+   `updater-signing.pub` in the next release.
+
+Apps that skipped the release in step 2 reinstall once with the install command.
 
 The native versions in `web/package.json`, `web/package-lock.json`, and
 `web/src-tauri/Cargo.toml`/`Cargo.lock` must equal `src/rcp/__init__.py`; a test
@@ -254,7 +293,9 @@ the hardened runtime: an unsealed bundle makes macOS call the downloaded app
 damaged instead of offering Open Anyway, and the hardened runtime stops the
 backend from loading its unpacked Python library. Without a signing identity the Keychain
 cannot bind credentials to the app, so the prebuilt app keeps the source build's
-Keychain storage. The Tauri updater stays disabled: nothing sets
-`RCP_UPDATE_ENDPOINT` or `RCP_UPDATE_PUBKEY`, so every build reports
-`enabled: false` and the app says nothing about it. Update notices come from the
-release check instead.
+Keychain storage. Only the published prebuilt app enables the Tauri updater:
+`npm --prefix web run desktop:build-signed` requires `RCP_UPDATE_ENDPOINT` and
+`RCP_UPDATE_PUBKEY`, compiles both into the app, and gives the same key to the
+Tauri signer. Every other build sets neither, reports `enabled: false`, and
+takes update notices from the release check. Apps from v0.4.4 or earlier have
+the updater off and reinstall once with the install command.
