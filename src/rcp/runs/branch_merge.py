@@ -1833,6 +1833,7 @@ async def stream_branch_merge_run(
     execution: Any | None = None,
     binary: str | None = None,
     max_main_rebases: int = MAX_BRANCH_MERGE_REBASE_ROUNDS,
+    before_commit: Callable[[], None] | None = None,
 ) -> AsyncIterator[str]:
     """Run, correct, rebase, and atomically commit one graph-only branch merge.
 
@@ -1857,6 +1858,8 @@ async def stream_branch_merge_run(
 
     if _branch_merge_is_represented(context):
         provenance = branch_merge_provenance(context)
+        if before_commit is not None:
+            before_commit()
         outcome.receipt = BranchMergeReceipt(
             outcome="no_change",
             provenance=provenance,
@@ -2034,6 +2037,8 @@ async def stream_branch_merge_run(
             if semantic_delta_is_subsumed(fresh.semantic_delta, fresh.main_graph):
                 context = fresh
                 outcome.rebased_main_head = context.main_head
+                if before_commit is not None:
+                    before_commit()
                 outcome.receipt = BranchMergeReceipt(
                     outcome="no_change",
                     provenance=branch_merge_provenance(context),
@@ -2056,6 +2061,8 @@ async def stream_branch_merge_run(
             ):
                 context = fresh
                 outcome.rebased_main_head = context.main_head
+                if before_commit is not None:
+                    before_commit()
                 outcome.receipt = BranchMergeReceipt(
                     outcome="no_change",
                     provenance=branch_merge_provenance(context),
@@ -2185,6 +2192,8 @@ async def stream_branch_merge_run(
         context = fresh
         if candidate is not None and not candidate.ops:
             if branch_merge_can_resolve_without_patch(context):
+                if before_commit is not None:
+                    before_commit()
                 outcome.receipt = BranchMergeReceipt(
                     outcome="no_change",
                     provenance=branch_merge_provenance(context),
@@ -2226,6 +2235,8 @@ async def stream_branch_merge_run(
                 candidate_problem = exc
             else:
                 try:
+                    if before_commit is not None:
+                        before_commit()
                     outcome.committed = commit_branch_merge_with_history(
                         main_history,
                         candidate,

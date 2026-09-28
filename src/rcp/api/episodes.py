@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rcp.agents.provider_accounts import account_login_refusal
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.dependencies import require_registered_project
-from rcp.core.models import AuthorizedHuman, GraphBranchSummary
+from rcp.core.models import AuthorizedHuman, EpisodeIsolationState, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.projects import ProjectCatalog
 from rcp.storage import (
@@ -285,6 +285,7 @@ class EpisodeResponse(BaseModel):
     code_worktree: bool
     graph_isolation: bool
     isolation_owner_episode_id: str | None
+    isolation_state: EpisodeIsolationState | None = None
     control_node_id: str | None
     graph_target: GraphTargetRef
     graph_base_head: GraphHeadRef | None
@@ -455,6 +456,12 @@ def serialize_episode(
         code_worktree=episode.code_worktree,
         graph_isolation=episode.graph_isolation,
         isolation_owner_episode_id=episode.isolation_owner_episode_id,
+        isolation_state=store.episode_isolation_state(
+            project_id,
+            episode.isolation_owner_episode_id
+            or episode.graph_target.branch_id
+            or episode.episode_id,
+        ),
         control_node_id=episode.control_node_id,
         graph_target=episode.graph_target,
         graph_base_head=episode.graph_base_head,
@@ -519,6 +526,7 @@ def serialize_episodes(
     *,
     mode: EpisodeMode | None = None,
     branch_summaries: BranchSummariesResolver | None = None,
+    include_archived_branches: bool = False,
 ) -> list[EpisodeResponse]:
     """Serialize the ordered project list, optionally limited to one episode mode."""
 
@@ -540,6 +548,24 @@ def serialize_episodes(
         key=lambda episode: (episode.created_at, episode.episode_id),
         reverse=True,
     )
+    if not include_archived_branches:
+        selected = [
+            episode
+            for episode in selected
+            if not (
+                episode.graph_target.kind == "branch"
+                and (
+                    state := store.episode_isolation_state(
+                        project_id,
+                        episode.isolation_owner_episode_id
+                        or episode.graph_target.branch_id
+                        or episode.episode_id,
+                    )
+                )
+                is not None
+                and state.graph_archived
+            )
+        ]
     archive_states = store.episode_archive_states(project_id)
     branch_summary: BranchSummaryResolver | None = None
     if branch_summaries is not None:

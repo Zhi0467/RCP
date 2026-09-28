@@ -104,6 +104,28 @@ class ComputeJobStoreMixin:
             ).fetchall()
         return [_compute_job_record(row) for row in rows]
 
+    @staticmethod
+    def _require_episode_binding_jobs_quiescent(connection, project_id, owner_episode_id) -> None:
+        row = connection.execute(
+            "SELECT j.status FROM compute_jobs j JOIN episodes e ON e.episode_id = j.episode_id "
+            "WHERE j.project_id = ? AND COALESCE(e.isolation_owner_episode_id, e.episode_id) = ? "
+            "AND j.status IN ('running', 'lost') ORDER BY j.job_id LIMIT 1",
+            (project_id, owner_episode_id),
+        ).fetchone()
+        if row is not None:
+            raise ValueError(
+                "episode_binding_job_unobservable"
+                if row[0] == "lost"
+                else "episode_binding_job_live"
+            )
+
+    def require_episode_binding_jobs_quiescent(
+        self, project_id: str, owner_episode_id: str
+    ) -> None:
+        """A lost job is unobservable; stopping its watcher does not make it safe."""
+        with self.connection() as connection:
+            self._require_episode_binding_jobs_quiescent(connection, project_id, owner_episode_id)
+
     def running_compute_jobs(self) -> list[ComputeJobRecord]:
         with self.connection() as connection:
             rows = connection.execute(

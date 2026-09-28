@@ -26,6 +26,8 @@ from rcp.core.authority import (
 )
 from rcp.core.models import (
     AuthorizedHuman,
+    BranchMergeReceipt,
+    EpisodeIsolationState,
 )
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
@@ -305,6 +307,25 @@ class AgentTaskStoreMixin:
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
         self._require_graph_branch_admission_open(connection, record)
+        if record.kind == "branch_merge":
+            reservation = connection.execute(
+                "SELECT json_extract(state_json, '$.merge_reservation') "
+                "FROM episode_isolation_states WHERE project_id = ? AND owner_episode_id = ?",
+                (record.project_id, record.episode_id),
+            ).fetchone()
+            if (
+                reservation is not None
+                and reservation[0] is not None
+                and reservation[0] != record.operation_id
+            ):
+                raise ValueError("episode_merge_reservation_changed")
+        else:
+            self.require_episode_binding_admission_open(
+                connection,
+                record.project_id,
+                episode_id=record.episode_id,
+                branch_id=record.graph_target.branch_id,
+            )
         connection.execute(
             """
             INSERT INTO graph_runs (
@@ -3930,6 +3951,66 @@ class AgentTaskStoreMixin:
                     created_at=now,
                     diagnostic=detail,
                 )
+
+    def reconcile_agentless_merge_task(
+        self,
+        operation_id: str,
+        receipt: BranchMergeReceipt,
+    ) -> None:
+        """Repair a task verdict only from its caller-verified canonical merge receipt."""
+        if receipt.provenance.merge_task_id != operation_id:
+            raise ValueError("episode_merge_receipt_mismatch")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            task = self._agent_task_record(row)
+            state_row = connection.execute(
+                "SELECT state_json FROM episode_isolation_states WHERE project_id = ? AND owner_episode_id = ?",
+                (task.project_id, task.episode_id),
+            ).fetchone()
+            state = EpisodeIsolationState.model_validate_json(state_row[0]) if state_row else None
+            attempt = state.merge_attempt if state else None
+            if (
+                task.kind != "branch_merge"
+                or task.episode_id != receipt.provenance.episode_id
+                or task.authorized_by != receipt.authorized_by
+                or attempt is None
+                or attempt.attempt_id != operation_id
+                or attempt.graph_task_id is not None
+            ):
+                raise ValueError("episode_merge_receipt_mismatch")
+            if task.status == "succeeded":
+                return
+            now = self.now()
+            revision = receipt.result_main_head.revision if receipt.outcome == "committed" else None
+            connection.execute(
+                "UPDATE graph_runs SET status = 'succeeded', updated_at = ?, finished_at = ?, "
+                "status_message = 'Agentless merge completed.', error = NULL, applied_revision = ?, "
+                "result_json = ?, phase = 'complete', last_activity_at = ? WHERE operation_id = ?",
+                (
+                    now,
+                    now,
+                    revision,
+                    self._bounded_result_json({"agentless": True}),
+                    now,
+                    operation_id,
+                ),
+            )
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "operation_completed",
+                self._bounded_receipt_payload(
+                    {"status": "succeeded", "applied_revision": revision}
+                ),
+                tier="summary",
+                created_at=now,
+            )
 
     def complete_agent_task(
         self,

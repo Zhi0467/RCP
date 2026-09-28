@@ -125,8 +125,9 @@ branch afterwards, including after aborting its own failed merge. A saved
 integration Resume/Retry may find only that operation's exact admitted target
 checked out in the worktree; it reruns the same clean-checkout and target-existence
 preflight before admission and provider launch. Ordinary turns still require the
-bound branch. RCP never merges, commits dirty files, resets, stashes, or force-pushes. Task completion is
-not an integration receipt.
+bound branch. Chat Integrate leaves Git writes to the provider. RCP never commits
+shared-checkout changes, resets, stashes, or force-pushes. Episode Merge has the
+bounded automatic path described below. Task completion is not an integration receipt.
 
 **Remove worktree** is explicit, refuses an active/paused turn or dirty worktree,
 and serializes with fresh, Resume, Retry, and graph-repair task admission for that
@@ -247,6 +248,20 @@ the worktree as their repository write root. The shared checkout is not writable
 
 Recovery, Resume, Retry, and restart retain the binding. A missing or moved
 worktree fails before launch. No path falls back to the shared checkout.
+
+Human-dispatched Merge reserves the isolation owner before any Git write. Every
+admission on that binding checks the reservation, including continuations,
+Resume, Retry, and recovery. It stays held through landing, verification, and
+cleanup. Live turns must settle first. Live or unobservable compute jobs block
+Merge and Remove worktree, even after their watcher stops. RCP never cancels
+these jobs as part of Merge.
+
+Episode Merge may commit the episode worktree's leftovers, respecting Gitignore.
+It refuses interrupted Git operations, unmerged entries, and dirty submodules.
+With no code or graph residue, it lands code into the chosen local branch,
+verifies delivery, then commits one graph transition without a provider turn.
+See [episode merge](auto-research-and-branch-merge.md#episode-code-merge-and-cleanup)
+for landing, recovery, and cleanup.
 
 The parent's recorded human authorizer is the authority for every turn inside the
 episode, so a different current human pressing Resume or Retry cannot stand in for

@@ -771,7 +771,11 @@ async def _stream_agent_events(
         task = execution.store.agent_task(execution.operation_id)
         if task is not None and task.episode_id is not None:
             await asyncio.to_thread(
-                validate_episode_launch, execution.store, task.episode_id, write_scope
+                validate_episode_launch,
+                execution.store,
+                task.episode_id,
+                write_scope,
+                operation_id=execution.operation_id,
             )
     remote_pid_file = (
         str(remote_stage.root / f"agent-{uuid.uuid4()}.pid")

@@ -1040,3 +1040,40 @@ def test_project_readiness_includes_only_its_machine_account_logins(manifest, tm
         ("claude", ""),
     }
     assert next(state for state in states if state["provider"] == "codex")["state"] == "signed_out"
+
+
+def test_graph_archive_hides_default_list_but_keeps_explicit_reads(tmp_path) -> None:
+    from rcp.core.models import EpisodeIsolation, EpisodeMergeAttempt
+
+    store = AppStore(tmp_path / "app.sqlite")
+    _project(store)
+    episode, _root = _auto_episode(store, "archived-branch")
+    store.create_episode_isolation(
+        "project",
+        EpisodeIsolation(owner_episode_id=episode.episode_id, graph_branch_id=episode.episode_id),
+    )
+    store.set_episode_isolation_status(
+        "project", episode.episode_id, expected_status="creating", status="ready"
+    )
+    attempt = EpisodeMergeAttempt(attempt_id="archive", authorized_by=_authorizer(store))
+    store.reserve_episode_merge("project", episode.episode_id, attempt)
+    store.finish_episode_merge(
+        "project",
+        episode.episode_id,
+        expected_attempt_id="archive",
+        attempt=attempt.model_copy(update={"phase": "done"}),
+        graph_archived=True,
+    )
+
+    def summaries(items):
+        return {item.episode_id: _branch_summary(item) for item in items}
+
+    assert serialize_episodes(store, "project", branch_summaries=summaries) == []
+    shown = serialize_episodes(
+        store, "project", branch_summaries=summaries, include_archived_branches=True
+    )
+    assert [item.episode_id for item in shown] == [episode.episode_id]
+    assert (
+        serialize_episode(store, "project", episode, branch_summary=_branch_summary).episode_id
+        == episode.episode_id
+    )

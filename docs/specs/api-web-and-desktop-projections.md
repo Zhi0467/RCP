@@ -162,8 +162,37 @@ outputs; an unavailable canonical refresh fails explicitly.
 Neither a branch response nor a delayed main response may replace the other
 target's state. Experiment controls and graph-wake evaluation use that same
 target. An active branch merge publishes graph mutation as unavailable and
-rejects manual Sync and new graph writers until it settles. Discuss remains
-available with its ordinary read-only capability.
+rejects manual Sync and new graph writers until it settles. An owner merge
+reservation also fences new Discuss turns on that binding through cleanup.
+
+## Episode merge API
+
+`POST /api/projects/{project_id}/episodes/{episode_id}/merge` resolves the
+isolation owner from any member. It also accepts a code-only owner. The optional
+body names `target_branch`, `history_mode` (`merge` or `squash`),
+`remove_worktree`, `delete_code_branch`, `archive_graph_branch`, and
+`keep_branch_open`. Cleanup defaults to all three steps. Squash disallows Keep
+branch open. Deleting the code branch requires worktree removal and delivery.
+Merge stays human-dispatched. A clean merge runs without a provider turn.
+Episode responses include the owner's nullable `isolation_state`. It carries
+the reservation, attempt phase, recorded cleanup steps and errors, delivered
+code commit and target, squash commit, and graph archive flag. Graph receipts
+remain the independent graph delivery record.
+
+`GET /api/projects/{project_id}/episodes/{episode_id}/merge-preview` accepts an
+optional `target_branch`. It recomputes `MergePreview`; no preview is stored.
+The response contains `delivered_baseline`, graph operation count and residue
+paths with reasons, optional code status, and `needs_agent`. Code reports its
+repository alias, source and target branches, commits ahead, leftovers, and
+conflict files. Its status is `clean`, `conflict`, `already_merged`,
+`target_dirty`, or `target_missing`.
+
+`POST /api/projects/{project_id}/episodes/{episode_id}/cleanup` accepts the
+three cleanup choices and `confirm_discard`. Unmerged removal or graph archive
+requires that confirmation. Each step is recorded and retryable. Graph archive
+only hides the branch from the default episode list. The list query
+`include_archived_branches=true` includes it again. Explicit episode and branch
+reads remain available, and Patch history is unchanged.
 
 ## Compute setup and job APIs
 

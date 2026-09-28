@@ -1,8 +1,8 @@
 # Active implementation handoffs
 
 - [Episodes run isolated, and a branch view shows the graph diff](handoff-2026-09-28-episode-isolation.md)
-  — design confirmed and reviewed 2026-09-28; seven slices, starting with
-  slice 1. Nothing implemented yet.
+  — design confirmed and reviewed 2026-09-28; slices 1–3 implemented.
+  Slice 4 adds the code-capable merge task; diff, web, and the closing journey follow.
 
 ## Open live checks
 

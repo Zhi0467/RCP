@@ -69,6 +69,13 @@ def validate_episode_admission(
     if episode is not None and episode.project_id != project_id:
         raise ValueError("episode_isolation_project_mismatch")
     isolation = store.episode_isolation(project_id, owner.episode_id) if owner else None
+    if owner is not None:
+        with store.connection() as connection:
+            store.require_episode_binding_admission_open(
+                connection,
+                project_id,
+                owner_episode_id=owner.episode_id,
+            )
     code = owner.code_worktree if owner else request.code_worktree
     owns_request = (
         getattr(request, "episode_id", None) == episode_id
@@ -179,7 +186,9 @@ def ensure_episode_isolation(
         return isolation
 
 
-def validate_episode_launch(store: AppStore, episode_id: str, scope: ProjectWriteScope) -> None:
+def validate_episode_launch(
+    store: AppStore, episode_id: str, scope: ProjectWriteScope, *, operation_id: str | None = None
+) -> None:
     """Recheck live binding proofs and machine grants for correction launches too."""
     episode = store.episode(episode_id)
     if episode is None:
@@ -191,7 +200,23 @@ def validate_episode_launch(store: AppStore, episode_id: str, scope: ProjectWrit
             raise ValueError("episode_isolation_owner_missing")
         return
     state = store.episode_isolation_state(episode.project_id, owner_id)
-    if state is None or state.status != "ready":
+    merge_launch = False
+    if state is not None and state.merge_reservation is not None:
+        task = store.agent_task(operation_id) if operation_id else None
+        merge_launch = bool(
+            task is not None
+            and task.kind == "branch_merge"
+            and task.operation_id == state.merge_reservation
+            and task.episode_id == owner_id
+            and task.project_id == episode.project_id
+        )
+        if not merge_launch:
+            raise ValueError("episode_merge_reserved")
+        if scope.repository_roots:
+            raise ValueError("episode_isolation_scope_mismatch")
+    if state is None or (
+        state.status != "ready" and not (merge_launch and state.status == "merging")
+    ):
         raise ValueError("episode_isolation_unavailable")
     binding = isolation.worktree
     if binding is None:

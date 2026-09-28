@@ -10,8 +10,11 @@ inherited bindings, Run admission, launch write roots, and fail-closed recovery.
 Slice 2, Experiment graph branch, is implemented. Experiments can create graph
 branches, and branch reads accept either episode kind. The API exposes the
 toggles and resolves omitted Auto-research code isolation from eligibility.
-Merge, diff, and web controls remain in slices 3–7. The settled choices below
-are unchanged.
+Slice 3, Pre-merge and agentless merge, is implemented in the API. It includes
+owner reservations, job gates, recoverable attempts, Git landing and verification,
+MergePreview, and recorded cleanup. Graph residue keeps the existing graph task;
+code residue refuses until slice 4. Diff and web controls remain in slices 5–6,
+and the closing journey remains in slice 7. The settled choices below are unchanged.
 
 Close this handoff when, on disposable data:
 
@@ -328,7 +331,7 @@ Each slice is one Codex implementation pass, reviewed once as it lands.
    reuses episode branch creation. Branch reads accept Experiment owners.
    Omitted Auto-research code isolation resolves from eligibility; an omitted
    Experiment choice stays off. Current-behavior specs are updated.
-3. **Pre-merge and agentless merge.** Owner-keyed merge admission with
+3. **Pre-merge and agentless merge — implemented.** Owner-keyed merge admission with
    separate code and graph delivery, the merge reservation and job gate, the
    merge attempt record and its reconciliation, interrupted-Git detection, the
    leftovers commit, the refusals, the merge-tree operation in the shipped

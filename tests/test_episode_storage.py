@@ -1838,6 +1838,11 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
         connection.execute("DROP INDEX episodes_continuation_request")
         connection.execute("ALTER TABLE episodes DROP COLUMN continues_episode_id")
         connection.execute("ALTER TABLE episodes DROP COLUMN continuation_request_id")
+        connection.execute("DROP TABLE episode_isolations")
+        connection.execute("DROP TABLE episode_isolation_states")
+        connection.execute("ALTER TABLE episodes DROP COLUMN isolation_owner_episode_id")
+        connection.execute("ALTER TABLE episodes DROP COLUMN code_worktree")
+        connection.execute("ALTER TABLE episodes DROP COLUMN graph_isolation")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 19")
         assert (
             connection.execute(

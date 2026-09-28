@@ -26,7 +26,8 @@ and edit that branch with the ordinary graph, Inbox, and Discuss/Work controls,
 during and after the episode. Those conversations have their own sessions and
 authority. Main stays editable,
 and branch work reaches main only when a human dispatches the dedicated semantic
-merge task. An episode may also bind one repository worktree. That code isolation
+merge. A clean merge may finish without a provider turn. An episode may also
+bind one repository worktree. That code isolation
 is separate from graph truth and shares one owner across its children and
 continuations. External effects are never rolled back by the graph workflow.
 

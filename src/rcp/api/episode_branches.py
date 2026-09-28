@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from rcp.api.dependencies import get_project_service
+from rcp.conversation_worktrees import worktree_command
 from rcp.core.models import BranchMergeReceipt, GraphBranchMetadata, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
@@ -199,6 +200,39 @@ def graph_branch_summary_from_snapshot(
         blocked_reason = f"Branch writers must settle before merging: {writers}."
     else:
         blocked_reason = None
+    binding = store.episode_isolation(
+        episode.project_id, episode.isolation_owner_episode_id or episode.episode_id
+    )
+    state = (
+        store.episode_isolation_state(episode.project_id, binding.owner_episode_id)
+        if binding
+        else None
+    )
+    if state and state.merge_reservation:
+        blocked_reason = "episode_merge_reserved"
+    elif (
+        binding
+        and binding.worktree
+        and state
+        and state.status == "ready"
+        and not active_task
+        and not active_branch_writers
+    ):
+        try:
+            facts = worktree_command(
+                store,
+                host=binding.worktree.execution_host,
+                operation="merge_preview",
+                binding=binding.worktree,
+                target_branch=state.delivered_target_branch or binding.worktree.starting_branch,
+            )
+            if facts["leftover_files"] or (
+                facts["status"] != "already_merged"
+                and facts["source_commit"] != state.delivered_source_commit
+            ):
+                blocked_reason = None
+        except ValueError:
+            pass
     return GraphBranchSummary(
         branch_id=metadata.branch_id,
         episode_id=metadata.episode_id,

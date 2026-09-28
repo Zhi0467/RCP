@@ -156,6 +156,13 @@ check exercises that sequence and replays the same key without a second launch.
 Per-operation transport and probe limits remain bounded; an interrupted result
 still retains its uncertain receipt.
 
+## Episode merge and removal gate
+
+Merge and Remove worktree check jobs started by every episode sharing the
+isolation owner. A live or unobservable job blocks both actions. Stopping a
+watcher does not prove job completion. The gate reuses compute-job records and
+never cancels a job.
+
 ## One watcher and human Cancel contract
 
 Every external `watch.json` entry requires `check_command`, absolute `log_path`,

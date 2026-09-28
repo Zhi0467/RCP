@@ -1568,6 +1568,26 @@ def create_app(
                 # effect fence opens. Recovery must precede every other owner.
                 await terminals.start()
                 background_tasks.recover_at_startup()
+                from rcp.runs.episodes.merge import reconcile_episode_merge
+
+                for project in store.projects():
+                    for episode in store.episodes(project.project_id, limit=None):
+                        state = store.episode_isolation_state(
+                            project.project_id, episode.episode_id
+                        )
+                        if state is None or state.merge_reservation is None:
+                            continue
+                        try:
+                            await asyncio.to_thread(
+                                reconcile_episode_merge,
+                                _project_service(catalog, project.project_id),
+                                store,
+                                episode,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Could not reconcile episode merge %s: %s", episode.episode_id, exc
+                            )
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
                 background_tasks.accept_watcher_notifications()

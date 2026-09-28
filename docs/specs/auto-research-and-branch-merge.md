@@ -154,8 +154,8 @@ off keeps ordinary repository write scope. Neither choice changes graph truth
 membership or provides repository rollback.
 
 Graph merge still neither copies nor replays repository files. A failed or merged
-graph branch persists as an audit trail. Code merge and cleanup remain separate
-unfinished work in the episode isolation handoff.
+graph branch persists as an audit trail. Human-dispatched Merge coordinates code
+delivery and graph delivery through the isolation owner.
 
 ## Mail and lifecycle notices
 
@@ -325,8 +325,9 @@ wake. These fences do not cancel compute jobs.
 
 ## Branch lifecycle and merge eligibility
 
-A branch remains writable while any episode of its chain accepts graph work.
-It is eligible to merge on branch facts alone: its head is exact and newer than
+A branch remains writable while any episode of its chain accepts graph work
+and no merge reservation fences its owner. Graph delivery uses branch facts:
+its head is exact and newer than
 its base, no successful receipt covers that head, and no queued, running, or
 pausing graph-capable task is writing to the branch (a `branch_merge` task is
 not a writer). Nothing about the episode is a condition: not its status, ending,
@@ -339,13 +340,52 @@ Eligibility and merge state derive from the canonical branch head, the branch's
 task state, and successful receipts. Recovered or explicitly abandoned historical
 attempts do not count as active writers. The branch is never deleted. A newer
 branch head after a prior receipt may be merged again; a head already covered by
-a successful receipt cannot. An active merge fences new graph work on the branch
-until it settles.
+a successful receipt needs no graph delivery. Code delivery is independent: a
+code-only owner or a delivered graph whose code moved on may still Merge.
+An active merge fences new work on the entire binding through cleanup.
 
 Only a human project member can dispatch **Merge to main**, from any card of the
-branch's episode chain. Already-merged, cross-project, cross-branch, or
+owner's episode chain. Fully delivered, cross-project, cross-branch, or
 concurrently merging requests fail closed, as does a branch with a live writer,
 which is named. The merge task does not spend any episode budget.
+
+## Episode code merge and cleanup
+
+Merge persists an owner reservation and an attempt before committing leftovers.
+Mutable attempts are separate from the immutable binding. Their phases are
+`pre_merge`, `landing`, `verified`, `graph_committed`, `cleanup`, and `done`.
+The next Merge or startup reconciles an interrupted attempt before new work.
+An uncertain transport result is checked against its recorded commits.
+
+The target is a human-chosen local branch, defaulting to the starting branch.
+Git 2.38 or later is required. Missing targets, the episode branch itself,
+targets checked out outside the shared checkout, and a dirty shared checkout
+holding the target are validation errors. An unfinished merge, rebase, or
+cherry-pick, unmerged index entries, and dirty submodules also refuse Merge.
+RCP commits ordinary episode leftovers once with `git add -A`. Ignored files
+stay out. It never commits the shared checkout's changes.
+
+The existing graph builder and `git merge-tree --write-tree` classify residue.
+With neither kind of residue, RCP lands code first and verifies it before one
+main graph transition. A checked-out target uses a real merge in the clean
+shared checkout. An unchecked-out target uses the tested tree and a
+compare-and-swap ref update. Source and target commits and checkout identity
+are rechecked before landing. RCP never resets, stashes, or force-pushes.
+Code conflicts refuse with `code_residue_needs_merge_task` in this slice.
+Graph residue keeps the existing graph merge task and its correction loop.
+
+History defaults to a merge commit (`--no-ff`). Squash records its resulting
+commit and disallows Keep branch open. Verification proves source ancestry or
+the recorded squash commit. Graph and code delivery have separate records.
+A later graph failure does not undo landed code.
+
+Cleanup records each step independently. The defaults remove the worktree,
+delete its code branch, and archive its graph branch. Branch deletion requires
+worktree removal and verified delivery or a recorded squash. Archive hides the
+graph branch from the default list and preserves every Patch. Keep branch open
+skips cleanup. Discard worktree or Archive before delivery requires explicit
+confirmation. Live turns and live or unobservable jobs block worktree removal.
+Cleanup failures remain cleanup failures and can be retried individually.
 
 ## Semantic rebase and merge
 
@@ -498,8 +538,9 @@ conversation. Historical episode reports remain immutable, so later branch
 edits are visible through the graph and its provenance.
 
 Today's surface is one branch per episode and one human-dispatched merge. There
-is no general branch manager, conflict editor, cherry-pick, discard, or
-repository-branch control, and no merge runs without a human dispatching it. That
+is no general branch manager, conflict editor, cherry-pick, or repository control.
+No merge runs without a human dispatching it.
+The API supports the bounded episode landing and cleanup above. That
 is current scope rather than a permanent exclusion; a version-control model for
 the graph is admitted in
 [the graph-branch scope decision](../decisions/2026-09-08-graph-branch-scope-is-reopened.md).

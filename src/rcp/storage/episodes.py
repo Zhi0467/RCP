@@ -2111,8 +2111,14 @@ class EpisodeStoreMixin:
             if task.request.get(field) != getattr(wrapup, field):
                 raise ValueError(f"the hidden report task changed its frozen {field}")
 
-    @staticmethod
-    def _insert_episode(connection: sqlite3.Connection, record: EpisodeRecord) -> None:
+    def _insert_episode(self, connection: sqlite3.Connection, record: EpisodeRecord) -> None:
+        self.require_episode_binding_admission_open(
+            connection,
+            record.project_id,
+            episode_id=record.episode_id,
+            owner_episode_id=record.isolation_owner_episode_id,
+            branch_id=record.graph_target.branch_id,
+        )
         connection.execute(
             """
             INSERT INTO episodes (

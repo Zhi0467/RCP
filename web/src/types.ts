@@ -1645,6 +1645,72 @@ export interface BranchMergeReceipt {
   created_at: string;
 }
 
+export interface MergeEpisodeBody {
+  target_branch?: string | null;
+  history_mode?: "merge" | "squash";
+  remove_worktree?: boolean;
+  delete_code_branch?: boolean;
+  archive_graph_branch?: boolean;
+  keep_branch_open?: boolean;
+}
+
+export interface EpisodeMergeAttempt {
+  attempt_id: string;
+  authorized_by: AuthorizedHuman;
+  phase: "pre_merge" | "landing" | "verified" | "graph_committed" | "cleanup" | "done";
+  source_commit: string | null;
+  target_branch: string | null;
+  target_commit: string | null;
+  tree: string | null;
+  landed_commit: string | null;
+  squash_commit: string | null;
+  commit_timestamp: string | null;
+  expected_shared_branch: string | null;
+  graph_head: GraphHeadRef | null;
+  history_mode: "merge" | "squash";
+  remove_worktree: boolean;
+  delete_code_branch: boolean;
+  archive_graph_branch: boolean;
+  keep_branch_open: boolean;
+  confirm_discard: boolean;
+  cleanup_completed: string[];
+  error: string | null;
+  graph_task_id: string | null;
+}
+
+export interface EpisodeIsolationState {
+  owner_episode_id: string;
+  status: "creating" | "ready" | "merging" | "removing" | "removed";
+  merge_reservation: string | null;
+  merge_attempt: EpisodeMergeAttempt | null;
+  delivered_source_commit: string | null;
+  delivered_target_branch: string | null;
+  squash_commit: string | null;
+  graph_archived: boolean;
+}
+
+export interface CleanupEpisodeBody {
+  remove_worktree?: boolean;
+  delete_code_branch?: boolean;
+  archive_graph_branch?: boolean;
+  confirm_discard?: boolean;
+}
+
+export interface MergePreview {
+  delivered_baseline: GraphHeadRef | null;
+  graph: { ops: number; residue: { path: string; reason: string }[] };
+  code: {
+    repo_alias: string;
+    source_branch: string;
+    target_branch: string;
+    commits_ahead: number;
+    leftover_files: string[];
+    status: "clean" | "conflict" | "already_merged" | "target_dirty" | "target_missing";
+    conflict_files: string[];
+  } | null;
+  needs_agent: boolean;
+}
+
 export interface GraphBranchSummary {
   branch_id: string;
   episode_id: string;
@@ -2318,6 +2384,7 @@ export interface Episode {
   code_worktree: boolean;
   graph_isolation: boolean;
   isolation_owner_episode_id: string | null;
+  isolation_state: EpisodeIsolationState | null;
   episode_id: string;
   project_id: string;
   mode: EpisodeMode;

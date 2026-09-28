@@ -309,3 +309,235 @@ def test_scratch_only_episode_launch_still_checks_missing_worktree(repository, t
     assert scope.repository_roots == []
     assert store.episode_isolation_state("project", "owner").status == "ready"
     assert store.episode_isolation("project", "owner").worktree == binding
+
+
+def _merge_owner(manifest, tmp_path):
+    from rcp.core.models import EpisodeMergeAttempt
+
+    store = _store(manifest, tmp_path)
+    owner = _episode(store, "owner").model_copy(update={"isolation_owner_episode_id": "owner"})
+    store.create_episode(owner)
+    store.create_episode_isolation("project", EpisodeIsolation(owner_episode_id="owner"))
+    store.set_episode_isolation_status(
+        "project", "owner", expected_status="creating", status="ready"
+    )
+    attempt = EpisodeMergeAttempt(attempt_id="merge-one", authorized_by=owner.authorized_by)
+    return store, owner, attempt
+
+
+def test_merge_reservation_survives_restart_and_fences_graph_only_admission(manifest, tmp_path):
+    store, owner, attempt = _merge_owner(manifest, tmp_path)
+    store.reserve_episode_merge("project", "owner", attempt)
+    reopened = AppStore(store.path)
+    assert reopened.episode_isolation_state("project", "owner").merge_reservation == "merge-one"
+    with pytest.raises(ValueError) as error:
+        validate_episode_admission(reopened, "project", RunRequest(), episode_id=owner.episode_id)
+    assert error.value.args == ("episode_merge_reserved",)
+    with pytest.raises(ValueError) as error:
+        reopened.create_episode(
+            owner.model_copy(
+                update={"episode_id": "continuation", "control_node_id": "continuation-node"}
+            )
+        )
+    assert error.value.args == ("episode_merge_reserved",)
+
+
+def test_merge_attempt_updates_preserve_binding_and_delivery(manifest, tmp_path):
+    store, owner, attempt = _merge_owner(manifest, tmp_path)
+    binding = store.episode_isolation("project", "owner")
+    store.reserve_episode_merge("project", "owner", attempt)
+    attempt = attempt.model_copy(update={"phase": "verified", "source_commit": "source"})
+    store.update_episode_merge_attempt(
+        "project",
+        "owner",
+        expected_attempt_id=attempt.attempt_id,
+        attempt=attempt,
+        delivered_source_commit="source",
+    )
+    state = store.finish_episode_merge(
+        "project",
+        "owner",
+        expected_attempt_id=attempt.attempt_id,
+        attempt=attempt.model_copy(update={"phase": "done"}),
+    )
+    assert (state.status, state.merge_reservation, state.delivered_source_commit) == (
+        "ready",
+        None,
+        "source",
+    )
+    assert store.episode_isolation("project", "owner") == binding
+    with pytest.raises(ValueError) as error:
+        store.update_episode_merge_attempt(
+            "project", "owner", expected_attempt_id="other", attempt=attempt
+        )
+    assert error.value.args == ("episode_merge_reservation_changed",)
+
+
+@pytest.mark.parametrize(
+    "status,code",
+    [
+        ("running", "episode_binding_job_live"),
+        ("lost", "episode_binding_job_unobservable"),
+        ("exited", None),
+        ("cancelled", None),
+    ],
+)
+def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, code):
+    from rcp.compute_jobs.models import ComputeJobRecord
+
+    store, owner, attempt = _merge_owner(manifest, tmp_path)
+    with store.connection() as connection:
+        store._insert_episode(
+            connection,
+            owner.model_copy(update={"episode_id": "child", "control_node_id": "child-node"}),
+        )
+    store.create_compute_job(
+        ComputeJobRecord(
+            job_id="job",
+            project_id="project",
+            origin_operation_id="origin",
+            episode_id="child",
+            execution_machine="local",
+            backend_id="local",
+            backend_handle="handle",
+            job_root="/tmp/job",
+            cwd="/tmp",
+            argv=["true"],
+            log_path="/tmp/job/log",
+            exit_path="/tmp/job/exit",
+            status=status,
+            created_at=store.now(),
+        )
+    )
+    if code:
+        with pytest.raises(ValueError) as error:
+            store.reserve_episode_merge("project", "owner", attempt)
+        assert error.value.args == (code,)
+        assert store.episode_isolation_state("project", "owner").merge_reservation is None
+    else:
+        assert (
+            store.reserve_episode_merge("project", "owner", attempt).merge_reservation
+            == attempt.attempt_id
+        )
+
+
+def test_reservation_fences_graph_mutations_without_task(manifest, tmp_path):
+    from rcp.api.graph_changes import active_merge
+    from rcp.core.transition_models import GraphTargetRef
+
+    store = _store(manifest, tmp_path)
+    owner = _episode(store, "owner", mode="auto_research")
+    store.create_episode_isolation(
+        "project", EpisodeIsolation(owner_episode_id="owner", graph_branch_id="owner")
+    )
+    store.set_episode_isolation_status(
+        "project", "owner", expected_status="creating", status="ready"
+    )
+    from rcp.core.models import EpisodeMergeAttempt
+
+    store.reserve_episode_merge(
+        "project",
+        "owner",
+        EpisodeMergeAttempt(attempt_id="merge", authorized_by=owner.authorized_by),
+    )
+    assert active_merge(store, "project", GraphTargetRef(kind="branch", branch_id="owner"))
+    assert store.episode_tasks("owner") == []
+
+
+def test_merge_waits_for_live_binding_turn(manifest, tmp_path):
+    from .test_episode_storage import _operational_task
+
+    store, owner, attempt = _merge_owner(manifest, tmp_path)
+    store.allocate_episode_invocation("owner", _operational_task(store, "turn", episode_id="owner"))
+    with pytest.raises(ValueError) as error:
+        store.reserve_episode_merge("project", "owner", attempt)
+    assert error.value.args == ("episode_binding_live_turns",)
+    assert store.episode_isolation_state("project", "owner").merge_reservation is None
+
+
+def test_existing_merge_task_blocks_owner_reservation(manifest, tmp_path, monkeypatch):
+    from rcp.core.models import EpisodeMergeAttempt
+
+    from .test_branch_merge_api import _admit_held_merge_task, _create_branch_harness
+
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    _admit_held_merge_task(harness, monkeypatch)
+    owner_id = harness.episode.episode_id
+    harness.store.create_episode_isolation(
+        harness.project_id, EpisodeIsolation(owner_episode_id=owner_id, graph_branch_id=owner_id)
+    )
+    harness.store.set_episode_isolation_status(
+        harness.project_id, owner_id, expected_status="creating", status="ready"
+    )
+    with pytest.raises(ValueError) as error:
+        harness.store.reserve_episode_merge(
+            harness.project_id,
+            owner_id,
+            EpisodeMergeAttempt(attempt_id="new", authorized_by=harness.episode.authorized_by),
+        )
+    assert error.value.args == ("episode_merge_reserved",)
+
+
+def test_only_reserved_merge_task_can_be_admitted(manifest, tmp_path, monkeypatch):
+    from rcp.core.models import EpisodeMergeAttempt
+    from rcp.runs.branch_merge_admission import start_branch_merge
+
+    from .test_branch_merge_api import _create_branch_harness, _resolved_branch_merge_request
+
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    owner_id = harness.episode.episode_id
+    harness.store.create_episode_isolation(
+        harness.project_id, EpisodeIsolation(owner_episode_id=owner_id, graph_branch_id=owner_id)
+    )
+    harness.store.set_episode_isolation_status(
+        harness.project_id, owner_id, expected_status="creating", status="ready"
+    )
+    attempt_id = str(uuid.uuid4())
+    harness.store.reserve_episode_merge(
+        harness.project_id,
+        owner_id,
+        EpisodeMergeAttempt(attempt_id=attempt_id, authorized_by=harness.episode.authorized_by),
+    )
+    tasks = harness.app.state.background_tasks
+    monkeypatch.setattr(tasks, "_spawn_record", lambda record, _request, **kwargs: record)
+    request = _resolved_branch_merge_request(harness.service, owner_id)
+    with pytest.raises(ValueError) as error:
+        start_branch_merge(
+            tasks,
+            harness.project_id,
+            request,
+            authorized_by=harness.episode.authorized_by,
+            operation_id=str(uuid.uuid4()),
+        )
+    assert error.value.args == ("episode_merge_reservation_changed",)
+    record = start_branch_merge(
+        tasks,
+        harness.project_id,
+        request,
+        authorized_by=harness.episode.authorized_by,
+        operation_id=attempt_id,
+    )
+    assert record.operation_id == attempt_id
+    scope = ProjectWriteScope.create(
+        project_id=harness.project_id,
+        execution_machine="laptop",
+        execution_host="",
+        capability="orchestrate",
+        stage_root=str(tmp_path / "merge-stage"),
+        workspace_root=str(tmp_path / "merge-stage" / "workspace"),
+        repositories=[],
+        protected_write_paths=[],
+    )
+    validate_episode_launch(harness.store, owner_id, scope, operation_id=attempt_id)
+    with pytest.raises(ValueError) as error:
+        validate_episode_launch(harness.store, owner_id, scope, operation_id="other")
+    assert error.value.args == ("episode_merge_reserved",)
+    from .test_branch_merge_api import _current_receipt
+
+    harness.store.fail_agent_task(attempt_id, "process interrupted", status="interrupted")
+    receipt = _current_receipt(harness, task_id=attempt_id)
+    harness.store.reconcile_agentless_merge_task(attempt_id, receipt)
+    assert harness.store.agent_task(attempt_id).status == "succeeded"
+    with pytest.raises(ValueError) as error:
+        harness.store.reconcile_agentless_merge_task("other", receipt)
+    assert error.value.args == ("episode_merge_receipt_mismatch",)

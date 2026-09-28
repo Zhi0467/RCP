@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.app import create_app
+from rcp.api.episode_routes import _resolved_branch_merge_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import (
@@ -40,6 +41,7 @@ from rcp.runs.auto_research_admission import (
     reserve_auto_research,
 )
 from rcp.runs.branch_merge import branch_merge_id
+from rcp.runs.branch_merge_admission import start_branch_merge
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.tasks.branch_merge import _apply_receipt_to_execution
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -278,7 +280,7 @@ def _create_branch_harness(
 def _episode_payload(harness: _BranchHarness) -> dict[str, object]:
     response = harness.client.get(
         f"/api/projects/{harness.project_id}/episodes",
-        params={"mode": "auto_research"},
+        params={"mode": "auto_research", "include_archived_branches": True},
     )
     assert response.status_code == 200, response.text
     return next(
@@ -368,10 +370,12 @@ def _admit_held_merge_task(
         "_spawn_record",
         lambda record, _request, **_kwargs: held.append(record) or record,
     )
-    response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    start_branch_merge(
+        harness.app.state.background_tasks,
+        harness.project_id,
+        _resolved_branch_merge_request(harness.service, harness.episode.episode_id),
+        authorized_by=authorized_human(harness.app),
     )
-    assert response.status_code == 202, response.text
     assert len(held) == 1
     stored = harness.store.agent_task(held[0].operation_id)
     assert stored is not None
@@ -757,11 +761,13 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
 
     monkeypatch.setattr(harness.app.state.background_tasks, "_spawn_record", hold_spawn)
     budget_before = harness.store.episode_budget_meter(harness.episode.episode_id)
-    admitted = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    start_branch_merge(
+        harness.app.state.background_tasks,
+        harness.project_id,
+        _resolved_branch_merge_request(harness.service, harness.episode.episode_id),
+        authorized_by=authorized_human(harness.app),
     )
 
-    assert admitted.status_code == 202, admitted.text
     assert len(held) == 1
     first = harness.store.agent_task(held[0].operation_id)
     assert first is not None
@@ -774,7 +780,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
     expected_authority.scope.run_truth_scope = harness.service.history.state().project_truth_scope
     assert first.dispatch_authority == expected_authority
     assert harness.store.episode_budget_meter(harness.episode.episode_id) == budget_before
-    admitted_summary = admitted.json()["graph_branch"]
+    admitted_summary = _episode_payload(harness)["graph_branch"]
     assert admitted_summary["merge_state"] == "running"
     assert admitted_summary["merge_eligible"] is False
     assert admitted_summary["active_merge_task_id"] == first.operation_id
@@ -783,7 +789,8 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert concurrent.status_code == 409
-    assert "already running" in concurrent.json()["detail"]
+    assert _episode_payload(harness)["graph_branch"]["active_merge_task_id"] == first.operation_id
+    assert len(held) == 1
 
     harness.store.fail_agent_task(first.operation_id, "The merge provider exited early.")
     for action in ("resume", "retry"):
@@ -797,9 +804,12 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert redispatched.status_code == 202, redispatched.text
-    assert len(held) == 2
-    assert held[1].operation_id != first.operation_id
-    assert redispatched.json()["graph_branch"]["active_merge_task_id"] == held[1].operation_id
+    assert len(held) == 1
+    summary = redispatched.json()["graph_branch"]
+    assert summary["active_merge_task_id"] is None
+    operation_id = summary["latest_successful_merge"]["provenance"]["merge_task_id"]
+    assert operation_id != first.operation_id
+    assert harness.store.agent_task(operation_id).status == "succeeded"
     assert harness.store.episode_budget_meter(harness.episode.episode_id) == budget_before
 
 
@@ -836,11 +846,11 @@ def test_merge_refuses_an_active_or_unchanged_branch(
     # Merge admission gates on the branch summary, so it keeps the short window.
     assert refresh_bounds
     assert set(refresh_bounds) == {REMOTE_STATE_RECONCILE_WINDOW_SECONDS}
-    assert refused.json()["detail"] == summary["merge_blocked_reason"]
-    if ended:
-        assert "no changes" in refused.json()["detail"]
-    else:
-        assert harness.root.operation_id in refused.json()["detail"]
+    assert refused.json()["detail"]["code"] == (
+        "no_undelivered_work" if ended else "episode_binding_live_turns"
+    )
+    if not ended:
+        assert harness.root.operation_id in summary["merge_blocked_reason"]
     assert not any(
         task.kind == "branch_merge" for task in harness.store.agent_tasks(harness.project_id)
     )
@@ -894,7 +904,9 @@ def test_ended_branch_merges_after_a_paused_attempt_is_retired(
     )
 
     assert response.status_code == 202, response.text
-    operation_id = response.json()["graph_branch"]["active_merge_task_id"]
+    summary = response.json()["graph_branch"]
+    assert summary["active_merge_task_id"] is None
+    operation_id = summary["latest_successful_merge"]["provenance"]["merge_task_id"]
     wait_for_task(store, operation_id, expect="succeeded")
     assert launcher.calls == 0
     assert "ev/branch-result" in harness.service.history.state().nodes
@@ -923,7 +935,9 @@ def test_ended_branch_merges_over_an_unresolved_paused_writer(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert response.status_code == 202, response.text
-    operation_id = response.json()["graph_branch"]["active_merge_task_id"]
+    summary = response.json()["graph_branch"]
+    assert summary["active_merge_task_id"] is None
+    operation_id = summary["latest_successful_merge"]["provenance"]["merge_task_id"]
     wait_for_task(store, operation_id, expect="succeeded")
     assert store.agent_task(harness.root.operation_id).status == "paused"
     assert "ev/branch-result" in harness.service.history.state().nodes
@@ -1043,7 +1057,9 @@ def test_no_change_merge_writes_a_receipt_without_launching_a_provider(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert response.status_code == 202, response.text
-    operation_id = response.json()["graph_branch"]["active_merge_task_id"]
+    summary = response.json()["graph_branch"]
+    assert summary["active_merge_task_id"] is None
+    operation_id = summary["latest_successful_merge"]["provenance"]["merge_task_id"]
     assert isinstance(operation_id, str)
 
     task = wait_for_task(harness.store, operation_id, expect="succeeded")
@@ -1154,7 +1170,9 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert response.status_code == 202, response.text
-    operation_id = response.json()["graph_branch"]["active_merge_task_id"]
+    summary = response.json()["graph_branch"]
+    assert summary["active_merge_task_id"] is None
+    operation_id = summary["latest_successful_merge"]["provenance"]["merge_task_id"]
     assert isinstance(operation_id, str)
 
     task = wait_for_task(harness.store, operation_id, expect="succeeded")

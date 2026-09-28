@@ -97,7 +97,9 @@ def worktree_command(
         if not isinstance(result, dict):
             raise ValueError("Worktree execution returned an invalid response")
         if "error" in result:
-            raise ValueError(str(result["error"]))
+            raise conversation_worktree.WorktreeValidationError(
+                str(result.get("code", "worktree_execution_failed")), str(result["error"])
+            )
         return result
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError(f"Worktree execution unavailable: {exc}") from exc

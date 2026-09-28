@@ -21,6 +21,7 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined, to_jsonable_python
 
+from rcp.core.transition_models import GraphHeadRef
 from rcp.providers import PROVIDER_IDS
 
 DISPLAY_NAME_MAX_LENGTH = 120
@@ -69,13 +70,6 @@ class EpisodeIsolation(BaseModel):
         if self.worktree and self.worktree.owner_episode_id != self.owner_episode_id:
             raise ValueError("episode worktree must belong to its isolation owner")
         return self
-
-
-class EpisodeIsolationState(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
-
-    owner_episode_id: str = Field(min_length=1)
-    status: Literal["creating", "ready", "merging", "removing", "removed"] = "creating"
 
 
 class ConversationWorktreeBinding(WorktreeBinding):
@@ -1098,6 +1092,57 @@ class AuthorizedHuman(BaseModel):
     _normalize_display_name = field_validator("display_name", mode="before")(normalize_display_name)
 
 
+class EpisodeMergeAttempt(BaseModel):
+    """Durable intent used to reconcile an interrupted human-dispatched merge."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    attempt_id: str = Field(min_length=1)
+    authorized_by: AuthorizedHuman
+    phase: Literal["pre_merge", "landing", "verified", "graph_committed", "cleanup", "done"] = (
+        "pre_merge"
+    )
+    source_commit: str | None = None
+    target_branch: str | None = None
+    target_commit: str | None = None
+    expected_shared_branch: str | None = None
+    tree: str | None = None
+    landed_commit: str | None = None
+    squash_commit: str | None = None
+    commit_timestamp: str | None = None
+    graph_head: GraphHeadRef | None = None
+    history_mode: Literal["merge", "squash"] = "merge"
+    remove_worktree: bool = True
+    delete_code_branch: bool = True
+    archive_graph_branch: bool = True
+    keep_branch_open: bool = False
+    confirm_discard: bool = False
+    cleanup_completed: list[str] = Field(default_factory=list)
+    error: str | None = None
+    graph_task_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_cleanup(self) -> EpisodeMergeAttempt:
+        if self.history_mode == "squash" and self.keep_branch_open:
+            raise ValueError("squash_cannot_keep_branch_open")
+        if self.delete_code_branch and not self.remove_worktree:
+            raise ValueError("delete_branch_requires_remove_worktree")
+        return self
+
+
+class EpisodeIsolationState(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    owner_episode_id: str = Field(min_length=1)
+    status: Literal["creating", "ready", "merging", "removing", "removed"] = "creating"
+    merge_reservation: str | None = None
+    merge_attempt: EpisodeMergeAttempt | None = None
+    delivered_source_commit: str | None = None
+    delivered_target_branch: str | None = None
+    squash_commit: str | None = None
+    graph_archived: bool = False
+
+
 class ProjectHomeTransfer(BaseModel):
     """One ordered, human-authorized change to a project's writable home."""
 
@@ -1383,7 +1428,7 @@ class Patch(BaseModel):
 # keeps that dependency one-way at runtime and lets Pydantic resolve the two
 # forward references explicitly.
 from rcp.core.operations import GraphOperation, ProposalOperation  # noqa: E402
-from rcp.core.transition_models import GraphHeadRef, TransitionTrace  # noqa: E402
+from rcp.core.transition_models import TransitionTrace  # noqa: E402
 
 Proposal.model_rebuild(_types_namespace={"ProposalOperation": ProposalOperation})
 Patch.model_rebuild(
