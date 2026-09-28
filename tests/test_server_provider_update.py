@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import replace
 from io import StringIO
@@ -54,8 +55,8 @@ def _layout(tmp_path: Path) -> ServerLayout:
 def _account(layout: ServerLayout):
     return SimpleNamespace(
         pw_name="rcp",
-        pw_uid=501,
-        pw_gid=501,
+        pw_uid=os.getuid(),
+        pw_gid=os.getgid(),
         pw_dir=str(layout.service_home),
     )
 
@@ -128,7 +129,9 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
     assert events[-1]["step"]["fields"][-1]["name"] == "authentication"
     assert not any(call[-2:] in {("login", "status"), ("auth", "status")} for call in calls)
     if provider == "codex":
-        assert any(call[0] == "/usr/bin/curl" for call in calls)
+        (download,) = [call for call in calls if call[0] == "/usr/bin/curl"]
+        # Agents may write /tmp, so the installer is staged in protected ~/.rcp/tmp.
+        assert Path(download[-1]).parent.parent == layout.service_home / ".rcp" / "tmp"
         assert any(
             call[:3] == ("/usr/bin/env", "CODEX_NON_INTERACTIVE=1", "/bin/sh") for call in calls
         )

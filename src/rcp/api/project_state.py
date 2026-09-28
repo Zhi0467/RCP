@@ -27,6 +27,7 @@ from rcp.api.graph_changes import (
     merge_fenced_mutation_availability,
 )
 from rcp.api.identity import IdentityAccess
+from rcp.api.space_machines import MACHINE_ATTACHMENT_LOCK
 from rcp.background import BackgroundAgentTasks
 from rcp.compute_jobs.probe import refresh_compute_probes
 from rcp.config import load_manifest
@@ -463,12 +464,12 @@ def add_project_machine(
     """Append a space machine card to this project's manifest; returns the project snapshot."""
 
     try:
-        store.space_machine(body.machine_id)
+        with MACHINE_ATTACHMENT_LOCK:
+            store.space_machine(body.machine_id)
+            return project_display_cache.add_machine(project_id, body.machine_id, body.alias)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Machine not found") from exc
-    try:
-        return project_display_cache.add_machine(project_id, body.machine_id, body.alias)
-    except KeyError as exc:
+        if exc.args == (body.machine_id,):
+            raise HTTPException(status_code=404, detail="Machine not found") from exc
         raise HTTPException(status_code=404, detail="Project not found") from exc
     except (FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

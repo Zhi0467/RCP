@@ -98,9 +98,11 @@ for directory in (rcp,base):
         os.mkdir(directory,0o700)
     except FileExistsError:
         pass
-info=os.lstat(base)
-if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid():
-    print('remote stage directory is unsafe',file=sys.stderr); raise SystemExit(1)
+# A parent another user can write could swap a retained stage, so both must be ours.
+for directory in (rcp,base):
+    info=os.lstat(directory)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
+        print('remote stage directory is unsafe',file=sys.stderr); raise SystemExit(1)
 label,reuse=sys.argv[1],sys.argv[2]=='1'
 if label:
     root=os.path.join(base,'rcp-run.'+label)

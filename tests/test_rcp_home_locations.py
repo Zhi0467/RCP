@@ -19,7 +19,7 @@ from rcp import rcp_home
 from rcp.agents import staged_command_broker, staged_command_client
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.runs.tasks import auto_research_stream
-from rcp.transport import StateMissing, ssh
+from rcp.transport import StateMissing, StateUnavailable, ssh
 from rcp.transport.run_stage import RemoteRunStage
 
 # Captured before conftest swaps it out for a per-test directory.
@@ -59,6 +59,20 @@ def test_new_remote_stages_land_under_the_remote_rcp_home(
         assert root.parent == home / ".rcp" / "stages"
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
         assert stage.close()
+
+
+def test_a_stage_parent_others_can_write_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".rcp").mkdir(parents=True)
+    (home / ".rcp").chmod(0o777)
+    stage = _local_stage(monkeypatch, home)
+    monkeypatch.setattr(stage, "sweep", lambda **_kwargs: None)
+
+    with pytest.raises(StateUnavailable):
+        stage.open("op-one")
+    assert not (home / ".rcp" / "stages" / "rcp-run.op-one").exists()
 
 
 def test_a_reused_stage_keeps_its_saved_legacy_tmp_folder(

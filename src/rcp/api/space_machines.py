@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
@@ -25,6 +26,10 @@ router = APIRouter()
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
+
+#: Held across "is this card used?" and delete, and across adding a card to a
+#: project, so a delete cannot slip between an add's read and its manifest write.
+MACHINE_ATTACHMENT_LOCK = threading.Lock()
 
 #: Bounds one PATCH; a card holds a handful of grants, not a mount table.
 _MAX_WRITABLE_PATHS = 64
@@ -276,19 +281,21 @@ def delete_space_machine(
     identity_access: IdentityDependency,
     store: StoreDependency,
 ) -> dict[str, object]:
-    view = _one_machine_view(
-        store,
-        _machine_or_404(store, machine_id),
-        _visible_project_ids(request, identity_access, store),
-    )
-    if view["in_use"] is not False:
-        detail = (
-            "A project uses this machine; remove it from the project first."
-            if view["in_use"]
-            else "RCP could not read every project, so it cannot tell whether this machine is used."
+    with MACHINE_ATTACHMENT_LOCK:
+        view = _one_machine_view(
+            store,
+            _machine_or_404(store, machine_id),
+            _visible_project_ids(request, identity_access, store),
         )
-        raise HTTPException(status_code=409, detail=detail)
-    store.delete_space_machine(machine_id)
+        if view["in_use"] is not False:
+            detail = (
+                "A project uses this machine; remove it from the project first."
+                if view["in_use"]
+                else "RCP could not read every project, so it cannot tell whether this "
+                "machine is used."
+            )
+            raise HTTPException(status_code=409, detail=detail)
+        store.delete_space_machine(machine_id)
     return {"deleted": machine_id}
 
 
