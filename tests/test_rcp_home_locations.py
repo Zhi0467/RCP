@@ -19,6 +19,7 @@ from rcp import rcp_home
 from rcp.agents import staged_command_broker, staged_command_client
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.runs.tasks import auto_research_stream
+from rcp.terminals import profile as terminal_profile
 from rcp.transport import StateMissing, StateUnavailable, ssh
 from rcp.transport.run_stage import RemoteRunStage
 
@@ -143,13 +144,20 @@ def test_legacy_stage_roots_lists_only_tmp_stage_directories(monkeypatch) -> Non
     label = f"test-{uuid.uuid4().hex}"
     legacy = Path("/tmp") / f"rcp-run.{label}"
     legacy.mkdir(mode=0o700)
+    # Anyone who can write /tmp can make this; no mount can carry its colon.
+    stray = Path("/tmp") / f"rcp-run.{label}:stray"
+    stray.mkdir(mode=0o700)
     stage = _local_stage(monkeypatch, Path("/nonexistent-home"))
     try:
         roots = stage.legacy_stage_roots()
+        terminal_roots = terminal_profile.legacy_stage_roots()
     finally:
         legacy.rmdir()
+        stray.rmdir()
 
-    assert os.path.realpath(legacy) in roots
+    for listed in (roots, terminal_roots):
+        assert os.path.realpath(legacy) in listed
+        assert os.path.realpath(stray) not in listed
     assert roots == sorted(roots)
 
 
@@ -219,6 +227,16 @@ def test_command_sockets_resolve_under_the_account_rcp_home(short_home: Path, mo
             staged_command_broker._safe_socket_path(outside)
         with pytest.raises(staged_command_client.ClientInputError):
             staged_command_client._broker_socket_path(outside)
+
+
+def test_a_socket_parent_another_user_can_write_is_refused(tmp_path: Path) -> None:
+    parent = tmp_path / "rcp"
+    parent.mkdir(mode=0o700)
+    staged_command_broker._private_directory(str(parent))
+    # Such a user could swap the socket folder under it.
+    parent.chmod(0o722)
+    with pytest.raises(staged_command_broker.BrokerError):
+        staged_command_broker._private_directory(str(parent))
 
 
 def test_a_long_home_moves_sockets_to_one_protected_short_folder(monkeypatch) -> None:

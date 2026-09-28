@@ -110,6 +110,8 @@ def _private_directory(path, *, exact=False):
         not stat.S_ISDIR(info.st_mode)
         or info.st_uid != os.geteuid()
         or (exact and stat.S_IMODE(info.st_mode) != 0o700)
+        # Another user who can write the parent could swap the socket folder.
+        or info.st_mode & 0o022
     ):
         raise BrokerError(f"RCP socket directory {path} is unsafe")
 

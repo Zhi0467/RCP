@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -193,12 +194,16 @@ def resolve_grants(
 def legacy_stage_roots() -> list[str]:
     """Task stages left in `/tmp` from before `~/.rcp/stages`; symlinks skipped.
 
-    A later release removes this with the legacy stage location.
+    Only names RCP made count: `/tmp` is writable by launches, and a stray name
+    no mount can carry must not stop every terminal from opening. A later
+    release removes this with the legacy stage location.
     """
     return sorted(
         str(path.resolve())
         for path in Path("/tmp").glob("rcp-run.*")
-        if path.is_dir() and not path.is_symlink()
+        if re.fullmatch(r"rcp-run\.[A-Za-z0-9_-]+", path.name)
+        and path.is_dir()
+        and not path.is_symlink()
     )
 
 

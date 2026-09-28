@@ -360,9 +360,11 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         """
 
         script = """
-import glob,json,os
+import glob,json,os,re
+# Only names RCP made; a stray one could hold text no mount can carry.
 roots=sorted({os.path.realpath(path) for path in glob.glob('/tmp/rcp-run.*')
-    if os.path.isdir(path) and not os.path.islink(path)})
+    if re.fullmatch(r'rcp-run\\.[A-Za-z0-9_-]+',os.path.basename(path))
+    and os.path.isdir(path) and not os.path.islink(path)})
 print(json.dumps(roots))
 """
         result = self._ssh(["python3", "-c", script])
