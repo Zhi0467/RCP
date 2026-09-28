@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -91,6 +92,9 @@ class ProviderLoginAccount(BaseModel):
     changed_by: str | None
     label: str
     sign_in_methods: tuple[str, ...]
+    #: False when the CLI's own login applies; the row then only says how to run it.
+    managed: bool
+    login_command: str
     token_instructions: str | None = None
     token: ProviderCredentialSummary | None = None
     sign_in: ProviderSignInStatus | None = None
@@ -131,8 +135,6 @@ def provider_login_accounts(
         for state in store.provider_login_states()
         if not state.host or state.host in machines
     )
-    # A CLI whose own login RCP does not manage has no account here to act on.
-    pairs = {pair for pair in pairs if profile_for(pair[0]).authentication.manages_login}
     paths = provider_path_sources(store)
     accounts = []
     for provider, host in sorted(pairs):
@@ -145,6 +147,8 @@ def provider_login_accounts(
                 **state.model_dump(),
                 label=profile.label,
                 sign_in_methods=profile.authentication.methods,
+                managed=profile.authentication.manages_login,
+                login_command=shlex.join(profile.login_command(profile.id)),
                 token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
                 provider_path=_visible_path(paths.get((provider, host), []), visible),

@@ -21,7 +21,7 @@ from rcp.api.dependencies import (
     get_provider_sign_ins,
     get_store,
 )
-from rcp.providers import PROVIDER_IDS, profile_for
+from rcp.providers import PROVIDER_IDS
 from rcp.runs.provider_sign_in import ProviderLoginRefused, ProviderSignInRunner
 from rcp.storage import AppStore
 
@@ -275,8 +275,7 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
 
     listed = TestClient(app).get("/api/providers/logins").json()
     remote = [account for account in listed if account["host"] == "gpu.example"]
-    managed = {p for p in PROVIDER_IDS if profile_for(p).authentication.manages_login}
-    assert {account["provider"] for account in remote} == managed
+    assert {account["provider"] for account in remote} == set(PROVIDER_IDS)
     assert all(account["machines"] == ["GPU"] for account in remote)
     assert all(account["provider_path"] is None for account in remote)
     reached = {"account": "alice"}

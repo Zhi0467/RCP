@@ -304,8 +304,13 @@ sudo -u rcp -H /bin/bash -lc \
 ```
 
 OpenCode's free models need no sign-in, so it is ready once installed. RCP does
-not yet manage an OpenCode login for other model backends; a Provider logins
-entry for it is later work.
+not manage an OpenCode login: **Settings, Provider logins** lists OpenCode with
+no sign-in state, only the command to run. For a model backend that needs a
+key, run it as `rcp`:
+
+```bash
+sudo -u rcp -H /bin/bash -lc 'opencode providers login'
+```
 
 ### Verify and sign out
 
