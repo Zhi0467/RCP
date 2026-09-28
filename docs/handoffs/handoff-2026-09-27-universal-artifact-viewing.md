@@ -115,8 +115,9 @@ filter, no dotfile filter, no recursion; symlinks and directories stay out.
 - Omissions are projected, not stored. The task projection gains
   `result.artifact_omissions`, read from the latest `artifact_discovery`
   receipt:
-  - Discovery receipts move from diagnostic to summary retention, so they do
-    not age out.
+  - Discovery receipts move from diagnostic to summary retention and join
+    `_PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES` (`storage/agent_tasks.py`), so
+    later summary receipts of a long turn cannot prune them.
   - Read them with one batched, category-specific query for the projected
     tasks.
   - Deduplicate against the latest receipt only, not any earlier identical
@@ -334,7 +335,7 @@ makes this path more reachable.
 
 ## Landing after #206
 
-Zhi0467/RCP#206 changes the comment path: raster box selections get a server
+#206 changes the comment path: raster box selections get a server
 crop, and HTML boxes name their elements (`elements` on
 `ArtifactBoxSelection`). Both are comment-side. The view layer passes
 selection payloads through without a field allowlist. Whichever lands second
