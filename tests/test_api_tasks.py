@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
-from rcp.artifacts import AgentArtifactDescriptor
+from rcp.api.tasks import AgentArtifactResponse
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES
 
 from .helpers import (
@@ -46,10 +46,19 @@ def test_remote_artifact_read_does_not_stall_health(
     manifest, tmp_path, monkeypatch, action
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    descriptor = AgentArtifactDescriptor(
+    descriptor = AgentArtifactResponse(
         artifact_id="a" * 24,
         name="plot.png",
         media_type="image/png",
+        view="image",
+        available=True,
+        unavailable_reason=None,
+        can_open=True,
+        can_download=True,
+        can_keep=True,
+        can_discuss=False,
+        can_revise=False,
+        revision_candidate=None,
     )
     data = b"\x89PNG\r\n\x1a\npreview"
     entered = threading.Event()

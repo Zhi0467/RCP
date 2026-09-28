@@ -6,9 +6,11 @@ ship this module's source to a remote machine and also call it in-process.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import pwd
+import re
 import sys
 
 
@@ -66,11 +68,30 @@ def browse_directory(
     }
 
 
+def legacy_stage_roots() -> list[str]:
+    """Task stages left in `/tmp` from before `~/.rcp/stages`, which launches protect.
+
+    Mirrors `rcp.transport.remote_stage_root.legacy_stage_roots`; this file ships
+    alone, and a test lists the same folders through both.
+    """
+
+    return sorted(
+        {
+            os.path.realpath(path)
+            for path in glob.glob("/tmp/rcp-run.*")
+            if re.fullmatch(r"rcp-run\.[A-Za-z0-9._-]+", os.path.basename(path))
+            and os.path.isdir(path)
+            and not os.path.islink(path)
+        }
+    )
+
+
 def check_directories(paths: list[str]) -> dict[str, object]:
     """The account's real home, and each path's real location if it is a directory."""
 
     return {
         "home": os.path.realpath(os.path.expanduser("~")),
+        "legacy_stages": legacy_stage_roots(),
         "resolved": {
             path: os.path.realpath(path) if os.path.isdir(path) else None for path in paths
         },
@@ -106,7 +127,8 @@ def handle(request: dict[str, object]) -> dict[str, object]:
     if not isinstance(protect, list) or not all(isinstance(item, str) for item in protect):
         raise ValueError("directory browser request is invalid")
     # Where each protected folder really lives, so a caller can lock its target.
-    return {**page, "protected_targets": sorted({os.path.realpath(item) for item in protect})}
+    targets = {os.path.realpath(item) for item in protect}
+    return {**page, "protected_targets": sorted(targets | set(legacy_stage_roots()))}
 
 
 def main(argv: list[str]) -> int:

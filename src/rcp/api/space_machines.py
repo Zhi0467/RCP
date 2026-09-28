@@ -203,6 +203,11 @@ def _validated_writable_paths(
     ):
         raise ValueError("the machine returned an invalid folder check")
     owned = _owned_paths(machine, home, catalog.data_dir)
+    # Launches keep retained /tmp stages read-only, so a grant must not cover one.
+    legacy = result.get("legacy_stages") or []
+    if not isinstance(legacy, list) or not all(isinstance(item, str) for item in legacy):
+        raise ValueError("the machine returned an invalid folder check")
+    owned.extend(legacy)
     owned.extend(research)
     owned.extend(real for path in research if isinstance(real := resolved[path], str))
     for path in paths:

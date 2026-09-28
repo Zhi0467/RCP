@@ -17,6 +17,7 @@ import { filterSkillCatalogToDefaults } from "./skillPicker";
 import type {
   AgentRunConfig,
   AgentTask,
+  ArtifactView,
   ChatMessage,
   ChatSummary,
   ChatTranscript,
@@ -640,6 +641,8 @@ type ProjectArtifactRecord = {
   kind: "task_artifact" | "episode_report";
   name: string;
   media_type: string;
+  view: ArtifactView;
+  can_download: boolean;
   available: boolean;
   can_open: boolean;
   task_id: string | null;
@@ -766,6 +769,8 @@ function projectArtifactRecords(
         kind: "task_artifact" as const,
         name: compactText(artifact.name, 120),
         media_type: artifact.media_type,
+        view: artifact.view,
+        can_download: artifact.can_download,
         available: artifact.available,
         can_open: artifact.can_open,
         task_id: task.operation_id,
@@ -793,6 +798,8 @@ function projectArtifactRecords(
       kind: "episode_report" as const,
       name: `${episode.ending ?? "Experiment"} episode report`,
       media_type: "text/html",
+      view: "html" as const,
+      can_download: false,
       available: true,
       can_open: true,
       task_id: null,
@@ -849,7 +856,11 @@ export async function openProjectArtifact(
   tasks: AgentTask[],
   episodes: Episode[],
   input: Record<string, unknown>,
-  openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
+  openViewer: (
+    viewerUrl: string,
+    contentUrl: string,
+    view: ArtifactView,
+  ) => boolean | Promise<boolean>,
   source: WebMcpArtifactSource,
 ): Promise<Record<string, unknown>> {
   const viewerId = requiredStringInput(input, "viewer_id");
@@ -869,7 +880,7 @@ export async function openProjectArtifact(
   if (!record.available || !record.can_open) {
     throw new Error(record.unavailable_reason ?? `Artifact viewer ${viewerId} is unavailable.`);
   }
-  if (!(await openViewer(record.viewer_url, record.content_url))) {
+  if (!(await openViewer(record.viewer_url, record.content_url, record.view))) {
     throw new Error("The RCP artifact viewer could not be shown.");
   }
   return {
@@ -884,7 +895,11 @@ export function projectArtifactToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   episodes: Episode[],
-  openViewer: (viewerUrl: string, contentUrl: string) => boolean | Promise<boolean>,
+  openViewer: (
+    viewerUrl: string,
+    contentUrl: string,
+    view: ArtifactView,
+  ) => boolean | Promise<boolean>,
   source: WebMcpArtifactSource,
 ): WebMcpToolDefinition[] {
   return [
@@ -1187,6 +1202,8 @@ export async function inspectProjectConversation(
               viewer_id: `task:${latestTask.operation_id}:${artifact.artifact_id}`,
               name: compactText(artifact.name, 96),
               media_type: artifact.media_type,
+              view: artifact.view,
+              can_download: artifact.can_download,
               available: artifact.available,
               can_open: artifact.can_open,
               kept_filename: artifact.kept_filename ?? null,

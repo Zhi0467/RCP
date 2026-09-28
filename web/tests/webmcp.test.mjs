@@ -269,6 +269,7 @@ function conversationFixtures() {
           artifact_id: "artifact-1",
           name: "calibration.html",
           media_type: "text/html",
+          view: "html",
           kept_filename: null,
           available: true,
           unavailable_reason: null,
@@ -356,6 +357,7 @@ function artifactFixtures() {
             artifact_id: "artifact-1",
             name: "calibration.html",
             media_type: "text/html",
+            view: "html",
             kept_filename: "calibration.html",
             available: true,
             unavailable_reason: null,
@@ -381,6 +383,7 @@ function artifactFixtures() {
             artifact_id: "artifact-2",
             name: "expired.png",
             media_type: "image/png",
+            view: "image",
             available: false,
             unavailable_reason: "Artifact bytes expired.",
             can_open: false,
@@ -1174,6 +1177,8 @@ test("conversation inspection returns bounded transcript, latest result, and cur
         viewer_id: "task:task-chat-1:artifact-1",
         name: "calibration.html",
         media_type: "text/html",
+        view: "html",
+        can_download: true,
         available: true,
         can_open: true,
         kept_filename: null,
@@ -2039,4 +2044,37 @@ test("ordinary branch conversations can send from their matching graph view", as
     },
   );
   assert.equal(started.length, 1);
+});
+
+test("download-only files and PDFs are listed but never sent to the visual opener", async () => {
+  const project = projectFixture();
+  const { tasks } = artifactFixtures();
+  for (const view of ["file", "pdf"]) {
+    tasks[0].result.artifacts[0] = {
+      ...tasks[0].result.artifacts[0],
+      view,
+      can_open: false,
+      can_download: true,
+    };
+    const listed = await listProjectArtifacts(project, [tasks[0]], [], {}, noArtifactFetch);
+    assert.equal(listed.artifacts.length, 1);
+    assert.equal(listed.artifacts[0].view, view);
+    assert.equal(listed.artifacts[0].can_open, false);
+    assert.equal(listed.artifacts[0].can_download, true);
+    let opened = false;
+    await assert.rejects(
+      openProjectArtifact(
+        project,
+        [tasks[0]],
+        [],
+        { viewer_id: listed.artifacts[0].viewer_id },
+        () => {
+          opened = true;
+          return true;
+        },
+        noArtifactFetch,
+      ),
+    );
+    assert.equal(opened, false);
+  }
 });

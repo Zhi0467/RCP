@@ -425,10 +425,12 @@ Reply and artifacts:
   a scientific result.
 - Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
   suffix to point at one line of a repository file. Only an authorized repository file or a file
-  you wrote in the artifact directory opens in RCP's bounded preview; a relative path, a line
-  suffix on an artifact, or any other location does not.
-- A preview is optional. RCP discovers only direct regular HTML or raster-image files in
-  `{artifact_path}`. Do not use nested directories, symlinks, provider directives, or other paths.
+  you wrote in the artifact directory resolves in RCP; a relative path, a line suffix on an
+  artifact, or any other location does not.
+- A preview is optional. RCP shows each bounded direct regular file of any type in
+  `{artifact_path}` as a card with Download and Keep. HTML, images, Markdown, and text
+  also open in a viewer; other files are download-only. Do not use nested directories,
+  symlinks, provider directives, or other paths.
   HTML must be self-contained; ordinary HTTP(S) links are allowed, but external resource loads do
   not work in the preview.
 

@@ -34,7 +34,9 @@ from rcp.api.episodes import (
 )
 from rcp.api.experiments import continue_experiment_episode, stop_bound_experiment_episode
 from rcp.api.identity import IdentityAccess
-from rcp.artifacts import AgentArtifactDescriptor, artifact_viewer_document, html_preview_document
+from rcp.artifact_comments import comment_panel, selection_frame_addon
+from rcp.artifact_views import artifact_viewer_document
+from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import (
@@ -531,6 +533,9 @@ def content_episode_report(
     try:
         document, csp = html_preview_document(
             report.html.encode("utf-8"),
+            frame_addon=selection_frame_addon()
+            if _report_discussable_origin(store, episode_id)
+            else None,
         )
     except (UnicodeError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Episode report unavailable") from exc
@@ -616,6 +621,22 @@ def view_episode_report(
     )
 
 
+def _report_discussable_origin(store: AppStore, episode_id: str) -> bool:
+    wrapup = store.episode_wrapup(episode_id)
+    origin = (
+        store.agent_task(wrapup.concluding_operation_id)
+        if wrapup and wrapup.concluding_operation_id
+        else None
+    )
+    return bool(
+        origin
+        and isinstance(origin.request.get("chat_id"), str)
+        and not origin.history_only
+        and origin.native_session_id
+        and origin.stage_root
+    )
+
+
 def _episode_report_viewer_response(
     project_id: str,
     episode_id: str,
@@ -644,16 +665,28 @@ def _episode_report_viewer_response(
         f"/api/projects/{quote(project_id, safe='')}/episodes/"
         f"{quote(episode_id, safe='')}/report/content"
     )
+    panel = (
+        comment_panel(
+            {
+                "projectId": project_id,
+                "chatId": chat_id,
+                "operationId": wrapup.concluding_operation_id,
+                "artifactId": descriptor.artifact_id,
+                "artifactName": descriptor.name,
+                "mediaType": descriptor.media_type,
+                "source": "episode_report",
+                "episodeId": episode_id,
+                "branchId": origin.graph_target.branch_id if origin else None,
+            }
+        )
+        if _report_discussable_origin(store, episode_id)
+        else None
+    )
     document, csp = artifact_viewer_document(
-        preview_url=content_url,
-        keep_url=None,
-        project_id=project_id,
-        chat_id=chat_id,
-        operation_id=wrapup.concluding_operation_id,
-        descriptor=descriptor,
-        source="episode_report",
-        episode_id=episode_id,
-        branch_id=origin.graph_target.branch_id if origin is not None else None,
+        descriptor,
+        content_url=content_url,
+        state="report",
+        panel=panel,
         save_url=(
             f"/api/projects/{quote(project_id, safe='')}/episodes/"
             f"{quote(episode_id, safe='')}/report/save"

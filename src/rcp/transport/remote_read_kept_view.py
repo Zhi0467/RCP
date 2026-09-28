@@ -32,10 +32,13 @@ def main() -> None:
     repository = Path(sys.argv[1])
     if len(sys.argv) == 4:
         directory, name, max_bytes = "views", sys.argv[2], int(sys.argv[3])
-        name_pattern = r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html"
     else:
         directory, name, max_bytes = sys.argv[2], sys.argv[3], int(sys.argv[4])
-        name_pattern = r"[a-z0-9](?:[a-z0-9-]{0,220})[.](?:html?|png|jpe?g|gif|webp|svg)"
+    name_pattern = (
+        r"[a-z0-9][a-z0-9-]{0,220}(?:\.[a-z0-9]{1,16})?"
+        if directory == "artifacts"
+        else r"[a-z0-9](?:[a-z0-9-]{0,238})[.]html"
+    )
     if (
         not repository.is_absolute()
         or str(repository) == "/"

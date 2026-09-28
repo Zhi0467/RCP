@@ -1,5 +1,6 @@
 import type {
   AgentArtifactDescriptor,
+  ArtifactOmissions,
   AgentTask,
   AgentTaskKind,
   ChatMessage,
@@ -17,6 +18,7 @@ export interface TaskTranscriptLine {
   taskId: string;
   timestamp: string;
   artifacts?: AgentArtifactDescriptor[];
+  artifactOmissions?: ArtifactOmissions;
   attachments?: ChatAttachmentDescriptor[];
   mode?: ConversationMode | null;
   trigger?: TaskTrigger;
@@ -185,19 +187,26 @@ export function reconcileChatHistoryArtifacts(
   });
   tasks.forEach((task) => {
     const artifacts = taskArtifacts(task);
+    const artifactOmissions = taskArtifactOmissions(task);
     const lineIndex = answerLineByOperationId.get(task.operation_id);
     if (lineIndex !== undefined) {
-      if (artifacts.length) lines[lineIndex] = { ...lines[lineIndex], artifacts };
+      lines[lineIndex] = {
+        ...lines[lineIndex],
+        ...(artifacts.length ? { artifacts } : {}),
+        ...(artifactOmissions ? { artifactOmissions } : {}),
+      };
       return;
     }
-    // The first steer reserves the original human message before the answer is
-    // persisted. Keep that attempt's live answer or failure beside its receipts.
+    // A steer can persist the human message before its answer. Preserve that
+    // attempt, and any deliverables from a turn with no persisted answer.
     const operationMessages = messages.filter(
       (message) => message.operation_id === task.operation_id,
     );
     if (
-      operationMessages.some((message) => message.steering) &&
-      operationMessages.some((message) => message.role === "user" && !message.steering)
+      operationMessages.some((message) => message.role === "user" && !message.steering) &&
+      (operationMessages.some((message) => message.steering) ||
+        artifacts.length > 0 ||
+        artifactOmissions !== undefined)
     ) {
       lines.push(...reconstructTaskTranscript([task]).filter((line) => line.role !== "human"));
     }
@@ -231,6 +240,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         )
       : [];
     const artifacts = taskArtifacts(task);
+    const artifactOmissions = taskArtifactOmissions(task);
     messages.forEach((text, index) =>
       lines.push({
         lineId: `task:${task.operation_id}:answer:${index}`,
@@ -241,10 +251,14 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         mode,
         trigger,
         ...(index === messages.length - 1 && artifacts.length ? { artifacts } : {}),
+        ...(index === messages.length - 1 && artifactOmissions ? { artifactOmissions } : {}),
         ...(index === messages.length - 1 && graphUpdate ? { graphUpdate } : {}),
       }),
     );
-    if (!messages.length && (artifacts.length || (graphUpdate && graphUpdate.status !== "none"))) {
+    if (
+      !messages.length &&
+      (artifacts.length || artifactOmissions || (graphUpdate && graphUpdate.status !== "none"))
+    ) {
       lines.push({
         lineId: `task:${task.operation_id}:deliverables`,
         role: "agent",
@@ -254,6 +268,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         mode,
         trigger,
         ...(artifacts.length ? { artifacts } : {}),
+        ...(artifactOmissions ? { artifactOmissions } : {}),
         ...(graphUpdate ? { graphUpdate } : {}),
       });
     }
@@ -305,7 +320,7 @@ export function artifactUrl(
   projectId: string,
   taskId: string,
   artifactId: string,
-  action: "content" | "preview" | "viewer" | "download",
+  action: "content" | "preview" | "viewer" | "download" | "keep",
 ): string {
   return `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}/${action}`;
 }
@@ -380,6 +395,7 @@ export function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
       typeof item.artifact_id === "string" &&
       typeof item.name === "string" &&
       typeof item.media_type === "string" &&
+      ["html", "image", "markdown", "text", "pdf", "file"].includes(item.view) &&
       typeof item.available === "boolean" &&
       (item.unavailable_reason === null || typeof item.unavailable_reason === "string") &&
       typeof item.can_open === "boolean" &&
@@ -388,4 +404,28 @@ export function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
       typeof item.can_discuss === "boolean" &&
       typeof item.can_revise === "boolean",
   );
+}
+
+export function taskArtifactOmissions(task: AgentTask): ArtifactOmissions | undefined {
+  const value = task.result?.artifact_omissions;
+  if (!value || typeof value !== "object" || typeof value.discovery_failed !== "boolean") {
+    return undefined;
+  }
+  const omissions: ArtifactOmissions = { discovery_failed: value.discovery_failed };
+  for (const reason of [
+    "count_limit",
+    "file_size_limit",
+    "total_size_limit",
+    "empty",
+    "invalid_or_unavailable",
+  ] as const) {
+    const count = value[reason];
+    if (typeof count === "number" && Number.isSafeInteger(count) && count >= 0) {
+      omissions[reason] = count;
+    }
+  }
+  return omissions.discovery_failed ||
+    Object.values(omissions).some((count) => typeof count === "number" && count > 0)
+    ? omissions
+    : undefined;
 }

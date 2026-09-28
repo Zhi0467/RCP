@@ -92,6 +92,8 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "operation_dispatch_started",
     "operation_dispatch_reset",
     "chat_stage_layout",
+    # The latest discovery outcome is projected as the turn's omission notice.
+    "artifact_discovery",
     "compute_command_started",
     "compute_command_result",
     "remote_provider_started",
@@ -2221,6 +2223,32 @@ class AgentTaskStoreMixin:
             data = dict(row)
             data["payload"] = json.loads(data.pop("payload_json"))
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
+        return receipts
+
+    def agent_task_artifact_discoveries(
+        self, operation_ids: Sequence[str]
+    ) -> dict[str, AgentTaskReceiptRecord]:
+        """Read the latest discovery receipt for each projected task in one query."""
+        if not operation_ids:
+            return {}
+        placeholders = ",".join("?" for _ in operation_ids)
+        with self.connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT * FROM graph_run_receipts WHERE receipt_id IN (
+                    SELECT MAX(receipt_id) FROM graph_run_receipts
+                    WHERE operation_id IN ({placeholders}) AND category = 'artifact_discovery'
+                    GROUP BY operation_id
+                )
+                """,  # noqa: S608 - placeholders are generated, never caller text
+                tuple(operation_ids),
+            ).fetchall()
+        receipts = {}
+        for row in rows:
+            data = dict(row)
+            data["payload"] = json.loads(data.pop("payload_json"))
+            receipt = AgentTaskReceiptRecord.model_validate(data)
+            receipts[receipt.operation_id] = receipt
         return receipts
 
     def agent_task_degradations(self, operation_ids: Sequence[str]) -> dict[str, str]:

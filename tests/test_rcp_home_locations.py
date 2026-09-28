@@ -19,7 +19,13 @@ from rcp.agents import staged_command_broker, staged_command_client
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.runs.tasks import auto_research_stream
 from rcp.terminals import profile as terminal_profile
-from rcp.transport import StateMissing, StateUnavailable, remote_stage_root, ssh
+from rcp.transport import (
+    StateMissing,
+    StateUnavailable,
+    remote_repository_browser,
+    remote_stage_root,
+    ssh,
+)
 from rcp.transport.run_stage import RemoteRunStage
 
 # Captured before conftest swaps it out for a per-test directory.
@@ -136,12 +142,13 @@ def test_legacy_stage_roots_lists_only_tmp_stage_directories(monkeypatch) -> Non
     try:
         roots = stage.legacy_stage_roots()
         terminal_roots = terminal_profile.legacy_stage_roots()
+        picker_roots = remote_repository_browser.legacy_stage_roots()
     finally:
         legacy.rmdir()
         dotted.rmdir()
         stray.rmdir()
 
-    for listed in (roots, terminal_roots):
+    for listed in (roots, terminal_roots, picker_roots):
         assert os.path.realpath(legacy) in listed
         assert os.path.realpath(dotted) in listed
         assert os.path.realpath(stray) not in listed

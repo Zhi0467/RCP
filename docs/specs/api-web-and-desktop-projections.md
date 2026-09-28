@@ -669,7 +669,20 @@ Artifact and report listing and opening use the recent task and episode windows
 the page holds and report both window sizes; an exact `task_id`, task viewer id,
 or `episode_id` outside those windows is fetched from the existing task or
 episodes route rather than reported missing. Artifact opening uses the existing backend
-viewer inside the page after confirming current availability.
+viewer inside the page after confirming current availability. A listed file with
+no viewer reports `can_open` false with its `view` and `can_download`; visual
+opening refuses it rather than navigating to a download.
+
+Task artifacts project a `view` (`html`, `image`, `markdown`, `text`, `pdf`, or
+`file`) alongside the independent `can_open`, `can_download`, `can_keep`, and
+`can_discuss` capabilities. `result.artifact_omissions` carries known reason
+counts and `discovery_failed`; transcript reconstruction and history
+reconciliation preserve it even for a turn with no cards or answer. Saved
+artifacts also project `view`, `available`, `can_download`, and a nullable
+`download_url`. `can_open` always means an RCP viewer, including in the desktop
+app; the system PDF action separately requires `view` of `pdf` and
+`can_download`.
+
 Conversation Send starts one asynchronous ordinary Discuss or Work turn through
 the same provider profile, native-session, skill, task-admission, and local or
 SSH execution path as the visible composer; it returns the durable task id rather
@@ -1071,7 +1084,13 @@ launcher, not manual PID cleanup.
 Preview links open the shell's secondary bounded window rather than navigating
 the main project WebView. Desktop repository links and result/report artifacts
 therefore cannot strand the main project window. Native downloads resolve
-through shell-controlled destinations.
+through shell-controlled destinations. A PDF artifact opens in the system PDF
+viewer through one main-window command that takes only project, task, and
+artifact ids, fetches the artifact's Download route itself, checks that the
+bytes are a bounded PDF, and writes them to a private app-owned temporary
+directory; failed opens are removed at once and copies older than the named
+one-day `PDF_PREVIEW_RETENTION` are pruned on startup and each open. It
+never opens an arbitrary path or URL, and preview windows cannot call it.
 
 In personal project setup, every local repository path has a native folder
 action in the desktop shell. Selecting a folder fills its absolute path;

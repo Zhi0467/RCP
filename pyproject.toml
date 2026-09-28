@@ -17,6 +17,7 @@ dependencies = [
   "tomlkit>=0.13.3",
   "uvicorn[standard]>=0.35.0",
   "anyio>=4.0",
+  "markdown-it-py>=4.2.0",
   "pillow>=12.3.0",
 ]
 

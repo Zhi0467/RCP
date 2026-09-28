@@ -3,34 +3,24 @@ from __future__ import annotations
 import errno
 import hashlib
 import html
-import importlib.resources
-import io
-import json
-import math
 import os
 import re
 import stat
 import xml.etree.ElementTree as ET
 from contextlib import suppress
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import urlsplit
 
-from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.artifact_replace import (
     recover_regular_file_replacement_in_open_directory,
     replace_regular_file_in_open_directory,
 )
-from rcp.limits import (
-    ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
-    ARTIFACT_CONTEXT_MAX_SELECTIONS,
-    ARTIFACT_CROP_MAX_PIXELS,
-    ARTIFACT_CROP_MAX_SIDE,
-    ARTIFACT_DISPLAY_TITLE_MAX_CHARS,
-)
+from rcp.limits import ARTIFACT_DISPLAY_TITLE_MAX_CHARS
 
 ArtifactMediaType = Literal[
     "text/html",
@@ -39,7 +29,15 @@ ArtifactMediaType = Literal[
     "image/gif",
     "image/webp",
     "image/svg+xml",
+    "text/markdown",
+    "text/plain",
+    "text/csv",
+    "application/json",
+    "application/pdf",
+    "application/octet-stream",
 ]
+
+ArtifactView = Literal["html", "image", "markdown", "text", "pdf", "file"]
 
 # Supported file types are an artifact contract, not an operational tuning knob.
 ARTIFACT_MEDIA_TYPES: dict[str, ArtifactMediaType] = {
@@ -52,6 +50,70 @@ ARTIFACT_MEDIA_TYPES: dict[str, ArtifactMediaType] = {
     ".webp": "image/webp",
     ".svg": "image/svg+xml",
 }
+
+ARTIFACT_MEDIA_TYPES.update(
+    {
+        ".md": "text/markdown",
+        ".markdown": "text/markdown",
+        ".csv": "text/csv",
+        ".json": "application/json",
+        ".pdf": "application/pdf",
+        **dict.fromkeys(
+            (
+                ".txt",
+                ".log",
+                ".tsv",
+                ".jsonl",
+                ".yaml",
+                ".yml",
+                ".toml",
+                ".ipynb",
+                ".py",
+                ".js",
+                ".ts",
+                ".jsx",
+                ".tsx",
+                ".mjs",
+                ".cjs",
+                ".c",
+                ".h",
+                ".cpp",
+                ".hpp",
+                ".cc",
+                ".rs",
+                ".go",
+                ".java",
+                ".sh",
+                ".bash",
+                ".zsh",
+                ".r",
+                ".jl",
+                ".rb",
+                ".sql",
+                ".css",
+                ".scss",
+                ".xml",
+                ".tex",
+                ".lua",
+                ".swift",
+            ),
+            "text/plain",
+        ),
+    }
+)
+
+
+def artifact_view(media_type: ArtifactMediaType) -> ArtifactView:
+    if media_type.startswith("image/"):
+        return "image"
+    return {
+        "text/html": "html",
+        "text/markdown": "markdown",
+        "text/plain": "text",
+        "text/csv": "text",
+        "application/json": "text",
+        "application/pdf": "pdf",
+    }.get(media_type, "file")
 
 
 class AgentArtifactDescriptor(BaseModel):
@@ -139,11 +201,11 @@ def descriptor_for(
     scope_id: str,
     name: str,
     *,
+    media_type: ArtifactMediaType,
     size_bytes: int | None = None,
     kept_filename: str | None = None,
     kept_at: str | None = None,
 ) -> AgentArtifactDescriptor:
-    media_type = ARTIFACT_MEDIA_TYPES[Path(name).suffix.casefold()]
     return AgentArtifactDescriptor(
         artifact_id=artifact_id(scope_id, name),
         name=name,
@@ -154,90 +216,46 @@ def descriptor_for(
     )
 
 
-def validate_artifact_bytes(name: str, data: bytes) -> ArtifactMediaType:
-    """Validate extension, bounded caller-provided bytes, and the format signature."""
-    try:
-        media_type = ARTIFACT_MEDIA_TYPES[Path(name).suffix.casefold()]
-    except KeyError as exc:
-        raise ValueError("unsupported artifact type") from exc
+def classify_artifact_bytes(name: str, data: bytes) -> ArtifactMediaType:
+    """Recognize bounded bytes; unrecognized files remain downloadable."""
+    media_type = ARTIFACT_MEDIA_TYPES.get(Path(name).suffix.casefold(), "application/octet-stream")
+    if media_type in {"text/html", "text/markdown", "text/plain", "text/csv", "application/json"}:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return "application/octet-stream"
+        return media_type if "\x00" not in text else "application/octet-stream"
+    if media_type == "image/svg+xml":
+        try:
+            root = ET.fromstring(data.decode("utf-8"))
+        except (UnicodeDecodeError, ET.ParseError):
+            return "application/octet-stream"
+        return (
+            media_type
+            if root.tag.rsplit("}", 1)[-1].casefold() == "svg"
+            else "application/octet-stream"
+        )
     valid = {
         "image/png": data.startswith(b"\x89PNG\r\n\x1a\n"),
         "image/jpeg": data.startswith(b"\xff\xd8\xff"),
         "image/gif": data.startswith((b"GIF87a", b"GIF89a")),
         "image/webp": len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP",
-        "image/svg+xml": False,
+        "application/pdf": data.startswith(b"%PDF-"),
     }
-    if media_type == "text/html":
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("HTML artifact is not UTF-8") from exc
-        if "\x00" in text:
-            raise ValueError("HTML artifact contains NUL bytes")
-    elif media_type == "image/svg+xml":
-        try:
-            root = ET.fromstring(data.decode("utf-8"))
-        except (UnicodeDecodeError, ET.ParseError) as exc:
-            raise ValueError("SVG artifact is not valid UTF-8 XML") from exc
-        if root.tag.rsplit("}", 1)[-1].casefold() != "svg":
-            raise ValueError("SVG artifact must have an svg root element")
-    elif not valid[media_type]:
-        raise ValueError(f"artifact bytes do not match {media_type}")
-    return media_type
-
-
-# Raster artifacts a boxed selection is cropped from; SVG and HTML are read as source.
-CROPPABLE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
-
-
-def croppable_frame(data: bytes) -> tuple[Image.Image | None, bool]:
-    """Decode a raster artifact once, as the viewer shows it, for its boxed regions.
-
-    The frame is the first one, turned by the image's own orientation as a browser
-    turns it. The flag says the image is animated, so a crop shows only that frame.
-    An image over the pixel bound returns no frame: its boxes travel as positions.
-    """
-
-    try:
-        with Image.open(io.BytesIO(data)) as image:
-            columns, rows = image.size
-            animated = getattr(image, "n_frames", 1) > 1
-            if columns * rows > ARTIFACT_CROP_MAX_PIXELS:
-                return None, animated
-            image.seek(0)
-            frame = ImageOps.exif_transpose(image).convert("RGBA")
-    except (OSError, Image.DecompressionBombError) as exc:
-        raise ValueError("The image could not be decoded to crop a selection.") from exc
-    return frame, animated
-
-
-def crop_region(frame: Image.Image, *, x: float, y: float, width: float, height: float) -> bytes:
-    """Cut one region, given as fractions of the frame, scaled to fit, as PNG."""
-
-    columns, rows = frame.size
-    left = min(columns - 1, math.floor(x * columns))
-    top = min(rows - 1, math.floor(y * rows))
-    right = max(left + 1, min(columns, math.ceil((x + width) * columns)))
-    bottom = max(top + 1, min(rows, math.ceil((y + height) * rows)))
-    # Resample the box straight into the bounded size; a full-size copy of a large
-    # region per selection would cost memory the output never needs.
-    scale = min(1.0, ARTIFACT_CROP_MAX_SIDE / max(right - left, bottom - top))
-    size = (max(1, round((right - left) * scale)), max(1, round((bottom - top) * scale)))
-    crop = frame.resize(size, Image.Resampling.LANCZOS, box=(left, top, right, bottom))
-    output = io.BytesIO()
-    crop.save(output, format="PNG")
-    return output.getvalue()
+    return media_type if valid.get(media_type, False) else "application/octet-stream"
 
 
 def read_local_regular_file(directory: Path, name: str, *, max_bytes: int) -> bytes:
     """Read one direct regular child without following a symlink."""
     if Path(name).name != name or name in {"", ".", ".."}:
         raise ValueError("artifact name must be a plain base name")
-    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps a FIFO swapped in after listing from blocking the open;
+    # the regular-file check below then refuses it, and regular reads ignore it.
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
     directory_fd = _open_local_directory(directory)
     try:
         try:
-            file_fd = os.open(name, os.O_RDONLY | no_follow, dir_fd=directory_fd)
+            file_fd = os.open(name, flags, dir_fd=directory_fd)
         except FileNotFoundError:
             raise
         except OSError as exc:
@@ -444,7 +462,15 @@ class _ArtifactHTMLSanitizer(HTMLParser):
         self.parts.append(f"<?{data}>")
 
 
-def html_preview_document(data: bytes, *, result_view_gestures: bool = False) -> tuple[str, str]:
+@dataclass(frozen=True)
+class FrameAddon:
+    frame_script: str
+    wrapper_script: str
+
+
+def html_preview_document(
+    data: bytes, *, frame_addon: FrameAddon | None = None, result_view_gestures: bool = False
+) -> tuple[str, str]:
     """Build an RCP-owned wrapper and its CSP for an opaque sandboxed document."""
     source = data.decode("utf-8")
     sanitizer = _ArtifactHTMLSanitizer()
@@ -452,7 +478,6 @@ def html_preview_document(data: bytes, *, result_view_gestures: bool = False) ->
     sanitizer.close()
     bootstrap = (
         "<script>(()=>{\n"
-        + _selection_script()
         + """
 const channel=new MessageChannel();
 const privatePort=channel.port1;
@@ -470,12 +495,9 @@ listen(window,'click',(event)=>{
   event.preventDefault(); event.stopImmediatePropagation();
   send({kind:'rcp-reference',url:anchor.getAttribute('data-rcp-href')});
 },true);
-let clearSelection=null;
-listen(privatePort,'message',(event)=>{
-  if(event.data?.kind==='rcp-artifact-selection-enable' && !clearSelection)
-    clearSelection=installArtifactSelection(document,(selection)=>send({kind:'rcp-artifact-selection',selection}));
-  if(event.data?.kind==='rcp-artifact-selection-clear') clearSelection?.();
-});
+"""
+        + (frame_addon.frame_script if frame_addon else "")
+        + """
 portStart(privatePort);
 parentPost({kind:'rcp-artifact-channel',version:1},'*',[outwardPort]);
 document.currentScript?.remove();
@@ -496,7 +518,8 @@ document.currentScript?.remove();
         + bootstrap
         + "".join(sanitizer.parts)
     )
-    wrapper_script = """<script>(()=>{
+    wrapper_script = (
+        """<script>(()=>{
 const artifact=()=>document.getElementById('artifact');
 const listen=Function.prototype.call.bind(EventTarget.prototype.addEventListener);
 const portPost=Function.prototype.call.bind(MessagePort.prototype.postMessage);
@@ -505,7 +528,11 @@ const parentPost=window.parent.postMessage.bind(window.parent);
 const openWindow=window.open.bind(window);
 const URLConstructor=URL;
 let artifactPort=null;
-let selectionEnabled=false;
+const channelListeners=[];
+const channelReady=[];
+"""
+        + (frame_addon.wrapper_script if frame_addon else "")
+        + """
 listen(window,'message',(event)=>{
   const value=event.data;
   const frame=artifact();
@@ -516,10 +543,7 @@ listen(window,'message',(event)=>{
   listen(artifactPort,'message',(portEvent)=>{
     const value=portEvent.data;
     if(!value || typeof value!=='object') return;
-    if(value.kind==='rcp-artifact-selection' && 'selection' in value && window.parent!==window){
-      parentPost({type:'rcp-artifact-selection',version:1,selection:value.selection},'*');
-      return;
-    }
+    for(const listener of channelListeners) listener(value);
     if(value.kind!=='rcp-reference' || typeof value.url!=='string') return;
     try {
       const target=new URLConstructor(value.url);
@@ -528,18 +552,10 @@ listen(window,'message',(event)=>{
     } catch {}
   });
   portStart(artifactPort);
-  if(selectionEnabled) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
+  for(const ready of channelReady) ready();
 },true);
-listen(window,'message',(event)=>{
-  if(window.parent===window || event.source!==window.parent) return;
-  if(event.data?.type==='rcp-artifact-selection-enable'){
-    selectionEnabled=true;
-    if(artifactPort) portPost(artifactPort,{kind:'rcp-artifact-selection-enable'});
-  }
-  if(event.data?.type==='rcp-artifact-selection-clear' && artifactPort)
-    portPost(artifactPort,{kind:'rcp-artifact-selection-clear'});
-});
 })();</script>"""
+    )
     result_view_script = ""
     if result_view_gestures:
         result_view_script = """<script>(()=>{
@@ -578,176 +594,6 @@ window.addEventListener('message',(event)=>{
         "frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
     )
     return document, wrapper_csp
-
-
-def _selection_script() -> str:
-    return importlib.resources.files("rcp").joinpath("artifact_selection.js").read_text("utf-8")
-
-
-def _viewer_script() -> str:
-    return importlib.resources.files("rcp").joinpath("artifact_viewer.js").read_text("utf-8")
-
-
-# Team servers accept authenticated mutations only as JSON (the CSRF guard in
-# rcp.api.app), so the viewer's bodiless POSTs still declare an empty JSON body.
-VIEWER_MUTATION_INIT = {
-    "method": "POST",
-    "credentials": "same-origin",
-    "headers": {"Content-Type": "application/json"},
-    "body": "{}",
-}
-_VIEWER_MUTATION_INIT_JS = json.dumps(VIEWER_MUTATION_INIT)
-
-_KEEP_SAVE_HANDLERS_JS = (
-    # Shared by both viewer shells; each defines `config` with keepUrl/saveUrl and `notice`.
-    "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,"
-    + _VIEWER_MUTATION_INIT_JS
-    + ");if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
-    "const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{save.disabled=true;notice.textContent='';try{const response=await fetch(config.saveUrl,"
-    + _VIEWER_MUTATION_INIT_JS
-    + ");if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${result.path}`;}catch(error){notice.textContent=error instanceof Error?error.message:String(error);}finally{save.disabled=false;}});\n"
-)
-
-
-def artifact_viewer_document(
-    *,
-    preview_url: str,
-    keep_url: str | None,
-    project_id: str,
-    chat_id: str | None,
-    operation_id: str,
-    descriptor: AgentArtifactDescriptor,
-    source: Literal["task", "episode_report"] = "task",
-    episode_id: str | None = None,
-    save_url: str | None = None,
-    branch_id: str | None = None,
-) -> tuple[str, str]:
-    """Build the common task-artifact shell around one isolated preview."""
-
-    def js(value: object) -> str:
-        return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
-
-    config = {
-        "previewUrl": preview_url,
-        "keepUrl": keep_url,
-        "saveUrl": save_url,
-        "projectId": project_id,
-        "chatId": chat_id,
-        "chatAvailable": chat_id is not None,
-        "chatOpenTimeoutMs": ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
-        "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
-        "operationId": operation_id,
-        "source": source,
-        "episodeId": episode_id,
-        "artifactId": descriptor.artifact_id,
-        "artifactName": descriptor.name,
-        "mediaType": descriptor.media_type,
-        "kept": descriptor.kept_filename is not None,
-    }
-    chat_query = {"view": "chats", "chat": chat_id or ""}
-    if branch_id is not None:
-        chat_query["branch_id"] = branch_id
-    chat_href = f"/#/projects/{quote(project_id, safe='')}?{urlencode(chat_query)}"
-    preview_markup = (
-        f'<iframe id="preview" sandbox="allow-scripts" src="{html.escape(preview_url)}" '
-        f'title="{html.escape(descriptor.name)}"></iframe>'
-        if descriptor.media_type == "text/html"
-        else f'<img id="previewImage" src="{html.escape(preview_url)}" alt="{html.escape(descriptor.name)}">'
-        '<div id="boxLayer" aria-hidden="true"></div>'
-    )
-    if chat_id is None:
-        readonly_preview = (
-            f'<iframe id="preview" sandbox="allow-scripts" src="{html.escape(preview_url)}" '
-            f'title="{html.escape(descriptor.name)}"></iframe>'
-            if descriptor.media_type == "text/html"
-            else f'<img id="previewImage" src="{html.escape(preview_url)}" alt="{html.escape(descriptor.name)}">'
-        )
-        # No originating chat can receive selections: keep ordinary browser gestures and
-        # draw no selection rail. Save copy and Keep remain available.
-        readonly_keep = (
-            '<button id="keep" type="button">Keep</button>'
-            if keep_url and descriptor.kept_filename is None
-            else ""
-        )
-        readonly_save = '<button id="save" type="button">Save copy</button>' if save_url else ""
-        readonly_state = (
-            "report"
-            if source == "episode_report"
-            else "kept"
-            if descriptor.kept_filename
-            else "temporary"
-        )
-        readonly_script = (
-            f"""<script>(()=>{{const config={js({"keepUrl": keep_url, "saveUrl": save_url})};const notice=document.getElementById('notice');
-{_KEEP_SAVE_HANDLERS_JS}}})();</script>"""
-            if readonly_keep or readonly_save
-            else ""
-        )
-        document = f"""<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(descriptor.name)}</title>
-<style>
-:root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--accent:#a94f31;--panel:#fbfaf5}}
-*{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}}
-body{{display:grid;grid-template-rows:48px minmax(0,1fr)}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
-header strong{{font-family:Georgia,serif;font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}header .state{{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}
-header .notice{{color:var(--accent);font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.spacer{{flex:1}}
-header button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:2px;font:inherit;cursor:pointer}}header button:hover{{border-color:var(--accent);color:var(--accent)}}header button:disabled{{opacity:.45;cursor:default}}
-main{{min-height:0;background:white}}iframe{{display:block;border:0;width:100%;height:100%}}main>img{{display:block;width:100%;height:100%;object-fit:contain}}
-</style></head><body>
-<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{readonly_state}</span><span id="notice" class="notice" role="status"></span><span class="spacer"></span>{readonly_save}{readonly_keep}</header>
-<main>{readonly_preview}</main>{readonly_script}</body></html>"""
-        csp = (
-            "default-src 'none'; "
-            + (
-                "script-src 'unsafe-inline'; connect-src 'self'; "
-                if readonly_keep or readonly_save
-                else ""
-            )
-            + "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; "
-            "base-uri 'none'; form-action 'none'; object-src 'none'"
-        )
-        return document, csp
-    document = f"""<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{html.escape(descriptor.name)}</title>
-<style>
-:root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--accent:#a94f31;--panel:#fbfaf5}}
-*{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}}
-body{{display:grid;grid-template-rows:48px minmax(0,1fr)}}
-header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
-header strong{{font-family:Georgia,serif;font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-header .state{{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}
-button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:2px;font:inherit;cursor:pointer}}
-button:hover{{border-color:var(--accent);color:var(--accent)}}button:disabled{{opacity:.45;cursor:default}}
-.spacer{{flex:1}}main{{display:grid;grid-template-columns:minmax(0,1fr) 300px;min-height:0}}
-.canvas{{position:relative;min-width:0;background:white;border-right:1px solid var(--rule)}}
-iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}#boxLayer{{position:absolute;inset:0;cursor:crosshair}}aside{{padding:14px;overflow:auto;background:var(--panel)}}
-aside h2{{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}}#pending{{border:1px solid var(--accent);padding:12px;margin-bottom:12px}}#pending button{{margin-top:10px}}#pending [data-confirm]{{background:var(--accent);color:white;border-color:var(--accent)}}
-.empty{{color:var(--muted);font-family:Georgia,serif;font-style:italic}}#pending:not([hidden]) + #empty{{display:none}}.selection{{border-top:1px solid var(--rule);padding:12px 0}}
-.selection b{{display:block;margin-bottom:5px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.08em}}
-.selection .remove{{float:right;padding:2px 6px;font-size:11px}}
-.excerpt{{max-height:90px;overflow:auto;font-family:Georgia,serif;font-size:13px}}
-textarea{{width:100%;min-height:62px;margin-top:8px;resize:vertical;border:1px solid var(--rule);background:white;padding:8px;color:var(--ink);font:13px/1.4 Georgia,serif}}
-.add{{width:100%;margin-top:12px;background:var(--ink);color:var(--paper);border-color:var(--ink)}}.add:hover{{background:var(--accent);color:white}}
-.open-chat{{display:block;margin-top:10px;padding:8px;text-align:center;border:1px solid var(--accent);color:var(--accent);text-decoration:none}}.open-chat[hidden]{{display:none}}
-.notice{{margin-top:10px;color:var(--accent);font-size:12px}}@media(max-width:760px){{main{{grid-template-columns:1fr;grid-template-rows:minmax(360px,1fr) auto}}.canvas{{border-right:0;border-bottom:1px solid var(--rule)}}aside{{max-height:42vh}}}}
-</style></head><body>
-<header><strong>{html.escape(descriptor.name)}</strong><span id="state" class="state">{"report" if source == "episode_report" else "kept" if descriptor.kept_filename else "temporary"}</span><span class="spacer"></span>{'<button id="save" type="button">Save copy</button>' if save_url else ""}{'<button id="keep" type="button">Keep</button>' if keep_url and descriptor.kept_filename is None else ""}</header>
-<main><div class="canvas">{preview_markup}</div>
-<aside><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><a id="open-chat" class="open-chat" href="{html.escape(chat_href, quote=True)}" hidden>Open chat</a><div id="notice" class="notice" role="status"></div></aside></main>
-<script>(()=>{{
-{_selection_script()}
-const config={js(config)};
-{_viewer_script()}
-{_KEEP_SAVE_HANDLERS_JS}
-}})();</script></body></html>"""
-    csp = (
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "frame-src 'self'; img-src 'self' data: blob:; connect-src 'self'; "
-        "base-uri 'none'; form-action 'none'; object-src 'none'"
-    )
-    return document, csp
 
 
 def _html_attributes(attrs: list[tuple[str, str | None]]) -> str:

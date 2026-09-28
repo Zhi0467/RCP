@@ -35,6 +35,7 @@ const COMMANDS: &[&str] = &[
     "desktop_start_dictation",
     "desktop_stop_dictation",
     "open_artifact_preview",
+    "open_artifact_pdf",
     "open_episode_report_preview",
     "open_repository_file_preview",
     "download_artifact",

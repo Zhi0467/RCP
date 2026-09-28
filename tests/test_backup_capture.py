@@ -140,6 +140,7 @@ def _project_inventory(
     task_id: str,
     with_files: bool,
     host: str = "",
+    artifact_name: str = "kept-figure.png",
 ) -> tuple[BackupSnapshotProjectInventory, Path]:
     account = pwd.getpwuid(os.geteuid()).pw_name
     central_root = tmp_path / f"central-{project_id}"
@@ -260,7 +261,7 @@ def _project_inventory(
         artifacts = repository / "artifacts"
         artifacts.mkdir()
         artifact = b"kept artifact"
-        (artifacts / "kept-figure.png").write_bytes(artifact)
+        (artifacts / artifact_name).write_bytes(artifact)
         (artifacts / "unrelated.png").write_bytes(b"do not capture")
         views = repository / "views"
         views.mkdir()
@@ -275,7 +276,7 @@ def _project_inventory(
                 media_type="image/png",
                 expected_size_bytes=len(artifact),
                 expected_sha256=hashlib.sha256(artifact).hexdigest(),
-                kept_filename="kept-figure.png",
+                kept_filename=artifact_name,
                 kept_at="2026-08-29T12:00:00+00:00",
             ),
         )
@@ -348,8 +349,10 @@ def _inventory_for_space(
     return BackupSnapshotProjectInventory.model_validate(inventory_document)
 
 
+@pytest.mark.parametrize("artifact_name", ["kept-figure.png", "kept-result.csv", "kept-result"])
 def test_project_file_capture_selects_only_typed_sources_and_chat_snapshot_prefix(
     tmp_path: Path,
+    artifact_name: str,
 ) -> None:
     data_dir = tmp_path / "data"
     project_id = str(uuid.uuid4())
@@ -359,6 +362,7 @@ def test_project_file_capture_selects_only_typed_sources_and_chat_snapshot_prefi
         project_id=project_id,
         task_id=task_id,
         with_files=True,
+        artifact_name=artifact_name,
     )
     receipt_path, receipt_sha256 = _sqlite_capture_with_projects(data_dir, (inventory,))
 

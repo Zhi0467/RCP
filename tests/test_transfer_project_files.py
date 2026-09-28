@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.artifacts import descriptor_for
+from rcp.artifacts import classify_artifact_bytes, descriptor_for
 from rcp.history.manager import canonical_fact_sources, iter_canonical_fact_bytes
 from rcp.service import (
     CoachRequest,
@@ -30,7 +30,7 @@ from rcp.transport.state import SSHStateWorkspace
 from .helpers import authorized_human, create_named_app
 
 
-def _finished_project(manifest, tmp_path: Path):
+def _finished_project(manifest, tmp_path: Path, source_name: str = "result.html"):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
     store = app.state.background_tasks.store
@@ -40,13 +40,14 @@ def _finished_project(manifest, tmp_path: Path):
     now = store.now()
     artifact_bytes = b"<!doctype html><p>kept artifact</p>"
     kept_filename = service.history.workspace.keep_artifact(
-        source_name="result.html",
+        source_name=source_name,
         project_name="Transfer fixture",
         data=artifact_bytes,
     )
     descriptor = descriptor_for(
         operation_id,
-        "result.html",
+        source_name,
+        media_type=classify_artifact_bytes(source_name, artifact_bytes),
         size_bytes=len(artifact_bytes),
     ).model_copy(update={"kept_filename": kept_filename, "kept_at": now})
     request = CoachRequest(
@@ -187,13 +188,18 @@ def _write_canonical_sources(service, operation_id: str) -> tuple[str, str]:
     return chat_id, unknown_operation_id
 
 
+@pytest.mark.parametrize(
+    "source_name", ["result.html", "result.csv", "result", "result.abcdefghijklmnopq"]
+)
 def test_project_file_capture_transforms_human_history_and_binds_kept_bytes(
     manifest,
     tmp_path: Path,
+    source_name: str,
 ) -> None:
     service, records, artifact, artifact_name, view, view_name = _finished_project(
         manifest,
         tmp_path,
+        source_name,
     )
     operation_id = records.tasks[0].operation_id
     chat_id, unknown_operation_id = _write_canonical_sources(service, operation_id)

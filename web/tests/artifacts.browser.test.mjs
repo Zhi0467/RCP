@@ -90,6 +90,28 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         viewer_url: "/api/projects/project/episodes/no-chat/report/viewer",
       },
     ];
+    entries = entries.map((entry) => ({
+      ...entry,
+      view: "html",
+      available: entry.can_open,
+      can_download: false,
+      download_url: null,
+    }));
+    entries.push(
+      ...["file", "pdf"].map((view) => ({
+        id: `artifact:${view}`,
+        name: `${view}.dat`,
+        kind: "artifact",
+        view,
+        operation_id: "task",
+        artifact_id: view,
+        available: true,
+        can_open: false,
+        can_download: true,
+        viewer_url: null,
+        download_url: `/api/projects/project/tasks/task/artifacts/${view}/download`,
+      })),
+    );
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.getByRole("link", { name: "Open Validation report" }).waitFor();
     await page.getByRole("link", { name: "Open originating chat for Validation report" }).waitFor();
@@ -234,6 +256,182 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
       await page.keyboard.press("Enter");
       assert.equal(new URL(page.url()).hash, entries[1].source_chat_href);
     }
+    for (const view of ["file", "pdf"]) {
+      const row = page
+        .locator(".artifact-entry")
+        .filter({ has: page.locator(`a[download="${view}.dat"]`) });
+      assert.equal(await row.locator("p").count(), 0);
+      assert.equal(await row.locator("a[download]").count(), 1);
+    }
+    // A refresh reprojects the existing rows after entering the desktop runtime.
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    const pdf = page
+      .locator(".artifact-entry")
+      .filter({ has: page.locator('a[download="pdf.dat"]') });
+    await pdf.getByRole("button").click();
+    await page.waitForFunction(() => window.previewCalls.length === 3);
+    assert.deepEqual(await page.evaluate(() => window.previewCalls[2]), {
+      command: "open_artifact_pdf",
+      args: { projectId: "project", taskId: "task", artifactId: "pdf" },
+    });
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("universal cards preserve actions, refresh Keep, and resolve file citations", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/**", (route) => route.fulfill({ json: [] }));
+    await page.route("**/artifacts/image/content?*", (route) => route.fulfill({ status: 410 }));
+    const mutations = [];
+    await page.route("**/artifacts/file/keep", (route) => {
+      mutations.push({
+        method: route.request().method(),
+        body: route.request().postDataJSON(),
+        contentType: route.request().headers()["content-type"],
+      });
+      return route.fulfill({ json: { kept: true } });
+    });
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    await page.evaluate(async () => {
+      const { default: React } = await import("/node_modules/.vite/deps/react.js");
+      const {
+        default: { createRoot },
+      } = await import("/node_modules/.vite/deps/react-dom_client.js");
+      const { NodeChat } = await import("/src/components/NodeChat.tsx");
+      const profile = {
+        provider: "codex",
+        model: null,
+        reasoning: null,
+        run_on: "local",
+        permissions: {},
+      };
+      const artifacts = ["file", "pdf", "text", "image", "html"].map((view) => ({
+        artifact_id: view,
+        name: `${view}.dat`,
+        view,
+        media_type: {
+          file: "application/octet-stream",
+          pdf: "application/pdf",
+          text: "text/plain",
+          image: "image/png",
+          html: "text/html",
+        }[view],
+        size_bytes: 64,
+        available: true,
+        unavailable_reason: null,
+        can_open: !["file", "pdf"].includes(view),
+        can_download: true,
+        can_keep: true,
+        can_discuss: ["html", "image"].includes(view),
+        can_revise: false,
+      }));
+      const task = {
+        operation_id: "turn",
+        kind: "project_chat",
+        status: "completed",
+        settled: true,
+        created_at: "2026-09-27T10:00:00Z",
+        updated_at: "2026-09-27T10:00:00Z",
+        request: { chat_id: "chat", mode: "discuss" },
+        result: {
+          messages: ["[file](/scratch/turns/turn/artifacts/file.dat)"],
+          artifacts,
+          artifact_omissions: { empty: 2, count_limit: 3, discovery_failed: false },
+        },
+      };
+      const omitted = {
+        ...task,
+        operation_id: "omitted",
+        result: { artifact_omissions: { discovery_failed: true } },
+      };
+      const element = document.createElement("div");
+      document.body.replaceChildren(element);
+      window.cardRoot = createRoot(element);
+      window.renderCards = (desktop = false) => {
+        if (desktop)
+          window.__TAURI_INTERNALS__ = {
+            transformCallback: () => 1,
+            invoke: async (command, args) => {
+              if (command === "open_artifact_pdf") window.pdfCall = { command, args };
+            },
+          };
+        window.cardRoot.render(
+          React.createElement(NodeChat, {
+            key: String(desktop),
+            project: {
+              id: "project",
+              name: "Project",
+              repositories: [],
+              project_truth_scope: [],
+              machines: [{ alias: "local" }],
+              agent_profiles: { project_chat: profile },
+              provider_readiness: {},
+            },
+            node: null,
+            runScope: [],
+            tasks: [task, omitted],
+            activeTask: null,
+            historyMessages: [],
+            chatId: "chat",
+            onRefreshTask: async () => {
+              window.refreshCount = (window.refreshCount ?? 0) + 1;
+              task.result.artifacts = task.result.artifacts.map((artifact) =>
+                artifact.artifact_id === "file"
+                  ? { ...artifact, can_keep: false, kept_filename: "file.dat" }
+                  : artifact,
+              );
+              window.renderCards();
+              return task;
+            },
+            onClose() {},
+            onStartTask() {},
+            onInspectTask() {},
+            onOpenInbox() {},
+            onRepairGraphUpdate() {},
+          }),
+        );
+      };
+      window.renderCards();
+    });
+    const file = page.locator("#artifact-turn-file");
+    await file.waitFor();
+    assert.equal(await page.locator(".chat-artifact").count(), 5);
+    assert.equal(await file.getByRole("button").count(), 1);
+    assert.equal(await file.locator("a[download]").count(), 1);
+    assert.equal(await page.locator("#artifact-turn-pdf button").count(), 1);
+    await page.waitForFunction(() => !document.querySelector("#artifact-turn-image img"));
+    assert.equal(await page.locator("#artifact-turn-image a[download]").count(), 1);
+    assert.equal(await page.locator("#artifact-turn-image [data-artifact-action=keep]").count(), 1);
+    assert.equal(await page.locator(".chat-artifact-omissions[role=status]").count(), 2);
+    await page.locator('a[href="/scratch/turns/turn/artifacts/file.dat"]').click();
+    assert.equal(await page.evaluate(() => document.activeElement.id), "artifact-turn-file");
+    await file.locator("[data-artifact-action=keep]").click();
+    await file.locator("[data-artifact-action=keep]").waitFor({ state: "detached" });
+    assert.deepEqual(mutations, [{ method: "POST", body: {}, contentType: "application/json" }]);
+    assert.equal(await page.evaluate(() => window.refreshCount), 1);
+    await page.evaluate(() => window.renderCards(true));
+    await page.locator("#artifact-turn-pdf .chat-artifact-actions button").first().click();
+    await page.waitForFunction(() => window.pdfCall);
+    assert.deepEqual(await page.evaluate(() => window.pdfCall), {
+      command: "open_artifact_pdf",
+      args: { projectId: "project", taskId: "turn", artifactId: "pdf" },
+    });
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

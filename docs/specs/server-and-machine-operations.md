@@ -968,9 +968,12 @@ disposable stage bytes do not. A referenced kept artifact remains openable
 and downloadable through its repository owner, but cannot Keep again or revise
 through the detached native session. An unkept artifact whose stage is excluded
 from transfer or restore is projected explicitly unavailable. Every task-artifact
-response publishes `available`, `unavailable_reason`, `can_open`, `can_download`,
-`can_keep`, and `can_revise`; the unavailable case makes every `can_*` false and
-has no stage URL. Content, download, Keep, and artifact-context admission recheck
+response publishes `available`, `unavailable_reason`, `view`, `can_open`,
+`can_download`, `can_keep`, `can_discuss`, and `can_revise`; the unavailable case
+makes every `can_*` false and has no stage URL. `view` names the backend's
+viewer for the stored type; `can_open` is false for a type with no RCP viewer,
+and `can_discuss` and `can_revise` are false for a type that does not support
+selection. Content, download, Keep, and artifact-context admission recheck
 those durable facts. The Web renders the backend answers, never infers
 availability from `history_only`, `kept_filename`, or a remembered stage path,
 and never constructs or probes a route for an unavailable action.

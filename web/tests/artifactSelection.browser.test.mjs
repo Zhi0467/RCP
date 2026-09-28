@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { execFileSync } from "node:child_process";
 import { chromium, webkit } from "playwright";
 import { createServer } from "vite";
 
@@ -9,18 +10,23 @@ const script = await readFile(
   "utf8",
 );
 const browserType = process.env.RCP_PREVIEW_BROWSER === "webkit" ? webkit : chromium;
-const renderer = await readFile(new URL("../../src/rcp/artifacts.py", import.meta.url), "utf8");
-const viewerScript = await readFile(
-  new URL("../../src/rcp/artifact_viewer.js", import.meta.url),
-  "utf8",
-);
-// Execute the actual renderer bridge, not a parallel implementation of its gates.
-const bootstrap = renderer.match(
-  /\+ _selection_script\(\)\s*\+ """([\s\S]*?)\}\)\(\);<\/script>"""/,
-)[1];
-const wrapper = renderer.match(
-  /wrapper_script = """<script>\(\(\)=>\{([\s\S]*?)\}\)\(\);<\/script>"""/,
-)[1];
+function renderPython(expression, payload) {
+  return execFileSync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      `import json,sys
+from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
+from rcp.artifact_comments import comment_panel, selection_frame_addon
+from rcp.artifact_views import artifact_viewer_document
+value=json.load(sys.stdin)
+print(${expression})`,
+    ],
+    { cwd: new URL("../..", import.meta.url), input: JSON.stringify(payload), encoding: "utf8" },
+  );
+}
 const report = `<style>body{margin:24px;min-height:1200px;font:20px sans-serif}#figure{width:420px;height:210px;overflow:auto;background:#edf2f5}p{padding:18px}</style>
   <p id="text">Reference scores improve, but the scientific limitation remains.</p>
   <div id="figure"><svg width="420" height="420" aria-label="Validation scores"><rect x="30" y="30" width="80" height="120" fill="teal"/><text x="30" y="180">Validation</text></svg></div>
@@ -62,16 +68,18 @@ test("preview comments survive reopening and Open chat hands off the exact conve
       };
       return route.fulfill({
         contentType: "text/html",
-        body: `
-        <meta charset="utf-8">
-        <style>#boxLayer{position:absolute;inset:0 auto auto 0;width:600px;height:400px}aside{position:absolute;left:620px}</style>
-        <div id="boxLayer"></div><aside>
-        <section id="pending" hidden><div class="excerpt"></div><button data-confirm>Comment</button><button data-cancel>Cancel</button></section>
-        <div id="items"></div><div id="empty"></div><button id="add" disabled>Add to chat</button>
-        <a id="open-chat" href="/${chatHash}" hidden>Open chat</a><div id="notice"></div></aside>
-        <script>(()=>{const config=${JSON.stringify(config)};${script}\n${viewerScript}})();</script>`,
+        body: renderPython(
+          "artifact_viewer_document(AgentArtifactDescriptor(artifact_id=value['artifactId'],name='plot.svg',media_type='image/svg+xml',size_bytes=1), content_url='/plot.svg', state='temporary', panel=comment_panel(value))[0]",
+          { ...config, branchId: "source-branch" },
+        ),
       });
     });
+    await context.route(`${origin}/plot.svg`, (route) =>
+      route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="600" height="400"><rect width="600" height="400" fill="white"/></svg>',
+      }),
+    );
     await context.route(`${origin}/receiver`, (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -85,7 +93,8 @@ test("preview comments survive reopening and Open chat hands off the exact conve
       return page;
     };
     let preview = await reopen();
-    await drag(preview, [30, 30], [220, 160]);
+    const box = await preview.locator("#boxLayer").boundingBox();
+    await drag(preview, [box.x + 30, box.y + 30], [box.x + 220, box.y + 160]);
     await preview.getByRole("button", { name: "Comment", exact: true }).click();
     const comment = "Why are these so different?\nCompare the two runs.";
     await preview.getByPlaceholder("Comment or question").fill(comment);
@@ -182,15 +191,13 @@ test("only a confirmation-shell parent can enable HTML selection across opaque f
       }, selectable);
       // An artifact's ordinary window messages cannot opt itself in, even if it
       // knows the message names. The trusted bootstrap alone owns the private port.
-      const inner = `<script>(()=>{${script}\n${bootstrap}})();</script>
-        <script>parent.postMessage({type:'rcp-artifact-selection-enable'},'*');parent.postMessage({kind:'rcp-artifact-selection-enable'},'*');</script>${report}`;
-      const escaped = inner
-        .replaceAll("&", "&amp;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("<", "&lt;");
+      const content = renderPython(
+        "html_preview_document(value.encode(), frame_addon=selection_frame_addon())[0]",
+        `<script>parent.postMessage({type:'rcp-artifact-selection-enable'},'*');parent.postMessage({kind:'rcp-artifact-selection-enable'},'*');</script>${report}`,
+      );
       await page.locator("iframe").evaluate((frame, source) => {
         frame.srcdoc = source;
-      }, `<style>body{margin:0}iframe{width:100%;height:600px;border:0}</style><script>(()=>{${wrapper}})();</script><iframe id="artifact" sandbox="allow-scripts" srcdoc="${escaped}"></iframe>`);
+      }, content);
       const artifact = page.frameLocator("iframe").frameLocator("iframe");
       await artifact.locator("#figure").waitFor();
       await drag(page, [40, 160], [330, 300]);

@@ -16,7 +16,7 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
-from rcp.artifacts import ResultViewDescriptor, html_preview_document
+from rcp.artifacts import ResultViewDescriptor, classify_artifact_bytes, html_preview_document
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore, ResultViewConflict, ResultViewRecord
@@ -67,6 +67,8 @@ async def preview_result_view(
         view_id,
     )
     try:
+        if classify_artifact_bytes("result.html", data) != "text/html":
+            raise ValueError("Result view is not HTML")
         document, csp = html_preview_document(data, result_view_gestures=True)
     except (UnicodeError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Result view unavailable") from exc

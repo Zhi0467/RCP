@@ -672,6 +672,15 @@ export async function openDesktopArtifactPreview(command: ArtifactCommand): Prom
     throw new Error(result.error || "The desktop host could not open this artifact.");
 }
 
+export async function openDesktopArtifactPdf(command: ArtifactCommand): Promise<void> {
+  if (!isDesktopRuntime()) throw new Error("Desktop PDF preview is unavailable in this browser.");
+  const result = await invokeDesktop<{ opened: boolean; error?: string }>(
+    "open_artifact_pdf",
+    command,
+  );
+  if (!result.opened) throw new Error(result.error || "The desktop host could not open this PDF.");
+}
+
 export async function openDesktopEpisodeReportPreview(
   command: EpisodeReportCommand,
 ): Promise<void> {

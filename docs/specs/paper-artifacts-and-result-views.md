@@ -38,13 +38,18 @@ public-web behavior; a skill cannot widen it.
 ## Answer and artifacts are independent
 
 The labelled final assistant message is the Markdown answer. A turn may also
-leave supported preview files, but artifact discovery, validation, expiry,
+leave output files, but artifact discovery, validation, expiry,
 rendering, SSH availability, or Download failure never changes the answer, task
 verdict, Patch verdict, or graph.
 
-For an ordinary turn, RCP discovers only bounded direct regular children of the
-exact RCP-created artifact directory. It ignores provider directives,
-provider-owned paths, URLs in prose, nested files, symlinks, and unknown types.
+For an ordinary turn, RCP discovers bounded direct regular children of the
+exact RCP-created artifact directory, of any type. It ignores provider
+directives, provider-owned paths, URLs in prose, nested files, and symlinks.
+Discovery reads at most eight files in filename order, each at most 16 MiB, and
+attaches at most 32 MiB per turn; a size is checked before a read is spent.
+Empty files and files past a bound get no card, but the turn reports how many
+were left out and why, and says so when discovery itself failed. The report
+comes from the durable discovery receipt; it carries counts, never paths.
 Bytes remain in temporary local or remote scratch and are proxied on demand
 until the human keeps them. Descriptors are durable with the task but do not
 copy bytes into chat or canonical graph storage.
@@ -57,10 +62,27 @@ artifact. Inline JavaScript remains useful and may navigate only its isolated
 child frame, which can still cause a navigation request; RCP does not claim
 literal zero network traffic.
 
-Raster images, SVG, and HTML have bounded validation. A small raster image or
-SVG renders directly with the answer. HTML retains the ordinary **Open** link;
-it does not need an inline thumbnail. An invalid artifact is shown as an
-artifact error and does not erase the reply.
+Every card offers Download and Keep. The file's type decides how it is viewed:
+
+- HTML opens in the sandboxed viewer. It has no inline thumbnail.
+- Raster images and SVG open in the viewer, and a small one renders directly
+  with the answer.
+- Markdown opens as RCP-rendered, script-free HTML. Raw HTML in the source
+  stays visible source, links show their address without being live, and
+  images are not fetched.
+- Text, data, notebook, and code files open as escaped text with line numbers.
+  Valid JSON and notebooks are pretty-printed.
+- Markdown and text previews render a bounded prefix and say when they are
+  truncated; Download returns the whole file.
+- A PDF opens in the system PDF viewer from the desktop app. In a browser it
+  is Download only; RCP never loads a PDF into its own page or origin.
+- Any other file, and any file whose bytes fail its type's recognition check,
+  is Download and Keep only. Such a file stays download-only even if its bytes
+  or RCP's supported types change later.
+
+A broken preview never hides Download or Keep, and never erases the reply.
+Keep refreshes the authoritative task projection after the mutation succeeds.
+Omission counts remain visible even when the turn has no artifact cards.
 
 ## Episode reports
 
@@ -123,7 +145,8 @@ episode's Runs entry, which lists the worker turn and inspects its transcript.
 Missing or non-chat origins have no source link; their
 artifact preview remains available. The source link is independent of the
 card's preview click target. Opening an entry uses the existing bounded artifact
-viewer in both browser and desktop. Listing grants no new filesystem or graph
+viewer in both browser and desktop; an entry with no viewer offers Download,
+and a PDF also opens in the system viewer from the desktop app. Listing grants no new filesystem or graph
 authority.
 
 ## Unified artifact viewer
@@ -139,10 +162,13 @@ routes only for compatibility. The current web client exposes no result-view
 type, selector, card, or authoring request, and the task API rejects new legacy
 create or revise intents.
 
-Every supported task artifact opens through one viewer shell. The shell owns
-**Keep** and selection-to-prompt interaction. The artifact remains the
-dominant visual object. The shell adds only a narrow selection rail and the
-controls needed to add the selections to the originating chat. Episode reports
+Every viewable task artifact opens through one viewer shell. The shell owns
+the preview and **Keep**. Selection-to-prompt is a separate layer that the
+shell hosts only for a type that supports it, and only when the originating
+chat can receive it. The artifact remains the dominant visual object. That
+layer adds only a narrow selection rail and the controls needed to add the
+selections to the originating chat. A missing chat removes the rail; it never
+prevents viewing. Episode reports
 use the same shell and selection vocabulary while retaining their immutable
 episode-report lifecycle.
 
@@ -161,6 +187,10 @@ or SVG from `/preview` continues to receive image bytes for an explicit browser
 image request; ordinary navigation to that URL receives the shell.
 
 ### Selection-to-prompt, not artifact annotation
+
+Only HTML, raster images, and SVG support selection, comment, and revision.
+Other types never show the rail, and the server refuses artifact context or a
+revision for them whatever the client sends.
 
 HTML selection gestures activate only when the surrounding confirmation shell
 opts in through the private preview bridge. A viewer without an originating chat,
@@ -225,8 +255,9 @@ to that turn, and exposes one pending candidate on the original artifact card.
 The source artifact directory is part of the provider-enforced write deny set
 for that launch, whether the source is temporary or kept. RCP discovers the
 candidate only after all patch and watcher correction turns have settled, so the
-candidate digest describes the final bytes left by the native session. Other or
-misnamed outputs from an artifact-revision turn do not create artifact cards.
+candidate digest describes the final bytes left by the native session. Only
+the exact replacement becomes the candidate; any other file the revision turn
+leaves becomes an ordinary card of that turn.
 The human compares **Current** and **Candidate**, then explicitly chooses
 **Accept revision** or **Reject**. There can be only one unresolved candidate for
 one source artifact; another Work revision is refused until that disposition,
@@ -279,7 +310,9 @@ canonical state repository root, outside `.research/`, through the normal state
 workspace lock and explicit publication. If `artifacts/` already exists as a
 real directory, RCP reuses it and preserves every existing file. A file or
 symlink at that path makes Keep fail visibly. Initial Keep chooses a safe,
-collision-free filename and never overwrites an existing entry.
+collision-free filename and never overwrites an existing entry. The filename
+keeps a short, safe suffix from the original name; otherwise it has none. Any
+type can be kept, and the kept file is viewed by its original name's type.
 
 Keep records the artifact's stable repository filename. It does not freeze the
 file: humans and tools may still edit it normally. A later Work revision is
@@ -313,8 +346,8 @@ never presents it as the whole file.
 
 An answer may also cite a file the turn itself wrote. That path lies outside
 every repository root, so RCP opens the artifact the task already registered
-under that name through the artifact viewer. An unregistered name keeps the
-ordinary nonnavigating error.
+under that name through its viewer, or focuses its card when it is download-only.
+An unregistered name keeps the ordinary nonnavigating error.
 
 Task prompts state this citation contract to the agent: an absolute path on the
 file's host, optionally suffixed with a line, naming either an authorized

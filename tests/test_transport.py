@@ -3,6 +3,7 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -11,7 +12,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -2429,6 +2430,23 @@ def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:
 
     with pytest.raises(ValueError, match="outside the staging boundary"):
         stage.sweep(protected_roots=["/tmp/not-an-rcp-stage"])
+
+
+def test_remote_stage_artifact_read_refuses_a_fifo_without_blocking(local_remote_stage) -> None:
+    stage = local_remote_stage
+    (Path(str(stage.root)) / "workspace").mkdir()
+    directory = Path(str(stage.prepare_artifact_directory("logical-turn", reuse=False)))
+    fifo = directory / "result.csv"
+    os.mkfifo(fifo)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(stage.read_artifact_bytes, "logical-turn", fifo.name, max_bytes=1024)
+        try:
+            with pytest.raises(ValueError):
+                pending.result(timeout=30)
+        finally:
+            # Release a reader stuck in open() so a failure cannot hang the suite.
+            with suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
 
 
 def test_remote_stage_artifact_operations_are_exact_and_binary(
