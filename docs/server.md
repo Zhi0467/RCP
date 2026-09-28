@@ -296,11 +296,14 @@ command argument, a log, an issue, chat, or a project file; RCP never prints it.
 
 ### OpenCode
 
-Install OpenCode's own build under the `rcp` account:
+Install OpenCode's own build under the `rcp` account. Its installer always
+writes `~/.opencode/bin`, which RCP does not search, so link it into
+`~/.local/bin`; `opencode upgrade` replaces the linked file in place:
 
 ```bash
 sudo -u rcp -H /bin/bash -lc \
-  'curl -fsSL https://opencode.ai/install | bash'
+  'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path &&
+   mkdir -p ~/.local/bin && ln -sf ~/.opencode/bin/opencode ~/.local/bin/opencode'
 ```
 
 OpenCode's free models need no sign-in, so it is ready once installed. RCP does

@@ -308,8 +308,9 @@ def test_an_unmanaged_login_note_names_the_saved_executable(tmp_path, monkeypatc
     source = ProviderPathSource(
         path="/opt/oc bin/opencode", project_id="p", project_name="P", machine_alias="local"
     )
+    hidden = source.model_copy(update={"path": "/hidden/opencode", "project_id": "q"})
     monkeypatch.setattr(
-        provider_login, "provider_path_sources", lambda _: {("opencode", ""): [source]}
+        provider_login, "provider_path_sources", lambda _: {("opencode", ""): [hidden, source]}
     )
     runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
 

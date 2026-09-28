@@ -142,15 +142,18 @@ def provider_login_accounts(
         profile = profile_for(provider)
         metadata = profile.authentication.credential_metadata(credentials, host)
         token = ProviderCredentialSummary(**metadata) if metadata is not None else None
-        provider_path = _visible_path(paths.get((provider, host), []), visible)
-        binary = provider_path.path if provider_path is not None else profile.id
+        sources = paths.get((provider, host), [])
+        provider_path = _visible_path(sources, visible)
+        # The member runs this command themselves, so any path they can see works;
+        # sign-in, by contrast, always uses the first.
+        own = next((source.path for source in sources if source.project_id in visible), None)
         accounts.append(
             ProviderLoginAccount(
                 **state.model_dump(),
                 label=profile.label,
                 sign_in_methods=profile.authentication.methods,
                 managed=profile.authentication.manages_login,
-                login_command=shlex.join(profile.login_command(binary)),
+                login_command=shlex.join(profile.login_command(own or profile.id)),
                 token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
                 provider_path=provider_path,
