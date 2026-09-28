@@ -1,7 +1,7 @@
 # Active implementation handoffs
 
-- [Install without Open Anyway, and push to the Mac and the phone](handoff-2026-09-28-install-and-push.md)
-  — scope confirmed 2026-09-28; design only, awaiting one xhigh review.
+- [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
+  — design settled 2026-09-28; one PR, after the Mac install handoff lands.
   Replaces the 2026-09-25 Inbox-push handoff. Nothing implemented.
 
 ## Open live checks
