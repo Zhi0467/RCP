@@ -1,9 +1,10 @@
 # Install and update the Mac app without Open Anyway
 
 Date: 2026-09-28
-Status: design settled with the human on 2026-09-28. Nothing is implemented.
-Split out of the install-and-push design; push notifications stay in their own
-handoff and PR. One PR delivers everything below.
+Status: implemented on this PR's branch on 2026-09-28, after one xhigh design
+review. Remaining: the human generates the updater key (see Updater), and the
+three real-hardware journeys below. Push notifications stay in their own
+handoff and PR.
 
 Close this handoff when all three hold on real hardware:
 
@@ -47,8 +48,10 @@ Close this handoff when all three hold on real hardware:
 - It installs only to `/Applications/RCP.app`. If `/Applications` is not
   writable, it stops and says to run it from an admin account. It never calls
   `sudo` and never falls back to another folder.
-- It unpacks next to the old app, checks the result, and swaps it in with one
-  `mv`. Any failure leaves the old app untouched.
+- It unpacks next to the old app with `ditto` and checks its signature with
+  `codesign --verify`. It then moves the old app aside and the new one in; if
+  the second rename fails or the script is interrupted between them, it puts
+  the old app back.
 - If RCP is running, it asks the person to quit with Cmd+Q and stops. It never
   kills the app or its backend.
 - The manual zip download stays documented as the alternative, with its
@@ -71,9 +74,11 @@ Close this handoff when all three hold on real hardware:
   `latest.json`. Not `macos-latest`, which is a GitHub runner label. The app
   reads `https://github.com/Zhi0467/RCP/releases/download/mac-latest/latest.json`.
 - **Publish order.** `publish-desktop.yml` builds with the endpoint and public
-  key set, signs the updater bundle, finishes publishing `desktop-vX.Y.Z`, and
-  only then replaces `latest.json` with `gh release upload --clobber`.
-- **Key rotation.** `docs/release.md` gains the procedure: ship one release
+  key set, signs the updater bundle, and finishes publishing `desktop-vX.Y.Z`.
+  A second job, rerunnable alone, verifies the bundle with `minisign` and only
+  then replaces `latest.json`. It runs one at a time across tags and refuses to
+  replace a newer version.
+- **Key rotation.** `docs/desktop.md` holds the procedure: ship one release
   signed with the old key that carries the new public key, then switch the
   secret. Apps that skipped that release reinstall once with the `curl` line.
 - Apps at v0.4.4 or older have the updater off, so they reinstall once with the
@@ -86,7 +91,7 @@ Close this handoff when all three hold on real hardware:
   the approval step is no longer an accepted cost, and one-click update is
   in scope for the prebuilt app. The same PR updates it.
 - Current-behavior docs change with the code: the README, `docs/install.md`,
-  `docs/desktop.md` (updater no longer disabled), `docs/release.md`, and the
+  `docs/desktop.md` (updater no longer disabled, key and publish steps), and the
   update-notice section of `docs/specs/api-web-and-desktop-projections.md`.
 
 Not in scope: Linux desktop, Windows, Intel, Homebrew, Apple signing, and one

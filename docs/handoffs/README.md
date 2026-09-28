@@ -1,7 +1,7 @@
 # Active implementation handoffs
 
 - [Install and update the Mac app without Open Anyway](handoff-2026-09-28-mac-install-and-update.md)
-  — design settled 2026-09-28; one PR, nothing implemented.
+  — implemented 2026-09-28; waiting on the updater key and live checks.
 
 ## Open live checks
 

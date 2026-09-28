@@ -285,3 +285,28 @@ def test_promotion_refuses_leading_zero_build() -> None:
         release_build.check_promotion(
             Path("rcp-0.3.2+build.01.gfe06636-py3-none-any.whl"), "v0.3.2"
         )
+
+
+@pytest.mark.parametrize(
+    ("published", "accepted"), [(None, True), ("0.4.9", True), ("0.4.10", True), ("0.5.0", False)]
+)
+def test_updater_manifest_never_points_back_at_an_older_release(
+    tmp_path: Path, published: str | None, accepted: bool
+) -> None:
+    (tmp_path / "app.sig").write_text("c2lnbmF0dXJl\n")
+    previous = None
+    if published is not None:
+        previous = tmp_path / "previous.json"
+        previous.write_text(json.dumps({"version": published}))
+    output = tmp_path / "latest.json"
+    argv = ["updater-manifest", "--tag", "v0.4.10", "--signature", str(tmp_path / "app.sig")]
+    argv += ["--url", "https://example.test/app.tar.gz", "--output", str(output)]
+    if previous is not None:
+        argv += ["--previous", str(previous)]
+
+    assert (release_build.main(argv) == 0) is accepted
+    if accepted:
+        platform = json.loads(output.read_text())["platforms"]["darwin-aarch64"]
+        assert platform == {"signature": "c2lnbmF0dXJl", "url": "https://example.test/app.tar.gz"}
+    else:
+        assert not output.exists()

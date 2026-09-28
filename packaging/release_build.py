@@ -262,6 +262,33 @@ def select_stale_builds(releases_file: Path, now: str, days: int) -> list[str]:
     return [tag_name for _, tag_name in sorted(stale)]
 
 
+def write_updater_manifest(
+    tag: str, signature_file: Path, url: str, output: Path, *, previous: Path | None = None
+) -> None:
+    """Write the Tauri updater's latest.json, refusing to point back at an older release."""
+    if not _TAG.fullmatch(tag):
+        raise ReleaseBuildError(f"invalid release tag: {tag}")
+    version = tag.removeprefix("v")
+    signature = signature_file.read_text(encoding="utf-8").strip()
+    if not signature:
+        raise ReleaseBuildError(f"updater signature is empty: {signature_file}")
+    if previous is not None:
+        try:
+            named = json.loads(previous.read_text(encoding="utf-8"))["version"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise ReleaseBuildError(f"could not read the published latest.json: {exc}") from exc
+        if not isinstance(named, str) or not _TAG.fullmatch(f"v{named}"):
+            raise ReleaseBuildError(f"published latest.json names an invalid version: {named}")
+        if tuple(map(int, named.split("."))) > tuple(map(int, version.split("."))):
+            raise ReleaseBuildError(f"published latest.json already names newer v{named}")
+    manifest = {
+        "version": version,
+        "pub_date": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "platforms": {"darwin-aarch64": {"signature": signature, "url": url}},
+    }
+    output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
 def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = _PlainArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -293,6 +320,13 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
     stale.add_argument("--releases", type=Path, required=True)
     stale.add_argument("--now", required=True)
     stale.add_argument("--days", type=int, default=STALE_BUILD_DAYS)
+
+    updater = subparsers.add_parser("updater-manifest")
+    updater.add_argument("--tag", required=True)
+    updater.add_argument("--signature", type=Path, required=True)
+    updater.add_argument("--url", required=True)
+    updater.add_argument("--output", type=Path, required=True)
+    updater.add_argument("--previous", type=Path)
     return parser.parse_args(argv)
 
 
@@ -314,6 +348,14 @@ def main(argv: list[str] | None = None) -> int:
         elif arguments.command == "select-stale-builds":
             for tag_name in select_stale_builds(arguments.releases, arguments.now, arguments.days):
                 print(tag_name)
+        elif arguments.command == "updater-manifest":
+            write_updater_manifest(
+                arguments.tag,
+                arguments.signature,
+                arguments.url,
+                arguments.output,
+                previous=arguments.previous,
+            )
     except ReleaseBuildError as exc:
         print(exc, file=sys.stderr)
         return 1
