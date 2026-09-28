@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hmac import HMAC
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.limits import (
     WEB_PUSH_CONNECT_TIMEOUT_SECONDS,
@@ -174,6 +175,15 @@ class Subscription:
     # The HTTPS origin the device registered from. Apple rejects a VAPID
     # subject that is not a real ``https:`` or ``mailto:`` URI.
     origin: str
+
+
+class WebPushKeys(BaseModel):
+    """The ``keys`` member of ``PushSubscription.toJSON()``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    p256dh: str = Field(min_length=1, max_length=128)
+    auth: str = Field(min_length=1, max_length=64)
 
 
 Resolver = Callable[[str], list[str]]

@@ -17,6 +17,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import REMOTE_STATE_RECONCILE_WINDOW_SECONDS
 from rcp.notifications import NotificationSender
+from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.release_check import ReleaseCheck
 from rcp.runs.provider_sign_in import ProviderSignInRunner
@@ -77,6 +78,7 @@ class ApiServices:
     episode_reconciliation: Callable[[], int]
     terminals: TerminalManager
     notification_sender: NotificationSender
+    phone_listener: PhoneListener | None
 
 
 def _api_services(request: Request) -> ApiServices:
@@ -96,6 +98,10 @@ def get_store(request: Request) -> AppStore:
 
 def get_notification_sender(request: Request) -> NotificationSender:
     return _api_services(request).notification_sender
+
+
+def get_phone_listener(request: Request) -> PhoneListener | None:
+    return _api_services(request).phone_listener
 
 
 def get_catalog(request: Request) -> ProjectCatalog:

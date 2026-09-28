@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#e5e8ec" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="RCP" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
+    <title>RCP notifications</title>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --fg: #1d2127;
+        --muted: #5b6470;
+        --line: #d5d9df;
+        --accent: #2f5bd3;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #15181c;
+          --fg: #e8eaed;
+          --muted: #9aa3ad;
+          --line: #2e343b;
+          --accent: #7c9cff;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main {
+        max-width: 420px;
+        margin: 0 auto;
+        padding: 32px 16px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0 0 8px;
+      }
+      p {
+        color: var(--muted);
+        margin: 0 0 16px;
+      }
+      input,
+      button {
+        box-sizing: border-box;
+        width: 100%;
+        font: inherit;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid var(--line);
+      }
+      input {
+        background: transparent;
+        color: var(--fg);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        margin-bottom: 12px;
+      }
+      button {
+        background: var(--accent);
+        color: #fff;
+        border: none;
+        font-weight: 600;
+      }
+      button:disabled {
+        opacity: 0.6;
+      }
+      [hidden] {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Get RCP notifications</h1>
+      <section id="install" hidden>
+        <p>
+          Add this page to your Home Screen first: tap Share, then Add to Home Screen. Open RCP
+          from the Home Screen and come back to this step.
+        </p>
+      </section>
+      <form id="pair" hidden>
+        <p>
+          Enter the code shown in RCP on your Mac. This phone will get a short notice when
+          something needs you. Open the item on your Mac.
+        </p>
+        <input id="code" autocomplete="one-time-code" placeholder="ABCD-EFGHJK" required />
+        <button id="submit" type="submit">Turn on notifications</button>
+      </form>
+      <p id="status" role="status"></p>
+    </main>
+    <script>
+      const status = document.getElementById("status");
+      const form = document.getElementById("pair");
+      const supported =
+        "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+      if (supported) {
+        form.hidden = false;
+      } else {
+        document.getElementById("install").hidden = false;
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = document.getElementById("submit");
+        button.disabled = true;
+        status.textContent = "";
+        try {
+          const permission = await Notification.requestPermission();
+          if (permission !== "granted") {
+            throw new Error("Notifications were not allowed on this phone.");
+          }
+          const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+          await navigator.serviceWorker.ready;
+          const key = await (await fetch("/api/key")).json();
+          const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: key.application_server_key,
+          });
+          const response = await fetch("/api/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              code: document.getElementById("code").value,
+              ...subscription.toJSON(),
+            }),
+          });
+          if (!response.ok) {
+            await subscription.unsubscribe();
+            throw new Error("That code did not work. Get a new one from RCP on your Mac.");
+          }
+          form.hidden = true;
+          status.textContent = "Done. This phone will get RCP notifications while your Mac runs RCP.";
+        } catch (error) {
+          status.textContent = error instanceof Error ? error.message : String(error);
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

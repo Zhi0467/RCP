@@ -126,6 +126,18 @@ sets the device status from its outcome. `DELETE
 either kind. The encrypted payload holds the notification id, reason code,
 project name, and, for a device that may open items, the deep link.
 
+A personal space pairs notify-only phones instead. `POST
+/api/notifications/phone-pairings` issues one code in the team device-code
+format, with the same expiry and lockout, and withdraws any earlier live code.
+While a code is live the backend serves a separate loopback listener on port
+8422; it stops once no code is live. The person routes one HTTPS name to it,
+for example `tailscale serve`. That listener never reaches the owner API: it
+serves only the pairing page, the web-app manifest, the service worker, its
+icons, the public key, and `POST /api/register`, which redeems the code and
+registers the subscription in one transaction. Redemption creates no session
+and returns nothing that grants read access; the phone's payload has no deep
+link. Restore voids every code along with every device.
+
 ## API composition and mutation boundary
 
 One FastAPI backend serves the JSON API and, when built, the React/Vite

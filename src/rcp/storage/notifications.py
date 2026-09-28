@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import sqlite3
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote
+
+from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT, TEAM_DEVICE_PAIRING_TTL_MINUTES
+from rcp.storage.models import _new_device_pairing_code, _parse_device_pairing_code
 
 NOTIFICATION_DEFAULTS = {
     "proposal": True,
@@ -50,6 +55,12 @@ def migrate_notifications(connection: sqlite3.Connection) -> None:
         "REFERENCES notification_devices(device_id) ON DELETE CASCADE, endpoint TEXT NOT NULL UNIQUE, "
         "p256dh TEXT NOT NULL, auth TEXT NOT NULL, origin TEXT NOT NULL, "
         "opens_links INTEGER NOT NULL CHECK(opens_links IN (0,1)))",
+        # Personal-space phone codes: the team code format, expiry, and lockout,
+        # but redeeming one only registers a notify-only phone.
+        "CREATE TABLE IF NOT EXISTS notification_phone_pairings (pairing_id TEXT PRIMARY KEY, "
+        "code_hash TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, "
+        "consumed_at TEXT, failed_attempts INTEGER NOT NULL DEFAULT 0, locked_at TEXT, "
+        "revoked_at TEXT)",
     )
     for statement in statements:
         connection.execute(statement)
@@ -198,26 +209,145 @@ class NotificationStoreMixin:
                 )
             elif session_id is not None:
                 raise ValueError("personal notification device cannot own a team session")
-            connection.execute(
-                "DELETE FROM notification_devices WHERE device_id IN (SELECT device_id FROM "
-                "notification_web_push_subscriptions WHERE endpoint=?)",
-                (endpoint,),
+            return self._insert_web_push_device(
+                connection, user_id, session_id, endpoint, p256dh, auth, origin, opens_links
             )
-            device_id = str(uuid.uuid4())
+
+    def _insert_web_push_device(
+        self,
+        connection: sqlite3.Connection,
+        user_id: str,
+        session_id: str | None,
+        endpoint: str,
+        p256dh: str,
+        auth: str,
+        origin: str,
+        opens_links: bool,
+    ) -> dict[str, Any]:
+        connection.execute(
+            "DELETE FROM notification_devices WHERE device_id IN (SELECT device_id FROM "
+            "notification_web_push_subscriptions WHERE endpoint=?)",
+            (endpoint,),
+        )
+        device_id = str(uuid.uuid4())
+        connection.execute(
+            "INSERT INTO notification_devices(device_id,user_id,kind,session_id,created_at) "
+            "VALUES (?,?,'web_push',?,?)",
+            (device_id, user_id, session_id, self.now()),
+        )
+        connection.execute(
+            "INSERT INTO notification_web_push_subscriptions VALUES (?,?,?,?,?,?)",
+            (device_id, endpoint, p256dh, auth, origin, int(opens_links)),
+        )
+        return dict(
             connection.execute(
-                "INSERT INTO notification_devices(device_id,user_id,kind,session_id,created_at) "
-                "VALUES (?,?,'web_push',?,?)",
-                (device_id, user_id, session_id, self.now()),
-            )
+                "SELECT * FROM notification_devices WHERE device_id=?", (device_id,)
+            ).fetchone()
+        )
+
+    def create_notification_phone_pairing(self) -> tuple[str, str]:
+        """Issue the personal space's one live phone code; return it and its expiry."""
+        now = self.now()
+        expires_at = (
+            datetime.fromisoformat(now) + timedelta(minutes=TEAM_DEVICE_PAIRING_TTL_MINUTES)
+        ).isoformat()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._space_kind_from_connection(connection) != "personal":
+                raise ValueError("Only a personal space pairs notify-only phones.")
             connection.execute(
-                "INSERT INTO notification_web_push_subscriptions VALUES (?,?,?,?,?,?)",
-                (device_id, endpoint, p256dh, auth, origin, int(opens_links)),
+                "UPDATE notification_phone_pairings SET revoked_at=? "
+                "WHERE consumed_at IS NULL AND revoked_at IS NULL",
+                (now,),
             )
-            return dict(
+            for _ in range(8):
+                code, pairing_id, code_hash = _new_device_pairing_code()
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM notification_phone_pairings WHERE pairing_id=?",
+                        (pairing_id,),
+                    ).fetchone()
+                    is None
+                ):
+                    break
+            else:  # pragma: no cover - eight collisions in a million-slot space
+                raise RuntimeError("RCP could not allocate a phone pairing code.")
+            connection.execute(
+                "INSERT INTO notification_phone_pairings(pairing_id,code_hash,created_at,expires_at) "
+                "VALUES (?,?,?,?)",
+                (pairing_id, code_hash, now, expires_at),
+            )
+        return code, expires_at
+
+    def notification_phone_pairing_live(self) -> bool:
+        with self.connection() as connection:
+            return (
                 connection.execute(
-                    "SELECT * FROM notification_devices WHERE device_id=?", (device_id,)
+                    "SELECT 1 FROM notification_phone_pairings WHERE consumed_at IS NULL AND "
+                    "revoked_at IS NULL AND locked_at IS NULL AND expires_at>?",
+                    (self.now(),),
                 ).fetchone()
+                is not None
             )
+
+    def redeem_notification_phone_pairing(
+        self, code: str, *, endpoint: str, p256dh: str, auth: str, origin: str
+    ) -> dict[str, Any]:
+        """Consume a code and register its notify-only phone in one transaction.
+
+        Raises ``ValueError`` with ``invalid``, ``consumed``, ``locked``, or
+        ``expired``; a wrong secret still counts toward the lockout.
+        """
+        parsed = _parse_device_pairing_code(code)
+        if parsed is None:
+            raise ValueError("invalid")
+        pairing_id, supplied_hash = parsed
+        now = self.now()
+        error = None
+        device = None
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM notification_phone_pairings WHERE pairing_id=?", (pairing_id,)
+            ).fetchone()
+            if row is None or row["revoked_at"] is not None:
+                error = "invalid"
+            elif row["consumed_at"] is not None:
+                error = "consumed"
+            elif row["locked_at"] is not None:
+                error = "locked"
+            elif row["expires_at"] <= now:
+                error = "expired"
+            elif not hmac.compare_digest(row["code_hash"], supplied_hash):
+                failed = int(row["failed_attempts"]) + 1
+                locked_at = now if failed >= TEAM_CODE_FAILED_ATTEMPT_LIMIT else None
+                connection.execute(
+                    "UPDATE notification_phone_pairings SET failed_attempts=?,locked_at=? "
+                    "WHERE pairing_id=?",
+                    (failed, locked_at, pairing_id),
+                )
+                error = "locked" if locked_at else "invalid"
+            elif connection.execute("SELECT 1 FROM notification_vapid_key").fetchone() is None:
+                raise RuntimeError("the VAPID key must exist before a phone subscribes")
+            else:
+                connection.execute(
+                    "UPDATE notification_phone_pairings SET consumed_at=? WHERE pairing_id=?",
+                    (now, pairing_id),
+                )
+                device = self._insert_web_push_device(
+                    connection,
+                    self.local_owner.user_id,
+                    None,
+                    endpoint,
+                    p256dh,
+                    auth,
+                    origin,
+                    False,
+                )
+        if error is not None:
+            raise ValueError(error)
+        assert device is not None
+        return device
 
     def web_push_subscription(self, device_id: str) -> dict[str, Any] | None:
         with self.connection() as connection:

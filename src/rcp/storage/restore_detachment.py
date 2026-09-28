@@ -69,6 +69,7 @@ class RestoreDetachmentStoreMixin:
                 now=now,
             )
             connection.execute("DELETE FROM notification_devices")
+            connection.execute("DELETE FROM notification_phone_pairings")
             connection.execute("DELETE FROM notification_graph_markers")
             connection.execute("DELETE FROM notification_episode_observations")
             connection.execute("DELETE FROM notification_project_baselines")

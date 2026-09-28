@@ -10,6 +10,7 @@ from rcp.api.dependencies import (
     get_catalog,
     get_identity_access,
     get_notification_sender,
+    get_phone_listener,
     get_store,
     require_project_membership,
     require_project_write_admission,
@@ -18,6 +19,7 @@ from rcp.api.dependencies import (
 from rcp.api.identity import IdentityAccess
 from rcp.limits import WEB_PUSH_MAX_ENDPOINT_BYTES
 from rcp.notifications import NotificationSender
+from rcp.phone_listener import PHONE_LISTENER_PORT, PhoneListener
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 
@@ -51,20 +53,13 @@ class NotificationAcknowledgment(BaseModel):
     status: Literal["posted", "failed"]
 
 
-class WebPushKeys(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    p256dh: str = Field(min_length=1, max_length=128)
-    auth: str = Field(min_length=1, max_length=64)
-
-
 class WebPushRegistration(BaseModel):
     """The browser's ``PushSubscription.toJSON()`` shape."""
 
     model_config = ConfigDict(extra="ignore")
 
     endpoint: str = Field(min_length=1, max_length=WEB_PUSH_MAX_ENDPOINT_BYTES)
-    keys: WebPushKeys
+    keys: web_push.WebPushKeys
 
 
 def _device_identity(
@@ -251,3 +246,21 @@ def test_web_push(
 ) -> dict[str, str]:
     _require_device(device_id, request, store, identity, kind="web_push")
     return {"outcome": sender.send_test(device_id)}
+
+
+@router.post("/api/notifications/phone-pairings")
+def create_phone_pairing(
+    request: Request,
+    *,
+    store: StoreDependency,
+    identity: IdentityDependency,
+    listener: Annotated[PhoneListener | None, Depends(get_phone_listener)],
+) -> dict[str, object]:
+    """Issue a personal space's one-time phone code and serve its listener."""
+    if listener is None:
+        raise HTTPException(status_code=403, detail="Only a personal space pairs phones.")
+    identity.acting_user(request)
+    store.notification_vapid_key()
+    code, expires_at = store.create_notification_phone_pairing()
+    listener.ensure_running()
+    return {"code": code, "expires_at": expires_at, "listener_port": PHONE_LISTENER_PORT}

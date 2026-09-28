@@ -1,0 +1,14 @@
+{
+  "id": "/",
+  "name": "RCP",
+  "short_name": "RCP",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#e5e8ec",
+  "theme_color": "#e5e8ec",
+  "icons": [
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

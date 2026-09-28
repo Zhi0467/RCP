@@ -9,8 +9,10 @@ Implementation started in this PR on 2026-09-28. Done: the Mac adapter
 SQLite preferences/devices/outbox, migration and persistence boundaries,
 shared episode health, watcher-independent main reconciliation, owner loop,
 and preferences/desktop delivery APIs; slice 3's Web Push encryption, VAPID key,
-outbound limits, and phone routes. Remaining: notify-only pairing/listener, Web settings and lifecycle, native client
-integration and deep-link handling, and the real-hardware journeys below.
+outbound limits, and phone routes; slice 4's personal pairing code, loopback
+phone listener, service worker, manifest, and pairing page. Remaining: the
+Notifications card and Devices section, deep-link routes, the Mac shell's
+outbox client, and the real-hardware journeys below.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which landed first (#216): the Mac check below
 runs on an app that install produced. Mac and phone push ship together in one

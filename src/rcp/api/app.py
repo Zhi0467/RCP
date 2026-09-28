@@ -95,6 +95,7 @@ from rcp.limits import (
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
 from rcp.notifications import NotificationSender
+from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import configured_runtime_id
@@ -1371,6 +1372,9 @@ def create_app(
         startup_effect_fence=startup_effect_fence,
     )
     catalog.on_accepted_transition = notification_sender.signal
+    phone_listener = (
+        PhoneListener(store, notification_sender.resolve) if space_kind == "personal" else None
+    )
     services = ApiServices(
         store=store,
         catalog=catalog,
@@ -1394,6 +1398,7 @@ def create_app(
         episode_reconciliation=reconcile_episodes,
         terminals=terminals,
         notification_sender=notification_sender,
+        phone_listener=phone_listener,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1508,6 +1513,8 @@ def create_app(
         watcher_poller.stop()
         graph_watcher_retry_worker.stop(timeout=timeout)
         notification_sender.stop(timeout=timeout)
+        if phone_listener is not None:
+            phone_listener.stop(timeout=timeout)
         if notification_sender.is_running():
             raise MaintenanceRefused(
                 "Timed out stopping notification delivery at the update boundary."
@@ -1774,6 +1781,8 @@ def create_app(
             watcher_poller.stop()
             graph_watcher_retry_worker.stop()
             await asyncio.to_thread(notification_sender.stop)
+            if phone_listener is not None:
+                await asyncio.to_thread(phone_listener.stop)
             background_tasks.shutdown()
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
