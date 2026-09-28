@@ -71,7 +71,7 @@ function Fixture() {
         tasks={[]}
         watchers={[]}
         graphChangesDisabled={false}
-        unreadTaskIds={new Set()}
+        unreadChatIds={new Set()}
         chatTranscripts={chatTranscripts}
         hasMore={false}
         loadingMore={false}

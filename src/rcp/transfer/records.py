@@ -77,6 +77,9 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         # Archive and rename are local display choices; a moved project shows
         # every chat under its derived name.
         "chat_display",
+        # Pins and read markers belong to source-space users.
+        "chat_pins",
+        "chat_reads",
         # Backend handles and job paths remain owned by the source machine.
         "compute_jobs",
         "compute_backend_probes",

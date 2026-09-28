@@ -133,7 +133,7 @@ test("chat history exposes one explicit end-of-list page control", () => {
     activeTask: null,
     watchers: [],
     graphChangesDisabled: false,
-    unreadTaskIds: new Set(),
+    unreadChatIds: new Set(),
     chatTranscripts: new Map(),
     onSelect() {},
     onLoadMore() {},

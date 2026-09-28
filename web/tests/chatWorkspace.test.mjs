@@ -3,10 +3,13 @@ import { withTaskAnswers } from "./taskAnswers.mjs";
 import test from "node:test";
 
 import {
+  AGENT_LIST_SECTIONS,
+  CONVERSATION_AGENT_GROUPS,
   chatDraftStorageKey,
   chatIdForTask,
   chatIndicator,
   chatEntryConversationId,
+  chatReadThrough,
   chatModeStorageKey,
   conversationTurnRequest,
   conversationHasUnread,
@@ -16,10 +19,12 @@ import {
   latestConversation,
   latestPersistedChatConfig,
   latestPersistedConversationMode,
-  newlyUnreadChatTaskIds,
+  newlyFinishedChatTaskIds,
   parseConversationMode,
   startConversationTurn,
   toggleConversationMode,
+  mergeChatReads,
+  unreadChatIdsFromReads,
   unsentConversation,
 } from "../src/chatWorkspace.ts";
 
@@ -188,31 +193,63 @@ test("entry preserves the previous chat before routing active or unread work", (
     "Project",
   );
   assert.equal(
-    chatEntryConversationId(conversations, active, new Set(["unread"]), "read-chat"),
+    chatEntryConversationId(conversations, active, new Set(["unread-chat"]), "read-chat"),
     "read-chat",
   );
   assert.equal(
-    chatEntryConversationId(conversations, terminal, new Set(["unread"]), "read-chat"),
+    chatEntryConversationId(conversations, terminal, new Set(["unread-chat"]), "read-chat"),
     "read-chat",
   );
   assert.equal(
-    chatEntryConversationId(conversations, active, new Set(["unread"]), "missing-chat"),
+    chatEntryConversationId(conversations, active, new Set(["unread-chat"]), "missing-chat"),
     "active-chat",
   );
   assert.equal(
-    chatEntryConversationId(conversations, terminal, new Set(["unread"]), "missing-chat"),
+    chatEntryConversationId(conversations, terminal, new Set(["unread-chat"]), "missing-chat"),
     "unread-chat",
   );
 });
 
-test("a completion is unread unless its exact conversation is selected and visible", () => {
+test("a turn is unread when it ended after the viewer's marker for its chat", () => {
   const completed = task({
     operation_id: "done",
     request: { chat_id: "chat-b", node_id: "node/b" },
+    finished: true,
+    finished_at: "2026-09-27T12:00:00.500000+00:00",
   });
-  const previous = new Map([["done", "running"]]);
-  assert.deepEqual(newlyUnreadChatTaskIds([completed], previous, "chat-a"), ["done"]);
-  assert.deepEqual(newlyUnreadChatTaskIds([completed], previous, "chat-b"), []);
+  const older = task({
+    operation_id: "older",
+    request: { chat_id: "chat-b", node_id: "node/b" },
+    finished: true,
+    finished_at: "2026-09-27T08:00:00+00:00",
+  });
+  const baseline = "2026-09-27T10:00:00+00:00";
+  // Seen finishing or not, only the marker decides: this is what survives a reload.
+  const unread = (tasks, reads, latest_finished = {}, archived = []) => [
+    ...unreadChatIdsFromReads(tasks, { baseline, reads, latest_finished, archived }),
+  ];
+  assert.deepEqual(unread([completed, older], {}), ["chat-b"]);
+  assert.deepEqual(unread([completed], {}, {}, ["chat-b"]), []);
+  assert.deepEqual(unread([completed], { "chat-b": completed.finished_at }), []);
+  assert.deepEqual([...unreadChatIdsFromReads([completed], null)], []);
+  // A reply the bounded task list no longer holds is still found from the server.
+  assert.deepEqual(unread([], {}, { "chat-old": "2026-09-27T11:00:00+00:00" }), ["chat-old"]);
+  const reads = {
+    baseline,
+    reads: {},
+    latest_finished: { "chat-b": older.finished_at },
+    archived: [],
+  };
+  assert.equal(chatReadThrough([completed], reads, "chat-b"), completed.finished_at);
+  assert.equal(chatReadThrough([completed], reads, "chat-a"), null);
+  // A snapshot fetched before a read landed cannot move the marker back.
+  const viewed = { ...reads, reads: { "chat-b": completed.finished_at } };
+  const stale = { ...reads, reads: { "chat-b": older.finished_at, "chat-c": baseline } };
+  assert.deepEqual(mergeChatReads(viewed, stale).reads, {
+    "chat-b": completed.finished_at,
+    "chat-c": baseline,
+  });
+  assert.deepEqual(newlyFinishedChatTaskIds([completed], new Map([["done", "running"]])), ["done"]);
   const conversations = groupChatConversations(
     [
       {
@@ -229,7 +266,7 @@ test("a completion is unread unless its exact conversation is selected and visib
     {},
     "Project",
   );
-  assert.equal(conversationHasUnread(conversations[0], new Set(["done"])), true);
+  assert.equal(conversationHasUnread(conversations[0], new Set(["chat-b"])), true);
 });
 
 test("conversation mode controls have stable storage keys and Shift+Tab semantics", () => {
@@ -418,56 +455,84 @@ test("worktree creation and integration preserve the ordinary conversation dispa
   }
 });
 
-test("the Agents panel groups each conversation by what its latest turn asks of the human", () => {
-  const conversation = (chatId, title, statuses) => ({
+for (const [id, statuses, unread, state, group] of [
+  ["reply", ["succeeded"], true, "unread", "new_reply"],
+  ["failed", ["failed"], false, "failed", "failed"],
+  ["failed-unread", ["failed"], true, "failed", "failed"],
+  ["paused", ["paused"], false, "stopped", "stopped"],
+  ["interrupted-unread", ["interrupted"], true, "stopped", "stopped"],
+  ["queued", ["queued"], false, "working", "working"],
+  ["running", ["succeeded", "running"], true, "working", "working"],
+  ["pausing", ["pausing"], false, "working", "working"],
+  ["recovered", ["failed", "succeeded"], false, "done", "done"],
+  ["summary", [], false, "done", "done"],
+  ["summary-unread", [], true, "unread", "new_reply"],
+  ["draft", [], false, "draft", "done"],
+]) {
+  test(`agent grouping: ${id}`, () => {
+    const conversation = {
+      chatId: id,
+      kind: "project_chat",
+      nodeId: null,
+      title: id,
+      updatedAt: id === "draft" ? "" : "2026-07-28T00:00:00Z",
+      tasks: statuses.map((status, index) =>
+        task({ operation_id: `${id}-${index}`, kind: "project_chat", status }),
+      ),
+    };
+    const groups = groupConversationAgents([conversation], new Set(unread ? [id] : []));
+    assert.deepEqual(CONVERSATION_AGENT_GROUPS, [
+      "new_reply",
+      "failed",
+      "stopped",
+      "working",
+      "done",
+    ]);
+    assert.deepEqual(Object.keys(groups), AGENT_LIST_SECTIONS);
+    assert.deepEqual(
+      Object.values(groups).map((rows) => rows.length),
+      AGENT_LIST_SECTIONS.map((key) => (key === group ? 1 : 0)),
+    );
+    const row = groups[group][0];
+    assert.equal(row.conversation.chatId, id);
+    assert.equal(row.status.state, state);
+    assert.equal(row.status.group, group);
+    assert.equal(row.status.unread, unread);
+    assert.equal(row.status.latest, conversation.tasks.at(-1) ?? null);
+  });
+}
+
+test("pinned conversations leave their status group, newest pin first", () => {
+  const conversation = (chatId, status) => ({
     chatId,
     kind: "project_chat",
     nodeId: null,
-    title,
+    title: chatId,
     updatedAt: "2026-07-28T00:00:00Z",
-    tasks: statuses.map((status, index) =>
-      task({ operation_id: `${chatId}-${index}`, kind: "project_chat", status }),
-    ),
+    tasks: [task({ operation_id: `${chatId}-turn`, kind: "project_chat", status })],
   });
-  const conversations = [
-    conversation("failed", "Failed run", ["failed"]),
-    conversation("recovered", "Recovered run", ["failed", "succeeded"]),
-    conversation("paused", "Paused run", ["paused"]),
-    conversation("interrupted", "Interrupted run", ["interrupted"]),
-    conversation("running", "Running audit", ["succeeded", "running"]),
-    conversation("unread", "Unread result", ["succeeded"]),
-    conversation("idle", "Idle notes", ["succeeded"]),
-    { ...conversation("draft", "Unsent draft", []), updatedAt: "" },
-  ];
-  const unread = new Set(["unread-0"]);
-
-  const ids = (groups) =>
-    Object.fromEntries(
-      Object.entries(groups).map(([group, rows]) => [
-        group,
-        rows.map((row) => [row.conversation.chatId, row.status.state]),
-      ]),
-    );
-
-  assert.deepEqual(ids(groupConversationAgents(conversations, unread)), {
-    needs_you: [
-      ["failed", "needs_you"],
-      ["paused", "paused"],
-      ["interrupted", "needs_you"],
+  const groups = groupConversationAgents(
+    [
+      conversation("failed", "failed"),
+      conversation("done", "succeeded"),
+      conversation("other", "succeeded"),
     ],
-    working: [["running", "working"]],
-    recent: [
-      ["recovered", "done"],
-      ["unread", "unread"],
-      ["idle", "done"],
-      ["draft", "draft"],
+    new Set(),
+    "",
+    ["done", "failed"],
+  );
+  assert.deepEqual(
+    groups.pinned.map((row) => [row.conversation.chatId, row.status.group]),
+    [
+      ["done", "done"],
+      ["failed", "failed"],
     ],
-  });
-  assert.deepEqual(ids(groupConversationAgents(conversations, unread, "  AUDIT ")), {
-    needs_you: [],
-    working: [["running", "working"]],
-    recent: [],
-  });
+  );
+  assert.deepEqual(groups.failed, []);
+  assert.deepEqual(
+    groups.done.map((row) => row.conversation.chatId),
+    ["other"],
+  );
 });
 
 test("agent search matches every word against what the card already holds", () => {

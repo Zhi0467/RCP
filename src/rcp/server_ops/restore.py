@@ -107,6 +107,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # Chat display (archive and title), fresh and upgraded in place.
         "ab05d5a356e78f8fac814b2b5d0d73d84fad1880373265878c44ee592f363d0f",
         "dfa7f6dbaeb5fe3cbe9073f8a62861f4c76fe6da58be5b48daa0ec7eb85478a8",
+        # Per-user chat read markers and chat pins, fresh and upgraded in place.
+        "2e9faec20d33214a6697f2c595c169af76d55ad33a6ebe5fed50369560fea185",
+        "a89a5484892c392ee414a410cc132484c99791497ea15e80257a574b0d096ae1",
     }
 )
 

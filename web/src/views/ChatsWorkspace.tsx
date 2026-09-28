@@ -1,19 +1,22 @@
 import {
-  Ellipsis,
   ChevronDown,
+  Circle,
+  Ellipsis,
   LoaderCircle,
   MessageCircle,
   PanelLeft,
+  Pause,
+  Pin,
   Search,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  CONVERSATION_AGENT_GROUPS,
+  AGENT_LIST_SECTIONS,
   conversationAgentStatus,
   groupConversationAgents,
   type ChatConversation,
-  type ConversationAgentGroup,
-  type ConversationAgentState,
+  type AgentListSection,
   type ConversationAgentStatus,
 } from "../chatWorkspace";
 import type { GlossaryIndex } from "../glossary";
@@ -36,7 +39,7 @@ import type {
   StartAgentTask,
   WatcherRecord,
 } from "../types";
-import { loadChatDisplay, setChatArchived, setChatTitle } from "../api";
+import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../api";
 import { NodeChat } from "../components/NodeChat";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
@@ -50,7 +53,7 @@ interface Props {
   tasks: AgentTask[];
   watchers: WatcherRecord[];
   graphChangesDisabled: boolean;
-  unreadTaskIds: ReadonlySet<string>;
+  unreadChatIds: ReadonlySet<string>;
   chatTranscripts: ReadonlyMap<string, ChatTranscript>;
   hasMore: boolean;
   loadingMore: boolean;
@@ -67,6 +70,10 @@ interface Props {
   onStopWatcher?: (watcherId: string) => void;
   onNewSession: (conversation: ChatConversation) => void;
   onRemoveDraft: (chatId: string) => void;
+  /** Archive moves a chat in or out of the unread count, which the server derives. */
+  onArchiveChange?: () => void;
+  /** Fetches conversations the loaded pages do not reach, such as old pinned ones. */
+  onEnsureListed?: (chatIds: readonly string[]) => void;
 }
 
 function chatListWidthStorageKey(projectId: string): string {
@@ -98,24 +105,33 @@ function readChatListCollapsed(projectId: string): boolean {
   }
 }
 
-type AgentFilter = "all" | "needs_you" | "working" | "archived";
+type AgentFilter = "all" | "working" | "archived";
 
-const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {} };
+const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {}, pinned: [] };
 
-const GROUP_LABELS: Record<ConversationAgentGroup, string> = {
-  needs_you: "Needs you",
+const GROUP_LABELS: Record<AgentListSection, string> = {
+  pinned: "Pinned",
+  new_reply: "New reply",
+  failed: "Failed",
+  stopped: "Stopped",
   working: "Working",
-  recent: "Recent",
+  done: "Done",
 };
 
-/** A needs-you or paused row shows the backend's status label as its reason. */
 function needsHuman(status: ConversationAgentStatus): boolean {
-  return status.group === "needs_you";
+  return status.state === "failed" || status.state === "stopped";
 }
 
-/** A filled dot whose colour names the agent's state; working pulses. */
-function AgentStateIcon({ state }: { state: ConversationAgentState }) {
-  return <span className="agent-state-dot" data-state={state} aria-hidden="true" />;
+function AgentGroupIcon({ group }: { group: AgentListSection }) {
+  const Icon = {
+    pinned: Pin,
+    new_reply: MessageCircle,
+    failed: X,
+    stopped: Pause,
+    working: Circle,
+    done: null,
+  }[group];
+  return Icon ? <Icon className="agent-group-icon" size={13} aria-hidden="true" /> : null;
 }
 
 function sinceLabel(timestamp: string | null | undefined, now: number): string {
@@ -136,6 +152,11 @@ function agentMeta(status: ConversationAgentStatus): string {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
     parts.push(latest.request.run_truth_scope?.join(", "));
+    if (status.state === "failed" && latest.can_retry) parts.push("Retry");
+    if (status.state === "stopped") {
+      if (latest.can_resume) parts.push("Resume");
+      else if (latest.can_retry) parts.push("Retry");
+    }
   }
   return parts.filter(Boolean).join(" · ");
 }
@@ -150,9 +171,11 @@ export function ChatsWorkspace({
   tasks,
   watchers,
   graphChangesDisabled,
-  unreadTaskIds,
+  unreadChatIds,
   chatTranscripts,
   hasMore,
+  onArchiveChange,
+  onEnsureListed,
   loadingMore,
   onSelect,
   onLoadMore,
@@ -201,15 +224,24 @@ export function ChatsWorkspace({
   // Count every archived chat, including ones on pages not loaded yet; the
   // Archived view pages through them with Load more.
   const archivedCount = archivedChatIds.size;
-  const groups = groupConversationAgents(listed, unreadTaskIds, query);
-  const activeGroups = showingArchived
-    ? groupConversationAgents(
-        conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
-        unreadTaskIds,
-        query,
-      )
-    : groups;
-  const visibleGroups = CONVERSATION_AGENT_GROUPS.filter(
+  // Pins lead only the All view; a filter shows each pinned chat in its status group.
+  const groups = groupConversationAgents(
+    listed,
+    unreadChatIds,
+    query,
+    filter === "all" ? display.pinned : [],
+  );
+  // Filter counts ignore pins, so Working counts every working agent.
+  const activeGroups = groupConversationAgents(
+    conversations.filter((conversation) => !archivedChatIds.has(conversation.chatId)),
+    unreadChatIds,
+    query,
+  );
+  const pinnedChatIds = new Set(display.pinned);
+  useEffect(() => {
+    onEnsureListed?.(display.pinned);
+  }, [display.pinned, onEnsureListed]);
+  const visibleGroups = AGENT_LIST_SECTIONS.filter(
     (group) => filter === "all" || showingArchived || group === filter,
   );
   const now = Date.now();
@@ -272,8 +304,12 @@ export function ChatsWorkspace({
       (item) => item.chatId !== chatId && !archivedChatIds.has(item.chatId),
     );
     if (archived && !showingArchived && selected?.chatId === chatId && next) onSelect(next.chatId);
-    return updateDisplay(() => setChatArchived(apiBase, chatId, archived));
+    return updateDisplay(() => setChatArchived(apiBase, chatId, archived)).then(() =>
+      onArchiveChange?.(),
+    );
   };
+  const pin = (chatId: string, pinned: boolean) =>
+    updateDisplay(() => setChatPinned(apiBase, chatId, pinned));
   const rename = (chatId: string, title: string) => {
     setRenamingChatId(null);
     return updateDisplay(() => setChatTitle(apiBase, chatId, title));
@@ -333,7 +369,7 @@ export function ChatsWorkspace({
     return () => observer.disconnect();
   }, [project.id, narrow]);
 
-  const selectedStatus = selected ? conversationAgentStatus(selected, unreadTaskIds) : null;
+  const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedLatest = selectedStatus?.latest ?? null;
   const resizeFromPointer = (clientX: number) => {
     const bounds = workspace.current?.getBoundingClientRect();
@@ -438,16 +474,14 @@ export function ChatsWorkspace({
           </div>
           <div className="agent-list-filters" role="group" aria-label="Filter agents">
             {(archivedCount > 0 || showingArchived
-              ? (["all", "needs_you", "working", "archived"] as const)
-              : (["all", "needs_you", "working"] as const)
+              ? (["all", "working", "archived"] as const)
+              : (["all", "working"] as const)
             ).map((value) => {
               const count =
                 value === "archived"
                   ? archivedCount
                   : value === "all"
-                    ? activeGroups.needs_you.length +
-                      activeGroups.working.length +
-                      activeGroups.recent.length
+                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0)
                     : activeGroups[value].length;
               return (
                 <button
@@ -484,12 +518,15 @@ export function ChatsWorkspace({
                 key={group}
               >
                 <div className="agent-group-heading" aria-hidden="true">
-                  <span>{GROUP_LABELS[group]}</span>
+                  <span className="agent-group-label">
+                    <AgentGroupIcon group={group} />
+                    {GROUP_LABELS[group]}
+                  </span>
                   <span>{groups[group].length}</span>
                 </div>
                 {groups[group].map(({ conversation, status }) => {
                   const selectedConversation = conversation.chatId === selected?.chatId;
-                  const unread = status.state === "unread";
+                  const unread = status.unread;
                   const latest = status.latest;
                   const draft = conversation.tasks.length === 0 && !conversation.updatedAt;
                   const archived = archivedChatIds.has(conversation.chatId);
@@ -510,9 +547,6 @@ export function ChatsWorkspace({
                             else void rename(conversation.chatId, title);
                           }}
                         >
-                          <span className="agent-row-icon">
-                            <AgentStateIcon state={status.state} />
-                          </span>
                           {/* Blank returns the chat to its derived name. */}
                           <input
                             name="title"
@@ -541,19 +575,14 @@ export function ChatsWorkspace({
                             if (narrow) setMobileListOpen(false);
                           }}
                         >
-                          <span className="agent-row-icon">
-                            <AgentStateIcon state={status.state} />
-                          </span>
                           <span className="agent-row-body">
-                            <span className="agent-row-title">{conversation.title}</span>
-                            {/* One secondary line always, so every card has the same height. */}
-                            {needsHuman(status) && latest ? (
-                              <span className="agent-row-reason">{latest.status_label}</span>
-                            ) : (
-                              <span className="agent-row-meta">
-                                {agentMeta(status) || "\u00a0"}
-                              </span>
-                            )}
+                            <span className="agent-row-title">
+                              {/* A pinned row sits outside its status group, so it carries the mark. */}
+                              {group === "pinned" && <AgentGroupIcon group={status.group} />}
+                              {unread && <span className="agent-new-pill">New</span>}
+                              {conversation.title}
+                            </span>
+                            <span className="agent-row-meta">{agentMeta(status) || "\u00a0"}</span>
                           </span>
                           <time>
                             {status.state === "working"
@@ -609,6 +638,20 @@ export function ChatsWorkspace({
                                   >
                                     Rename
                                   </button>
+                                  {!archived && (
+                                    <button
+                                      type="button"
+                                      role="menuitem"
+                                      onClick={() =>
+                                        void pin(
+                                          conversation.chatId,
+                                          !pinnedChatIds.has(conversation.chatId),
+                                        )
+                                      }
+                                    >
+                                      {pinnedChatIds.has(conversation.chatId) ? "Unpin" : "Pin"}
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     role="menuitem"
