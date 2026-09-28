@@ -59,7 +59,7 @@ test("compute controls introduce no sub-10px primary or status text", () => {
   const styles = withResolvedTypeScale(appStylesheet());
   const composer = styles.slice(
     styles.indexOf(".chat-compute-picker"),
-    styles.indexOf(".artifact-context-chip"),
+    styles.indexOf(".chat-composer.is-dragging-files"),
   );
   const settings = styles.slice(
     styles.indexOf(".compute-settings > header"),

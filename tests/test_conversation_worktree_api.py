@@ -42,8 +42,11 @@ class _ChatLauncher:
         session = kwargs.get("session_id") or str(uuid.uuid4())
         self.sessions[request.chat_id] = session
         scope = kwargs.get("write_scope")
-        contract = Path(next(re.finditer(r"/[^\n]+\.md", prompt)).group())
-        inputs = "\n".join(path.read_text() for path in contract.parent.glob("*.md"))
+        # A continuation carries its current write scope inline beside the files it names.
+        named = {Path(item.group()).parent for item in re.finditer(r"/[^\s`\"]+\.md", prompt)}
+        inputs = "\n".join(
+            [prompt, *(path.read_text() for folder in named for path in folder.glob("*.md"))]
+        )
         root = self.harness.repository
         binding = self.harness.store.conversation_worktree(self.harness.project_id, request.chat_id)
         if binding:

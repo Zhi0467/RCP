@@ -15,6 +15,7 @@ import rcp.runs.tasks.auto_research_child_work as child_module
 import rcp.runs.tasks.experiment_loop as loop_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
+from rcp.agents.continuation_prompt import SECTIONS, MasterRef
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
@@ -23,6 +24,8 @@ from .helpers import (
     agent_patch_json,
     append_fixture_patch,
     create_named_app,
+    current_command_client,
+    launch_contract_path,
     seed_patch,
     shape_invalid_patch,
 )
@@ -201,6 +204,8 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
     request = _request().model_copy(
         update={"message": None, "session_id": "manual-repair-native-session"}
     )
+    # A task is stored with the provider and machine its launch is pinned to.
+    request = work_module._resolve_work_execution(service, request, None).request
     execution = _chat_task_execution(app, request, "work-mailbox-manual-repair-failure")
     stage = tmp_path / "data" / "run-stage" / "chat-manual-repair-failure"
     stage.mkdir(parents=True)
@@ -211,6 +216,10 @@ async def test_manual_graph_repair_preserves_post_stage_failure_over_mailbox_fai
         workspace_root=str(stage / "workspace"),
     )
     execution.checkpoint_stage("", str(stage))
+    # A recovery task is created bound to the native session it continues.
+    execution.store.checkpoint_agent_task(
+        execution.operation_id, native_session_id="manual-repair-native-session"
+    )
     execution.continuation = "graph_repair"
     staged_mailboxes: list[StagedCommandMailbox] = []
     started: list[str] = []
@@ -500,6 +509,9 @@ async def test_operational_continuation_renders_current_launch_client(
     service = app.state.service
     append_fixture_patch(service, seed_patch())
     request = _request()
+    if owner is not loop_module:
+        # A task is stored with the provider and machine its launch is pinned to.
+        request = work_module._resolve_work_execution(service, request, None).request
     execution = _chat_task_execution(app, request, "current-launch-turn")
     previous_stage = tmp_path / "previous-stage"
     previous_stage.mkdir()
@@ -521,10 +533,12 @@ async def test_operational_continuation_renders_current_launch_client(
         "<argv...>",
     )
     previous_command = previous.client_command(*launch_args)
+    previous_client = previous.client_command()
     original = previous_stage / "original.md"
     original.write_text(previous_command)
     previous.cleanup()
-    monkeypatch.setattr(owner, "_parent_task_contract_path", lambda *_args: str(original))
+    for module in {owner, work_module} - {loop_module}:
+        monkeypatch.setattr(module, "_parent_task_contract_path", lambda *_args: str(original))
     turn, staged = await work_module._stage_work_turn(
         service,
         work_module._resolve_work_execution(service, request, execution),
@@ -534,13 +548,25 @@ async def test_operational_continuation_renders_current_launch_client(
     try:
         execution.continuation = continuation
         execution.retry_feedback = ("The previous invocation was interrupted.",)
-        turn.request = request.model_copy(update={"watcher_ids": ["observer-1"]})
+        if owner is loop_module:
+            turn.request = request.model_copy(update={"watcher_ids": ["observer-1"]})
+        else:
+            # Work and child Work continue the native session their task is bound to.
+            execution.store.checkpoint_agent_task(
+                execution.operation_id, native_session_id="current-launch-session"
+            )
+            turn.request = turn.request.model_copy(
+                update={"watcher_ids": ["observer-1"], "session_id": "current-launch-session"}
+            )
         if owner is child_module:
             composed = child_module._compose_child_prompt(
                 turn,
                 staged,
                 SimpleNamespace(
-                    worker_id="child-1", instruction="Complete the bounded child check."
+                    episode_id="episode-1",
+                    worker_id="child-1",
+                    control_node_id="hyp/example",
+                    instruction="Complete the bounded child check.",
                 ),
                 mail_path="/inputs/mail.json",
             )
@@ -551,25 +577,27 @@ async def test_operational_continuation_renders_current_launch_client(
                     "control_node_id": "exp/one",
                     "control_invocation": 1,
                     "control_invocation_ceiling": 3,
+                    "session_id": "native-session",
                 }
             )
             prepared = SimpleNamespace(
                 episode_context_baseline={},
                 loop_control_path="/inputs/loop-control.json",
                 watcher_state_path="/inputs/watcher-state.json",
-                context_replacement=None,
+                ontology_sha256="0" * 64,
                 wake_episode=SimpleNamespace(last_graph_result="applied", last_watcher_ids=[]),
             )
+            # The master holds the expired command; the continuation must not repeat it.
             monkeypatch.setattr(
-                owner, "_experiment_session_contract_path", lambda _turn: str(original)
-            )
-            compose = getattr(
                 owner,
-                "_compose_wake_prompt"
-                if continuation == "watcher_wake"
-                else f"_compose_{continuation}_prompt",
+                "_experiment_master",
+                lambda *_args, **_kwargs: MasterRef(path=str(original), bootstrap=False),
             )
-            composed = compose(turn, staged, prepared)
+            monkeypatch.setattr(owner, "_report_rebootstrap_pending", lambda _turn: False)
+            if continuation == "watcher_wake":
+                composed = owner._compose_wake_prompt(turn, staged, prepared)
+            else:
+                composed = owner._compose_recovery_prompt(turn, staged, prepared, continuation)
         else:
             compose = getattr(
                 owner,
@@ -578,18 +606,22 @@ async def test_operational_continuation_renders_current_launch_client(
                 else f"_compose_{continuation}_prompt",
             )
             composed = compose(turn, staged)
-        contract = Path(composed.contract_path).read_text()
-        scope_context = composed.prompt + "\n" + contract
-        for path in (*turn.write_scope.writable_roots, *turn.write_scope.protected_write_paths):
-            assert path in scope_context
-        if owner is work_module and continuation == "message_wake":
-            assert turn.patch_inputs.validator_staged.client_command(*launch_args) not in contract
-            tooling = list((turn.local_stage / "inputs").glob("task-*-execution.md"))
-            assert len(tooling) == 1
-            assert tooling[0].name in composed.prompt
-            contract = tooling[0].read_text()
-        assert turn.patch_inputs.validator_staged.client_command(*launch_args) in contract
-        assert previous_command not in contract
+        scope = (*turn.write_scope.writable_roots, *turn.write_scope.protected_write_paths)
+        if owner is loop_module:
+            contract = Path(composed.contract_path).read_text()
+            scope_context = composed.prompt + "\n" + contract
+            for path in scope:
+                assert path in scope_context
+            assert turn.patch_inputs.validator_staged.client_command(*launch_args) in contract
+            assert previous_command not in contract
+        else:
+            # A Work continuation sends what changed; a master it opens now holds the rest.
+            opened = SECTIONS["master_pointer"].split("{path}")[0] not in composed.prompt
+            master = launch_contract_path(composed.prompt).read_text() if opened else ""
+            for path in scope:
+                assert path in composed.prompt + "\n" + master
+            assert current_command_client(composed.prompt) == turn.patch_inputs.command_client
+            assert previous_client not in composed.prompt + "\n" + master
     finally:
         await turn.validator_lifecycle.close()
 
@@ -1123,7 +1155,16 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         name = experiment_watcher_output_name("exp/test")
         resource = SimpleNamespace(control_node_id="exp/test", graph_target=None)
         finalization.experiment_resources = [
-            SimpleNamespace(resource=resource, watch_path=str(primed.workspace / name))
+            SimpleNamespace(
+                resource=resource,
+                watch_path=str(primed.workspace / name),
+                prompt_value=lambda: {
+                    "control_node_id": "exp/test",
+                    "execution_host": "",
+                    "watcher_state_path": "/stage/inputs/watcher-state.json",
+                    "watch_path": str(primed.workspace / name),
+                },
+            )
         ]
         monkeypatch.setattr(
             maintenance_module,

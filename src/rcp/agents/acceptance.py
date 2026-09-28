@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.git_access import ProviderGitAccess
 from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.launcher import (
@@ -22,6 +23,7 @@ from rcp.agents.launcher import (
     AgentProcessControl,
     ProviderReadiness,
 )
+from rcp.agents.prompts import COMMAND_CLIENT, PromptFactory
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.limits import ACCEPTANCE_AGENT_JOB_SECONDS
@@ -62,6 +64,7 @@ _CAMPAIGN_FAILURE_RELEASE_FILE = ".rcp-acceptance-campaign-failure-release"
 _CAMPAIGN_FAILURE_WORKER_ACTIVE_FILE = ".rcp-acceptance-campaign-worker-active"
 _CAMPAIGN_FAILURE_WORKER_RELEASE_FILE = ".rcp-acceptance-campaign-worker-release"
 _CAMPAIGN_ORDINARY_CHILD_MARKER = "## Auto-research child Work boundary"
+_CAMPAIGN_ORDINARY_CHILD_WAKE = "# RCP Auto-research child Work wake"
 _CAMPAIGN_CONTRACTS: dict[
     str,
     tuple[
@@ -256,10 +259,15 @@ class AcceptanceAgentLauncher(AgentLauncher):
                 hold.release()
 
         state = _read_state(resolved_cwd)
+        # An inline campaign continuation is its own current contract. A master it only points
+        # to holds what the session learned at start, which the persisted fixture state already
+        # caches, and expired commands that must never stand in for a missing current one.
         contract = (
             prompt
             if _RESULT_VIEW_AUTHORING_MARKER in prompt
-            else _read_launch_contract(prompt, resolved_cwd)
+            else _campaign_inline_contract(prompt)
+            if prompt.partition("\n")[0] in _CAMPAIGN_CONTRACTS
+            else _read_launch_contract(prompt)
         )
         scenario = _scenario(prompt, contract, state)
         active_contract = prompt if _RESULT_VIEW_AUTHORING_MARKER in prompt else contract
@@ -344,9 +352,13 @@ class AcceptanceAgentLauncher(AgentLauncher):
         elif action == "initial":
             focused_experiment_id = _focused_experiment_id(contract)
             _start_fixture_jobs(resolved_cwd)
+            graph_path = _experiment_pointer(
+                contract, "- Current graph, including the Experiment's attempts: `", "paths.graph"
+            )
             state = {
                 "scenario": scenario,
                 "focused_experiment_id": focused_experiment_id,
+                "graph_path": str(graph_path) if graph_path is not None else None,
                 "jobs_started": True,
                 "watch_corrected": False,
             }
@@ -385,6 +397,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     )
                 tested_hypothesis_id = _tested_hypothesis_id(
                     contract,
+                    state,
                     focused_experiment_id,
                 )
                 _write_json(
@@ -446,31 +459,33 @@ class AcceptanceAgentLauncher(AgentLauncher):
             self._launch_records.append(record)
 
 
-def _read_launch_contract(prompt: str, cwd: Path) -> str:
+def _read_launch_contract(prompt: str) -> str:
+    """Read what this launch instructs: a session start's contract, or a continuation itself.
+
+    A continuation carries its current values as changed-value lines. The fixture never
+    reads them from the master it points to, so a continuation that omits one fails here
+    as it would for a provider; what the fixture learned at session start lives in its state.
+    """
+
     lines = prompt.splitlines()
     if len(lines) < 2:
         raise ValueError("Acceptance-agent launch text has no contract path.")
-    retained_prefix = "RCP master context: "
-    path = Path(
-        lines[0][len(retained_prefix) :]
-        if lines[0].startswith(retained_prefix)
-        else lines[1].strip()
-    )
-    paths = [path]
-    execution_prefix = "Read current execution instructions relative to this turn's cwd: `"
-    execution_lines = [line for line in lines if line.startswith(execution_prefix)]
-    if execution_lines:
-        if len(execution_lines) != 1 or not execution_lines[0].endswith("`"):
-            raise ValueError("Acceptance-agent launch text has a malformed execution path.")
-        execution_path = execution_lines[0][len(execution_prefix) : -1]
-        if not execution_path or "`" in execution_path:
-            raise ValueError("Acceptance-agent launch text has a malformed execution path.")
-        # Follow this invocation's pointer; retained inputs can contain expired commands.
-        paths.append(cwd / execution_path)
+    start = _session_start_contract_path(lines)
+    if start is None:
+        return prompt
     try:
-        return "\n\n".join(path.read_text(encoding="utf-8") for path in paths)
+        return start.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"Acceptance-agent contract is unreadable: {exc}") from exc
+
+
+def _session_start_contract_path(lines: list[str]) -> Path | None:
+    """A session start opens with the file it must read; a continuation opens with itself."""
+
+    bootstrap = SECTIONS["master_bootstrap"].split("\n")[0]
+    if lines[0] in {bootstrap, PromptFactory.launch_prompt("").splitlines()[0]}:
+        return Path(lines[1].strip())
+    return None
 
 
 def _read_state(cwd: Path) -> dict[str, object]:
@@ -522,7 +537,10 @@ def _campaign_contract(
     ]
     | None
 ):
-    if _CAMPAIGN_ORDINARY_CHILD_MARKER in contract:
+    # A child's master holds its boundary; a wake names itself on its first line instead.
+    if _CAMPAIGN_ORDINARY_CHILD_MARKER in contract or contract.startswith(
+        _CAMPAIGN_ORDINARY_CHILD_WAKE
+    ):
         phase = (
             "continuation"
             if "Continue the exact Auto-research child Work assignment" in contract
@@ -606,7 +624,7 @@ async def _accept_campaign_turn(
     fixture_state = dict(fixture) if isinstance(fixture, dict) else {}
 
     if role == "worker":
-        reply_prefix = _campaign_command_prefix(contract, "- Reply command prefix: `")
+        reply_prefix = _campaign_worker_reply_prefix(contract)
         reply_template = _campaign_ordinary_child_reply_template(contract)
         instruction_path = _campaign_optional_path(contract, "- worker instruction: `")
         worker_fixture = False
@@ -969,11 +987,46 @@ def _prepare_campaign_fixture_active(cwd: Path, *, active_name: str, label: str)
     )
 
 
+def _campaign_inline_contract(prompt: str) -> str:
+    """An inline campaign continuation, with the master it opens now when it bootstraps one.
+
+    A master opened now was rendered with the current values, so the continuation sends
+    none of them; a master the session already holds is never read.
+    """
+
+    openers = [
+        SECTIONS[section].split("{path}")[0]
+        for section in ("master_bootstrap", "report_rebootstrap")
+    ]
+    for opener in openers:
+        if opener in prompt:
+            path = Path(prompt.partition(opener)[2].splitlines()[0].strip())
+            try:
+                return f"{prompt}\n\n{path.read_text(encoding='utf-8')}"
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"Acceptance campaign master is unreadable: {exc}") from exc
+    return prompt
+
+
 def _campaign_command_prefix_for_orchestrator(contract: str) -> str | None:
+    """A session start's master names the prefix; a continuation sends it as a changed value."""
+
     return _campaign_command_prefix(
         contract,
-        "- Command prefix for this turn: `",
+        "- command_prefix: `",
     ) or _campaign_command_prefix(contract, "- Command prefix: `")
+
+
+def _campaign_worker_reply_prefix(contract: str) -> str | None:
+    """The worker reply command: the current prefix followed by `message --key <reply key>`."""
+
+    prefix = _campaign_command_prefix_for_orchestrator(contract)
+    key = _campaign_command_prefix(contract, "- reply_key: `") or _campaign_command_prefix(
+        contract, "- Reply key: `"
+    )
+    if prefix is None or key is None:
+        return None
+    return shlex.join([*shlex.split(prefix), "message", "--key", key])
 
 
 def _campaign_command_prefix(contract: str, prefix: str) -> str | None:
@@ -989,6 +1042,12 @@ def _campaign_command_prefix(contract: str, prefix: str) -> str | None:
 
 
 def _campaign_ordinary_child_reply_template(contract: str) -> str | None:
+    """The child's reply command, run through the current command client.
+
+    A continuation's changed ``patch.command_client`` line wins over the client its
+    master stated at session start.
+    """
+
     marker = "optional reply to your orchestrator:"
     if marker not in contract:
         return None
@@ -996,7 +1055,12 @@ def _campaign_ordinary_child_reply_template(contract: str) -> str | None:
     line = next((item.strip() for item in tail.splitlines() if item.strip()), "")
     if not line.startswith("`") or not line.endswith("`") or "`" in line[1:-1]:
         raise ValueError("Acceptance ordinary child contract has a malformed reply command.")
-    value = line[1:-1]
+    client = _campaign_command_prefix(
+        contract, "- patch.command_client: `"
+    ) or _campaign_command_prefix(contract, "- Command client: `")
+    if client is None:
+        raise ValueError("Acceptance ordinary child contract names no command client.")
+    value = line[1:-1].replace(COMMAND_CLIENT, client, 1)
     try:
         argv = shlex.split(value)
     except ValueError as exc:
@@ -1366,17 +1430,32 @@ def _action(
     return "initial"
 
 
-def _experiment_loop_phase(contract: str) -> str | None:
-    prefix = "- Loop control for this invocation: `"
+def _experiment_pointer(contract: str, start_prefix: str, value_key: str) -> Path | None:
+    """A path the session's start contract names, or a continuation's changed value for it.
+
+    A continuation names only what changed since the master, so a path it does not
+    change is one the fixture learned at session start.
+    """
+
+    prefixes = (start_prefix, f"- {value_key}: `")
     for line in contract.splitlines():
-        if not (line.startswith(prefix) and line.endswith("`")):
-            continue
-        try:
-            value = json.loads(Path(line[len(prefix) : -1]).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Acceptance Experiment loop control is unreadable: {exc}") from exc
-        return value.get("phase") if isinstance(value, dict) else None
+        for prefix in prefixes:
+            if line.startswith(prefix) and line.endswith("`"):
+                return Path(line[len(prefix) : -1])
     return None
+
+
+def _experiment_loop_phase(contract: str) -> str | None:
+    path = _experiment_pointer(
+        contract, "- Loop control for this invocation: `", "paths.loop_control"
+    )
+    if path is None:
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Acceptance Experiment loop control is unreadable: {exc}") from exc
+    return value.get("phase") if isinstance(value, dict) else None
 
 
 def _focused_experiment_id(contract: str) -> str | None:
@@ -1387,19 +1466,14 @@ def _focused_experiment_id(contract: str) -> str | None:
     return None
 
 
-def _tested_hypothesis_id(contract: str, focused_experiment_id: str) -> str:
-    prefixes = (
-        "- Current graph, including the Experiment's attempts: `",
-        "- current graph: `",
-    )
-    graph_path: Path | None = None
-    for line in contract.splitlines():
-        for prefix in prefixes:
-            if line.startswith(prefix) and line.endswith("`"):
-                graph_path = Path(line[len(prefix) : -1])
-                break
-        if graph_path is not None:
-            break
+def _tested_hypothesis_id(
+    contract: str, state: dict[str, object], focused_experiment_id: str
+) -> str:
+    graph_path = _experiment_pointer(
+        contract, "- Current graph, including the Experiment's attempts: `", "paths.graph"
+    ) or _experiment_pointer(contract, "- current graph: `", "paths.graph")
+    if graph_path is None and isinstance(state.get("graph_path"), str):
+        graph_path = Path(str(state["graph_path"]))
     if graph_path is None:
         raise ValueError("Acceptance Experiment wake contract has no current graph path.")
     try:
@@ -1479,24 +1553,24 @@ def _fixture_jobs_complete(cwd: Path) -> bool:
 def _reauthorized_fixture_jobs_complete(contract: str) -> bool:
     """Inspect delivered watcher evidence when a human Run starts in a fresh chat stage."""
 
-    prefix = "- Current watcher state for this Experiment: `"
-    for line in contract.splitlines():
-        if not (line.startswith(prefix) and line.endswith("`")):
-            continue
-        try:
-            value = json.loads(Path(line[len(prefix) : -1]).read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Acceptance Experiment watcher state is unreadable: {exc}") from exc
-        if not isinstance(value, list) or not value:
-            return False
-        delivered = [item for item in value if isinstance(item, dict) and item.get("notified")]
-        return bool(delivered) and all(
-            item.get("status") == "completed"
-            and isinstance(item.get("log_path"), str)
-            and Path(item["log_path"]).is_file()
-            for item in delivered
-        )
-    return False
+    path = _experiment_pointer(
+        contract, "- Current watcher state for this Experiment: `", "paths.watcher_state"
+    )
+    if path is None:
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Acceptance Experiment watcher state is unreadable: {exc}") from exc
+    if not isinstance(value, list) or not value:
+        return False
+    delivered = [item for item in value if isinstance(item, dict) and item.get("notified")]
+    return bool(delivered) and all(
+        item.get("status") == "completed"
+        and isinstance(item.get("log_path"), str)
+        and Path(item["log_path"]).is_file()
+        for item in delivered
+    )
 
 
 def _completion_patch(

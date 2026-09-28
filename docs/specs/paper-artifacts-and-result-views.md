@@ -160,7 +160,7 @@ artifacts and episode reports. A retained client that still embeds a small PNG
 or SVG from `/preview` continues to receive image bytes for an explicit browser
 image request; ordinary navigation to that URL receives the shell.
 
-### Selection-to-prompt, not annotation
+### Selection-to-prompt, not artifact annotation
 
 HTML selection gestures activate only when the surrounding confirmation shell
 opts in through the private preview bridge. A viewer without an originating chat,
@@ -178,21 +178,35 @@ preserves native highlighting, and ordinary controls keep their own gestures.
 Both text and area selections are pending until the human chooses **Comment**;
 **Cancel** or Escape discards the pending selection. Clicking or dragging alone
 never adds prompt context. The human may add one comment or question per
-confirmed selection, review the
-assembled draft, and add it to the ordinary chat composer. Nothing is sent until
-the human sends that composer turn.
-Re-adding selections replaces the earlier generated block, including edits inside
-that block, while preserving surrounding composer text. Reopening the chat alone
-preserves direct composer edits.
+confirmed selection and add them to the chat. Each selection becomes a composer
+annotation, the same object as a comment on answer text, with the artifact
+selection as what it is about; the comment stays editable there and the
+annotation is removable. Nothing is sent until the human sends that composer
+turn. Re-adding selections replaces the staged artifact annotations and leaves
+typed text and answer comments alone. Artifact annotations need a new turn, like
+files; they block steering a running turn.
 After adding selections, **Open chat** opens that exact conversation and graph
-target with the draft ready to review. In the desktop it brings the existing RCP
+target with the annotations ready to review. In the desktop it brings the existing RCP
 window forward; in a browser it follows the chat link in the current tab.
 An expired desktop navigation cannot later select the chat or focus the window.
 
-RCP carries selected text with limited surrounding text. A box carries bounded
-viewport-relative coordinates and the intersecting visible text or SVG labels;
-an implementation may additionally attach a screenshot crop. The selection
-payload, comments, and final question are bounded and treated as untrusted input.
+RCP carries selected text with limited surrounding text. A box on HTML names
+up to eight elements it covers the way a reader of the source finds them: a CSS
+path, the element's own or its chart's label, and its bounded text. When the box
+sits inside one element, such as a canvas or chart, it also says where within
+that element. A box on an image is a fraction of the image as displayed, with
+its orientation applied. On a raster image (PNG, JPEG, GIF, WebP) the server
+also crops that region from the staged copy, decoding it once, and stages the
+crop beside it, so a recovery restages the same crop. An animated image is
+cropped from its first frame and the prompt says so; SVG and an image over the
+crop pixel bound travel as positions only. A box saved by the viewer before
+elements were named measured the viewer area, so it is described by its old
+sampled text and never cropped. A turn
+carries at most 50 annotations. On send, each artifact annotation adds
+`Selection N: <what it covers>` and its comment to the human message, numbered in
+order, and the prompt lists the same numbers with what each selection covers; no
+markup is added. The selection payload, comments, and final
+question are bounded and treated as untrusted input.
 The current artifact bytes are staged as a read-only turn input so the resumed
 agent can inspect what the human saw.
 

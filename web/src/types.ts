@@ -2129,9 +2129,20 @@ export type ArtifactSelection =
       kind: "box";
       rect: { x: number; y: number; width: number; height: number };
       viewport: { width: number; height: number };
-      labels: string;
+      /** The HTML elements the box covers; empty for an image, absent from an older viewer. */
+      elements?: ArtifactBoxElement[];
+      /** Sampled text from a viewer before elements were named. */
+      labels?: string;
       comment: string;
     };
+
+export interface ArtifactBoxElement {
+  path: string;
+  label: string;
+  text: string;
+  /** Where the box lies within this element, when the box sits inside it. */
+  region?: { x: number; y: number; width: number; height: number };
+}
 
 export interface ArtifactContextRequest {
   source?: "task" | "episode_report";

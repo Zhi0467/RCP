@@ -493,11 +493,13 @@ async def test_discuss_stages_attachment_as_exact_read_dir_and_persists_metadata
         )
     ]
 
-    assert any('"name": "context.html"' in launcher.prompt for _frame in frames)
+    assert frames
     attachment_read_dirs = [
         item for item in launcher.read_dirs if item.name.startswith("chat-attachments-v1-")
     ]
     assert len(attachment_read_dirs) == 1
+    staged = [str(path) for path in attachment_read_dirs[0].iterdir()]
+    assert len(staged) == 1 and staged[0] in launcher.prompt
     assert attachment_read_dirs[0].parent.name == "inputs"
     transcript = service.chat_transcript(chat_id)
     assert transcript is not None

@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from rcp.agents import AgentEvent, AgentProcessControl
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.write_scope import registered_repository_roots
 from rcp.api.episodes import serialize_episode
 from rcp.api.experiment_controls import _experiment_control_response
@@ -35,11 +36,13 @@ class _ReportLauncher:
         self.outcomes = outcomes
         self.calls = 0
         self.kwargs: list[dict[str, object]] = []
+        self.prompts: list[str] = []
 
     async def stream(self, _provider, prompt, **kwargs):
         outcome = self.outcomes[self.calls]
         self.calls += 1
         self.kwargs.append(kwargs)
+        self.prompts.append(prompt)
         workspace = Path(kwargs["cwd"])
         if outcome == "valid":
             workspace.joinpath("episode-report.html").write_text(
@@ -590,6 +593,17 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
     assert episode.invocations_used == 1
     assert episode.report_attempts_used == 3
     assert episode.wrapup_state == "ready"
+    # Each attempt travels inline, revokes the operational instructions, and names no
+    # master contract; only the corrections carry a diagnostic.
+    for number, prompt in enumerate(launcher.prompts, start=1):
+        assert (
+            store.agent_task_contract(execution.operation_id, f"episode_report_attempt_{number}")
+            == prompt
+        )
+        assert SECTIONS["report_revocation"] in prompt
+        for master_section in ("master_pointer", "master_bootstrap", "master_rebootstrap"):
+            assert SECTIONS[master_section].split("{path}")[0] not in prompt
+        assert ("- exact report correction diagnostic: `" in prompt) == (number > 1)
 
 
 @pytest.mark.parametrize(
