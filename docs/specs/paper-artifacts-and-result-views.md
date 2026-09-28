@@ -189,10 +189,16 @@ target with the draft ready to review. In the desktop it brings the existing RCP
 window forward; in a browser it follows the chat link in the current tab.
 An expired desktop navigation cannot later select the chat or focus the window.
 
-RCP carries selected text with limited surrounding text. A box carries bounded
-viewport-relative coordinates and the intersecting visible text or SVG labels;
-an implementation may additionally attach a screenshot crop. The selection
-payload, comments, and final question are bounded and treated as untrusted input.
+RCP carries selected text with limited surrounding text. A box on HTML names
+the elements it covers the way a reader of the source finds them: a CSS path,
+the element's own or its chart's label, and its bounded text. A box on a raster
+image (PNG, JPEG, GIF, WebP) is a fraction of the image itself; the server crops
+that region from the staged copy and stages the crop beside it, so a recovery
+restages the same crop. An SVG box is located by fractions of the image. A turn
+carries at most 50 selections. The composer draft numbers each selection with
+its comment in plain text, and the prompt lists the same numbers with what each
+selection covers; no markup is added. The selection payload, comments, and final
+question are bounded and treated as untrusted input.
 The current artifact bytes are staged as a read-only turn input so the resumed
 agent can inspect what the human saw.
 

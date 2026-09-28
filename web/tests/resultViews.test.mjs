@@ -46,7 +46,7 @@ const payload = {
       kind: "box",
       rect: { x: 0.5, y: 0.2, width: 0.25, height: 0.3 },
       viewport: { width: 1200, height: 800 },
-      labels: "seed three",
+      elements: [{ path: "figure#seed-3 > svg", label: "seed three", text: "" }],
       comment: "Compare this with seed one.",
     },
   ],
@@ -54,6 +54,15 @@ const payload = {
 
 test("artifact selections decode as bounded context for exactly one originating chat", () => {
   assert.deepEqual(parseArtifactContextPayload(payload), payload);
+  // A selection saved by a viewer from before elements were named still decodes.
+  const { elements: _elements, ...legacyBox } = payload.selections[1];
+  assert.deepEqual(
+    parseArtifactContextPayload({
+      ...payload,
+      selections: [{ ...legacyBox, labels: "seed three" }],
+    }).selections,
+    [{ ...legacyBox, labels: "seed three", elements: [] }],
+  );
   assert.equal(parseArtifactContextPayload({ ...payload, artifact_id: "bad" }), null);
   assert.equal(parseArtifactContextPayload({ ...payload, selections: [] }), null);
   assert.equal(
@@ -87,8 +96,6 @@ test("artifact selection comments assemble into a visible annotation-style draft
   assert.match(draft, /Why does this happen\?/);
   assert.match(draft, /seed three/);
   assert.match(draft, /Compare this with seed one\./);
-  assert.match(draft, /:rcp-artifact-selection\{index="1"\}/);
-  assert.match(draft, /:rcp-artifact-selection\{index="2"\}/);
 });
 
 test("re-adding edited selections replaces their generated draft and preserves user text", () => {

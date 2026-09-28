@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import io
 import os
 import subprocess
 from datetime import date
@@ -10,9 +11,11 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 import rcp.artifact_replace as artifact_replace_module
 from rcp.agents import AgentProcessControl
+from rcp.agents.prompts import PromptFactory
 from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifacts import (
     AgentArtifactDescriptor,
@@ -1180,7 +1183,7 @@ def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
     assert "installSelectionConfirmation" in document
     assert 'frame.addEventListener("load", enableSelection)' in document
     assert 'type: "rcp-artifact-selection-enable"' in document
-    assert "installArtifactSelection(boxLayer, offerSelection)" in document
+    assert "installArtifactSelection(boxLayer, " in document
     assert 'id="box"' not in document
     assert ">Comment</button>" in document
     assert "if(raw.kind==='text'&&typeof raw.text==='string') appendSelection" not in document
@@ -1980,3 +1983,106 @@ def test_remote_temporary_candidate_accept_uses_its_exact_source_and_candidate_s
 
     assert response.status_code == 200, response.text
     assert remote_files[("/remote/source-stage", origin_id, name)] == second
+
+
+def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
+    manifest,
+    tmp_path: Path,
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    store = app.state.background_tasks.store
+    image = Image.new("RGB", (100, 50), "red")
+    image.paste("blue", (50, 0, 100, 50))
+    encoded = io.BytesIO()
+    image.save(encoded, format="PNG")
+    data = encoded.getvalue()
+    origin_id = "5b6f0c8e-3c1f-4d1a-9a67-7a3f2d0c9e11"
+    kept = service.history.workspace.keep_artifact(
+        source_name="plot.png", project_name="Pilot", data=data, today=date(2026, 9, 27)
+    )
+    source = descriptor_for(origin_id, "plot.png", size_bytes=len(data)).model_copy(
+        update={"kept_filename": kept, "kept_at": store.now()}
+    )
+    request = RunRequest(
+        provider="codex",
+        model="",
+        reasoning="medium",
+        run_on="laptop",
+        chat_scope="project",
+        chat_id="0b1f6f9e-8d59-4c3b-9d0e-3f5b8a2c7d41",
+        message="What is in the right half?",
+        mode="discuss",
+    )
+    now = store.now()
+    for operation_id, result in (
+        (origin_id, {"artifacts": [source.model_dump(mode="json")]}),
+        (
+            "9e3c1a7b-2f4d-4b8e-8c6a-1d2e3f4a5b6c",
+            None,
+        ),
+    ):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=app.state.default_project_id,
+                kind="project_chat",
+                status="succeeded" if result else "running",
+                request=request.model_dump(mode="json"),
+                result=result,
+                created_at=now,
+                updated_at=now,
+                status_message="Running.",
+                native_session_id="image-session",
+                stage_root=str(tmp_path / f"stage-{operation_id}"),
+            )
+        )
+    store.record_agent_task_receipt(
+        origin_id,
+        "operation_created",
+        {"kind": "project_chat", "attempt": 1, "has_parent": False, "resumed": False},
+    )
+    turn = RunRequest.model_validate(
+        {
+            **request.model_dump(mode="python"),
+            "session_id": "image-session",
+            "artifact_context": {
+                "operation_id": origin_id,
+                "artifact_id": source.artifact_id,
+                "selections": [
+                    {
+                        "kind": "box",
+                        "rect": {"x": 0.5, "y": 0, "width": 0.5, "height": 1},
+                        "viewport": {"width": 100, "height": 50},
+                        "comment": "What is this?",
+                    }
+                ],
+            },
+        }
+    )
+    execution = AgentTaskExecution(
+        operation_id="9e3c1a7b-2f4d-4b8e-8c6a-1d2e3f4a5b6c",
+        store=store,
+        control=AgentProcessControl(),
+    )
+
+    staged = stage_artifact_context(
+        service,
+        turn,
+        execution,
+        local_stage=tmp_path / "stage-9e3c1a7b-2f4d-4b8e-8c6a-1d2e3f4a5b6c",
+        remote_stage=None,
+        artifact_path=str(tmp_path / "artifacts"),
+    )
+
+    assert staged is not None
+    crop_path = Path(staged.pointer["selections"][0]["crop_path"])
+    with Image.open(crop_path) as crop:
+        assert crop.size == (50, 50)
+        assert [color for _, color in crop.convert("RGB").getcolors()] == [(0, 0, 255)]
+    prompt = PromptFactory.discuss_turn_prompt(
+        artifact_path=str(tmp_path / "artifacts"),
+        human_message=turn.message or "",
+        attachments=[staged.pointer],
+    )
+    assert str(crop_path) in prompt

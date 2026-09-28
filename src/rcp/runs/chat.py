@@ -33,7 +33,9 @@ from rcp.agents.write_scope import (
 )
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
+    CROPPABLE_MEDIA_TYPES,
     AgentArtifactDescriptor,
+    crop_artifact_region,
     descriptor_for,
     list_local_regular_files,
     read_local_regular_file,
@@ -984,14 +986,24 @@ def stage_artifact_context(
                 )
             protected_write_paths = (str(source_directory),)
 
+    # Each box on a raster image is cropped from the exact bytes staged beside it, so a
+    # recovery restages the same crops.
+    crops = {
+        index: crop_artifact_region(
+            data,
+            x=selection.rect.x,
+            y=selection.rect.y,
+            width=selection.rect.width,
+            height=selection.rect.height,
+        )
+        for index, selection in enumerate(context.selections, 1)
+        if selection.kind == "box" and descriptor.media_type in CROPPABLE_MEDIA_TYPES
+    }
     label = f"artifact-context-v1-{execution.operation_id}-{descriptor.artifact_id}"
     if remote_stage is not None:
         with tempfile.TemporaryDirectory(prefix="rcp-artifact-context-") as temporary:
             root = Path(temporary)
-            source_path = root / descriptor.name
-            source_path.write_bytes(data)
-            source_path.chmod(0o400)
-            root.chmod(0o500)
+            _write_artifact_context(root, descriptor.name, data, crops)
             staged_root = Path(remote_stage.put_directory(root, label, reuse=True))
     else:
         assert local_stage is not None
@@ -1008,13 +1020,11 @@ def stage_artifact_context(
             staged_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix=f".{label}-", dir=staged_root.parent))
             try:
-                (temporary / descriptor.name).write_bytes(data)
-                (temporary / descriptor.name).chmod(0o400)
-                temporary.chmod(0o500)
+                _write_artifact_context(temporary, descriptor.name, data, crops)
                 os.replace(temporary, staged_root)
             finally:
                 if temporary.exists():
-                    temporary.chmod(0o700)
+                    _make_tree_writable(temporary)
                     shutil.rmtree(temporary)
 
     pointer = {
@@ -1025,7 +1035,17 @@ def stage_artifact_context(
         "sha256": base_sha256,
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
-        "selections": [item.model_dump(mode="json") for item in context.selections],
+        "selections": [
+            {
+                **item.model_dump(mode="json"),
+                **(
+                    {"crop_path": str(staged_root / _SELECTION_CROPS / f"{index}.png")}
+                    if index in crops
+                    else {}
+                ),
+            }
+            for index, item in enumerate(context.selections, 1)
+        ],
     }
     if context.source == "task":
         pointer["revision_output_path"] = str(Path(artifact_path) / descriptor.name)
@@ -1035,6 +1055,30 @@ def stage_artifact_context(
         pointer=pointer,
         protected_write_paths=protected_write_paths,
     )
+
+
+_SELECTION_CROPS = "selections"
+
+
+def _write_artifact_context(root: Path, name: str, data: bytes, crops: dict[int, bytes]) -> None:
+    """Write the artifact copy and its selection crops as one read-only tree."""
+
+    (root / name).write_bytes(data)
+    (root / name).chmod(0o400)
+    if crops:
+        folder = root / _SELECTION_CROPS
+        folder.mkdir()
+        for index, crop in crops.items():
+            (folder / f"{index}.png").write_bytes(crop)
+            (folder / f"{index}.png").chmod(0o400)
+        folder.chmod(0o500)
+    root.chmod(0o500)
+
+
+def _make_tree_writable(root: Path) -> None:
+    for folder in (root, root / _SELECTION_CROPS):
+        if folder.is_dir():
+            folder.chmod(0o700)
 
 
 def finalize_artifact_revision(

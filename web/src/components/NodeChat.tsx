@@ -113,6 +113,7 @@ import {
 import type {
   AgentArtifactDescriptor,
   ArtifactContextRequest,
+  ArtifactBoxElement,
   ArtifactSelection,
   AgentTask,
   ChatMessage,
@@ -314,14 +315,16 @@ export function parseArtifactContextPayload(value: unknown): ArtifactContextPayl
       selection.kind === "box" &&
       isArtifactSelectionRect(selection.rect) &&
       isArtifactViewport(selection.viewport) &&
-      isBoundedArtifactText(selection.labels, 0, 4096) &&
+      (selection.elements === undefined || isArtifactBoxElements(selection.elements)) &&
+      (selection.labels === undefined || isBoundedArtifactText(selection.labels, 0, 4096)) &&
       isBoundedArtifactText(selection.comment, 0, 2048)
     ) {
       selections.push({
         kind: "box",
         rect: selection.rect,
         viewport: selection.viewport,
-        labels: selection.labels,
+        elements: selection.elements ?? [],
+        ...(selection.labels ? { labels: selection.labels } : {}),
         comment: selection.comment,
       });
       continue;
@@ -354,6 +357,23 @@ function isArtifactSelectionRect(
   return x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1 && y + height <= 1;
 }
 
+function isArtifactBoxElements(value: unknown): value is ArtifactBoxElement[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 8 &&
+    value.every(
+      (element) =>
+        element &&
+        typeof element === "object" &&
+        !Array.isArray(element) &&
+        Object.keys(element).every((key) => ["path", "label", "text"].includes(key)) &&
+        isBoundedArtifactText(element.path, 1, 512) &&
+        isBoundedArtifactText(element.label, 0, 256) &&
+        isBoundedArtifactText(element.text, 0, 512),
+    )
+  );
+}
+
 function isArtifactViewport(value: unknown): value is { width: number; height: number } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const viewport = value as Record<string, unknown>;
@@ -365,17 +385,23 @@ function isArtifactViewport(value: unknown): value is { width: number; height: n
   );
 }
 
+// Numbered like the prompt's attachment lines, so "Selection 2" means the same thing
+// in the human's message and in the list of what each selection covers.
 export function artifactContextDraft(payload: ArtifactContextPayload): string {
   return payload.selections
     .map((selection, index) => {
-      const selected =
-        selection.kind === "text"
-          ? `Selected text: ${selection.text}`
-          : `Boxed region: ${selection.labels || `${Math.round(selection.rect.x * 100)}%, ${Math.round(selection.rect.y * 100)}%`}`;
       const comment = selection.comment.trim() ? `\n${selection.comment.trim()}` : "";
-      return `${selected}${comment}\n:rcp-artifact-selection{index="${index + 1}"}`;
+      return `Selection ${index + 1}: ${describeArtifactSelection(selection)}${comment}`;
     })
     .join("\n\n");
+}
+
+function describeArtifactSelection(selection: ArtifactSelection): string {
+  if (selection.kind === "text") return `"${selection.text}"`;
+  const [first, ...rest] = selection.elements;
+  if (!first) return selection.labels || "boxed area";
+  const name = first.label || first.text.slice(0, 80) || first.path;
+  return `boxed ${rest.length ? `${name} and ${rest.length} more` : name}`;
 }
 
 interface ArtifactDraftSpan {

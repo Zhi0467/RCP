@@ -830,12 +830,26 @@ class ArtifactTextSelection(BaseModel):
     comment: str = Field(default="", max_length=2048)
 
 
+class ArtifactBoxElement(BaseModel):
+    """One HTML element a box covers, named so the agent can find it in the source."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(min_length=1, max_length=512)
+    label: str = Field(default="", max_length=256)
+    text: str = Field(default="", max_length=512)
+
+
 class ArtifactBoxSelection(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["box"]
+    # A fraction of the image for an image artifact, of the visible frame for HTML.
     rect: ArtifactSelectionRect
     viewport: ArtifactViewport
+    elements: list[ArtifactBoxElement] = Field(default_factory=list, max_length=8)
+    # Sampled text a viewer sent before it named elements; kept so a stored request
+    # from that release still validates and renders.
     labels: str = Field(default="", max_length=4096)
     comment: str = Field(default="", max_length=2048)
 

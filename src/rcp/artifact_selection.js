@@ -20,6 +20,95 @@ function installArtifactSelection(surface, publish) {
     return result;
   }
 
+  // Name elements the way a reader of the HTML source can find them.
+  function elementPath(element) {
+    const parts = [];
+    for (
+      let node = element;
+      node && node !== doc.body && node !== doc.documentElement && parts.length < 6;
+      node = node.parentElement
+    ) {
+      const tag = node.tagName.toLowerCase();
+      if (node.id) {
+        parts.unshift(`${tag}#${CSS.escape(node.id)}`);
+        break;
+      }
+      const same = node.parentElement
+        ? [...node.parentElement.children].filter((child) => child.tagName === node.tagName)
+        : [];
+      parts.unshift(same.length > 1 ? `${tag}:nth-of-type(${same.indexOf(node) + 1})` : tag);
+    }
+    return bounded(parts.join(" > "), 512) || "body";
+  }
+
+  function ownLabel(element) {
+    const title = [...element.children].find((child) => child.tagName.toLowerCase() === "title");
+    return (
+      element.getAttribute("aria-label") ||
+      element.getAttribute("alt") ||
+      element.getAttribute("title") ||
+      title?.textContent ||
+      ""
+    );
+  }
+
+  // A part of a chart, such as one SVG shape, is named by the chart it belongs to.
+  function describeElement(element) {
+    let label = "";
+    for (
+      let node = element, depth = 0;
+      node && node !== doc.body && depth < 4 && !label;
+      node = node.parentElement, depth++
+    )
+      label = ownLabel(node);
+    return {
+      path: elementPath(element),
+      label: bounded(label, 256),
+      text: bounded(element.innerText ?? element.textContent, 512),
+    };
+  }
+
+  const ignored = new Set(["SCRIPT", "STYLE", "HEAD", "META", "LINK", "TEMPLATE", "NOSCRIPT"]);
+
+  // The outermost elements lying mostly inside the box; when none does, the
+  // smallest element that holds the whole box.
+  function coveredElements(box) {
+    const inside = [];
+    for (const element of doc.body.querySelectorAll("*")) {
+      if (ignored.has(element.tagName) || element.dataset.rcpSelection) continue;
+      if (inside.some((outer) => outer.contains(element))) continue;
+      const rect = element.getBoundingClientRect();
+      const area = rect.width * rect.height;
+      if (!area) continue;
+      const overlap =
+        Math.max(0, Math.min(rect.right, box.right) - Math.max(rect.left, box.left)) *
+        Math.max(0, Math.min(rect.bottom, box.bottom) - Math.max(rect.top, box.top));
+      if (overlap / area >= 0.5) inside.push(element);
+    }
+    let chosen = inside;
+    if (inside.length > 8) {
+      let common = inside[0];
+      while (common && !inside.every((element) => common.contains(element)))
+        common = common.parentElement;
+      chosen = common ? [common] : inside.slice(0, 8);
+    } else if (!inside.length) {
+      let holder = doc.elementFromPoint((box.left + box.right) / 2, (box.top + box.bottom) / 2);
+      while (holder && holder !== doc.body && holder !== doc.documentElement) {
+        const rect = holder.getBoundingClientRect();
+        if (
+          rect.left <= box.left &&
+          rect.top <= box.top &&
+          rect.right >= box.right &&
+          rect.bottom >= box.bottom
+        )
+          break;
+        holder = holder.parentElement;
+      }
+      chosen = holder && holder !== doc.body && holder !== doc.documentElement ? [holder] : [];
+    }
+    return chosen.map(describeElement);
+  }
+
   function endDrag() {
     const id = drag?.id;
     drag = null;
@@ -159,24 +248,7 @@ function installArtifactSelection(surface, publish) {
       });
       anchor = { element, bounds: element.getBoundingClientRect(), left, top };
       event.preventDefault();
-      const labels = new Set();
-      if (surface === doc) {
-        for (let xi = 0; xi <= 5; xi++)
-          for (let yi = 0; yi <= 5; yi++) {
-            let element = doc.elementFromPoint(
-              left + ((right - left) * xi) / 5,
-              top + ((bottom - top) * yi) / 5,
-            );
-            for (let depth = 0; element && depth < 3; depth++, element = element.parentElement) {
-              if (["HTML", "BODY", "HEAD", "STYLE", "SCRIPT"].includes(element.tagName)) continue;
-              const text = bounded(element.getAttribute("aria-label") || element.textContent, 512);
-              if (text) {
-                labels.add(text);
-                break;
-              }
-            }
-          }
-      }
+      const box = { left, top, right, bottom };
       publish({
         kind: "box",
         rect: {
@@ -186,7 +258,7 @@ function installArtifactSelection(surface, publish) {
           height: (bottom - top) / area.height,
         },
         viewport: { width: Math.round(area.width), height: Math.round(area.height) },
-        labels: bounded([...labels].join(" | "), 4096),
+        elements: surface === doc ? coveredElements(box) : [],
       });
     },
     true,
@@ -254,8 +326,7 @@ function installSelectionConfirmation(container, confirm, clearSelection) {
   function offer(selection) {
     pending = selection;
     container.hidden = !selection;
-    excerpt.textContent =
-      selection?.kind === "text" ? selection.text : selection?.labels || "Selected area";
+    excerpt.textContent = selection ? describeSelection(selection) : "";
   }
   accept.addEventListener("click", () => {
     if (!pending) return;
@@ -275,4 +346,13 @@ function installSelectionConfirmation(container, confirm, clearSelection) {
     }
   });
   return offer;
+}
+
+// One short line for a selection, shared by the viewer rail and the chat draft.
+function describeSelection(selection) {
+  if (selection.kind === "text") return `"${selection.text}"`;
+  const [first, ...rest] = selection.elements || [];
+  if (!first) return selection.labels || "Boxed area";
+  const name = first.label || first.text.slice(0, 80) || first.path;
+  return rest.length ? `${name} and ${rest.length} more` : name;
 }

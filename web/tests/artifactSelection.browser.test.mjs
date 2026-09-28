@@ -330,6 +330,11 @@ test("direct preview drags require confirmation, preserve text, and keep working
       assert.equal(await pending.isHidden(), true);
       const [selection] = await page.evaluate(() => confirmed);
       assert.equal(selection.kind, "box");
+      // An HTML box names the covered elements by where they sit in the source.
+      if (kind === "html") {
+        assert.ok(selection.elements.length > 0);
+        assert.ok(selection.elements.every((element) => element.path.startsWith("div#figure")));
+      } else assert.deepEqual(selection.elements, []);
       assert.ok(selection.rect.width > 0 && selection.rect.height > 0);
       assert.ok(selection.rect.x >= 0 && selection.rect.x + selection.rect.width <= 1);
       assert.ok(selection.rect.y >= 0 && selection.rect.y + selection.rect.height <= 1);

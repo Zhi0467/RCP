@@ -4,7 +4,9 @@ import errno
 import hashlib
 import html
 import importlib.resources
+import io
 import json
+import math
 import os
 import re
 import stat
@@ -15,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, urlencode, urlsplit
 
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.artifact_replace import (
@@ -24,6 +27,8 @@ from rcp.artifact_replace import (
 from rcp.limits import (
     ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
+    ARTIFACT_CROP_MAX_PIXELS,
+    ARTIFACT_CROP_MAX_SIDE,
     ARTIFACT_DISPLAY_TITLE_MAX_CHARS,
 )
 
@@ -179,6 +184,37 @@ def validate_artifact_bytes(name: str, data: bytes) -> ArtifactMediaType:
     elif not valid[media_type]:
         raise ValueError(f"artifact bytes do not match {media_type}")
     return media_type
+
+
+# Raster artifacts a boxed selection is cropped from; SVG and HTML are read as source.
+CROPPABLE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+def crop_artifact_region(data: bytes, *, x: float, y: float, width: float, height: float) -> bytes:
+    """Cut one boxed region, given as fractions of the image, out of a raster artifact.
+
+    A GIF is cropped from its first frame. The crop is scaled down to fit the maximum
+    side and returned as PNG.
+    """
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            columns, rows = image.size
+            if columns * rows > ARTIFACT_CROP_MAX_PIXELS:
+                raise ValueError("The image is too large to crop a selection from.")
+            image.seek(0)
+            frame = image.convert("RGBA")
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("The image could not be decoded to crop a selection.") from exc
+    left = min(columns - 1, math.floor(x * columns))
+    top = min(rows - 1, math.floor(y * rows))
+    right = max(left + 1, min(columns, math.ceil((x + width) * columns)))
+    bottom = max(top + 1, min(rows, math.ceil((y + height) * rows)))
+    crop = frame.crop((left, top, right, bottom))
+    crop.thumbnail((ARTIFACT_CROP_MAX_SIDE, ARTIFACT_CROP_MAX_SIDE))
+    output = io.BytesIO()
+    crop.save(output, format="PNG")
+    return output.getvalue()
 
 
 def read_local_regular_file(directory: Path, name: str, *, max_bytes: int) -> bytes:

@@ -474,6 +474,41 @@ def _one_line(value: object) -> str:
     return " ".join(str(value).split())
 
 
+def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[str]:
+    """Name what a box covers: its cropped image, the HTML elements, or where it lies."""
+
+    if isinstance(selection.get("crop_path"), str):
+        return [f"  Selection {index}, boxed region of the image: `{selection['crop_path']}`"]
+    elements = selection.get("elements")
+    if isinstance(elements, list) and elements:
+        lines = [f"  Selection {index}, boxed area covering:"]
+        for element in elements:
+            described = f"`{element['path']}`"
+            label = _one_line(element.get("label", ""))
+            if label:
+                described += f' "{label}"'
+            text = _one_line(element.get("text", ""))
+            lines.append(f"    {described}: {text}" if text else f"    {described}")
+        return lines
+    labels = _one_line(selection.get("labels", ""))
+    if labels:
+        return [f"  Selection {index}, boxed area covering: {labels}"]
+    if html:
+        return [f"  Selection {index}, boxed area with no element inside"]
+    # An image that is not cropped (SVG) is located by fractions of its own size.
+    rect = selection["rect"]
+    assert isinstance(rect, dict)
+    return [
+        f"  Selection {index}, boxed area {_percent(rect['x'])}–"
+        f"{_percent(rect['x'] + rect['width'])} across and {_percent(rect['y'])}–"
+        f"{_percent(rect['y'] + rect['height'])} down the image"
+    ]
+
+
+def _percent(fraction: float) -> str:
+    return f"{round(fraction * 100)}%"
+
+
 def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
     """List a turn's attachments as plain lines."""
 
@@ -500,12 +535,7 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
                 if around:
                     lines.append(f"    Around it: {around}")
             else:
-                labels = _one_line(selection.get("labels", ""))
-                lines.append(
-                    f"  Selection {index}, boxed area covering: {labels}"
-                    if labels
-                    else f"  Selection {index}, boxed area with no text inside"
-                )
+                lines.extend(_box_lines(index, selection, html=item["media_type"] == "text/html"))
     return "\n".join(lines)
 
 
