@@ -45,9 +45,5 @@ stands in for it. Run one on disposable data, then delete its line here.
 - Pushes: the live team-space push run and real remote-machine SSH.
 - Phone UI: the real-iPhone journey and its screenshot review.
 - Runs loading: the team-server measurement of first open against the 2 s target.
-- Artifact viewing: in the desktop app, a PDF card's Open launches the
-  system PDF viewer and leaves a private copy that is pruned after a day; a
-  Markdown and a CSV artifact open in the preview window; Download still saves
-  every type.
 - Update notices: a `publish-desktop.yml` rerun after a failed upload; in the
   prebuilt app, the Download button, quit and reopen, and a team connection.

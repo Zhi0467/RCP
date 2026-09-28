@@ -74,16 +74,31 @@ pub fn prepare_cache(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(root)
 }
 
+/// Remove expired preview directories. Cleanup is best-effort per entry: a copy
+/// the system viewer still holds open must not block the next PDF from opening.
 pub fn prune(root: &Path, now: SystemTime) -> io::Result<()> {
     for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if metadata.is_dir()
-            && now
-                .duration_since(metadata.modified()?)
-                .is_ok_and(|age| age > PDF_PREVIEW_RETENTION)
-        {
-            fs::remove_dir_all(entry.path())?;
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(error) => {
+                eprintln!("[rcp] skipped unreadable PDF preview entry: {error}");
+                continue;
+            }
+        };
+        let expired = fs::symlink_metadata(&path).and_then(|metadata| {
+            Ok(metadata.is_dir()
+                && now
+                    .duration_since(metadata.modified()?)
+                    .is_ok_and(|age| age > PDF_PREVIEW_RETENTION))
+        });
+        match expired {
+            Ok(true) => {
+                if let Err(error) = fs::remove_dir_all(&path) {
+                    eprintln!("[rcp] kept expired PDF preview {}: {error}", path.display());
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("[rcp] skipped PDF preview {}: {error}", path.display()),
         }
     }
     Ok(())
@@ -199,5 +214,32 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stale_preview_that_cannot_be_removed_does_not_block_pruning() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let expired = SystemTime::now() - PDF_PREVIEW_RETENTION - Duration::from_secs(1);
+        let stuck = root.path().join("pdf-stuck");
+        let locked = stuck.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("artifact.pdf"), b"%PDF-").unwrap();
+        // A read-only child makes remove_dir_all fail, like a copy a viewer holds open.
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+        let stale = root.path().join("pdf-stale");
+        fs::create_dir(&stale).unwrap();
+        for path in [&stuck, &stale] {
+            fs::File::open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(expired))
+                .unwrap();
+        }
+        let result = prune(root.path(), SystemTime::now());
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        result.unwrap();
+        assert!(stuck.exists());
+        assert!(!stale.exists());
     }
 }
