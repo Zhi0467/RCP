@@ -45,3 +45,12 @@ update is out, but does not apply it.
   a stable signing identity.
 - If RCP ever pays for signing, the prebuilt app, the updater, and app-bound
   credentials change together.
+
+## Amendment, 2026-09-28
+
+The one-time approval is no longer an accepted cost. A `curl … | sh` installer
+becomes the first install step: a file that `curl` downloads has no quarantine
+flag, so macOS does not block its first launch. RCP still does not pursue Apple
+signing. The manual zip stays as the alternative, with its approval step. The
+plan is in the
+[install and push handoff](../handoffs/handoff-2026-09-28-install-and-push.md).

@@ -1,9 +1,8 @@
 # Active implementation handoffs
 
-- [RCP tells your phone when you are needed](handoff-2026-09-25-inbox-push.md)
-  — confirmed 2026-09-25 as the follow-up to the phone UI pull request; the
-  first design failed review and must be rewritten against the recorded
-  requirements before it starts. Nothing implemented.
+- [Install without Open Anyway, and push to the Mac and the phone](handoff-2026-09-28-install-and-push.md)
+  — scope confirmed 2026-09-28; design only, awaiting one xhigh review.
+  Replaces the 2026-09-25 Inbox-push handoff. Nothing implemented.
 
 ## Open live checks
 
