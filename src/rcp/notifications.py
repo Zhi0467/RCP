@@ -90,6 +90,9 @@ class NotificationSender:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        # None means every project: a new owner has not reconciled any yet.
+        # A project leaves the set only after its reconciliation succeeds.
+        self._dirty: set[str] | None = None
 
     def start(self) -> None:
         if self.is_running():
@@ -107,7 +110,10 @@ class NotificationSender:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def signal(self, *_args) -> None:
+    def signal(self, project_id: str) -> None:
+        with self._lock:
+            if self._dirty is not None:
+                self._dirty.add(project_id)
         self._wake.set()
 
     def _run(self) -> None:
@@ -127,6 +133,8 @@ class NotificationSender:
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open("notification reconciliation")
         with self.admission.mutation("notification reconciliation"), self._lock:
+            dirty = self._dirty
+            self._dirty = set()
             for project in self.store.projects():
                 if project.retired_at is not None:
                     continue
@@ -136,9 +144,14 @@ class NotificationSender:
                     _LOG.exception(
                         "Could not recheck episode notifications for %s", project.project_id
                     )
+                # Replaying history is costly, and remote state reads cross SSH,
+                # so only projects with an accepted change or a failed pass replay.
+                if dirty is not None and project.project_id not in dirty:
+                    continue
                 try:
                     self.reconcile_project(project.project_id)
                 except Exception:
+                    self._dirty.add(project.project_id)
                     # Inaccessible canonical state is not empty attention.
                     _LOG.warning(
                         "Could not reconcile graph notifications for %s",
@@ -279,7 +292,6 @@ class NotificationSender:
             self.startup_effect_fence.require_open("notification delivery")
         with self.admission.mutation("desktop notification delivery"), self._lock:
             output = []
-            states = {}
             now = datetime.fromisoformat(self.store.now())
             for row in self.store.pending_notification_rows(device_id):
                 notification_id = row["notification_id"]
@@ -291,23 +303,13 @@ class NotificationSender:
                     self.store.drop_notification(device_id, notification_id)
                     continue
                 if row["kind"] in _GRAPH_KINDS:
-                    project_id = row["project_id"]
-                    if project_id not in states:
-                        try:
-                            replay, _ = self.catalog.open(
-                                project_id
-                            ).history.accepted_boundary_states()
-                            states[project_id] = (
-                                _attention(replay.state)
-                                if replay.state.replay_status == "complete"
-                                else None
-                            )
-                        except Exception:
-                            states[project_id] = None
-                    attention = states[project_id]
-                    if attention is None:
+                    # The marker holds the attention of the last reconciled
+                    # revision, so a pull never replays canonical history.
+                    marker = self.store.notification_graph_marker(row["project_id"])
+                    if marker is None:
                         continue
-                    unresolved = row["item_id"] in attention[row["kind"]]
+                    attention = json.loads(marker["attention_json"])
+                    unresolved = row["item_id"] in attention.get(row["kind"], [])
                 else:
                     episode = self.store.episode(row["item_id"])
                     if episode is None:

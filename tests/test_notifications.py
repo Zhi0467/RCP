@@ -20,6 +20,12 @@ def _setup(manifest, tmp_path):
     return app, store, project_id, device
 
 
+def _append(app, service, patch):
+    # The fixture writer bypasses the production manager's accepted-transition hook.
+    append_fixture_patch(service, patch)
+    app.state.notification_sender.signal(app.state.default_project_id)
+
+
 def _blocker_patch(identifier):
     return Patch(
         kind="refresh",
@@ -49,16 +55,16 @@ def test_graph_baseline_restart_reopen_and_no_watchers(manifest, tmp_path, nonem
     app, store, project_id, device = _setup(manifest, tmp_path)
     service = app.state.catalog.open(project_id)
     if nonempty:
-        append_fixture_patch(service, _blocker_patch("blk/baseline"))
+        _append(app, service, _blocker_patch("blk/baseline"))
     sender = app.state.notification_sender
     sender.run_pass()
     assert store.notification_graph_marker(project_id) is not None
     assert store.notification_outbox() == []
-    append_fixture_patch(service, _blocker_patch("blk/new"))
+    _append(app, service, _blocker_patch("blk/new"))
     sender.run_pass()
     assert [row["item_id"] for row in store.notification_outbox()] == ["blk/new"]
     # Canonical work accepted while the owner is down is replayed on restart.
-    append_fixture_patch(service, _blocker_patch("blk/down"))
+    _append(app, service, _blocker_patch("blk/down"))
     restarted = NotificationSender(store, app.state.catalog, admission=RuntimeAdmissionGate())
     restarted.run_pass()
     restarted.run_pass()
@@ -72,12 +78,23 @@ def test_unreachable_graph_does_not_advance_or_enqueue(manifest, tmp_path, monke
     sender = app.state.notification_sender
     sender.run_pass()
     marker = store.notification_graph_marker(project_id)
-    monkeypatch.setattr(
-        app.state.catalog, "open", lambda _: (_ for _ in ()).throw(OSError("offline"))
-    )
+    opened = []
+
+    def offline(project):
+        opened.append(project)
+        raise OSError("offline")
+
+    monkeypatch.setattr(app.state.catalog, "open", offline)
+    # A pass with no accepted change does not replay history.
+    sender.run_pass()
+    assert opened == []
+    sender.signal(project_id)
     sender.run_pass()
     assert store.notification_graph_marker(project_id) == marker
     assert store.notification_outbox() == []
+    # A failed replay stays pending for the next pass.
+    sender.run_pass()
+    assert opened == [project_id, project_id]
 
 
 def test_episode_baseline_and_finishes_between_passes_or_while_down(tmp_path):
@@ -156,12 +173,13 @@ def test_proposal_and_reopened_attention_have_distinct_occurrences(manifest, tmp
             },
         ],
     )
-    append_fixture_patch(service, proposal_patch.model_copy(update={"ops": proposal_patch.ops[:1]}))
-    append_fixture_patch(service, proposal_patch.model_copy(update={"ops": proposal_patch.ops[1:]}))
-    append_fixture_patch(service, _blocker_patch("blk/reopen"))
+    _append(app, service, proposal_patch.model_copy(update={"ops": proposal_patch.ops[:1]}))
+    _append(app, service, proposal_patch.model_copy(update={"ops": proposal_patch.ops[1:]}))
+    _append(app, service, _blocker_patch("blk/reopen"))
     sender.run_pass()
     for status in ("resolved", "open"):
-        append_fixture_patch(
+        _append(
+            app,
             service,
             Patch(
                 kind="refresh",

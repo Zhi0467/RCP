@@ -150,7 +150,8 @@ requirements.
    `evaluate_graph_wake_boundary` and the startup sweep), so a project with
    no watchers would never notify. Notification reconciliation runs for every
    project's main target where a member has a graph kind on. It runs after
-   each accepted main transition, at startup, and on every sender pass. It
+   each accepted main transition and at startup, and a failed attempt
+   retries on the next sender pass. A pass with no change replays nothing. It
    reuses the same pure boundary result, and enqueues inside the same SQLite
    transaction that advances its own per-target marker. An unreachable remote
    project enqueues nothing, and is never read as empty attention.

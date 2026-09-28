@@ -9,8 +9,9 @@ Auto-research-specific orchestration and graph branches are in
 
 Notification reconciliation is independent of graph watchers. Main targets
 with an enabled graph preference reconcile accepted attention boundaries at
-startup, after accepted main transitions, and on each sender pass. An
-unreachable canonical project produces no observation. The notification marker
+startup and after accepted main transitions; a failed attempt retries on the
+next sender pass, and a pass with no change replays nothing. An unreachable
+canonical project produces no observation. The notification marker
 and per-device outbox rows advance in one SQLite transaction; empty attention
 is still a durable first-run baseline. The first baseline sends nothing.
 
