@@ -369,6 +369,7 @@ function describeSelection(selection) {
   const [first, ...rest] = elements;
   if (!first) return `Boxed area ${describeRegion(selection.rect)}`;
   const name = first.label || first.text.slice(0, 80) || first.path;
+  if (first.region) return `${name}, ${describeRegion(first.region)}`;
   return rest.length ? `${name} and ${rest.length} more` : name;
 }
 

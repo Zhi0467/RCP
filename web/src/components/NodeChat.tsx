@@ -402,13 +402,15 @@ function describeArtifactSelection(selection: ArtifactSelection): string {
   if (selection.kind === "text") return `"${selection.text}"`;
   if (!selection.elements) return `boxed ${selection.labels || "area"}`;
   const [first, ...rest] = selection.elements;
-  if (!first) {
-    const { x, y, width, height } = selection.rect;
-    const percent = (value: number) => `${Math.round(value * 100)}%`;
-    return `boxed area at x ${percent(x)}–${percent(x + width)}, y ${percent(y)}–${percent(y + height)}`;
-  }
+  if (!first) return `boxed area at ${describeArtifactRegion(selection.rect)}`;
   const name = first.label || first.text.slice(0, 80) || first.path;
+  if (first.region) return `boxed ${name}, ${describeArtifactRegion(first.region)}`;
   return `boxed ${rest.length ? `${name} and ${rest.length} more` : name}`;
+}
+
+function describeArtifactRegion(rect: { x: number; y: number; width: number; height: number }) {
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
+  return `x ${percent(rect.x)}–${percent(rect.x + rect.width)}, y ${percent(rect.y)}–${percent(rect.y + rect.height)}`;
 }
 
 interface ArtifactDraftSpan {
