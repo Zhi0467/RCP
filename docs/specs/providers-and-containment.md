@@ -424,6 +424,29 @@ startup that fails before prompt delivery may use the explicit exec fallback;
 exec must still enforce the same capability and exact roots. RCP never restores
 broad bypass access or treats prompt wording as containment.
 
+### Adding a provider
+
+A provider is one package registered as the `rcp.providers` docstring
+describes. The shared defaults were written for Codex and Claude, so a new
+profile decides each of these explicitly rather than inheriting them:
+
+1. Session files: a session format and roots, or none, which leaves RCP not
+   indexing its history.
+2. Turn end: the event its fence reads, or a wrapper line when the CLI prints
+   none. Both the local decoder and the remote fence must end on it.
+3. Login: an `auth.py` when RCP manages sign-in. Without one, Provider logins
+   shows a note with the CLI's own login command.
+4. Models: probed efforts may be empty, and every stored reasoning field must
+   accept that.
+5. Version floor: the CLI version whose containment was probed, applied to every
+   capability that relies on it.
+
+Containment is proved against the real CLI at that floor: config precedence,
+path bases, and anything that can rewrite the rules, such as plugins. Tests that
+cover every provider iterate `PROVIDER_IDS`; only tests of one provider's
+protocol name it. Before merge, drive the served app through Discuss, Work,
+Provider logins, and the model picker, locally and on an SSH execution machine.
+
 ## Continuation binding
 
 Every launch receipt records the project, execution host, capability, canonical
