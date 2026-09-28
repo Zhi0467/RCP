@@ -232,6 +232,12 @@ class ComposedWorkPrompt:
     contract_path: str
     prompt: str
     base_contract_path: str
+    #: Renders the owner's full start contract, for a later continuation in this
+    #: session that finds no master to point to.
+    render_master: Callable[[], str] | None = None
+    #: The stable values this launch was composed with; a later correction in the
+    #: same turn sends what differs from its master's values.
+    prompt_values: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)

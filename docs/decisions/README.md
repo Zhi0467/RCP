@@ -5,6 +5,12 @@
   repository-writing launch, why only RCP's own storage stays read-only, and
   why Claude's file tools lose their bound inside a grant covering a stage.
 
+- [Continuations point to their master](2026-09-27-continuations-point-to-their-master.md)
+  records why a continuation sends only what is new plus one pointer to its
+  session's master, why the master has a durable record that only a succeeded
+  attempt counts, why current authority stays inline, and why the episode
+  report gets no pointer.
+
 - [Desktop installs follow releases](2026-09-26-desktop-installs-follow-releases.md)
   records why desktop and local Web installs follow promoted releases like
   team servers, why each release ships an unsigned prebuilt app in a companion
@@ -22,8 +28,8 @@
 
 - [Graph rules render from the model](2026-09-23-graph-rules-render-from-the-model.md)
   records why agents learn field and relation meaning from descriptions in code
-  rendered into every graph contract, why authority stays with each call site,
-  and why continuations repeat the rules unless their digest changed.
+  rendered into every graph contract, and why authority stays with each call
+  site.
 
 - [A member terminal inherits the Work turn's trust boundary](2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md)
   records why a project terminal runs as the service account without isolation,

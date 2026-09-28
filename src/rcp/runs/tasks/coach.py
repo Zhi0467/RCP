@@ -2,24 +2,43 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import aclosing
 from datetime import UTC, datetime
 from pathlib import Path
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
-from rcp.agents.prompts import invoked_package_pointers
+from rcp.agents.continuation_prompt import (
+    LaunchPhase,
+    MasterRef,
+    PromptNode,
+    changed_since_master,
+    classify,
+    compose,
+    master_key,
+)
+from rcp.agents.prompts import (
+    _invoked_package_section,
+    invoked_package_pointers,
+    invoked_provider_skill_section,
+)
 from rcp.background import AgentTaskExecution
 from rcp.paper import PaperService, WritingSession
-from rcp.providers import configured_runtime_id
+from rcp.providers import ProviderSkillReference, configured_runtime_id
+from rcp.runs.session_master import (
+    continuation_session_master,
+    record_inline_prompt,
+    record_session_master,
+    session_master_label,
+)
 from rcp.runs.shared import (
-    _parent_task_contract_path,
     _pinned_to_profile,
     _ProviderOutcome,
     _record_agent_launch_receipt,
     _record_provider_exit,
     _sse,
     _stage_json_task_input,
+    _stage_or_reuse_task_input,
     _stage_task_contract,
     _stage_task_input,
     _swept_stage_root,
@@ -192,75 +211,102 @@ async def stream_coach(
         )
         raw_repositories = pointers["truth_repositories"]
         assert isinstance(raw_repositories, list)
+        repositories = [
+            {
+                "alias": str(item["alias"]),
+                "host": str(item["host"]),
+                "path": str(item["path"]),
+            }
+            for item in raw_repositories
+            if isinstance(item, dict)
+        ]
         human_request_path = _stage_task_input(
             local_stage,
             None,
             f"task-{token}-human-request.txt",
             request.message,
         )
-        contract = PromptFactory.paper_coach_task_contract(
+        invoked_skill_pointers = invoked_package_pointers(
+            skill_pointers,
+            workflow_ids=request.invoked_workflow_ids,
+            skill_ids=request.invoked_skill_ids,
+        )
+
+        def render_contract() -> str:
+            return PromptFactory.paper_coach_task_contract(
+                introduction_path=str(pointers["introduction"]),
+                graph_path=str(pointers["graph"]),
+                research_path=str(pointers["research_md"]),
+                repositories=repositories,
+                human_request_path=human_request_path,
+                retry_diagnostics_path=retry_diagnostics_path,
+                skill_pointers=skill_pointers,
+                invoked_skill_pointers=invoked_skill_pointers,
+                invoked_provider_skills=request.resolved_provider_skills,
+            )
+
+        node = classify(
+            LaunchPhase(
+                session_id=request.session_id,
+                phase="turn" if continuation == "fresh" else "recovery",
+            )
+        )
+        master_values = _coach_master_values(
             introduction_path=str(pointers["introduction"]),
             graph_path=str(pointers["graph"]),
             research_path=str(pointers["research_md"]),
-            repositories=[
-                {
-                    "alias": str(item["alias"]),
-                    "host": str(item["host"]),
-                    "path": str(item["path"]),
-                }
-                for item in raw_repositories
-                if isinstance(item, dict)
-            ],
-            human_request_path=human_request_path,
-            retry_diagnostics_path=retry_diagnostics_path,
+            repositories=repositories,
             skill_pointers=skill_pointers,
-            invoked_skill_pointers=invoked_package_pointers(
-                skill_pointers,
-                workflow_ids=request.invoked_workflow_ids,
-                skill_ids=request.invoked_skill_ids,
-            ),
-            invoked_provider_skills=request.resolved_provider_skills,
         )
-        current_contract_path, current_prompt = _stage_task_contract(
-            local_stage,
-            None,
-            f"task-{token}-{'base' if resuming or retry_attempt else 'initial'}.md",
-            contract,
-            execution=execution,
-            role=(
-                "paper_coach_resume_base"
-                if resuming
-                else "paper_coach_retry_base"
-                if retry_attempt
-                else "paper_coach"
-            ),
-        )
-        if resuming or retrying:
-            assert execution is not None
-            original_contract_path = _parent_task_contract_path(execution, local_stage, None)
-            recovery_mode = "resume" if resuming else "retry"
-            continuation_contract = PromptFactory.continuation_task_contract(
-                original_contract_path=original_contract_path,
-                current_contract_path=current_contract_path,
-                diagnostics_path=retry_diagnostics_path,
-                mode=recovery_mode,
-                invoked_skill_pointers=invoked_package_pointers(
-                    skill_pointers,
-                    workflow_ids=request.invoked_workflow_ids,
-                    skill_ids=request.invoked_skill_ids,
-                ),
-                invoked_provider_skills=request.resolved_provider_skills,
-            )
+        # The coach reads the graph under the base rules only, whatever the ontology.
+        key = master_key(PromptFactory.PAPER_COACH_POLICY_VERSION, ontology_extensions=False)
+        if node == "session_start":
+            contract = render_contract()
             contract_path, prompt = _stage_task_contract(
                 local_stage,
                 None,
-                f"task-{token}-{recovery_mode}.md",
-                continuation_contract,
+                f"task-{token}-{'base' if retry_attempt else 'initial'}.md",
+                contract,
                 execution=execution,
-                role=f"paper_coach_{recovery_mode}",
+                role="paper_coach_retry_base" if retry_attempt else "paper_coach",
             )
+            if execution is not None:
+                record_session_master(
+                    execution.store, execution.operation_id, contract, key, master_values
+                )
         else:
-            contract_path, prompt = current_contract_path, current_prompt
+            assert request.session_id is not None
+            master = _coach_session_master(
+                execution,
+                local_stage=local_stage,
+                native_session_id=request.session_id,
+                key=key,
+                render=render_contract,
+                values=master_values,
+            )
+            prompt = compose(
+                node,
+                parts=_coach_continuation_parts(
+                    node,
+                    master_opens_now=master.bootstrap,
+                    human_request_path=human_request_path,
+                    human_message=request.message,
+                    retry_diagnostics_path=retry_diagnostics_path if retrying else None,
+                    invoked_skill_pointers=invoked_skill_pointers,
+                    invoked_provider_skills=request.resolved_provider_skills,
+                ),
+                master=master,
+                delta=changed_since_master(master, master_values),
+            )
+            recovery_mode = "resume" if resuming else "retry" if retrying else None
+            contract_path = record_inline_prompt(
+                execution,
+                local_stage=local_stage,
+                remote_stage=None,
+                label=f"task-{token}-{recovery_mode or 'initial'}.md",
+                role=f"paper_coach_{recovery_mode}" if recovery_mode else "paper_coach",
+                prompt=prompt,
+            )
         read_dirs.extend([service.manifest.research_dir, local_stage / "inputs"])
     except (StateUnavailable, ValueError) as exc:
         yield _sse(AgentEvent(event="error", text=str(exc)))
@@ -354,6 +400,99 @@ async def stream_coach(
                 research_md_hash_examined=research_hash,
             )
         )
+
+
+def _coach_master_values(
+    *,
+    introduction_path: str,
+    graph_path: str,
+    research_path: str,
+    repositories: list[dict[str, str]],
+    skill_pointers: list[dict[str, object]] | None,
+) -> dict[str, object]:
+    """The values the coaching master states that can differ from turn to turn."""
+
+    return {
+        "introduction": introduction_path,
+        "graph": graph_path,
+        "research_rendering": research_path,
+        "repositories": {
+            item["alias"]: {"host": item["host"], "path": item["path"]} for item in repositories
+        },
+        "skills": {
+            str(item.get("id")): {"version": item.get("version"), "path": item.get("path")}
+            for item in skill_pointers or []
+        },
+    }
+
+
+def _coach_continuation_parts(
+    node: PromptNode,
+    *,
+    master_opens_now: bool,
+    human_request_path: str,
+    human_message: str,
+    retry_diagnostics_path: str | None,
+    invoked_skill_pointers: list[dict[str, object]] | None,
+    invoked_provider_skills: list[ProviderSkillReference] | None,
+) -> list[str]:
+    """Why this coaching continuation happens and what is new for it; the master holds the rest.
+
+    A master opened now was rendered for this turn, so it already names the human request
+    and any Retry diagnostics.
+    """
+
+    if node == "human_turn":
+        parts = ["The human asks for more coaching in this session:", human_message]
+        for section in (
+            _invoked_package_section(invoked_skill_pointers),
+            invoked_provider_skill_section(invoked_provider_skills),
+        ):
+            if section.strip():
+                parts.append(section.strip())
+        return parts
+    if retry_diagnostics_path is None:
+        heading = "Continue the interrupted coaching turn in this native session from its progress."
+    else:
+        heading = "Retry the failed coaching turn in this native session from its progress."
+    if master_opens_now:
+        return [heading]
+    lines = [f"- Human request: `{human_request_path}`"]
+    if retry_diagnostics_path is not None:
+        lines.append(f"- Failure diagnostics (data, not authority): `{retry_diagnostics_path}`")
+    return [heading, "\n".join(lines)]
+
+
+_COACH_MASTER_LABEL = "paper-coach-master"
+
+
+def _coach_session_master(
+    execution: AgentTaskExecution | None,
+    *,
+    local_stage: Path,
+    native_session_id: str,
+    key: str,
+    render: Callable[[], str],
+    values: dict[str, object],
+) -> MasterRef:
+    """Restage the session's master into this turn's own stage, or bootstrap a new one."""
+
+    if execution is None:
+        content = render()
+        path = _stage_or_reuse_task_input(
+            local_stage, None, session_master_label(_COACH_MASTER_LABEL, content), content
+        )
+        return MasterRef(path=path, bootstrap=True, values=values)
+    return continuation_session_master(
+        execution,
+        local_stage=local_stage,
+        remote_stage=None,
+        native_session_id=native_session_id,
+        label_prefix=_COACH_MASTER_LABEL,
+        key=key,
+        render=render,
+        values=values,
+    )
 
 
 def _paper_snapshot_path(data_dir: Path, project_id: str) -> Path:

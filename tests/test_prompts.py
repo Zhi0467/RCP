@@ -7,13 +7,14 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import validate_work_patch
+from rcp.agents.continuation_prompt import MasterRef, context_delta
 from rcp.agents.experiment_loop_prompt import (
     experiment_loop_continuation_contract,
     experiment_loop_task_contract,
     experiment_loop_watcher_correction_contract,
 )
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
-from rcp.agents.prompts import REPLY_STYLE, PromptFactory
+from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME, REPLY_STYLE, PromptFactory
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.core.models import HUMAN_EDITABLE_NODE_FIELDS, GraphState
 from rcp.core.operations import CoverageUpdate, SetCoverageOperation
@@ -23,7 +24,6 @@ from rcp.core.validation.experiment_loop import (
     PINNED_DECISION_BALLOT_FIELDS,
 )
 from rcp.providers import ProviderSkillReference
-from rcp.runs.chat import _chat_context_delta
 from rcp.runs.experiment_loop import stage_experiment_loop_context
 from rcp.service import RunRequest
 from rcp.skill_registry import official_registry
@@ -75,7 +75,7 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/chat-patch-schema.json",
-        validator_command="python /stage/inputs/validator.py /stage/workspace/patch.json",
+        command_client="python /stage/inputs/validator.py --workspace /stage/workspace",
         watch_path="/stage/workspace/watch.json",
         skill_pointers=[package.catalog_entry() | {"path": skill_path}],
     )
@@ -110,7 +110,7 @@ def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> N
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/schema.json",
-        validator_command="python3 /stage/inputs/validate.py",
+        command_client="python3 /stage/inputs/validate.py",
         watch_path="/stage/workspace/watch.json",
         execution_host="chat.example",
         experiment_watcher_resources=[resource],
@@ -135,8 +135,8 @@ def test_chat_turn_preserves_human_message_and_input_paths(mode, bootstrap) -> N
     prompt = build(
         artifact_path=artifact_path,
         human_message=message,
-        master_context_path=master_path,
-        bootstrap_master_context=bootstrap,
+        node="human_turn",
+        master=MasterRef(path=master_path, bootstrap=bootstrap),
         context_delta={"repositories": [{"alias": "repo-b", "path": "/repo-b"}]},
     )
 
@@ -250,8 +250,8 @@ def test_graph_contract_preserves_input_paths_watermark_and_validator_command() 
     assert graph_rules(edits=True, ontology_extensions=True) in contract
 
 
-def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
-    validator_command = "python /stage/validate_patch.py --token work-token"
+def test_work_contract_preserves_inputs_outputs_and_command_client() -> None:
+    command_client = "python /stage/validate_patch.py --token work-token"
     contract = PromptFactory.work_task_contract(
         project_name="Example",
         ontology_path="/state/graph.json#ontology",
@@ -268,7 +268,7 @@ def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
         patch_path="/stage/patch.json",
         artifact_path="/stage/artifacts",
         output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command=validator_command,
+        command_client=command_client,
     )
 
     assert "/state/graph.json" in contract
@@ -278,7 +278,7 @@ def test_work_contract_preserves_inputs_outputs_and_validator_command() -> None:
     assert "/srv/repo-b" in contract
     assert "gpu.example" in contract
     assert "/stage/patch.json" in contract
-    assert validator_command in contract
+    assert command_client in contract
     assert graph_rules(edits=True, ontology_extensions=True) in contract
 
 
@@ -541,14 +541,6 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
     )
     assert invoked["path"] in paper
     assert graph_rules(edits=False, ontology_extensions=False) in paper
-    correction = PromptFactory.continuation_task_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
-        mode="patch_correction",
-        patch_path="/stage/patch.json",
-        diagnostics_path="/stage/inputs/correction.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-        ontology_extensions=False,
-    )
     watcher = PromptFactory.continuation_task_contract(
         original_contract_path="/stage/inputs/task-initial.md",
         mode="watch_correction",
@@ -559,64 +551,40 @@ def test_paper_and_continuation_contracts_only_point_to_dynamic_content() -> Non
     assert "/state/paper/introduction.md" in paper
     assert "/stage/inputs/human-request.txt" in paper
     assert "/stage/inputs/retry.json" in paper
-    assert "/stage/inputs/correction.json" in correction
-    assert "/stage/inputs/task-initial.md" in correction
-    assert "/stage/patch.json" in correction
     assert "/stage/watch.json" in watcher
     assert "/stage/inputs/watch-correction.json" in watcher
 
 
-def test_work_patch_correction_preserves_paths_and_validator_command() -> None:
-    validator_command = "python /stage/validate_patch.py --token correction-token"
-    correction = PromptFactory.continuation_task_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
+def test_work_patch_correction_names_its_diagnostics_and_leaves_rules_to_the_master() -> None:
+    correction = PromptFactory.inline_continuation(
         mode="work_patch_correction",
-        patch_path="/stage/patch.json",
+        turn_mode="work",
         diagnostics_path="/stage/inputs/correction.json",
-        validator_command=validator_command,
-        ontology_extensions=True,
     )
 
-    assert validator_command in correction
-    assert "/stage/patch.json" in correction
     assert "/stage/inputs/correction.json" in correction
-    # A correction repeats the current rules; it does not claim to replace a same-version copy.
-    assert REPEATED_RULES_NOTE in correction
-    assert graph_rules(edits=True, ontology_extensions=True) in correction
+    # The rules and the command client live in the session master the correction points to.
+    assert graph_rules(edits=True, ontology_extensions=True) not in correction
     with pytest.raises(ValueError):
-        PromptFactory.continuation_task_contract(
-            original_contract_path="/stage/inputs/task-initial.md",
-            mode="work_patch_correction",
-            patch_path="/stage/patch.json",
-            diagnostics_path="/stage/inputs/correction.json",
-            validator_command=validator_command,
+        PromptFactory.inline_continuation(mode="work_patch_correction", turn_mode="work")
+
+
+def test_experiment_continuations_carry_their_diagnostics_but_no_master_policy() -> None:
+    retry = "\n\n".join(
+        experiment_loop_continuation_contract(
+            mode="retry", diagnostics_path="/stage/inputs/retry.json"
         )
-
-
-def test_experiment_retry_preserves_fresh_control_path() -> None:
-    retry = experiment_loop_continuation_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
-        mode="retry",
-        patch_path="/stage/patch.json",
-        watch_path="/stage/watch.json",
-        diagnostics_path="/stage/inputs/retry.json",
-        output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-        loop_control_path="/stage/inputs/experiment-control-retry.json",
+    )
+    watcher_correction = "\n\n".join(
+        experiment_loop_watcher_correction_contract(diagnostics_path="/stage/inputs/watch.json")
     )
 
-    assert "/stage/inputs/experiment-control-retry.json" in retry
-    assert REPEATED_RULES_NOTE in retry
-    watcher_correction = experiment_loop_watcher_correction_contract(
-        original_contract_path="/stage/inputs/task-initial.md",
-        diagnostics_path="/stage/inputs/watch.json",
-        watch_path="/stage/watch.json",
-        patch_path="/stage/patch.json",
-        output_schema_path="/stage/inputs/patch-schema.json",
-        validator_command="python /stage/validator.py /stage/patch.json",
-        ontology_extensions=False,
-    )
-    assert graph_rules(edits=True, ontology_extensions=False) in watcher_correction
+    for continuation in (retry, watcher_correction):
+        assert REPEATED_RULES_NOTE not in continuation
+        assert graph_rules(edits=True, ontology_extensions=False) not in continuation
+        assert PROVIDER_NATIVE_SUBAGENT_LIFETIME not in continuation
+    assert "/stage/inputs/retry.json" in retry
+    assert "/stage/inputs/watch.json" in watcher_correction
 
 
 def test_retry_contract_requires_diagnostics_and_preserves_contract_paths() -> None:
@@ -706,7 +674,7 @@ def _work_contract(**overrides: object) -> str:
         "patch_path": "/stage/patch.json",
         "artifact_path": "/stage/artifacts",
         "output_schema_path": "/stage/inputs/patch-schema.json",
-        "validator_command": "python /stage/validate_patch.py --token work-token",
+        "command_client": "python /stage/validate_patch.py --token work-token",
     }
     arguments.update(overrides)
     return PromptFactory.work_task_contract(**arguments)  # type: ignore[arg-type]
@@ -723,18 +691,17 @@ def test_work_launch_contract_preserves_resolved_scope_paths() -> None:
         assert path in contract
 
 
-def test_discuss_turn_rejects_a_work_write_scope() -> None:
+def test_discuss_turn_rejects_work_launch_instructions() -> None:
     with pytest.raises(ValueError, match="only to a Work turn"):
         PromptFactory._chat_turn_prompt(
             marker="Discuss",
             artifact_path="/stage/turns/t1/artifacts",
             human_message="What do we know?",
-            master_context_path=None,
             context_delta=None,
             invoked_skill_pointers=None,
             invoked_provider_skills=None,
             attachments=None,
-            write_scope=_work_write_scope(),
+            launch_instructions="Use the launch helper.",
         )
 
 
@@ -752,7 +719,7 @@ def test_compute_resources_preserve_selected_connection_metadata() -> None:
         patch_path="/stage/workspace/patch.json",
         workspace_path="/stage/workspace",
         output_schema_path="/stage/inputs/schema.json",
-        validator_command="python3 /stage/inputs/validate.py",
+        command_client="python3 /stage/inputs/validate.py",
         compute_connections=[
             {
                 "id": "gpu",
@@ -798,7 +765,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
         }
     }
 
-    delta = _chat_context_delta(previous, current)
+    delta = context_delta(previous, current)
     assert delta == {
         "compute": {
             "added": [
@@ -828,7 +795,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
             ]
         }
     }
-    assert _chat_context_delta(current, updated) == {
+    assert context_delta(current, updated) == {
         "compute": {
             "added": [],
             "removed": ["Current machine"],
@@ -843,7 +810,7 @@ def test_compute_context_delta_tracks_added_removed_and_updated_connections() ->
             ],
         }
     }
-    assert _chat_context_delta(updated, updated) is None
+    assert context_delta(updated, updated) is None
 
 
 def test_watch_correction_preserves_supplied_diagnostics() -> None:
@@ -876,32 +843,6 @@ def test_work_continuation_preserves_execution_instructions_only_for_operational
         assert execution_instructions not in contract
 
 
-@pytest.mark.parametrize("mode", ["resume", "retry"])
-def test_experiment_continuation_preserves_current_paths_and_execution_instructions(
-    mode, execution_instructions
-):
-    contract = experiment_loop_continuation_contract(
-        original_contract_path="/old/task.md",
-        mode=mode,
-        loop_control_path="/stage/control.json",
-        patch_path="/stage/patch.json",
-        watch_path="/stage/watch.json",
-        output_schema_path="/stage/schema.json",
-        validator_command="test-client validate",
-        execution_instructions=execution_instructions,
-        diagnostics_path="/stage/diagnostics.json",
-        graph_path="/stage/current/graph.json",
-        research_path="/stage/current/research.md",
-        artifact_path="/stage/turn-2/artifacts",
-        write_scope=_work_write_scope(),
-    )
-    assert execution_instructions in contract
-    assert "/stage/current/graph.json" in contract
-    assert "/stage/current/research.md" in contract
-    assert "/stage/turn-2/artifacts" in contract
-    assert "/repo-a/.research" in contract
-
-
 def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
     import inspect
 
@@ -922,15 +863,8 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         auto.auto_research_orchestrator_task_contract,
         auto.auto_research_worker_task_contract,
         auto.auto_research_orchestrator_continuation_contract,
-        auto.auto_research_worker_continuation_contract,
         experiment.experiment_loop_task_contract,
-        experiment.experiment_loop_continuation_contract,
-        experiment.experiment_loop_watcher_correction_contract,
-        experiment.experiment_watcher_maintenance_correction_contract,
-        experiment.experiment_loop_patch_correction_contract,
         merge.branch_merge_task_contract,
-        merge.branch_merge_correction_contract,
-        merge.branch_merge_rebase_contract,
         episode_report_task_contract,
     ]
     inputs = dict(
@@ -948,12 +882,11 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
         mode="resume",
         write_scope=_work_write_scope(),
         command_client="rcp-command",
-        reply_command="rcp-reply",
+        reply_key="worker-reply-key",
         seat_node_type="hypothesis",
         seat_node_id="hyp/example",
         seat_difficulty="standard",
         context_id="a" * 64,
-        previous_context_id="b" * 64,
         review_contract_json="{}",
         residue_block="No residue.",
         ending="completed",

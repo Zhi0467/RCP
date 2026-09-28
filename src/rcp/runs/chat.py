@@ -7,7 +7,8 @@ import os
 import shutil
 import tempfile
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -16,6 +17,14 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import ChatContext, agent_output_schema
 from rcp.agents.command_mailbox import StagedCommandMailbox
+from rcp.agents.continuation_prompt import (
+    LaunchPhase,
+    MasterRef,
+    PromptNode,
+    changed_since_master,
+    classify,
+    master_key,
+)
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
 from rcp.agents.write_scope import (
     ProjectWriteScope,
@@ -24,7 +33,10 @@ from rcp.agents.write_scope import (
 )
 from rcp.artifacts import (
     ARTIFACT_MEDIA_TYPES,
+    CROPPABLE_MEDIA_TYPES,
     AgentArtifactDescriptor,
+    crop_region,
+    croppable_frame,
     descriptor_for,
     list_local_regular_files,
     read_local_regular_file,
@@ -42,6 +54,14 @@ from rcp.limits import (
 from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
+from rcp.runs.session_master import (
+    continuation_session_master,
+    read_legacy_session_master,
+    record_session_master,
+    recorded_master_values,
+    session_master_label,
+    stage_session_master,
+)
 from rcp.runs.shared import (
     _remove_local_tree,
     _safe_stage_name,
@@ -77,6 +97,9 @@ class _ChatMasterSnapshot(BaseModel):
     master_context_path: str
     contract_key: str
     values: dict[str, object]
+    # Where the exact master bytes are recorded; absent on snapshots from before the record.
+    master_operation_id: str | None = None
+    master_sha256: str | None = None
 
 
 class _ChatPromptCandidate(BaseModel):
@@ -94,6 +117,17 @@ class _ChatPatchInputs:
     validator_command: str
     validator_mailbox_id: str
     validator_staged: StagedCommandMailbox
+    command_client: str
+
+    def prompt_values(self) -> dict[str, str]:
+        """The Patch values a session is told once and sent again only when they change."""
+
+        return {
+            "path": self.patch_path,
+            "watch_path": self.watch_path,
+            "schema_path": self.schema_path,
+            "command_client": self.command_client,
+        }
 
 
 @dataclass(frozen=True)
@@ -142,7 +176,72 @@ def _stage_chat_patch_inputs(
         validator_command=validator_command,
         validator_mailbox_id=validator_staged.credential.mailbox_id,
         validator_staged=validator_staged,
+        command_client=validator_staged.client_command(),
     )
+
+
+def chat_prompt_values(
+    context: ChatContext,
+    request: RunRequest,
+    *,
+    repositories: list[dict[str, object]],
+    compute_profiles: list[dict[str, str]],
+    skill_pointers: list[dict[str, object]],
+    experiment_watcher_resources: list[dict[str, object]],
+    workspace: str,
+    patch: Mapping[str, object] | None = None,
+    work: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Every value a conversation master states that can differ between launches.
+
+    Discuss, Work, and their recoveries and corrections build their values here, so a
+    continuation's changed values are always taken against the same shape. ``patch``
+    holds the Patch outputs and command client, and ``work`` what only a Work turn
+    resolves: its write roots and its launch facts. A Discuss launch keeps both as its
+    session last had them.
+    """
+
+    values: dict[str, object] = {
+        "project": {"name": context.project_name},
+        "settings": {
+            "provider": request.provider,
+            "model": request.model,
+            "reasoning": request.reasoning,
+            "run_on": request.run_on,
+        },
+        "current": {
+            "ontology_path": f"{context.graph_path}#ontology",
+            "graph_revision": context.graph_revision,
+            "graph_path": context.graph_path,
+            "research_path": context.research_md_path,
+            "focused_node_id": str(context.node["id"]) if context.node else None,
+            "introduction_path": context.introduction_path,
+            "experiment_watcher_resources": experiment_watcher_resources,
+        },
+        "repositories": repositories,
+        "compute": {"active": compute_profiles},
+        "skills": [
+            {
+                "id": item.get("id"),
+                "kind": item.get("kind", "skill"),
+                "version": item.get("version"),
+                "path": item.get("path"),
+            }
+            for item in skill_pointers
+        ],
+        "workspace": {"path": workspace},
+    }
+    if patch is not None:
+        values["patch"] = dict(patch)
+    if work is not None:
+        values["work"] = dict(work)
+    return values
+
+
+def retained_work_values(values: Mapping[str, object] | None) -> dict[str, object]:
+    """The Work-only entries a Discuss launch keeps unchanged from its session's values."""
+
+    return {key: values[key] for key in ("patch", "work") if values and key in values}
 
 
 def _stage_chat_turn_contract(
@@ -167,6 +266,24 @@ def _stage_chat_turn_contract(
     return contract_path
 
 
+def _with_graph_revision(
+    master_values: dict[str, object], baseline: dict[str, object]
+) -> dict[str, object]:
+    """The master's values, with the graph revision the last committed turn ended on."""
+
+    current = baseline.get("current")
+    if not isinstance(current, dict) or "graph_revision" not in current:
+        return master_values
+    master_current = master_values.get("current")
+    return {
+        **master_values,
+        "current": {
+            **(master_current if isinstance(master_current, dict) else {}),
+            "graph_revision": current["graph_revision"],
+        },
+    }
+
+
 def _prepare_chat_prompt_state(
     execution: AgentTaskExecution | None,
     request: RunRequest,
@@ -176,28 +293,72 @@ def _prepare_chat_prompt_state(
     master_context: str,
     contract_key: str,
     values: dict[str, object],
-) -> tuple[str | None, dict[str, object] | None, str]:
-    """Persist a candidate baseline and return bootstrap path plus compact delta."""
+) -> tuple[PromptNode, MasterRef, dict[str, object] | None]:
+    """Persist a candidate baseline and return the turn's node, master, and compact delta."""
 
     previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
-    must_bootstrap = previous is None or previous.contract_key != contract_key
-    if must_bootstrap:
-        digest = hashlib.sha256(master_context.encode("utf-8")).hexdigest()
-        label = f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}-{digest[:16]}.md"
+    node = classify(LaunchPhase(session_id=request.session_id, phase="turn"))
+    master_operation_id: str | None = None
+    master_sha256: str | None = None
+    master_source = "rendered"
+    if previous is not None and previous.contract_key == contract_key:
+        if previous.master_operation_id is not None and previous.master_sha256 is not None:
+            master_operation_id = previous.master_operation_id
+            master_sha256 = previous.master_sha256
+            master_source = "restored"
+        elif execution is not None:
+            legacy = read_legacy_session_master(
+                local_stage=local_stage,
+                remote_stage=remote_stage,
+                path=previous.master_context_path,
+            )
+            if legacy is not None:
+                master_operation_id = execution.operation_id
+                master_sha256 = record_session_master(
+                    execution.store, execution.operation_id, legacy
+                )
+                master_source = "legacy_capture"
+    must_bootstrap = master_operation_id is None
+    if not must_bootstrap:
+        assert execution is not None and previous is not None and master_sha256 is not None
+        master_context_path = stage_session_master(
+            execution.store,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            operation_id=master_operation_id,
+            sha256=master_sha256,
+            path=previous.master_context_path,
+        )
+    else:
         master_context_path = _stage_or_reuse_task_input(
             local_stage,
             remote_stage,
-            label,
+            session_master_label(f"chat-master-v{CHAT_MASTER_CONTEXT_VERSION}", master_context),
             master_context,
         )
-    else:
-        master_context_path = previous.master_context_path
+        if execution is not None:
+            master_operation_id = execution.operation_id
+            master_sha256 = record_session_master(
+                execution.store, execution.operation_id, master_context, values=values
+            )
 
-    delta = None if previous is None else _chat_context_delta(previous.values, values)
-    bootstrap_path: str | None = master_context_path if must_bootstrap else None
-    if previous is not None and previous.contract_key != contract_key:
+    # The delta is a complete overlay on the master, never on the previous turn: a value a
+    # later turn leaves out is the master's, so an agent that compacted and reread the
+    # master reads the same current state as one that kept every turn.
+    # The graph revision is the one exception: it signals a graph change someone else made,
+    # so it is compared with the last committed turn, which absorbed this chat's own Apply.
+    delta = None
+    if not must_bootstrap:
+        assert execution is not None and master_operation_id is not None
+        reference = recorded_master_values(execution.store, master_operation_id)
+        if reference is not None and previous is not None:
+            reference = _with_graph_revision(reference, previous.values)
+        delta = changed_since_master(
+            MasterRef(path=master_context_path, bootstrap=False, values=reference), values
+        )
+    replaces = previous is not None and must_bootstrap
+    if replaces:
         delta = {
-            **(delta or {}),
             "master_context": {
                 "version": CHAT_MASTER_CONTEXT_VERSION,
                 "path": master_context_path,
@@ -209,6 +370,8 @@ def _prepare_chat_prompt_state(
         master_context_path=master_context_path,
         contract_key=contract_key,
         values=values,
+        master_operation_id=master_operation_id,
+        master_sha256=master_sha256,
     )
     if execution is not None:
         candidate = _ChatPromptCandidate(
@@ -229,11 +392,18 @@ def _prepare_chat_prompt_state(
                 "bootstrapped": must_bootstrap,
                 "master_context_version": CHAT_MASTER_CONTEXT_VERSION,
                 "master_context_path": master_context_path,
+                "master_source": master_source,
                 "changed_fields": sorted(delta or {}),
             },
             tier="diagnostic",
         )
-    return bootstrap_path, delta, master_context_path
+    master = MasterRef(
+        path=master_context_path,
+        bootstrap=must_bootstrap,
+        replaces=replaces,
+        values=previous.values if previous is not None else None,
+    )
+    return node, master, delta
 
 
 def _committed_chat_prompt_state(
@@ -285,22 +455,92 @@ def _committed_chat_prompt_state(
     )
 
 
+def chat_continuation_master(
+    execution: AgentTaskExecution | None,
+    request: RunRequest,
+    *,
+    session_id: str,
+    local_stage: Path | None,
+    remote_stage: RemoteRunStage | None,
+    policy_version: str,
+    ontology_extensions: bool,
+    render: Callable[[], str],
+    values: dict[str, object] | None = None,
+    force_bootstrap: bool = False,
+) -> MasterRef:
+    """The master a Discuss or Work continuation points to in this native session.
+
+    A session with a committed chat baseline keeps its chat master, restored from its
+    record. Any other session continues from the master recorded for it under the owner's
+    key, or bootstraps a freshly rendered owner contract. A forced bootstrap reopens the
+    same master rather than implying that its content changed. A launch with no task
+    record has nowhere to find a master, so it always bootstraps one.
+    """
+
+    if execution is None:
+        content = render()
+        path = _stage_or_reuse_task_input(
+            local_stage, remote_stage, session_master_label(policy_version, content), content
+        )
+        return MasterRef(path=path, bootstrap=True, values=values)
+    previous, _ = _committed_chat_prompt_state(
+        execution, request.model_copy(update={"session_id": session_id})
+    )
+    if (
+        previous is not None
+        and previous.contract_key
+        == chat_master_contract_key(ontology_extensions=ontology_extensions)
+        and previous.master_operation_id is not None
+        and previous.master_sha256 is not None
+    ):
+        path = stage_session_master(
+            execution.store,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            operation_id=previous.master_operation_id,
+            sha256=previous.master_sha256,
+            path=previous.master_context_path,
+        )
+        return MasterRef(
+            path=path,
+            bootstrap=force_bootstrap,
+            values=recorded_master_values(execution.store, previous.master_operation_id),
+        )
+    master = continuation_session_master(
+        execution,
+        local_stage=local_stage,
+        remote_stage=remote_stage,
+        native_session_id=session_id,
+        label_prefix=policy_version,
+        key=master_key(policy_version, ontology_extensions=ontology_extensions),
+        render=render,
+        values=values,
+    )
+    if force_bootstrap and not master.bootstrap:
+        return replace(master, bootstrap=True)
+    return master
+
+
 def _retained_chat_patch_values(
     execution: AgentTaskExecution | None,
     request: RunRequest,
-) -> dict[str, str] | None:
-    """Reuse an inactive Discuss Patch contract without issuing a credential."""
+    *,
+    ontology_extensions: bool,
+) -> dict[str, object] | None:
+    """Reuse an inactive Discuss Patch contract and Work values without issuing a credential."""
 
     previous, _ = _committed_chat_prompt_state(execution, request)
-    if previous is None or previous.contract_key != chat_master_contract_key():
+    if previous is None or previous.contract_key != chat_master_contract_key(
+        ontology_extensions=ontology_extensions
+    ):
         return None
     value = previous.values.get("patch")
     if not isinstance(value, dict):
         return None
-    names = ("path", "watch_path", "schema_path", "validator_command", "validator_mailbox_id")
+    names = ("path", "watch_path", "schema_path", "command_client")
     if not all(isinstance(value.get(name), str) and value[name] for name in names):
         return None
-    return {name: str(value[name]) for name in names}
+    return retained_work_values(previous.values)
 
 
 def _commit_chat_prompt_state(
@@ -421,49 +661,6 @@ def _record_applied_graph_revision(
         committed_operation_id=execution.operation_id,
         expected_snapshot_sha256=record.snapshot_sha256,
     )
-
-
-def _chat_context_delta(
-    previous: dict[str, object],
-    current: dict[str, object],
-) -> dict[str, object] | None:
-    changed = {
-        key: value
-        for key, value in current.items()
-        if key != "compute" and (key not in previous or previous[key] != value)
-    }
-    prior_compute = _compute_profiles(previous.get("compute"))
-    current_compute = _compute_profiles(current.get("compute"))
-    if prior_compute != current_compute:
-        prior_ids = set(prior_compute)
-        current_ids = set(current_compute)
-        changed["compute"] = {
-            "added": [current_compute[item] for item in sorted(current_ids - prior_ids)],
-            "removed": [prior_compute[item]["name"] for item in sorted(prior_ids - current_ids)],
-            "updated": [
-                current_compute[item]
-                for item in sorted(prior_ids & current_ids)
-                if prior_compute[item] != current_compute[item]
-            ],
-        }
-    removed = sorted(key for key in previous if key not in current)
-    if removed:
-        changed["removed"] = removed
-    return changed or None
-
-
-def _compute_profiles(value: object) -> dict[str, dict[str, str]]:
-    if not isinstance(value, dict) or not isinstance(value.get("active"), list):
-        return {}
-    profiles: dict[str, dict[str, str]] = {}
-    for item in value["active"]:
-        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-            continue
-        profiles[item["id"]] = {
-            key: str(item.get(key, ""))
-            for key in ("id", "name", "kind", "ssh_target", "access_hint")
-        }
-    return profiles
 
 
 def _clear_stale_turn_handoffs(
@@ -792,16 +989,37 @@ def stage_artifact_context(
                 )
             protected_write_paths = (str(source_directory),)
 
-    label = f"artifact-context-v1-{execution.operation_id}-{descriptor.artifact_id}"
+    # Each box the current viewer drew on a raster image is cropped from the exact bytes
+    # staged beside it, so a recovery restages the same crops.
+    boxes = {
+        index: selection.rect
+        for index, selection in enumerate(context.selections, 1)
+        if selection.kind == "box" and selection.elements is not None
+    }
+    frame, animated = (
+        croppable_frame(data)
+        if boxes and descriptor.media_type in CROPPABLE_MEDIA_TYPES
+        else (None, False)
+    )
+    crops = sorted(boxes) if frame is not None else []
+
+    def write_crops(folder: Path) -> None:
+        assert frame is not None
+        for index in crops:
+            rect = boxes[index]
+            path = folder / f"{index}.png"
+            path.write_bytes(
+                crop_region(frame, x=rect.x, y=rect.y, width=rect.width, height=rect.height)
+            )
+            path.chmod(0o400)
+
+    label = f"artifact-context-v2-{execution.operation_id}-{descriptor.artifact_id}"
     if remote_stage is not None:
         with tempfile.TemporaryDirectory(
             prefix="rcp-artifact-context-", dir=rcp_temp_dir()
         ) as temporary:
             root = Path(temporary)
-            source_path = root / descriptor.name
-            source_path.write_bytes(data)
-            source_path.chmod(0o400)
-            root.chmod(0o500)
+            _write_artifact_context(root, descriptor.name, data, write_crops if crops else None)
             staged_root = Path(remote_stage.put_directory(root, label, reuse=True))
     else:
         assert local_stage is not None
@@ -818,13 +1036,13 @@ def stage_artifact_context(
             staged_root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             temporary = Path(tempfile.mkdtemp(prefix=f".{label}-", dir=staged_root.parent))
             try:
-                (temporary / descriptor.name).write_bytes(data)
-                (temporary / descriptor.name).chmod(0o400)
-                temporary.chmod(0o500)
+                _write_artifact_context(
+                    temporary, descriptor.name, data, write_crops if crops else None
+                )
                 os.replace(temporary, staged_root)
             finally:
                 if temporary.exists():
-                    temporary.chmod(0o700)
+                    _make_tree_writable(temporary)
                     shutil.rmtree(temporary)
 
     pointer = {
@@ -835,7 +1053,20 @@ def stage_artifact_context(
         "sha256": base_sha256,
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
-        "selections": [item.model_dump(mode="json") for item in context.selections],
+        "selections": [
+            {
+                **item.model_dump(mode="json"),
+                **(
+                    {
+                        "crop_path": str(staged_root / _SELECTION_CROPS / f"{index}.png"),
+                        "first_frame_only": animated,
+                    }
+                    if index in crops
+                    else {}
+                ),
+            }
+            for index, item in enumerate(context.selections, 1)
+        ],
     }
     if context.source == "task":
         pointer["revision_output_path"] = str(Path(artifact_path) / descriptor.name)
@@ -845,6 +1076,30 @@ def stage_artifact_context(
         pointer=pointer,
         protected_write_paths=protected_write_paths,
     )
+
+
+_SELECTION_CROPS = "selections"
+
+
+def _write_artifact_context(
+    root: Path, name: str, data: bytes, write_crops: Callable[[Path], None] | None
+) -> None:
+    """Write the artifact copy and its selection crops as one read-only tree."""
+
+    (root / name).write_bytes(data)
+    (root / name).chmod(0o400)
+    if write_crops is not None:
+        folder = root / _SELECTION_CROPS
+        folder.mkdir()
+        write_crops(folder)
+        folder.chmod(0o500)
+    root.chmod(0o500)
+
+
+def _make_tree_writable(root: Path) -> None:
+    for folder in (root, root / _SELECTION_CROPS):
+        if folder.is_dir():
+            folder.chmod(0o700)
 
 
 def finalize_artifact_revision(

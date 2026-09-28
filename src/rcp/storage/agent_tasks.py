@@ -2745,6 +2745,41 @@ class AgentTaskStoreMixin:
             ).fetchall()
         return [AgentTaskContractRecord.model_validate(dict(row)) for row in rows]
 
+    def latest_session_master(
+        self,
+        project_id: str,
+        native_session_id: str,
+    ) -> tuple[str, str, str | None] | None:
+        """Return the newest master a succeeded turn delivered in one native session.
+
+        Only a succeeded operation counts: a master recorded by an attempt that failed,
+        paused, or was interrupted may never have reached the provider, so the session is
+        not known to hold it and the next launch must bootstrap again. The session id alone
+        selects the master: an owner that gives each turn a fresh stage restores it into
+        the current one. The result is the recording operation, the master's digest, and the key it
+        was rendered under (None for a master recorded without one).
+        """
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT master.operation_id, master.sha256, key.content AS master_key
+                FROM graph_run_contracts AS master
+                JOIN graph_runs AS run ON run.operation_id = master.operation_id
+                LEFT JOIN graph_run_contracts AS key
+                  ON key.operation_id = master.operation_id AND key.role = 'session_master_key'
+                WHERE master.role = 'session_master'
+                  AND run.status = 'succeeded'
+                  AND run.project_id = ? AND run.native_session_id = ?
+                ORDER BY master.rowid DESC
+                LIMIT 1
+                """,
+                (project_id, native_session_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row["operation_id"]), str(row["sha256"]), row["master_key"]
+
     @staticmethod
     def _bounded_receipt_payload(payload: dict[str, object]) -> str:
         keys = [str(key)[:80] for key in list(payload)[:32]]

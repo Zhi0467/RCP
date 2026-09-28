@@ -69,12 +69,14 @@ import {
   chatAnnotationComposerPosition,
   chatAnnotationTextControlSelection,
   chatAnnotationViewportMetrics,
+  MAX_ARTIFACT_SELECTIONS,
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
   annotatableAnswerSelectionRange,
   parseStagedChatAnnotations,
   replaceTextSpan,
+  stagedArtifactContext,
   stagedChatAnnotationsAreComplete,
   type ChatAnnotationAnchor,
   type ChatAnnotationComposerPosition,
@@ -111,7 +113,7 @@ import {
 } from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
-  ArtifactContextRequest,
+  ArtifactBoxElement,
   ArtifactSelection,
   AgentTask,
   ChatMessage,
@@ -288,7 +290,7 @@ export function parseArtifactContextPayload(value: unknown): ArtifactContextPayl
     !isBoundedArtifactText(candidate.media_type, 1, 64) ||
     !Array.isArray(candidate.selections) ||
     candidate.selections.length < 1 ||
-    candidate.selections.length > 12
+    candidate.selections.length > MAX_ARTIFACT_SELECTIONS
   )
     return null;
   const selections: ArtifactSelection[] = [];
@@ -313,14 +315,17 @@ export function parseArtifactContextPayload(value: unknown): ArtifactContextPayl
       selection.kind === "box" &&
       isArtifactSelectionRect(selection.rect) &&
       isArtifactViewport(selection.viewport) &&
-      isBoundedArtifactText(selection.labels, 0, 4096) &&
+      (selection.elements === undefined || isArtifactBoxElements(selection.elements)) &&
+      (selection.labels === undefined || isBoundedArtifactText(selection.labels, 0, 4096)) &&
       isBoundedArtifactText(selection.comment, 0, 2048)
     ) {
       selections.push({
         kind: "box",
         rect: selection.rect,
         viewport: selection.viewport,
-        labels: selection.labels,
+        // A box from the older viewer carries no elements; the server must see that.
+        ...(selection.elements !== undefined ? { elements: selection.elements } : {}),
+        ...(selection.labels ? { labels: selection.labels } : {}),
         comment: selection.comment,
       });
       continue;
@@ -353,6 +358,24 @@ function isArtifactSelectionRect(
   return x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1 && y + height <= 1;
 }
 
+function isArtifactBoxElements(value: unknown): value is ArtifactBoxElement[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 8 &&
+    value.every(
+      (element) =>
+        element &&
+        typeof element === "object" &&
+        !Array.isArray(element) &&
+        Object.keys(element).every((key) => ["path", "label", "text", "region"].includes(key)) &&
+        isBoundedArtifactText(element.path, 1, 512) &&
+        isBoundedArtifactText(element.label, 0, 256) &&
+        isBoundedArtifactText(element.text, 0, 512) &&
+        (element.region === undefined || isArtifactSelectionRect(element.region)),
+    )
+  );
+}
+
 function isArtifactViewport(value: unknown): value is { width: number; height: number } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const viewport = value as Record<string, unknown>;
@@ -364,97 +387,20 @@ function isArtifactViewport(value: unknown): value is { width: number; height: n
   );
 }
 
-export function artifactContextDraft(payload: ArtifactContextPayload): string {
-  return payload.selections
-    .map((selection, index) => {
-      const selected =
-        selection.kind === "text"
-          ? `Selected text: ${selection.text}`
-          : `Boxed region: ${selection.labels || `${Math.round(selection.rect.x * 100)}%, ${Math.round(selection.rect.y * 100)}%`}`;
-      const comment = selection.comment.trim() ? `\n${selection.comment.trim()}` : "";
-      return `${selected}${comment}\n:rcp-artifact-selection{index="${index + 1}"}`;
-    })
-    .join("\n\n");
+// How the composer names an artifact selection its comment is about.
+export function describeArtifactSelection(selection: ArtifactSelection): string {
+  if (selection.kind === "text") return `"${selection.text}"`;
+  if (!selection.elements) return `boxed ${selection.labels || "area"}`;
+  const [first, ...rest] = selection.elements;
+  if (!first) return `boxed area at ${describeArtifactRegion(selection.rect)}`;
+  const name = first.label || first.text.slice(0, 80) || first.path;
+  if (first.region) return `boxed ${name}, ${describeArtifactRegion(first.region)}`;
+  return `boxed ${rest.length ? `${name} and ${rest.length} more` : name}`;
 }
 
-interface ArtifactDraftSpan {
-  signature: string;
-  message: string;
-  start: number;
-  end: number;
-}
-
-function readArtifactDraftSpan(raw: string | null): ArtifactDraftSpan | null {
-  try {
-    const span = JSON.parse(raw ?? "null");
-    return span &&
-      typeof span.signature === "string" &&
-      typeof span.message === "string" &&
-      Number.isInteger(span.start) &&
-      Number.isInteger(span.end) &&
-      span.start >= 0 &&
-      span.end >= span.start &&
-      span.end <= span.message.length
-      ? span
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-export function moveArtifactDraftSpan(span: ArtifactDraftSpan, message: string): ArtifactDraftSpan {
-  const block = span.message.slice(span.start, span.end);
-  const retained = block ? message.indexOf(block) : -1;
-  if (retained >= 0) return { ...span, message, start: retained, end: retained + block.length };
-  let prefix = 0;
-  while (
-    prefix < span.message.length &&
-    prefix < message.length &&
-    span.message[prefix] === message[prefix]
-  )
-    prefix++;
-  let suffix = 0;
-  while (
-    suffix < span.message.length - prefix &&
-    suffix < message.length - prefix &&
-    span.message[span.message.length - suffix - 1] === message[message.length - suffix - 1]
-  )
-    suffix++;
-  const oldEnd = span.message.length - suffix;
-  const delta = message.length - span.message.length;
-  return {
-    ...span,
-    message,
-    start: span.start <= prefix ? span.start : span.start >= oldEnd ? span.start + delta : prefix,
-    end:
-      span.end < prefix
-        ? span.end
-        : span.end >= oldEnd
-          ? span.end + delta
-          : message.length - suffix,
-  };
-}
-
-export function updateArtifactContextDraft(
-  message: string,
-  payload: ArtifactContextPayload,
-  previousDraft: string | null,
-): ArtifactDraftSpan {
-  const addition = artifactContextDraft(payload);
-  const previous = readArtifactDraftSpan(previousDraft);
-  const span = previous ? moveArtifactDraftSpan(previous, message) : null;
-  const prefix = span
-    ? message.slice(0, span.start)
-    : message.trimEnd()
-      ? `${message.trimEnd()}\n\n`
-      : "";
-  const suffix = span ? message.slice(span.end) : "";
-  return {
-    signature: JSON.stringify(payload),
-    message: prefix + addition + suffix,
-    start: prefix.length,
-    end: prefix.length + addition.length,
-  };
+function describeArtifactRegion(rect: { x: number; y: number; width: number; height: number }) {
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
+  return `x ${percent(rect.x)}–${percent(rect.x + rect.width)}, y ${percent(rect.y)}–${percent(rect.y + rect.height)}`;
 }
 
 export function NodeChat({
@@ -564,7 +510,6 @@ export function NodeChat({
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
   const artifactContextKey = artifactContextStorageKey(project.id, chatId);
-  const appliedArtifactContextKey = `${artifactContextKey}:applied`;
   const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
   const annotationPanelId = useId();
   const derivedMode = useMemo(
@@ -575,32 +520,18 @@ export function NodeChat({
     () => latestPersistedComputeIds(historyMessages, relatedTasks, computeConnections),
     [computeConnections, historyMessages, relatedTasks],
   );
-  const [message, setMessageState] = useState(() => readStorage(draftKey) ?? "");
-  const setMessage = useCallback(
-    (value: string | ((current: string) => string)) => {
-      setMessageState((current) => {
-        const next = typeof value === "function" ? value(current) : value;
-        const span = readArtifactDraftSpan(readStorage(appliedArtifactContextKey));
-        if (span)
-          writeStorage(
-            appliedArtifactContextKey,
-            JSON.stringify(moveArtifactDraftSpan(span, next)),
-          );
-        return next;
-      });
-    },
-    [appliedArtifactContextKey],
-  );
-  const [artifactContext, setArtifactContext] = useState<ArtifactContextRequest | null>(null);
+  const [message, setMessage] = useState(() => readStorage(draftKey) ?? "");
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
     readStagedChatAnnotations(annotationsKey),
   );
+  const annotationsRef = useRef(annotations);
+  annotationsRef.current = annotations;
+  const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
   const [annotationViewport, setAnnotationViewport] =
     useState<ChatAnnotationViewportMetrics | null>(null);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
-  const lastArtifactContextRef = useRef<string | null>(null);
   const [modeState, setModeState] = useState<{ value: ConversationMode; pinned: boolean }>(() => {
     const storedMode = parseConversationMode(readStorage(modeKey));
     return { value: storedMode ?? derivedMode, pinned: Boolean(storedMode) };
@@ -725,7 +656,7 @@ export function NodeChat({
   }, [revisionDecision, revisionReview, revisionReviewCandidate?.candidate_id]);
 
   useEffect(() => {
-    const accept = (raw: unknown, restoring = false) => {
+    const accept = (raw: unknown) => {
       const payload = parseArtifactContextPayload(raw);
       if (!payload || payload.project_id !== project.id || payload.chat_id !== chatId) return;
       const source = relatedTasks.find((task) => task.operation_id === payload.operation_id);
@@ -735,36 +666,40 @@ export function NodeChat({
       );
       if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_discuss)))
         return;
-      const signature = JSON.stringify(payload);
-      if (lastArtifactContextRef.current === signature) return;
-      lastArtifactContextRef.current = signature;
-      setArtifactContext({
+      // A viewer sends all of its selections each time, so they replace the staged
+      // artifact comments and leave comments on answer text alone.
+      removeStorage(artifactContextKey);
+      removeStorage(`${artifactContextKey}:applied`);
+      const answerComments = annotationsRef.current.filter((annotation) => !annotation.artifact);
+      if (answerComments.length + payload.selections.length > MAX_CHAT_ANNOTATIONS) {
+        setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
+        return;
+      }
+      const context = {
         source: sourceKind,
         operation_id: payload.operation_id,
         artifact_id: payload.artifact_id,
         ...(sourceKind === "episode_report" && payload.episode_id
           ? { episode_id: payload.episode_id }
           : {}),
-        selections: payload.selections,
-      });
-      // The preview can bring a different window or chat surface forward. Keep
-      // the attachment with its draft without appending its text again on mount.
+      };
+      setAnnotations([
+        ...answerComments,
+        ...payload.selections.map((selection) => ({
+          id: crypto.randomUUID(),
+          selectedText: describeArtifactSelection(selection),
+          comment: selection.comment,
+          artifact: { context, name: payload.artifact_name, selection },
+        })),
+      ]);
+      setAnnotationsOpen(true);
+      // The preview can bring a different window or chat surface forward.
       window.requestAnimationFrame(() => textareaRef.current?.focus());
-      setMessageState((current) => {
-        const previousDraft = readStorage(appliedArtifactContextKey);
-        const previous = readArtifactDraftSpan(previousDraft);
-        if (restoring && previous?.signature === signature && previous.message === current)
-          return current;
-        const next = updateArtifactContextDraft(current, payload, previousDraft);
-        writeStorage(draftKey, next.message);
-        writeStorage(appliedArtifactContextKey, JSON.stringify(next));
-        return next.message;
-      });
     };
     const stored = readStorage(artifactContextKey);
     if (stored) {
       try {
-        accept(JSON.parse(stored), true);
+        accept(JSON.parse(stored));
       } catch {
         removeStorage(artifactContextKey);
       }
@@ -789,7 +724,7 @@ export function NodeChat({
       window.removeEventListener("storage", storage);
       channel?.close();
     };
-  }, [artifactContextKey, appliedArtifactContextKey, chatId, draftKey, project.id, relatedTasks]);
+  }, [artifactContextKey, chatId, project.id, relatedTasks]);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherVisibility = useHiddenWatchers(apiBase);
   const watcherRows = useMemo(
@@ -1349,14 +1284,14 @@ export function NodeChat({
   const steer = async (task: AgentTask) => {
     const draftMessage = message;
     const draftAnnotations = annotations;
-    const draftArtifactContext = artifactContext;
     const text = assembleChatTurn(message, annotations);
     if (!annotationsComplete) {
       setAnnotationsOpen(true);
       setSubmitError("Each staged annotation needs a comment.");
       return;
     }
-    if (!text || attachments.length || submitting || !task.steer_turn_id) return;
+    // Files and artifact selections are staged for a new turn; a steer carries text only.
+    if (!text || attachments.length || artifactContext || submitting || !task.steer_turn_id) return;
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     const request = {
@@ -1381,21 +1316,12 @@ export function NodeChat({
             },
       );
       // Typing and skill selection are fenced while the receipt is awaited, so
-      // the delivered draft is exactly what is consumed. Artifact context can
-      // still arrive from another view meanwhile; it and the text it appended
-      // survive, while selections that described the delivered message are
-      // reset so they cannot attach themselves to the next ordinary turn.
+      // the delivered draft is exactly what is consumed. Artifact comments can
+      // still arrive from another view meanwhile, and they survive.
       setMessage((current) => (current === draftMessage ? "" : current));
       setAnnotations((current) => (current === draftAnnotations ? [] : current));
-      setArtifactContext((current) => {
-        if (current !== draftArtifactContext) return current;
-        removeStorage(artifactContextKey);
-        removeStorage(appliedArtifactContextKey);
-        return null;
-      });
       setAnnotationsOpen(false);
       skills.reset();
-      lastArtifactContextRef.current = null;
     } catch (error) {
       setSubmitError(
         `Steering receipt could not be read. Nothing was resent. ${error instanceof Error ? error.message : String(error)}`,
@@ -1443,7 +1369,7 @@ export function NodeChat({
       mode,
       attachments: readyAttachments,
     });
-    setMessageState("");
+    setMessage("");
     setSubmitError(null);
     setSubmitting(true);
     try {
@@ -1468,13 +1394,9 @@ export function NodeChat({
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
       setAttachments([]);
-      setArtifactContext(null);
-      removeStorage(artifactContextKey);
-      removeStorage(appliedArtifactContextKey);
       setAnnotations([]);
       setAnnotationsOpen(false);
       removeSessionStorage(annotationsKey);
-      lastArtifactContextRef.current = null;
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
       selectMode(mode);
@@ -2165,6 +2087,7 @@ export function NodeChat({
                 {annotations.map((annotation, index) => (
                   <article key={annotation.id}>
                     <blockquote>{annotation.selectedText}</blockquote>
+                    {annotation.artifact && <small>In {annotation.artifact.name}</small>}
                     <textarea
                       aria-label={`Comment for annotation ${index + 1}`}
                       disabled={submitting}
@@ -2184,22 +2107,6 @@ export function NodeChat({
                 ))}
               </div>
             </section>
-          )}
-          {artifactContext && (
-            <div className="artifact-context-chip">
-              <span>Artifact selections · {artifactContext.selections.length}</span>
-              <button
-                type="button"
-                aria-label="Remove artifact selections"
-                onClick={() => {
-                  setArtifactContext(null);
-                  removeStorage(artifactContextKey);
-                  lastArtifactContextRef.current = null;
-                }}
-              >
-                <X size={12} />
-              </button>
-            </div>
           )}
           {attachments.length > 0 && (
             <div className="chat-attachment-chips" aria-label="Files for this turn">
@@ -2390,7 +2297,7 @@ export function NodeChat({
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask
-                    ? attachments.length > 0
+                    ? attachments.length > 0 || artifactContext !== null
                     : attachmentsUnready ||
                       relatedActive ||
                       Boolean(pausedAttempt) ||
