@@ -1,11 +1,8 @@
 # Active implementation handoffs
 
-There are no active handoffs.
-
-Earlier on 2026-09-26 every open handoff was closed: ten had shipped their code,
-and the refusal-explains-itself handoff (a refused dispatch or Apply reported
-where the human clicked, with no task row) was closed unbuilt because the human
-chose not to pursue it. Git history holds their full text.
+- [Episodes run isolated, and a branch view shows the graph diff](handoff-2026-09-28-episode-isolation.md)
+  — scope confirmed 2026-09-28; design only, awaiting one xhigh review.
+  Nothing implemented.
 
 ## Open live checks
 
