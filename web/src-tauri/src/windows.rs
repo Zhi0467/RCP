@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, OnceLock,
     },
     time::Duration,
@@ -25,6 +25,10 @@ use crate::{
 static PREVIEW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static SHOW_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 static INITIAL_URL: OnceLock<Url> = OnceLock::new();
+/// Whether the main window has started loading a real document. A WKWebView
+/// that has only held its blank placeholder has no URL, and reading it panics
+/// inside wry, so the reopen path must not ask it.
+static MAIN_DOCUMENT_STARTED: AtomicBool = AtomicBool::new(false);
 static PENDING_RECOVERY: OnceLock<Mutex<Option<PendingRecovery>>> = OnceLock::new();
 
 /// How long the hidden window waits for the frontend handshake before showing
@@ -79,6 +83,9 @@ pub fn create_main(
         .visible(false)
         .zoom_hotkeys_enabled(false)
         .on_page_load(|window, payload| {
+            if payload.url().scheme() != "about" {
+                MAIN_DOCUMENT_STARTED.store(true, Ordering::SeqCst);
+            }
             finish_recovered_page_load(&window, payload.url(), payload.event());
         })
         .on_navigation(move |url| {
@@ -180,9 +187,14 @@ pub fn recover_then_prepare_show(
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "the RCP window is unavailable".to_string())?;
-    let current = window
-        .url()
-        .map_err(|error| format!("could not inspect the RCP window: {error}"))?;
+    let current = if MAIN_DOCUMENT_STARTED.load(Ordering::SeqCst) {
+        window
+            .url()
+            .map_err(|error| format!("could not inspect the RCP window: {error}"))?
+    } else {
+        // Still on the startup placeholder: recover it like any blank window.
+        Url::parse(BLANK_URL).map_err(|error| format!("unusable blank page: {error}"))?
+    };
     let team_status = app
         .state::<TeamSessionState>()
         .status_for_origin(&current)?;
@@ -217,13 +229,23 @@ pub fn recover_then_prepare_show(
 /// The backend origin the window must move to, or `None` when it is already
 /// there — or when `tauri dev` is serving the frontend from Vite.
 pub fn navigation_target(base_url: &str) -> Option<Url> {
-    if uses_vite_dev_server() {
-        return None;
-    }
+    startup_navigation_target(INITIAL_URL.get(), uses_vite_dev_server(), base_url)
+}
+
+/// A deferred start (no eager initial URL) holds the blank placeholder in every
+/// mode, including an unbundled debug run whose frontend is the backend itself,
+/// so it always moves to the backend once it is ready.
+fn startup_navigation_target(
+    initial: Option<&Url>,
+    uses_vite_dev_server: bool,
+    base_url: &str,
+) -> Option<Url> {
     let target = Url::parse(base_url).ok()?;
-    match INITIAL_URL.get() {
+    match initial {
+        None => Some(target),
+        Some(_) if uses_vite_dev_server => None,
         Some(initial) if *initial == target => None,
-        _ => Some(target),
+        Some(_) => Some(target),
     }
 }
 
@@ -494,6 +516,28 @@ mod tests {
         assert_eq!(
             initial_navigation(true, Some("http://127.0.0.1:8421")).unwrap(),
             InitialNavigation::AfterBackendReady(url("http://127.0.0.1:8421")),
+        );
+    }
+
+    #[test]
+    fn a_deferred_start_navigates_to_the_backend_even_in_a_debug_run() {
+        let backend = "http://127.0.0.1:8421";
+        // Same-origin debug run: no eager URL, so the blank placeholder must move.
+        assert_eq!(
+            startup_navigation_target(None, true, backend),
+            Some(url(backend))
+        );
+        assert_eq!(
+            startup_navigation_target(None, false, backend),
+            Some(url(backend))
+        );
+        // Vite serves an eager frontend; the window stays on it.
+        let vite = url("http://127.0.0.1:5173");
+        assert_eq!(startup_navigation_target(Some(&vite), true, backend), None);
+        let eager_backend = url(backend);
+        assert_eq!(
+            startup_navigation_target(Some(&eager_backend), false, backend),
+            None
         );
     }
 
