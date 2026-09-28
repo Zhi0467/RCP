@@ -139,8 +139,8 @@ remain explicit follow-up evidence.
   without publishing anything, then download and open it:
 
   ```bash
-  gh workflow run desktop-candidate.yml -f build=<N>
-  gh run download <run-id> -n desktop-app
+  gh workflow run desktop-candidate.yml --repo Zhi0467/RCP -f build=<N>
+  gh run download <run-id> --repo Zhi0467/RCP -n desktop-app
   ```
 
   Test it with a throwaway data directory; see
