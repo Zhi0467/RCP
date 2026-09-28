@@ -19,6 +19,7 @@ import { addProjectMachine, api, clearProjectCaches } from "../api";
 import { computeProbePresentation } from "../compute";
 import { ProjectMembers } from "../components/ProjectMembers";
 import { MachineCard, NewMachineForm } from "../components/MachineCard";
+import { AddMachineTile, MachineTile, type MachineSignal } from "../components/MachineTile";
 import { errorMessage } from "../errors";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
 import {
@@ -215,6 +216,9 @@ export function ProjectSettings({
   const [saving, setSaving] = useState(false);
   const [clearingCaches, setClearingCaches] = useState(false);
   const spaceMachines = useSpaceMachines();
+  // Machines show as tiles; one opens at a time so the section stays short.
+  const [openMachine, setOpenMachine] = useState<string | null>(null);
+  const [addingMachine, setAddingMachine] = useState(false);
   const [resolvingProvider, setResolvingProvider] = useState<string | null>(null);
   const [cacheMetrics, setCacheMetrics] = useState(project.cache_metrics);
   const [status, setStatus] = useState<{ kind: "saved" | "error"; text: string } | null>(null);
@@ -488,6 +492,35 @@ export function ProjectSettings({
     setStatus(null);
   };
 
+  // What a tile shows at a glance: each provider, the jobs route, and grants.
+  const machineSignals = (machine: (typeof project.machines)[number]): MachineSignal[] => {
+    const signals: MachineSignal[] = providerCatalog.map((provider) => {
+      const state = providerPathPresentation(
+        project.provider_readiness[machine.alias]?.[provider.provider],
+        providerPaths[machine.alias]?.[provider.provider] ?? "",
+        machine.provider_paths[provider.provider] ?? "",
+      );
+      return { label: provider.label || provider.provider, tone: state.kind };
+    });
+    const unsavedCompute = Boolean(
+      machineComputeUpdates(
+        { [machine.alias]: machine.compute ?? null },
+        { [machine.alias]: machineCompute[machine.alias] ?? null },
+      ),
+    );
+    const probe = machine.compute_probes?.[machine.compute?.job_manager ? "scheduler" : "helper"];
+    signals.push({
+      label: machine.compute?.job_manager === "slurm" ? "Slurm" : "Jobs",
+      tone: unsavedCompute ? "pending" : probe ? computeProbePresentation(probe).tone : "warning",
+    });
+    const record = spaceMachines.machines
+      ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
+      : null;
+    const grants = record?.writable_paths.length ?? 0;
+    if (grants) signals.push({ label: `${grants} writable`, tone: "ready" });
+    return signals;
+  };
+
   const resolveProviderPath = async (machine: string, provider: ProviderId) => {
     const key = `${machine}:${provider}`;
     if (resolvingProvider || writesDisabled) return;
@@ -633,162 +666,197 @@ export function ProjectSettings({
           </span>
           <h2>Machines</h2>
         </header>
+        <div className="machine-tiles" role="group" aria-label="Machines">
+          {project.machines.map((machine) => (
+            <MachineTile
+              key={machine.alias}
+              name={machine.alias}
+              hostLabel={machineHostLabel(machine.host, spaceKind)}
+              account={machine.os_account}
+              signals={machineSignals(machine)}
+              selected={openMachine === machine.alias}
+              onSelect={() => {
+                setAddingMachine(false);
+                setOpenMachine((current) => (current === machine.alias ? null : machine.alias));
+              }}
+            />
+          ))}
+          <AddMachineTile
+            label="Add machine"
+            selected={addingMachine}
+            disabled={writesDisabled}
+            onSelect={() => {
+              setOpenMachine(null);
+              setAddingMachine((current) => !current);
+            }}
+          />
+        </div>
         <div className="provider-machine-list">
-          {project.machines.map((machine) => {
-            const config = machineCompute[machine.alias] ?? {
-              job_manager: null,
-              jobs_root: "",
-            };
-            const needsSave = Boolean(
-              machineComputeUpdates(
-                { [machine.alias]: machine.compute ?? null },
-                { [machine.alias]: machineCompute[machine.alias] ?? null },
-              ),
-            );
-            const computeDisabled = writesDisabled || saving;
-            return (
-              <MachineCard
-                key={machine.alias}
-                title={machine.alias}
-                hostLabel={machineHostLabel(machine.host, spaceKind)}
-                osAccount={machine.os_account}
-                record={
-                  spaceMachines.machines
-                    ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
-                    : null
-                }
-                level="project"
-                writesDisabled={writesDisabled}
-                onRecordChange={spaceMachines.replace}
-              >
-                <div className="provider-path-list">
-                  {providerCatalog.map((provider) => {
-                    const recorded = machine.provider_paths[provider.provider] ?? "";
-                    const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
-                    const readiness =
-                      project.provider_readiness[machine.alias]?.[provider.provider];
-                    const state = providerPathPresentation(readiness, value, recorded);
-                    const resolveKey = `${machine.alias}:${provider.provider}`;
-                    return (
-                      <div className="provider-path-row" key={provider.provider}>
-                        <strong>{provider.label || provider.provider}</strong>
-                        <input
-                          type="text"
-                          aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
-                          value={value}
-                          disabled={writesDisabled}
-                          onChange={(event) => {
-                            const path = event.target.value;
-                            setProviderPaths((currentPaths) => ({
-                              ...currentPaths,
-                              [machine.alias]: {
-                                ...currentPaths[machine.alias],
-                                [provider.provider]: path,
-                              },
-                            }));
-                            setStatus(null);
-                          }}
-                        />
-                        <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
-                        <button
-                          className="button secondary compact"
-                          type="button"
-                          disabled={writesDisabled || Boolean(resolvingProvider)}
-                          onClick={() => void resolveProviderPath(machine.alias, provider.provider)}
-                        >
-                          {resolvingProvider === resolveKey ? (
-                            <LoaderCircle className="spin" size={13} />
-                          ) : (
-                            <ScanSearch size={13} />
-                          )}
-                          Resolve
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-                <fieldset className="machine-compute" disabled={computeDisabled}>
-                  <legend>Long-running jobs</legend>
-                  <div className="compute-connection-fields">
-                    <label>
-                      <span>Use Slurm</span>
-                      <input
-                        type="checkbox"
-                        checked={config.job_manager === "slurm"}
-                        onChange={(event) =>
-                          updateMachineCompute(machine.alias, {
-                            ...config,
-                            job_manager: event.target.checked ? "slurm" : null,
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      <span>Jobs root</span>
-                      <input
-                        value={config.jobs_root}
-                        onChange={(event) =>
-                          updateMachineCompute(machine.alias, {
-                            ...config,
-                            jobs_root: event.target.value,
-                          })
-                        }
-                      />
-                    </label>
-                    <button
-                      className="button secondary compact"
-                      type="button"
-                      onClick={() => updateMachineCompute(machine.alias, null)}
-                    >
-                      Reset compute
-                    </button>
+          {project.machines
+            .filter((machine) => machine.alias === openMachine)
+            .map((machine) => {
+              const config = machineCompute[machine.alias] ?? {
+                job_manager: null,
+                jobs_root: "",
+              };
+              const needsSave = Boolean(
+                machineComputeUpdates(
+                  { [machine.alias]: machine.compute ?? null },
+                  { [machine.alias]: machineCompute[machine.alias] ?? null },
+                ),
+              );
+              const computeDisabled = writesDisabled || saving;
+              return (
+                <MachineCard
+                  key={machine.alias}
+                  title={machine.alias}
+                  hostLabel={machineHostLabel(machine.host, spaceKind)}
+                  osAccount={machine.os_account}
+                  record={
+                    spaceMachines.machines
+                      ? spaceMachineForProject(spaceMachines.machines, project.id, machine)
+                      : null
+                  }
+                  level="project"
+                  writesDisabled={writesDisabled}
+                  onRecordChange={spaceMachines.replace}
+                >
+                  <div className="provider-path-list">
+                    {providerCatalog.map((provider) => {
+                      const recorded = machine.provider_paths[provider.provider] ?? "";
+                      const value = providerPaths[machine.alias]?.[provider.provider] ?? "";
+                      const readiness =
+                        project.provider_readiness[machine.alias]?.[provider.provider];
+                      const state = providerPathPresentation(readiness, value, recorded);
+                      const resolveKey = `${machine.alias}:${provider.provider}`;
+                      return (
+                        <div className="provider-path-row" key={provider.provider}>
+                          <strong>{provider.label || provider.provider}</strong>
+                          <input
+                            type="text"
+                            aria-label={`${provider.label || provider.provider} executable on ${machine.alias}`}
+                            value={value}
+                            disabled={writesDisabled}
+                            onChange={(event) => {
+                              const path = event.target.value;
+                              setProviderPaths((currentPaths) => ({
+                                ...currentPaths,
+                                [machine.alias]: {
+                                  ...currentPaths[machine.alias],
+                                  [provider.provider]: path,
+                                },
+                              }));
+                              setStatus(null);
+                            }}
+                          />
+                          <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
+                          <button
+                            className="button secondary compact"
+                            type="button"
+                            disabled={writesDisabled || Boolean(resolvingProvider)}
+                            onClick={() =>
+                              void resolveProviderPath(machine.alias, provider.provider)
+                            }
+                          >
+                            {resolvingProvider === resolveKey ? (
+                              <LoaderCircle className="spin" size={13} />
+                            ) : (
+                              <ScanSearch size={13} />
+                            )}
+                            Resolve
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
-                  {(machine.compute?.job_manager
-                    ? (["scheduler", "helper"] as const)
-                    : (["helper"] as const)
-                  ).map((route) => {
-                    // RCP checks each route at startup and after a compute save.
-                    const probe = needsSave ? null : (machine.compute_probes?.[route] ?? null);
-                    const presentation = probe
-                      ? computeProbePresentation(probe)
-                      : {
-                          label: needsSave ? "Checked after save" : "Not checked yet",
-                          tone: "pending" as const,
-                        };
-                    return (
-                      <div className={`compute-probe ${presentation.tone}`} key={route}>
-                        <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
-                        <span className="compute-probe-dot" aria-hidden="true" />
-                        <span>{presentation.label}</span>
-                        {probe?.backend_id && <span>{probe.backend_id}</span>}
-                        {probe?.diagnostic && <span>{probe.diagnostic}</span>}
-                        {probe?.required_action && <em>{probe.required_action}</em>}
-                      </div>
-                    );
-                  })}
-                </fieldset>
-              </MachineCard>
-            );
-          })}
+                  <fieldset className="machine-compute" disabled={computeDisabled}>
+                    <legend>Long-running jobs</legend>
+                    <div className="compute-connection-fields">
+                      <label>
+                        <span>Use Slurm</span>
+                        <input
+                          type="checkbox"
+                          checked={config.job_manager === "slurm"}
+                          onChange={(event) =>
+                            updateMachineCompute(machine.alias, {
+                              ...config,
+                              job_manager: event.target.checked ? "slurm" : null,
+                            })
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Jobs root</span>
+                        <input
+                          value={config.jobs_root}
+                          onChange={(event) =>
+                            updateMachineCompute(machine.alias, {
+                              ...config,
+                              jobs_root: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <button
+                        className="button secondary compact"
+                        type="button"
+                        onClick={() => updateMachineCompute(machine.alias, null)}
+                      >
+                        Reset compute
+                      </button>
+                    </div>
+                    {(machine.compute?.job_manager
+                      ? (["scheduler", "helper"] as const)
+                      : (["helper"] as const)
+                    ).map((route) => {
+                      // RCP checks each route at startup and after a compute save.
+                      const probe = needsSave ? null : (machine.compute_probes?.[route] ?? null);
+                      const presentation = probe
+                        ? computeProbePresentation(probe)
+                        : {
+                            label: needsSave ? "Checked after save" : "Not checked yet",
+                            tone: "pending" as const,
+                          };
+                      return (
+                        <div className={`compute-probe ${presentation.tone}`} key={route}>
+                          <strong>{route === "scheduler" ? "Scheduler" : "Helper"}</strong>
+                          <span className="compute-probe-dot" aria-hidden="true" />
+                          <span>{presentation.label}</span>
+                          {probe?.backend_id && <span>{probe.backend_id}</span>}
+                          {probe?.diagnostic && <span>{probe.diagnostic}</span>}
+                          {probe?.required_action && <em>{probe.required_action}</em>}
+                        </div>
+                      );
+                    })}
+                  </fieldset>
+                </MachineCard>
+              );
+            })}
         </div>
         {spaceMachines.error && <div className="settings-error">{spaceMachines.error}</div>}
-        <AddProjectMachine
-          projectId={project.id}
-          machines={spaceMachines.machines ?? []}
-          writesDisabled={writesDisabled}
-          onCreated={spaceMachines.replace}
-          onAdded={(saved) => {
-            if (!requestIsCurrent()) return;
-            // Keep in-progress path edits; the new machine starts from its manifest values.
-            setProviderPaths((currentPaths) => ({
-              ...machineProviderPathsFrom(saved.machines),
-              ...currentPaths,
-            }));
-            onSaved(saved, { provider: false, compute: false });
-            void spaceMachines.reload();
-            void onRefreshReadiness().catch(() => {});
-          }}
-        />
+        {addingMachine && (
+          <AddProjectMachine
+            projectId={project.id}
+            spaceKind={spaceKind}
+            onClose={() => setAddingMachine(false)}
+            machines={spaceMachines.machines ?? []}
+            writesDisabled={writesDisabled}
+            onCreated={spaceMachines.replace}
+            onAdded={(saved, alias) => {
+              if (!requestIsCurrent()) return;
+              // Keep in-progress path edits; the new machine starts from its manifest values.
+              setProviderPaths((currentPaths) => ({
+                ...machineProviderPathsFrom(saved.machines),
+                ...currentPaths,
+              }));
+              onSaved(saved, { provider: false, compute: false });
+              void spaceMachines.reload();
+              void onRefreshReadiness().catch(() => {});
+              setAddingMachine(false);
+              setOpenMachine(alias);
+            }}
+          />
+        )}
       </section>
 
       <section className="settings-section compute-settings">
@@ -1150,18 +1218,21 @@ export function ProjectSettings({
 /** Appends a space machine to this project's manifest, picking a card or creating one. */
 function AddProjectMachine({
   projectId,
+  spaceKind,
   machines,
   writesDisabled,
   onCreated,
   onAdded,
+  onClose,
 }: {
   projectId: string;
+  spaceKind: "personal" | "team";
   machines: SpaceMachine[];
   writesDisabled: boolean;
   onCreated: (machine: SpaceMachine) => void;
-  onAdded: (project: ProjectSnapshot) => void;
+  onAdded: (project: ProjectSnapshot, alias: string) => void;
+  onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [machineId, setMachineId] = useState("");
   const [alias, setAlias] = useState("");
@@ -1176,13 +1247,12 @@ function AddProjectMachine({
   };
 
   const add = async () => {
-    if (!machineId || !alias.trim() || adding) return;
+    const chosen = alias.trim();
+    if (!machineId || !chosen || adding) return;
     setAdding(true);
     setError(null);
     try {
-      onAdded(await addProjectMachine(projectId, machineId, alias.trim()));
-      setOpen(false);
-      choose(undefined);
+      onAdded(await addProjectMachine(projectId, machineId, chosen), chosen);
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -1190,21 +1260,6 @@ function AddProjectMachine({
     }
   };
 
-  if (!open) {
-    return (
-      <div className="add-project-machine">
-        <button
-          className="button secondary compact"
-          type="button"
-          data-machine-action="add-machine"
-          disabled={writesDisabled}
-          onClick={() => setOpen(true)}
-        >
-          <Plus size={13} /> Add machine
-        </button>
-      </div>
-    );
-  }
   return (
     <div className="add-project-machine open" data-add-project-machine="">
       {creating ? (
@@ -1218,65 +1273,57 @@ function AddProjectMachine({
           }}
         />
       ) : (
-        <div className="add-project-machine-fields">
-          <label>
-            <span>Machine</span>
-            <select
-              value={machineId}
+        <>
+          <div className="machine-tiles" role="group" aria-label="Space machines">
+            {candidates.map((machine) => (
+              <MachineTile
+                key={machine.machine_id}
+                name={machine.name}
+                hostLabel={machineHostLabel(machine.host, spaceKind)}
+                account={machine.os_account}
+                selected={machine.machine_id === machineId}
+                disabled={writesDisabled || adding}
+                onSelect={() => choose(machine)}
+              />
+            ))}
+            <AddMachineTile
+              label="New machine"
               disabled={writesDisabled || adding}
-              onChange={(event) =>
-                choose(candidates.find((machine) => machine.machine_id === event.target.value))
-              }
-            >
-              <option value="">Choose a machine…</option>
-              {candidates.map((machine) => (
-                <option key={machine.machine_id} value={machine.machine_id}>
-                  {machine.name} ({machine.host || "this machine"})
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Alias in this project</span>
-            <input
-              value={alias}
-              maxLength={MACHINE_ALIAS_MAX_LENGTH}
-              disabled={writesDisabled || adding || !machineId}
-              onChange={(event) => setAlias(event.target.value)}
+              onSelect={() => setCreating(true)}
             />
-          </label>
-          <div className="new-machine-actions">
-            <button
-              className="button primary compact"
-              type="button"
-              data-machine-action="confirm-add-machine"
-              disabled={writesDisabled || adding || !machineId || !alias.trim()}
-              onClick={() => void add()}
-            >
-              {adding ? <LoaderCircle className="spin" size={13} /> : <Plus size={13} />}
-              Add
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={adding}
-              onClick={() => setCreating(true)}
-            >
-              New machine
-            </button>
-            <button
-              className="button secondary compact"
-              type="button"
-              disabled={adding}
-              onClick={() => {
-                setOpen(false);
-                choose(undefined);
-              }}
-            >
-              Cancel
-            </button>
           </div>
-        </div>
+          <div className="add-project-machine-fields">
+            <label>
+              <span>Alias in this project</span>
+              <input
+                value={alias}
+                maxLength={MACHINE_ALIAS_MAX_LENGTH}
+                disabled={writesDisabled || adding || !machineId}
+                onChange={(event) => setAlias(event.target.value)}
+              />
+            </label>
+            <div className="new-machine-actions">
+              <button
+                className="button primary compact"
+                type="button"
+                data-machine-action="confirm-add-machine"
+                disabled={writesDisabled || adding || !machineId || !alias.trim()}
+                onClick={() => void add()}
+              >
+                {adding ? <LoaderCircle className="spin" size={13} /> : <Plus size={13} />}
+                Add
+              </button>
+              <button
+                className="button secondary compact"
+                type="button"
+                disabled={adding}
+                onClick={onClose}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </>
       )}
       {error && <p role="alert">{error}</p>}
     </div>

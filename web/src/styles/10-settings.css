@@ -3255,3 +3255,117 @@ details[open] > .view-disclosure-summary > svg:last-child {
     flex-wrap: wrap;
   }
 }
+
+/* Machine tiles: small cards to open or pick a machine, in Settings and setup. */
+.machine-tiles {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+.provider-path-settings > .machine-tiles {
+  padding: 16px 16px 0;
+}
+.machine-tile {
+  align-content: start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  display: grid;
+  gap: 4px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-height: 62px;
+  padding: 11px 12px;
+  text-align: left;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.machine-tile:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+.machine-tile.selected {
+  border-color: var(--cobalt);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cobalt) 22%, transparent);
+}
+.machine-tile:disabled {
+  opacity: 0.55;
+}
+.machine-tile.add {
+  align-content: center;
+  background: transparent;
+  border-style: dashed;
+  color: var(--ink-soft);
+}
+.machine-tile-icon {
+  align-items: center;
+  background: var(--cobalt-soft);
+  border-radius: 5px;
+  color: var(--cobalt-dark);
+  display: inline-flex;
+  grid-row: span 2;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.machine-tile.add .machine-tile-icon {
+  background: transparent;
+  border: 1px dashed var(--line-strong);
+  color: var(--ink-soft);
+  grid-row: auto;
+}
+.machine-tile > strong {
+  font-size: var(--type-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.machine-tile-host {
+  color: var(--muted);
+  font-family: var(--mono, monospace);
+  font-size: var(--type-2xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.machine-tile-signals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  grid-column: 1 / -1;
+  margin-top: 6px;
+}
+.machine-tile-signal {
+  align-items: center;
+  color: var(--ink-soft);
+  display: inline-flex;
+  font-size: var(--type-2xs);
+  gap: 5px;
+}
+.machine-tile-signal > i {
+  background: var(--muted);
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
+}
+.machine-tile-signal.ready > i {
+  background: var(--green);
+}
+.machine-tile-signal.warning > i {
+  background: var(--amber, var(--walnut));
+}
+.machine-tile-signal.error > i {
+  background: var(--red);
+}
+.machine-tile-signal.pending > i {
+  background: var(--cobalt);
+}
+.setup-machine-choice {
+  display: grid;
+  gap: 6px;
+  grid-column: 1 / -1;
+}
+.setup-machine-choice > span {
+  font-size: var(--type-2xs);
+  font-weight: 700;
+}

@@ -35,6 +35,7 @@ import {
   type ProjectSetupRoute,
 } from "../projectSetup";
 import { NewMachineForm } from "../components/MachineCard";
+import { AddMachineTile, MachineTile } from "../components/MachineTile";
 import { PathPicker } from "../components/PathPicker";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
 import { setupMachineSelection } from "../spaceMachines";
@@ -1086,9 +1087,6 @@ function SectionHeading({ eyebrow, title }: { eyebrow: string; title: string }) 
   );
 }
 
-const NEW_MACHINE_OPTION = "__new_machine__";
-const TYPED_HOST_OPTION = "__typed_host__";
-
 export function RepositoryEditor({
   repository,
   canonical,
@@ -1195,39 +1193,38 @@ export function RepositoryEditor({
           </button>
         </div>
         {repository.location === "ssh" && (
-          <label>
+          <div className="setup-machine-choice">
             <span>Machine</span>
-            <select
+            <div
+              className="machine-tiles"
+              role="group"
+              aria-label="Machine"
               data-repository-machine=""
-              value={
-                creatingMachine
-                  ? NEW_MACHINE_OPTION
-                  : (selectedMachine?.machine_id ?? (host ? TYPED_HOST_OPTION : ""))
-              }
-              onChange={(event) => {
-                const value = event.target.value;
-                if (value === NEW_MACHINE_OPTION) {
-                  setCreatingMachine(true);
-                  return;
-                }
-                setCreatingMachine(false);
-                if (value === TYPED_HOST_OPTION) return;
-                const machine = remoteMachines.find((item) => item.machine_id === value);
-                setChosenMachineId(machine?.machine_id ?? null);
-                changeRepository({ host: machine?.host ?? "" });
-              }}
             >
-              <option value="">Choose a machine…</option>
               {remoteMachines.map((machine) => (
-                <option key={machine.machine_id} value={machine.machine_id}>
-                  {machine.name} ({machine.host}
-                  {machine.os_account ? ` · ${machine.os_account}` : ""})
-                </option>
+                <MachineTile
+                  key={machine.machine_id}
+                  name={machine.name}
+                  hostLabel={machine.host}
+                  account={machine.os_account}
+                  selected={!creatingMachine && selectedMachine?.machine_id === machine.machine_id}
+                  onSelect={() => {
+                    setCreatingMachine(false);
+                    setChosenMachineId(machine.machine_id);
+                    changeRepository({ host: machine.host });
+                  }}
+                />
               ))}
-              {host && !selectedMachine && <option value={TYPED_HOST_OPTION}>{host}</option>}
-              <option value={NEW_MACHINE_OPTION}>New machine…</option>
-            </select>
-          </label>
+              {host && !selectedMachine && (
+                <MachineTile name={host} hostLabel="Typed host" selected onSelect={() => {}} />
+              )}
+              <AddMachineTile
+                label="New machine"
+                selected={creatingMachine}
+                onSelect={() => setCreatingMachine(true)}
+              />
+            </div>
+          </div>
         )}
         {repository.location === "ssh" && creatingMachine && (
           <NewMachineForm
