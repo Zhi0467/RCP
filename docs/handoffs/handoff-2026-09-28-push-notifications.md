@@ -1,7 +1,10 @@
 # Push notifications to the Mac and the phone
 
 Date: 2026-09-28
-Status: design settled with the human on 2026-09-28. Nothing is implemented.
+Status: design settled with the human on 2026-09-28, then revised the same day
+for a second xhigh review (Mac adapter, outbound push limits, watcher-free
+graph reconciliation, ended episodes, sign-in during wrap-up). Nothing is
+implemented.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which lands first: the Mac check below
 runs on an app that install produced. Mac and phone push ship together in one
@@ -21,7 +24,9 @@ Close this handoff when all four hold on real hardware:
 
 - New graph attention on main: pending Proposals, Decisions awaiting a choice,
   and open asserted Blockers.
-- An episode whose health becomes `needs_action`.
+- An episode whose health becomes `needs_action`, or one wrapping up that is
+  blocked on a provider sign-in (`health='wrapping_up'`,
+  `blocked_reason='sign_in'`). Both use the same "Needs you" toggle.
 - An episode that ends: health becomes `completed`, `stopped`, or `failed`.
 - Nothing else.
 
@@ -77,7 +82,26 @@ Both the Mac and the phone deliver the same items, from one outbox.
   `pywebpush`, which brings `requests` and `aiohttp`. Measured on the team
   server host from the v0.4.1 wheel and lock file: 46 MB, then 62 MB with
   `cryptography`.
-- **Mac:** the desktop shell adds `tauri-plugin-notification`. The shell
+- **Outbound limits.** A subscription endpoint is only a destination the
+  server posts to, so registration validates it before storing it, and every
+  send validates it again:
+  - `https` only, default port, on a fixed allowlist of push-service hosts
+    (Apple, Google, Mozilla, Microsoft), kept in code beside the sender.
+  - Every resolved address must be public. Loopback, private, link-local,
+    and unique-local addresses are refused, and the connection uses the
+    address that was checked.
+  - Redirects are never followed.
+  - Timeouts, the request body, and the stored subscription size are bounded
+    in `limits.py`.
+  - A refused endpoint is rejected at registration and makes no connection.
+- **Mac:** `tauri-plugin-notification` cannot be used. On desktop it passes
+  only title, body, icon, and sound; it drops the notification id and click
+  data, and it discards delivery errors. The desktop shell instead gets a
+  small native adapter over macOS `UNUserNotificationCenter` (through the
+  `objc2` bindings). It sets the stable notification id as the request
+  identifier, carries the deep link in `userInfo`, routes clicks through the
+  notification-center delegate (including a click that launches the app), and
+  reports delivery errors back to the outbox. The shell
   subscribes to its own backend's outbox as a "desktop" delivery target and
   posts each item natively. For a team space, the target is registered through
   the existing SSH tunnel. Mac delivery happens only while the app runs.
@@ -95,26 +119,37 @@ requirements.
 1. **At-least-once delivery.** There is one outbox row per (subscription,
    notification id). It records the attempt count, next attempt time, and
    last status. A stable notification id is the Web Push `Topic`, the Web
-   Notification `tag` passed to `showNotification`, and the Tauri notification
-   id, so a repeat replaces the old notification instead of stacking, even
+   Notification `tag` passed to `showNotification`, and the Mac request
+   identifier, so a repeat replaces the old notification instead of stacking, even
    after delivery. Honor TTL and `Retry-After`, with exponential backoff. A
    404 or 410 deletes the subscription. Any other permanent failure shows as
    Delivery failed on the device.
-2. **Trigger points.** Graph attention enqueues from
-   `reconcile_accepted_graph_boundaries`
-   (`src/rcp/runs/transition_event_reconciliation.py`), inside the same SQLite
-   transaction that advances the per-target watermark. An unreachable remote
-   project enqueues nothing, and is never read as empty attention. Episode
-   health has many writers: the episode row, its tasks, recovery rows, and the
-   provider credential store all feed it, and Stop settles some episodes with
-   no task settlement. So the sender loop rechecks every unfinished episode
-   about every 15 seconds with the shared health function, stores the last
-   notified health per episode, and enqueues only on a change. All of its
-   inputs are local.
+2. **Trigger points.** Graph attention has its own reconciliation, not the
+   watcher one. Today `reconcile_accepted_graph_boundaries` is reached only
+   for targets with an active graph watcher (`watchers.py`
+   `evaluate_graph_wake_boundary` and the startup sweep), so a project with
+   no watchers would never notify. Notification reconciliation runs for every
+   project's main target where a member has a graph kind on. It runs after
+   each accepted main transition, at startup, and on every sender pass. It
+   reuses the same pure boundary result, and enqueues inside the same SQLite
+   transaction that advances its own per-target marker. An unreachable remote
+   project enqueues nothing, and is never read as empty attention.
+   Episode health has many writers: the episode row, its tasks, recovery
+   rows, and the provider credential store all feed it, and Stop settles some
+   episodes with no task settlement. So the sender loop rechecks episodes
+   about every 15 seconds with the shared health function. It stores the last
+   notified observation, `(health, blocked_reason)`, per episode and enqueues
+   only on a change. The recheck covers every unfinished episode, and also
+   every ended episode whose stored observation is not yet its terminal one.
+   An ended episode leaves the set only once its terminal observation is
+   recorded, so a finish between two passes, or during downtime, still
+   notifies. All of its inputs are local.
 3. **First run is a durable baseline.** Store one marker per (project, target)
-   and one last-notified health per episode. On an upgrade, a new project, or
-   a recovered project, record the current state as the baseline and send
-   nothing. An empty baseline is still a baseline.
+   and one last-notified observation per episode. On an upgrade, a new
+   project, or a recovered project, record the current state as the baseline
+   and send nothing. An empty baseline is still a baseline. An episode created
+   after its project's baseline starts with no observation, so its first
+   recheck notifies even if it has already ended.
 4. **Graph target scope.** Only main notifies. Branch attention appears in its
    episode's "finished" and `needs_action` items. Every record is keyed by
    project, target, kind, and item id, so branch notifications can be added
@@ -148,15 +183,27 @@ requirements.
 
 ## Checks
 
-- First, before any other code: confirm that the ad-hoc-signed prebuilt app
-  can post a native notification through `tauri-plugin-notification`. If it
-  cannot, stop and bring the Mac path back for a decision.
+- First, before any other code: in the ad-hoc-signed prebuilt app, prove the
+  native adapter can post a notification, replace it by reposting the same
+  id, open the exact item from a click while running and from a click that
+  launches the app, and report a delivery error. If any of these fails, stop
+  and bring the Mac path back for a decision.
+- Registration refuses a non-`https` endpoint, a host off the allowlist, a
+  host that resolves to a private or loopback address, and an oversized
+  subscription, each without opening a connection; a redirect from a push
+  service is not followed.
+- A project with no graph watchers notifies for a new Proposal, and again
+  after a restart that follows a canonical append made while RCP was down.
+- An episode created and finished between two passes, and one that finished
+  while RCP was down, each produce one "finished" item; an episode that
+  already ended at upgrade produces none.
 - A crash between send and record, and one between record and send; partial
   success across two devices; first run on an empty and a non-empty project;
   an item that closes and then reopens.
 - Stop on an Auto-research and an Experiment-loop episode produces one
   "finished" item; a provider sign-in lost during wrap-up produces one
-  `needs_action` item.
+  "Needs you" item from `blocked_reason='sign_in'`, with health still
+  `wrapping_up`.
 - The Mac backlog: resolved and expired items are dropped, and more than three
   collapse into one summary.
 - Logout, session revocation, Remove on a personal phone, leaving a project,
