@@ -88,39 +88,6 @@ def remove_tree(path):
 """
 
 
-# New stages live in the remote account's `~/.rcp/stages`, never `/tmp`.
-_REMOTE_STAGE_CREATE = """\
-import os,stat,sys,tempfile
-rcp=os.path.join(os.path.expanduser('~'),'.rcp')
-base=os.path.join(rcp,'stages')
-for directory in (rcp,base):
-    try:
-        os.mkdir(directory,0o700)
-    except FileExistsError:
-        pass
-# A parent another user can write could swap a retained stage, so both must be ours.
-for directory in (rcp,base):
-    info=os.lstat(directory)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid() or info.st_mode&0o022:
-        print('remote stage directory is unsafe',file=sys.stderr); raise SystemExit(1)
-label,reuse=sys.argv[1],sys.argv[2]=='1'
-if label:
-    root=os.path.join(base,'rcp-run.'+label)
-    legacy='/tmp/rcp-run.'+label
-    # Legacy: a reused stage made before RCP left /tmp stays there; a later release removes this.
-    if reuse and not os.path.lexists(root) and os.path.lexists(legacy):
-        print(legacy); raise SystemExit(0)
-    try:
-        os.mkdir(root,0o700)
-    except FileExistsError:
-        if not reuse:
-            print('remote run stage already exists',file=sys.stderr); raise SystemExit(1)
-else:
-    root=tempfile.mkdtemp(prefix='rcp-run.',dir=base)
-print(root)
-"""
-
-
 @dataclass(frozen=True)
 class ImportedProviderSourceReadback:
     fingerprint: str
@@ -221,7 +188,16 @@ for target in targets:
         """
         self.sweep(protected_roots=protected_roots)
         label = "" if operation_id is None else _safe_label(operation_id)
-        result = self._ssh(["python3", "-c", _REMOTE_STAGE_CREATE, label, "1" if reuse else "0"])
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "create",
+                label,
+                "1" if reuse else "0",
+            ]
+        )
         remote_root = result.stdout.strip()
         if result.returncode or not _safe_root(remote_root):
             raise _ssh_failure(result, "could not create remote run stage")
@@ -359,15 +335,7 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         A later release removes this with the legacy stage location.
         """
 
-        script = """
-import glob,json,os,re
-# Only names RCP made; a stray one could hold text no mount can carry.
-roots=sorted({os.path.realpath(path) for path in glob.glob('/tmp/rcp-run.*')
-    if re.fullmatch(r'rcp-run\\.[A-Za-z0-9_-]+',os.path.basename(path))
-    and os.path.isdir(path) and not os.path.islink(path)})
-print(json.dumps(roots))
-"""
-        result = self._ssh(["python3", "-c", script])
+        result = self._ssh(["python3", "-c", _remote_script("remote_stage_root.py"), "legacy"])
         if result.returncode:
             raise _ssh_failure(result, "could not list legacy remote run stages")
         try:
