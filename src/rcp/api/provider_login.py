@@ -142,16 +142,18 @@ def provider_login_accounts(
         profile = profile_for(provider)
         metadata = profile.authentication.credential_metadata(credentials, host)
         token = ProviderCredentialSummary(**metadata) if metadata is not None else None
+        provider_path = _visible_path(paths.get((provider, host), []), visible)
+        binary = provider_path.path if provider_path is not None else profile.id
         accounts.append(
             ProviderLoginAccount(
                 **state.model_dump(),
                 label=profile.label,
                 sign_in_methods=profile.authentication.methods,
                 managed=profile.authentication.manages_login,
-                login_command=shlex.join(profile.login_command(profile.id)),
+                login_command=shlex.join(profile.login_command(binary)),
                 token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
-                provider_path=_visible_path(paths.get((provider, host), []), visible),
+                provider_path=provider_path,
                 token=token,
                 sign_in=sign_ins.running_sign_in(provider, host),
             )

@@ -31,6 +31,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _JsonlProviderTurn,
     _require_project_write_scope,
+    _require_provider_version,
     _usage_dedupe_key,
     _usage_int,
 )
@@ -112,6 +113,18 @@ class OpenCodeProfile(ProviderProfile):
     runtime_choices = (ProviderRuntimeChoice(id="run-json", label="OpenCode run JSON"),)
     # The version whose edit-rule matching RCP's rules were probed against.
     work_like_minimum_version = (1, 18, 30)
+
+    def validate_readiness_version(
+        self,
+        actual: str | None,
+        *,
+        capability: AgentCapability,
+    ) -> None:
+        # Every capability, not only Work, relies on the probed rule matching.
+        del capability
+        _require_provider_version(
+            provider=self.label, actual=actual, minimum=self.work_like_minimum_version
+        )
 
     def runtime(self, runtime_id: str) -> ProviderRuntime:
         if runtime_id == self.legacy_runtime_id:
@@ -204,9 +217,9 @@ class OpenCodeProfile(ProviderProfile):
         work_like = capability in {"work_auto", "orchestrate"}
         if work_like:
             _require_project_write_scope(write_scope, capability=capability, write_dirs=write_dirs)
-            self.validate_readiness_version(provider_version, capability=capability)
         elif write_scope is not None:
             raise ValueError(f"capability {capability!r} cannot carry a project write scope")
+        self.validate_readiness_version(provider_version, capability=capability)
         permission = _permission(capability, cwd, write_dirs, write_scope)
         # `--pure` loads no plugin, whose config hook could rewrite these rules.
         command = [binary, "run", "--format", "json", "--pure", "--agent", _agent_name(permission)]

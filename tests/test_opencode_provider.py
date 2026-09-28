@@ -1,6 +1,9 @@
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.providers import ProviderTurnRequest, profile_for
@@ -86,6 +89,16 @@ def test_discuss_edits_only_its_own_folders_and_has_no_shell():
         "home/rcp/data/stages/s/workspace/**": "allow",
         "work/notes/**": "allow",
     }
+
+
+@pytest.mark.parametrize("capability", ["discuss", "paper_readonly", "work_auto"])
+def test_every_capability_refuses_a_cli_older_than_the_probed_rules(capability):
+    scope = _scope() if capability == "work_auto" else None
+    request = replace(_request(capability, scope=scope), provider_version="1.18.29")
+    with pytest.raises(ValueError):
+        OPENCODE.runtime(OPENCODE.legacy_runtime_id).turn(request)
+    with pytest.raises(ValueError):
+        OPENCODE.validate_readiness_version("1.18.29", capability=capability)
 
 
 def _lines(*values: dict) -> list[str]:
