@@ -375,7 +375,7 @@ def test_branch_merge_task_requires_a_quiet_branch_and_exact_authority(
         )
 
     other_target = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
-    with pytest.raises(ValueError, match="exact Auto-research episode"):
+    with pytest.raises(ValueError, match="exact owner episode"):
         store.create_branch_merge_task(
             _merge_task(store, episode, "merge-cross-target", graph_target=other_target)
         )

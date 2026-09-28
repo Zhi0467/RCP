@@ -380,7 +380,8 @@ def serialize_episode(
     ):
         raise ValueError("Experiment episode projection does not match its durable parent.")
     has_graph_branch = episode.graph_target.kind == "branch"
-    if has_graph_branch and include_graph_branch and branch_summary is None:
+    owns_graph_branch = has_graph_branch and episode.graph_target.branch_id == episode.episode_id
+    if owns_graph_branch and include_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
     task_records = (
