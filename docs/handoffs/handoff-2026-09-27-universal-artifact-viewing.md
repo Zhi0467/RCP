@@ -4,7 +4,7 @@ Status on 2026-09-27: design settled with a Codex xhigh review; the human
 chose not to review it and asked to implement it in this pull request.
 
 - Implemented: nothing yet.
-- Remains: changes 1–9 below, then [Verification](#verification).
+- Remains: changes 1–10 below, then [Verification](#verification).
 - Settled (human, 2026-09-27):
   - Viewing is universal. Every file an agent leaves in its turn artifact
     directory gets a card with Download and Keep, within the existing bounds.
@@ -319,9 +319,18 @@ keeps any short `[a-z0-9]{1,16}` suffix.
 - `docs/specs/api-web-and-desktop-projections.md`: `view`,
   `artifact_omissions`, `/content` by kind, refusal of artifact context for
   other types, saved-artifact capabilities, the desktop command.
-- `docs/desktop.md`: the PDF open check.
 - Provider prompts that promise only HTML and image discovery
   (`agents/prompts.py`, `agents/experiment_loop_prompt.py`).
+
+### 10. Readers never block on a swapped file
+
+`read_local_regular_file` (`src/rcp/artifacts.py`) and the shipped remote
+reader in `src/rcp/transport/run_stage.py` open the file before `fstat`
+proves it is regular. A regular file replaced by a FIFO after listing blocks
+that open forever. Both open with `O_NONBLOCK` added and keep the existing
+regular-file check, which then refuses the FIFO at once. Regular files ignore
+the flag, so reads are unchanged. Discovery now reads every file type, which
+makes this path more reachable.
 
 ## Landing after #206
 
