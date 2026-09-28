@@ -230,8 +230,9 @@ Exact outputs and RCP tooling:
 Context protocol:
 - This is a fresh, self-sufficient view of the invocation. No prior chat transcript is an input.
   Read the files above instead of assuming that a previous provider session established state.
-- Each later message in this session names every path, command, write root, or pointer that has
-  changed since this contract. Use those current values in place of the ones given here.
+- Each later message in this session names every path, command, write root, or pointer that
+  differs from this contract. Use those in place of the ones given here; anything it does not name
+  is as given here.
 - Read loop control first. `phase` distinguishes a human-started episode from a watcher wake.
   `invocation`, `invocation_ceiling`, and `remaining_invocations` are the operational budget; they
   do not count or limit semantic attempts. `human_reauthorization` means a human started this

@@ -142,8 +142,9 @@ _TURN_WRITE_BOUNDARY = """- A Work turn's writable roots arrive with it as `work
 
 
 _CHANGED_VALUES_RULE = f"""A later launch in this session lists what changed under `{SECTIONS["context_delta"]}`,
-one `- key: value` line each. Each replaces the value this contract or an earlier launch gave under
-that key: `current.*` the graph inputs, `patch.*` the Patch, watcher, schema, and command client,
+one `- key: value` line each, and it lists every value that differs from this contract, not only
+what changed since the launch before. A listed value replaces this contract's value for that
+launch; a key it does not list has this contract's value. The keys: `current.*` the graph inputs, `patch.*` the Patch, watcher, schema, and command client,
 `work.*` the Work write roots and launch facts, and likewise `repositories`, `skills`, `settings.*`,
 and `workspace.path`. A new `current.graph_revision` means the graph changed, not that the human
 approved anything; re-read the records you rely on."""

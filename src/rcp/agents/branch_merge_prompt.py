@@ -147,8 +147,10 @@ def branch_merge_rebase_parts(
         "# RCP graph-branch merge rebase\n\nMain advanced, so RCP discarded the previous "
         "candidate; nothing from it was committed. RCP rebuilt the ordinary operations against "
         "the replacement main head. Recompute the merge against the replacement context: "
-        "preserve compatible new main changes, resolve its conflicts, and rewrite the Patch for "
-        "the current residue paths instead of reusing the stale candidate."
+        "preserve compatible new main changes, resolve its conflicts, and rewrite the Patch "
+        "instead of reusing the stale candidate. Write only the operations for the current "
+        "residue: the `residue` listed below replaces the master's list; if none is listed, "
+        "the master's list still holds."
     ]
     if new_reason_legend:
         parts.append("What each new residue reason means:\n" + new_reason_legend)

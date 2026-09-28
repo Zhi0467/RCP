@@ -21,8 +21,8 @@ from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
     PromptNode,
+    changed_since_master,
     classify,
-    context_delta,
     master_key,
 )
 from rcp.agents.prompts import CHAT_MASTER_CONTEXT_VERSION, chat_master_contract_key
@@ -54,6 +54,7 @@ from rcp.runs.session_master import (
     continuation_session_master,
     read_legacy_session_master,
     record_session_master,
+    recorded_master_values,
     session_master_label,
     stage_session_master,
 )
@@ -260,6 +261,24 @@ def _stage_chat_turn_contract(
     return contract_path
 
 
+def _with_graph_revision(
+    master_values: dict[str, object], baseline: dict[str, object]
+) -> dict[str, object]:
+    """The master's values, with the graph revision the last committed turn ended on."""
+
+    current = baseline.get("current")
+    if not isinstance(current, dict) or "graph_revision" not in current:
+        return master_values
+    master_current = master_values.get("current")
+    return {
+        **master_values,
+        "current": {
+            **(master_current if isinstance(master_current, dict) else {}),
+            "graph_revision": current["graph_revision"],
+        },
+    }
+
+
 def _prepare_chat_prompt_state(
     execution: AgentTaskExecution | None,
     request: RunRequest,
@@ -315,14 +334,26 @@ def _prepare_chat_prompt_state(
         if execution is not None:
             master_operation_id = execution.operation_id
             master_sha256 = record_session_master(
-                execution.store, execution.operation_id, master_context
+                execution.store, execution.operation_id, master_context, values=values
             )
 
-    delta = None if previous is None else context_delta(previous.values, values)
+    # The delta is a complete overlay on the master, never on the previous turn: a value a
+    # later turn leaves out is the master's, so an agent that compacted and reread the
+    # master reads the same current state as one that kept every turn.
+    # The graph revision is the one exception: it signals a graph change someone else made,
+    # so it is compared with the last committed turn, which absorbed this chat's own Apply.
+    delta = None
+    if not must_bootstrap:
+        assert execution is not None and master_operation_id is not None
+        reference = recorded_master_values(execution.store, master_operation_id)
+        if reference is not None and previous is not None:
+            reference = _with_graph_revision(reference, previous.values)
+        delta = changed_since_master(
+            MasterRef(path=master_context_path, bootstrap=False, values=reference), values
+        )
     replaces = previous is not None and must_bootstrap
     if replaces:
         delta = {
-            **(delta or {}),
             "master_context": {
                 "version": CHAT_MASTER_CONTEXT_VERSION,
                 "path": master_context_path,
@@ -465,7 +496,11 @@ def chat_continuation_master(
             sha256=previous.master_sha256,
             path=previous.master_context_path,
         )
-        return MasterRef(path=path, bootstrap=force_bootstrap, values=previous.values)
+        return MasterRef(
+            path=path,
+            bootstrap=force_bootstrap,
+            values=recorded_master_values(execution.store, previous.master_operation_id),
+        )
     master = continuation_session_master(
         execution,
         local_stage=local_stage,

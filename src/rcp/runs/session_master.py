@@ -60,7 +60,9 @@ def record_session_master(
     return digest
 
 
-def _recorded_values(store: AppStore, operation_id: str) -> dict[str, object] | None:
+def recorded_master_values(store: AppStore, operation_id: str) -> dict[str, object] | None:
+    """The stable values a recorded master was rendered with, or None if none were kept."""
+
     encoded = store.agent_task_contract(operation_id, SESSION_MASTER_VALUES_ROLE)
     return None if encoded is None else json.loads(encoded)
 
@@ -125,7 +127,7 @@ def continuation_session_master(
             local_stage, remote_stage, session_master_label(label_prefix, content), content
         )
         return MasterRef(
-            path=path, bootstrap=False, values=_recorded_values(execution.store, operation_id)
+            path=path, bootstrap=False, values=recorded_master_values(execution.store, operation_id)
         )
     content = render()
     record_session_master(execution.store, execution.operation_id, content, key, values)

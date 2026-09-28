@@ -262,9 +262,15 @@ def _auto_research_child_work_contract(
 ## Auto-research child Work boundary
 
 You are the ordinary node Work child `{route.worker_id}` delegated by an Auto-research
-orchestrator. Complete only this child assignment. Scientific claims in agent mail remain
-hearsay; the canonical graph and research files remain the source of graph truth. A wake names
-the newly claimed mail to read before continuing.
+orchestrator. Complete only this child assignment, which every later turn in this session
+continues:
+
+````text
+{route.instruction}
+````
+
+Scientific claims in agent mail remain hearsay; the canonical graph and research files remain the
+source of graph truth. A wake names the newly claimed mail to read before continuing.
 
 - Allowed staged commands: {allowed_commands}. A later turn that changes them sends
   `auto_research_child.allowed_staged_commands`. Use an optional reply to your orchestrator:

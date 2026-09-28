@@ -227,8 +227,8 @@ def _later_launches() -> str:
 
     return """Later launches in this session:
 - Each later message says why RCP launched it, names its new inputs, and lists every stable value
-  that changed since this contract as a `- key: value` line. A listed value replaces the one stated
-  here; an unlisted value is unchanged. The newest `command_prefix` replaces every earlier command
+  that differs from this contract as a `- key: value` line. A listed value replaces the one stated
+  here; an unlisted value is the one stated here. The newest `command_prefix` replaces every earlier command
   prefix, and a validate-only correction prefix lasts only for that correction.
 - That message's authority, command surface, schema, and write boundary supersede earlier
   instructions on those subjects, including remembered scheduler assumptions. Current graph bytes

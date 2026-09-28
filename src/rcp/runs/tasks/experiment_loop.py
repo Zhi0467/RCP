@@ -111,10 +111,10 @@ from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
 from rcp.runs.session_master import (
     SESSION_MASTER_KEY_ROLE,
     SESSION_MASTER_ROLE,
-    _recorded_values,
     continuation_session_master,
     record_inline_prompt,
     record_session_master,
+    recorded_master_values,
     session_master_label,
     stage_session_master,
 )
@@ -809,7 +809,7 @@ def _experiment_master(
             path=session_master_label(_EXPERIMENT_MASTER_LABEL, content),
         )
         return MasterRef(
-            path=path, bootstrap=False, values=_recorded_values(execution.store, operation_id)
+            path=path, bootstrap=False, values=recorded_master_values(execution.store, operation_id)
         )
     return continuation_session_master(
         execution,
@@ -866,7 +866,7 @@ def _session_start_contract(
                 )
                 if started_key not in {None, key}:
                     return None
-                return durable.content, _recorded_values(execution.store, task.operation_id)
+                return durable.content, recorded_master_values(execution.store, task.operation_id)
     return None
 
 
