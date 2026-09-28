@@ -621,6 +621,9 @@ function preserveUnchangedProjectSlices(
   if (sameProjectSlice(previous.experiment_control, next.experiment_control)) {
     shared.experiment_control = previous.experiment_control;
   }
+  if (sameProjectSlice(previous.primary_question, next.primary_question)) {
+    shared.primary_question = previous.primary_question;
+  }
   return { ...next, ...shared };
 }
 
@@ -695,13 +698,24 @@ function applyProjectSnapshot(
     state.transitionCoordinator.canonical_heads[
       graphSessionKey(decodedProject.id, state.graphTarget)
     ];
-  const nextHead =
-    decodedProject.graph_head ??
-    (observedHead &&
+  const observedAtRevision =
+    observedHead &&
     sameGraphTarget(observedHead.target, state.graphTarget) &&
     observedHead.revision === nextGraph.revision
       ? observedHead
-      : { ...canonicalGraphHead(nextGraph.revision), target: state.graphTarget });
+      : null;
+  // Display caches written before snapshots named the transition id carry a
+  // null id. One revision of one target has one head, so the head already
+  // observed there is the exact one; taking the null id instead reads as a
+  // moved head and restarts the staged preview on every poll.
+  const snapshotHead = decodedProject.graph_head;
+  const nextHead =
+    snapshotHead && (snapshotHead.transition_id !== null || !observedAtRevision)
+      ? snapshotHead
+      : (observedAtRevision ?? {
+          ...canonicalGraphHead(nextGraph.revision),
+          target: state.graphTarget,
+        });
   const reconciliation = state.humanDraft
     ? authoritative
       ? reconcileHumanDraft(state.humanDraft, nextGraph)

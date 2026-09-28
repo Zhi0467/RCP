@@ -30,6 +30,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
 from rcp.config import ComputeConnectionConfig, MachineConfig
 from rcp.core.attention import decision_awaits_choice
+from rcp.core.materialize import MaterializationResult
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.constants import NODE_ADAPTER
@@ -1285,7 +1286,7 @@ def test_project_snapshot_counts_only_ripe_decisions_and_open_asserted_blockers(
         nodes={item.id: item for item in [*blockers, *decisions]},
     )
 
-    snapshot = app.state.service.project_snapshot(state=state)
+    snapshot = app.state.service.project_snapshot(materialization=MaterializationResult(state))
 
     assert snapshot["counts"]["decisions_awaiting_choice"] == 2
     assert snapshot["counts"]["open_blockers"] == 1
