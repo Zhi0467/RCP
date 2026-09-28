@@ -84,17 +84,17 @@ exercised only by the packaged app, so source behavior is no evidence for it.
 
 | Name on disk | Build | Use |
 | --- | --- | --- |
-| `/Applications/RCP.app` | the `desktop-vX.Y.Z` release download | the human's working app, on their real data |
+| `/Applications/RCP.app` | the `desktop-vX.Y.Z` release download | everyday use, on real data |
 | `RCP Candidate.app` | the `desktop-candidate.yml` artifact, renamed after unzipping; or `desktop:build` output, left in `target/release` | packaging, frozen-only, and pre-promotion checks |
 | `RCP Dev.app` | `npm --prefix web run desktop:build-dev` (`desktop:dev` runs unbundled) | branch work |
 
 Only the released download is ever named `RCP.app` outside `target/`. A
 candidate holds the exact bytes a release will publish, so it is renamed on
 disk rather than rebuilt under another name. `RCP Dev.app` has its own bundle
-identifier; the other two share one. All three still use the same backend port
-and default data directory, and one process owns a data directory (invariant
-8). Run a candidate or dev build with a throwaway `RCP_DATA_DIR`, never the
-human's, and quit the working app first. A file the backend reads at runtime
+identifier; the other two share one. All three bind the same backend port and
+default data directory, and one process owns a data directory (invariant 8),
+so only one runs at a time. Test builds get a throwaway `RCP_DATA_DIR`
+([docs/desktop.md](docs/desktop.md#build-and-test-a-release-candidate)). A file the backend reads at runtime
 must also be listed in `packaging/rcp_backend.spec` and checked in
 `packaging/hooks/validate_frozen_resources.py`.
 

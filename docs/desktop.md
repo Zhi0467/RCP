@@ -175,16 +175,17 @@ RCP_LIVE_SSH_TARGET=<ssh-alias-or-user@host> \
 
 To test the exact bytes a promotion would publish, run the `desktop-candidate.yml`
 workflow on the build, as described in [docs/release.md](release.md#what-to-check-before-promoting).
-Rename the unzipped `RCP.app` to `RCP Candidate.app` and keep it out of
-`/Applications`; `RCP.app` there is always the released download.
+Rename the unzipped `RCP.app` to `RCP Candidate.app`, following the
+[naming convention](../AGENTS.md#three-desktop-builds).
 
-Do not open the candidate through Finder. It shares the working app's bundle
-identifier, port, and default data directory, so a running working app would be
-focused or its backend reused instead. Quit the working app with Cmd+Q, confirm
-nothing answers on the port, then launch the candidate on throwaway data:
+Every desktop build binds backend port 8421 and defaults to the same data
+directory, and a candidate has the released app's bundle identifier. Opening a
+second copy with that identifier only focuses the running one, and a new app
+attaches to any backend already on the port. So a candidate is tested only
+when no other RCP is running, and on its own data:
 
 ```bash
-curl -fsS -m 3 http://127.0.0.1:8421/api/health && echo "quit the running RCP first"
+curl -fsS -m 3 http://127.0.0.1:8421/api/health && echo "another RCP is running; quit it first"
 open -n "RCP Candidate.app" --env RCP_DATA_DIR="$(mktemp -d)"
 ```
 
