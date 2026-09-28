@@ -79,6 +79,7 @@ from .helpers import (
     wait_for_task,
     write_local_test_manifest,
 )
+from .test_conversation_worktree_git import repository  # noqa: F401
 
 
 def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:
@@ -212,6 +213,7 @@ def _setup_auto_research(
     invocation_ceiling: int = 12,
     episode_id: str = "auto_research",
     graph_base_head: GraphHeadRef | None = None,
+    code_worktree: bool = False,
 ) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord, AgentTaskRecord]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     store = AppStore(tmp_path / "app.sqlite3")
@@ -232,6 +234,7 @@ def _setup_auto_research(
     root_request = AutoResearchRunRequest(
         episode_id=episode_id,
         role="orchestrator",
+        code_worktree=code_worktree,
         actor_operation_id="root",
         provider="codex",
         model="",
@@ -253,6 +256,8 @@ def _setup_auto_research(
             episode_id=episode_id,
             project_id="project",
             mode="auto_research",
+            code_worktree=code_worktree,
+            graph_isolation=True,
             graph_target=graph_target,
             graph_base_head=graph_base_head,
             status="queued",
@@ -295,6 +300,7 @@ def _setup_auto_research(
     worker_request = AutoResearchRunRequest(
         episode_id=episode_id,
         role="worker",
+        code_worktree=code_worktree,
         actor_operation_id="worker",
         provider="codex",
         model="",
@@ -539,6 +545,8 @@ def _enable_task_attribution(
 def _setup_branch_auto_research(
     main_service: ProjectService,
     tmp_path: Path,
+    *,
+    code_worktree: bool = False,
 ) -> tuple[
     ProjectService,
     AppStore,
@@ -554,6 +562,7 @@ def _setup_branch_auto_research(
         tmp_path,
         episode_id=episode_id,
         graph_base_head=base_head,
+        code_worktree=code_worktree,
     )
     _enable_task_attribution(main_service, store)
     assert episode.authorized_by is not None
@@ -3025,3 +3034,67 @@ def test_orchestrator_inbox_prompt_exposes_harvest_data_contract() -> None:
     suppression_values = get_args(get_args(annotation)[0])
     assert suppression_values
     assert all(value in prompt for value in suppression_values)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_grant", [False, True])
+async def test_isolated_orchestrator_launch_uses_owner_worktree(
+    manifest,
+    tmp_path: Path,
+    repository: Path,  # noqa: F811
+    monkeypatch,
+    late_grant: bool,
+) -> None:
+    previous_root = manifest.repository_map["repo-a"].path
+    manifest.path.write_text(manifest.path.read_text().replace(previous_root, str(repository)))
+    manifest.repository_map["repo-a"].path = str(repository)
+    service, store, episode, root, _worker = _setup_branch_auto_research(
+        _service(manifest, tmp_path), tmp_path / "store", code_worktree=True
+    )
+    store.upsert_project(
+        store.project("project").model_copy(update={"locator": str(manifest.path)})
+    )
+
+    if late_grant:
+        card = store.create_space_machine(name="local", host="", os_account="")
+        record_launch = auto_research_stream_module._record_agent_launch_receipt
+
+        def grant_after_scope(*args, **kwargs):
+            record_launch(*args, **kwargs)
+            store.update_space_machine(card.machine_id, writable_paths=[str(repository)])
+
+        monkeypatch.setattr(
+            auto_research_stream_module, "_record_agent_launch_receipt", grant_after_scope
+        )
+
+    def write_worktree(_contract, _workspace):
+        isolation = store.episode_isolation("project", episode.episode_id)
+        assert isolation is not None and isolation.worktree is not None
+        Path(isolation.worktree.worktree_path, "notes.txt").write_text("episode edit\n")
+
+    launcher = _WorkerLauncher(session_id="orchestrator-session", writer=write_worktree)
+    events = await _events(
+        stream_auto_research_orchestrator_run(
+            service,
+            launcher,
+            AutoResearchRunRequest.model_validate(root.request),
+            tmp_path / "data",
+            _execution(store, root),
+            command_dispatcher=_dispatcher(store),
+        )
+    )
+    if late_grant:
+        assert launcher.calls == 0
+        assert [event.text for event in events if event.event == "error"] == [
+            "episode_isolation_grant_overlap"
+        ]
+        return
+    assert launcher.calls == 1, [(event.event, event.text) for event in events]
+    isolation = store.episode_isolation("project", episode.episode_id)
+    assert isolation is not None and isolation.worktree is not None
+    binding = isolation.worktree
+    assert launcher.write_scopes[0].repository_roots == [binding.worktree_path]
+    assert binding.worktree_path in launcher.contracts[0]
+    assert Path(binding.worktree_path, "notes.txt").read_text() == "episode edit\n"
+    assert (repository / "notes.txt").read_text() == "initial\n"
+    assert store.episode_isolation_state("project", episode.episode_id).status == "ready"

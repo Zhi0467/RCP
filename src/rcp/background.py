@@ -425,12 +425,31 @@ class BackgroundAgentTasks:
         )
 
     def admit_provider_task(
-        self, project_id: str, request: AgentTaskRequest, *, execution_host: str | None = None
+        self,
+        project_id: str,
+        request: AgentTaskRequest,
+        *,
+        execution_host: str | None = None,
+        isolation_episode_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
     ) -> None:
         """Refuse an ineligible execution account before durable allocation or debit."""
 
         if request.provider is None:
             raise ValueError("Provider task admission requires a resolved provider.")
+        if isinstance(request, AutoResearchRunRequest) or (
+            isinstance(request, RunRequest)
+            and (request.patch_kind == "experiment_loop" or isolation_episode_id)
+        ):
+            from rcp.runs.episodes.isolation import validate_episode_admission
+
+            validate_episode_admission(
+                self.store,
+                project_id,
+                request,
+                episode_id=isolation_episode_id,
+                graph_target=graph_target,
+            )
         host = execution_host
         if host is None:
             if request.run_on in {None, "local"}:
@@ -1142,7 +1161,11 @@ class BackgroundAgentTasks:
 
         self._require_startup_effects_open("provider task admission")
         self.admit_provider_task(
-            project_id, request, execution_host=(stage_host or "") if stage_root else None
+            project_id,
+            request,
+            execution_host=(stage_host or "") if stage_root else None,
+            isolation_episode_id=parent.episode_id if parent else None,
+            graph_target=parent.graph_target if parent else graph_target,
         )
         episode: EpisodeRecord | None = None
         task_graph_target = (

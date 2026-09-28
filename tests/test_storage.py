@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -87,6 +88,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (25, "chat_display_v1"),
         (26, "chat_reads_and_pins_v1"),
         (27, "space_machines_v1"),
+        (28, "episode_isolation_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -1964,6 +1966,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "chat_reads": 0,
         "chat_pins": 0,
         "conversation_worktrees": 0,
+        "episode_isolations": 0,
+        "episode_isolation_states": 0,
         "compute_jobs": 0,
         "compute_backend_probes": 0,
         "watchers": 0,
@@ -3514,3 +3518,56 @@ def test_agent_task_result_retains_only_valid_bounded_artifact_descriptors(tmp_p
         "messages": ["answer"],
         "artifacts": [descriptor.model_dump(mode="json")],
     }
+
+
+def test_episode_isolation_identity_and_operation_state_survive_restart(tmp_path: Path) -> None:
+    from rcp.core.models import EpisodeIsolation
+
+    database = tmp_path / "isolation.sqlite3"
+    store = AppStore(database)
+    isolation = EpisodeIsolation(owner_episode_id="owner", graph_branch_id="branch")
+    assert store.create_episode_isolation("project", isolation) == isolation
+    assert store.create_episode_isolation("project", isolation) == isolation
+    with pytest.raises(ValidationError):
+        isolation.graph_branch_id = "replacement"
+    with pytest.raises(ValueError):
+        store.create_episode_isolation(
+            "project", isolation.model_copy(update={"graph_branch_id": "replacement"})
+        )
+    store.set_episode_isolation_status(
+        "project", "owner", expected_status="creating", status="ready"
+    )
+    reloaded = AppStore(database)
+    assert reloaded.episode_isolation("project", "owner") == isolation
+    assert reloaded.episode_isolation_for_branch("project", "branch") == isolation
+    assert reloaded.episode_isolation_state("project", "owner").status == "ready"
+    with pytest.raises(ValueError):
+        reloaded.set_episode_isolation_status(
+            "project", "owner", expected_status="creating", status="ready"
+        )
+    with reloaded.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM episode_isolations").fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT count(*) FROM episode_isolation_states").fetchone()[0] == 1
+        )
+
+
+def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.execute("CREATE TABLE episodes (episode_id TEXT, graph_target_json TEXT)")
+        connection.executemany(
+            "INSERT INTO episodes VALUES (?, ?)",
+            [
+                ("branch-owner", '{"kind":"branch","branch_id":"branch"}'),
+                ("main-owner", '{"kind":"main"}'),
+            ],
+        )
+        AppStore._migrate_episode_isolation(connection)
+        assert connection.execute(
+            "SELECT episode_id, isolation_owner_episode_id, code_worktree, graph_isolation FROM episodes ORDER BY episode_id"
+        ).fetchall() == [("branch-owner", None, 0, 1), ("main-owner", None, 0, 0)]
+        connection.execute(
+            "UPDATE episodes SET graph_isolation = 1 WHERE episode_id = 'main-owner'"
+        )
+        AppStore._migrate_episode_isolation(connection)
+        assert connection.execute("SELECT sum(graph_isolation) FROM episodes").fetchone()[0] == 2

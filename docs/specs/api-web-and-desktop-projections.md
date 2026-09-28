@@ -736,6 +736,14 @@ authority. Entering Agents closes node detail.
 
 ### Runs
 
+Episode Run requests expose `code_worktree` and `graph_isolation`. Auto-research
+defaults both to true and refuses `graph_isolation: false`. Experiment starts
+default both to false. Experiment graph-branch creation is not yet supported.
+The episode response publishes both choices and `isolation_owner_episode_id`.
+The binding is backend-owned; clients cannot supply worktree paths or an owner.
+Resume, Retry, and Add N turns keep the captured choices and owner.
+These fields have no Run-panel controls yet.
+
 Runs is the episode ledger. Its primary object is the durable Experiment-loop or
 Auto-research episode parent, never an invocation, graph node, or Blocker. It has
 three sections in order: **Needs Action**, **In progress**, then **Completed**.

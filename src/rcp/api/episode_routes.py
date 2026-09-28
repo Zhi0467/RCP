@@ -710,6 +710,8 @@ def _resolved_auto_research_start_request(
     profile = service.resolve_agent_profile("orchestrator")
     request = AutoResearchStartRequest(
         invocation_ceiling=body.invocation_ceiling,
+        code_worktree=body.code_worktree,
+        graph_isolation=body.graph_isolation,
         starting_instruction=body.starting_instruction,
         provider=profile.provider,
         model=profile.model,

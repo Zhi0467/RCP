@@ -21,13 +21,14 @@ graph history records their research meaning only through an admitted Patch.
 
 RCP schedules autonomous work only inside a human-authorized Auto-research
 episode with a fixed operational invocation budget. Every such episode writes
-research-graph changes to its persistent graph-only branch. Humans can inspect
+research-graph changes to its persistent graph branch. Humans can inspect
 and edit that branch with the ordinary graph, Inbox, and Discuss/Work controls,
 during and after the episode. Those conversations have their own sessions and
 authority. Main stays editable,
 and branch work reaches main only when a human dispatches the dedicated semantic
-merge task. Repository files and external effects are never branched or rolled
-back by that graph workflow.
+merge task. An episode may also bind one repository worktree. That code isolation
+is separate from graph truth and shares one owner across its children and
+continuations. External effects are never rolled back by the graph workflow.
 
 The paper introduction is human-authored and non-authoritative. Agent-created
 artifacts and reports help a researcher read work; they do not become graph

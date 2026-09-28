@@ -1905,6 +1905,9 @@ export interface AgentTaskContract {
 }
 
 export interface AgentTaskRequest {
+  code_worktree?: boolean;
+  graph_isolation?: boolean;
+  isolation_owner_episode_id?: string | null;
   worktree?: boolean;
   worktree_integration?: WorktreeIntegrationOption["id"] | null;
   provider?: ProviderId | null;
@@ -2312,6 +2315,9 @@ export interface AutoResearchRecoverySummary {
 }
 
 export interface Episode {
+  code_worktree: boolean;
+  graph_isolation: boolean;
+  isolation_owner_episode_id: string | null;
   episode_id: string;
   project_id: string;
   mode: EpisodeMode;
@@ -2485,6 +2491,8 @@ export interface EpisodeMessage {
 
 export interface StartEpisodeRequest {
   mode: "auto_research";
+  code_worktree?: boolean;
+  graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;
 }

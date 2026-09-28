@@ -62,6 +62,7 @@ class AppStoreBase:
         (25, "chat_display_v1"),
         (26, "chat_reads_and_pins_v1"),
         (27, "space_machines_v1"),
+        (28, "episode_isolation_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -608,6 +609,12 @@ class AppStoreBase:
             version=27,
             name="space_machines_v1",
             migration=self._migrate_space_machines,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=28,
+            name="episode_isolation_v1",
+            migration=self._migrate_episode_isolation,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2036,6 +2043,7 @@ class AppStoreBase:
         # upgrade for stores whose version-5 migration already completed.
         self._migrate_artifact_revision_candidates(connection)
         self._migrate_conversation_worktrees(connection)
+        self._migrate_episode_isolation(connection)
         self._migrate_compute_jobs(connection)
         self._migrate_external_watcher_actions(connection)
         self._migrate_child_work_watchers(connection)
@@ -2378,6 +2386,40 @@ class AppStoreBase:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS compute_jobs_origin ON compute_jobs(origin_operation_id)"
         )
+
+    @staticmethod
+    def _migrate_episode_isolation(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS episode_isolations (
+                project_id TEXT NOT NULL,
+                owner_episode_id TEXT NOT NULL,
+                graph_branch_id TEXT,
+                binding_json TEXT NOT NULL,
+                PRIMARY KEY(project_id, owner_episode_id),
+                UNIQUE(project_id, graph_branch_id)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS episode_isolation_states (
+                project_id TEXT NOT NULL,
+                owner_episode_id TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                PRIMARY KEY(project_id, owner_episode_id)
+            )
+        """)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(episodes)")}
+        for name, declaration in (
+            ("isolation_owner_episode_id", "TEXT"),
+            ("code_worktree", "INTEGER NOT NULL DEFAULT 0"),
+            ("graph_isolation", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE episodes ADD COLUMN {name} {declaration}")
+                if name == "graph_isolation":
+                    connection.execute(
+                        "UPDATE episodes SET graph_isolation = 1 "
+                        "WHERE json_extract(graph_target_json, '$.kind') = 'branch'"
+                    )
 
     @staticmethod
     def _migrate_conversation_worktrees(connection: sqlite3.Connection) -> None:

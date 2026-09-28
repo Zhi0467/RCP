@@ -153,6 +153,7 @@ def _service(manifest: Manifest, tmp_path: Path) -> ProjectService:
 
 def _auto_start(*, ceiling: int) -> AutoResearchStartRequest:
     return AutoResearchStartRequest(
+        code_worktree=False,
         invocation_ceiling=ceiling,
         provider="codex",
         model="",

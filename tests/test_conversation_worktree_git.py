@@ -358,3 +358,36 @@ def test_remote_branch_lookup_uses_local_bare_remote_and_reports_unavailability(
     result = run("remote_branch", binding=binding)
     assert result["remote_branch_exists"] is None
     assert result["remote_branch_reason"]
+
+
+def test_episode_uses_shared_worktree_lifecycle_and_fails_closed(repository: Path) -> None:
+    binding = run("plan", shared_path=str(repository), owner_episode_id="owner")
+    assert binding["owner_episode_id"] == "owner"
+    assert "chat_id" not in binding
+    run("create", binding=binding)
+    assert run("inspect", binding=binding)["ahead_count"] == 0
+    worktree = Path(binding["worktree_path"])
+    (worktree / "notes.txt").write_text("episode edit\n")
+    assert (repository / "notes.txt").read_text() == "initial\n"
+    assert run("create", binding=binding)["dirty_worktree"] == [" M notes.txt"]
+    worktree.rename(worktree.with_name("moved"))
+    with pytest.raises(ValueError):
+        run("inspect", binding=binding)
+
+
+@pytest.mark.parametrize(
+    "version,supported", [("2.37.9", False), ("2.38.0", True), ("3.0.0", True)]
+)
+def test_episode_git_version_probe_runs_on_execution_host(monkeypatch, version, supported) -> None:
+    commands = []
+
+    def probe(arguments, **kwargs):
+        commands.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, f"git version {version}\n", "")
+
+    monkeypatch.setattr(conversation_worktree.subprocess, "run", probe)
+    assert run("git_version") == {
+        "version": [int(part) for part in version.split(".")],
+        "supported": supported,
+    }
+    assert commands == [["git", "--version"]]

@@ -111,6 +111,27 @@ class ExperimentStoreMixin:
             continues_episode_id=continues_episode_id,
             continuation_request_id=continuation_request_id,
         )
+        source = self.episode(continues_episode_id) if continues_episode_id else None
+        isolation_parent = source or parent_episode or graph_branch
+        if isolation_parent is not None:
+            episode = episode.model_copy(
+                update={
+                    "isolation_owner_episode_id": isolation_parent.isolation_owner_episode_id
+                    or isolation_parent.episode_id,
+                    "code_worktree": isolation_parent.code_worktree,
+                    "graph_isolation": isolation_parent.graph_isolation,
+                }
+            )
+            record = record.model_copy(
+                update={
+                    "request": {
+                        **record.request,
+                        "isolation_owner_episode_id": episode.isolation_owner_episode_id,
+                        "code_worktree": episode.code_worktree,
+                        "graph_isolation": episode.graph_isolation,
+                    }
+                }
+            )
         self._validate_new_episode(episode)
         self._validate_experiment_watcher_ids(record, ids)
         try:
@@ -509,6 +530,9 @@ class ExperimentStoreMixin:
             episode_id=episode_id,
             project_id=record.project_id,
             mode="experiment_loop",
+            isolation_owner_episode_id=episode_id,
+            code_worktree=bool(request.get("code_worktree", False)),
+            graph_isolation=bool(request.get("graph_isolation", False)),
             control_node_id=control_node_id,
             graph_target=record.graph_target,
             graph_base_head=graph_base_head,

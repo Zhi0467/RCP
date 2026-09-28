@@ -23,7 +23,12 @@ from rcp.agents.write_scope import (
     _reject_broad_repository_root,
     _reject_repository_ownership_overlap,
 )
-from rcp.core.models import ConversationWorktreeBinding
+from rcp.core.models import (
+    ConversationWorktreeBinding,
+    EpisodeIsolation,
+    EpisodeWorktreeBinding,
+    WorktreeBinding,
+)
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import WORKTREE_GIT_TIMEOUT_SECONDS
 from rcp.service import ProjectService, RunRequest
@@ -65,7 +70,7 @@ def worktree_command(
     *,
     host: str,
     operation: str,
-    binding: ConversationWorktreeBinding | None = None,
+    binding: WorktreeBinding | None = None,
     **values: object,
 ) -> dict:
     payload = {
@@ -212,6 +217,103 @@ def _validate_creation_roots(
         )
 
 
+def _plan_worktree(
+    service: ProjectService,
+    store: AppStore,
+    project_id: str,
+    request: RunRequest,
+    **owner: str,
+) -> dict:
+    repository = _repository(service, request)
+    host = service.manifest.machine_map[repository.machine].host
+    facts = worktree_command(
+        store, host=host, operation="plan", shared_path=repository.path, **owner
+    )
+    if not host:
+        destination = Path(facts["worktree_path"])
+        data = store.path.parent.resolve()
+        if destination == data or data in destination.parents or destination in data.parents:
+            raise ValueError("A worktree cannot be inside the RCP data directory.")
+    _validate_creation_roots(service, store, project_id, request, facts)
+    return {
+        **facts,
+        "repository_alias": repository.alias,
+        "machine": repository.machine,
+        "execution_host": host,
+    }
+
+
+def _require_episode_git(store: AppStore, host: str) -> None:
+    facts = worktree_command(store, host=host, operation="git_version")
+    if not facts["supported"]:
+        version = ".".join(str(part) for part in facts["version"])
+        raise ValueError(f"Episode code isolation requires Git 2.38 or later; found {version}.")
+
+
+def plan_episode_worktree(
+    service: ProjectService,
+    store: AppStore,
+    project_id: str,
+    request: RunRequest,
+    owner_episode_id: str,
+) -> EpisodeWorktreeBinding:
+    repository = _repository(service, request)
+    _require_episode_git(store, service.manifest.machine_map[repository.machine].host)
+    return EpisodeWorktreeBinding(
+        **_plan_worktree(
+            service,
+            store,
+            project_id,
+            request,
+            owner_episode_id=owner_episode_id,
+        )
+    )
+
+
+def ensure_episode_worktree(
+    service: ProjectService,
+    store: AppStore,
+    project_id: str,
+    request: RunRequest,
+    isolation: EpisodeIsolation,
+) -> None:
+    """Recover creation only; a ready binding must still exist exactly as bound."""
+    state = store.episode_isolation_state(project_id, isolation.owner_episode_id)
+    if state is None or state.status not in {"creating", "ready"}:
+        raise ValueError("Episode isolation is unavailable for launch.")
+    binding = isolation.worktree
+    if binding is not None:
+        repository = _repository(service, request)
+        if (
+            binding.repository_alias != repository.alias
+            or binding.machine != repository.machine
+            or binding.execution_host != service.manifest.machine_map[repository.machine].host
+        ):
+            raise ValueError("The launch no longer matches its episode worktree binding.")
+        _require_episode_git(store, binding.execution_host)
+        facts = worktree_command(
+            store,
+            host=binding.execution_host,
+            operation="canonicalize",
+            paths=[repository.path],
+            shared_path=repository.path,
+        )
+        if facts["canonical"][repository.path] != binding.shared_path:
+            raise ValueError("The registered repository moved after its worktree was bound.")
+        if state.status == "creating":
+            _validate_creation_roots(service, store, project_id, request, binding.model_dump())
+        worktree_command(
+            store,
+            host=binding.execution_host,
+            operation="create" if state.status == "creating" else "inspect",
+            binding=binding,
+        )
+    if state.status == "creating":
+        store.set_episode_isolation_status(
+            project_id, isolation.owner_episode_id, expected_status="creating", status="ready"
+        )
+
+
 def admit_conversation_worktree(
     service: ProjectService, store: AppStore, project_id: str, request: RunRequest
 ) -> RunRequest:
@@ -227,26 +329,13 @@ def admit_conversation_worktree(
             raise ValueError(
                 "Worktree selection is fixed by the first Work turn. Start a new chat."
             )
-        repository = _repository(service, request)
-        host = service.manifest.machine_map[repository.machine].host
-        facts = worktree_command(
-            store, host=host, operation="plan", shared_path=repository.path, chat_id=request.chat_id
-        )
-        if not host:
-            destination = Path(facts["worktree_path"])
-            data = store.path.parent.resolve()
-            if destination == data or data in destination.parents or destination in data.parents:
-                raise ValueError("A conversation worktree cannot be inside the RCP data directory.")
-        _validate_creation_roots(service, store, project_id, request, facts)
+        facts = _plan_worktree(service, store, project_id, request, chat_id=request.chat_id)
         binding = store.create_conversation_worktree(
             ConversationWorktreeBinding(
                 **facts,
                 project_id=project_id,
                 chat_scope=request.chat_scope,
                 node_id=request.node_id,
-                repository_alias=repository.alias,
-                machine=repository.machine,
-                execution_host=host,
             )
         )
     if binding is None:

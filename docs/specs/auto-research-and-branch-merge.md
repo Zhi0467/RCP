@@ -134,19 +134,22 @@ does not change main revision, main materialization, main control, or ordinary
 main watchers. Human Sync, ordinary Work, and unrelated project work may keep
 advancing main while the episode runs.
 
-## Graph-only boundary
+## Graph and code isolation
 
-The branch covers canonical research-graph state only. Auto-research repository
-work uses the real project repositories under exact provider-native write
-containment. Provider sessions, external jobs, artifacts, and files remain in
-their ordinary locations.
+The graph branch covers canonical research state. Code isolation is a separate
+Run choice and defaults on. Graph isolation stays on for every Auto-research
+episode. Its Decision exception remains branch-only.
 
-This graph branch creates no Git branch or worktree and provides no repository
-rollback, branch discard, or whole-project sandbox. Ordinary conversations may
-independently bind a [repository worktree](conversations-episodes-and-watchers.md#conversation-worktrees);
-episodes and workers do not. Graph merge neither copies nor replays repository files. A
-failed or merged graph branch persists as an audit trail even when its operational
-work already changed a repository.
+The root episode owns the optional Git worktree. Children, continuations, and
+human-started Experiments on its graph branch resolve the same immutable
+[isolation binding](conversations-episodes-and-watchers.md#episode-isolation).
+They write the worktree instead of the shared checkout. Turning code isolation
+off keeps ordinary repository write scope. Neither choice changes graph truth
+membership or provides repository rollback.
+
+Graph merge still neither copies nor replays repository files. A failed or merged
+graph branch persists as an audit trail. Code merge and cleanup remain separate
+unfinished work in the episode isolation handoff.
 
 ## Mail and lifecycle notices
 

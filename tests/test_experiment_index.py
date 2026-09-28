@@ -120,6 +120,7 @@ def _record_loop(
     operation_id: str,
     created_at: str,
     node_id: str = "exp/launched",
+    graph_target: GraphTargetRef | None = None,
 ) -> None:
     request = RunRequest(
         provider="codex",
@@ -146,6 +147,7 @@ def _record_loop(
             operation_id=operation_id,
             project_id=project_id,
             episode_id=episode_id,
+            graph_target=graph_target or GraphTargetRef(),
             kind="node_chat",
             status="queued",
             request=request.model_dump(mode="json"),
@@ -960,6 +962,41 @@ def test_experiment_index_skips_an_orphan_main_runtime(manifest, tmp_path: Path)
 
     assert response.status_code == 200
     assert [entry["episode"]["episode_id"] for entry in response.json()] == [current_episode]
+
+
+def test_human_branch_experiment_index_preserves_own_parentage(manifest, tmp_path) -> None:
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    append_fixture_patch(app.state.service, seed_patch())
+    append_fixture_patch(app.state.service, _experiment_patch())
+    project_id = app.state.default_project_id
+    assert project_id is not None
+    owner, _ = _record_branch_target_child_experiment(app)
+    store = app.state.background_tasks.store
+    episode_id = str(uuid.uuid4())
+    _record_loop(
+        store,
+        project_id,
+        episode_id=episode_id,
+        operation_id="human-branch-loop",
+        created_at=store.now(),
+        node_id="exp/never-run",
+        graph_target=owner.graph_target,
+    )
+    assert store.auto_research_child_experiment(episode_id) is None
+    client = TestClient(app)
+    for path in (
+        f"/api/projects/{project_id}/experiment-episodes?mode=experiment_loop",
+        "/api/episodes?mode=experiment_loop",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        entry = next(
+            item for item in response.json() if item["episode"]["episode_id"] == episode_id
+        )
+        assert entry["parent_episode_id"] is None
+        assert entry["parent_watching"] is False
+        assert entry["graph_target"] == owner.graph_target.model_dump(mode="json")
+        assert entry["episode"]["isolation_owner_episode_id"] == owner.episode_id
 
 
 def test_branch_modified_child_experiment_uses_exact_target_across_index_and_stop(

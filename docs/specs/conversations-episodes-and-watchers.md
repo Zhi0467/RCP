@@ -98,8 +98,8 @@ and worktree paths, Git common metadata directory, real worktree and starting
 branch names, and starting commit.
 The new branch starts at the shared checkout's captured commit; uncommitted
 shared edits are excluded. Detached starting HEAD is refused. A deterministic
-sibling path and branch derive from the chat id. No worktree belongs to an
-episode or worker, and a path alone never establishes a binding.
+sibling path and branch derive from the chat id. Episodes use the same worktree
+binding path with an episode owner. A path alone never establishes a binding.
 
 Every later Discuss or Work turn uses the bound repository pointer. Discuss
 still has no repository write authority. Native continuation, Pause, Resume,
@@ -211,6 +211,34 @@ The parent owns identity, human authorizer, graph target, lifecycle, durable
 ending, native-session binding, operational ceiling, Stop state, report state,
 and restart reconciliation. Mode adapters own their distinct admission,
 authority, watcher/child settlement, and compact wrap-up facts.
+
+### Episode isolation
+
+Run captures independent code and graph isolation choices. Auto-research defaults
+both on and keeps graph isolation locked on. Experiments default both off.
+Creating an Experiment graph branch is not yet supported. An Experiment with
+graph isolation off keeps its existing graph target.
+
+The episode that first creates isolation owns one immutable `EpisodeIsolation`.
+It records the owner id, optional graph branch id, and optional worktree identity
+before the first provider launch. Worktree identity pins the repository alias,
+machine, execution host, shared path, worktree path, Git common directory, branch,
+starting branch, and starting commit. Operation state is stored separately.
+The choices cannot change after the first launch.
+
+Auto-research children, Add N turns continuations, and human-started Experiments
+on the owner's branch store `isolation_owner_episode_id`. They resolve that
+owner's binding and never create another one. Their execution host must match
+the worktree binding. Graph truth membership is unchanged.
+
+Code isolation requires exactly one run-scope repository and Git 2.38 or later
+on the execution host. The shipped worktree script probes the Git version.
+A machine writable-path grant covering the shared checkout refuses admission.
+Every launch rechecks grants and the exact binding. Work and orchestrate receive
+the worktree as their repository write root. The shared checkout is not writable.
+
+Recovery, Resume, Retry, and restart retain the binding. A missing or moved
+worktree fails before launch. No path falls back to the shared checkout.
 
 The parent's recorded human authorizer is the authority for every turn inside the
 episode, so a different current human pressing Resume or Retry cannot stand in for

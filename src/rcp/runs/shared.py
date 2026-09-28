@@ -765,6 +765,14 @@ async def _stream_agent_events(
     Terminal and labelled events are withheld from the wire: the caller decides
     what a completed run, an answer, or a trace is worth in its own protocol.
     """
+    if execution is not None and write_scope is not None:
+        from rcp.runs.episodes.isolation import validate_episode_launch
+
+        task = execution.store.agent_task(execution.operation_id)
+        if task is not None and task.episode_id is not None:
+            await asyncio.to_thread(
+                validate_episode_launch, execution.store, task.episode_id, write_scope
+            )
     remote_pid_file = (
         str(remote_stage.root / f"agent-{uuid.uuid4()}.pid")
         if execution is not None and remote_stage is not None and remote_stage.root

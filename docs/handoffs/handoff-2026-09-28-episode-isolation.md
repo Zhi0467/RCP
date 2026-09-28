@@ -4,8 +4,11 @@ Date: 2026-09-28
 Status: scope and design confirmed by the human on 2026-09-28, after a grilling
 round that settled every open choice below. The xhigh design review ran the
 same day; its eleven findings are folded in, and one choice it raised was
-settled by the human (Auto-research keeps the graph toggle on). Nothing is
-implemented. The slices at the end run in order.
+settled by the human (Auto-research keeps the graph toggle on). Slice 1, Binding,
+is implemented. It includes persisted owner identity and operation state,
+inherited bindings, Run admission, launch write roots, and fail-closed recovery.
+The API exposes the toggles. Experiment graph-branch creation, merge, diff, and
+web controls remain in slices 2–7. The settled choices below are unchanged.
 
 Close this handoff when, on disposable data:
 
@@ -302,7 +305,7 @@ graph is its most severe path.
 
 Each slice is one Codex implementation pass, reviewed once as it lands.
 
-1. **Binding.** `EpisodeIsolation` storage and its separate operation state,
+1. **Binding — implemented.** `EpisodeIsolation` storage and its separate operation state,
    the chat-or-episode worktree owner, `isolation_owner_episode_id` resolution
    for children, continuations, and branch Experiments, Run admission (one
    repository, Git version, grant overlap, host compatibility, Auto-research

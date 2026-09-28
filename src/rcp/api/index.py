@@ -391,12 +391,14 @@ def _experiment_episode_entries(
                     and set(watcher.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
                     for watcher in active_graph_watchers
                 )
-                if target.kind == "branch" and not episode_on_branch(
-                    store, parent_episode_id, target.branch_id
-                ):
-                    raise ValueError(
-                        "Branch-target Experiment lost its Auto-research parent identity."
+                if target.kind == "branch":
+                    binding_episode_id = (
+                        parent_episode_id
+                        if route is not None
+                        else episode.isolation_owner_episode_id or episode.episode_id
                     )
+                    if not episode_on_branch(store, binding_episode_id, target.branch_id):
+                        raise ValueError("Branch-target Experiment lost its graph binding.")
                 if target.kind == "main":
                     controls = (
                         completed_cached.get("experiment_control") if completed_cached else None

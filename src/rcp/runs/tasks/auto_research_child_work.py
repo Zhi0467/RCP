@@ -556,13 +556,6 @@ async def _stage_auto_research_child_work_turn(
                 artifact_scope_id,
                 reuse=resuming,
             )
-        read_dirs = _chat_read_dirs(
-            context,
-            local_stage,
-            remote_stage,
-            service,
-            resolved.execution_machine_alias,
-        )
         write_scope = _project_write_scope(
             context,
             service,
@@ -573,6 +566,14 @@ async def _stage_auto_research_child_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+            episode_request=request,
+        )
+        read_dirs = _chat_read_dirs(
+            context,
+            local_stage,
+            remote_stage,
+            service,
+            resolved.execution_machine_alias,
         )
         compute_commands = WorkComputeCommands(
             execution, service.manifest, write_scope, remote_stage, route.episode_id

@@ -111,6 +111,8 @@ class StartEpisodeBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["auto_research"]
+    code_worktree: bool = True
+    graph_isolation: Literal[True] = True
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(
         default=None,
@@ -280,6 +282,9 @@ class EpisodeResponse(BaseModel):
     episode_id: str
     project_id: str
     mode: EpisodeMode
+    code_worktree: bool
+    graph_isolation: bool
+    isolation_owner_episode_id: str | None
     control_node_id: str | None
     graph_target: GraphTargetRef
     graph_base_head: GraphHeadRef | None
@@ -447,6 +452,9 @@ def serialize_episode(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
         mode=episode.mode,
+        code_worktree=episode.code_worktree,
+        graph_isolation=episode.graph_isolation,
+        isolation_owner_episode_id=episode.isolation_owner_episode_id,
         control_node_id=episode.control_node_id,
         graph_target=episode.graph_target,
         graph_base_head=episode.graph_base_head,

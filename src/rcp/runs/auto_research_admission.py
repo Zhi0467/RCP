@@ -181,6 +181,8 @@ def continue_auto_research(
     run_request = previous_root.model_copy(
         update={
             "episode_id": episode_id,
+            "code_worktree": source.code_worktree,
+            "graph_isolation": source.graph_isolation,
             "role": "orchestrator",
             "actor_operation_id": operation_id,
             "control_node_id": None,
@@ -216,6 +218,9 @@ def continue_auto_research(
         updated_at=now,
         continues_episode_id=source.episode_id,
         continuation_request_id=request_id,
+        code_worktree=source.code_worktree,
+        graph_isolation=source.graph_isolation,
+        isolation_owner_episode_id=source.isolation_owner_episode_id or source.episode_id,
     )
     task = AgentTaskRecord(
         operation_id=operation_id,
@@ -314,6 +319,9 @@ def reserve_auto_research(
         graph_base_head=graph_base_head,
         status="queued",
         invocation_ceiling=request.invocation_ceiling,
+        code_worktree=request.code_worktree,
+        graph_isolation=request.graph_isolation,
+        isolation_owner_episode_id=episode_id,
         authorized_by=authorized_by,
         created_at=now,
         updated_at=now,
@@ -450,6 +458,13 @@ def start_auto_research_turn(
     """Admit one operational actor turn from the episode invocation budget."""
 
     episode = auto_research_for_request(tasks, episode_id, request)
+    if request.role == "worker":
+        request = request.model_copy(
+            update={
+                "code_worktree": episode.code_worktree,
+                "graph_isolation": episode.graph_isolation,
+            }
+        )
     operation_id = operation_id or str(uuid.uuid4())
     parent = _auto_research_parent(tasks, episode, parent_operation_id)
     parent_role = tasks.store.auto_research_invocation_role(parent.operation_id)
@@ -857,6 +872,13 @@ def start_auto_research_child_work(
             "An Auto-research spawn must be a fresh ordinary node Work request with its "
             "exact snapshotted instruction and stable worker conversation id."
         )
+    request = request.model_copy(
+        update={
+            "isolation_owner_episode_id": episode.isolation_owner_episode_id or episode.episode_id,
+            "code_worktree": episode.code_worktree,
+            "graph_isolation": episode.graph_isolation,
+        }
+    )
     tasks._validate_request_type("node_chat", request)
     operation_id = worker_id
     request_data = request.model_dump(mode="json")
@@ -906,7 +928,7 @@ def start_auto_research_child_work(
         created_at=now,
         updated_at=now,
     )
-    tasks.admit_provider_task(episode.project_id, request)
+    tasks.admit_provider_task(episode.project_id, request, isolation_episode_id=episode.episode_id)
     _, stored = tasks.store.create_auto_research_child_work(
         route,
         task,
@@ -1116,7 +1138,7 @@ def _start_auto_research_child_work_wake(
         authorized_by=episode.authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(episode.project_id, request)
+    tasks.admit_provider_task(episode.project_id, request, isolation_episode_id=episode.episode_id)
     if continuation == "watcher_wake":
         stored = tasks.store.create_auto_research_child_work_watcher_wake_task(
             task,
@@ -1388,7 +1410,7 @@ def start_auto_research_child_experiment(
         authorized_by=parent.authorized_by,
         dispatch_authority=dispatch_authority,
     )
-    tasks.admit_provider_task(route.project_id, request)
+    tasks.admit_provider_task(route.project_id, request, graph_target=parent.graph_target)
     stored = tasks.store.create_experiment_episode_with_invocation(
         task,
         request.watcher_ids,

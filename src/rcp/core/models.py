@@ -27,15 +27,11 @@ EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH = 300
 EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS = 12
 
 
-class ConversationWorktreeBinding(BaseModel):
-    """Durable, immutable repository identity owned by one ordinary chat."""
+class WorktreeBinding(BaseModel):
+    """Immutable repository identity shared by chat and episode owners."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    project_id: str = Field(min_length=1)
-    chat_id: str
-    chat_scope: Literal["node", "project"]
-    node_id: str | None = None
     repository_alias: str = Field(min_length=1)
     machine: str = Field(min_length=1)
     execution_host: str
@@ -45,6 +41,48 @@ class ConversationWorktreeBinding(BaseModel):
     branch: str = Field(min_length=1)
     starting_branch: str = Field(min_length=1)
     starting_commit: str = Field(min_length=1)
+
+    @field_validator("git_common_dir")
+    @classmethod
+    def absolute_git_common_dir(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts or str(path) != value:
+            raise ValueError("Git metadata directory must be absolute and normalized")
+        return value
+
+
+class EpisodeWorktreeBinding(WorktreeBinding):
+    owner_episode_id: str = Field(min_length=1)
+
+
+class EpisodeIsolation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    owner_episode_id: str = Field(min_length=1)
+    graph_branch_id: str | None = None
+    worktree: EpisodeWorktreeBinding | None = None
+
+    @model_validator(mode="after")
+    def validate_owner(self) -> EpisodeIsolation:
+        if self.worktree and self.worktree.owner_episode_id != self.owner_episode_id:
+            raise ValueError("episode worktree must belong to its isolation owner")
+        return self
+
+
+class EpisodeIsolationState(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    owner_episode_id: str = Field(min_length=1)
+    status: Literal["creating", "ready", "merging", "removing", "removed"] = "creating"
+
+
+class ConversationWorktreeBinding(WorktreeBinding):
+    """Durable repository identity and legacy chat operation-state projection."""
+
+    project_id: str = Field(min_length=1)
+    chat_id: str
+    chat_scope: Literal["node", "project"]
+    node_id: str | None = None
     status: Literal["creating", "ready", "removing", "removed"] = "creating"
 
     @field_validator("chat_id")
@@ -52,14 +90,6 @@ class ConversationWorktreeBinding(BaseModel):
     def canonical_chat_id(cls, value: str) -> str:
         if str(uuid.UUID(value)) != value:
             raise ValueError("conversation worktree chat id must be a canonical UUID")
-        return value
-
-    @field_validator("git_common_dir")
-    @classmethod
-    def absolute_git_common_dir(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if not path.is_absolute() or ".." in path.parts or str(path) != value:
-            raise ValueError("conversation Git metadata directory must be absolute and normalized")
         return value
 
     @model_validator(mode="after")

@@ -895,6 +895,9 @@ class RunRequest(BaseModel):
     chat_id: str | None = None
     session_id: str | None = None
     mode: ConversationMode = "discuss"
+    isolation_owner_episode_id: str | None = None
+    code_worktree: bool = False
+    graph_isolation: bool = False
     worktree: bool = Field(default=False, exclude_if=lambda value: not value)
     worktree_integration: Literal["pull_request", "starting_branch", "default_branch"] | None = (
         Field(default=None, exclude_if=lambda value: value is None)

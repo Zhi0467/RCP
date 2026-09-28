@@ -10,6 +10,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -48,11 +49,15 @@ def _checkout(root: Path, *, timeout: float) -> None:
         raise ValueError(f"Registered repository must be a Git checkout root: {root}")
 
 
-def _names(shared: Path, chat_id: str) -> tuple[Path, str]:
-    if not chat_id:
-        raise ValueError("Worktree binding requires a chat id")
-    digest = hashlib.sha256(chat_id.encode()).hexdigest()[:24]
-    return shared.parent / f"{shared.name}-rcp-{digest}", f"rcp/chat-{digest}"
+def _names(shared: Path, owner: dict) -> tuple[Path, str]:
+    episode_id = owner.get("owner_episode_id")
+    owner_id = episode_id or owner.get("chat_id")
+    if not owner_id or (episode_id and owner.get("chat_id")):
+        raise ValueError("Worktree binding requires exactly one owner")
+    kind = "episode" if episode_id else "chat"
+    identity = f"episode:{owner_id}" if episode_id else owner_id
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:24]
+    return shared.parent / f"{shared.name}-rcp-{digest}", f"rcp/{kind}-{digest}"
 
 
 def _branch_exists(root: Path, branch: str, *, timeout: float) -> bool:
@@ -120,7 +125,7 @@ def _validate(
 ) -> tuple[Path, Path]:
     shared = _directory(binding["shared_path"], require_owner=require_owner)
     worktree = _directory(binding["worktree_path"], require_owner=require_owner)
-    expected_path, expected_branch = _names(shared, binding["chat_id"])
+    expected_path, expected_branch = _names(shared, binding)
     if (
         str(shared) != binding["shared_path"]
         or worktree != expected_path
@@ -223,6 +228,17 @@ def execute(payload: dict) -> dict:
         raise ValueError("Git timeout must be positive")
     require_owner = bool(payload.get("require_owner", False))
     operation = payload["operation"]
+    if operation == "git_version":
+        result = subprocess.run(
+            ["git", "--version"], capture_output=True, text=True, timeout=timeout, check=False
+        )
+        if result.returncode:
+            raise ValueError(result.stderr.strip() or "Git version is unavailable")
+        match = re.search(r"git version (\d+)\.(\d+)(?:\.(\d+))?", result.stdout)
+        if match is None:
+            raise ValueError("Git version is unavailable")
+        version = [int(part or 0) for part in match.groups()]
+        return {"version": version, "supported": version >= [2, 38, 0]}
     if operation == "canonicalize":
         canonical = {}
         for value in payload["paths"]:
@@ -248,7 +264,7 @@ def execute(payload: dict) -> dict:
         )
         if not branch:
             raise ValueError("Cannot bind a worktree from a detached HEAD")
-        path, name = _names(shared, payload["chat_id"])
+        path, name = _names(shared, payload)
         if (
             path.exists()
             or path.is_symlink()
@@ -259,7 +275,11 @@ def execute(payload: dict) -> dict:
                 "Conversation worktree path or branch already exists without a binding"
             )
         return {
-            "chat_id": payload["chat_id"],
+            **(
+                {"owner_episode_id": payload["owner_episode_id"]}
+                if payload.get("owner_episode_id")
+                else {"chat_id": payload["chat_id"]}
+            ),
             "shared_path": str(shared),
             "worktree_path": str(path),
             "branch": name,
@@ -272,7 +292,7 @@ def execute(payload: dict) -> dict:
         shared = _directory(binding["shared_path"], require_owner=require_owner)
         _checkout(shared, timeout=timeout)
         _bound_common_dir(shared, binding, timeout=timeout)
-        path, branch = _names(shared, binding["chat_id"])
+        path, branch = _names(shared, binding)
         if (str(shared), str(path), branch) != (
             binding["shared_path"],
             binding["worktree_path"],
@@ -333,7 +353,7 @@ def execute(payload: dict) -> dict:
         shared = _directory(binding["shared_path"], require_owner=require_owner)
         _checkout(shared, timeout=timeout)
         _bound_common_dir(shared, binding, timeout=timeout)
-        path, branch = _names(shared, binding["chat_id"])
+        path, branch = _names(shared, binding)
         if (str(shared), str(path), branch) != (
             binding["shared_path"],
             binding["worktree_path"],

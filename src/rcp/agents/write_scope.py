@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents.context import RepositoryPointer
 from rcp.config import Manifest, RepositoryConfig
-from rcp.core.models import ConversationWorktreeBinding
+from rcp.core.models import ConversationWorktreeBinding, EpisodeWorktreeBinding, WorktreeBinding
 from rcp.providers import AgentCapability
 from rcp.rcp_home import command_socket_directory, short_socket_root
 from rcp.transport.run_stage import RemoteRunStage
@@ -184,7 +184,7 @@ def resolve_project_write_scope(
     app_data_dir: Path | None,
     repository_inventory: list[RegisteredRepositoryRoot],
     additional_protected_write_paths: list[str] | None = None,
-    conversation_worktree: ConversationWorktreeBinding | None = None,
+    conversation_worktree: WorktreeBinding | None = None,
     include_shared_checkout: bool = False,
     machine_writable_paths: list[str] | None = None,
 ) -> ProjectWriteScope:
@@ -192,7 +192,9 @@ def resolve_project_write_scope(
 
     A scope that writes repositories also receives the execution machine's
     space-level writable paths and the default temporary roots. RCP's own
-    storage inside any of them stays read-only.
+    storage inside any of them stays read-only. Episode worktrees refuse explicit
+    grants overlapping the shared checkout and omit implicit temporary grants
+    covering it, while retaining the exact writable Git common directory.
     """
 
     if capability not in {"work_auto", "orchestrate"}:
@@ -231,12 +233,15 @@ def resolve_project_write_scope(
     if include_shared_checkout and binding is None:
         raise ValueError("shared checkout integration requires a conversation worktree binding")
     if binding is not None:
-        if capability != "work_auto":
-            raise ValueError("conversation worktrees require ordinary Work capability")
-        if binding.status != "ready":
-            raise ValueError("conversation worktree is not ready")
+        if isinstance(binding, ConversationWorktreeBinding):
+            if capability != "work_auto":
+                raise ValueError("conversation worktrees require ordinary Work capability")
+            if binding.status != "ready":
+                raise ValueError("conversation worktree is not ready")
+        elif include_shared_checkout:
+            raise ValueError("episode launches cannot admit the shared checkout")
         if (
-            binding.project_id != project_id
+            (isinstance(binding, ConversationWorktreeBinding) and binding.project_id != project_id)
             or binding.machine != execution_machine
             or binding.execution_host != machine.host
         ):
@@ -283,6 +288,16 @@ def resolve_project_write_scope(
         remote_stage=remote_stage,
         require_writable=True,
     )
+    if isinstance(binding, EpisodeWorktreeBinding):
+        shared_root = canonical[binding.shared_path]
+        for grant in machine_writable_paths or []:
+            if path_semantics.overlaps(canonical[grant], shared_root):
+                raise ValueError("episode machine writable grant overlaps the shared checkout")
+        declared_grants = [
+            grant
+            for grant in declared_grants
+            if not path_semantics.overlaps(canonical[grant], shared_root)
+        ]
     canonical_stage = canonical[stage_root]
     canonical_workspace = canonical[workspace_root]
     if remote_stage is not None:

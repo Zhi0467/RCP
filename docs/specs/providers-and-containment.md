@@ -337,7 +337,7 @@ stage still resumes until a later release removes it.
 
 ## Provider enforcement
 
-A durable conversation worktree binding replaces exactly one registered alias's
+A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine and host.
 Catalog ownership and overlap checks validate the registered checkout and
 the planned sibling before creation, and the replacement before launch. The
@@ -347,6 +347,11 @@ admitting shared checkout files. The scope prompt renders this same root. The sh
 Discuss receives the same worktree pointer as read context only. A
 human-selected local integration turn alone admits both exact roots. Its target
 is backend-resolved and persisted, never taken from a client-supplied path.
+
+Episode Work and orchestrate use the owner's binding. They never receive the
+shared checkout as a repository write root. Each launch refuses a machine grant
+covering that checkout. A default temporary grant that covers it is omitted.
+Repository context renders the same bound worktree used by enforcement.
 
 ### Codex
 
