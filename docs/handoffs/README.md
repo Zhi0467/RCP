@@ -4,7 +4,7 @@
   — design confirmed and reviewed 2026-09-28; slices 1–3 implemented.
   Slice 4 adds the code-capable merge task; diff, web, and the closing journey follow.
 - [Install and update the Mac app without Open Anyway](handoff-2026-09-28-mac-install-and-update.md)
-  — implemented 2026-09-28; waiting on live checks across two releases.
+  — shipped in v0.4.5; install checks passed, one-click update waits for v0.4.6.
 
 ## Open live checks
 
