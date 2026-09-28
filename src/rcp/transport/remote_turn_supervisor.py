@@ -1,6 +1,6 @@
 """Keep one provider turn's evidence on the machine that runs it.
 
-RCP ships this module with `TurnFence` prepended and runs the result with
+RCP ships this module after the provider remote bundle and runs the result with
 ``python -c``. Keeping the executable source in a real module lets ruff, the
 formatter, and `tests/test_remote_turn_supervisor.py` see it.
 
@@ -26,8 +26,8 @@ import subprocess
 import time
 from pathlib import Path
 
-if "TurnFence" not in globals():
-    from rcp.agents.remote_turn_fence import TurnFence
+if "turn_fence" not in globals():
+    from rcp.providers.turn_fence import turn_fence
 
 
 class Lines:
@@ -123,7 +123,7 @@ def run(args):
         raise ValueError("The turn supervisor requires its own process group.")
     directory = Path(args.pid_file + ".turn")
     directory.mkdir(mode=0o700)  # Never overwrite another pass's evidence.
-    fence = TurnFence(args.runtime_id)
+    fence = turn_fence(args.runtime_id)
     inputs = Lines(args.max_event_bytes, fence.input)
     outputs = Lines(args.max_event_bytes, fence.output)
     pending = {1: bytearray(), 2: bytearray()}

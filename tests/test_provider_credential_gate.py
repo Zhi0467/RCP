@@ -610,7 +610,9 @@ async def test_waiting_launch_captures_environment_and_generation_together(
 
     from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.agents.provider_environment import ProviderCredentialStore
-    from rcp.provider_auth import CLAUDE_TOKEN_VARIABLE
+    from rcp.providers.claude.auth import ClaudeAuthentication
+
+    CLAUDE_TOKEN_VARIABLE = ClaudeAuthentication.token_variable
     from rcp.runs.provider_sign_in import ProviderSignInRunner
     from rcp.storage import AppStore
 

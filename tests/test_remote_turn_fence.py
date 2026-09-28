@@ -16,12 +16,12 @@ import json
 
 import pytest
 
-from rcp.agents.remote_turn_fence import TurnFence
+from rcp.providers.turn_fence import turn_fence
 
 
 def _canonical_app_server_turn(tmp_path, *, handshake: bool):
-    from rcp.agents.codex_app_server import CodexAppServerRuntime
     from rcp.providers import ProviderTurnRequest
+    from rcp.providers.codex.app_server import CodexAppServerRuntime
 
     turn = CodexAppServerRuntime().turn(
         ProviderTurnRequest(
@@ -38,7 +38,7 @@ def _canonical_app_server_turn(tmp_path, *, handshake: bool):
             provider_version="0.153.4",
         )
     )
-    fence = TurnFence("codex.app-server-stdio.v1")
+    fence = turn_fence("codex.app-server-stdio.v1")
     if handshake:
         for message in (
             {"id": 1, "result": {}},
@@ -94,7 +94,7 @@ def _started_decoder_pair(tmp_path, runtime_id: str):
         fence.output(started)
         return turn, fence
     turn = _canonical_turn(tmp_path, runtime_id)
-    fence = TurnFence(runtime_id)
+    fence = turn_fence(runtime_id)
     start = (
         {"type": "system", "subtype": "init", "session_id": "corpus-thread"}
         if runtime_id.startswith("claude")

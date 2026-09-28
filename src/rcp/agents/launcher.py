@@ -706,14 +706,10 @@ class AgentLauncher:
     def process_environment(self, provider: str, host: str) -> ProviderProcessEnvironment:
         """The environment for one provider process; every Claude start goes through it."""
 
+        authentication = profile_for(provider).authentication
         if self.credentials is None:
-            environment = ProviderProcessEnvironment()
-            return (
-                environment.with_claude_foreground_tasks(remote=bool(host))
-                if provider == "claude"
-                else environment
-            )
-        return profile_for(provider).authentication.process_environment(self.credentials, host)
+            return authentication.unmanaged_environment(host)
+        return authentication.process_environment(self.credentials, host)
 
     def _login_refusal(self, provider: str, host: str) -> str | None:
         if self.accounts is not None:

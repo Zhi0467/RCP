@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.resources
 import json
 import os
 import posixpath
@@ -13,7 +12,6 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,7 +22,8 @@ from rcp.limits import (
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
     SOURCE_ORIGINAL_COPY_BUFFER_BYTES,
 )
-from rcp.providers import PROVIDERS, ProviderId
+from rcp.providers import PROVIDERS, ProviderId, remote_bundle
+from rcp.providers.session_format import SessionFormat, session_format
 from rcp.rcp_home import rcp_temp_dir
 from rcp.sources.cache import (
     REMOTE_SOURCE_CACHE_LIMITS,
@@ -181,7 +180,7 @@ class ConversationIndexer:
             if not root.exists():
                 continue
             for path in root.rglob("*.jsonl"):
-                if provider == "claude" and "subagents" in path.parts:
+                if _source_format(provider).skip_file(path.parts):
                     continue
                 cache_key = (provider, path)
                 seen_local_sources.add(cache_key)
@@ -636,40 +635,20 @@ class ConversationIndexer:
     def _inspect(
         path: Path, provider: str, repository_paths: list[str] | None = None
     ) -> dict[str, Any]:
-        cwd = ""
-        session_id = ""
+        source_format = _source_format(provider)
+        metadata = source_format.initial_metadata()
         first_timestamp = None
         last_timestamp = None
         last_uuid = None
         record_count = 0
-        thread_source = "user" if provider in {"claude", "app_chat"} else None
-        parent_session_id = None
-        originator = None
-        source_kind = provider if provider in {"claude", "app_chat"} else None
         with path.open(encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, start=1):
                 if not line.strip():
                     continue
                 raw = json.loads(line)
                 record_count += 1
-                if provider == "codex" and raw.get("type") == "session_meta":
-                    payload = raw.get("payload", {})
-                    cwd = payload.get("cwd", cwd)
-                    session_id = payload.get("id") or payload.get("session_id") or session_id
-                    thread_source = payload.get("thread_source") or thread_source
-                    originator = payload.get("originator") or originator
-                    source = payload.get("source")
-                    if isinstance(source, str):
-                        source_kind = source
-                    elif isinstance(source, dict):
-                        source_kind = "subagent" if "subagent" in source else source_kind
-                        subagent = source.get("subagent")
-                        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-                        if isinstance(spawn, dict):
-                            parent_session_id = spawn.get("parent_thread_id") or parent_session_id
-                else:
-                    cwd = raw.get("cwd", cwd)
-                    session_id = raw.get("sessionId", session_id)
+                source_format.read_metadata(raw, metadata)
+                cwd = metadata["cwd"]
                 if cwd and repository_paths and not path_matches_roots(cwd, repository_paths):
                     break
                 record = _normalize_record(raw, provider, line_number)
@@ -677,19 +656,19 @@ class ConversationIndexer:
                 if record.timestamp is not None:
                     first_timestamp = first_timestamp or record.timestamp
                     last_timestamp = record.timestamp
-        if provider != "app_chat" and not cwd:
+        if source_format.requires_cwd and not metadata["cwd"]:
             raise ValueError("conversation has no cwd")
         return {
-            "cwd": cwd,
-            "session_id": session_id,
+            "cwd": metadata["cwd"],
+            "session_id": metadata["session_id"],
             "first_timestamp": first_timestamp,
             "last_timestamp": last_timestamp,
             "last_uuid": last_uuid,
             "record_count": record_count,
-            "thread_source": thread_source,
-            "parent_session_id": parent_session_id,
-            "originator": originator,
-            "source_kind": source_kind,
+            "thread_source": metadata["thread_source"],
+            "parent_session_id": metadata["parent_session_id"],
+            "originator": metadata["originator"],
+            "source_kind": metadata["source_kind"],
         }
 
     def _inspect_remote_root(
@@ -793,10 +772,16 @@ class ConversationIndexer:
         return cached
 
 
+def _source_format(source: str) -> SessionFormat:
+    """The live registry's format, so a profile is the one place it is declared."""
+    profile = PROVIDERS.get(source)
+    return profile.session_format if profile is not None else session_format(source)
+
+
 def _normalize_record(raw: dict[str, Any], provider: str, line_number: int) -> ConversationRecord:
     """Model wrapper over the parser shared with the remote drivers."""
 
-    normalized = normalize_record(raw, provider, line_number)
+    normalized = normalize_record(raw, _source_format(provider), line_number)
     return ConversationRecord(
         uuid=normalized["uuid"],
         timestamp=_parse_datetime(normalized["timestamp"]),
@@ -902,22 +887,6 @@ def _parse_datetime(value: Any) -> datetime | None:
         return None
 
 
-@lru_cache(maxsize=1)
-def _record_parsing_source() -> str:
-    """Load the parser as a package resource for source, wheel, and frozen builds."""
-    return (
-        importlib.resources.files("rcp.sources")
-        .joinpath("record_parsing.py")
-        .read_text(encoding="utf-8")
-    )
-
-
-def _remote_program(driver: str) -> str:
-    """Prepend the shared parser's source to a remote driver."""
-
-    return f"{_record_parsing_source()}\n{driver}"
-
-
 _REMOTE_INDEX_DRIVER = r"""
 import json
 import sys
@@ -925,23 +894,20 @@ from pathlib import Path
 
 request = json.loads(sys.argv[1])
 provider = request["provider"]
+source_format = session_format(provider)
 roots = request["repository_paths"]
 unmatched_files = 0
 malformed_files = 0
 
 for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
-    if provider == "claude" and "subagents" in path.parts:
+    if source_format.skip_file(path.parts):
         continue
+    metadata = source_format.initial_metadata()
     cwd = ""
-    session_id = ""
     first_timestamp = None
     last_timestamp = None
     last_uuid = None
     record_count = 0
-    thread_source = "user" if provider == "claude" else None
-    parent_session_id = None
-    originator = None
-    source_kind = provider if provider == "claude" else None
     relevant = False
     sequence_count = 0
     sequence_first_timestamp = None
@@ -954,32 +920,14 @@ for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
                     continue
                 raw = json.loads(line)
                 sequence_count += 1
-                record = normalize_record(raw, provider, line_number)
+                record = normalize_record(raw, source_format, line_number)
                 timestamp = record["timestamp"]
                 if timestamp:
                     sequence_first_timestamp = sequence_first_timestamp or timestamp
                     sequence_last_timestamp = timestamp
                 sequence_last_uuid = record["uuid"]
-                if provider == "codex" and raw.get("type") == "session_meta":
-                    inner = raw.get("payload", {})
-                    cwd = inner.get("cwd", cwd)
-                    session_id = inner.get("id") or inner.get("session_id") or session_id
-                    thread_source = inner.get("thread_source") or thread_source
-                    originator = inner.get("originator") or originator
-                    source = inner.get("source")
-                    if isinstance(source, str):
-                        source_kind = source
-                    elif isinstance(source, dict):
-                        source_kind = "subagent" if "subagent" in source else source_kind
-                        subagent = source.get("subagent")
-                        spawn = subagent.get("thread_spawn") if isinstance(subagent, dict) else None
-                        if isinstance(spawn, dict):
-                            parent_session_id = (
-                                spawn.get("parent_thread_id") or parent_session_id
-                            )
-                else:
-                    cwd = raw.get("cwd", cwd)
-                    session_id = raw.get("sessionId", session_id)
+                source_format.read_metadata(raw, metadata)
+                cwd = metadata["cwd"]
                 if cwd:
                     relevant = path_matches_roots(cwd, roots)
                     if not relevant:
@@ -1001,15 +949,15 @@ for path in Path(request["root"]).expanduser().rglob("*.jsonl"):
                 "kind": "session",
                 "path": str(path),
                 "cwd": cwd,
-                "session_id": session_id or path.stem,
+                "session_id": metadata["session_id"] or path.stem,
                 "first_timestamp": first_timestamp,
                 "last_timestamp": last_timestamp,
                 "last_uuid": last_uuid,
                 "record_count": record_count,
-                "thread_source": thread_source,
-                "parent_session_id": parent_session_id,
-                "originator": originator,
-                "source_kind": source_kind,
+                "thread_source": metadata["thread_source"],
+                "parent_session_id": metadata["parent_session_id"],
+                "originator": metadata["originator"],
+                "source_kind": metadata["source_kind"],
             }))
         elif cwd:
             unmatched_files += 1
@@ -1026,4 +974,4 @@ print(json.dumps({
 """
 
 
-_REMOTE_INDEX_SCRIPT = _remote_program(_REMOTE_INDEX_DRIVER)
+_REMOTE_INDEX_SCRIPT = remote_bundle(_REMOTE_INDEX_DRIVER)
