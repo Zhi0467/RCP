@@ -77,7 +77,6 @@ async def _process_experiment_watcher_maintenance(
     workspace: Path,
     remote_stage: RemoteRunStage | None,
     local_stage: Path | None,
-    base_contract_path: str,
     token: str,
     native_session_id: str | None,
     read_dirs: list[Path | PurePosixPath],
@@ -286,9 +285,9 @@ async def _process_experiment_watcher_maintenance(
                 },
             )
             correction_contract = experiment_watcher_maintenance_correction_contract(
-                original_contract_path=base_contract_path,
+                resource=staged.prompt_value(),
+                work_execution_host=execution_host,
                 diagnostics_path=diagnostics_path,
-                watch_path=staged.watch_path,
             )
             if continuation is None:
                 raise ValueError(

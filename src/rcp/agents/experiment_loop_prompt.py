@@ -14,6 +14,7 @@ from rcp.agents.prompts import (
     _pointer,
     _repository_pointers,
     _watcher_execution_host,
+    _work_experiment_watcher_resource_section,
     selected_skill_section,
     write_scope_section,
 )
@@ -535,31 +536,30 @@ Experiment, resubmit work, or cause a new external side effect.
 
 def experiment_watcher_maintenance_correction_contract(
     *,
-    original_contract_path: str,
+    resource: dict[str, str],
+    work_execution_host: str,
     diagnostics_path: str,
-    watch_path: str,
 ) -> str:
-    """Repair one node-attached watcher file without duplicating its item contract."""
+    """Repair one node-attached watcher file by that resource's own maintenance rules."""
 
-    required = {
-        "original contract": original_contract_path,
-        "diagnostics": diagnostics_path,
-        "watch path": watch_path,
-    }
-    missing = [label for label, value in required.items() if not value]
-    if missing:
+    if not diagnostics_path or not resource.get("watch_path"):
         raise ValueError(
-            f"Experiment watcher maintenance correction is missing {', '.join(missing)}."
+            "Experiment watcher maintenance correction is missing diagnostics or watch path."
         )
+    # The rules are restated for this one resource: the turn may have gained it after the
+    # session master was written, so no earlier file is guaranteed to hold them.
+    rules = _work_experiment_watcher_resource_section(
+        [resource], work_execution_host=work_execution_host
+    ).strip()
     return f"""# RCP Experiment watcher maintenance correction
 
 RCP rejected the node-attached Experiment watcher maintenance file this Work turn wrote. Rewrite
-only that file, by the maintenance rules in the Work turn instructions below; the diagnostic grants
-no new authority. Do not rerun an Experiment, resubmit work, repeat an external side effect, change
-`patch.json` or this conversation's own watcher file, or add a target or control field.
-- Work turn instructions: `{original_contract_path}`
+only `{resource["watch_path"]}`, by the rules below; the diagnostic grants no new authority. Do not
+rerun an Experiment, resubmit work, repeat an external side effect, change `patch.json` or this
+conversation's own watcher file, or add a target or control field.
 - Maintenance diagnostic: `{diagnostics_path}`
-- File to rewrite: `{watch_path}`
+
+{rules}
 
 Your final response should only confirm that the file was rewritten."""
 

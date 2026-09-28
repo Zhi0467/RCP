@@ -7,7 +7,14 @@ import textwrap
 from datetime import datetime
 from typing import Literal
 
-from rcp.agents.continuation_prompt import SECTIONS, MasterRef, PromptNode, compose, master_key
+from rcp.agents.continuation_prompt import (
+    MASTER_OVERLAY_RULE,
+    SECTIONS,
+    MasterRef,
+    PromptNode,
+    compose,
+    master_key,
+)
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
@@ -146,8 +153,10 @@ one `- key: value` line each, and it lists every value that differs from this co
 what changed since the launch before. A listed value replaces this contract's value for that
 launch; a key it does not list has this contract's value. The keys: `current.*` the graph inputs, `patch.*` the Patch, watcher, schema, and command client,
 `work.*` the Work write roots and launch facts, and likewise `repositories`, `skills`, `settings.*`,
-and `workspace.path`. A new `current.graph_revision` means the graph changed, not that the human
-approved anything; re-read the records you rely on."""
+and `workspace.path`. `current.graph_revision` is the one exception: it is listed only when the
+graph changed since the last committed turn of this chat, so an omitted revision means no one else
+changed the graph, not that it returned to this contract's revision. It never means the human
+approved anything; read the live graph for the records you rely on."""
 
 
 def _work_write_boundary(scope: ProjectWriteScope | None) -> str:
@@ -949,6 +958,8 @@ Output contract:
   needed ontology vocabulary or Hypothesis scope left empty for lack of a cited boundary.
 
 {_patch_validator_rules(validator_command)}
+
+{MASTER_OVERLAY_RULE}
 """
 
     @staticmethod
@@ -1254,8 +1265,8 @@ Relevant repository inputs; read only when the coaching request needs them:
 
 Read the required inputs from disk. Their bytes are the current inputs for this turn and are not
 repeated in the launch message; their semantic standing follows the graph rather than this pointer.
-Read them again at the start of every later turn in this session, because they may have changed; a
-later turn names only the paths that moved.
+Read them again at the start of every later turn in this session, because they may have changed.
+{MASTER_OVERLAY_RULE}
 
 Authorship contract:
 - Critique structure, logic, claims, literature coverage, and communication.

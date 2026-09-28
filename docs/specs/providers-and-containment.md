@@ -425,7 +425,11 @@ client, write roots, repositories, skill pointers, execution facts), so a new
 mailbox or a changed root appears and an unchanged one does not. Static
 explanations, such as validator exit codes, the launch helper, and the write
 boundary, live only in the master. Current values take precedence over the
-master. It ends with one pointer to the master. The pointer says this is the contract given at
+master. Every master says so: a listed value replaces its own for that launch,
+and an unlisted one is its own. A chat's graph revision is the one value
+compared with the chat's last committed turn instead, so its own Apply is not
+announced back. An Experiment watcher-maintenance correction restates the rules
+for its one resource, because that resource can be newer than the master. It ends with one pointer to the master. The pointer says this is the contract given at
 the session's start, and to read it only after a compaction or a lost grip on
 the graph rules or authority. A continuation never resends the master and never
 forces a read.

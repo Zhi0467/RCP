@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
+from rcp.agents.continuation_prompt import MASTER_OVERLAY_RULE
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
 
@@ -108,6 +109,8 @@ Before finishing, run the exact validator command. Exit 0 means the candidate is
 valid against the live current main graph, exit 1 supplies a correction diagnostic, and exit 2
 means validation is unavailable rather than semantically invalid. A successful self-check does
 not commit anything; RCP revalidates and commits atomically or commits nothing.
+
+{MASTER_OVERLAY_RULE}
 """
 
 

@@ -53,6 +53,14 @@ SECTIONS = {
     ),
 }
 
+# A master states this once so a later launch's changed values read the same after compaction.
+MASTER_OVERLAY_RULE = (
+    f"A later launch in this session lists, under `{SECTIONS['context_delta']}`, every path or "
+    "value that differs from this contract, one `- key: value` line each. A listed value "
+    "replaces the one stated here for that launch; an unlisted value is the one stated here, "
+    "whatever an earlier launch listed."
+)
+
 
 @dataclass(frozen=True)
 class LaunchPhase:

@@ -2059,7 +2059,6 @@ async def _apply_work_turn(
         workspace=turn.workspace,
         remote_stage=turn.remote_stage,
         local_stage=turn.local_stage,
-        base_contract_path=composed.base_contract_path if composed is not None else "",
         token=_task_token(turn.execution),
         native_session_id=applied.native_session_id,
         read_dirs=launch_turn.read_dirs if launch_turn is not None else [],

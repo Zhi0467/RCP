@@ -956,7 +956,6 @@ async def settle_child_work_deliverables(
         workspace=finalization.workspace,
         remote_stage=finalization.remote_stage,
         local_stage=finalization.local_stage,
-        base_contract_path=composed.base_contract_path if composed is not None else "",
         token=_task_token(finalization.execution),
         native_session_id=settled.native_session_id,
         read_dirs=launch_turn.read_dirs if launch_turn is not None else [],
