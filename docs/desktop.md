@@ -58,17 +58,17 @@ npm --prefix web run desktop:build-dev
 The bundle is written to:
 
 ```text
-web/src-tauri/target/debug/bundle/macos/RCP.app
+web/src-tauri/target/debug/bundle/macos/RCP Dev.app
 ```
 
-`RCP.app` records the checkout and absolute `uv` executable in its `Info.plist` and
+`RCP Dev.app` records the checkout and absolute `uv` executable in its `Info.plist` and
 launches the backend from source. Rebuild it after Rust or Tauri configuration changes.
-An older `/Applications/RCP.app` is a separate copy and is not changed by that build.
-Quit RCP with Cmd+Q before replacing and reopening that copy:
+An older `/Applications/RCP Dev.app` is a separate copy and is not changed by that build.
+Quit it with Cmd+Q before replacing and reopening that copy:
 
 ```bash
-ditto web/src-tauri/target/debug/bundle/macos/RCP.app /Applications/RCP.app
-open /Applications/RCP.app
+ditto "web/src-tauri/target/debug/bundle/macos/RCP Dev.app" "/Applications/RCP Dev.app"
+open "/Applications/RCP Dev.app"
 ```
 
 ### Only the menu Quit stops the backend
@@ -175,7 +175,9 @@ RCP_LIVE_SSH_TARGET=<ssh-alias-or-user@host> \
 
 To test the exact bytes a promotion would publish, run the `desktop-candidate.yml`
 workflow on the build, as described in [docs/release.md](release.md#what-to-check-before-promoting).
-The local steps below build the same app from a checkout.
+Rename the unzipped `RCP.app` to `RCP Candidate.app` and keep it out of
+`/Applications`; `RCP.app` there is always the released download. The local
+steps below build the same app from a checkout; open it where it is built.
 
 Before packaging, verify that the intended revision is checked out, the version is
 intentional, no unrelated changes will enter the artifact, and the baseline and desktop

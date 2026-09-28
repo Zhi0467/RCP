@@ -141,7 +141,11 @@ remain explicit follow-up evidence.
   ```bash
   gh workflow run desktop-candidate.yml --repo Zhi0467/RCP -f build=<N>
   gh run download <run-id> --repo Zhi0467/RCP -n desktop-app
+  ditto -x -k desktop-assets/RCP-v<X.Y.Z>-macos-arm64.zip .
+  mv RCP.app "RCP Candidate.app"
   ```
+
+  Keep it out of `/Applications`, which holds only the released `RCP.app`.
 
   Test it with a throwaway data directory; see
   [docs/desktop.md](desktop.md#build-and-test-a-release-candidate). Then pass
