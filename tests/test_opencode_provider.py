@@ -57,13 +57,16 @@ def test_work_grants_exact_roots_and_denies_protected_storage_after_them():
     )
     assert command[:2] == ["sh", "-c"]
     assert "--pure" in command
-    rules = list(permission["edit"].items())
-    assert rules[0] == ("*", "deny")
-    allowed = [pattern for pattern, action in rules if action == "allow"]
-    assert allowed == ["home/rcp/data/stages/s/workspace/**", "home/rcp/**", "tmp/**"]
-    # The stage's own protected parent stays undenied; the other follows every grant.
-    assert rules[-1] == ("home/rcp/.rcp/**", "deny")
-    assert "home/rcp/data/**" not in permission["edit"]
+    # OpenCode applies the last matching rule: every grant, then protected
+    # storage, then the stage that sits inside it.
+    assert list(permission["edit"].items()) == [
+        ("*", "deny"),
+        ("home/rcp/**", "allow"),
+        ("tmp/**", "allow"),
+        ("home/rcp/.rcp/**", "deny"),
+        ("home/rcp/data/**", "deny"),
+        ("home/rcp/data/stages/s/workspace/**", "allow"),
+    ]
 
 
 def test_paper_coach_denies_every_edit_so_no_path_base_is_needed():
@@ -71,6 +74,7 @@ def test_paper_coach_denies_every_edit_so_no_path_base_is_needed():
     assert "rev-parse" not in command[2]
     assert permission["edit"] == "deny"
     assert permission["bash"] == "deny"
+    assert permission["external_directory"] == "allow"
 
 
 def test_discuss_edits_only_its_own_folders_and_has_no_shell():

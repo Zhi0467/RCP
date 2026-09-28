@@ -395,7 +395,9 @@ user agent can share the name and be merged in. Every launch also passes
 `--pure`, because a plugin's config hook could rewrite the rules.
 
 Edit rules deny everything, then allow the exact workspace and admitted roots,
-then deny protected paths; OpenCode applies the last rule that matches. OpenCode
+then deny protected paths, then allow again each root inside a protected path,
+such as a stage inside RCP storage; OpenCode applies the last rule that matches.
+The paper coach and every other capability may read outside their folder. OpenCode
 matches them against paths relative to its project root, which is the enclosing
 Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
 path rules therefore refuses to start inside a Git work tree, rather than let

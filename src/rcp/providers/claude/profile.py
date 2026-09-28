@@ -6,7 +6,7 @@ import json
 import re
 import subprocess
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.providers.base import (
@@ -546,8 +546,16 @@ def _claude_write_settings(scope: ProjectWriteScope | None = None) -> dict[str, 
     # execution host. Exact write roots are enforced by Claude's file-permission
     # rules instead: they bound every file-editing tool, and Bash is not bounded.
     writable_roots = scope.writable_roots if scope is not None else []
-    # Claude's deny beats its allow, so the stage's own protected ancestors stay out.
-    protected_write_paths = scope.enforced_protected_paths if scope is not None else []
+    protected_write_paths = scope.protected_write_paths if scope is not None else []
+    if scope is not None:
+        # Claude's deny beats its allow, so a protected folder holding this
+        # launch's own stage (RCP storage inside a grant) stays undenied.
+        own = [PurePosixPath(scope.stage_root), PurePosixPath(scope.workspace_root)]
+        protected_write_paths = [
+            path
+            for path in protected_write_paths
+            if not any(PurePosixPath(path) in item.parents for item in own)
+        ]
     # `Edit(path)` is the only file permission rule Claude matches, and it covers
     # every file-editing tool. A `Write(path)` rule is accepted and then ignored.
     allow_patterns = [f"Edit({_claude_absolute_pattern(path)})" for path in writable_roots]

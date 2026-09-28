@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.providers.base import (
@@ -297,15 +297,27 @@ def _permission(
     scope: ProjectWriteScope | None,
 ) -> dict[str, object]:
     if capability == "paper_readonly":
-        return {"edit": "deny", "bash": "deny", "question": "deny", "webfetch": "allow"}
+        # Reads its staged inputs outside the project; it can neither edit nor run.
+        return {
+            "edit": "deny",
+            "bash": "deny",
+            "external_directory": "allow",
+            "question": "deny",
+            "webfetch": "allow",
+        }
     if scope is not None:
-        allowed, denied = scope.writable_roots, scope.enforced_protected_paths
+        allowed, denied = scope.writable_roots, scope.protected_write_paths
     else:
         allowed, denied = [str(cwd), *(str(item) for item in write_dirs)], []
-    # OpenCode applies the last rule that matches, so denials follow the grants.
+    # OpenCode applies the last rule that matches: grants, then protected
+    # storage, then again each grant inside it, such as a stage in RCP storage.
     edit: dict[str, str] = {"*": "deny"}
     edit.update({_root_pattern(path): "allow" for path in allowed})
     edit.update({_root_pattern(path): "deny" for path in denied})
+    for path in allowed:
+        if any(PurePosixPath(item) in PurePosixPath(path).parents for item in denied):
+            edit.pop(_root_pattern(path))
+            edit[_root_pattern(path)] = "allow"
     return {
         "edit": edit,
         # Only Work runs commands. Nothing bounds the shell's writes, and Discuss

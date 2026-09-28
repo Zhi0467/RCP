@@ -69,6 +69,11 @@ def _provider() -> ProjectProvisioningProviderIntent:
     )
 
 
+def test_a_model_without_reasoning_effort_is_a_valid_provider_intent():
+    intent = _provider().model_copy(update={"provider": "opencode", "reasoning": ""})
+    assert ProjectProvisioningProviderIntent.model_validate(intent.model_dump()).reasoning == ""
+
+
 def _create(store: AppStore, authorizer: AuthorizedHuman):
     return store.create_project_provisioning_request(
         kind="create_team_project",

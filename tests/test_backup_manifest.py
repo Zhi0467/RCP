@@ -11,6 +11,7 @@ from rcp.config import (
     AGENT_EXECUTION_PROFILES,
     Manifest,
     load_manifest,
+    permissions_for,
     write_machine_provider_paths,
 )
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
@@ -34,6 +35,7 @@ from rcp.server_ops.backup_models import (
     BackupFileEntry,
     BackupImportedProviderSourceCapture,
     BackupImportedProviderSourceInventory,
+    BackupManifestAgentProfile,
     BackupManifestConfiguration,
     BackupProjectCapture,
     inspect_app_data_capture_plan,
@@ -233,6 +235,19 @@ def _captured_project(tmp_path: Path) -> BackupProjectCapture:
         recovery=registration.recovery,
         total_bytes=17,
     )
+
+
+def test_an_agent_profile_whose_model_takes_no_reasoning_is_backed_up() -> None:
+    profile = BackupManifestAgentProfile(
+        profile="project_chat",
+        provider="opencode",
+        runtime="run-json",
+        model="opencode/big-pickle",
+        reasoning="",
+        run_on="laptop",
+        permissions=permissions_for("project_chat"),
+    )
+    assert BackupManifestAgentProfile.model_validate(profile.model_dump()).reasoning == ""
 
 
 def test_app_data_inventory_is_closed_and_never_follows_unknown_roots(tmp_path: Path) -> None:
