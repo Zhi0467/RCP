@@ -139,13 +139,16 @@ remain explicit follow-up evidence.
   without publishing anything, then download and open it:
 
   ```bash
-  gh workflow run desktop-candidate.yml --repo Zhi0467/RCP -f build=<N>
-  gh run download <run-id> --repo Zhi0467/RCP -n desktop-app
+  gh workflow run desktop-candidate.yml -f build=<N>
+  gh run download <run-id> -n desktop-app
   ```
 
-  It is built by the same `build-desktop.yml` job that promotion's companion
-  release uses. Test it with a throwaway data directory; see
-  [docs/desktop.md](desktop.md#build-and-test-a-release-candidate).
+  Test it with a throwaway data directory; see
+  [docs/desktop.md](desktop.md#build-and-test-a-release-candidate). Then pass
+  that run to promotion with `-f desktop_candidate_run=<run-id>`, so the
+  companion release publishes the bytes you tested. Promotion checks that the
+  run is a successful candidate built from the same build. Without it,
+  promotion builds the app afresh and says so in its run summary.
 - The release notes, if you write any, name behavior changes an operator would
   notice: new prerequisites, changed commands, migration time.
 - If the change touched `src/rcp/storage/`, a frozen fixture exists for the new

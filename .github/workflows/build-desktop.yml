@@ -1,8 +1,7 @@
 name: Build desktop
 
-# The one place the unsigned macOS app is built. Publishing a release and
-# testing a candidate before promotion both call it, so the app a human tests
-# is built exactly the way the published one is.
+# The one place the unsigned macOS app is built. A candidate run builds it for
+# a human to test, and promotion can publish that same artifact.
 on:
   workflow_call:
     inputs:
@@ -18,10 +17,6 @@ on:
         description: Desktop version in X.Y.Z form
         required: true
         type: string
-      label:
-        description: Asset name label, such as v0.4.4 or v0.4.4-build.312
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -34,7 +29,7 @@ jobs:
       TARGET_COMMIT: ${{ inputs.commit }}
       BUILD_NUMBER: ${{ inputs.build }}
       DESKTOP_VERSION: ${{ inputs.version }}
-      ASSET: RCP-${{ inputs.label }}-macos-arm64.zip
+      ASSET: RCP-v${{ inputs.version }}-macos-arm64.zip
     steps:
       - uses: actions/checkout@v7
         with:
@@ -68,9 +63,15 @@ jobs:
             "desktop-assets/$ASSET"
           cd desktop-assets
           shasum -a 256 "$ASSET" > "$ASSET.sha256"
+          # Kept beside the assets, never published: promotion checks it
+          # before it releases a candidate someone tested.
+          printf '{"commit": "%s", "build": "%s", "version": "%s"}\n' \
+            "$TARGET_COMMIT" "$BUILD_NUMBER" "$DESKTOP_VERSION" > ../desktop-identity.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-app
-          path: desktop-assets/
+          path: |
+            desktop-assets/
+            desktop-identity.json
           if-no-files-found: error
           retention-days: 14

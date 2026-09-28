@@ -1,8 +1,9 @@
 name: Desktop candidate
+run-name: Desktop candidate for build ${{ inputs.build }}
 
-# Builds the exact desktop app a promotion of build/<N> would publish, as a
-# workflow artifact, so a human can test it before promoting. It publishes
-# nothing. Manual, because macOS runners bill at ten times the Linux rate.
+# Builds the desktop app for build/<N> as a workflow artifact, so a human can
+# test it before promoting. It publishes nothing; promotion given this run's id
+# publishes these exact bytes. Manual, because macOS minutes are costly.
 on:
   workflow_dispatch:
     inputs:
@@ -65,4 +66,3 @@ jobs:
       commit: ${{ needs.identity.outputs.commit }}
       build: ${{ inputs.build }}
       version: ${{ needs.identity.outputs.version }}
-      label: v${{ needs.identity.outputs.version }}-build.${{ inputs.build }}

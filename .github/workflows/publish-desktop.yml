@@ -7,11 +7,20 @@ on:
         description: Published release tag in vX.Y.Z form
         required: true
         type: string
+      candidate_run:
+        description: Desktop candidate run id whose tested app to publish; empty builds fresh
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       tag:
         required: true
         type: string
+      candidate_run:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -90,29 +99,73 @@ jobs:
 
   build:
     needs: [identity]
+    if: inputs.candidate_run == ''
     uses: ./.github/workflows/build-desktop.yml
     with:
       commit: ${{ needs.identity.outputs.commit }}
       build: ${{ needs.identity.outputs.build }}
       version: ${{ needs.identity.outputs.version }}
-      label: ${{ inputs.tag }}
 
   publish:
     name: publish unsigned desktop companion
     needs: [identity, build]
+    # `build` is skipped when a tested candidate is published instead.
+    if: >-
+      always() && needs.identity.result == 'success'
+      && (needs.build.result == 'success' || needs.build.result == 'skipped')
     permissions:
       contents: write
+      actions: read
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ inputs.tag }}
       TARGET_COMMIT: ${{ needs.identity.outputs.commit }}
+      BUILD_NUMBER: ${{ needs.identity.outputs.build }}
+      DESKTOP_VERSION: ${{ needs.identity.outputs.version }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - name: Refuse a candidate run that is not a successful desktop candidate
+        if: inputs.candidate_run != ''
+        shell: bash
+        run: |
+          if ! [[ "$CANDIDATE_RUN" =~ ^[0-9]+$ ]]; then
+            echo "invalid candidate run $CANDIDATE_RUN"
+            exit 1
+          fi
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN" --jq '[.path, .conclusion] | join(" ")')
+          if [ "$run" != ".github/workflows/desktop-candidate.yml success" ]; then
+            echo "run $CANDIDATE_RUN is not a successful desktop candidate: $run"
+            exit 1
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: desktop-app
-          path: desktop-assets
+          path: artifact
+          run-id: ${{ inputs.candidate_run || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Check the artifact was built from this release's build
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          found = json.load(open("artifact/desktop-identity.json"))
+          expected = {
+              "commit": os.environ["TARGET_COMMIT"],
+              "build": os.environ["BUILD_NUMBER"],
+              "version": os.environ["DESKTOP_VERSION"],
+          }
+          if found != expected:
+              raise SystemExit(f"desktop artifact identity {found} differs from {expected}")
+          PY
+          mv artifact/desktop-assets desktop-assets
+          (cd desktop-assets && shasum -a 256 -c "RCP-$RELEASE_TAG-macos-arm64.zip.sha256")
+          if [ -n "$CANDIDATE_RUN" ]; then
+            echo "Published the tested app from desktop candidate run $CANDIDATE_RUN." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No candidate run was given; published an app built fresh in this run." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Upload a draft companion
         run: |
           gh release create "desktop-$RELEASE_TAG" desktop-assets/* \
