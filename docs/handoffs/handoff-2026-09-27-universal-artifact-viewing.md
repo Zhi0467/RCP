@@ -3,8 +3,10 @@
 Status on 2026-09-27: design settled with a Codex xhigh review; the human
 chose not to review it and asked to implement it in this pull request.
 
-- Implemented: nothing yet.
-- Remains: changes 1–10 below, then [Verification](#verification).
+- Implemented (backend): changes 1–5, the backend half of 7 (saved-artifact
+  capabilities), 8, the prompt lines of 9, and 10, with their Python tests.
+- Remains: the web half of 4 (the desktop PDF command), 6, the web half of 7,
+  then [Verification](#verification).
 - Settled (human, 2026-09-27):
   - Viewing is universal. Every file an agent leaves in its turn artifact
     directory gets a card with Download and Keep, within the existing bounds.
