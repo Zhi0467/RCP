@@ -171,6 +171,9 @@ test("both Settings levels render the same machine card with one remove per path
     assert.equal(html.match(/data-machine-action="remove-path"/g)?.length, 2);
     assert.equal(html.match(/data-machine-action="add-path"/g)?.length, 1);
   }
+  // The card's own name is renamed on the space page; a project names its machines itself.
+  assert.equal(render("space").match(/data-machine-action="rename"/g)?.length, 1);
+  assert.equal(render("project").match(/data-machine-action="rename"/g), null);
   // Only the project card carries the applies-to-every-project note.
   assert.equal(
     render("project").match(/machine-writable-note/g)?.length,

@@ -983,7 +983,8 @@ moves forward. Markers are not moved with a transferred project.
 
 Paper owns human Markdown Write/Preview and read-only coaching. Settings has two
 levels. Space Settings, opened from the gear beside the identity menu, owns the
-server status (team spaces), machine cards with their writable paths, provider logins, and the
+server status (team spaces), machine cards with their names (renamed in place) and
+writable paths, provider logins, and the
 personal space's clear-all-caches. Project Settings owns repositories, this
 project's machine cards (provider paths, compute, and the same writable-path
 record), execution profiles, compute connections, packages, caches, project

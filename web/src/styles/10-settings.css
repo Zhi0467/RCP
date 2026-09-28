@@ -3020,6 +3020,29 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .provider-machine.machine-card > header > span {
   margin-left: auto;
 }
+.provider-machine.machine-card > header > .machine-name-edit {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 0;
+}
+.machine-name-edit input {
+  /* Match the name it replaces, not the header's small host label. */
+  font-family: var(--editorial);
+  font-size: var(--type-lg);
+  font-weight: 550;
+  min-width: 0;
+  padding: 4px 8px;
+  width: 20ch;
+}
+.machine-name-edit em {
+  color: var(--red);
+  flex-basis: 100%;
+  font-family: var(--ui);
+  font-size: var(--type-2xs);
+  font-style: normal;
+}
 .machine-card-error,
 .machine-card-projects {
   font-size: var(--type-2xs);

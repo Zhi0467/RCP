@@ -1,4 +1,4 @@
-import { FolderPlus, LoaderCircle, Trash2, X } from "lucide-react";
+import { Check, FolderPlus, LoaderCircle, Pencil, Trash2, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import { createSpaceMachine, updateSpaceMachine } from "../api";
 import { errorMessage } from "../errors";
@@ -42,7 +42,11 @@ export function MachineCard({
       data-machine-card={record?.machine_id ?? title}
     >
       <header>
-        <strong>{title}</strong>
+        {level === "space" && record ? (
+          <MachineName record={record} writesDisabled={writesDisabled} onRenamed={onRecordChange} />
+        ) : (
+          <strong>{title}</strong>
+        )}
         <span>
           {hostLabel}
           {osAccount ? ` · ${osAccount}` : ""}
@@ -192,6 +196,86 @@ export function WritablePaths({
 }
 
 /** Adds one machine account to the space list, for setup and project Settings to pick. */
+/** A space card's name, renamed in place; a project names its machines itself. */
+function MachineName({
+  record,
+  writesDisabled,
+  onRenamed,
+}: {
+  record: SpaceMachine;
+  writesDisabled: boolean;
+  onRenamed: (machine: SpaceMachine) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (draft === null) {
+    return (
+      <>
+        <strong>{record.name}</strong>
+        <button
+          className="icon-button"
+          type="button"
+          data-machine-action="rename"
+          aria-label={`Rename ${record.name}`}
+          disabled={writesDisabled}
+          onClick={() => setDraft(record.name)}
+        >
+          <Pencil size={13} />
+        </button>
+      </>
+    );
+  }
+  const name = draft.trim();
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      onRenamed(await updateSpaceMachine(record.machine_id, { name }));
+      setDraft(null);
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <span className="machine-name-edit">
+      <input
+        value={draft}
+        maxLength={80}
+        aria-label="Machine name"
+        autoFocus
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && name) void save();
+          if (event.key === "Escape") setDraft(null);
+        }}
+      />
+      <button
+        className="icon-button"
+        type="button"
+        data-machine-action="save-name"
+        aria-label="Save name"
+        disabled={writesDisabled || saving || !name}
+        onClick={() => void save()}
+      >
+        {saving ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />}
+      </button>
+      <button
+        className="icon-button"
+        type="button"
+        aria-label="Cancel rename"
+        disabled={saving}
+        onClick={() => setDraft(null)}
+      >
+        <X size={13} />
+      </button>
+      {error && <em role="alert">{error}</em>}
+    </span>
+  );
+}
+
 export function NewMachineForm({
   writesDisabled = false,
   accountRequired = false,
