@@ -65,6 +65,7 @@ from rcp.api.project_state import router as project_state_router
 from rcp.api.provider_login import router as provider_login_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
+from rcp.api.space_machines import router as space_machines_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
 from rcp.api.tasks import router as tasks_router
@@ -92,7 +93,7 @@ from rcp.limits import (
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
-from rcp.projects import ProjectCatalog, ProjectDisplayCache
+from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import configured_runtime_id
 from rcp.release_check import ReleaseCheck
@@ -1559,6 +1560,8 @@ def create_app(
                     member_removal_coordinator.reconcile_pending()
                 background_tasks.accept_watcher_notifications()
                 store.prune_operational_storage()
+                # Registered projects' machines appear without opening each project.
+                await asyncio.to_thread(fill_space_machines, store)
                 await asyncio.to_thread(
                     reconcile_reserved_auto_research_roots,
                     background_tasks,
@@ -1973,6 +1976,7 @@ def create_app(
     app.state.project_membership_dependency = require_project_membership
 
     app.include_router(provider_login_router)
+    app.include_router(space_machines_router)
     app.include_router(health_router)
     app.include_router(server_status_router)
     app.include_router(update_notice_router)

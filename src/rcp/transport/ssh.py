@@ -15,6 +15,7 @@ from rcp.limits import (
     SSH_SERVER_ALIVE_COUNT_MAX,
     SSH_SERVER_ALIVE_INTERVAL_SECONDS,
 )
+from rcp.rcp_home import private_directory, rcp_home
 from rcp.ssh_validation import validate_ssh_destination
 
 # Callers with no work of their own to lose share one master.
@@ -142,21 +143,19 @@ def _socket_answers(path: Path) -> bool:
 def _require_control_directory() -> Path:
     """Create and prove the private local owner of SSH mux sockets."""
 
-    directory = _control_directory_path()
-    with suppress(FileExistsError):
-        directory.mkdir(mode=0o700)
-    try:
-        info = directory.lstat()
-    except OSError as exc:
-        raise RuntimeError("RCP SSH control directory is unavailable") from exc
-    if (
-        not stat.S_ISDIR(info.st_mode)
-        or info.st_uid != os.geteuid()
-        or stat.S_IMODE(info.st_mode) != 0o700
-    ):
-        raise RuntimeError("RCP SSH control directory is unsafe")
-    return directory
+    return private_directory(_control_directory_path(), "SSH control directory")
+
+
+# sizeof(sun_path) on macOS, minus the terminator and OpenSSH's bind suffix.
+_CONTROL_PATH_CEILING = 104 - 1 - 17
 
 
 def _control_directory_path() -> Path:
-    return Path("/tmp") / f"rcp-ssh-{os.geteuid()}"
+    directory = rcp_home() / "ssh"
+    # A master binds `<ControlPath>.<16 random chars>`, so the room this
+    # directory leaves for `/<token>-<%C>` has a hard ceiling. Refuse rather
+    # than fall back to a shorter shared directory such as /tmp.
+    widest = len(os.fsencode(directory)) + len(f"/{control_partition_token('x')}-") + 40
+    if widest > _CONTROL_PATH_CEILING:
+        raise RuntimeError(f"RCP SSH control directory path is too long: {directory}")
+    return directory

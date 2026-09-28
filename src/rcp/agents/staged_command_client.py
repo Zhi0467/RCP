@@ -8,6 +8,7 @@ import argparse
 import json
 import math
 import os
+import pwd
 import re
 import socket
 import stat
@@ -418,6 +419,16 @@ def _handle_response(response, verb, request_id):
     return exit_code
 
 
+def _broker_socket_path(path):
+    """Resolve the broker's `~/.rcp/sockets/rcp-command-*.sock` as the broker does."""
+
+    prefix = "~/.rcp/sockets/"
+    name = path[len(prefix) :] if path.startswith(prefix) else ""
+    if not name.startswith("rcp-command-") or not name.endswith(".sock") or "/" in name:
+        raise ClientInputError("broker path is outside the RCP socket directory")
+    return os.path.join(pwd.getpwuid(os.geteuid()).pw_dir, ".rcp", "sockets", name)
+
+
 def _run(namespace):
     if not math.isfinite(namespace.timeout) or namespace.timeout <= 0:
         raise ClientInputError("timeout must be a positive finite number")
@@ -425,9 +436,7 @@ def _run(namespace):
     if os.path.islink(workspace) or not os.path.isdir(workspace):
         raise ClientInputError("run workspace is unavailable")
     if namespace.broker is not None:
-        broker = os.path.abspath(namespace.broker)
-        if not broker.startswith("/tmp/rcp-command-") or not broker.endswith(".sock"):
-            raise ClientInputError("broker path is outside the bounded temporary namespace")
+        broker = _broker_socket_path(namespace.broker)
         mailbox_id = namespace.mailbox_id
         if not isinstance(mailbox_id, str) or not _MAILBOX_ID.fullmatch(mailbox_id):
             raise ClientInputError("broker mailbox id is malformed")

@@ -44,6 +44,7 @@ from rcp.limits import (
     STATE_LOCK_POLL_INTERVAL_SECONDS,
     STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS,
 )
+from rcp.rcp_home import rcp_temp_dir
 from rcp.server_ops.backup_models import (
     BACKUP_RESEARCH_CANONICAL_ROOTS,
     BACKUP_RESEARCH_DELEGATED_ROOTS,
@@ -2450,7 +2451,9 @@ class SSHStateWorkspace(StateWorkspace):
             if prepared.returncode:
                 self._mark_unreachable(prepared.stderr)
                 raise StateUnavailable(self.error or "canonical state is unreachable")
-            with tempfile.TemporaryDirectory(prefix="rcp-kept-view-") as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-kept-view-", dir=rcp_temp_dir()
+            ) as temporary:
                 source = Path(temporary) / "content.html"
                 source.write_bytes(content)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"
@@ -2556,7 +2559,9 @@ class SSHStateWorkspace(StateWorkspace):
             if prepared.returncode:
                 self._mark_unreachable(prepared.stderr)
                 raise StateUnavailable(self.error or "canonical state is unreachable")
-            with tempfile.TemporaryDirectory(prefix="rcp-kept-artifact-") as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-kept-artifact-", dir=rcp_temp_dir()
+            ) as temporary:
                 source = Path(temporary) / "content.bin"
                 source.write_bytes(data)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"
@@ -2655,7 +2660,9 @@ class SSHStateWorkspace(StateWorkspace):
             if prepared.returncode:
                 self._mark_unreachable(prepared.stderr)
                 raise StateUnavailable(self.error or "canonical state is unreachable")
-            with tempfile.TemporaryDirectory(prefix="rcp-artifact-revision-") as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-artifact-revision-", dir=rcp_temp_dir()
+            ) as temporary:
                 source = Path(temporary) / "content.bin"
                 source.write_bytes(data)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"

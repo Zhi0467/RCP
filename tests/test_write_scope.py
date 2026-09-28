@@ -125,11 +125,34 @@ def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
     assert str((shared / "app-data").resolve()) not in legacy.protected_write_paths
 
 
+def test_a_grant_keeps_unadmitted_repositories_research_read_only(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    scope = _resolve_local(manifest, tmp_path, aliases=["repo-b"])
+
+    research_a = str(Path(manifest.repository_map["repo-a"].path).resolve() / ".research")
+    assert any(research_a == path for path in scope.protected_write_paths)
+    assert str((tmp_path / "stage" / "inputs").resolve()) in scope.protected_write_paths
+
+
+def test_previous_fingerprints_cover_pre_grant_and_pre_inputs_bindings(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    from rcp.background import previous_scope_fingerprints
+
+    stage = tmp_path / "stage"
+    scope = _resolve_local(manifest, tmp_path, stage_root=stage, workspace_root=stage)
+    previous = previous_scope_fingerprints(scope)
+
+    assert previous == (scope.without_grants().fingerprint,)
+    assert scope.fingerprint not in previous
+
+
 def test_a_grant_inside_rcp_data_is_refused(manifest: Manifest, tmp_path: Path) -> None:
     app_data = tmp_path / "app-data"
     (app_data / "cache").mkdir(parents=True)
 
-    with pytest.raises(ValueError, match="inside RCP's own storage"):
+    with pytest.raises(ValueError, match="inside protected storage"):
         _resolve_local(
             manifest,
             tmp_path,
@@ -793,6 +816,9 @@ class _RemoteScopeStage:
             raise self.failure
         return ({path: self.overrides.get(path, path) for path in paths}, "/home/worker")
 
+    def legacy_stage_roots(self) -> list[str]:
+        return []
+
 
 def _remote_manifest(manifest: Manifest) -> Manifest:
     remote = manifest.model_copy(deep=True)
@@ -912,6 +938,8 @@ def test_remote_scope_uses_execution_host_canonical_roots(manifest: Manifest) ->
     assert scope.protected_write_paths == [
         "/declared/repo-a/.research",
         "/srv/repo-a/.research",
+        # The default /tmp grant covers this legacy stage; its inputs stay read-only.
+        "/tmp/rcp-run.scope/inputs",
     ]
     assert stage.calls[0][1] is True
     assert all(not writable for _paths, writable in stage.calls[1:])

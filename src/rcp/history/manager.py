@@ -19,9 +19,11 @@ from rcp.config import (
     AgentSurfaceConfig,
     ComputeConnectionConfig,
     MachineComputeConfig,
+    MachineConfig,
     Manifest,
     load_manifest,
     validate_project_scope_update,
+    write_added_machine,
     write_agent_settings,
     write_machine_provider_paths,
     write_project_scope,
@@ -1510,6 +1512,17 @@ class HistoryManager:
                 self.manifest,
                 provider_path_updates,
             )
+            self.workspace.publish([Path("manifest.toml")])
+        return self.manifest
+
+    def add_machine(self, machine: MachineConfig) -> Manifest:
+        with self.workspace.transaction(), self._append_lock():
+            self._reload_manifest()
+            current = self.materialize(write_outputs=False)
+            self.require_writable(current.state)
+            self._require_writable_home_locked(current)
+            self._repair_materializations_locked()
+            self.manifest = write_added_machine(self.manifest, machine)
             self.workspace.publish([Path("manifest.toml")])
         return self.manifest
 

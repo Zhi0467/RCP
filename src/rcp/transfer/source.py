@@ -24,6 +24,7 @@ from rcp.limits import (
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
 )
 from rcp.project_transfer import capture_project_transfer_source
+from rcp.rcp_home import rcp_temp_dir
 from rcp.transfer.archive import (
     TRANSFER_ARCHIVE_CODEC,
     TRANSFER_ARCHIVE_GIT_CODEC,
@@ -432,7 +433,9 @@ def _capture_canonical_history(
     destination_root: Path,
 ) -> tuple[list[TransferArchiveEntry], BackupCanonicalSourcePlan]:
     workspace = service.history.workspace
-    with tempfile.TemporaryDirectory(prefix="rcp-transfer-canonical-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="rcp-transfer-canonical-", dir=rcp_temp_dir()
+    ) as temporary:
         export_root = Path(temporary)
         export_root.chmod(0o700)
         source_root = workspace.backup_source_root(export_root)

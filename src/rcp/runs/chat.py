@@ -40,6 +40,7 @@ from rcp.limits import (
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
 from rcp.providers import AgentCapability
+from rcp.rcp_home import rcp_temp_dir
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.shared import (
     _remove_local_tree,
@@ -63,6 +64,7 @@ from rcp.transport import (
     StateUnavailable,
     clear_turn_handoff_files,
 )
+from rcp.transport.run_stage import remote_stage_name
 
 _CHAT_PROMPT_STATE_ROLE = "chat_prompt_state"
 
@@ -792,7 +794,9 @@ def stage_artifact_context(
 
     label = f"artifact-context-v1-{execution.operation_id}-{descriptor.artifact_id}"
     if remote_stage is not None:
-        with tempfile.TemporaryDirectory(prefix="rcp-artifact-context-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="rcp-artifact-context-", dir=rcp_temp_dir()
+        ) as temporary:
             root = Path(temporary)
             source_path = root / descriptor.name
             source_path.write_bytes(data)
@@ -1142,18 +1146,7 @@ def _chat_stage_name(
     if execution is not None:
         if execution.stage_root:
             if execution.stage_host:
-                prefix = "/tmp/rcp-run."
-                if not execution.stage_root.startswith(prefix):
-                    raise ValueError(
-                        "Cannot safely resume this chat because its saved stage is invalid. "
-                        "Retry the turn from the beginning."
-                    )
-                stage_name = execution.stage_root[len(prefix) :]
-                if "/" in stage_name:
-                    raise ValueError(
-                        "Cannot safely resume this chat because its saved stage is invalid. "
-                        "Retry the turn from the beginning."
-                    )
+                stage_name = remote_stage_name(execution.stage_root) or ""
             else:
                 stage_name = Path(execution.stage_root).name
             if not stage_name or _safe_stage_name(stage_name) != stage_name:
@@ -1191,8 +1184,9 @@ def _validated_remote_chat_resume_stage(
             "Cannot safely resume this chat because its saved stage host does not match "
             "the execution machine. Retry the turn from the beginning."
         )
-    expected = str(PurePosixPath("/tmp") / f"rcp-run.{stage_name}")
-    if execution.stage_root != expected:
+    # The remote home is checked on the host when the stage is attached. A saved
+    # legacy `/tmp/rcp-run.<name>` stage still resumes; a later release removes it.
+    if remote_stage_name(execution.stage_root) != stage_name:
         raise ValueError(
             "Cannot safely resume this chat because its saved stage belongs to a different "
             "project or conversation. Retry the turn from the beginning."

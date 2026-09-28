@@ -262,31 +262,7 @@ class AgentTaskExecution:
             raise ValueError(
                 "agent task must checkpoint its exact stage before write-scope binding"
             )
-        legacy_inputs = str(PurePosixPath(scope.stage_root) / "inputs")
-        compatible_previous_fingerprint = None
-        if scope.granted_roots:
-            # A task bound before machine grants existed resolved this same
-            # scope without them.
-            compatible_previous_fingerprint = scope.without_grants().fingerprint
-        elif (
-            scope.workspace_root == scope.stage_root
-            and legacy_inputs in scope.protected_write_paths
-        ):
-            # A legacy local stage used its root as cwd and bound this otherwise-
-            # identical scope before inputs had an explicit deny.
-            compatible_previous_fingerprint = ProjectWriteScope.create(
-                project_id=scope.project_id,
-                execution_machine=scope.execution_machine,
-                execution_host=scope.execution_host,
-                capability=scope.capability,
-                stage_root=scope.stage_root,
-                workspace_root=scope.workspace_root,
-                repositories=scope.repositories,
-                git_metadata_roots=scope.git_metadata_roots,
-                protected_write_paths=[
-                    path for path in scope.protected_write_paths if path != legacy_inputs
-                ],
-            ).fingerprint
+        compatible_previous_fingerprints = previous_scope_fingerprints(scope)
         self.store.bind_agent_task_write_scope(
             self.operation_id,
             project_id=scope.project_id,
@@ -300,7 +276,7 @@ class AgentTaskExecution:
             # instead, which is how a run scope legitimately changes.
             continuation_binding=self.reuses_native_checkpoint or resumes_native_session,
             scope_repositories=[item.alias for item in scope.repositories],
-            compatible_previous_fingerprint=compatible_previous_fingerprint,
+            compatible_previous_fingerprints=compatible_previous_fingerprints,
             compatible_related_fingerprints=self.compatible_related_write_scope_fingerprints,
         )
         self.write_scope_fingerprint = scope.fingerprint
@@ -2792,3 +2768,33 @@ def _graph_updates(text: str) -> list[GraphUpdateResult] | None:
         return [GraphUpdateResult.model_validate(item) for item in raw_updates]
     except (TypeError, ValueError):
         return None
+
+
+def previous_scope_fingerprints(scope: ProjectWriteScope) -> tuple[str, ...]:
+    """Fingerprints this exact scope had under earlier RCP builds.
+
+    A task bound before machine grants existed resolved it without grants; a
+    legacy local stage that used its root as cwd bound it before `inputs` had an
+    explicit deny. Both can apply to one task.
+    """
+
+    base = scope.without_grants() if scope.granted_roots else scope
+    candidates = [base] if base is not scope else []
+    legacy_inputs = str(PurePosixPath(base.stage_root) / "inputs")
+    if base.workspace_root == base.stage_root and legacy_inputs in base.protected_write_paths:
+        candidates.append(
+            ProjectWriteScope.create(
+                project_id=base.project_id,
+                execution_machine=base.execution_machine,
+                execution_host=base.execution_host,
+                capability=base.capability,
+                stage_root=base.stage_root,
+                workspace_root=base.workspace_root,
+                repositories=base.repositories,
+                git_metadata_roots=base.git_metadata_roots,
+                protected_write_paths=[
+                    path for path in base.protected_write_paths if path != legacy_inputs
+                ],
+            )
+        )
+    return tuple(item.fingerprint for item in candidates)

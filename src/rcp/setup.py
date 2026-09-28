@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pwd
 import re
 import shlex
 import socket
@@ -29,7 +30,7 @@ from rcp.core.materialize import MaterializationResult
 from rcp.core.models import ProjectIdentity
 from rcp.history import HistoryManager, ProjectIdentityConflict
 from rcp.limits import (
-    SSH_REPOSITORY_BROWSER_MAX_ENTRIES,
+    MACHINE_DIRECTORY_PAGE_SIZE,
     SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS,
 )
 from rcp.projects import ProjectCatalog
@@ -44,7 +45,7 @@ from rcp.server_ops.models import redact_server_text
 from rcp.ssh_validation import validate_ssh_destination
 from rcp.storage import ProjectProvisioningRequestRecord, ProjectRecord
 from rcp.storage.provisioning import project_provisioning_review_digest
-from rcp.transport import StateWorkspace
+from rcp.transport import StateWorkspace, remote_repository_browser
 from rcp.transport.remote_compute_probe import classify_ssh_failure
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import SSHStateWorkspace, _remote_script, state_workspace_for_probe
@@ -100,21 +101,6 @@ def _setup_remote_path(value: str, *, label: str) -> str:
     return str(path)
 
 
-class SshRepositoryBrowseRequest(_StrictSetupModel):
-    host: str = Field(min_length=1, max_length=255)
-    path: str | None = Field(default=None, max_length=1024)
-
-    @model_validator(mode="after")
-    def validate_target(self) -> SshRepositoryBrowseRequest:
-        self.host = self.host.strip()
-        validate_ssh_destination(self.host)
-        if not re.fullmatch(r"[A-Za-z0-9_.@:-]+", self.host):
-            raise ValueError("SSH repository browser needs a valid host")
-        if self.path is not None:
-            self.path = _setup_remote_path(self.path, label="SSH repository browser path")
-        return self
-
-
 class SshRepositoryBrowseEntry(_StrictSetupModel):
     name: str = Field(min_length=1, max_length=255)
     path: str = Field(max_length=1024)
@@ -133,42 +119,170 @@ class SshRepositoryBrowseEntry(_StrictSetupModel):
         return self
 
 
-class SshRepositoryDirectoryListing(_StrictSetupModel):
+def _validate_directory_entries(
+    path: str, parent: str | None, entries: list[SshRepositoryBrowseEntry]
+) -> tuple[str, str | None]:
+    path = _setup_remote_path(path, label="directory browser directory")
+    if parent is not None:
+        parent = _setup_remote_path(parent, label="directory browser parent")
+    expected_parent = None if path == "/" else str(PurePosixPath(path).parent)
+    if parent != expected_parent:
+        raise ValueError("directory browser returned an invalid parent")
+    if any(PurePosixPath(entry.path).parent != PurePosixPath(path) for entry in entries):
+        raise ValueError("directory browser returned an out-of-directory entry")
+    if any(PurePosixPath(entry.path).name != entry.name for entry in entries):
+        raise ValueError("directory browser returned a mismatched directory entry")
+    paths = [entry.path for entry in entries]
+    if len(paths) != len(set(paths)):
+        raise ValueError("directory browser returned duplicate entries")
+    return path, parent
+
+
+class MachineDirectoryPage(_StrictSetupModel):
+    """One validated page of one machine directory, as the browser script returns it."""
+
+    home: str = Field(max_length=1024)
     path: str = Field(max_length=1024)
     parent: str | None = Field(default=None, max_length=1024)
-    entries: list[SshRepositoryBrowseEntry] = Field(max_length=SSH_REPOSITORY_BROWSER_MAX_ENTRIES)
-    truncated: bool
+    entries: list[SshRepositoryBrowseEntry] = Field(max_length=MACHINE_DIRECTORY_PAGE_SIZE)
+    total: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
-    def validate_listing(self) -> SshRepositoryDirectoryListing:
-        self.path = _setup_remote_path(self.path, label="SSH repository browser directory")
-        if self.parent is not None:
-            self.parent = _setup_remote_path(
-                self.parent,
-                label="SSH repository browser parent",
-            )
-        expected_parent = None if self.path == "/" else str(PurePosixPath(self.path).parent)
-        if self.parent != expected_parent:
-            raise ValueError("SSH repository browser returned an invalid parent")
-        if any(
-            PurePosixPath(entry.path).parent != PurePosixPath(self.path) for entry in self.entries
-        ):
-            raise ValueError("SSH repository browser returned an out-of-directory entry")
-        if any(PurePosixPath(entry.path).name != entry.name for entry in self.entries):
-            raise ValueError("SSH repository browser returned a mismatched directory entry")
-        paths = [entry.path for entry in self.entries]
-        if len(paths) != len(set(paths)):
-            raise ValueError("SSH repository browser returned duplicate entries")
+    def validate_page(self) -> MachineDirectoryPage:
+        self.home = _setup_remote_path(self.home, label="directory browser home")
+        self.path, self.parent = _validate_directory_entries(self.path, self.parent, self.entries)
+        if len(self.entries) > self.total:
+            raise ValueError("directory browser returned more entries than its total")
         return self
 
 
-class SshRepositoryBrowseResponse(_StrictSetupModel):
-    state: Literal["reachable", "unreachable", "authentication_failed", "host_key_failed"]
-    rcp_machine: str = Field(min_length=1, max_length=255)
-    host: str = Field(min_length=1, max_length=255)
-    listing: SshRepositoryDirectoryListing | None = None
-    diagnostic: str = Field(max_length=600)
-    required_action: str | None = Field(default=None, max_length=800)
+class MachineBrowseFailure(Exception):
+    """SSH or the machine refused one directory request; the text is redacted."""
+
+    def __init__(
+        self,
+        state: Literal["unreachable", "authentication_failed", "host_key_failed"],
+        diagnostic: str,
+        required_action: str | None = None,
+    ) -> None:
+        super().__init__(required_action or diagnostic)
+        self.state = state
+        self.diagnostic = diagnostic
+        self.required_action = required_action
+
+
+def local_account_home(os_account: str) -> str:
+    """The home of the local machine account a card names, or this process's own."""
+
+    if os_account:
+        try:
+            return pwd.getpwnam(os_account).pw_dir
+        except KeyError:
+            pass
+    return os.path.expanduser("~")
+
+
+def run_machine_directory_request(
+    host: str,
+    request: dict[str, object],
+    *,
+    os_account: str = "",
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    rcp_machine: str | None = None,
+) -> dict[str, object]:
+    """Run one browser request on a machine: in-process locally, shipped over SSH remotely.
+
+    The one implementation behind setup's repository browser and the space
+    folder picker. The result is the browser script's JSON, still untrusted.
+    """
+
+    if not host:
+        home = local_account_home(os_account)
+        local_request = dict(request)
+        if local_request.get("mode") != "check" and local_request.get("path") is None:
+            local_request["path"] = home
+        try:
+            result = remote_repository_browser.handle(local_request)
+        except (OSError, ValueError) as exc:
+            raise MachineBrowseFailure("unreachable", str(exc)[:600]) from exc
+        return {**result, "home": home}
+    run = runner or subprocess.run
+    machine = rcp_machine or socket.gethostname() or "this RCP machine"
+    command = shlex.join(
+        [
+            "python3",
+            "-c",
+            _remote_script("remote_repository_browser.py"),
+            json.dumps(request, sort_keys=True),
+        ]
+    )
+    try:
+        completed = run(
+            ssh_arguments(host, command, strict_host_key_checking=True),
+            capture_output=True,
+            text=True,
+            timeout=SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        raise MachineBrowseFailure("unreachable", redact_server_text(str(exc))[:600]) from exc
+    if completed.returncode:
+        diagnostic = redact_server_text(
+            (completed.stderr or completed.stdout).strip() or "SSH connection failed."
+        )[:600]
+        state = classify_ssh_failure(diagnostic)
+        required_action = None
+        if state == "authentication_failed":
+            required_action = (
+                f'Add SSH credentials for {host} on RCP machine "{machine}", '
+                "then browse again. RCP does not collect keys or passwords."
+            )
+        elif state == "host_key_failed":
+            required_action = (
+                f"Verify and add the SSH host key for {host} on RCP machine "
+                f'"{machine}", then browse again.'
+            )
+        raise MachineBrowseFailure(state, diagnostic, required_action)
+    try:
+        decoded = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("SSH repository browser returned invalid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("SSH repository browser returned an invalid response")
+    error = decoded.get("error")
+    if isinstance(error, str) and error:
+        raise MachineBrowseFailure("unreachable", redact_server_text(error)[:600])
+    return decoded
+
+
+def browse_machine_directory(
+    host: str,
+    path: str | None,
+    *,
+    os_account: str = "",
+    name_filter: str = "",
+    offset: int = 0,
+    runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+    rcp_machine: str | None = None,
+) -> MachineDirectoryPage:
+    decoded = run_machine_directory_request(
+        host,
+        {
+            "mode": "list",
+            "path": path,
+            "filter": name_filter,
+            "offset": offset,
+            "limit": MACHINE_DIRECTORY_PAGE_SIZE,
+        },
+        os_account=os_account,
+        runner=runner,
+        rcp_machine=rcp_machine,
+    )
+    try:
+        return MachineDirectoryPage.model_validate(decoded)
+    except ValueError as exc:
+        raise ValueError("SSH repository browser returned an invalid listing") from exc
 
 
 class SetupExecution(_StrictSetupModel):
@@ -397,93 +511,6 @@ class ProjectSetupManager:
         self.data_dir = data_dir
         self.catalog = catalog
         self.launcher = launcher
-
-    def browse_ssh_repository_paths(
-        self,
-        request: SshRepositoryBrowseRequest,
-        *,
-        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
-        rcp_machine: str | None = None,
-    ) -> SshRepositoryBrowseResponse:
-        """List exactly one remote directory using this RCP machine's existing SSH state."""
-
-        run = runner or subprocess.run
-        machine = rcp_machine or socket.gethostname() or "this RCP machine"
-        command_parts = [
-            "python3",
-            "-c",
-            _remote_script("remote_repository_browser.py"),
-            str(SSH_REPOSITORY_BROWSER_MAX_ENTRIES),
-        ]
-        if request.path is not None:
-            command_parts.append(request.path)
-        try:
-            completed = run(
-                ssh_arguments(
-                    request.host,
-                    shlex.join(command_parts),
-                    strict_host_key_checking=True,
-                ),
-                capture_output=True,
-                text=True,
-                timeout=SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            return SshRepositoryBrowseResponse(
-                state="unreachable",
-                rcp_machine=machine,
-                host=request.host,
-                diagnostic=redact_server_text(str(exc))[:600],
-            )
-        if completed.returncode:
-            diagnostic = redact_server_text(
-                (completed.stderr or completed.stdout).strip() or "SSH connection failed."
-            )[:600]
-            state = classify_ssh_failure(diagnostic)
-            required_action = None
-            if state == "authentication_failed":
-                required_action = (
-                    f'Add SSH credentials for {request.host} on RCP machine "{machine}", '
-                    "then browse again. RCP does not collect keys or passwords."
-                )
-            elif state == "host_key_failed":
-                required_action = (
-                    f"Verify and add the SSH host key for {request.host} on RCP machine "
-                    f'"{machine}", then browse again.'
-                )
-            return SshRepositoryBrowseResponse(
-                state=state,
-                rcp_machine=machine,
-                host=request.host,
-                diagnostic=diagnostic,
-                required_action=required_action,
-            )
-        try:
-            decoded = json.loads(completed.stdout)
-        except json.JSONDecodeError as exc:
-            raise ValueError("SSH repository browser returned invalid JSON") from exc
-        if not isinstance(decoded, dict):
-            raise ValueError("SSH repository browser returned an invalid response")
-        error = decoded.get("error")
-        if isinstance(error, str) and error:
-            return SshRepositoryBrowseResponse(
-                state="unreachable",
-                rcp_machine=machine,
-                host=request.host,
-                diagnostic=redact_server_text(error)[:600],
-            )
-        try:
-            listing = SshRepositoryDirectoryListing.model_validate(decoded)
-        except ValueError as exc:
-            raise ValueError("SSH repository browser returned an invalid listing") from exc
-        return SshRepositoryBrowseResponse(
-            state="reachable",
-            rcp_machine=machine,
-            host=request.host,
-            listing=listing,
-            diagnostic="Remote directory is available.",
-        )
 
     def preflight(self, request: ProjectSetupRequest) -> SetupPreview:
         checks = [self._check_repository(repository) for repository in request.repositories]

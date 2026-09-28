@@ -333,7 +333,7 @@ def test_shipped_helper_creates_and_removes_only_its_request_probe_directory() -
     assert prepared.returncode == 0, prepared.stderr
     path = Path(json.loads(prepared.stdout)["probe_directory"])
     try:
-        assert path.parent == Path("/tmp")
+        assert path.parent == Path(pwd.getpwuid(os.getuid()).pw_dir) / ".rcp" / "tmp"
         assert path.name.startswith(f"rcp-git-probe.{REQUEST_ID}.")
         assert stat.S_IMODE(path.stat().st_mode) == 0o700
 

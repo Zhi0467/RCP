@@ -691,6 +691,28 @@ def write_machine_provider_paths(
     return load_manifest(manifest.path)
 
 
+def write_added_machine(manifest: Manifest, machine: MachineConfig) -> Manifest:
+    """Append one execution machine; existing aliases and repositories stay as they are."""
+
+    if machine.alias in manifest.machine_map:
+        raise ValueError(f"this project already has a machine named {machine.alias}")
+    if any(
+        (existing.host, existing.os_account) == (machine.host, machine.os_account)
+        for existing in manifest.machines
+    ):
+        raise ValueError("this project already uses that machine account")
+    document = tomlkit.parse(manifest.path.read_text(encoding="utf-8"))
+    table = tomlkit.table()
+    table.add("alias", machine.alias)
+    table.add("host", machine.host)
+    table.add("os_account", machine.os_account)
+    document.setdefault("machines", tomlkit.aot()).append(table)
+    content = tomlkit.dumps(document)
+    Manifest.model_validate(tomlkit.parse(content).unwrap())
+    _atomic_write(manifest.path, content)
+    return load_manifest(manifest.path)
+
+
 def _apply_machine_compute_updates(
     document: tomlkit.TOMLDocument,
     updates: dict[str, MachineComputeConfig | None],

@@ -20,7 +20,8 @@ from rcp.api.dependencies import (
     get_provider_sign_ins,
     get_store,
 )
-from rcp.runs.provider_sign_in import ProviderSignInRunner
+from rcp.providers import PROVIDER_IDS
+from rcp.runs.provider_sign_in import ProviderLoginRefused, ProviderSignInRunner
 from rcp.storage import AppStore
 
 
@@ -249,3 +250,33 @@ def test_invalid_account_requests_do_not_echo_credentials(tmp_path, body):
     response = TestClient(app).post("/api/providers/claude/logins/token", json=body)
     assert response.status_code == 422
     assert "private-value" not in response.text
+
+
+def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "login.sqlite3")
+    store.create_space_machine(name="GPU", host="gpu.example", os_account="alice")
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    accounts = ProviderAccounts(store, credentials)
+    launcher = AgentLauncher(accounts=accounts)
+    runner = ProviderSignInRunner(store, launcher, accounts)
+    monkeypatch.setattr(
+        provider_login,
+        "get_identity_access",
+        lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
+    )
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.dependency_overrides[get_store] = lambda: store
+    app.dependency_overrides[get_catalog] = lambda: SimpleNamespace(provider_targets=lambda: [])
+    app.dependency_overrides[get_provider_credentials] = lambda: credentials
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
+
+    listed = TestClient(app).get("/api/providers/logins").json()
+    remote = [account for account in listed if account["host"] == "gpu.example"]
+    assert {account["provider"] for account in remote} == set(PROVIDER_IDS)
+    assert all(account["machines"] == ["GPU"] for account in remote)
+    assert all(account["provider_path"] is None for account in remote)
+    # With no project path saved, the machine's PATH resolves the provider.
+    assert runner.provider_binary("codex", "gpu.example") == ("codex", set())
+    with pytest.raises(ProviderLoginRefused):
+        runner.provider_binary("codex", "unknown.example")

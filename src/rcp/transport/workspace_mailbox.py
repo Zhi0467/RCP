@@ -10,6 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
+from rcp.rcp_home import rcp_temp_dir
 from rcp.transport.run_stage import RemoteRunStage
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -173,7 +174,9 @@ class RunStageMailbox:
 
         label = _safe_name(label)
         if self.remote_stage is not None:
-            with tempfile.TemporaryDirectory(prefix="rcp-mailbox-input-") as temporary:
+            with tempfile.TemporaryDirectory(
+                prefix="rcp-mailbox-input-", dir=rcp_temp_dir()
+            ) as temporary:
                 source = Path(temporary) / label
                 source.write_bytes(content.encode("utf-8"))
                 source.chmod(0o400)

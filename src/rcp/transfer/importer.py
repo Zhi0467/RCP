@@ -19,6 +19,7 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.history import HistoryManager
 from rcp.limits import PROJECT_TRANSFER_COPY_BUFFER_BYTES
 from rcp.paper import PaperService
+from rcp.rcp_home import rcp_temp_dir
 from rcp.service import ProjectService
 from rcp.sources import ImportedProviderSourceInventory
 from rcp.storage import ProjectTransferImportRecord
@@ -273,7 +274,9 @@ def _publish_canonical(
     archive_root: Path,
     configuration: TransferTargetConfiguration,
 ):
-    with tempfile.TemporaryDirectory(prefix="rcp-transfer-target-manifest-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="rcp-transfer-target-manifest-", dir=rcp_temp_dir()
+    ) as temporary:
         manifest_source = Path(temporary) / "manifest.toml"
         manifest_source.write_text(configuration.manifest_content, encoding="utf-8")
         manifest_bytes = configuration.manifest_content.encode("utf-8")
@@ -319,7 +322,9 @@ def _publish_project_files(
     capture: TransferProjectFileCapture,
 ) -> None:
     operation_projects = {task.operation_id: capture.project_id for task in capture.records.tasks}
-    with tempfile.TemporaryDirectory(prefix="rcp-transfer-chat-readback-") as temporary:
+    with tempfile.TemporaryDirectory(
+        prefix="rcp-transfer-chat-readback-", dir=rcp_temp_dir()
+    ) as temporary:
         chat_root = Path(temporary) / ".research" / "chat"
         for entry in capture.entries:
             source = archive_root / entry.archive_path

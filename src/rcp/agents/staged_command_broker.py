@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import pwd
 import re
 import socket
 import stat
@@ -65,15 +66,42 @@ def _bootstrap(mailbox_id):
     return token
 
 
+_SOCKET_DIRECTORY = "~/.rcp/sockets/"
+
+
 def _safe_socket_path(path):
-    absolute = os.path.abspath(path)
-    if not absolute.startswith("/tmp/rcp-command-") or not absolute.endswith(".sock"):
-        raise BrokerError("broker socket is outside the bounded temporary namespace")
+    """Resolve `~/.rcp/sockets/rcp-command-*.sock` against this account's home.
+
+    The home comes from the password database, not `HOME`, so the provider's
+    client resolves the same path whatever environment it runs in.
+    """
+
+    name = path[len(_SOCKET_DIRECTORY) :] if path.startswith(_SOCKET_DIRECTORY) else ""
+    if not name.startswith("rcp-command-") or not name.endswith(".sock") or "/" in name:
+        raise BrokerError("broker socket is outside the RCP socket directory")
+    directory = os.path.join(pwd.getpwuid(os.geteuid()).pw_dir, ".rcp", "sockets")
+    absolute = os.path.join(directory, name)
+    # sun_path is 104 bytes on macOS and 108 on Linux. Refuse instead of
+    # falling back to a shorter shared directory such as /tmp.
     if len(os.fsencode(absolute)) >= 100:
-        raise BrokerError("broker socket path is too long")
+        raise BrokerError(f"broker socket path is too long: {absolute}")
+    _private_directory(os.path.dirname(directory))
+    _private_directory(directory, exact=True)
     if os.path.lexists(absolute):
         raise BrokerError("broker socket path is already occupied")
     return absolute
+
+
+def _private_directory(path, *, exact=False):
+    with suppress(FileExistsError):
+        os.mkdir(path, 0o700)
+    info = os.lstat(path)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or (exact and stat.S_IMODE(info.st_mode) != 0o700)
+    ):
+        raise BrokerError(f"RCP socket directory {path} is unsafe")
 
 
 def _peer_identity(connection):

@@ -23,6 +23,7 @@ from rcp.limits import (
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
+from rcp.rcp_home import rcp_temp_dir
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
@@ -84,6 +85,37 @@ def remove_tree(path):
         return
     make_writable(path)
     shutil.rmtree(path)
+"""
+
+
+# New stages live in the remote account's `~/.rcp/stages`, never `/tmp`.
+_REMOTE_STAGE_CREATE = """\
+import os,stat,sys,tempfile
+rcp=os.path.join(os.path.expanduser('~'),'.rcp')
+base=os.path.join(rcp,'stages')
+for directory in (rcp,base):
+    try:
+        os.mkdir(directory,0o700)
+    except FileExistsError:
+        pass
+info=os.lstat(base)
+if not stat.S_ISDIR(info.st_mode) or info.st_uid!=os.geteuid():
+    print('remote stage directory is unsafe',file=sys.stderr); raise SystemExit(1)
+label,reuse=sys.argv[1],sys.argv[2]=='1'
+if label:
+    root=os.path.join(base,'rcp-run.'+label)
+    legacy='/tmp/rcp-run.'+label
+    # Legacy: a reused stage made before RCP left /tmp stays there; a later release removes this.
+    if reuse and not os.path.lexists(root) and os.path.lexists(legacy):
+        print(legacy); raise SystemExit(0)
+    try:
+        os.mkdir(root,0o700)
+    except FileExistsError:
+        if not reuse:
+            print('remote run stage already exists',file=sys.stderr); raise SystemExit(1)
+else:
+    root=tempfile.mkdtemp(prefix='rcp-run.',dir=base)
+print(root)
 """
 
 
@@ -153,7 +185,9 @@ class RemoteRunStage:
 import glob,json,sys,time
 cutoff=time.time()-(int(sys.argv[1])*86400)
 protected=set(json.loads(sys.argv[2]))
-for target in glob.glob('/tmp/rcp-run.*'):
+# /tmp holds stages made before RCP moved them under ~/.rcp; a later release drops it.
+targets=glob.glob(os.path.expanduser('~/.rcp/stages/rcp-run.*'))+glob.glob('/tmp/rcp-run.*')
+for target in targets:
     try:
         if target not in protected and os.path.isdir(target) and os.path.getmtime(target) < cutoff:
             remove_tree(target)
@@ -184,17 +218,9 @@ for target in glob.glob('/tmp/rcp-run.*'):
         second time must land in the same directory rather than fail.
         """
         self.sweep(protected_roots=protected_roots)
-        if operation_id is None:
-            result = self._ssh(["mktemp", "-d", "/tmp/rcp-run.XXXXXXXX"])
-            remote_root = result.stdout.strip()
-        else:
-            label = _safe_label(operation_id)
-            remote_root = f"/tmp/rcp-run.{label}"
-            result = self._ssh(
-                ["mkdir", "-p", "-m", "700", remote_root]
-                if reuse
-                else ["mkdir", "-m", "700", remote_root]
-            )
+        label = "" if operation_id is None else _safe_label(operation_id)
+        result = self._ssh(["python3", "-c", _REMOTE_STAGE_CREATE, label, "1" if reuse else "0"])
+        remote_root = result.stdout.strip()
         if result.returncode or not _safe_root(remote_root):
             raise _ssh_failure(result, "could not create remote run stage")
         safe = self._directory_probe(remote_root)
@@ -244,8 +270,11 @@ for target in glob.glob('/tmp/rcp-run.*'):
 
         script = """
 import os,stat,sys
+root=sys.argv[1]
+if not root.startswith('/tmp/rcp-run.') and os.path.dirname(root)!=os.path.join(os.path.expanduser('~'),'.rcp','stages'):
+    print('remote run stage is outside this account',file=sys.stderr); raise SystemExit(1)
 try:
-    info=os.lstat(sys.argv[1])
+    info=os.lstat(root)
 except (FileNotFoundError,NotADirectoryError):
     raise SystemExit(1)
 except OSError as exc:
@@ -321,6 +350,29 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         ):
             raise StateUnavailable("remote repository root inspection returned invalid paths")
         return values, home
+
+    def legacy_stage_roots(self) -> list[str]:
+        """Canonical paths of the `/tmp/rcp-run.*` stages left from before `~/.rcp`.
+
+        A later release removes this with the legacy stage location.
+        """
+
+        script = """
+import glob,json,os
+roots=sorted({os.path.realpath(path) for path in glob.glob('/tmp/rcp-run.*')
+    if os.path.isdir(path) and not os.path.islink(path)})
+print(json.dumps(roots))
+"""
+        result = self._ssh(["python3", "-c", script])
+        if result.returncode:
+            raise _ssh_failure(result, "could not list legacy remote run stages")
+        try:
+            roots = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise StateUnavailable("legacy remote run stage listing returned invalid data") from exc
+        if not isinstance(roots, list) or not all(isinstance(root, str) for root in roots):
+            raise StateUnavailable("legacy remote run stage listing returned invalid paths")
+        return roots
 
     def attach_artifact_source(self, root: str) -> RemoteRunStage:
         """Adopt saved provenance; the bounded artifact read performs the SSH check."""
@@ -652,7 +704,9 @@ except BaseException:
 
     def _pending_input_root(self) -> Path:
         if self._pending_inputs is None:
-            self._pending_inputs = Path(tempfile.mkdtemp(prefix="rcp-remote-inputs-"))
+            self._pending_inputs = Path(
+                tempfile.mkdtemp(prefix="rcp-remote-inputs-", dir=rcp_temp_dir())
+            )
         return self._pending_inputs
 
     def _clear_pending_inputs(self) -> None:
@@ -1518,8 +1572,29 @@ def _safe_workspace_file_name(name: str) -> str:
 
 
 def _safe_root(value: str) -> bool:
-    candidate = PurePosixPath(value)
-    return (
-        candidate.parent == PurePosixPath("/tmp")
-        and re.fullmatch(r"rcp-run\.[A-Za-z0-9_-]+", candidate.name) is not None
-    )
+    return remote_stage_name(value) is not None
+
+
+def remote_stage_name(root: str) -> str | None:
+    """The stage name in a remote stage root, or None when it is not one.
+
+    New stages live at `<remote home>/.rcp/stages/rcp-run.<name>`; the home is
+    only known on that host, so the directory probe there checks it exactly.
+    """
+
+    candidate = PurePosixPath(root)
+    match = re.fullmatch(r"rcp-run\.([A-Za-z0-9_-]+)", candidate.name)
+    if match is None:
+        return None
+    parent = candidate.parent
+    # Legacy: stages saved before RCP left /tmp. A later release removes this.
+    if parent == PurePosixPath("/tmp"):
+        return match.group(1)
+    if (
+        parent.is_absolute()
+        and len(parent.parts) > 3
+        and parent.parts[-2:] == (".rcp", "stages")
+        and ".." not in parent.parts
+    ):
+        return match.group(1)
+    return None

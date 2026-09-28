@@ -26,6 +26,13 @@ def account_credential_lock_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.fixture(autouse=True)
+def rcp_home_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep RCP's own `~/.rcp` temporary files out of the human's home."""
+
+    monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: tmp_path / "rcp-home")
+
+
+@pytest.fixture(autouse=True)
 def ssh_control_socket_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the mux-socket sweep out of the human's own live connections.
 
@@ -96,7 +103,7 @@ def terminated_background_tasks(monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
     unentered `TestClient`, so no lifespan ever runs; their workers are daemon
     threads, so interpreter exit drops them without unwinding and the staged
     broker plus its provider child are reparented and left running, holding a
-    `/tmp/rcp-command-*.sock` for as long as they live. Registering at
+    `~/.rcp/sockets/rcp-command-*.sock` for as long as they live. Registering at
     construction covers every engine a test creates, including the ones reached
     through `create_app` and server-operation validation.
     """

@@ -1798,6 +1798,18 @@ class ProjectService:
         self.paper.manifest = self.manifest
         self.invalidate_source_index()
 
+    def add_machine(self, alias: str, host: str, os_account: str) -> None:
+        """Append one execution machine, copied from a space machine card."""
+
+        if re.fullmatch(r"[a-z][a-z0-9-]{0,47}", alias) is None:
+            raise ValueError(
+                "machine names must start with a letter and use lowercase letters, "
+                "numbers, or hyphens"
+            )
+        self.history.add_machine(MachineConfig(alias=alias, host=host, os_account=os_account))
+        self.paper.manifest = self.manifest
+        self.invalidate_source_index()
+
     def resolve_compute_request(self, request: RunRequest) -> RunRequest:
         ids = list(dict.fromkeys(request.active_compute_ids))
         selected = selected_compute_connections(self.manifest, ids)

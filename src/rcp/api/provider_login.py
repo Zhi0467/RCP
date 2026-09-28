@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,14 +17,15 @@ from rcp.api.dependencies import (
     get_provider_sign_ins,
     get_store,
 )
-from rcp.config import load_manifest
 from rcp.limits import PROVIDER_TOKEN_MAX_CHARS
 from rcp.projects import ProjectCatalog
-from rcp.providers import ProviderId, profile_for
+from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.runs.provider_sign_in import (
     ProviderLoginRefused,
+    ProviderPathSource,
     ProviderSignInRunner,
     ProviderSignInStatus,
+    provider_path_sources,
 )
 from rcp.storage import AppStore
 
@@ -76,7 +76,7 @@ class ProviderCredentialSummary(BaseModel):
 
 
 class ProviderLoginAccount(BaseModel):
-    """One `(provider, execution account)` pair every project on this server may launch on."""
+    """One `(provider, execution account)` pair on a space machine."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +94,8 @@ class ProviderLoginAccount(BaseModel):
     token_instructions: str | None = None
     token: ProviderCredentialSummary | None = None
     sign_in: ProviderSignInStatus | None = None
+    #: The project path sign-in launches; None means the machine's PATH resolves it.
+    provider_path: ProviderPathSource | None = None
 
 
 def _refused(exc: ProviderLoginRefused) -> HTTPException:
@@ -107,20 +109,19 @@ def provider_login_accounts(
     sign_ins: ProviderSignInRunner,
 ) -> list[ProviderLoginAccount]:
     machines: dict[str, set[str]] = {}
-    for project in store.projects():
-        manifest = _project_manifest(project)
-        if manifest is None:
-            continue
-        for machine in manifest.machines:
-            machines.setdefault(machine.host, set()).add(machine.alias)
+    for machine in store.space_machines():
+        machines.setdefault(machine.host, set()).add(machine.name)
     pairs = {(provider, host) for provider, host, _ in catalog.provider_targets()}
-    # A stored row for a host no project names any more is history, not an
+    # Every space machine can be signed in, even one no project uses yet.
+    pairs.update((provider, host) for host in machines for provider in PROVIDER_IDS)
+    # A stored row for a host the space no longer lists is history, not an
     # account anyone can act on; Verify would refuse it as an unknown host.
     pairs.update(
         (state.provider, state.host)
         for state in store.provider_login_states()
         if not state.host or state.host in machines
     )
+    paths = provider_path_sources(store)
     accounts = []
     for provider, host in sorted(pairs):
         state = sign_ins.account_state(provider, host)
@@ -134,6 +135,7 @@ def provider_login_accounts(
                 sign_in_methods=profile.authentication.methods,
                 token_instructions=profile.authentication.token_instructions,
                 machines=sorted(machines.get(host, set())),
+                provider_path=next(iter(paths.get((provider, host), [])), None),
                 token=token,
                 sign_in=sign_ins.running_sign_in(provider, host),
             )
@@ -243,15 +245,3 @@ def sign_out_provider_login(
     except ProviderLoginRefused as exc:
         raise _refused(exc) from exc
     return {"state": state.model_dump(mode="json")}
-
-
-def _project_manifest(project):
-    if project is None:
-        return None
-    try:
-        return load_manifest(project.locator)
-    except (OSError, ValueError):
-        logging.getLogger(__name__).warning(
-            "Provider login resume skipped an unavailable project manifest."
-        )
-        return None

@@ -11,7 +11,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.agents.context import RepositoryPointer
-from rcp.agents.grant_paths import owned_paths_covered, refuse_grants_inside
 from rcp.config import Manifest, RepositoryConfig
 from rcp.core.models import ConversationWorktreeBinding
 from rcp.providers import AgentCapability
@@ -390,23 +389,44 @@ def resolve_project_write_scope(
             for root in roots
         )
 
+    granted_input = sorted({canonical[path] for path in declared_grants})
     granted, rcp_protected = _granted_roots(
-        sorted({canonical[path] for path in declared_grants}),
-        remote=remote_stage is not None,
-        account_home=account_home,
-        app_data_dir=app_data_dir,
+        granted_input,
+        owned=[
+            *rcp_owned_paths(
+                account_home=account_home,
+                app_data_dir=app_data_dir,
+                remote=remote_stage is not None,
+            ),
+            # Canonical state of every repository on this host, admitted or not.
+            *(
+                str(PurePosixPath(path) / ".research")
+                for item in execution_inventory
+                for path in (item.path, canonical_inventory[item.path])
+            ),
+            # This launch's own immutable inputs, and other tasks' legacy stages.
+            str(PurePosixPath(canonical_stage) / "inputs"),
+            *(
+                root
+                for root in (
+                    remote_stage.legacy_stage_roots()
+                    if remote_stage is not None and granted_input
+                    else []
+                )
+                if root != canonical_stage
+            ),
+        ],
+        path_semantics=path_semantics,
     )
 
-    protected = protected_repository_paths(
+    base_protected = protected_repository_paths(
         manifest=manifest,
         repository_roots=[item.path for item in repository_roots],
         remote_stage=remote_stage,
-        additional_paths=[
-            *explicit_protected,
-            *(canonical[path] for path in explicit_protected),
-            *rcp_protected,
-        ],
+        additional_paths=[*explicit_protected, *(canonical[path] for path in explicit_protected)],
     )
+    granted_protected = sorted(set(rcp_protected) - set(base_protected))
+    protected = sorted({*base_protected, *granted_protected})
 
     return ProjectWriteScope.create(
         project_id=project_id,
@@ -419,7 +439,7 @@ def resolve_project_write_scope(
         git_metadata_roots=[binding.git_common_dir] if binding else [],
         granted_roots=granted,
         protected_write_paths=protected,
-        granted_protected_paths=[path for path in rcp_protected if path in protected],
+        granted_protected_paths=granted_protected,
     )
 
 
@@ -521,17 +541,40 @@ def _installed_server_paths(data_dir: Path) -> list[str]:
 def _granted_roots(
     grants: list[str],
     *,
-    remote: bool,
-    account_home: str,
-    app_data_dir: Path | None,
+    owned: list[str],
+    path_semantics: _ExecutionPathSemantics,
 ) -> tuple[list[str], list[str]]:
-    """Refuse grants inside RCP storage; return the RCP paths they cover."""
+    """Refuse grants inside protected storage; return the protected paths they cover.
+
+    Locally, identity is filesystem identity: resolved forms are compared too,
+    and `samefile` catches case-insensitive and symlinked aliases.
+    """
 
     if not grants:
         return [], []
-    owned = rcp_owned_paths(account_home=account_home, app_data_dir=app_data_dir, remote=remote)
-    refuse_grants_inside(grants, owned)
-    return grants, owned_paths_covered(grants, owned)
+    candidates = list(dict.fromkeys(owned))
+    if not path_semantics.remote:
+        candidates = list(
+            dict.fromkeys([*candidates, *(str(Path(path).resolve()) for path in candidates)])
+        )
+    for grant in grants:
+        for path in candidates:
+            if path_semantics.equal(grant, path) or any(
+                path_semantics.equal(parent, path) for parent in PurePosixPath(grant).parents
+            ):
+                raise ValueError(f"writable path {grant} is inside protected storage at {path}")
+    covered = sorted(
+        {
+            path
+            for path in candidates
+            if any(
+                path_semantics.equal(parent, grant)
+                for grant in grants
+                for parent in PurePosixPath(path).parents
+            )
+        }
+    )
+    return grants, covered
 
 
 def registered_repository_roots(

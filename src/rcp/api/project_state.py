@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.api.dependencies import (
     get_background_tasks,
@@ -442,6 +442,38 @@ def _refresh_machine_compute_probes(
         logger.warning("Could not check compute routes for project %s: %s", project_id, exc)
 
 
+class AddProjectMachineRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    machine_id: str = Field(min_length=1, max_length=64)
+    alias: str = Field(min_length=1, max_length=48)
+
+
+@router.post(
+    "/api/projects/{project_id}/machines",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def add_project_machine(
+    project_id: str,
+    body: AddProjectMachineRequest,
+    *,
+    store: StoreDependency,
+    project_display_cache: DisplayCacheDependency,
+) -> dict[str, object]:
+    """Append a space machine card to this project's manifest; returns the project snapshot."""
+
+    try:
+        store.space_machine(body.machine_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Machine not found") from exc
+    try:
+        return project_display_cache.add_machine(project_id, body.machine_id, body.alias)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post(
     "/api/projects/{project_id}/machines/{machine_alias}/providers/{provider}/resolve",
     dependencies=[Depends(require_project_write_admission)],
@@ -533,6 +565,7 @@ def agent_usage(
 
 __all__ = [
     "ProjectInviteRequest",
+    "add_project_machine",
     "agent_usage",
     "cached_project",
     "cached_project_revision",

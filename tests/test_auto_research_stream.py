@@ -658,6 +658,9 @@ class _LocalBackedRemoteStage:
             canonical[raw] = str(resolved)
         return canonical, str(Path.home().resolve())
 
+    def legacy_stage_roots(self) -> list[str]:
+        return []
+
 
 def _record_original_contract(
     store: AppStore,
