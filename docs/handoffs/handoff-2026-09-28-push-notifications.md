@@ -165,9 +165,14 @@ requirements.
    restore fingerprint, a transfer disposition, and a boundary fixture.
    Restore and transfer detach every subscription. A lost key is recovered by
    devices subscribing again, never by silently making a new key.
-8. **Subscriptions belong to a device.** On a team space, logout or session
-   revocation deletes the subscription. On a personal space, Remove deletes
-   it. Project membership is checked again before every send.
+8. **Subscriptions belong to a device.** On a team space, logout, session
+   revocation, or session expiry deletes the subscription. Every team send
+   first requires the owning session to be active and unexpired; a send that
+   finds it expired deletes the subscription instead. Pushes alone do not
+   refresh a session, so a phone that is never opened stops receiving pushes
+   after `TEAM_SESSION_IDLE_DAYS`, and the Devices card says so. On a personal
+   space, Remove deletes it. Project membership is checked again before every
+   send.
 9. **Deep links.** Add hash routes for a Proposal, Decision, Blocker, or
    episode on its target. Handle a cold launch, an expired session (sign in,
    then continue to the link), and an item already resolved (open it read-only
@@ -206,8 +211,8 @@ requirements.
   `wrapping_up`.
 - The Mac backlog: resolved and expired items are dropped, and more than three
   collapse into one summary.
-- Logout, session revocation, Remove on a personal phone, leaving a project,
-  and member removal each stop future sends.
+- Logout, session revocation, session expiry, Remove on a personal phone,
+  leaving a project, and member removal each stop future sends.
 - The personal-space phone listener refuses every route outside its allowlist,
   and a redeemed pairing code grants no read access.
 - Backup and restore keep the key; restore does not resume old subscriptions.
