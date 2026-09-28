@@ -1175,6 +1175,10 @@ shown on the project index, setup screens, and every project view, renders it:
 a team space shows `sudo rcp server update`; a source checkout shows
 `scripts/update-from-source vX.Y.Z` (with `--desktop` from a source app); a
 prebuilt app shows a Download button only once the companion is confirmed.
+A published prebuilt app has the Tauri updater enabled and checks it at launch
+and whenever its window is shown; while that check reports a newer release, the
+surface shows the native **Update** button instead, which replaces and
+relaunches the app and asks before interrupting running agent tasks.
 The native shell reports its build kind, version, and checkout through
 `desktop_build_identity`, because a desktop may reuse a backend of the other
 kind. A visible page polls the endpoint (30 s while `unchecked`, then 10 min,

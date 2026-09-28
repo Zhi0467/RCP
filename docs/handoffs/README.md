@@ -3,6 +3,8 @@
 - [Episodes run isolated, and a branch view shows the graph diff](handoff-2026-09-28-episode-isolation.md)
   — design confirmed and reviewed 2026-09-28; slices 1–3 implemented.
   Slice 4 adds the code-capable merge task; diff, web, and the closing journey follow.
+- [Install and update the Mac app without Open Anyway](handoff-2026-09-28-mac-install-and-update.md)
+  — implemented 2026-09-28; waiting on live checks across two releases.
 
 ## Open live checks
 
