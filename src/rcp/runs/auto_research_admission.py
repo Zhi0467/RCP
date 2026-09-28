@@ -35,7 +35,6 @@ from rcp.runs.auto_research import (
 from rcp.runs.auto_research import (
     pending_auto_research_mail as _episode_pending_mail,
 )
-from rcp.runs.episodes.isolation import resolve_auto_research_code_worktree
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.provider_login import provider_login_host
 from rcp.runs.task_policy import AgentTaskContinuation, resolved_dispatch_authority, skill_update
@@ -288,11 +287,6 @@ def reserve_auto_research(
 
     if not authorized_by.display_name.strip():
         raise ValueError("Auto-research requires a named human authorizer snapshot.")
-    request = request.model_copy(
-        update={
-            "code_worktree": resolve_auto_research_code_worktree(tasks.store, project_id, request)
-        }
-    )
     episode_id = episode_id or str(uuid.uuid4())
     if graph_base_head.target.kind != "main":
         raise ValueError("Auto-research must branch from an exact main graph head.")

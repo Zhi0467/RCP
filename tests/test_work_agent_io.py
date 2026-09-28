@@ -17,9 +17,11 @@ import rcp.runs.tasks.work as work_module
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.continuation_prompt import SECTIONS, MasterRef
 from rcp.agents.staged_command_client import _broker_socket_path
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.runs.patch_validator import stage_patch_validation_mailbox
 from rcp.runs.tasks.work import _WorkValidatorMailboxLifecycle, stream_work_run
 from rcp.service import RunRequest
+from rcp.storage import EpisodeRecord
 
 from .helpers import (
     agent_patch_json,
@@ -366,6 +368,22 @@ async def test_work_watcher_binding_keeps_originating_episode_lineage(
     request = _request()
     execution = _chat_task_execution(app, request, "work-episode-watcher-binding")
     episode_id = "auto-research-episode"
+    task = execution.store.agent_task(execution.operation_id)
+    assert task is not None
+    execution.store.create_episode(
+        EpisodeRecord(
+            episode_id=episode_id,
+            project_id=task.project_id,
+            mode="auto_research",
+            graph_target=GraphTargetRef(kind="branch", branch_id=episode_id),
+            graph_base_head=GraphHeadRef(revision=0),
+            status="queued",
+            invocation_ceiling=1,
+            authorized_by=task.authorized_by,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+        )
+    )
     original_agent_task = execution.store.agent_task
 
     def episode_bound_task(operation_id: str):
@@ -415,8 +433,8 @@ async def test_work_watcher_binding_keeps_originating_episode_lineage(
         )
     ]
 
-    assert not any('"event":"error"' in frame for frame in frames)
-    assert len(bindings) == 1
+    assert not any('"event":"error"' in frame for frame in frames), frames
+    assert len(bindings) == 1, frames
     assert bindings[0].episode_id == episode_id
 
 

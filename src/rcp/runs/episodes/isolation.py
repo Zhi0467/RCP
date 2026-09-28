@@ -100,8 +100,10 @@ def validate_episode_admission(
     if len(aliases) != 1:
         raise ValueError("episode_isolation_requires_one_repository")
     repository = manifest.repository_map[aliases[0]]
-    host = manifest.machine_map[request.run_on or "local"].host
-    if repository.machine != request.run_on:
+    # Graph-writing profiles default to the canonical state machine.
+    run_on = request.run_on or manifest.repository_map[manifest.state.repository].machine
+    host = manifest.machine_map[run_on].host
+    if repository.machine != run_on:
         raise ValueError("episode_isolation_host_mismatch")
     if isolation and isolation.worktree:
         binding = isolation.worktree
@@ -118,12 +120,10 @@ def validate_episode_admission(
     _check_grants(store, host, repository.path)
 
 
-def resolve_auto_research_code_worktree(
+def auto_research_code_worktree_eligible(
     store: AppStore, project_id: str, request: AutoResearchStartRequest
 ) -> bool:
-    """Resolve the omitted toggle once, before persisting the owner's choices."""
-    if request.code_worktree is not None:
-        return request.code_worktree
+    """Check the API's omitted toggle before persisting the owner's choices."""
     try:
         validate_episode_admission(
             store, project_id, request.model_copy(update={"code_worktree": True})
@@ -131,6 +131,7 @@ def resolve_auto_research_code_worktree(
     except ValueError as exc:
         if str(exc) not in {
             "episode_isolation_requires_one_repository",
+            "episode_isolation_host_mismatch",
             "episode_isolation_git_version",
             "episode_isolation_grant_overlap",
         }:

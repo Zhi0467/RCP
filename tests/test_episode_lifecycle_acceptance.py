@@ -161,6 +161,7 @@ def _start_episode(
         f"/api/projects/{project_id}/episodes",
         json={
             "mode": "auto_research",
+            "code_worktree": False,
             "invocation_ceiling": invocation_ceiling,
             "starting_instruction": starting_instruction,
         },

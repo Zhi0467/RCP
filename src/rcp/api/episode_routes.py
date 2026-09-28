@@ -57,6 +57,7 @@ from rcp.runs.auto_research_delivery import (
 )
 from rcp.runs.branch_merge_admission import start_branch_merge
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
+from rcp.runs.episodes.isolation import auto_research_code_worktree_eligible
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
 from rcp.transport import StateUnavailable
@@ -204,6 +205,14 @@ def start_episode(
     service = get_project_service(catalog, project_id)
     try:
         start_request = _resolved_auto_research_start_request(service, body)
+        if body.code_worktree is None:
+            start_request = start_request.model_copy(
+                update={
+                    "code_worktree": auto_research_code_worktree_eligible(
+                        store, project_id, start_request
+                    )
+                }
+            )
         service.history.require_writable()
         graph_base_head = service.history.head_ref()
         episode, _ = start_auto_research(
@@ -710,7 +719,7 @@ def _resolved_auto_research_start_request(
     profile = service.resolve_agent_profile("orchestrator")
     request = AutoResearchStartRequest(
         invocation_ceiling=body.invocation_ceiling,
-        code_worktree=body.code_worktree,
+        code_worktree=body.code_worktree if body.code_worktree is not None else False,
         graph_isolation=body.graph_isolation,
         starting_instruction=body.starting_instruction,
         provider=profile.provider,

@@ -283,6 +283,7 @@ def test_recovery_reuses_paid_allocation_and_can_be_exact_ending_task(tmp_path: 
         session_id="native-session",
         stage_root="/tmp/exact-experiment-stage",
     )
+    child.request.update(code_worktree=False, graph_isolation=False)
 
     stored = store.create_experiment_recovery_task(child)
     store.complete_agent_task(stored.operation_id, applied_revision=None, result={})

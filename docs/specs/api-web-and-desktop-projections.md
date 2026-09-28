@@ -744,6 +744,10 @@ isolation to true and refuses `graph_isolation: false`. Experiment starts
 default both to false; graph isolation creates an episode branch. An existing
 branch target retains its branch and owner. Explicit ineligible code isolation
 still refuses with its admission code.
+Only the API start route resolves the omitted Auto-research code default.
+Internal start and run requests default code isolation to false and do no
+eligibility work unless enabled. Disabled admission does not read the manifest
+or probe Git.
 The episode response publishes both choices and `isolation_owner_episode_id`.
 The binding is backend-owned; clients cannot supply worktree paths or an owner.
 Resume, Retry, and Add N turns keep the captured choices and owner.

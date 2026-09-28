@@ -76,7 +76,7 @@ class AutoResearchStartRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    code_worktree: bool | None = None
+    code_worktree: bool = False
     graph_isolation: Literal[True] = True
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(default=None, max_length=16_000)
@@ -117,7 +117,7 @@ class AutoResearchRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     episode_id: str = Field(min_length=1)
-    code_worktree: bool = True
+    code_worktree: bool = False
     graph_isolation: Literal[True] = True
     role: AutoResearchActorRole
     provider: ProviderId | None = None

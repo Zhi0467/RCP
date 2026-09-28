@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from rcp.agents.write_scope import ProjectWriteScope
@@ -11,14 +12,14 @@ from rcp.api.episodes import StartEpisodeBody
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
 from rcp.core.transition_models import GraphHeadRef
-from rcp.runs.auto_research import AutoResearchStartRequest
+from rcp.runs.auto_research import AutoResearchRunRequest, AutoResearchStartRequest
 from rcp.runs.auto_research_admission import reserve_auto_research
 from rcp.runs.episodes.isolation import validate_episode_admission, validate_episode_launch
 from rcp.service import RunRequest
 from rcp.storage import AppStore, ProjectRecord
 
 from . import test_conversation_worktree_git as worktree_fixture
-from .helpers import fabricated_authorizer
+from .helpers import create_named_app, fabricated_authorizer
 from .test_auto_research_children_storage import (
     _experiment_route,
     _experiment_task,
@@ -32,7 +33,7 @@ repository = worktree_fixture.repository
 def test_run_defaults_and_auto_graph_lock() -> None:
     auto = AutoResearchStartRequest(invocation_ceiling=1)
     experiment = RunRequest()
-    assert (auto.code_worktree, auto.graph_isolation) == (None, True)
+    assert (auto.code_worktree, auto.graph_isolation) == (False, True)
     assert (experiment.code_worktree, experiment.graph_isolation) == (False, False)
     with pytest.raises(ValidationError) as error:
         StartEpisodeBody(mode="auto_research", invocation_ceiling=1, graph_isolation=False)
@@ -70,32 +71,93 @@ def test_code_admission_requires_one_repository(manifest, tmp_path) -> None:
     assert store.episodes("project") == []
 
 
-@pytest.mark.parametrize("ineligible", [None, "repositories", "git", "grant"])
+@pytest.mark.parametrize("ineligible", [None, "repositories", "host", "git", "grant"])
 def test_auto_code_default_is_resolved_and_persisted(manifest, tmp_path, monkeypatch, ineligible):
-    store = _store(manifest, tmp_path)
+    if ineligible == "host":
+        text = manifest.path.read_text()
+        text = text.replace(
+            '[[repositories]]\nalias = "repo-b"\nmachine = "laptop"',
+            '[[repositories]]\nalias = "repo-b"\nmachine = "gpu"',
+        ).replace('default_run_truth_scope = ["repo-a"]', 'default_run_truth_scope = ["repo-b"]')
+        manifest.path.write_text(
+            text.replace(
+                "[[repositories]]",
+                '[[machines]]\nalias = "gpu"\nhost = "gpu"\n\n[[repositories]]',
+                1,
+            )
+        )
+    if ineligible == "repositories":
+        manifest.path.write_text(
+            manifest.path.read_text().replace(
+                'default_run_truth_scope = ["repo-a"]',
+                'default_run_truth_scope = ["repo-a", "repo-b"]',
+            )
+        )
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.catalog.store
+    monkeypatch.setattr(
+        app.state.background_tasks, "_spawn_record", lambda record, *a, **kw: record
+    )
     monkeypatch.setattr(
         "rcp.conversation_worktrees.worktree_command",
         lambda *a, **kw: {"version": [2, 38, 0], "supported": ineligible != "git"},
     )
     if ineligible == "grant":
-        card = store.create_space_machine(name="local", host="", os_account="")
+        card = store.space_machine_for("") or store.create_space_machine(
+            name="local", host="", os_account=""
+        )
         store.update_space_machine(card.machine_id, writable_paths=[str(tmp_path)])
-    request = AutoResearchStartRequest(
-        invocation_ceiling=1,
-        provider="codex",
-        run_on="laptop",
-        run_truth_scope=["repo-a", "repo-b"] if ineligible == "repositories" else ["repo-a"],
+    response = TestClient(app).post(
+        f"/api/projects/{app.state.default_project_id}/episodes",
+        json={"mode": "auto_research", "invocation_ceiling": 1},
     )
-    tasks = BackgroundAgentTasks(store, None)
+    assert response.status_code == 202, response.text
+    episode = store.episode(response.json()["episode_id"])
+    assert episode.code_worktree is (ineligible is None)
+    assert store.agent_task(episode.root_operation_id).request["code_worktree"] is (
+        ineligible is None
+    )
+
+
+def test_internal_code_defaults_skip_eligibility(manifest, tmp_path, monkeypatch):
+    store = _store(manifest, tmp_path)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("unexpected eligibility check")
+
+    monkeypatch.setattr("rcp.runs.episodes.isolation.load_manifest", unexpected)
+    monkeypatch.setattr("rcp.runs.episodes.isolation.worktree_command", unexpected)
+    start = AutoResearchStartRequest(
+        invocation_ceiling=1, provider="codex", run_truth_scope=["repo-a"]
+    )
+    for request in (
+        start,
+        AutoResearchRunRequest(episode_id="new", role="orchestrator"),
+        RunRequest(),
+    ):
+        assert request.code_worktree is False
+        validate_episode_admission(store, "project", request)
     episode, task, resolved = reserve_auto_research(
-        tasks,
+        BackgroundAgentTasks(store, None),
         "project",
-        request,
+        start,
         authorized_by=fabricated_authorizer("Researcher"),
         graph_base_head=GraphHeadRef(revision=0),
     )
-    assert store.episode(episode.episode_id).code_worktree is (ineligible is None)
-    assert resolved.code_worktree is task.request["code_worktree"] is (ineligible is None)
+    assert episode.code_worktree is resolved.code_worktree is task.request["code_worktree"] is False
+
+
+def test_code_admission_resolves_the_profile_machine(manifest, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "rcp.conversation_worktrees.worktree_command",
+        lambda *a, **kw: {"version": [2, 38, 0], "supported": True},
+    )
+    assert "local" not in manifest.machine_map
+    validate_episode_admission(
+        _store(manifest, tmp_path),
+        "project",
+        RunRequest(code_worktree=True, run_truth_scope=["repo-a"]),
+    )
 
 
 def test_code_admission_refuses_old_execution_host_git(manifest, tmp_path, monkeypatch) -> None:
