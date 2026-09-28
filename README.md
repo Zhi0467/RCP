@@ -12,8 +12,8 @@ Run it alone on a Mac, or share one team space with your lab on a Linux server.
 - **Agents:** Codex and Claude Code. More to come.
 - **Platforms:** macOS 13+ on Apple Silicon for the desktop app; Ubuntu 22.04
   or 24.04 LTS on x86-64 for the web app and team server.
-- **Install:** the unsigned macOS app from the releases page, or from source
-  with the steps below. RCP shows a notice when a newer release is out.
+- **Install:** the macOS app with one command, or from source with the steps
+  below. RCP shows a notice when a newer release is out.
 
 ## Set up with your agent
 
@@ -54,12 +54,21 @@ access, then send:
 
 ## Install and run
 
-**macOS app.** From each release on, the
-[releases page](https://github.com/Zhi0467/RCP/releases) has a
-`desktop-vX.Y.Z` pre-release with `RCP-vX.Y.Z-macos-arm64.zip`. Unzip it and
-move `RCP.app` to Applications. The app is not signed by Apple, so macOS blocks
-the first launch: open System Settings → Privacy & Security and choose
-**Open Anyway**. A manually downloaded update may ask again.
+**macOS app.** Paste this into Terminal, from an admin account:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Zhi0467/RCP/main/scripts/install-macos.sh | sh
+```
+
+It installs the latest release to `/Applications/RCP.app`, and the app opens
+with no approval step. Run it again to reinstall. Once installed, the app
+updates itself from its **Update** button.
+
+Or download `RCP-vX.Y.Z-macos-arm64.zip` from the latest `desktop-vX.Y.Z`
+pre-release on the [releases page](https://github.com/Zhi0467/RCP/releases),
+unzip it, and move `RCP.app` to Applications. The app is not signed by Apple,
+so macOS blocks a downloaded zip's first launch: open System Settings →
+Privacy & Security and choose **Open Anyway**.
 
 **From source.** You need Git, Node.js, [`uv`](https://docs.astral.sh/uv/), and Codex CLI or
 Claude Code signed in. Build the web app and run it in your browser:

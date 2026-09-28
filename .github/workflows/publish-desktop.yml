@@ -21,6 +21,11 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD:
+        required: false
 
 permissions:
   contents: read
@@ -105,6 +110,9 @@ jobs:
       commit: ${{ needs.identity.outputs.commit }}
       build: ${{ needs.identity.outputs.build }}
       version: ${{ needs.identity.outputs.version }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
   publish:
     name: publish unsigned desktop companion
@@ -179,21 +187,99 @@ jobs:
             --draft --prerelease --latest=false \
             --target "$TARGET_COMMIT" \
             --title "RCP $RELEASE_TAG for Apple Silicon" \
-            --notes "Unsigned macOS app for $RELEASE_TAG. Approve the first launch in System Settings > Privacy & Security > Open Anyway. Updates are manual."
+            --notes "Unsigned macOS app for $RELEASE_TAG. Install it with the one-line command in the README. A manually downloaded zip needs one approval in System Settings > Privacy & Security > Open Anyway. Installed apps update from the app's Update button."
       - name: Verify the uploaded bytes
         run: |
           mkdir downloaded-assets
           gh release download "desktop-$RELEASE_TAG" --dir downloaded-assets
           cmp "desktop-assets/RCP-$RELEASE_TAG-macos-arm64.zip.sha256" \
             "downloaded-assets/RCP-$RELEASE_TAG-macos-arm64.zip.sha256"
+          cmp "desktop-assets/RCP-$RELEASE_TAG-macos-arm64.app.tar.gz" \
+            "downloaded-assets/RCP-$RELEASE_TAG-macos-arm64.app.tar.gz"
           cd downloaded-assets
           shasum -a 256 -c "RCP-$RELEASE_TAG-macos-arm64.zip.sha256"
       - name: Publish the verified companion
         run: gh release edit "desktop-$RELEASE_TAG" --draft=false --prerelease --latest=false
 
+  point-updater:
+    name: point the Mac updater at this release
+    # A separate job, so a failure here reruns alone ("Re-run failed jobs") from
+    # the already-published companion instead of rebuilding it.
+    needs: [identity, publish]
+    # One pointer update at a time across every tag; the manifest step also
+    # refuses to replace a newer version, so a late older run cannot win.
+    concurrency:
+      group: mac-updater-pointer
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      TARGET_COMMIT: ${{ needs.identity.outputs.commit }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.identity.outputs.commit }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.12"
+      - name: Download the published updater signature
+        run: |
+          mkdir updater
+          gh release download "desktop-$RELEASE_TAG" --dir updater \
+            --pattern "RCP-$RELEASE_TAG-macos-arm64.app.tar.gz.sig"
+      - name: Write latest.json, refusing to point back at an older release
+        run: |
+          # An API failure must not look like a missing pointer release.
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/mac-latest" > "$RUNNER_TEMP/pointer.json" 2> "$RUNNER_TEMP/pointer.err"; then
+            echo "POINTER_EXISTS=1" >> "$GITHUB_ENV"
+          elif grep -q "HTTP 404" "$RUNNER_TEMP/pointer.err"; then
+            echo "POINTER_EXISTS=0" >> "$GITHUB_ENV"
+          else
+            cat "$RUNNER_TEMP/pointer.err"
+            exit 1
+          fi
+          previous=()
+          if grep -q '"name": *"latest.json"' "$RUNNER_TEMP/pointer.json" 2>/dev/null; then
+            gh release download mac-latest --pattern latest.json --output "$RUNNER_TEMP/previous.json"
+            previous=(--previous "$RUNNER_TEMP/previous.json")
+          fi
+          app="RCP-$RELEASE_TAG-macos-arm64.app.tar.gz"
+          uv run --no-project python packaging/release_build.py updater-manifest \
+            --tag "$RELEASE_TAG" \
+            --signature "updater/$app.sig" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/desktop-$RELEASE_TAG/$app" \
+            --output updater/latest.json \
+            "${previous[@]}"
+      - name: Publish latest.json on the fixed mac-latest pre-release
+        run: |
+          if [ "$POINTER_EXISTS" = 0 ]; then
+            gh release create mac-latest --prerelease --latest=false \
+              --target "$TARGET_COMMIT" \
+              --title "RCP Mac updater pointer" \
+              --notes "Holds latest.json for the Mac app's updater. To install RCP, use the latest desktop-vX.Y.Z release."
+          fi
+          # --clobber deletes the old asset before uploading. If the upload then
+          # fails and the asset is gone, put the previous manifest back with a
+          # plain upload, which deletes nothing; then fail so the job can be rerun.
+          if ! gh release upload mac-latest updater/latest.json --clobber; then
+            if [ -f "$RUNNER_TEMP/previous.json" ] &&
+              ! gh release view mac-latest --json assets --jq '.assets[].name' | grep -qx latest.json; then
+              mkdir -p restore
+              cp "$RUNNER_TEMP/previous.json" restore/latest.json
+              gh release upload mac-latest restore/latest.json ||
+                echo "::error::latest.json is missing from mac-latest; rerun this job"
+            fi
+            exit 1
+          fi
+
   report:
     name: report a desktop failure
-    needs: [identity, build, publish]
+    needs: [identity, build, publish, point-updater]
     if: failure()
     runs-on: ubuntu-latest
     steps:

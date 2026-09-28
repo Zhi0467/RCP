@@ -12,7 +12,7 @@ and preferences/desktop delivery APIs. Remaining: Web Push and VAPID,
 notify-only pairing/listener, Web settings and lifecycle, native client
 integration and deep-link handling, and the real-hardware journeys below.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
-work moved to its own handoff and PR, which lands first: the Mac check below
+work moved to its own handoff and PR, which landed first (#216): the Mac check below
 runs on an app that install produced. Mac and phone push ship together in one
 PR.
 
