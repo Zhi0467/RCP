@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import sys
 
 
@@ -76,6 +77,11 @@ def check_directories(paths: list[str]) -> dict[str, object]:
 
 
 def handle(request: dict[str, object]) -> dict[str, object]:
+    expected = request.get("account") or ""
+    # A host naming no user takes its account from SSH configuration, which may
+    # land elsewhere; that account's folders are not the card's.
+    if expected and pwd.getpwuid(os.geteuid()).pw_name != expected:
+        raise ValueError(f"reached account {pwd.getpwuid(os.geteuid()).pw_name}, not {expected}")
     if request.get("mode") == "check":
         paths = request.get("paths")
         if not isinstance(paths, list) or not all(isinstance(item, str) for item in paths):

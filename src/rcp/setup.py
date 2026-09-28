@@ -216,7 +216,7 @@ def run_machine_directory_request(
             "python3",
             "-c",
             _remote_script("remote_repository_browser.py"),
-            json.dumps(request, sort_keys=True),
+            json.dumps({**request, "account": os_account}, sort_keys=True),
         ]
     )
     try:

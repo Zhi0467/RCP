@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from rcp.agents import AgentLauncher
 from rcp.agents import launcher as launcher_module
+from rcp.agents.launcher import ProviderExecutionAccount
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import provider_login
@@ -277,7 +278,19 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
     assert {account["provider"] for account in remote} == set(PROVIDER_IDS)
     assert all(account["machines"] == ["GPU"] for account in remote)
     assert all(account["provider_path"] is None for account in remote)
+    reached = {"account": "alice"}
+    monkeypatch.setattr(
+        launcher,
+        "execution_account",
+        lambda *, host="": ProviderExecutionAccount(
+            host=host, reachable=True, os_account=reached["account"]
+        ),
+    )
     # With no project path saved, the machine's PATH resolves the provider.
     assert runner.provider_binary("codex", "gpu.example") == ("codex", set())
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "unknown.example")
+    # SSH configuration now lands on another account; its provider state is not the card's.
+    reached["account"] = "bob"
+    with pytest.raises(ProviderLoginRefused):
+        runner.provider_binary("codex", "gpu.example")

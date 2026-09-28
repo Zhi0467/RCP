@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pwd
 import shutil
 import subprocess
 import tomllib
@@ -153,6 +155,23 @@ def test_ssh_repository_browser_starts_at_home_and_validates_one_level_listing()
     assert "remote_repository_browser.py" not in commands[0][-1]
     assert "/home/alice" not in commands[0][-1]
     assert "password" not in " ".join(commands[0]).casefold()
+
+
+def test_shipped_directory_browser_refuses_another_account(tmp_path) -> None:
+    def run_here(command, **kwargs):
+        # The shipped command, run on this machine instead of over SSH.
+        return subprocess.run(["sh", "-c", command[-1]], **kwargs)
+
+    me = pwd.getpwuid(os.geteuid()).pw_name
+    (tmp_path / "folder").mkdir()
+    page = browse_machine_directory(
+        "worker@gpu.example", str(tmp_path), os_account=me, runner=run_here
+    )
+    assert [entry.name for entry in page.entries] == ["folder"]
+    with pytest.raises(MachineBrowseFailure):
+        browse_machine_directory(
+            "worker@gpu.example", str(tmp_path), os_account=f"{me}-other", runner=run_here
+        )
 
 
 def test_ssh_repository_browser_auth_failure_names_the_exact_rcp_machine() -> None:

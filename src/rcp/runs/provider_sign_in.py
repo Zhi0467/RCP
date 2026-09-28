@@ -172,8 +172,19 @@ class ProviderSignInRunner:
         orders them); otherwise the machine's PATH resolves the provider.
         """
 
-        if host and host not in {machine.host for machine in self.store.space_machines()}:
+        card = self.store.space_machine_for(host) if host else None
+        if host and card is None:
             raise ProviderLoginRefused("Unknown provider execution host.")
+        if card is not None and card.os_account:
+            # A host naming no user takes its account from SSH configuration;
+            # never touch another account's provider state.
+            reached = self.launcher.execution_account(host=host)
+            if not reached.reachable:
+                raise ProviderLoginRefused(reached.reason or "The machine is unreachable.")
+            if reached.os_account != card.os_account:
+                raise ProviderLoginRefused(
+                    f"{host} reached account {reached.os_account}, not {card.os_account}."
+                )
         sources = provider_path_sources(self.store).get((provider, host), [])
         binaries = {source.path for source in sources}
         binary = sources[0].path if sources else None
@@ -298,11 +309,12 @@ class ProviderSignInRunner:
             raise ProviderLoginRefused(
                 "Device sign-in is not supported by this provider.", status_code=422
             )
+        # Resolved before the lock: it may probe the machine over SSH.
+        binary, _ = self.provider_binary(provider, host)
         with self._lock:
             running = self._running(provider, host)
             if running is not None:
                 return running
-            binary, _ = self.provider_binary(provider, host)
             status = ProviderSignInStatus(
                 login_id=str(uuid.uuid4()),
                 provider=provider,
