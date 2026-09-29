@@ -225,6 +225,9 @@ def validate_episode_launch(
         )
         if not merge_launch:
             raise ValueError("episode_merge_reserved")
+    # A launch with no repository roots (a report in its own stage) needs no worktree.
+    if state is not None and state.status == "removed" and not scope.repository_roots:
+        return
     if state is None or (
         state.status != "ready" and not (merge_launch and state.status in {"merging", "removed"})
     ):

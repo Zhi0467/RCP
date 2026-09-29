@@ -2425,6 +2425,15 @@ class AppStoreBase:
             if name not in columns:
                 connection.execute(f"ALTER TABLE episodes ADD COLUMN {name} {declaration}")
         AppStoreBase._derive_branch_episode_isolation(connection)
+        # Experiment requests pin graph_isolation; a legacy branch loop's stored requests
+        # must agree with the episode it now derives, or its next delivery is refused.
+        connection.execute(
+            "UPDATE graph_runs SET request_json = "
+            "json_set(request_json, '$.graph_isolation', json('true')) "
+            "WHERE json_extract(graph_target_json, '$.kind') = 'branch' "
+            "AND json_extract(request_json, '$.patch_kind') = 'experiment_loop' "
+            "AND json_type(request_json, '$.graph_isolation') IS NULL"
+        )
 
     @staticmethod
     def _derive_branch_episode_isolation(

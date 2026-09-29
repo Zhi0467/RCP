@@ -309,6 +309,12 @@ def test_scratch_only_episode_launch_still_checks_missing_worktree(repository, t
     assert scope.repository_roots == []
     assert store.episode_isolation_state("project", "owner").status == "ready"
     assert store.episode_isolation("project", "owner").worktree == binding
+    # After a recorded removal, a scratch-only launch (a report) needs no worktree.
+    for expected, status in (("ready", "removing"), ("removing", "removed")):
+        store.set_episode_isolation_status(
+            "project", "owner", expected_status=expected, status=status
+        )
+    validate_episode_launch(store, "owner", scope)
 
 
 def _merge_owner(manifest, tmp_path):

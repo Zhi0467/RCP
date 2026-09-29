@@ -3563,6 +3563,14 @@ def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
         connection.execute(
             "CREATE TABLE episodes (episode_id TEXT, project_id TEXT, graph_target_json TEXT)"
         )
+        connection.execute("CREATE TABLE graph_runs (request_json TEXT, graph_target_json TEXT)")
+        connection.executemany(
+            "INSERT INTO graph_runs VALUES (?, ?)",
+            [
+                ('{"patch_kind":"experiment_loop"}', '{"kind":"branch","branch_id":"branch"}'),
+                ('{"patch_kind":"experiment_loop"}', '{"kind":"main"}'),
+            ],
+        )
         connection.executemany(
             "INSERT INTO episodes VALUES (?, 'project', ?)",
             [
@@ -3584,3 +3592,7 @@ def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
         )
         AppStore._migrate_episode_isolation(connection)
         assert connection.execute("SELECT sum(graph_isolation) FROM episodes").fetchone()[0] == 3
+        # The legacy branch loop's pinned requests agree with its derived episode.
+        assert connection.execute(
+            "SELECT json_extract(request_json, '$.graph_isolation') FROM graph_runs ORDER BY rowid"
+        ).fetchall() == [(1,), (None,)]
