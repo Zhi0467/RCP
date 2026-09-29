@@ -517,7 +517,10 @@ standing predicate, new-node arrival, or relation predicate.
 ## Graph-condition delivery
 
 Graph conditions evaluate at accepted revision boundaries and at startup, using
-the exact target's canonical transition order. A staged draft never fires them.
+the exact target's canonical transition order. The startup sweep runs on the
+watcher retry worker immediately after the API is ready, never on the readiness
+path; a remote read that fails there retries with the ordinary poll-pass
+backoff. A staged draft never fires them.
 Halted/degraded replay means not yet for that target; other targets still
 reconcile, and their callbacks cannot clear a pending transient retry elsewhere.
 A node removed after arming retires its condition.

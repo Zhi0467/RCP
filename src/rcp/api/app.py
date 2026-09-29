@@ -1188,7 +1188,7 @@ def create_app(
     )
     deliver_watcher_group = watcher_delivery.deliver_watcher_group
     evaluate_graph_wake_boundary = watcher_delivery.evaluate_graph_wake_boundary
-    sweep_graph_conditions_at_startup = watcher_delivery.sweep_graph_conditions_at_startup
+    request_startup_sweep = watcher_delivery.request_startup_sweep
     retry_graph_wakes_after_poll = watcher_delivery.retry_graph_wakes_after_poll
 
     def after_task_settled(
@@ -1735,8 +1735,11 @@ def create_app(
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
-                await asyncio.to_thread(sweep_graph_conditions_at_startup)
+                # Startup graph sweeps and notification reconciliation read
+                # remote graphs, so both run on their workers after readiness.
+                await asyncio.to_thread(request_startup_sweep)
                 graph_watcher_retry_worker.start()
+                graph_watcher_retry_worker.signal()
                 watcher_poller.start()
                 notification_sender.start()
                 if phone_listener is not None:

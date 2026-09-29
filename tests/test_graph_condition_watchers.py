@@ -4,6 +4,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -1129,8 +1130,10 @@ def test_startup_reconciles_healthy_target_after_another_target_fails(
         "deliver_watcher_group",
         lambda group, **_kwargs: delivered.append([item.watcher_id for item in group]),
     )
+    current = WatcherRetryGeneration(lambda: True, lambda callback: (callback(), True)[1])
     try:
-        delivery.sweep_graph_conditions_at_startup()
+        delivery.request_startup_sweep()
+        delivery.retry_graph_wakes_after_poll(current)
         assert store.watcher("z-main").status == "completed"
         assert store.watcher("a-branch").status == "active"
         assert delivered == [["z-main"]]
@@ -1726,6 +1729,91 @@ def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
         stored = reopened.state.background_tasks.store.watcher(watcher_id)
         assert isinstance(stored, GraphWatcherRecord)
         assert stored.status == "completed"
+
+
+def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
+    manifest,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    data_dir = tmp_path / "startup-data"
+    first = create_app(str(manifest.path), data_dir=data_dir)
+    append_fixture_patch(
+        first.state.service,
+        _canonical_fixture_patch(blocker_status="resolved"),
+    )
+    project_id = first.state.default_project_id
+    assert project_id is not None
+    first_store = first.state.background_tasks.store
+    origin = _completed_origin(first_store, project_id, "startup-origin")
+    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
+    first_store.create_watchers(
+        [
+            _graph_record(
+                "startup-hook", condition, project_id=project_id, origin=origin.operation_id
+            )
+        ]
+    )
+    first.state.background_tasks.shutdown()
+
+    # The condition was satisfied while RCP was down, and its canonical read
+    # is slow: the API must serve before that read completes.
+    reopened = create_app(str(manifest.path), data_dir=data_dir)
+    delivery = reopened.state.services.watcher_delivery
+    open_service = delivery._graph_project_service
+    entered = threading.Event()
+    release = threading.Event()
+    serving = threading.Event()
+
+    def slow_service(identifier, target):
+        entered.set()
+        assert release.wait(10), "graph read was not released"
+        return open_service(identifier, target)
+
+    monkeypatch.setattr(delivery, "_graph_project_service", slow_service)
+    deliveries: list[list[str]] = []
+
+    def capture_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
+        deliveries.append(watcher_ids)
+        task = _notification_task(
+            reopened.state.background_tasks.store, "startup-graph-wake", watcher_ids
+        ).model_copy(
+            update={
+                "project_id": project_id,
+                "authorized_by": _test_authorizer(reopened.state.background_tasks.store),
+            }
+        )
+        return reopened.state.background_tasks.store.create_watcher_notification_task(
+            task, watcher_ids
+        )
+
+    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
+
+    def serve():
+        with TestClient(reopened) as client:
+            health = client.get("/api/health")
+            serving.set()
+            assert release.wait(10), "test did not finish checking startup"
+            wait_until(
+                lambda: deliveries if deliveries else None,
+                detail="startup graph watcher delivery did not run",
+            )
+            return health
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        request = executor.submit(serve)
+        try:
+            assert entered.wait(5), "startup did not begin the graph sweep"
+            assert serving.wait(5), "API startup waited for the graph sweep read"
+        finally:
+            release.set()
+        health = request.result(timeout=15)
+
+    assert health.status_code == 200
+    assert deliveries == [["startup-hook"]]
+    stored = reopened.state.background_tasks.store.watcher("startup-hook")
+    assert isinstance(stored, GraphWatcherRecord)
+    assert stored.status == "completed"
 
 
 def test_discuss_settlement_retries_graph_wake_blocked_by_same_chat_overlap(
