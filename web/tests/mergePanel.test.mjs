@@ -49,7 +49,7 @@ test("an entity carries its most severe path, and counts are per entity", () => 
     delivered: 1,
     proposals: 0,
     conflicts: 1,
-    needsAgent: 0,
+    needsAgent: 1,
   });
 });
 

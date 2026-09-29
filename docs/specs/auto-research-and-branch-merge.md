@@ -515,11 +515,13 @@ shows:
 - unmerged, merging, merged-through-head, needs-action, or failed merge state;
 - paused and interrupted merge tasks project as needs action, retain their
   diagnostic, and offer a fresh **Merge** dispatch when eligible;
-- a persistent **Merge** panel, including when currently ineligible. It shows
-  the merge preview and offers the target branch, Merge commit or Squash
-  (Squash only when no agent is needed), Keep branch open (not with Squash),
-  Remove worktree, and Delete code branch (only with worktree removal). A
-  deliberate click checks current server state and either admits the merge or
+- a persistent **Merge** control, including when currently ineligible. It
+  summarizes the preview (graph changes, commits ahead) and opens pickers on
+  click: the target branch, Merge commit or Squash (Squash only when no agent
+  is needed), removing the Git worktree together with its code branch, and
+  keeping the graph branch for more runs (not with Squash). The pickers count
+  every change the merge agent must resolve, conflicts and Proposals included.
+  The pickers' Merge checks current server state and either admits the merge or
   displays the specific blocker beside the control. Ineligibility does not hide
   or disable the control; an in-flight UI action or a missing preview disables
   it;

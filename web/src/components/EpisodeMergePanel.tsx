@@ -1,4 +1,4 @@
-import { LoaderCircle, Network } from "lucide-react";
+import { ChevronDown, LoaderCircle, Network } from "lucide-react";
 import { useEffect, useState } from "react";
 import { loadMergePreview } from "../api";
 import {
@@ -13,7 +13,7 @@ import type { Episode, EpisodeUnfinishedJob, MergeEpisodeBody, MergePreview } fr
 
 const CODE_STATUS_LABELS: Record<NonNullable<MergePreview["code"]>["status"], string> = {
   clean: "Merges cleanly",
-  conflict: "Conflicts",
+  conflict: "Code conflicts",
   already_merged: "Already merged",
   target_dirty: "Target checkout has uncommitted changes",
   target_missing: "Target branch not found",
@@ -39,6 +39,7 @@ export function EpisodeMergePanel({
   const [mergeError, setMergeError] = useState<string | null>(null);
   // Merge paused on these jobs; the human can merge anyway and the agent stops them.
   const [pausedJobs, setPausedJobs] = useState<EpisodeUnfinishedJob[] | null>(null);
+  const [open, setOpen] = useState(false);
   const [targetDraft, setTargetDraft] = useState("");
   const [target, setTarget] = useState<string | null>(null);
   const [choices, setChoices] = useState<MergeChoices>({
@@ -104,12 +105,30 @@ export function EpisodeMergePanel({
         episode.episode_id,
         confirmUnfinishedJobs ? { ...body, confirm_unfinished_jobs: true } : body,
       );
+      setOpen(false);
     } catch (error) {
       const jobs = unfinishedJobsFromError(error);
       if (jobs) setPausedJobs(jobs);
       else setMergeError(error instanceof Error ? error.message : String(error));
     }
   };
+
+  const graphChanges = counts ? counts.changed : 0;
+  const summary = [
+    hasGraphBranch &&
+      counts &&
+      `${graphChanges} graph ${graphChanges === 1 ? "change" : "changes"}`,
+    preview?.code &&
+      `${preview.code.commits_ahead} ${preview.code.commits_ahead === 1 ? "commit" : "commits"} in ${preview.code.repo_alias}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const agentReasons = [
+    counts?.conflicts && `${counts.conflicts} ${counts.conflicts === 1 ? "conflict" : "conflicts"}`,
+    counts?.proposals && `${counts.proposals} ${counts.proposals === 1 ? "Proposal" : "Proposals"}`,
+    preview?.code?.status === "conflict" && "code conflicts",
+  ].filter(Boolean);
+  const agentChanges = counts?.needsAgent ?? 0;
 
   return (
     <div className="episode-merge-panel" aria-label="Merge">
@@ -118,99 +137,91 @@ export function EpisodeMergePanel({
           {previewError}
         </div>
       )}
-      {preview?.code && (
-        <div className="merge-code-summary">
-          <strong>{preview.code.repo_alias}</strong>
-          <span>
-            {preview.code.source_branch} → {preview.code.target_branch}
-          </span>
-          <span>{preview.code.commits_ahead} commits ahead</span>
-          {/* Leftovers are committed at Merge, so a tip equal to the target is not merged yet. */}
-          {!(preview.code.status === "already_merged" && preview.code.leftover_files.length) && (
-            <span className={`status-pill merge-code-${preview.code.status}`}>
-              {CODE_STATUS_LABELS[preview.code.status]}
-            </span>
-          )}
-          {preview.code.leftover_files.length > 0 && (
-            <span>{preview.code.leftover_files.length} uncommitted files will be committed</span>
-          )}
-          {preview.code.conflict_files.length > 0 && (
-            <ul className="merge-conflict-files" aria-label="Conflicting files">
-              {preview.code.conflict_files.map((path) => (
-                <li key={path}>{path}</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-      {counts && hasGraphBranch && (
-        <div className="merge-graph-counts" aria-label="Graph changes">
-          <span>{counts.changed} changed</span>
-          <span>{counts.proposals} Proposals</span>
-          <span>{counts.conflicts} conflicts</span>
-          <span>{counts.needsAgent} need agent</span>
-          {counts.delivered > 0 && <span>{counts.delivered} already merged</span>}
-        </div>
-      )}
-      {preview?.needs_agent && (
-        <span className="merge-needs-agent">A merge agent will resolve what RCP cannot.</span>
-      )}
-      {preview && (
-        <fieldset className="merge-options" disabled={disabled}>
+      <div className="merge-summary-row">
+        <span>{summary}</span>
+        <button
+          className="button secondary compact campaign-branch-merge"
+          type="button"
+          aria-expanded={open}
+          disabled={disabled || !preview}
+          onClick={() => setOpen(!open)}
+        >
+          {busy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
+          {busy ? "Starting merge…" : "Merge"}
+          {!busy && <ChevronDown size={12} />}
+        </button>
+      </div>
+      {open && preview && (
+        <fieldset className="merge-pickers" aria-label="Merge options" disabled={disabled}>
           {preview.code && (
             <>
-              <label>
-                <span>Target branch</span>
+              <label className="merge-picker">
+                <span>Into</span>
                 <input
                   value={targetDraft}
                   onChange={(event) => setTargetDraft(event.target.value)}
                   onBlur={() => setTarget(targetDraft.trim() || null)}
                 />
               </label>
-              <label>
-                <input
-                  type="radio"
-                  name={`history-${episode.episode_id}`}
-                  checked={historyMode === "merge"}
-                  onChange={() => setChoices({ ...choices, historyMode: "merge" })}
-                />
-                Merge commit
+              <label className="merge-picker">
+                <span>Code history</span>
+                <select
+                  value={historyMode}
+                  onChange={(event) =>
+                    setChoices({
+                      ...choices,
+                      historyMode: event.target.value === "squash" ? "squash" : "merge",
+                    })
+                  }
+                >
+                  <option value="merge">Merge commit</option>
+                  <option value="squash" disabled={!squash}>
+                    Squash
+                  </option>
+                </select>
               </label>
-              <label>
-                <input
-                  type="radio"
-                  name={`history-${episode.episode_id}`}
-                  checked={historyMode === "squash"}
-                  disabled={!squash}
-                  onChange={() => setChoices({ ...choices, historyMode: "squash" })}
-                />
-                Squash
-              </label>
-              <label>
+              {preview.code.status !== "clean" &&
+                // Leftovers are committed at Merge, so a tip equal to the target is not merged yet.
+                !(
+                  preview.code.status === "already_merged" && preview.code.leftover_files.length
+                ) && (
+                  <span className={`merge-code-status merge-code-${preview.code.status}`}>
+                    {CODE_STATUS_LABELS[preview.code.status]}
+                  </span>
+                )}
+              {preview.code.conflict_files.length > 0 && (
+                <ul className="merge-conflict-files" aria-label="Conflicting files">
+                  {preview.code.conflict_files.map((path) => (
+                    <li key={path}>{path}</li>
+                  ))}
+                </ul>
+              )}
+              {preview.code.leftover_files.length > 0 && (
+                <span className="merge-note">
+                  {preview.code.leftover_files.length} uncommitted{" "}
+                  {preview.code.leftover_files.length === 1 ? "file" : "files"} will be committed.
+                </span>
+              )}
+              <label className="merge-check">
                 <input
                   type="checkbox"
                   checked={choices.removeWorktree}
                   onChange={(event) =>
-                    setChoices({ ...choices, removeWorktree: event.target.checked })
+                    setChoices({
+                      ...choices,
+                      removeWorktree: event.target.checked,
+                      deleteCodeBranch: event.target.checked,
+                    })
                   }
                 />
-                Remove worktree
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={choices.removeWorktree && choices.deleteCodeBranch}
-                  disabled={!choices.removeWorktree}
-                  onChange={(event) =>
-                    setChoices({ ...choices, deleteCodeBranch: event.target.checked })
-                  }
-                />
-                Delete code branch
+                <span>
+                  Remove the Git worktree and its branch <code>{preview.code.source_branch}</code>
+                </span>
               </label>
             </>
           )}
           {hasGraphBranch && (
-            <label>
+            <label className="merge-check">
               <input
                 type="checkbox"
                 checked={historyMode !== "squash" && choices.keepBranchOpen}
@@ -219,20 +230,36 @@ export function EpisodeMergePanel({
                   setChoices({ ...choices, keepBranchOpen: event.target.checked })
                 }
               />
-              Keep branch open
+              <span>Keep the graph branch for more runs</span>
             </label>
           )}
+          {preview.needs_agent && (
+            <span className="merge-note">
+              {agentChanges > 0
+                ? `${agentChanges} ${agentChanges === 1 ? "change needs" : "changes need"} the merge agent`
+                : "The merge agent resolves the code"}
+              {agentReasons.length > 0 && ` (${agentReasons.join(", ")})`}. The rest merge directly.
+            </span>
+          )}
+          <div className="merge-picker-actions">
+            <button
+              className="button secondary compact"
+              type="button"
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              className="button primary compact"
+              type="button"
+              disabled={!previewCurrent}
+              onClick={() => void merge()}
+            >
+              Merge
+            </button>
+          </div>
         </fieldset>
       )}
-      <button
-        className="button primary compact campaign-branch-merge"
-        type="button"
-        disabled={disabled || !previewCurrent}
-        onClick={() => void merge()}
-      >
-        {busy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
-        {busy ? "Starting merge…" : "Merge"}
-      </button>
       {pausedJobs && (
         <div className="merge-unfinished-jobs" role="alert">
           <strong>These jobs may still be writing the worktree.</strong>

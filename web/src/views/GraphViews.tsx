@@ -4,17 +4,27 @@ import { branchGraphProjection, expandBranchContext } from "../branchGraph";
 import { graphSessionKey } from "../graphTarget";
 import { ChangedFields, ChangeHistory } from "../components/BranchChangeDetail";
 import { EpisodeMergePanel } from "../components/EpisodeMergePanel";
-import { type MergeDiffMark, mergeDiffCounts, mergeDiffMarks } from "../mergePanel";
+import { type BranchDiffWord, branchDiffWord, mergeDiffMarks } from "../mergePanel";
 import type { GraphBranchChanges, GraphTargetRef, MergeDiffPath, MergeEpisodeBody } from "../types";
 
-/** The suffix a changed node's badge carries for how Merge will treat it. */
-const MERGE_NODE_MARKS: Record<MergeDiffMark, string> = {
-  changed: "",
-  delivered: " · merged",
-  proposal: " · → Proposal",
-  needs_agent: " · needs agent",
-  conflict: " · conflict",
+const BRANCH_DIFF_WORDS: Record<BranchDiffWord, string> = {
+  created: "Added",
+  updated: "Changed",
+  removed: "Removed",
+  changed: "Changed",
+  delivered: "Already merged",
+  proposal: "Proposal",
+  needs_agent: "Needs agent",
+  conflict: "Conflict",
 };
+const BRANCH_DIFF_LEGEND: BranchDiffWord[] = [
+  "created",
+  "updated",
+  "removed",
+  "proposal",
+  "needs_agent",
+  "conflict",
+];
 import {
   ChevronDown,
   CircleDot,
@@ -257,10 +267,6 @@ export function DagView({
     [branchChanges],
   );
   const mergeMarks = useMemo(() => mergeDiffMarks(mergePaths ?? []), [mergePaths]);
-  const mergeCounts = useMemo(
-    () => (mergePaths ? mergeDiffCounts(mergePaths) : null),
-    [mergePaths],
-  );
   const changeTasks = useMemo(
     () => [
       ...new Map(
@@ -750,24 +756,12 @@ export function DagView({
             </button>
           )}
           <div className="branch-change-legend" aria-label="Change legend">
-            <span className="branch-change-badge created">Created</span>
-            <span className="branch-change-badge updated">Updated</span>
-            <span className="branch-change-badge removed">Removed</span>
-          </div>
-          {mergeCounts && (
-            <div className="branch-merge-counts" aria-label="On merge">
-              <span className="merge-mark-badge proposal">{mergeCounts.proposals} → Proposal</span>
-              <span className="merge-mark-badge conflict">{mergeCounts.conflicts} conflict</span>
-              <span className="merge-mark-badge needs_agent">
-                {mergeCounts.needsAgent} needs agent
+            {BRANCH_DIFF_LEGEND.map((word) => (
+              <span key={word} className={`branch-diff-word diff-${word}`}>
+                {BRANCH_DIFF_WORDS[word]}
               </span>
-              {mergeCounts.delivered > 0 && (
-                <span className="merge-mark-badge delivered">
-                  {mergeCounts.delivered} already merged
-                </span>
-              )}
-            </div>
-          )}
+            ))}
+          </div>
         </div>
       )}
       <GraphEditingControls
@@ -1035,9 +1029,13 @@ export function DagView({
                     !brightTypes.has(node.type) ||
                     Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id)) ||
                     Boolean(selectedTaskId && !taskHighlights.has(node.id));
+                  const nodeChange = nodeChanges.get(node.id);
+                  const diffWord = nodeChange
+                    ? branchDiffWord(nodeChange.change, mergeMarks.get(`node:${node.id}`))
+                    : null;
                   return (
                     <div
-                      className={`dag-node ${nodeChanges.has(node.id) ? `branch-${nodeChanges.get(node.id)!.change}` : ""} ${mergeMarks.has(`node:${node.id}`) ? `merge-${mergeMarks.get(`node:${node.id}`)}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
+                      className={`dag-node ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
                       data-node-id={node.id}
                       style={
                         {
@@ -1061,19 +1059,14 @@ export function DagView({
                         type="button"
                         onClick={() => inspectNode(node)}
                       >
-                        <span className="eyebrow">
-                          {nodeTypeLabel(node)}
-                          {nodeChanges.has(node.id) && (
-                            <span
-                              className={`branch-change-badge ${nodeChanges.get(node.id)!.change}`}
-                            >
-                              {nodeChanges.get(node.id)!.change}
-                              {MERGE_NODE_MARKS[mergeMarks.get(`node:${node.id}`) ?? "changed"]}
-                            </span>
-                          )}
-                        </span>
+                        {!branchChanges && <span className="eyebrow">{nodeTypeLabel(node)}</span>}
                         <strong>{node.title}</strong>
-                        <small>
+                        {branchChanges && (
+                          <span className={`branch-diff-word diff-${diffWord ?? "context"}`}>
+                            {diffWord ? BRANCH_DIFF_WORDS[diffWord] : "Context"}
+                          </span>
+                        )}
+                        <small className="dag-node-standing">
                           <span className={`standing ${node.standing}`}>{node.standing}</span>
                           <span>{node.status || node.validity || ""}</span>
                         </small>

@@ -394,62 +394,67 @@
 .branch-change-badge.removed {
   color: var(--coral);
 }
-.branch-merge-counts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.merge-mark-badge {
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  padding: 2px 5px;
-  font-size: var(--type-2xs);
-  line-height: 1.2;
-}
-.merge-mark-badge.proposal {
-  color: var(--plum);
-}
-.merge-mark-badge.needs_agent {
-  color: var(--amber);
-}
-.merge-mark-badge.conflict {
-  color: var(--coral);
-}
-.merge-mark-badge.delivered {
-  color: var(--moss);
-}
-.dag-node.merge-conflict {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--coral) 35%, transparent);
-}
-.dag-node.merge-needs_agent {
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 35%, transparent);
-}
-.dag-node.merge-delivered {
-  opacity: 0.7;
-}
-.merge-fields tr.merge-mark-conflict td:last-child {
-  color: var(--coral);
-}
-.merge-fields tr.merge-mark-needs_agent td:last-child {
-  color: var(--amber);
-}
 .dag-node .eyebrow {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 4px;
 }
-.dag-node.branch-created {
-  outline: 2px solid var(--moss);
+.branch-diff-word {
+  font-size: var(--type-2xs);
+  line-height: 1.2;
 }
-.dag-node.branch-updated {
-  outline: 2px solid var(--mustard);
+.branch-change-legend .branch-diff-word {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 2px 5px;
 }
-.dag-node.branch-removed {
-  outline: 2px dashed var(--coral);
+.diff-created {
+  --diff-color: var(--moss);
 }
-.dag-node.branch-removed strong {
+.diff-updated,
+.diff-changed {
+  --diff-color: var(--mustard);
+}
+.diff-removed,
+.diff-conflict {
+  --diff-color: var(--coral);
+}
+.diff-proposal {
+  --diff-color: var(--plum);
+}
+.diff-needs_agent {
+  --diff-color: var(--amber);
+}
+.diff-delivered,
+.diff-context {
+  --diff-color: var(--muted);
+}
+.branch-diff-word {
+  color: var(--diff-color);
+}
+.dag-node.is-branch-diff[class*="diff-"] {
+  outline: 2px solid var(--diff-color);
+}
+.dag-node.diff-removed {
+  outline-style: dashed;
+}
+.dag-node.diff-removed strong {
   text-decoration: line-through;
+}
+.dag-node.diff-delivered {
+  opacity: 0.7;
+}
+.dag-node.is-branch-diff .dag-node-standing,
+.dag-node.is-branch-diff .dag-connect-handle {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.dag-node.is-branch-diff:hover .dag-node-standing,
+.dag-node.is-branch-diff:hover .dag-connect-handle,
+.dag-node.is-branch-diff:focus-within .dag-node-standing,
+.dag-node.is-branch-diff:focus-within .dag-connect-handle {
+  opacity: 1;
 }
 .dag-edge-group.branch-created .dag-edge {
   stroke: var(--moss);
@@ -469,40 +474,57 @@
   border-bottom: 1px solid var(--line);
   padding-bottom: 14px;
 }
-.branch-change-detail h3 {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 12px;
-}
 .branch-change-fields {
-  border-collapse: collapse;
-  table-layout: fixed;
-  width: 100%;
-  margin-top: 12px;
+  display: grid;
+  gap: 14px;
   font-size: var(--type-sm);
 }
-.branch-change-fields th,
-.branch-change-fields td {
-  border: 1px solid var(--line);
-  padding: 8px;
-  text-align: left;
-  vertical-align: top;
+.branch-change-field {
+  display: grid;
+  gap: 4px;
+}
+.branch-change-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.branch-change-value {
+  --value-color: var(--slate);
+  margin: 0;
+  border-left: 2px solid var(--value-color);
+  padding-left: 10px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.branch-change-fields th:first-child {
-  width: 22%;
+.branch-change-value > span {
+  color: var(--value-color);
+  font-size: var(--type-2xs);
+}
+.branch-change-value.main-before s {
+  opacity: 0.55;
+}
+.branch-change-value.branch {
+  --value-color: var(--teal);
+  color: var(--teal);
+}
+.branch-change-value.main-now {
+  --value-color: var(--coral);
+  color: var(--coral);
 }
 .branch-change-history {
-  padding-left: 22px;
+  display: grid;
+  gap: 6px;
   margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: var(--type-2xs);
 }
 .branch-change-history li {
-  margin: 10px 0;
-}
-.branch-change-history p {
-  margin: 4px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   overflow-wrap: anywhere;
 }
 .branch-edge-changes {

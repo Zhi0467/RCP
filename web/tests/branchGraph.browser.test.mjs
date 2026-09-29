@@ -103,7 +103,11 @@ test("branch graph keeps normal edit and chat controls while removed nodes are h
     await page.getByRole("button", { name: "Close detail", exact: true }).click();
     await page.locator('[data-node-id="hyp/changed"] .dag-node-inspect').click();
     assert.ok(
-      await page.getByRole("cell", { name: "Original claim", exact: true }).first().isVisible(),
+      await page
+        .getByLabel("Branch changes")
+        .getByText("Original claim", { exact: true })
+        .first()
+        .isVisible(),
     );
     assert.equal(
       await page.getByRole("button", { name: "Edit node", exact: true }).isDisabled(),

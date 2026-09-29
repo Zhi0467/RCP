@@ -1089,12 +1089,14 @@ branch or code worktree show the same panel. A deliberate click checks
 current server eligibility and either starts the merge or displays the blocker
 beside the control, following the
 [branch merge projection](auto-research-and-branch-merge.md#runs-projection).
-The Experiment Run control offers Graph branch and Code worktree toggles, off by
-default. The Auto-research dialog shows the graph branch as always on; its Code
-worktree choice is left to the server's eligibility check unless the human opts
-out. On a branch, the DAG and node detail mark each changed node and field by
-how Merge will treat it: merges, already merged, becomes a Proposal, needs
-agent, or conflict, with main's value beside a conflict.
+The Experiment Run control offers "Work on a graph branch" and "Code worktree"
+toggles, off by default. The Auto-research dialog shows the graph branch as
+always on; its Code worktree choice is left to the server's eligibility check
+unless the human opts out. On a branch, each DAG node shows its title and one
+word: how Merge will treat it (Conflict, Needs agent, Proposal, Already merged),
+else how the branch changed it (Added, Changed, Removed). Standing, status, and
+the connect handle appear on hover. Node detail lists each changed field as
+main before, branch, and main now beside a conflict, each with its own color.
 **Open graph** selects the branch workspace explicitly. An exact branch
 Experiment route may show its historical transcript through Runs without exposing an ordinary
 composer for that episode-owned session. Ordinary chats started in the branch

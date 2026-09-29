@@ -619,7 +619,7 @@ export function DetailDrawer({
                           setIsolation({ ...isolation, graph_isolation: event.target.checked })
                         }
                       />
-                      Graph branch
+                      Work on a graph branch
                     </label>
                     <label>
                       <input

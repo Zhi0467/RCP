@@ -197,7 +197,7 @@ export function AutoResearchDialog({
           <div className="campaign-isolation" role="group" aria-label="Isolation">
             <label>
               <input type="checkbox" checked disabled />
-              Graph branch
+              Work on a graph branch
             </label>
             <label>
               <input
@@ -206,7 +206,7 @@ export function AutoResearchDialog({
                 disabled={busy}
                 onChange={(event) => setCodeWorktree(event.target.checked)}
               />
-              Code worktree, when the run scope allows it
+              Code worktree
             </label>
           </div>
         </div>

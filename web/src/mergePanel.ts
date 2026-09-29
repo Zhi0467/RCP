@@ -18,7 +18,13 @@ export interface MergeDiffCounts {
 
 export type MergeDiffMark = "delivered" | "changed" | "proposal" | "needs_agent" | "conflict";
 
-const SEVERITY: MergeDiffMark[] = ["delivered", "changed", "proposal", "needs_agent", "conflict"];
+export const MERGE_MARK_SEVERITY: MergeDiffMark[] = [
+  "delivered",
+  "changed",
+  "proposal",
+  "needs_agent",
+  "conflict",
+];
 
 export function mergePathMark(path: MergeDiffPath): MergeDiffMark {
   if (path.conflict) return "conflict";
@@ -34,7 +40,8 @@ export function mergeDiffMarks(paths: MergeDiffPath[]): Map<string, MergeDiffMar
     const key = `${path.entity}:${path.id}`;
     const mark = mergePathMark(path);
     const current = marks.get(key);
-    if (!current || SEVERITY.indexOf(mark) > SEVERITY.indexOf(current)) marks.set(key, mark);
+    if (!current || MERGE_MARK_SEVERITY.indexOf(mark) > MERGE_MARK_SEVERITY.indexOf(current))
+      marks.set(key, mark);
   }
   return marks;
 }
@@ -52,7 +59,8 @@ export function mergeDiffCounts(paths: MergeDiffPath[]): MergeDiffCounts {
     else counts.changed += 1;
     if (mark === "proposal") counts.proposals += 1;
     if (mark === "conflict") counts.conflicts += 1;
-    if (mark === "needs_agent") counts.needsAgent += 1;
+    // Every residue path goes to the merge agent, conflicts and Proposals included.
+    if (mark !== "changed" && mark !== "delivered") counts.needsAgent += 1;
   }
   return counts;
 }
@@ -106,4 +114,14 @@ export function unfinishedJobsFromError(error: unknown): EpisodeUnfinishedJob[] 
   } catch {
     return null;
   }
+}
+
+export type BranchDiffWord = MergeDiffMark | "created" | "updated" | "removed";
+
+/** The one word a changed node shows: how Merge treats it, else how the branch changed it. */
+export function branchDiffWord(
+  change: "created" | "updated" | "removed",
+  mark: MergeDiffMark | undefined,
+): BranchDiffWord {
+  return mark && mark !== "changed" ? mark : change;
 }

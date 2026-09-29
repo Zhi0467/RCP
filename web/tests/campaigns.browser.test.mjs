@@ -76,7 +76,10 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     await page.goto(
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
     );
-    const merge = page.getByRole("button", { name: "Merge", exact: true });
+    await page.getByRole("button", { name: "Merge", exact: true, expanded: false }).click();
+    const merge = page
+      .getByRole("group", { name: "Merge options" })
+      .getByRole("button", { name: "Merge", exact: true });
     await merge.click();
     const branch = page.getByRole("region", { name: "Episode graph branch" });
     await branch.getByRole("alert").waitFor();
