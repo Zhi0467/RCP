@@ -12,7 +12,6 @@ import os
 import pwd
 import re
 import socket
-import stat
 import sys
 import tempfile
 import time
@@ -27,7 +26,6 @@ COMMAND_MAILBOX_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # its complete durable blocker snapshot outside the compact event ledger, and no
 # finite response bound is proved by admission. The socket timeout still bounds a
 # peer that stalls before closing the newline-framed response.
-PROMPT_FILE_MAX_BYTES = 16 * 1024
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -81,48 +79,34 @@ def _atomic_request(path, content):
             os.unlink(temporary)
 
 
-def _regular_workspace_file(workspace, path, label):
+def _workspace_file_path(workspace, path, label, required_name=None):
     absolute = os.path.abspath(path)
     if os.path.dirname(absolute) != workspace:
         raise ClientInputError(f"{label} must be a direct file in this run workspace")
     name = os.path.basename(absolute)
     if not _SAFE_FILE.match(name):
         raise ClientInputError(f"{label} has an unsafe file name")
+    if required_name is not None and name != required_name:
+        raise ClientInputError(f"this command accepts only this run workspace's {required_name}")
+    return absolute
+
+
+def _regular_workspace_file(workspace, path, label, required_name=None):
+    absolute = _workspace_file_path(workspace, path, label, required_name)
     if os.path.islink(absolute) or not os.path.isfile(absolute):
         raise ClientInputError(f"{label} is unavailable or not a regular file")
     return absolute
 
 
-def _workspace_text_filename(workspace, path, label, max_bytes, require_nonblank=False):
-    absolute = _regular_workspace_file(workspace, path, label)
-    try:
-        descriptor = os.open(
-            absolute,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            file_stat = os.fstat(descriptor)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ClientInputError(f"{label} is unavailable or not a regular file")
-            if file_stat.st_size > max_bytes:
-                raise ClientInputError(f"{label} exceeds the {max_bytes}-byte limit")
-            with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                content = stream.read(max_bytes + 1)
-        finally:
-            os.close(descriptor)
-    except ClientInputError:
-        raise
-    except OSError as exc:
-        raise ClientInputError(f"{label} could not be read: {exc}") from exc
-    if len(content) > max_bytes:
-        raise ClientInputError(f"{label} exceeds the {max_bytes}-byte limit")
-    try:
-        text = content.decode("utf-8")
-    except UnicodeError as exc:
-        raise ClientInputError(f"{label} must be UTF-8 text") from exc
-    if require_nonblank and not text.strip():
-        raise ClientInputError(f"{label} must not be blank")
-    return os.path.basename(absolute)
+def _keyed_command_file(workspace, path, label, required_name=None):
+    """Name one keyed command file; RCP, not this client, reads its contents.
+
+    RCP snapshots the file under its key on first admission and may consume it
+    (Apply does). A retry of the same key must reach RCP whatever the path now
+    holds, because RCP answers a known key from its record.
+    """
+
+    return os.path.basename(_workspace_file_path(workspace, path, label, required_name))
 
 
 def _read_json(path, label):
@@ -228,9 +212,9 @@ def _nonblank(value, label):
 def _request_arguments(namespace, workspace):
     verb = namespace.verb.replace("-", "_")
     if verb == "validate":
-        patch_path = _regular_workspace_file(workspace, namespace.patch_path, "patch.json")
-        if os.path.basename(patch_path) != "patch.json":
-            raise ClientInputError("validation accepts only this run workspace's patch.json")
+        patch_path = _regular_workspace_file(
+            workspace, namespace.patch_path, "patch.json", required_name="patch.json"
+        )
         try:
             with open(patch_path, "rb") as stream:
                 if os.fstat(stream.fileno()).st_size > COMMAND_MAILBOX_MAX_REQUEST_BYTES:
@@ -261,22 +245,13 @@ def _request_arguments(namespace, workspace):
         return verb, None, {"worker_id": worker_id, "episode_id": episode_id}
     key = _nonblank(namespace.key, "idempotency key")
     if verb == "apply":
-        patch_file = _workspace_text_filename(
-            workspace,
-            namespace.patch_path,
-            "patch.json",
-            COMMAND_MAILBOX_MAX_REQUEST_BYTES,
+        patch_file = _keyed_command_file(
+            workspace, namespace.patch_path, "patch.json", required_name="patch.json"
         )
-        if patch_file != "patch.json":
-            raise ClientInputError("Apply accepts only this run workspace's patch.json")
         arguments = {"patch_file": patch_file}
     elif verb == "spawn":
-        instruction_file = _workspace_text_filename(
-            workspace,
-            namespace.instruction_file,
-            "instruction file",
-            PROMPT_FILE_MAX_BYTES,
-            require_nonblank=True,
+        instruction_file = _keyed_command_file(
+            workspace, namespace.instruction_file, "instruction file"
         )
         arguments = {
             "seat_node_id": _nonblank(namespace.seat_node, "seat node"),
@@ -315,13 +290,7 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError("invocation limit must be a positive integer")
             goal_file = namespace.goal_file
             if goal_file is not None:
-                goal_file = _workspace_text_filename(
-                    workspace,
-                    goal_file,
-                    "goal file",
-                    PROMPT_FILE_MAX_BYTES,
-                    require_nonblank=True,
-                )
+                goal_file = _keyed_command_file(workspace, goal_file, "goal file")
             arguments = {
                 "action": "kick_off_experiment",
                 "node_id": _nonblank(node_id, "Experiment node"),
@@ -383,12 +352,34 @@ def _print_json(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
-def _client_failure(verb, status, message):
+def _client_failure(verb, status, message, delivery=None):
+    """Print one client-side outcome.
+
+    ``delivery`` tells an agent what an `unavailable` command did: `not_sent`
+    never reached RCP; `unknown` reached it or may have, so RCP can still act
+    and the exact same command (same key) returns that outcome.
+    """
+
     if verb == "validate":
         _print_json({"status": status, "messages": [message]})
     else:
-        _print_json({"status": status, "message": message, "result": {}})
+        result = {"delivery": delivery} if delivery is not None else {}
+        _print_json({"status": status, "message": message, "result": result})
     return INVALID if status == "invalid" else UNAVAILABLE
+
+
+def _not_answered(verb, timeout):
+    repeat = (
+        "Run the check again."
+        if verb == "validate"
+        else "Repeat the exact same command, with the same key, to get its result."
+    )
+    return _client_failure(
+        verb,
+        "unavailable",
+        f"RCP has not answered within {timeout:g} seconds and may still be working on it. {repeat}",
+        "unknown",
+    )
 
 
 def _response_exit_code(response):
@@ -408,6 +399,7 @@ def _handle_response(response, verb, request_id):
             verb,
             "unavailable",
             "RCP command returned a malformed or mismatched response.",
+            "unknown",
         )
     exit_code = _response_exit_code(response)
     if exit_code is None:
@@ -415,6 +407,7 @@ def _handle_response(response, verb, request_id):
             verb,
             "unavailable",
             "RCP command returned an unsupported status.",
+            "unknown",
         )
     _print_json(_display_response(response, verb))
     return exit_code
@@ -426,7 +419,10 @@ def _broker_socket_path(path):
     prefix = "~/.rcp/sockets/"
     name = path[len(prefix) :] if path.startswith(prefix) else ""
     if not name.startswith("rcp-command-") or not name.endswith(".sock") or "/" in name:
-        raise ClientInputError("broker path is outside the RCP socket directory")
+        raise ClientInputError(
+            "broker path is outside the RCP socket directory; "
+            "copy the supplied command prefix unchanged, including its quotes"
+        )
     return os.path.join(_socket_directory(pwd.getpwuid(os.geteuid()).pw_dir), name)
 
 
@@ -484,6 +480,7 @@ def _run(namespace):
             namespace.verb,
             "unavailable",
             f"RCP command request could not be written: {exc}",
+            "not_sent",
         )
 
     deadline = time.monotonic() + namespace.timeout
@@ -499,42 +496,65 @@ def _run(namespace):
                 namespace.verb,
                 "unavailable",
                 f"RCP command response could not be read: {exc}",
+                "unknown",
             )
         return _handle_response(response, namespace.verb, request_id)
-    return _client_failure(
-        namespace.verb,
-        "unavailable",
-        "RCP command did not answer before the timeout.",
-    )
+    return _not_answered(namespace.verb, namespace.timeout)
+
+
+def _remaining(deadline):
+    """Seconds left for the next blocking step of one invocation."""
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("invocation deadline reached")
+    return remaining
 
 
 def _run_brokered(namespace, broker, request_content, request_id):
+    # One deadline for the whole invocation, not one allowance per socket step.
+    deadline = time.monotonic() + namespace.timeout
     connection = None
     content = bytearray()
     try:
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(namespace.timeout)
+        connection.settimeout(_remaining(deadline))
         connection.connect(broker)
+    except (OSError, TimeoutError) as exc:
+        if connection is not None:
+            connection.close()
+        return _client_failure(
+            namespace.verb,
+            "unavailable",
+            f"RCP command was not sent; its broker is unavailable: {exc}",
+            "not_sent",
+        )
+    try:
+        connection.settimeout(_remaining(deadline))
         connection.sendall(request_content)
         while True:
+            connection.settimeout(_remaining(deadline))
             chunk = connection.recv(65536)
             if not chunk:
                 break
             content.extend(chunk)
-    except (OSError, TimeoutError) as exc:
+    except (TimeoutError, socket.timeout):  # noqa: UP041 (distinct on Python 3.9)
+        return _not_answered(namespace.verb, namespace.timeout)
+    except OSError as exc:
         return _client_failure(
             namespace.verb,
             "unavailable",
-            f"RCP command broker is unavailable: {exc}",
+            f"RCP command connection failed after sending; it may still take effect: {exc}",
+            "unknown",
         )
     finally:
-        if connection is not None:
-            connection.close()
+        connection.close()
     if not content.endswith(b"\n") or b"\n" in content[:-1]:
         return _client_failure(
             namespace.verb,
             "unavailable",
             "RCP command broker did not return one complete newline-delimited response.",
+            "unknown",
         )
     try:
         response = json.loads(content[:-1])
@@ -543,6 +563,7 @@ def _run_brokered(namespace, broker, request_content, request_id):
             namespace.verb,
             "unavailable",
             f"RCP command broker returned invalid JSON: {exc}",
+            "unknown",
         )
     return _handle_response(response, namespace.verb, request_id)
 

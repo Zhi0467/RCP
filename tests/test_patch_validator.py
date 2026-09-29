@@ -113,7 +113,7 @@ async def test_validator_client_distinguishes_valid_invalid_and_unavailable(tmp_
     unavailable = await _run_client(staged, patch_path, timeout=0.2)
     staged.cleanup()
     assert unavailable.returncode == 2
-    assert "did not answer" in unavailable.stdout
+    assert json.loads(unavailable.stdout)["status"] == "unavailable"
 
 
 @pytest.mark.asyncio

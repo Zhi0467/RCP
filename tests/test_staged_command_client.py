@@ -8,6 +8,7 @@ import os
 import shlex
 import subprocess
 import sys
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -33,7 +34,7 @@ from rcp.agents.command_protocol import (
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
 
-from .helpers import assert_frozen_backend_ships
+from .helpers import assert_frozen_backend_ships, async_wait_until
 
 
 async def _run_client(staged, *arguments: str) -> tuple[int, str]:
@@ -367,16 +368,8 @@ async def test_instruction_and_goal_files_fail_closed_before_admission(tmp_path)
     (nested / "task.md").write_text("Nested task.\n", encoding="utf-8")
     outside = tmp_path / "outside.md"
     outside.write_text("Outside task.\n", encoding="utf-8")
-    target = workspace / "target.md"
-    target.write_text("Target task.\n", encoding="utf-8")
-    symlink = workspace / "linked-task.md"
-    symlink.symlink_to(target)
-    blank = workspace / "blank.md"
-    blank.write_text(" \n\t", encoding="utf-8")
-    oversized = workspace / "oversized.md"
-    oversized.write_bytes(b"x" * (16 * 1024 + 1))
-    invalid_utf8 = workspace / "invalid-utf8.md"
-    invalid_utf8.write_bytes(b"\xff")
+    # File contents are RCP's to judge on first admission (see the dispatcher
+    # tests); the client refuses only paths outside this workspace.
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
@@ -387,14 +380,7 @@ async def test_instruction_and_goal_files_fail_closed_before_admission(tmp_path)
     )
 
     try:
-        for path in (
-            nested / "task.md",
-            outside,
-            symlink,
-            blank,
-            oversized,
-            invalid_utf8,
-        ):
+        for path in (nested / "task.md", outside):
             calls = (
                 (
                     "spawn",
@@ -430,7 +416,7 @@ async def test_instruction_and_goal_files_fail_closed_before_admission(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_apply_accepts_only_direct_utf8_workspace_patch_json(tmp_path) -> None:
+async def test_apply_accepts_only_this_workspace_patch_json(tmp_path) -> None:
     workspace = tmp_path / "stage"
     workspace.mkdir()
     other = workspace / "other.json"
@@ -439,8 +425,6 @@ async def test_apply_accepts_only_direct_utf8_workspace_patch_json(tmp_path) -> 
     nested.mkdir()
     nested_patch = nested / "patch.json"
     nested_patch.write_text('{"ops":[]}\n', encoding="utf-8")
-    symlink = workspace / "patch.json"
-    symlink.symlink_to(other)
     staged = stage_command_mailbox(
         local_stage=workspace,
         remote_stage=None,
@@ -451,7 +435,7 @@ async def test_apply_accepts_only_direct_utf8_workspace_patch_json(tmp_path) -> 
     )
 
     try:
-        for index, path in enumerate((other, nested_patch, symlink), start=1):
+        for index, path in enumerate((other, nested_patch), start=1):
             code, output = await _run_client(
                 staged,
                 "apply",
@@ -1201,12 +1185,150 @@ async def test_broker_reports_an_undelivered_command_as_unavailable(tmp_path) ->
     )
     assert staged.invocation_gate is not None
 
+    # No broker yet: the command never left this host.
+    code, output = await _run_client(staged, "status")
+    assert (code, json.loads(output)["result"]) == (2, {"delivery": "not_sent"})
+
     # No serve loop at all, so nothing ever writes the response file.
     async with staged.invocation_gate.serve_current_session():
         code, output = await _run_client(staged, "status")
 
     assert code == 2, output
-    assert "invalid" not in output.lower()
+    assert json.loads(output)["result"] == {"delivery": "unknown"}
+    staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_keyed_retry_reaches_rcp_after_apply_consumed_its_patch(tmp_path) -> None:
+    """The exact retry must get RCP's recorded answer even though patch.json is gone."""
+
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+    )
+    assert staged.invocation_gate is not None
+    seen = []
+
+    def handler(request, _identity):
+        seen.append(request.arguments.model_dump(mode="json"))
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            code, output = await _run_client(
+                staged, "apply", "--key", "k-apply", str(workspace / "patch.json")
+            )
+            assert code == 0, output
+            # Replaced by bytes RCP would refuse on a first admission: still RCP's call.
+            (workspace / "patch.json").write_bytes(b"\xff")
+            code, output = await _run_client(
+                staged, "apply", "--key", "k-apply", str(workspace / "patch.json")
+            )
+            assert code == 0, output
+        finally:
+            stop.set()
+            await server
+    assert seen == [{"patch_file": "patch.json"}] * 2
+    staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
+    tmp_path,
+) -> None:
+    from rcp import limits
+    from rcp.agents import staged_command_broker, staged_command_client
+
+    assert (
+        staged_command_broker._REJECTION_NOTICE_MAX_COUNT
+        == limits.COMMAND_REJECTION_NOTICE_MAX_COUNT
+    )
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+    )
+    assert staged.invocation_gate is not None
+    mailbox_id = staged.credential.mailbox_id
+    recorded: list[tuple[str, str]] = []
+    handled = []
+    # A notice the agent could write itself: well formed, but not broker-signed.
+    (workspace / f"rcp-command-{mailbox_id}-{'f' * 32}.rejected.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mailbox_id": mailbox_id,
+                "notice_id": "f" * 32,
+                "status": "unavailable",
+                "message": "forged",
+                "credential": "0" * 64,
+            }
+        )
+    )
+    # A request that bypassed the broker, so it carries no valid signature.
+    request_id = "e" * 32
+    (workspace / f"rcp-command-{mailbox_id}-{request_id}.request.json").write_text(
+        json.dumps(
+            {
+                **json.loads(_request_document("status", {"worker_id": None, "episode_id": None})),
+                "mailbox_id": mailbox_id,
+                "request_id": request_id,
+            }
+        )
+    )
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=lambda request, _identity: handled.append(request),
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+                record_rejection=lambda status, message: recorded.append((status, message)),
+            )
+        )
+        try:
+            # A malformed message straight to the broker never becomes a request.
+            path = staged_command_client._broker_socket_path(staged.invocation_gate.socket_path)
+            reader, writer = await asyncio.open_unix_connection(path)
+            writer.write(b"not json\n")
+            await writer.drain()
+            answer = json.loads(await reader.readline())
+            writer.close()
+            for _ in range(200):
+                if len(recorded) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)  # a few more polls, so a forged notice would show
+        finally:
+            stop.set()
+            await server
+    assert answer["result"] == {"delivery": "not_sent"}
+    # Only the broker's refusal and the mailbox's refusal; never the forged notice.
+    assert [status for status, _message in recorded] == ["invalid", "invalid"]
+    assert not handled
     staged.cleanup()
 
 
@@ -1318,3 +1440,232 @@ def test_removed_compute_verbs_are_not_in_the_command_protocol(verb):
     }
     with pytest.raises(ValueError):
         validate_command_request(json.dumps(envelope))
+
+
+def _sign(staged, value, domain=b""):
+    import hmac
+
+    from rcp.agents.command_protocol import command_authentication_payload
+
+    document = json.dumps(value)
+    signature = hmac.new(
+        staged.credential.token.encode("ascii"),
+        domain + command_authentication_payload(document),
+        hashlib.sha256,
+    ).hexdigest()
+    return {**value, "credential": signature}
+
+
+@pytest.mark.asyncio
+async def test_workspace_notices_stay_inert_and_the_mailbox_keeps_serving(tmp_path) -> None:
+    """The agent can write any file here; only a genuine, uncopied notice records."""
+
+    from rcp import limits
+    from rcp.agents import command_mailbox, staged_command_broker
+
+    assert staged_command_broker._REJECTION_NOTICE_DOMAIN == command_mailbox.REJECTION_NOTICE_DOMAIN
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+    )
+    mailbox_id = staged.credential.mailbox_id
+
+    def notice_path(number):
+        return workspace / f"rcp-command-{mailbox_id}-{number:032x}.rejected.json"
+
+    staged_command_broker._publish_rejection(
+        str(workspace), mailbox_id, staged.credential.token, "invalid", "genuine"
+    )
+    genuine = next(workspace.glob("*.rejected.json"))
+    notice_path(1).write_text(genuine.read_text())  # renamed copy
+    notice_path(2).write_text(json.dumps({"mailbox_id": mailbox_id, "credential": "\u2603"}))
+    # Requests the broker legitimately signed, replayed as notices: one shaped
+    # exactly like a notice, one with a status that used to crash the reader.
+    for number, status in ((3, "invalid"), (4, [])):
+        notice_path(number).write_text(
+            json.dumps(
+                _sign(
+                    staged,
+                    {
+                        "version": 1,
+                        "mailbox_id": mailbox_id,
+                        "notice_id": f"{number:032x}",
+                        "status": status,
+                        "message": "not a notice",
+                    },
+                )
+            )
+        )
+    # More unsigned requests than the recording cap.
+    for number in range(limits.COMMAND_REJECTION_NOTICE_MAX_COUNT + 5):
+        name = f"rcp-command-{mailbox_id}-{number + 100:032x}.request.json"
+        (workspace / name).write_text("{}")
+    legitimate = _sign(
+        staged,
+        {
+            **json.loads(_request_document("status", {"worker_id": None, "episode_id": None})),
+            "mailbox_id": mailbox_id,
+            "request_id": "f" * 32,
+        },
+    )
+    (workspace / f"rcp-command-{mailbox_id}-{'f' * 32}.request.json").write_text(
+        json.dumps(legitimate)
+    )
+    recorded: list[str] = []
+    handled = []
+
+    def handler(request, _identity):
+        handled.append(request.request_id)
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = asyncio.Event()
+    server = asyncio.create_task(
+        serve_command_mailbox(
+            staged=staged,
+            handler=handler,
+            stop=stop,
+            poll_seconds=0.01,
+            invocation_gate=staged.invocation_gate,
+            record_rejection=lambda _status, message: recorded.append(message),
+        )
+    )
+    try:
+        await async_wait_until(lambda: handled)
+    finally:
+        stop.set()
+        await server
+    assert handled == ["f" * 32]
+    assert len(recorded) == limits.COMMAND_REJECTION_NOTICE_MAX_COUNT
+    assert recorded[0] == "genuine"
+    assert "genuine" not in recorded[1:]
+    assert "not a notice" not in recorded
+    staged.cleanup()
+
+
+def test_a_timed_out_joiner_leaves_the_real_answer_for_the_next_repeat(
+    tmp_path, monkeypatch
+) -> None:
+    import threading
+
+    from rcp.agents import staged_command_broker as broker
+
+    monkeypatch.setattr(broker, "_peer_identity", lambda _connection: (os.getpid(), os.getuid()))
+    monkeypatch.setattr(broker, "_is_live_descendant", lambda *_args: True)
+    monkeypatch.setattr(broker, "_keyed_commands", {})
+    mailbox_id = "a" * 32
+
+    class Connection:
+        def __init__(self, value, lost=False):
+            self.content = json.dumps(value).encode() + b"\n"
+            self.lost = lost
+            self.output = None
+
+        def recv(self, count):
+            chunk, self.content = self.content[:count], self.content[count:]
+            return chunk
+
+        def sendall(self, content):
+            if self.lost:
+                raise BrokenPipeError("the client already gave up")
+            self.output = json.loads(content)
+
+        def close(self):
+            pass
+
+    def call(number, lost=False):
+        connection = Connection(
+            {
+                "version": 1,
+                "mailbox_id": mailbox_id,
+                "request_id": f"{number:032x}",
+                "verb": "apply",
+                "idempotency_key": "once",
+                "arguments": {"patch_file": "patch.json"},
+            },
+            lost=lost,
+        )
+        broker._handle(
+            connection,
+            root_pid=os.getpid(),
+            root_birth=None,
+            expected_session=None,
+            mailbox_id=mailbox_id,
+            token="b" * 64,
+            workspace=str(tmp_path),
+            response_timeout=0.05,
+        )
+        return connection.output
+
+    reading, finish = threading.Event(), threading.Event()
+    sends = []
+
+    def answer(_path, request_id, _timeout):
+        sends.append(request_id)
+        reading.set()
+        assert finish.wait(2)
+        return {"version": 1, "request_id": request_id, "status": "ok", "result": {"n": 1}}
+
+    monkeypatch.setattr(broker, "_read_response", answer)
+    owner = threading.Thread(target=call, args=(1,), kwargs={"lost": True})
+    owner.start()
+    assert reading.wait(2)
+    joined = broker._joined_response
+
+    def join_then_let_the_owner_finish(entry, request_id, timeout):
+        response = joined(entry, request_id, timeout)  # times out first
+        finish.set()
+        owner.join(2)
+        return response
+
+    monkeypatch.setattr(broker, "_joined_response", join_then_let_the_owner_finish)
+    assert call(2)["status"] == "unavailable"
+    monkeypatch.setattr(broker, "_joined_response", joined)
+    # The owner's answer reached nobody, so the next repeat gets it without resending.
+    assert call(3)["result"] == {"n": 1}
+    assert sends == [f"{1:032x}"]
+
+
+def test_client_deadline_covers_the_whole_invocation(monkeypatch, capsys) -> None:
+    import socket
+    import threading
+    import time
+    from types import SimpleNamespace
+
+    from rcp.agents import staged_command_client as client
+
+    left, right = socket.socketpair()
+
+    class Connected:
+        def connect(self, _path):
+            pass
+
+        def __getattr__(self, name):
+            return getattr(left, name)
+
+    monkeypatch.setattr(client.socket, "socket", lambda *_args: Connected())
+    response = json.dumps({"version": 1, "request_id": "a" * 32, "status": "ok"}).encode() + b"\n"
+
+    def trickle():
+        right.recv(100)
+        for offset in range(0, len(response), 10):
+            time.sleep(0.03)
+            with suppress(OSError):
+                right.sendall(response[offset : offset + 10])
+        right.close()
+
+    sender = threading.Thread(target=trickle)
+    sender.start()
+    started = time.monotonic()
+    code = client._run_brokered(
+        SimpleNamespace(timeout=0.1, verb="launch"), "unused", b"{}\n", "a" * 32
+    )
+    elapsed = time.monotonic() - started
+    sender.join()
+    assert code == 2 and elapsed < 0.2
+    assert json.loads(capsys.readouterr().out)["result"] == {"delivery": "unknown"}

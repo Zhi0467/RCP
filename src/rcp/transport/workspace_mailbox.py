@@ -61,6 +61,9 @@ class RunStageMailbox:
         directory = _open_directory(self.workspace)
         descriptor: int | None = None
         try:
+            if stat.S_ISLNK(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode):
+                # As the remote reader does: a symlink is a refused entry, not an outage.
+                raise ValueError(f"mailbox entry is not a regular file: {name}")
             flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
             descriptor = os.open(name, flags, dir_fd=directory)
             if not stat.S_ISREG(os.fstat(descriptor).st_mode):

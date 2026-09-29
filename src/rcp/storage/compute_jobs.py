@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 
 from rcp.compute_jobs.models import (
     ComputeBackendProbe,
@@ -23,17 +24,23 @@ def _compute_job_record(row: sqlite3.Row) -> ComputeJobRecord:
 
 class ComputeJobStoreMixin:
     def compute_command_receipts(
-        self, operation_id: str, verb: str, key: str
+        self, operation_ids: Sequence[str], verb: str, key: str
     ) -> list[dict[str, object]]:
+        """Return one key's receipts across the given task attempts, oldest first."""
+
+        if not operation_ids:
+            return []
+        placeholders = ", ".join("?" for _ in operation_ids)
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT payload_json FROM graph_run_receipts WHERE operation_id = ? "
+                "SELECT operation_id, payload_json FROM graph_run_receipts "
+                f"WHERE operation_id IN ({placeholders}) "
                 "AND category IN ('compute_command_started', 'compute_command_result') "
                 "AND json_extract(payload_json, '$.verb') = ? "
                 "AND json_extract(payload_json, '$.key') = ? ORDER BY receipt_id",
-                (operation_id, verb, key),
+                (*operation_ids, verb, key),
             ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        return [{**json.loads(row[1]), "operation_id": row[0]} for row in rows]
 
     def compute_backend_probe(
         self, project_id: str, execution_machine: str, route: ComputeRoute

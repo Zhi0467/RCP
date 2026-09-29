@@ -99,6 +99,14 @@ REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS = 5.0
 COMMAND_MAILBOX_TIMEOUT_SECONDS = 30.0
 COMMAND_MAILBOX_POLL_SECONDS = 0.2
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
+# How long one client invocation waits before it returns "not answered yet".
+# Provider shell tools kill long commands (Claude Code's Bash stops at 120 s,
+# probed 2026-09-29), so a slow command must return inside that and let the
+# agent rerun the same keyed call; RCP keeps working on the request meanwhile.
+COMMAND_CLIENT_WAIT_SECONDS = 90.0
+# A signed broker refusal notice; the broker writes at most this many per turn.
+COMMAND_REJECTION_NOTICE_MAX_BYTES = 8 * 1024
+COMMAND_REJECTION_NOTICE_MAX_COUNT = 20
 AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES = 16 * 1024
 AUTO_RESEARCH_APPLY_MAX_PER_TURN = 32
 # One turn's in-turn Applies plus the end-of-turn settlement disposition. The

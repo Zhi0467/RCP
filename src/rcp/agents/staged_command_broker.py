@@ -1,4 +1,4 @@
-"""Stdlib-only episode command broker staged beside one provider invocation."""
+"""Stdlib-only command broker staged beside one provider invocation."""
 
 import argparse
 import ctypes
@@ -23,6 +23,56 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024 + 64 * 1024
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
+# Mirrors rcp.limits.COMMAND_REJECTION_NOTICE_MAX_COUNT; this file ships alone.
+_REJECTION_NOTICE_MAX_COUNT = 20
+# Notice signatures carry this prefix, so a signed request can never pass as a notice.
+# Mirrors rcp.agents.command_mailbox.REJECTION_NOTICE_DOMAIN.
+_REJECTION_NOTICE_DOMAIN = b"rcp-rejection-notice\n"
+_rejection_notices = 0
+_rejection_notice_lock = threading.Lock()
+# Keyed commands this broker already sent, by exact verb, key, and arguments.
+_keyed_commands = {}
+_keyed_commands_lock = threading.Lock()
+
+
+class _KeyedCommand:
+    def __init__(self):
+        self.done = threading.Event()
+        self.response = None
+        self.sent = False
+        self.delivered = False
+
+
+def _keyed_signature(value):
+    key = value.get("idempotency_key")
+    if not isinstance(key, str):
+        return None
+    return json.dumps(
+        [value.get("verb"), key, value.get("arguments")],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _join_keyed_command(signature):
+    """Return (entry, owner) for one exact keyed call.
+
+    A client gives up before a slow command finishes and the agent repeats the
+    call. That repeat waits for the send still in flight, or takes the answer no
+    client received, instead of sending again: over a slow SSH stage a second
+    round trip can itself outlast the client. A repeat after a delivered answer
+    goes to RCP, which replays and audits it, and so does a repeat of a first
+    attempt that never reached RCP.
+    """
+
+    with _keyed_commands_lock:
+        entry = _keyed_commands.get(signature)
+        if entry is not None and not (entry.done.is_set() and (entry.delivered or not entry.sent)):
+            return entry, False
+        entry = _KeyedCommand()
+        _keyed_commands[signature] = entry
+        return entry, True
 
 
 class BrokerError(Exception):
@@ -304,7 +354,7 @@ def _read_response(path, request_id, timeout):
     raise BrokerUnavailable("command response timed out")
 
 
-def _error(request_id, message, status):
+def _error(request_id, message, status, delivery):
     return {
         "version": VERSION,
         "request_id": request_id
@@ -312,8 +362,61 @@ def _error(request_id, message, status):
         else "0" * 32,
         "status": status,
         "message": message[:2000],
-        "result": {},
+        # `not_sent`: RCP never received it. `unknown`: RCP has it and may still act.
+        "result": {"delivery": delivery},
     }
+
+
+def _signed(value, token, domain=b""):
+    payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
+        "utf-8"
+    )
+    signature = hmac.new(token.encode("ascii"), domain + payload, hashlib.sha256).hexdigest()
+    return {**value, "credential": signature}
+
+
+def _publish_rejection(workspace, mailbox_id, token, status, message):
+    """Leave a signed refusal notice so RCP can record a command it never received."""
+
+    global _rejection_notices
+    with _rejection_notice_lock:
+        if _rejection_notices >= _REJECTION_NOTICE_MAX_COUNT:
+            return
+        _rejection_notices += 1
+    notice_id = os.urandom(16).hex()
+    notice = {
+        "version": VERSION,
+        "mailbox_id": mailbox_id,
+        "notice_id": notice_id,
+        "status": status,
+        "message": message[:2000],
+    }
+    with suppress(BrokerError, OSError):
+        _atomic_json(
+            workspace,
+            f"rcp-command-{mailbox_id}-{notice_id}.rejected.json",
+            _signed(notice, token, _REJECTION_NOTICE_DOMAIN),
+        )
+
+
+def _unavailable(request_id, error, written):
+    if written:
+        return _error(
+            request_id,
+            f"RCP has this command but its answer did not arrive ({error}); "
+            "it may still take effect. Repeat the exact same command to get the result.",
+            "unavailable",
+            "unknown",
+        )
+    return _error(request_id, f"RCP command was not sent: {error}", "unavailable", "not_sent")
+
+
+def _joined_response(entry, request_id, response_timeout):
+    """Return (response, from_entry); only an entry's own answer can mark it delivered."""
+
+    if not entry.done.wait(response_timeout):
+        return _unavailable(request_id, "command response timed out", True), False
+    return {**entry.response, "request_id": request_id}, True
 
 
 def _handle(
@@ -328,6 +431,10 @@ def _handle(
     response_timeout,
 ):
     request_id = None
+    written = False
+    entry = None
+    owner = False
+    answers_entry = False
     try:
         pid, uid = _peer_identity(connection)
         value = _read_message(connection)
@@ -338,33 +445,41 @@ def _handle(
             raise BrokerError("command client is outside the current provider invocation")
         if value.get("version") != VERSION or value.get("mailbox_id") != mailbox_id:
             raise BrokerError("command request mailbox identity does not match")
-        unsigned = dict(value)
-        unsigned.pop("credential", None)
-        payload = json.dumps(
-            unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
-        value["credential"] = hmac.new(token.encode("ascii"), payload, hashlib.sha256).hexdigest()
-        name = f"rcp-command-{mailbox_id}-{request_id}.request.json"
-        response_name = name.removesuffix(".request.json") + ".response.json"
-        _atomic_json(workspace, name, value)
-        response = _read_response(
-            os.path.join(workspace, response_name), request_id, response_timeout
-        )
+        signature = _keyed_signature(value)
+        entry, owner = _join_keyed_command(signature) if signature else (None, True)
+        if not owner:
+            written = True  # the first send of this exact keyed call carries it
+            response, answers_entry = _joined_response(entry, request_id, response_timeout)
+        else:
+            unsigned = dict(value)
+            unsigned.pop("credential", None)
+            name = f"rcp-command-{mailbox_id}-{request_id}.request.json"
+            response_name = name.removesuffix(".request.json") + ".response.json"
+            _atomic_json(workspace, name, _signed(unsigned, token))
+            written = True
+            response = _read_response(
+                os.path.join(workspace, response_name), request_id, response_timeout
+            )
     except BrokerUnavailable as exc:
-        response = _error(
-            request_id, f"Auto-research command could not be delivered: {exc}", "unavailable"
-        )
+        response = _unavailable(request_id, exc, written)
     except (BrokerError, ValueError) as exc:
-        response = _error(request_id, f"Auto-research command rejected: {exc}", "invalid")
+        response = _error(request_id, f"RCP command rejected: {exc}", "invalid", "not_sent")
     except OSError as exc:
         # Sockets and the workspace filesystem. The request itself was fine.
-        response = _error(
-            request_id, f"Auto-research command could not be delivered: {exc}", "unavailable"
-        )
+        response = _unavailable(request_id, exc, written)
+    if owner and entry is not None:
+        entry.response = response
+        entry.sent = written
+        entry.done.set()
+        answers_entry = True
+    if not written:
+        _publish_rejection(workspace, mailbox_id, token, response["status"], response["message"])
     try:
         connection.sendall(
             json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
         )
+        if answers_entry:
+            entry.delivered = True
     except OSError:
         pass
     finally:
@@ -512,7 +627,7 @@ def main(argv=None):
         _copy(child.stdout, sys.stdout.buffer)
         return child.wait()
     except (BrokerError, OSError, ValueError) as exc:
-        print(f"RCP episode command broker failed: {exc}", file=sys.stderr)
+        print(f"RCP command broker failed: {exc}", file=sys.stderr)
         return 2
     finally:
         stop.set()

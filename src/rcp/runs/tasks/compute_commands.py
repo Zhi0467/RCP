@@ -52,17 +52,9 @@ class WorkComputeCommands:
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         if not isinstance(request, LaunchCommandRequest) or request.verb not in self.allowed_verbs:
-            return CommandResponse(
-                request_id=request.request_id,
-                status="invalid",
-                message="This Work turn does not authorize that command.",
-            )
+            return self._refused(request, "This Work turn does not authorize that command.")
         if identity.authority != "broker" or identity.task_id != self.execution.operation_id:
-            return CommandResponse(
-                request_id=request.request_id,
-                status="invalid",
-                message="Compute requires this Work turn's broker authority.",
-            )
+            return self._refused(request, "Compute requires this Work turn's broker authority.")
         store = self.execution.store
         key = request.idempotency_key
         arguments = hashlib.sha256(
@@ -73,7 +65,11 @@ class WorkComputeCommands:
                 ensure_ascii=False,
             ).encode("utf-8")
         ).hexdigest()
-        previous = store.compute_command_receipts(self.execution.operation_id, request.verb, key)
+        # A Resume or Retry is a new task attempt; the key still names the first launch.
+        previous = store.compute_command_receipts(self.recovery_lineage, request.verb, key)
+        # An attempt that proved it submitted nothing leaves the key free after it.
+        free_after = max((i for i, item in enumerate(previous) if _not_submitted(item)), default=-1)
+        previous = previous[free_after + 1 :]
         response = None
         if previous:
             if previous[0]["arguments_sha256"] != arguments:
@@ -94,12 +90,20 @@ class WorkComputeCommands:
                 response = (
                     CommandResponse.model_validate({**result, "request_id": request.request_id})
                     if result
-                    else CommandResponse(
-                        request_id=request.request_id,
-                        status="unavailable",
-                        message="The earlier command has an uncertain outcome; inspect its retained receipt.",
-                    )
+                    else _uncertain_launch(request, previous[0])
                 )
+            store.record_agent_task_receipt(
+                self.execution.operation_id,
+                "compute_command_replayed",
+                {
+                    "verb": request.verb,
+                    "key": key,
+                    "arguments_sha256": arguments,
+                    "status": response.status,
+                    "message": (response.message or "")[:600],
+                },
+                tier="diagnostic",
+            )
         if response is None:
             store.record_agent_task_receipt(
                 self.execution.operation_id,
@@ -167,9 +171,14 @@ class WorkComputeCommands:
             "inside your sandbox. The launch response's startup object reports the job a moment "
             "after start: running means RCP saw it alive, unknown means RCP could not check it "
             "(see diagnostic), and any other status means it already ended and log_tail says why. "
-            "Confirm success from startup, not from a port or URL another process could answer. A repeated launch must use the same idempotency key "
-            "and arguments. If submission is uncertain, inspect the retained receipt; do not submit "
-            "again under a new key. RCP refuses helper launches without reliable process ownership."
+            "Confirm success from startup, not from a port or URL another process could answer. "
+            "A repeated launch must use the same idempotency key and arguments, including after "
+            "a Resume or Retry of this turn. When a launch returns result.delivery `unknown`, RCP "
+            "may still be working on it: repeat the exact same command to get its result. "
+            "`submitted: false` means nothing started; the same key runs again once the owner is "
+            "ready. A `disposition` of `uncertain` means it may be running: never submit it again "
+            "under any key; tell the human. RCP refuses helper launches without reliable process "
+            "ownership."
         )
 
         availability = (
@@ -237,6 +246,8 @@ class WorkComputeCommands:
                 result={
                     "diagnostic": probe.diagnostic,
                     "required_action": probe.required_action,
+                    # Nothing was submitted, so the same key may run again once ready.
+                    "submitted": False,
                 },
             )
         job = launch_compute_job(
@@ -262,9 +273,12 @@ class WorkComputeCommands:
         }
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
-    def validate_handoff(self, observed_check_commands: set[str]) -> None:
+    @cached_property
+    def recovery_lineage(self) -> tuple[str, ...]:
+        """This attempt and the earlier attempts of the same turn it recovers, newest first."""
+
         store = self.execution.store
-        operation_ids = {self.execution.operation_id}
+        operation_ids = [self.execution.operation_id]
         current = store.agent_task(self.execution.operation_id)
         cause = self.execution.continuation
         while current and cause in {"resume", "retry", "graph_repair", "handoff"}:
@@ -280,9 +294,22 @@ class WorkComputeCommands:
                 or parent.kind != current.kind
             ):
                 break
-            operation_ids.add(parent.operation_id)
+            operation_ids.append(parent.operation_id)
             current = parent
             cause = store.agent_task_continuation_cause(current.operation_id)
+        return tuple(operation_ids)
+
+    def _refused(self, request: CommandRequest, message: str) -> CommandResponse:
+        self.execution.store.record_agent_task_event(
+            self.execution.operation_id,
+            f"Compute {request.verb} refused: {message}",
+            level="warning",
+        )
+        return CommandResponse(request_id=request.request_id, status="invalid", message=message)
+
+    def validate_handoff(self, observed_check_commands: set[str]) -> None:
+        store = self.execution.store
+        operation_ids = set(self.recovery_lineage)
         unobserved = []
         for job in store.running_compute_jobs():
             if (
@@ -299,3 +326,29 @@ class WorkComputeCommands:
                 "Running helper jobs require shell watchers in watch.json: "
                 + json.dumps(unobserved)
             )
+
+
+def _not_submitted(receipt: dict[str, object]) -> bool:
+    response = receipt.get("response")
+    result = response.get("result") if isinstance(response, dict) else None
+    return isinstance(result, dict) and result.get("submitted") is False
+
+
+def _uncertain_launch(request: CommandRequest, started: dict[str, object]) -> CommandResponse:
+    """A launch that started but never recorded a result: never resubmit it blindly."""
+
+    operation_id = started.get("operation_id")
+    return CommandResponse(
+        request_id=request.request_id,
+        status="unavailable",
+        message=(
+            "An earlier launch with this key started but RCP never recorded its result, so it "
+            "may be running. Do not launch it again under any key; ask the human to check this "
+            f"project's compute jobs in Runs for task {operation_id}."
+        ),
+        result={
+            "disposition": "uncertain",
+            "original_operation_id": operation_id,
+            "key": request.idempotency_key,
+        },
+    )

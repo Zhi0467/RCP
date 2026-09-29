@@ -59,7 +59,11 @@ from rcp.runs.chat import (
     _validated_local_chat_resume_stage,
     _validated_remote_chat_resume_stage,
 )
-from rcp.runs.patch_validator import PatchValidationBudget, PatchValidationResult
+from rcp.runs.patch_validator import (
+    PatchValidationBudget,
+    PatchValidationResult,
+    command_rejection_recorder,
+)
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.session_master import record_inline_prompt
 from rcp.runs.shared import (
@@ -1471,6 +1475,7 @@ async def _serve_auto_research_child_work_mailbox(
             stop=stop,
             poll_seconds=PATCH_SELF_CHECK_POLL_SECONDS,
             invocation_gate=staged.invocation_gate,
+            record_rejection=command_rejection_recorder(execution),
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         execution.store.record_agent_task_event(
