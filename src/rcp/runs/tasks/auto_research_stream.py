@@ -73,6 +73,7 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
 )
+from rcp.runs.patch_validator import command_rejection_recorder
 from rcp.runs.session_master import (
     continuation_session_master,
     record_inline_prompt,
@@ -1626,6 +1627,7 @@ async def _serve_auto_research_commands(
         handler=handle,
         stop=stop,
         invocation_gate=staged.invocation_gate,
+        record_rejection=command_rejection_recorder(execution),
     )
 
 

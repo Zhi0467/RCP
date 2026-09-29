@@ -200,8 +200,9 @@ def test_helper_launch_replays_its_shell_handoff_after_store_reopen(commands):
 
 
 @pytest.mark.asyncio
-async def test_slow_remote_launch_returns_before_client_deadline_and_replays(commands, monkeypatch):
+async def test_slow_remote_launch_returns_pending_then_replays_one_launch(commands, monkeypatch):
     from rcp import limits
+    from rcp.agents import command_mailbox
     from rcp.compute_jobs import backend_context
     from rcp.compute_jobs import probe as probe_module
     from rcp.compute_jobs.backends.systemd_user import SystemdUserBackend
@@ -302,6 +303,11 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
         "COMPUTE_COMMAND_TIMEOUT_SECONDS",
         limits.COMPUTE_COMMAND_TIMEOUT_SECONDS / speed,
     )
+    monkeypatch.setattr(
+        command_mailbox,
+        "COMMAND_CLIENT_WAIT_SECONDS",
+        limits.COMMAND_CLIENT_WAIT_SECONDS / speed,
+    )
     staged = patch_validator.stage_patch_validation_mailbox(
         local_stage=commands.workspace,
         remote_stage=None,
@@ -337,7 +343,9 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
         )
         try:
             responses = []
-            for _attempt in range(2):
+            pending = 0
+            while len(responses) < 2:
+                assert pending < 20
                 process = await asyncio.create_subprocess_exec(
                     *staged.client_argv(
                         "launch",
@@ -352,12 +360,18 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
                     stderr=asyncio.subprocess.STDOUT,
                 )
                 output, _ = await process.communicate()
+                if process.returncode == 2:
+                    # The client returned inside a provider shell's limit; RCP kept working.
+                    assert json.loads(output)["result"] == {"delivery": "unknown"}
+                    pending += 1
+                    continue
                 assert process.returncode == 0, output.decode()
                 responses.append(json.loads(output))
                 if len(responses) == 1:
-                    assert elapsed > 120
+                    assert elapsed > limits.COMMAND_CLIENT_WAIT_SECONDS
                     assert elapsed < limits.COMPUTE_COMMAND_TIMEOUT_SECONDS
                     first_call_count = len(calls)
+            assert pending >= 1
             assert responses[0]["result"] == responses[1]["result"]
             assert len(calls) == first_call_count
             assert len(launches) == 1
@@ -367,6 +381,67 @@ async def test_slow_remote_launch_returns_before_client_deadline_and_replays(com
             stop.set()
             await server
     staged.cleanup()
+
+
+def test_launch_key_replays_across_a_resumed_turn_attempt(commands):
+    first = commands.launch()
+    parent = commands.store.agent_task("work-turn")
+    commands.store.create_agent_task(
+        parent.model_copy(
+            update={"operation_id": "work-resume", "parent_operation_id": "work-turn", "attempt": 2}
+        )
+    )
+    resumed = replace(
+        commands.handler,
+        execution=replace(
+            commands.handler.execution, operation_id="work-resume", continuation="resume"
+        ),
+    )
+    replay = resumed(
+        _request("launch", "launch-once", cwd=str(commands.workspace), argv=["true"]),
+        CommandTurnIdentity(None, "work-resume", "turn", "broker"),
+    )
+    assert replay.result == first.result
+    assert len(commands.backend.starts) == 1
+    assert [
+        receipt.category
+        for receipt in commands.store.agent_task_receipts("work-resume")
+        if receipt.category.startswith("compute_command")
+    ] == ["compute_command_replayed"]
+
+
+def test_interrupted_launch_replays_as_uncertain_without_a_second_start(commands, monkeypatch):
+    execute = WorkComputeCommands._execute
+
+    def interrupted(self, request):
+        execute(self, request)
+        raise KeyboardInterrupt("RCP stopped before recording the result")
+
+    monkeypatch.setattr(WorkComputeCommands, "_execute", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        commands.launch()
+    monkeypatch.setattr(WorkComputeCommands, "_execute", execute)
+    replay = commands.launch()
+    assert replay.status == "unavailable"
+    assert replay.result == {
+        "disposition": "uncertain",
+        "original_operation_id": "work-turn",
+        "key": "launch-once",
+    }
+    assert len(commands.backend.starts) == 1
+
+
+def test_launch_refused_before_submission_keeps_its_key_free(commands, monkeypatch):
+    unready = commands.probe.model_copy(
+        update={"ready": False, "state": "failed", "diagnostic": "No user manager"}
+    )
+    monkeypatch.setattr(compute_commands, "probe_compute_backend", lambda *_a, **_k: unready)
+    assert commands.launch(argv=["false"]).result["submitted"] is False
+    monkeypatch.setattr(compute_commands, "probe_compute_backend", lambda *_a, **_k: commands.probe)
+    first = commands.launch()
+    assert first.status == "ok"
+    assert commands.launch().result == first.result
+    assert len(commands.backend.starts) == 1
 
 
 def test_helper_launch_reports_a_job_that_ended_at_startup(commands, monkeypatch):

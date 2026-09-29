@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import inspect
+import json
 import math
 import re
 import secrets
@@ -32,8 +33,10 @@ from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.staged_command_client import COMMAND_MAILBOX_MAX_REQUEST_BYTES
 from rcp.limits import (
     COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
+    COMMAND_CLIENT_WAIT_SECONDS,
     COMMAND_MAILBOX_POLL_SECONDS,
     COMMAND_MAILBOX_TIMEOUT_SECONDS,
+    COMMAND_REJECTION_NOTICE_MAX_BYTES,
 )
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
@@ -41,6 +44,10 @@ _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _REQUEST_FILE = re.compile(
     r"^rcp-command-(?P<mailbox_id>[a-f0-9]{32})-"
     r"(?P<request_id>[a-f0-9]{32})\.request\.json$"
+)
+# A broker refusal that never became a request, signed so an agent cannot forge one.
+_REJECTION_FILE = re.compile(
+    r"^rcp-command-(?P<mailbox_id>[a-f0-9]{32})-(?P<notice_id>[a-f0-9]{32})\.rejected\.json$"
 )
 _COMMAND_STATE_PREFIXES = ("rcp-command-", ".rcp-command-", ".rcp-mailbox-")
 
@@ -122,6 +129,22 @@ class CommandTurnCredential:
             and secrets.compare_digest(expected, request.credential)
         )
 
+    def accepts_rejection_notice(self, document: str) -> bool:
+        """Check a broker refusal notice signed with this turn's broker token."""
+
+        if self.identity.authority != "broker" or self._state != "active":
+            return False
+        value = json.loads(document)
+        credential = value.get("credential") if isinstance(value, dict) else None
+        if not isinstance(credential, str) or value.get("mailbox_id") != self.mailbox_id:
+            return False
+        expected = hmac.new(
+            self._token.encode("ascii"),
+            command_authentication_payload(document),
+            hashlib.sha256,
+        ).hexdigest()
+        return secrets.compare_digest(expected, credential)
+
     def expire(self) -> None:
         self._token = ""
         self._state = "expired"
@@ -143,7 +166,11 @@ class StagedCommandMailbox:
     def client_argv(self, *arguments: str, timeout_seconds: float | None = None) -> tuple[str, ...]:
         """Build an argv tuple for the separately staged agent-only executable."""
 
-        timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        timeout = (
+            min(self.timeout_seconds, COMMAND_CLIENT_WAIT_SECONDS)
+            if timeout_seconds is None
+            else timeout_seconds
+        )
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("command client timeout must be a positive finite number")
         authority = (
@@ -171,6 +198,8 @@ class StagedCommandMailbox:
 
 CommandHandlerResult: TypeAlias = CommandResponse | Awaitable[CommandResponse]
 CommandHandler: TypeAlias = Callable[[CommandRequest, CommandTurnIdentity], CommandHandlerResult]
+# Called with (status, message) for each refusal the handler never saw.
+CommandRejectionRecorder: TypeAlias = Callable[[str, str], None]
 
 
 def stage_command_mailbox(
@@ -279,8 +308,13 @@ async def serve_command_mailbox(
     stop: asyncio.Event,
     poll_seconds: float = COMMAND_MAILBOX_POLL_SECONDS,
     invocation_gate: ProviderInvocationGate | None = None,
+    record_rejection: CommandRejectionRecorder | None = None,
 ) -> None:
-    """Validate and dispatch requests; the injected handler owns every effect and record."""
+    """Validate and dispatch requests; the injected handler owns every effect and record.
+
+    Refusals made here or by the broker never reach the handler, so they are
+    reported through ``record_rejection`` for the owner's task history.
+    """
 
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("command mailbox poll interval must be a positive finite number")
@@ -295,6 +329,15 @@ async def serve_command_mailbox(
     try:
         while not stop.is_set():
             names = await asyncio.to_thread(staged.mailbox.entry_names)
+            for name in sorted(
+                name
+                for name in names
+                if name not in seen and _rejection_notice_name(name, credential.mailbox_id)
+            ):
+                seen.add(name)
+                notice = await asyncio.to_thread(_read_rejection_notice, staged, name)
+                if notice is not None and record_rejection is not None:
+                    await asyncio.to_thread(record_rejection, *notice)
             requests = sorted(
                 name
                 for name in names
@@ -307,12 +350,16 @@ async def serve_command_mailbox(
                 seen.add(name)
                 identity = _request_identity_from_name(name, credential.mailbox_id)
                 assert identity is not None
-                response = await _answer_request(
+                response, handled = await _answer_request(
                     name,
                     request_id=identity,
                     staged=staged,
                     handler=handler,
                 )
+                if not handled and record_rejection is not None:
+                    await asyncio.to_thread(
+                        record_rejection, response.status, response.message or ""
+                    )
                 response_name = name.removesuffix(".request.json") + ".response.json"
                 await asyncio.to_thread(
                     staged.mailbox.write_text,
@@ -332,7 +379,9 @@ async def _answer_request(
     request_id: str,
     staged: StagedCommandMailbox,
     handler: CommandHandler,
-) -> CommandResponse:
+) -> tuple[CommandResponse, bool]:
+    """Answer one request; the flag says whether the handler produced the response."""
+
     try:
         content = await asyncio.to_thread(
             staged.mailbox.read_text,
@@ -352,9 +401,9 @@ async def _answer_request(
         ):
             raise ValueError(f"{request.verb} requires broker authority")
     except (FileNotFoundError, OSError, StateUnavailable) as exc:
-        return _error_response(request_id, "unavailable", "Command request unavailable", exc)
+        return _error_response(request_id, "unavailable", "Command request unavailable", exc), False
     except (UnicodeError, ValueError, ValidationError) as exc:
-        return _error_response(request_id, "invalid", "Command request invalid", exc)
+        return _error_response(request_id, "invalid", "Command request invalid", exc), False
 
     try:
         outcome = handler(request, staged.credential.identity)
@@ -363,9 +412,9 @@ async def _answer_request(
             raise TypeError("command handler returned an unsupported response")
         if response.request_id != request_id:
             raise ValueError("command handler returned a mismatched request identity")
-        return response
+        return response, True
     except Exception as exc:
-        return _error_response(request_id, "unavailable", "Command handler unavailable", exc)
+        return _error_response(request_id, "unavailable", "Command handler unavailable", exc), False
 
 
 def _error_response(
@@ -377,6 +426,27 @@ def _error_response(
     detail = " ".join(str(error).split())
     message = f"{prefix}: {detail}" if detail else f"{prefix}."
     return CommandResponse(request_id=request_id, status=status, message=message[:2_000])
+
+
+def _rejection_notice_name(name: str, mailbox_id: str) -> bool:
+    match = _REJECTION_FILE.fullmatch(name)
+    return match is not None and secrets.compare_digest(match.group("mailbox_id"), mailbox_id)
+
+
+def _read_rejection_notice(staged: StagedCommandMailbox, name: str) -> tuple[str, str] | None:
+    """Return (status, message) from one authentic broker refusal notice, else None."""
+
+    try:
+        document = staged.mailbox.read_text(name, max_bytes=COMMAND_REJECTION_NOTICE_MAX_BYTES)
+        if not staged.credential.accepts_rejection_notice(document):
+            return None
+        value = json.loads(document)
+    except (OSError, StateUnavailable, UnicodeError, ValueError):
+        return None
+    status, message = value.get("status"), value.get("message")
+    if status not in {"invalid", "unavailable"} or not isinstance(message, str):
+        return None
+    return status, " ".join(message.split())[:2_000]
 
 
 def _request_identity_from_name(name: str, mailbox_id: str) -> str | None:

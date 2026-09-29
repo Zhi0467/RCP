@@ -142,17 +142,28 @@ launch registry or corresponding automatic handoff enforcement.
 
 The broker binds one live provider process tree; validate-only credentials
 cannot issue launch. Keys and protected command receipts make the same intent
-replayable without duplicate launch. An interrupted command without a result
-retains an uncertain-outcome diagnostic. These operational effects create no
+replayable without duplicate launch, across the Resume, Retry, and handoff
+attempts of one turn as well as within an attempt. Every replay attempt keeps
+its own diagnostic receipt. A refusal that provably submitted nothing, such as
+an owner that is not ready, answers `submitted: false` and leaves the key free
+to run once the owner is ready. An interrupted command without a result answers
+`disposition: uncertain` with the original task attempt: the job may be
+running, so the agent must not submit it again under any key, and the human
+inspects the retained evidence. These operational effects create no
 new graph-change channel. Discuss, graph merge, Seed/Refresh, Paper, and the
 Auto-research root do not gain helper launch authority.
 
-The staged helper client and broker share a response allowance derived from the
-existing per-operation timeouts. It covers remote cwd resolution and mailbox
-transfers, both containment probes, one stale-binding reprobe, and launch with
-receipt or cleanup. Responses return as soon as the operation finishes; the
-allowance does not delay normal launches. A scaled slow-transport integration
-check exercises that sequence and replays the same key without a second launch.
+The broker's response allowance is derived from the existing per-operation
+timeouts. It covers remote cwd resolution and mailbox transfers, both
+containment probes, one stale-binding reprobe, and launch with receipt or
+cleanup. Responses return as soon as the operation finishes; the allowance does
+not delay normal launches. One client invocation waits at most
+`COMMAND_CLIENT_WAIT_SECONDS`, inside provider shell-tool limits. A slower
+launch returns `unavailable` with `delivery: unknown` while RCP keeps working,
+and the agent repeats the exact call. The broker answers that repeat from the
+send still in flight, or with the answer no client received, so it needs no
+further transport round trip. A scaled slow-transport integration check
+exercises that sequence and replays the same key without a second launch.
 Per-operation transport and probe limits remain bounded; an interrupted result
 still retains its uncertain receipt.
 

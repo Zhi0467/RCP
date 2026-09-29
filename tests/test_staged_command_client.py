@@ -1201,12 +1201,144 @@ async def test_broker_reports_an_undelivered_command_as_unavailable(tmp_path) ->
     )
     assert staged.invocation_gate is not None
 
+    # No broker yet: the command never left this host.
+    code, output = await _run_client(staged, "status")
+    assert (code, json.loads(output)["result"]) == (2, {"delivery": "not_sent"})
+
     # No serve loop at all, so nothing ever writes the response file.
     async with staged.invocation_gate.serve_current_session():
         code, output = await _run_client(staged, "status")
 
     assert code == 2, output
-    assert "invalid" not in output.lower()
+    assert json.loads(output)["result"] == {"delivery": "unknown"}
+    staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_keyed_retry_reaches_rcp_after_apply_consumed_its_patch(tmp_path) -> None:
+    """The exact retry must get RCP's recorded answer even though patch.json is gone."""
+
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+    )
+    assert staged.invocation_gate is not None
+    seen = []
+
+    def handler(request, _identity):
+        seen.append(request.arguments.model_dump(mode="json"))
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            code, output = await _run_client(
+                staged, "apply", "--key", "k-apply", str(workspace / "patch.json")
+            )
+        finally:
+            stop.set()
+            await server
+    assert code == 0, output
+    assert seen == [{"patch_file": "patch.json"}]
+    staged.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
+    tmp_path,
+) -> None:
+    from rcp import limits
+    from rcp.agents import staged_command_broker, staged_command_client
+
+    assert (
+        staged_command_broker._REJECTION_NOTICE_MAX_COUNT
+        == limits.COMMAND_REJECTION_NOTICE_MAX_COUNT
+    )
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id="episode",
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=10,
+    )
+    assert staged.invocation_gate is not None
+    mailbox_id = staged.credential.mailbox_id
+    recorded: list[tuple[str, str]] = []
+    handled = []
+    # A notice the agent could write itself: well formed, but not broker-signed.
+    (workspace / f"rcp-command-{mailbox_id}-{'f' * 32}.rejected.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "mailbox_id": mailbox_id,
+                "notice_id": "f" * 32,
+                "status": "unavailable",
+                "message": "forged",
+                "credential": "0" * 64,
+            }
+        )
+    )
+    # A request that bypassed the broker, so it carries no valid signature.
+    request_id = "e" * 32
+    (workspace / f"rcp-command-{mailbox_id}-{request_id}.request.json").write_text(
+        json.dumps(
+            {
+                **json.loads(_request_document("status", {"worker_id": None, "episode_id": None})),
+                "mailbox_id": mailbox_id,
+                "request_id": request_id,
+            }
+        )
+    )
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=lambda request, _identity: handled.append(request),
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+                record_rejection=lambda status, message: recorded.append((status, message)),
+            )
+        )
+        try:
+            # A malformed message straight to the broker never becomes a request.
+            path = staged_command_client._broker_socket_path(staged.invocation_gate.socket_path)
+            reader, writer = await asyncio.open_unix_connection(path)
+            writer.write(b"not json\n")
+            await writer.drain()
+            answer = json.loads(await reader.readline())
+            writer.close()
+            for _ in range(200):
+                if len(recorded) == 2:
+                    break
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.1)  # a few more polls, so a forged notice would show
+        finally:
+            stop.set()
+            await server
+    assert answer["result"] == {"delivery": "not_sent"}
+    # Only the broker's refusal and the mailbox's refusal; never the forged notice.
+    assert [status for status, _message in recorded] == ["invalid", "invalid"]
+    assert not handled
     staged.cleanup()
 
 

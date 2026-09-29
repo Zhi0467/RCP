@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.agents.command_mailbox import (
     CommandHandler,
+    CommandRejectionRecorder,
     CommandTurnIdentity,
     StagedCommandMailbox,
     prepare_command_mailbox,
@@ -138,9 +139,28 @@ async def serve_patch_validation_mailbox(
             stop=stop,
             poll_seconds=PATCH_SELF_CHECK_POLL_SECONDS,
             invocation_gate=staged.invocation_gate,
+            record_rejection=command_rejection_recorder(execution),
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         _record_mailbox_unavailable(execution, str(exc))
+
+
+def command_rejection_recorder(
+    execution: AgentTaskExecution | None,
+) -> CommandRejectionRecorder | None:
+    """Record command refusals the handler never saw in this task's history."""
+
+    if execution is None:
+        return None
+
+    def record(status: str, message: str) -> None:
+        execution.store.record_agent_task_event(
+            execution.operation_id,
+            f"RCP command {status} before dispatch: {' '.join(message.split())[:400]}",
+            level="warning",
+        )
+
+    return record
 
 
 def cleanup_patch_validation_mailbox(

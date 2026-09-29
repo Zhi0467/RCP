@@ -81,20 +81,38 @@ def _atomic_request(path, content):
             os.unlink(temporary)
 
 
-def _regular_workspace_file(workspace, path, label):
+def _workspace_file_path(workspace, path, label, required_name=None):
     absolute = os.path.abspath(path)
     if os.path.dirname(absolute) != workspace:
         raise ClientInputError(f"{label} must be a direct file in this run workspace")
     name = os.path.basename(absolute)
     if not _SAFE_FILE.match(name):
         raise ClientInputError(f"{label} has an unsafe file name")
+    if required_name is not None and name != required_name:
+        raise ClientInputError(f"this command accepts only this run workspace's {required_name}")
+    return absolute
+
+
+def _regular_workspace_file(workspace, path, label, required_name=None):
+    absolute = _workspace_file_path(workspace, path, label, required_name)
     if os.path.islink(absolute) or not os.path.isfile(absolute):
         raise ClientInputError(f"{label} is unavailable or not a regular file")
     return absolute
 
 
-def _workspace_text_filename(workspace, path, label, max_bytes, require_nonblank=False):
-    absolute = _regular_workspace_file(workspace, path, label)
+def _workspace_text_filename(
+    workspace, path, label, max_bytes, require_nonblank=False, required_name=None
+):
+    """Name one keyed command file, checking it locally only while it still exists.
+
+    RCP snapshots the file on first admission and may consume it (Apply does).
+    A retry of the same key must still reach RCP, which answers from its record.
+    """
+
+    absolute = _workspace_file_path(workspace, path, label, required_name)
+    if not os.path.lexists(absolute):
+        return os.path.basename(absolute)
+    absolute = _regular_workspace_file(workspace, path, label, required_name)
     try:
         descriptor = os.open(
             absolute,
@@ -228,9 +246,9 @@ def _nonblank(value, label):
 def _request_arguments(namespace, workspace):
     verb = namespace.verb.replace("-", "_")
     if verb == "validate":
-        patch_path = _regular_workspace_file(workspace, namespace.patch_path, "patch.json")
-        if os.path.basename(patch_path) != "patch.json":
-            raise ClientInputError("validation accepts only this run workspace's patch.json")
+        patch_path = _regular_workspace_file(
+            workspace, namespace.patch_path, "patch.json", required_name="patch.json"
+        )
         try:
             with open(patch_path, "rb") as stream:
                 if os.fstat(stream.fileno()).st_size > COMMAND_MAILBOX_MAX_REQUEST_BYTES:
@@ -266,9 +284,8 @@ def _request_arguments(namespace, workspace):
             namespace.patch_path,
             "patch.json",
             COMMAND_MAILBOX_MAX_REQUEST_BYTES,
+            required_name="patch.json",
         )
-        if patch_file != "patch.json":
-            raise ClientInputError("Apply accepts only this run workspace's patch.json")
         arguments = {"patch_file": patch_file}
     elif verb == "spawn":
         instruction_file = _workspace_text_filename(
@@ -383,12 +400,34 @@ def _print_json(value):
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
-def _client_failure(verb, status, message):
+def _client_failure(verb, status, message, delivery=None):
+    """Print one client-side outcome.
+
+    ``delivery`` tells an agent what an `unavailable` command did: `not_sent`
+    never reached RCP; `unknown` reached it or may have, so RCP can still act
+    and the exact same command (same key) returns that outcome.
+    """
+
     if verb == "validate":
         _print_json({"status": status, "messages": [message]})
     else:
-        _print_json({"status": status, "message": message, "result": {}})
+        result = {"delivery": delivery} if delivery is not None else {}
+        _print_json({"status": status, "message": message, "result": result})
     return INVALID if status == "invalid" else UNAVAILABLE
+
+
+def _not_answered(verb, timeout):
+    repeat = (
+        "Run the check again."
+        if verb == "validate"
+        else "Repeat the exact same command, with the same key, to get its result."
+    )
+    return _client_failure(
+        verb,
+        "unavailable",
+        f"RCP has not answered within {timeout:g} seconds and may still be working on it. {repeat}",
+        "unknown",
+    )
 
 
 def _response_exit_code(response):
@@ -408,6 +447,7 @@ def _handle_response(response, verb, request_id):
             verb,
             "unavailable",
             "RCP command returned a malformed or mismatched response.",
+            "unknown",
         )
     exit_code = _response_exit_code(response)
     if exit_code is None:
@@ -415,6 +455,7 @@ def _handle_response(response, verb, request_id):
             verb,
             "unavailable",
             "RCP command returned an unsupported status.",
+            "unknown",
         )
     _print_json(_display_response(response, verb))
     return exit_code
@@ -426,7 +467,10 @@ def _broker_socket_path(path):
     prefix = "~/.rcp/sockets/"
     name = path[len(prefix) :] if path.startswith(prefix) else ""
     if not name.startswith("rcp-command-") or not name.endswith(".sock") or "/" in name:
-        raise ClientInputError("broker path is outside the RCP socket directory")
+        raise ClientInputError(
+            "broker path is outside the RCP socket directory; "
+            "copy the supplied command prefix unchanged, including its quotes"
+        )
     return os.path.join(_socket_directory(pwd.getpwuid(os.geteuid()).pw_dir), name)
 
 
@@ -484,6 +528,7 @@ def _run(namespace):
             namespace.verb,
             "unavailable",
             f"RCP command request could not be written: {exc}",
+            "not_sent",
         )
 
     deadline = time.monotonic() + namespace.timeout
@@ -499,13 +544,10 @@ def _run(namespace):
                 namespace.verb,
                 "unavailable",
                 f"RCP command response could not be read: {exc}",
+                "unknown",
             )
         return _handle_response(response, namespace.verb, request_id)
-    return _client_failure(
-        namespace.verb,
-        "unavailable",
-        "RCP command did not answer before the timeout.",
-    )
+    return _not_answered(namespace.verb, namespace.timeout)
 
 
 def _run_brokered(namespace, broker, request_content, request_id):
@@ -515,26 +557,39 @@ def _run_brokered(namespace, broker, request_content, request_id):
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.settimeout(namespace.timeout)
         connection.connect(broker)
+    except (OSError, TimeoutError) as exc:
+        if connection is not None:
+            connection.close()
+        return _client_failure(
+            namespace.verb,
+            "unavailable",
+            f"RCP command was not sent; its broker is unavailable: {exc}",
+            "not_sent",
+        )
+    try:
         connection.sendall(request_content)
         while True:
             chunk = connection.recv(65536)
             if not chunk:
                 break
             content.extend(chunk)
-    except (OSError, TimeoutError) as exc:
+    except (TimeoutError, socket.timeout):  # noqa: UP041 (distinct on Python 3.9)
+        return _not_answered(namespace.verb, namespace.timeout)
+    except OSError as exc:
         return _client_failure(
             namespace.verb,
             "unavailable",
-            f"RCP command broker is unavailable: {exc}",
+            f"RCP command connection failed after sending; it may still take effect: {exc}",
+            "unknown",
         )
     finally:
-        if connection is not None:
-            connection.close()
+        connection.close()
     if not content.endswith(b"\n") or b"\n" in content[:-1]:
         return _client_failure(
             namespace.verb,
             "unavailable",
             "RCP command broker did not return one complete newline-delimited response.",
+            "unknown",
         )
     try:
         response = json.loads(content[:-1])
@@ -543,6 +598,7 @@ def _run_brokered(namespace, broker, request_content, request_id):
             namespace.verb,
             "unavailable",
             f"RCP command broker returned invalid JSON: {exc}",
+            "unknown",
         )
     return _handle_response(response, namespace.verb, request_id)
 

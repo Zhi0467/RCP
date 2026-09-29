@@ -609,7 +609,16 @@ files through the writable workspace while RCP polls locally or through the
 existing SSH run stage,
 prepares the candidate against live current state in process, and records each
 check. Client exit codes distinguish valid, semantically invalid, and validator
-unavailable, so a transport failure can never become a correction loop.
+unavailable, so a transport failure can never become a correction loop. Every
+command result is JSON on stdout, and one invocation returns within
+`COMMAND_CLIENT_WAIT_SECONDS`, inside provider shell-tool limits. An
+`unavailable` keyed command also states its `delivery`: `not_sent` never reached
+RCP, while `unknown` reached it or may have, so RCP can still act and the exact
+same call returns that outcome. A keyed retry sends the file name even after
+Apply consumed the file, because RCP answers a known key from its record.
+Refusals made before a handler sees a request, by the mailbox or the broker,
+are recorded as task events; the broker signs its refusal notices with the turn
+token, so an agent cannot forge one.
 Validation stages operations in their written order against earlier valid
 operations while retaining whole-patch node and edge lookup for legal forward
 references; it never reorders operations. A validator self-check is not a
