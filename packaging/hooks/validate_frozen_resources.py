@@ -6,7 +6,7 @@ from rcp.providers import remote_bundle
 from rcp.skill_registry import official_registry
 from rcp.terminals.remote import terminal_source
 from rcp.transfer.repository_git import _remote_source
-from rcp.transport.state import _remote_script
+from rcp.transport.state import _remote_lock_holder_script, _remote_script
 
 if "function installArtifactSelection" not in _selection_script():
     raise RuntimeError("The packaged artifact selection script is invalid.")
@@ -45,6 +45,10 @@ for script_name, required in (
 ):
     if required not in _remote_script(script_name):
         raise RuntimeError(f"The packaged remote script {script_name} is invalid.")
+
+lock_holder = _remote_lock_holder_script()
+if "def replace_regular_file_in_open_directory" not in lock_holder:
+    raise RuntimeError("The packaged remote lock holder lacks the artifact replacement protocol.")
 
 for script_name, required in (
     ("profile.py", "def launch_command"),
