@@ -801,6 +801,15 @@
   align-items: center;
   gap: 6px;
 }
+.campaign-dialog-fields .campaign-isolation label {
+  display: inline-flex;
+}
+.campaign-isolation input,
+.experiment-isolation input,
+.merge-options input[type="checkbox"],
+.merge-options input[type="radio"] {
+  width: auto;
+}
 .merge-conflict-files {
   flex-basis: 100%;
   margin: 0;

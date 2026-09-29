@@ -16,7 +16,14 @@ MergePreview, and recorded cleanup. Slice 4, Merge task with code, is
 implemented: a code conflict or graph residue starts one merge task with
 Integrate's roots, and RCP verifies the landing before the graph commit.
 Slice 5, the diff projection, is implemented as per-path flags on the merge
-preview. Web controls remain in slice 6, and the closing journey in slice 7. The settled choices below are unchanged.
+preview. Slice 6, Web, is implemented: Run toggles, the Merge panel, and merge
+marks on the branch DAG and node detail. Slice 7 updated the specs and drove the
+served Merge journey on disposable seeded data: the branch view showed only the
+diff, and one Merge click committed leftovers, landed a merge commit on `main`,
+merged the graph, removed the worktree and code branch, and archived the graph
+branch. Remaining: the first closing item, real provider runs of an Experiment
+and an Auto-research episode with both toggles on. The settled choices below are
+unchanged.
 
 Close this handoff when, on disposable data:
 
@@ -343,9 +350,10 @@ Each slice is one Codex implementation pass, reviewed once as it lands.
    also carries code state.
 5. **Diff projection — implemented.** Per-path merge flags on
    `MergePreview.graph.paths`, joined in Web with `GraphBranchChanges`.
-6. **Web.** Run toggles, the Branches diff view, and the Merge panel.
-7. **Specs and journey.** Current-behavior spec updates, then the served-app
-   journey in the closing condition.
+6. **Web — implemented.** Run toggles, the Branches diff view, and the Merge panel.
+7. **Specs and journey — specs and the Merge journey done.** Current-behavior
+   spec updates, then the served-app journey in the closing condition; the real
+   provider runs remain.
 
 ## Checks
 

@@ -100,9 +100,12 @@ export function EpisodeMergePanel({
             {preview.code.source_branch} → {preview.code.target_branch}
           </span>
           <span>{preview.code.commits_ahead} commits ahead</span>
-          <span className={`status-pill merge-code-${preview.code.status}`}>
-            {CODE_STATUS_LABELS[preview.code.status]}
-          </span>
+          {/* Leftovers are committed at Merge, so a tip equal to the target is not merged yet. */}
+          {!(preview.code.status === "already_merged" && preview.code.leftover_files.length) && (
+            <span className={`status-pill merge-code-${preview.code.status}`}>
+              {CODE_STATUS_LABELS[preview.code.status]}
+            </span>
+          )}
           {preview.code.leftover_files.length > 0 && (
             <span>{preview.code.leftover_files.length} uncommitted files will be committed</span>
           )}

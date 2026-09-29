@@ -344,7 +344,7 @@ a successful receipt needs no graph delivery. Code delivery is independent: a
 code-only owner or a delivered graph whose code moved on may still Merge.
 An active merge fences new work on the entire binding through cleanup.
 
-Only a human project member can dispatch **Merge to main**, from any card of the
+Only a human project member can dispatch **Merge**, from any card of the
 owner's episode chain. Fully delivered, cross-project, cross-branch, or
 concurrently merging requests fail closed, as does a branch with a live writer,
 which is named. The merge task does not spend any episode budget.
@@ -353,7 +353,8 @@ which is named. The merge task does not spend any episode budget.
 
 Merge persists an owner reservation and an attempt before committing leftovers.
 Mutable attempts are separate from the immutable binding. Their phases are
-`pre_merge`, `landing`, `verified`, `graph_committed`, `cleanup`, and `done`.
+`pre_merge`, `landing`, `agent_merging`, `verified`, `graph_committed`,
+`cleanup`, and `done`.
 The next Merge or startup reconciles an interrupted attempt before new work.
 An uncertain transport result is checked against its recorded commits.
 
@@ -373,8 +374,11 @@ compare-and-swap ref update. Source and target commits and checkout identity
 are rechecked before landing. RCP never resets, stashes, or force-pushes.
 A code conflict or graph residue starts one merge task. Its agent lands the
 code with a merge commit inside chat Integrate's local-merge scope, and RCP
-verifies the landing before the graph commit. A code-only owner's task has no
-graph side. Squash needs an agentless merge.
+verifies the landing before the graph commit. With no graph residue, the code
+lands in its own turn and the graph then merges with no provider turn. A
+code-only owner's task targets main and has no graph side. Squash needs an
+agentless merge. A task that ends without the code landed fails before any
+graph commit; the next Merge starts a fresh attempt.
 
 History defaults to a merge commit (`--no-ff`). Squash records its resulting
 commit and disallows Keep branch open. Verification proves source ancestry or
@@ -440,7 +444,10 @@ mandatory source Proposals with out-of-scope provenance fail before provider
 launch. They never enter an agent correction loop that cannot repair them.
 
 When needed, the merge agent receives the orchestrator graph profile under the
-human merge dispatcher's authorization. It receives scratch but no repository write roots,
+human merge dispatcher's authorization. Without code isolation it receives
+scratch but no repository write roots. When it lands code, its roots are exactly
+chat Integrate's local-merge scope: the episode worktree and the shared
+checkout, and its prompt renders that same resolved scope. It never receives
 membership, ontology, project configuration, Proposal approval, server command,
 or general branch authority.
 
@@ -503,11 +510,15 @@ shows:
 - compact branch id, immutable main base, and current branch head;
 - unmerged, merging, merged-through-head, needs-action, or failed merge state;
 - paused and interrupted merge tasks project as needs action, retain their
-  diagnostic, and offer a fresh **Merge to main** dispatch when eligible;
-- a persistent **Merge to main** control, including when currently ineligible;
-  a deliberate click checks current server state and either admits the merge or
+  diagnostic, and offer a fresh **Merge** dispatch when eligible;
+- a persistent **Merge** panel, including when currently ineligible. It shows
+  the merge preview and offers the target branch, Merge commit or Squash
+  (Squash only when no agent is needed), Keep branch open (not with Squash),
+  Remove worktree, and Delete code branch (only with worktree removal). A
+  deliberate click checks current server state and either admits the merge or
   displays the specific blocker beside the control. Ineligibility does not hide
-  or disable the control; an in-flight UI action temporarily disables it;
+  or disable the control; an in-flight UI action or a missing preview disables
+  it;
 - the ordinary merge task/output/correction/recovery history; and
 - the episode report or final report error.
 

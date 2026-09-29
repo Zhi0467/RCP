@@ -1,6 +1,6 @@
 # RCP merges clean episode worktrees
 
-Date: 2026-09-28. Status: active, design stage. Plan in the
+Date: 2026-09-28. Status: active. Plan in the
 [episode isolation handoff](../handoffs/handoff-2026-09-28-episode-isolation.md).
 
 ## Decision
@@ -21,7 +21,8 @@ A target checked out in any other linked worktree, or equal to the episode
 branch, refuses Merge.
 
 If either side has residue, one merge task runs. Its agent lands the code with
-chat Integrate's local-merge write scope, and RCP makes the single graph commit.
+a merge commit inside chat Integrate's local-merge write scope, RCP verifies
+the landing, and RCP makes the single graph commit. Squash stays agentless.
 
 This narrows the conversation rule that RCP never merges or commits dirty files.
 Chat Integrate still runs as an agent turn. RCP still never commits the shared

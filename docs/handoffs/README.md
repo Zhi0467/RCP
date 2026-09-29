@@ -1,8 +1,8 @@
 # Active implementation handoffs
 
 - [Episodes run isolated, and a branch view shows the graph diff](handoff-2026-09-28-episode-isolation.md)
-  — design confirmed and reviewed 2026-09-28; slices 1–5 implemented.
-  Web and the closing journey follow.
+  — design confirmed and reviewed 2026-09-28; slices 1–7 implemented.
+  Real provider runs with both toggles on remain.
 - [Install and update the Mac app without Open Anyway](handoff-2026-09-28-mac-install-and-update.md)
   — shipped in v0.4.5; install checks passed, one-click update waits for v0.4.6.
 

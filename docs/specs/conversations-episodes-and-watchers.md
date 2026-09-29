@@ -260,6 +260,8 @@ Episode Merge may commit the episode worktree's leftovers, respecting Gitignore.
 It refuses interrupted Git operations, unmerged entries, and dirty submodules.
 With no code or graph residue, it lands code into the chosen local branch,
 verifies delivery, then commits one graph transition without a provider turn.
+Otherwise one merge task's agent lands the code the way chat Integrate does,
+and RCP verifies it before the graph commit.
 See [episode merge](auto-research-and-branch-merge.md#episode-code-merge-and-cleanup)
 for landing, recovery, and cleanup.
 

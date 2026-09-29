@@ -24,8 +24,9 @@ Capabilities are fixed in code:
   focused-Experiment graph and watcher contract.
 - **Auto-research orchestrate** uses Work-like project repository access plus
   its dedicated staged command client and orchestrator graph profile.
-- **graph merge** is graph-only; it writes its scratch candidate and receives no
-  repository write roots.
+- **episode merge** writes its scratch candidate. It receives no repository
+  write roots unless it lands episode code; then it receives exactly chat
+  Integrate's local-merge roots, the episode worktree and the shared checkout.
 - **generic graph correction** rewrites only retained scratch output; Work-like
   correction retains the same native session and the same exact Work write
   scope so it can repair reflection without repeating operational effects.

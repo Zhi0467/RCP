@@ -181,8 +181,12 @@ remain the independent graph delivery record.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/merge-preview` accepts an
 optional `target_branch`. It recomputes `MergePreview`; no preview is stored.
-The response contains `delivered_baseline`, graph operation count and residue
-paths with reasons, optional code status, and `needs_agent`. Code reports its
+The response contains `delivered_baseline`, graph operation count, residue
+paths with reasons, per-path `paths`, optional code status, and `needs_agent`.
+Each path names its entity, id, and field path, its base, branch, and main
+values, and the builder's `delivered`, `conflict`, `needs_agent`,
+`needs_proposal`, and `residue_reason`, from the same builder call as the
+residue. `needs_agent` also covers a code conflict. Code reports its
 repository alias, source and target branches, commits ahead, leftovers, and
 conflict files. Its status is `clean`, `conflict`, `already_merged`,
 `target_dirty`, or `target_missing`.
@@ -986,10 +990,17 @@ the route shows a History handoff without exposing the newer episode's transcrip
 or controls.
 
 An Auto-research detail shows compact graph-branch identity, base/head, merge
-state, and a persistent **Merge to main** control. A deliberate click checks
+state, and a persistent **Merge** panel. Experiment cards that own a graph
+branch or code worktree show the same panel. A deliberate click checks
 current server eligibility and either starts the merge or displays the blocker
 beside the control, following the
 [branch merge projection](auto-research-and-branch-merge.md#runs-projection).
+The Experiment Run control offers Graph branch and Code worktree toggles, off by
+default. The Auto-research dialog shows the graph branch as always on; its Code
+worktree choice is left to the server's eligibility check unless the human opts
+out. On a branch, the DAG and node detail mark each changed node and field by
+how Merge will treat it: merges, already merged, becomes a Proposal, needs
+agent, or conflict, with main's value beside a conflict.
 **Open graph** selects the branch workspace explicitly. An exact branch
 Experiment route may show its historical transcript through Runs without exposing an ordinary
 composer for that episode-owned session. Ordinary chats started in the branch
