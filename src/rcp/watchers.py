@@ -196,6 +196,12 @@ class GraphWatcherRetryRegistry:
                 max_passes,
             )
 
+    def request(self, project_id: str) -> None:
+        """Make a project due on the next retry pass without counting a failure."""
+
+        with self._retry_guard:
+            self._passes[project_id] = min(self._passes.get(project_id, 1), 1)
+
     def clear(self, project_id: str) -> None:
         with self._retry_guard:
             self._failures.pop(project_id, None)
@@ -1132,9 +1138,16 @@ class WatcherDelivery:
                     exc,
                 )
 
-    def sweep_graph_conditions_at_startup(self) -> None:
+    def request_startup_sweep(self) -> None:
+        """Queue every watcher project for the retry worker's first pass.
+
+        Conditions satisfied while RCP was down are evaluated right after
+        startup, but on the retry worker: a remote graph read never runs on
+        the API readiness path, and one that fails retries with the ordinary
+        poll-pass backoff.
+        """
         for project_id in self._store.graph_watcher_project_ids():
-            self.evaluate_graph_wake_boundary(project_id, None, source="startup sweep")
+            self._retry.request(project_id)
 
     def retry_graph_wakes_after_poll(self, generation: WatcherRetryGeneration) -> None:
         due = self._retry.due()
