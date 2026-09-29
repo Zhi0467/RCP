@@ -67,13 +67,20 @@ export async function enableWebPush(): Promise<void> {
   const { application_server_key } = await api<{ application_server_key: string }>(
     "/api/notifications/web-push/key",
   );
+  const existing = await registration.pushManager.getSubscription();
   const subscription =
-    (await registration.pushManager.getSubscription()) ??
+    existing ??
     (await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: application_server_key,
     }));
-  await registerSubscription(subscription);
+  try {
+    await registerSubscription(subscription);
+  } catch (failure) {
+    // A failed Turn on leaves nothing for the next visit to re-register.
+    if (!existing) await subscription.unsubscribe();
+    throw failure;
+  }
 }
 
 export async function disableWebPush(device: NotificationDevice | null): Promise<void> {

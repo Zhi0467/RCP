@@ -105,6 +105,9 @@ class NotificationSender:
         # None means every project: a new owner has not reconciled any yet.
         # A project leaves the set only after its reconciliation succeeds.
         self._dirty: set[str] | None = None
+        # Projects a running pass took from the dirty set but has not yet
+        # reconciled; pulls hold their graph items too.
+        self._reconciling: set[str] = set()
 
     def start(self) -> None:
         if self.is_running():
@@ -148,10 +151,14 @@ class NotificationSender:
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open("notification reconciliation")
         with self.admission.mutation("notification reconciliation"), self._lock:
+            projects = self.store.projects()
             with self._dirty_lock:
                 dirty = self._dirty
                 self._dirty = set()
-            for project in self.store.projects():
+                self._reconciling = (
+                    {project.project_id for project in projects} if dirty is None else set(dirty)
+                )
+            for project in projects:
                 if project.retired_at is not None:
                     continue
                 try:
@@ -174,6 +181,11 @@ class NotificationSender:
                         project.project_id,
                         exc_info=True,
                     )
+                finally:
+                    with self._dirty_lock:
+                        self._reconciling.discard(project.project_id)
+            with self._dirty_lock:
+                self._reconciling = set()
             self.store.prune_notification_devices()
             self.store.expire_notification_receipts(
                 (
@@ -442,7 +454,11 @@ class NotificationSender:
                 # A dirty project's marker may predate an accepted change that
                 # resolved this item; hold it until reconciliation runs.
                 with self._dirty_lock:
-                    held = self._dirty is None or row["project_id"] in self._dirty
+                    held = (
+                        self._dirty is None
+                        or row["project_id"] in self._dirty
+                        or row["project_id"] in self._reconciling
+                    )
                 if held:
                     continue
                 # The marker holds the attention of the last reconciled

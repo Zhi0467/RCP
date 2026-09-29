@@ -56,7 +56,7 @@ impl Space {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct Settings {
     personal: bool,
     teams: Vec<String>,
@@ -134,29 +134,32 @@ impl NotificationState {
         }
     }
 
+    /// Persist first, then publish: a failed write leaves memory unchanged,
+    /// so the poller never follows a setting that is not on disk.
     fn set_enabled(&self, space: &Space, enabled: bool) -> Result<(), String> {
-        let bytes = {
-            let mut inner = self.lock();
-            match space {
-                Space::Personal => inner.settings.personal = enabled,
-                Space::Team(id) => {
-                    inner.settings.teams.retain(|item| item != id);
-                    if enabled {
-                        inner.settings.teams.push(id.clone());
-                    }
+        let mut settings = self.lock().settings.clone();
+        match space {
+            Space::Personal => settings.personal = enabled,
+            Space::Team(id) => {
+                settings.teams.retain(|item| item != id);
+                if enabled {
+                    settings.teams.push(id.clone());
                 }
             }
-            if !enabled {
-                inner.devices.remove(space);
-            }
-            serde_json::to_vec(&inner.settings).map_err(|error| error.to_string())?
-        };
+        }
+        let bytes = serde_json::to_vec(&settings).map_err(|error| error.to_string())?;
         if let Some(parent) = self.settings_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
         let temporary = self.settings_path.with_extension("json.tmp");
         std::fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
-        std::fs::rename(&temporary, &self.settings_path).map_err(|error| error.to_string())
+        std::fs::rename(&temporary, &self.settings_path).map_err(|error| error.to_string())?;
+        let mut inner = self.lock();
+        inner.settings = settings;
+        if !enabled {
+            inner.devices.remove(space);
+        }
+        Ok(())
     }
 }
 

@@ -107,10 +107,17 @@ def test_disabled_kinds_advance_the_marker_and_dirty_projects_hold(manifest, tmp
             ],
         ),
     )
-    # The marker predates the resolution, so a pull before the pass holds the item.
+    # The marker predates the resolution, so a pull before the pass holds the item,
+    # and so does a pull while the pass is still reconciling that project.
     assert sender.pending_desktop(device["device_id"]) == []
     assert len(store.notification_outbox()) == 1
+    reconcile, pulled = sender.reconcile_project, []
+    sender.reconcile_project = lambda project: (
+        pulled.append(sender.pending_desktop(device["device_id"])),
+        reconcile(project),
+    )
     sender.run_pass()
+    assert pulled == [[]]
     assert sender.pending_desktop(device["device_id"]) == []
     assert store.notification_outbox() == []
 
