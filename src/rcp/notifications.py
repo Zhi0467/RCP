@@ -113,8 +113,8 @@ class NotificationSender:
         # successful reconciliation. A silent first baseline taken at or past
         # it would swallow attention accepted after the API began serving.
         self._signalled: dict[str, int] = {}
-        # Revision of the silent first baseline this process took per project;
-        # only such a baseline may be rewound, because it sent nothing.
+        # Upper revision of attention still swallowed by this process's silent
+        # first baseline. Late signals backfill it without rewinding the marker.
         self._first_baselines: dict[str, int] = {}
 
     def start(self) -> None:
@@ -257,20 +257,21 @@ class NotificationSender:
                 signalled = self._signalled.get(project_id)
             marker = self.store.notification_graph_marker(project_id)
             first_baseline = self._first_baselines.get(project_id)
-            if marker is None or (
-                signalled is not None
-                and first_baseline is not None
-                and signalled <= first_baseline == marker["revision"]
-            ):
-                marker = self._baseline(
-                    project_id, replay, patches, signalled, rewind=marker is not None
-                )
+            if marker is None:
+                marker = self._baseline(project_id, replay, patches, signalled)
             if marker["revision"] > replay.state.revision:
                 raise RuntimeError("graph is behind its notification marker")
-            previous = json.loads(marker["attention_json"])
-            for boundary, (_, patch, _) in zip(boundaries, patches, strict=True):
-                if boundary.revision <= marker["revision"]:
+            backfill = []
+            baseline_before = None
+            for boundary, (before, patch, _) in zip(boundaries, patches, strict=True):
+                swallowed = (
+                    signalled is not None
+                    and first_baseline is not None
+                    and signalled <= boundary.revision <= first_baseline
+                )
+                if boundary.revision <= marker["revision"] and not swallowed:
                     continue
+                previous = _attention(before)
                 current = _attention(boundary.state)
                 notifications = [
                     _notification(
@@ -285,15 +286,25 @@ class NotificationSender:
                     for kind, ids in current.items()
                     for item_id in sorted(set(ids) - set(previous.get(kind, [])))
                 ]
-                self.store.consume_notification_graph_boundary(
-                    project_id,
-                    "main",
-                    boundary.revision,
-                    boundary.transition_id,
-                    current,
-                    notifications,
-                )
-                previous = current
+                if swallowed:
+                    if baseline_before is None:
+                        baseline_before = before.revision
+                    backfill.extend(notifications)
+                else:
+                    self.store.consume_notification_graph_boundary(
+                        project_id,
+                        "main",
+                        boundary.revision,
+                        boundary.transition_id,
+                        current,
+                        notifications,
+                    )
+            if baseline_before is not None:
+                # A newer signal may already have advanced the marker and sent
+                # attention. Recover only the silent prefix; never replay those
+                # delivered boundaries or roll current attention backwards.
+                self.store.backfill_notification_graph_attention(backfill)
+                self._first_baselines[project_id] = baseline_before
             with self._dirty_lock:
                 # A signal that arrived during this pass may name a revision the
                 # read did not see, or one this baseline swallowed; keep it.
@@ -306,15 +317,13 @@ class NotificationSender:
         replay: MaterializationResult,
         patches: list[tuple[GraphState, Patch, GraphState]],
         signalled: int | None,
-        *,
-        rewind: bool,
     ) -> dict[str, Any]:
         """Persist the silent first baseline and return it as a marker.
 
         The baseline is the graph as it stood before the API began serving.
-        An accepted transition signalled before the baseline is taken, or one
-        the read saw before its signal arrived, moves the baseline before that
-        revision so the attention it added is delivered rather than swallowed.
+        An accepted transition signalled before the baseline is taken places
+        the baseline before that revision. Signals arriving later recover the
+        swallowed prefix separately, without rewinding an advanced marker.
         A signalled revision the read did not reach is not in this baseline
         either; the next pass delivers it from the marker.
         """
@@ -325,14 +334,9 @@ class NotificationSender:
                     state = before
                     break
         attention = _attention(state)
-        if rewind:
-            self.store.rewind_notification_graph_marker(
-                project_id, "main", state.revision, attention
-            )
-        else:
-            self.store.consume_notification_graph_boundary(
-                project_id, "main", state.revision, None, attention, []
-            )
+        self.store.consume_notification_graph_boundary(
+            project_id, "main", state.revision, None, attention, []
+        )
         self._first_baselines[project_id] = state.revision
         return {"revision": state.revision, "attention_json": json.dumps(attention)}
 

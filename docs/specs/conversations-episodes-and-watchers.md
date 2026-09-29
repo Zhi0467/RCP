@@ -22,10 +22,11 @@ notification marker and per-device outbox rows advance in one SQLite
 transaction; empty attention is still a durable first-run baseline. The first
 baseline sends nothing, and it is the graph as it stood before the API began
 serving: an accepted main transition signals its revision, and a first baseline
-that would swallow a signalled revision is placed, or moved back, before it so
-that attention is delivered. Only a silent first baseline taken by the running
-process moves back; a marker that has delivered never replays. A delivered row
-is deleted once its 24-hour delivery window has passed.
+that would swallow a signalled revision is placed before it so that attention
+is delivered. A signal arriving after that first baseline recovers only its
+silently swallowed attention, even if newer transitions have already delivered.
+The current marker and delivered receipts never move backwards or replay.
+A delivered row is deleted once its 24-hour delivery window has passed.
 
 An update boundary stops the sender between projects: the graph read it finds
 in flight completes, and projects the pass did not reach stay dirty and held
