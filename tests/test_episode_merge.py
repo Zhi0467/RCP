@@ -175,16 +175,21 @@ def test_cleanup_failure_keeps_delivery_and_retries(manifest, tmp_path, monkeypa
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     assert state.delivered_source_commit
     assert state.merge_attempt.phase == "cleanup"
-    assert state.graph_archived
+    # A failed code cleanup keeps the episode listed, so its Merge panel can retry.
+    assert not state.graph_archived
     assert len(harness.branch.merge_receipts()) == 1
     monkeypatch.setattr(merge, "_git", original)
     response = harness.client.post(
-        route + "/cleanup", json={"remove_worktree": True, "delete_code_branch": True}
+        route + "/cleanup",
+        json={"remove_worktree": True, "delete_code_branch": True, "archive_graph_branch": True},
     )
     assert response.status_code == 200, response.text
     assert not Path(binding.worktree_path).exists()
     assert (shared / "file").read_text() == "episode"
     assert len(harness.branch.merge_receipts()) == 1
+    assert harness.store.episode_isolation_state(
+        harness.project_id, harness.episode.episode_id
+    ).graph_archived
 
 
 def test_preview_after_partial_cleanup_reads_the_removed_worktree(manifest, tmp_path, monkeypatch):

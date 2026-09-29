@@ -443,6 +443,9 @@ def _cleanup(service, store, owner, binding, attempt):
     ):
         if attempt.keep_branch_open or not enabled or step in attempt.cleanup_completed:
             continue
+        # Archiving hides the episode, and with it the panel that retries failed code cleanup.
+        if step == "archive_graph_branch" and errors:
+            continue
         try:
             if step == "remove_worktree":
                 store.require_episode_binding_quiescent(
