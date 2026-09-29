@@ -492,6 +492,43 @@ def test_lifecycle_notice_requires_completed_delivery_and_acknowledgement() -> N
         )
 
 
+def test_graph_archive_state_transfers_only_in_record_schema_three(tmp_path: Path) -> None:
+    from rcp.storage import AppStore
+
+    episode_id = "66666666-6666-4666-8666-666666666666"
+    archived = TransferEpisodeRecord(
+        episode_id=episode_id,
+        mode="auto_research",
+        graph_target=TransferGraphTarget(kind="branch", branch_id=episode_id),
+        graph_base_head=TransferGraphHead(revision=4, transition_id="c" * 64),
+        status="completed",
+        invocation_ceiling=5,
+        invocations_used=0,
+        ending="completed",
+        wrapup_state="not_started",
+        report_attempts_used=0,
+        created_at=NOW,
+        updated_at=NOW,
+        ended_at=NOW,
+        auto_research=TransferAutoResearchHistory(created_at=NOW, updated_at=NOW),
+        graph_archived=True,
+    )
+    bundle = {"project_id": PROJECT_ID, "attributions": (), "tasks": (), "watchers": ()}
+    with pytest.raises(ValidationError, match="schema version 3"):
+        TransferRecordBundle(**bundle, schema_version=2, episodes=(archived,))
+    # Older payloads keep their canonical shape.
+    plain = archived.model_copy(update={"graph_archived": False})
+    older = TransferRecordBundle(**bundle, schema_version=2, episodes=(plain,))
+    assert "graph_archived" not in older.model_dump(mode="json")["episodes"][0]
+    records = TransferRecordBundle(**bundle, schema_version=3, episodes=(archived,))
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    with store.connection() as connection:
+        store._insert_transfer_episodes(connection, records, {})
+    state = store.episode_isolation_state(PROJECT_ID, episode_id)
+    assert state.graph_archived and state.status == "ready"
+    assert store.episode_isolation(PROJECT_ID, episode_id).worktree is None
+
+
 def test_bundle_resolves_human_attribution_and_preserves_paper_conflict_state() -> None:
     bundle = TransferRecordBundle(
         project_id=PROJECT_ID,
