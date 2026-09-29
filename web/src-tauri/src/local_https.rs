@@ -29,6 +29,9 @@ const CERTIFICATE_RENEW_BEFORE_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_CERTIFICATE_BYTES: usize = 32 * 1024;
 const MAX_PRIVATE_KEY_BYTES: usize = 16 * 1024;
 const KEYCHAIN_ACCOUNT: &str = "desktop-identity-sealing-key/source-v1";
+/// The one service every bundle shared before services followed the identifier.
+#[cfg(target_os = "macos")]
+const SHARED_KEYCHAIN_SERVICE: &str = "app.researchcontrolpanel.rcp.local-https";
 #[cfg(target_os = "macos")]
 const SEALED_IDENTITY_FILENAME: &str = "local-https-identity-v1.sealed";
 #[cfg(target_os = "macos")]
@@ -66,10 +69,7 @@ impl LocalHttpsIdentity {
         match (sealed, key) {
             (Some(sealed), Some(key)) => load_and_migrate_identity(&path, &sealed, &key),
             (None, None) => create_and_store_identity(&path, &service),
-            (Some(_), None) => Err(
-                "the encrypted local HTTPS identity exists but its Keychain sealing key is missing"
-                    .into(),
-            ),
+            (Some(sealed), None) => adopt_shared_key(&path, &sealed, &service),
             (None, Some(_)) => Err(
                 "the local HTTPS Keychain sealing key exists but its encrypted identity is missing"
                     .into(),
@@ -302,6 +302,29 @@ fn read_sealed_identity(path: &Path) -> Result<Option<Vec<u8>>, String> {
         return Err("the encrypted local HTTPS identity exceeds its size limit".into());
     }
     Ok(Some(sealed))
+}
+
+/// A bundle that ran before services followed the identifier sealed its file
+/// with the shared service's key. Adopt that key only once it authenticates
+/// this bundle's own file; the shared entry stays for the released app.
+#[cfg(target_os = "macos")]
+fn adopt_shared_key(
+    path: &Path,
+    sealed: &[u8],
+    service: &str,
+) -> Result<LocalHttpsIdentity, String> {
+    let missing =
+        "the encrypted local HTTPS identity exists but its Keychain sealing key is missing";
+    if service == SHARED_KEYCHAIN_SERVICE {
+        return Err(missing.into());
+    }
+    let key = crate::keychain::get(SHARED_KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        .map_err(|error| format!("could not read the local HTTPS sealing key: {error}"))?
+        .ok_or_else(|| missing.to_string())?;
+    let identity = load_and_migrate_identity(path, sealed, &key)?;
+    crate::keychain::set(service, KEYCHAIN_ACCOUNT, &key[..])
+        .map_err(|error| format!("could not store the local HTTPS sealing key: {error}"))?;
+    Ok(identity)
 }
 
 #[cfg(target_os = "macos")]
@@ -603,7 +626,7 @@ mod tests {
         let dev: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.dev-bundle.conf.json")).unwrap();
         let release = keychain_service(release["identifier"].as_str().unwrap());
-        assert_eq!(release, "app.researchcontrolpanel.rcp.local-https");
+        assert_eq!(release, SHARED_KEYCHAIN_SERVICE);
         assert_ne!(
             keychain_service(dev["identifier"].as_str().unwrap()),
             release

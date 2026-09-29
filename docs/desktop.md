@@ -137,7 +137,9 @@ item at service `<bundle identifier>.local-https`, account
 `desktop-identity-sealing-key/source-v1`. The released app's service is
 `app.researchcontrolpanel.rcp.local-https`; `RCP Dev.app` keeps its own under
 `app.researchcontrolpanel.rcp.dev.local-https`, because its configuration
-directory, and so its sealed file, is separate. Never print or export the Keychain
+directory, and so its sealed file, is separate. A dev bundle whose file was
+sealed under the shared service before this split adopts that key once it
+authenticates the file, and leaves the shared entry for the released app. Never print or export the Keychain
 value or decrypted identity. The source-built app accesses that short key only
 through `/usr/bin/security`, whose ACL remains stable across ad-hoc rebuilds.
 That ACL authorizes the Apple tool, not the calling RCP process: it prevents
