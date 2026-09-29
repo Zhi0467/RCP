@@ -163,7 +163,8 @@ isolation owner. A live or unobservable job pauses both actions: RCP lists the
 jobs, and the human either cancels or confirms. Stopping a watcher does not
 prove job completion. A confirmed Merge with a code worktree always runs the code
 merge agent, which receives the confirmed jobs and stops them before it merges.
-RCP itself never cancels a job.
+If a job still reads as unfinished afterwards, Merge keeps the worktree for a
+later Merge to remove. RCP itself never cancels a job.
 
 ## One watcher and human Cancel contract
 

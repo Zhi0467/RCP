@@ -622,6 +622,17 @@ def test_confirmed_unfinished_jobs_go_to_the_code_merge_agent(manifest, tmp_path
     wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="succeeded")
     assert len(prompts) == 1 and "squeue -j 7" in prompts[0]
     assert (shared / "file").read_text() == "episode change"
+    # The job still reads as unfinished, so Merge lands but keeps the worktree listed.
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert state.merge_attempt.worktree_kept and not state.graph_archived
+    assert Path(binding.worktree_path).exists()
+    with harness.store.connection() as connection:
+        connection.execute(
+            "UPDATE watchers SET status = 'completed', completed_at = ? WHERE watcher_id = 'w'",
+            (harness.store.now(),),
+        )
+    # Once the job finished, Merge again removes what the first Merge kept.
+    assert harness.client.post(route).status_code == 202
     assert not Path(binding.worktree_path).exists()
 
 

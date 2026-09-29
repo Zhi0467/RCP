@@ -429,10 +429,11 @@ def _commit_graph_once(service, store, owner, attempt):
     return receipt
 
 
-def _cleanup(service, store, owner, binding, attempt):
+def _cleanup(service, store, owner, binding, attempt, *, keep_worktree_for_jobs=False):
     attempt = _save(store, owner, attempt, phase="cleanup", error=None)
     code_side = binding.worktree is not None and attempt.source_commit is not None
     errors = []
+    kept = False
     for step, enabled in (
         ("remove_worktree", attempt.remove_worktree and code_side),
         ("delete_code_branch", attempt.delete_code_branch and code_side),
@@ -444,7 +445,18 @@ def _cleanup(service, store, owner, binding, attempt):
         if attempt.keep_branch_open or not enabled or step in attempt.cleanup_completed:
             continue
         # Archiving hides the episode, and with it the panel that retries failed code cleanup.
-        if step == "archive_graph_branch" and errors:
+        if step == "archive_graph_branch" and (errors or kept):
+            continue
+        if step == "delete_code_branch" and kept:
+            continue
+        # A Merge never removes a worktree a job may still write, even one the human
+        # confirmed; it keeps the worktree until a later Merge finds the jobs finished.
+        if (
+            step == "remove_worktree"
+            and keep_worktree_for_jobs
+            and store.episode_binding_unfinished_jobs(owner.project_id, owner.episode_id)
+        ):
+            kept = True
             continue
         try:
             if step == "remove_worktree":
@@ -487,7 +499,7 @@ def _cleanup(service, store, owner, binding, attempt):
     if errors:
         _save(store, owner, attempt, error="; ".join(errors))
         raise ValueError("episode_cleanup_failed")
-    attempt = _save(store, owner, attempt, phase="done")
+    attempt = _save(store, owner, attempt, phase="done", worktree_kept=kept)
     store.finish_episode_merge(
         owner.project_id, owner.episode_id, expected_attempt_id=attempt.attempt_id, attempt=attempt
     )
@@ -565,7 +577,7 @@ def _resume(service, store, owner, binding, attempt):
             receipt = _commit_graph(service, store, owner, attempt)
             if receipt is not None:
                 store.reconcile_agentless_merge_task(attempt.attempt_id, receipt)
-    return _cleanup(service, store, owner, binding, attempt)
+    return _cleanup(service, store, owner, binding, attempt, keep_worktree_for_jobs=True)
 
 
 def merge_episode(
@@ -733,7 +745,9 @@ def complete_graph_merge(service, store, owner):
             )
         attempt = _save(store, owner, attempt, phase="graph_committed")
         try:
-            _cleanup(service, store, owner, _binding(store, owner), attempt)
+            _cleanup(
+                service, store, owner, _binding(store, owner), attempt, keep_worktree_for_jobs=True
+            )
         except (ValueError, OSError) as exc:
             current = store.episode_isolation_state(
                 owner.project_id, owner.episode_id

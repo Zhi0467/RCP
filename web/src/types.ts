@@ -1679,6 +1679,7 @@ export interface EpisodeMergeAttempt {
   code_by_agent: boolean;
   conflict_files: string[];
   unfinished_jobs?: EpisodeUnfinishedJob[];
+  worktree_kept?: boolean;
   source_commit: string | null;
   target_branch: string | null;
   target_commit: string | null;

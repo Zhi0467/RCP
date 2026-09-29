@@ -282,8 +282,12 @@ external watcher, or a stopped one with no recorded completion, pauses them on a
 binding with a worktree. A graph-condition watcher runs no job and never pauses
 them. The confirmed jobs are stored on the merge attempt; the code merge agent
 receives them and stops them before it merges, so a confirmed Merge with a code
-worktree always runs that agent. Cleanup then accepts the confirmed jobs, while a
-job that started later pauses it again. RCP itself never cancels them.
+worktree always runs that agent. Merge never removes a worktree a job may still
+write: if any job still reads as unfinished after the agent's turn, the merge
+finishes with the worktree, its branch, and the graph branch kept and marked
+`worktree_kept`, and a later Merge removes them once the jobs have ended. A
+standalone Remove worktree removes it over confirmed jobs. RCP itself never
+cancels them.
 
 Episode Merge may commit the episode worktree's leftovers, respecting Gitignore.
 It refuses interrupted Git operations, unmerged entries, and dirty submodules.

@@ -151,6 +151,12 @@ export function EpisodeMergePanel({
           {!busy && <ChevronDown size={12} />}
         </button>
       </div>
+      {episode.isolation_state?.merge_attempt?.worktree_kept && (
+        <span className="merge-note">
+          Merged, but the worktree was kept: a job was still running. Merge again once it ends to
+          remove it.
+        </span>
+      )}
       {open && preview && (
         <fieldset className="merge-pickers" aria-label="Merge options" disabled={disabled}>
           {preview.code && (
