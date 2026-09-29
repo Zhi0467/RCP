@@ -201,8 +201,9 @@ Agent semantic permission is represented by two constant code profiles:
 
 The manifest cannot edit these profiles. Surface contracts narrow them further:
 Discuss and Paper expose no Patch; Experiment-loop work is limited to its
-focused Experiment policy; merge is graph-only and
-receives no repository write scope.
+focused Experiment policy; merge receives no repository write scope unless it
+lands episode code, and then exactly chat Integrate's local-merge roots, the
+episode worktree and the shared checkout.
 
 ## Graph action vocabulary
 
