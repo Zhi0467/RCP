@@ -172,8 +172,9 @@ commits and the checkout's identity and cleanliness.
 
 - **No residue on either side:** RCP lands the code, then commits the graph,
   with no provider turn.
-  - Target checked out in the (clean) shared checkout: RCP runs a real
-    `git merge` there, so the files and index stay in sync.
+  - Target checked out in the (clean) shared checkout: RCP fast-forwards it
+    to the commit built from the tested tree, so the files and index stay in
+    sync.
   - Target not checked out: RCP builds the commit from the tested tree and
     moves the target with a compare-and-swap `git update-ref`. If the target
     moved, Merge refuses rather than overwriting.

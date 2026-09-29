@@ -523,36 +523,18 @@ def _episode_operation(payload: dict, timeout: float, require_owner: bool) -> di
     if payload["landed_commit"] != expected:
         raise WorktreeValidationError("landing_commit_changed")
     if facts["target_checked_out"]:
-        if mode == "squash":
-            _git(
-                shared,
-                "-c",
-                "core.hooksPath=/dev/null",
-                "merge",
-                "--squash",
-                "--",
-                facts["source_commit"],
-                timeout=timeout,
-            )
-            _commit_command(shared, ["commit", "--allow-empty", "-m", message], timestamp, timeout)
-        else:
-            _commit_command(
-                shared,
-                [
-                    "merge",
-                    "--no-ff",
-                    "--no-edit",
-                    "--no-log",
-                    "--no-signoff",
-                    "--no-gpg-sign",
-                    "-m",
-                    message,
-                    "--",
-                    facts["source_commit"],
-                ],
-                timestamp,
-                timeout,
-            )
+        # One fast-forward to the prebuilt commit moves the ref, index, and files together;
+        # there is no second step for a crash to fall between.
+        _git(
+            shared,
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--ff-only",
+            "--",
+            expected,
+            timeout=timeout,
+        )
         if _git(shared, "rev-parse", "HEAD", timeout=timeout) != expected:
             raise WorktreeValidationError("landing_commit_changed")
     else:

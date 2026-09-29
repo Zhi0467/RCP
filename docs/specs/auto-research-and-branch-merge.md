@@ -368,9 +368,9 @@ stay out. It never commits the shared checkout's changes.
 
 The existing graph builder and `git merge-tree --write-tree` classify residue.
 With neither kind of residue, RCP lands code first and verifies it before one
-main graph transition. A checked-out target uses a real merge in the clean
-shared checkout. An unchecked-out target uses the tested tree and a
-compare-and-swap ref update. Source and target commits and checkout identity
+main graph transition. Both paths build the landing commit from the tested tree. A checked-out
+target fast-forwards to it in the clean shared checkout, in one step. An
+unchecked-out target moves by a compare-and-swap ref update. Source and target commits and checkout identity
 are rechecked before landing. RCP never resets, stashes, or force-pushes.
 A code conflict or graph residue starts one merge task. Its agent lands the
 code with a merge commit inside chat Integrate's local-merge scope, and RCP

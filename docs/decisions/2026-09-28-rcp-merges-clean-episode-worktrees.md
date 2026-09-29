@@ -12,8 +12,8 @@ episode worktree's own uncommitted leftovers, then tests the code merge with
 If neither the code nor the graph has residue, RCP lands the code itself, with
 no provider turn:
 
-- when the target is checked out in the clean shared checkout, by a real
-  `git merge` there;
+- when the target is checked out in the clean shared checkout, by one
+  `git merge --ff-only` there to the commit built from the tested tree;
 - otherwise by building the commit and moving the target with a
   compare-and-swap `git update-ref`, refusing if the target moved.
 
