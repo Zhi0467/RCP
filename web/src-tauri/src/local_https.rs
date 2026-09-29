@@ -28,7 +28,6 @@ const CERTIFICATE_CLOCK_SKEW_DAYS: i64 = 1;
 const CERTIFICATE_RENEW_BEFORE_SECONDS: u64 = 7 * 24 * 60 * 60;
 const MAX_CERTIFICATE_BYTES: usize = 32 * 1024;
 const MAX_PRIVATE_KEY_BYTES: usize = 16 * 1024;
-const KEYCHAIN_SERVICE: &str = "app.researchcontrolpanel.rcp.local-https";
 const KEYCHAIN_ACCOUNT: &str = "desktop-identity-sealing-key/source-v1";
 #[cfg(target_os = "macos")]
 const SEALED_IDENTITY_FILENAME: &str = "local-https-identity-v1.sealed";
@@ -60,12 +59,13 @@ impl LocalHttpsIdentity {
     #[cfg(target_os = "macos")]
     pub fn load_or_create(app: &tauri::AppHandle) -> Result<Self, String> {
         let path = sealed_identity_path(app)?;
+        let service = keychain_service(&app.config().identifier);
         let sealed = read_sealed_identity(&path)?;
-        let key = crate::keychain::get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        let key = crate::keychain::get(&service, KEYCHAIN_ACCOUNT)
             .map_err(|error| format!("could not read the local HTTPS sealing key: {error}"))?;
         match (sealed, key) {
             (Some(sealed), Some(key)) => load_and_migrate_identity(&path, &sealed, &key),
-            (None, None) => create_and_store_identity(&path),
+            (None, None) => create_and_store_identity(&path, &service),
             (Some(_), None) => Err(
                 "the encrypted local HTTPS identity exists but its Keychain sealing key is missing"
                     .into(),
@@ -252,6 +252,14 @@ fn lowercase_sha256(value: &[u8]) -> String {
         .collect()
 }
 
+/// The sealing key and the sealed file need one owner. The file lives in this
+/// bundle's config directory, so the Keychain service comes from the same bundle
+/// identifier; the release identifier yields the original service name.
+#[cfg(target_os = "macos")]
+fn keychain_service(identifier: &str) -> String {
+    format!("{identifier}.local-https")
+}
+
 #[cfg(target_os = "macos")]
 fn sealed_identity_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
@@ -297,15 +305,15 @@ fn read_sealed_identity(path: &Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn create_and_store_identity(path: &Path) -> Result<LocalHttpsIdentity, String> {
+fn create_and_store_identity(path: &Path, service: &str) -> Result<LocalHttpsIdentity, String> {
     let identity = generate_identity()?;
     let encoded = encode_identity(&identity)?;
     let key = generate_sealing_key()?;
     let sealed = seal_identity(&encoded, &key[..])?;
-    crate::keychain::set(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, &key[..])
+    crate::keychain::set(service, KEYCHAIN_ACCOUNT, &key[..])
         .map_err(|error| format!("could not store the local HTTPS sealing key: {error}"))?;
     if let Err(write_error) = write_sealed_identity(path, &sealed) {
-        let cleanup = crate::keychain::remove(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+        let cleanup = crate::keychain::remove(service, KEYCHAIN_ACCOUNT);
         return match cleanup {
             Ok(_) => Err(write_error),
             Err(cleanup_error) => Err(format!(
@@ -586,6 +594,21 @@ pub async fn install_team_session_cookie(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn each_bundle_keeps_its_own_sealing_key_and_release_keeps_the_original() {
+        let release: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let dev: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.dev-bundle.conf.json")).unwrap();
+        let release = keychain_service(release["identifier"].as_str().unwrap());
+        assert_eq!(release, "app.researchcontrolpanel.rcp.local-https");
+        assert_ne!(
+            keychain_service(dev["identifier"].as_str().unwrap()),
+            release
+        );
+    }
 
     #[test]
     fn macos_bundles_allow_manual_trust_only_for_team_origin_family() {

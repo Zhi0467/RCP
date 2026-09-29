@@ -22,6 +22,8 @@ PROVIDER_REMOTE_SOURCES = [
 STAGED_COMMAND_CLIENT = SOURCE_ROOT / "rcp" / "agents" / "staged_command_client.py"
 STAGED_COMMAND_BROKER = SOURCE_ROOT / "rcp" / "agents" / "staged_command_broker.py"
 TRANSPORT_ROOT = SOURCE_ROOT / "rcp" / "transport"
+# Composed into the shipped lock-holder source by `rcp.transport.state`.
+ARTIFACT_REPLACE = SOURCE_ROOT / "rcp" / "artifact_replace.py"
 REMOTE_LOCK_HOLDER = TRANSPORT_ROOT / "remote_lock_holder.py"
 REMOTE_ARCHIVE_RESEARCH = TRANSPORT_ROOT / "remote_archive_research.py"
 REMOTE_READ_KEPT_VIEW = TRANSPORT_ROOT / "remote_read_kept_view.py"
@@ -56,6 +58,7 @@ analysis = Analysis(
         *PROVIDER_REMOTE_SOURCES,
         (str(STAGED_COMMAND_CLIENT), "rcp/agents"),
         (str(STAGED_COMMAND_BROKER), "rcp/agents"),
+        (str(ARTIFACT_REPLACE), "rcp"),
         (str(REMOTE_LOCK_HOLDER), "rcp/transport"),
         (str(REMOTE_ARCHIVE_RESEARCH), "rcp/transport"),
         (str(REMOTE_READ_KEPT_VIEW), "rcp/transport"),
