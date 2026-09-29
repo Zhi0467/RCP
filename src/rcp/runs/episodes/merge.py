@@ -314,6 +314,7 @@ def verify_episode_merge_code(store, owner):
         source_commit=attempt.source_commit,
         target_branch=attempt.target_branch,
         squash_commit=attempt.squash_commit,
+        target_commit=attempt.target_commit,
     )["verified"]:
         raise ValueError("code_landing_unverified")
 
@@ -427,6 +428,7 @@ def _cleanup(service, store, owner, binding, attempt):
                     source_commit=attempt.source_commit,
                     target_branch=attempt.target_branch,
                     squash_commit=attempt.squash_commit,
+                    target_commit=attempt.target_commit,
                 )
             completed = attempt.model_copy(
                 update={"cleanup_completed": [*attempt.cleanup_completed, step]}
@@ -467,6 +469,7 @@ def _resume(service, store, owner, binding, attempt):
                 source_commit=attempt.source_commit,
                 target_branch=attempt.target_branch,
                 squash_commit=attempt.squash_commit,
+                target_commit=attempt.target_commit,
             )["verified"]
             if not verified:
                 _git(
@@ -495,6 +498,7 @@ def _resume(service, store, owner, binding, attempt):
                     source_commit=attempt.source_commit,
                     target_branch=attempt.target_branch,
                     squash_commit=attempt.squash_commit,
+                    target_commit=attempt.target_commit,
                 )["verified"]:
                     raise ValueError("code_landing_unverified")
         attempt = _save(store, owner, attempt, phase="verified")

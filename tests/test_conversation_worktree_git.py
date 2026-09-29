@@ -432,6 +432,22 @@ def test_episode_merge_lands_verified_commit_and_retries_cleanup(repository, tar
     assert not Path(binding["worktree_path"]).exists()
 
 
+def test_episode_landing_that_drops_target_history_is_unverified(repository):
+    binding = episode_binding(repository)
+    episode_edit(binding)
+    (repository / "human.txt").write_text("human\n")
+    git(repository, "add", "human.txt")
+    git(repository, "commit", "-m", "Target moves after the episode starts")
+    run("commit_leftovers", binding=binding, target_branch="release")
+    git(repository, "branch", "-f", "release", "research")
+    preview = run("merge_preview", binding=binding, target_branch="release")
+    # A provider that resets the target to the source contains the source but drops the target.
+    git(repository, "branch", "-f", "release", preview["source_commit"])
+    payload = {"binding": binding, "target_branch": "release", **preview}
+    assert run("verify_landing", **{**payload, "target_commit": None})["verified"]
+    assert not run("verify_landing", **payload)["verified"]
+
+
 def test_episode_merge_commits_without_an_account_git_identity(repository, monkeypatch):
     binding = episode_binding(repository)
     episode_edit(binding)
@@ -441,10 +457,8 @@ def test_episode_merge_commits_without_an_account_git_identity(repository, monke
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     result = land_episode(binding, "release")
-    assert (
-        git(repository, "log", "--format=%an %cn", "-2", result["landed_commit"]).split()
-        == ["RCP"] * 4
-    )
+    for commit in (result["landed_commit"], result["source_commit"]):
+        assert git(repository, "show", "-s", "--format=%an %cn", commit) == "RCP RCP"
 
 
 def test_episode_leftovers_respect_ignore_and_do_not_commit_shared_changes(repository):

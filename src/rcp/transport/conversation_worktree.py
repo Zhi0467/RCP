@@ -445,7 +445,11 @@ def _episode_operation(payload: dict, timeout: float, require_owner: bool) -> di
         target_commit = _ref_commit(shared, target, timeout)
         source = payload["source_commit"]
         squash = payload.get("squash_commit")
-        verified = _contains(shared, squash or source, target_commit, timeout)
+        # A landing must keep the target history the attempt merged into, not only the source.
+        baseline = payload.get("target_commit")
+        verified = _contains(shared, squash or source, target_commit, timeout) and (
+            baseline is None or _contains(shared, baseline, target_commit, timeout)
+        )
         if operation == "verify_landing":
             return {"verified": verified, "landed_commit": squash or source}
         if Path(binding["worktree_path"]).exists() or str(

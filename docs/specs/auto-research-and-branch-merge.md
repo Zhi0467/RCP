@@ -376,7 +376,8 @@ unchecked-out target moves by a compare-and-swap ref update. Source and target c
 are rechecked before landing. RCP never resets, stashes, or force-pushes.
 A code conflict or graph residue starts one merge task. Its agent lands the
 code with a merge commit inside chat Integrate's local-merge scope, and RCP
-verifies the landing before the graph commit. With no graph residue, the code
+verifies the landing before the graph commit: the target must contain both the
+source and the target commit the attempt recorded. With no graph residue, the code
 lands in its own turn and the graph then merges with no provider turn. A
 code-only owner's task targets main and has no graph side. Squash needs an
 agentless merge. A task that ends without the code landed fails before any
