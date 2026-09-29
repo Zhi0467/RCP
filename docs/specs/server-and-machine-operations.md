@@ -74,7 +74,10 @@ operator wrapper around the provider's native update under `rcp`; it does not
 take ownership of provider releases or credentials and never reads the login. The installed
 service and root-to-service subprocess environment put `/home/rcp/.local/bin`
 first so a provider's account-local installation wins over a stale system-wide
-copy. Provider discovery persists that stable command path rather than resolving
+copy. The updater finds the account's executable in `~/.local/bin`, then in the
+provider-native locations its profile declares (OpenCode's `~/.opencode/bin`),
+then system-wide directories, so the documented installation is the one it
+updates. Provider discovery persists that stable command path rather than resolving
 a provider-managed symlink to one versioned target. RCP runs the Codex installer
 in its supported noninteractive mode: the installer never launches Codex or asks
 the operator to decide what to do with an older package-manager installation.
