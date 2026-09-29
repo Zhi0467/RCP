@@ -113,6 +113,8 @@ def test_crash_retry_partial_success_and_toggle_off(tmp_path):
     first, second = [device["device_id"] for device in devices]
     later = (datetime.fromisoformat(store.now()) + timedelta(seconds=10)).isoformat()
     assert store.begin_notification_attempt(first, "n", later)
+    # A leased row is not due again, so a concurrent pull cannot lease it twice.
+    assert not store.begin_notification_attempt(first, "n", later)
     reopened = AppStore(store.path)
     assert reopened.notification_outbox(first)[0]["last_status"] == "pending"
     assert reopened.notification_outbox(first)[0]["attempts"] == 1

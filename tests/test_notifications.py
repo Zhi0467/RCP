@@ -347,15 +347,20 @@ def test_delivery_drops_changed_observation_even_within_same_kind(tmp_path):
     ]
 
 
-def test_signal_does_not_wait_for_a_running_pass(manifest, tmp_path):
+def test_signals_and_pulls_do_not_wait_for_a_running_pass(manifest, tmp_path):
     import threading
 
-    app, _store, project_id, _device = _setup(manifest, tmp_path)
+    app, _store, project_id, device = _setup(manifest, tmp_path)
     sender = app.state.notification_sender
-    signalled = threading.Event()
+    done = threading.Event()
     with sender._lock:
         # A pass holds this lock across remote reads and push requests.
         threading.Thread(
-            target=lambda: (sender.signal(project_id), signalled.set()), daemon=True
+            target=lambda: (
+                sender.signal(project_id),
+                sender.pending_desktop(device["device_id"]),
+                done.set(),
+            ),
+            daemon=True,
         ).start()
-        assert signalled.wait(5)
+        assert done.wait(5)

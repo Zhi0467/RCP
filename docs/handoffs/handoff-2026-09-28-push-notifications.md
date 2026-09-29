@@ -50,9 +50,8 @@ Both the Mac and the phone deliver the same items, from one outbox.
 
 The implemented backend contract and routes are in
 [API, Web, and desktop projections](../specs/api-web-and-desktop-projections.md#desktop-notification-delivery).
-Slice 2 does not yet post notifications through either client. Its backend
-checks include an ephemeral served HTTP register/Sync/pull/acknowledge journey,
-plus recovery, retry, session, migration, restore, and transfer regressions.
+Both clients post notifications; what remains is the real-hardware closing
+checks above.
 
 ## Settled
 

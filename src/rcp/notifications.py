@@ -313,7 +313,9 @@ class NotificationSender:
         """Lease due items without marking delivery; a lost acknowledgement retries."""
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open("notification delivery")
-        with self.admission.mutation("desktop notification delivery"), self._lock:
+        # No pass lock: leasing is atomic in SQLite, so a pull never waits for
+        # a pass's remote replay or push requests.
+        with self.admission.mutation("desktop notification delivery"):
             return [
                 {
                     key: row[key]

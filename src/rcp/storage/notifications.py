@@ -567,11 +567,16 @@ class NotificationStoreMixin:
             connection.execute("BEGIN IMMEDIATE")
             if not self._guard_notification_delivery(connection, device_id, notification_id):
                 return False
-            connection.execute(
-                "UPDATE notification_outbox SET attempts=attempts+1,next_attempt_at=? WHERE device_id=? AND notification_id=?",
-                (next_attempt_at, device_id, notification_id),
+            # The due check sits in the update, so two concurrent pulls cannot
+            # lease the same row.
+            return (
+                connection.execute(
+                    "UPDATE notification_outbox SET attempts=attempts+1,next_attempt_at=? "
+                    "WHERE device_id=? AND notification_id=? AND next_attempt_at<=?",
+                    (next_attempt_at, device_id, notification_id, self.now()),
+                ).rowcount
+                == 1
             )
-            return True
 
     def acknowledge_notification(
         self,

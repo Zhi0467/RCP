@@ -484,9 +484,9 @@ pub async fn set_for_window(
     let state = app.state::<NotificationState>().inner().clone();
     if enabled {
         adapter_reply(app, AUTHORIZE_ID, platform::authorize).await?;
-        state.set_enabled(&space, true)?;
+        // Saved only after registration, so a failed Turn on stays off.
         device_id(app, &state, &space, true).await?;
-        return Ok(());
+        return state.set_enabled(&space, true);
     }
     let device = device_id(app, &state, &space, true).await;
     if let Ok(device) = device {
