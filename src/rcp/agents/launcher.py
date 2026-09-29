@@ -601,6 +601,20 @@ class _PrePromptRuntimeFailure(RuntimeError):
     """A provider runtime ended before it could have accepted RCP's prompt."""
 
 
+class ProviderDiscoveryUnavailable(RuntimeError):
+    """Discovery gave no verdict: the host did not answer or the program did not run.
+
+    Distinct from an absent executable, which discovery reports as None.
+    """
+
+
+def _discovery_failure_reason(host: str, probe: subprocess.CompletedProcess[str]) -> str:
+    # The shipped discovery answers 0 or 1. Anything else means it did not
+    # run: no python3, or a login shell that broke it.
+    detail = _meaningful_stderr(probe.stderr) or f"exit status {probe.returncode}"
+    return f"Provider discovery could not run on {host}: {detail}"
+
+
 def _discover_local_provider(provider: str) -> str | None:
     return discover_provider(provider, profile_for(provider).install_paths)
 
@@ -893,12 +907,7 @@ class AgentLauncher:
                 f"or discoverable{where}."
             )
             if host and installed_probe.returncode != 1:
-                # The shipped discovery answers 0 or 1. Anything else means it
-                # did not run: no python3, or a login shell that broke it.
-                detail = _meaningful_stderr(installed_probe.stderr) or (
-                    f"exit status {installed_probe.returncode}"
-                )
-                reason = f"Provider discovery could not run on {host}: {detail}"
+                reason = _discovery_failure_reason(host, installed_probe)
             return ProviderReadiness(
                 provider=provider,
                 label=profile.label,
@@ -1870,11 +1879,21 @@ class AgentLauncher:
     def discover_provider(self, provider: str, *, host: str) -> str | None:
         """The executable an unconfigured launch on this account would run.
 
-        None when nothing is discoverable, or when the host did not answer.
+        None means the account has no discoverable executable. A host that did
+        not answer, or one where the discovery program could not run, raises
+        `ProviderDiscoveryUnavailable` with the same reason readiness reports,
+        so a caller never mistakes either for an absent CLI.
         """
         if not host:
             return _discover_local_provider(provider)
-        return self._discover_remote_provider(provider, host)[1]
+        probe, candidate = self._discover_remote_provider(provider, host)
+        if probe.returncode == 255:
+            raise ProviderDiscoveryUnavailable(
+                _unreachable_reason(probe, host=host, checked=provider)
+            )
+        if candidate is None and probe.returncode != 1:
+            raise ProviderDiscoveryUnavailable(_discovery_failure_reason(host, probe))
+        return candidate
 
     @staticmethod
     def _probe(

@@ -301,6 +301,17 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
         "/home/alice/.local/bin/codex",
         set(),
     )
+    # A host that gave no discovery verdict is refused with that reason, not
+    # as a missing executable.
+    from rcp.agents.launcher import ProviderDiscoveryUnavailable
+
+    def unanswered(provider, *, host):
+        raise ProviderDiscoveryUnavailable(f"{host} did not answer the discovery probe.")
+
+    monkeypatch.setattr(launcher, "discover_provider", unanswered)
+    with pytest.raises(ProviderLoginRefused) as refused:
+        runner.provider_binary("codex", "gpu.example")
+    assert refused.value.detail == "gpu.example did not answer the discovery probe."
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "unknown.example")
     # SSH configuration now lands on another account; its provider state is not the card's.

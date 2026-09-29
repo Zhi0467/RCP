@@ -191,11 +191,16 @@ class ProviderSignInRunner:
         binary = sources[0].path if sources else None
         if binary is None:
             # Read through the module so the suite's discovery seam covers sign-in too.
-            binary = (
-                self.launcher.discover_provider(provider, host=host)
-                if host
-                else launcher_module._discover_local_provider(provider)
-            )
+            try:
+                binary = (
+                    self.launcher.discover_provider(provider, host=host)
+                    if host
+                    else launcher_module._discover_local_provider(provider)
+                )
+            except launcher_module.ProviderDiscoveryUnavailable as exc:
+                # An unanswered host or a broken discovery program is not a
+                # missing executable; say which, as readiness would.
+                raise ProviderLoginRefused(str(exc)) from exc
         if binary is None:
             raise ProviderLoginRefused(f"{profile_for(provider).label} executable was not found.")
         return binary, binaries
