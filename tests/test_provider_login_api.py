@@ -323,7 +323,7 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     ("returncode", "stdout", "stderr", "detail"),
     [
-        (255, "", "ssh: Connection refused", "ssh: Connection refused"),
+        (255, "", "ssh: Connection refused", "gpu.example is unreachable"),
         (127, "", "bash: python3: command not found", "python3: command not found"),
         (127, "", "", "exit status 127"),
         (0, "relative/provider", "", "returned no absolute executable path"),
