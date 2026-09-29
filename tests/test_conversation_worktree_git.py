@@ -432,6 +432,21 @@ def test_episode_merge_lands_verified_commit_and_retries_cleanup(repository, tar
     assert not Path(binding["worktree_path"]).exists()
 
 
+def test_episode_merge_commits_without_an_account_git_identity(repository, monkeypatch):
+    binding = episode_binding(repository)
+    episode_edit(binding)
+    git(repository, "config", "--unset", "user.name")
+    git(repository, "config", "--unset", "user.email")
+    git(repository, "config", "user.useConfigOnly", "true")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    result = land_episode(binding, "release")
+    assert (
+        git(repository, "log", "--format=%an %cn", "-2", result["landed_commit"]).split()
+        == ["RCP"] * 4
+    )
+
+
 def test_episode_leftovers_respect_ignore_and_do_not_commit_shared_changes(repository):
     binding = episode_binding(repository)
     worktree = episode_edit(binding)

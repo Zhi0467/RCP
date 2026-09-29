@@ -364,7 +364,9 @@ targets checked out outside the shared checkout, and a dirty shared checkout
 holding the target are validation errors. An unfinished merge, rebase, or
 cherry-pick, unmerged index entries, and dirty submodules also refuse Merge.
 RCP commits ordinary episode leftovers once with `git add -A`. Ignored files
-stay out. It never commits the shared checkout's changes.
+stay out. It never commits the shared checkout's changes. RCP authors its
+leftovers and landing commits under a fixed RCP identity, so an account with
+no Git identity can still merge.
 
 The existing graph builder and `git merge-tree --write-tree` classify residue.
 With neither kind of residue, RCP lands code first and verifies it before one

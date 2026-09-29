@@ -381,7 +381,19 @@ def _shared_binding(binding: dict, timeout: float, require_owner: bool) -> Path:
     return shared
 
 
-def _commit_command(root: Path, arguments: list[str], timestamp: str, timeout: float) -> str:
+# RCP authors its own commits, so an account with no Git identity can still land them.
+_RCP_COMMIT_IDENTITY = {
+    "GIT_AUTHOR_NAME": "RCP",
+    "GIT_AUTHOR_EMAIL": "rcp@rcp.invalid",
+    "GIT_COMMITTER_NAME": "RCP",
+    "GIT_COMMITTER_EMAIL": "rcp@rcp.invalid",
+}
+
+
+def _commit_command(
+    root: Path, arguments: list[str], timeout: float, timestamp: str | None = None
+) -> str:
+    dates = {"GIT_AUTHOR_DATE": timestamp, "GIT_COMMITTER_DATE": timestamp} if timestamp else {}
     result = subprocess.run(
         [
             "git",
@@ -393,7 +405,7 @@ def _commit_command(root: Path, arguments: list[str], timestamp: str, timeout: f
             str(root),
             *arguments,
         ],
-        env={**os.environ, "GIT_AUTHOR_DATE": timestamp, "GIT_COMMITTER_DATE": timestamp},
+        env={**os.environ, **_RCP_COMMIT_IDENTITY, **dates},
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -457,17 +469,7 @@ def _episode_operation(payload: dict, timeout: float, require_owner: bool) -> di
         if facts["leftover_files"]:
             _git(worktree, "add", "-A", timeout=timeout)
             if _git(worktree, "diff", "--cached", "--name-only", timeout=timeout):
-                _git(
-                    worktree,
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "-c",
-                    "commit.gpgSign=false",
-                    "commit",
-                    "-m",
-                    "RCP episode leftovers",
-                    timeout=timeout,
-                )
+                _commit_command(worktree, ["commit", "-m", "RCP episode leftovers"], timeout)
         return {
             "source_commit": _git(worktree, "rev-parse", "HEAD", timeout=timeout),
             "leftover_files": facts["leftover_files"],
@@ -510,7 +512,7 @@ def _episode_operation(payload: dict, timeout: float, require_owner: bool) -> di
     if mode == "merge":
         parents += ["-p", facts["source_commit"]]
     expected = _commit_command(
-        shared, ["commit-tree", tree["tree"], *parents, "-m", message], timestamp, timeout
+        shared, ["commit-tree", tree["tree"], *parents, "-m", message], timeout, timestamp
     )
     result = {
         "landed_commit": expected,
