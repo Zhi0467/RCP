@@ -359,7 +359,7 @@ def test_authentication_is_read_the_way_each_cli_reports_it() -> None:
 
 
 def test_the_registry_is_the_only_list_of_providers() -> None:
-    assert PROVIDER_IDS == ("codex", "claude")
+    assert PROVIDER_IDS == ("codex", "claude", "opencode")
     for provider in PROVIDER_IDS:
         assert profile_for(provider).id == provider
         assert profile_for(provider).label
@@ -821,7 +821,7 @@ def test_claude_leaves_the_protected_parent_of_its_own_stage_undenied():
     assert permissions["deny"] == ["Edit(//home/rcp/.rcp/**)"]
 
 
-def test_every_runtime_has_a_fence_and_every_provider_a_session_format() -> None:
+def test_every_runtime_has_a_fence_and_every_indexed_provider_a_session_format() -> None:
     from rcp.providers.session_format import SESSION_FORMATS
     from rcp.providers.turn_fence import TURN_FENCES
 
@@ -830,6 +830,7 @@ def test_every_runtime_has_a_fence_and_every_provider_a_session_format() -> None
         for profile in PROVIDERS.values()
         for runtime_id in (*profile.runtime_aliases.values(), profile.legacy_runtime_id)
     }
-    assert set(SESSION_FORMATS) == {*PROVIDERS, "app_chat"}
+    indexed = {provider for provider, profile in PROVIDERS.items() if profile.session_format}
+    assert set(SESSION_FORMATS) == {*indexed, "app_chat"}
     assert set(TURN_FENCES) == runtime_ids
     assert all(profile.native_update for profile in PROVIDERS.values())

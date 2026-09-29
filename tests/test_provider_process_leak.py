@@ -12,11 +12,12 @@ from fastapi.testclient import TestClient
 from rcp.agents import launcher as launcher_module
 from rcp.agents.launcher import AgentLauncher, AgentProcessControl
 from rcp.config import Manifest
+from rcp.providers import PROVIDER_IDS
 
 from .helpers import create_named_app, wait_until
 
 
-@pytest.mark.parametrize("provider", ["codex", "claude"])
+@pytest.mark.parametrize("provider", PROVIDER_IDS)
 def test_local_provider_discovery_stays_unconfigured(provider: str) -> None:
     """`unconfigured_local_providers` must stay autouse.
 

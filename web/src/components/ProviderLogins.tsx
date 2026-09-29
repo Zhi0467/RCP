@@ -184,6 +184,22 @@ export function ProviderLoginRow({
   const canVerify =
     account.token !== null || account.sign_in_methods.some((method) => method !== "token_entry");
 
+  if (!account.managed) {
+    // RCP neither signs this CLI in nor checks its login, so it claims no state.
+    return (
+      <article className="provider-login-account" data-provider-login="unmanaged">
+        <header>
+          <strong>{label}</strong>
+          <span>{accountLabel(account, spaceKind)}</span>
+        </header>
+        <p className="provider-login-detail">
+          RCP does not manage this login; {label} uses its own. For a model backend that needs a
+          sign-in, run <code>{account.login_command}</code> as this machine account.
+        </p>
+      </article>
+    );
+  }
+
   return (
     <article className={`provider-login-account ${account.state}`}>
       <header>

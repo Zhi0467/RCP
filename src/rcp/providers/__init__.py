@@ -6,7 +6,8 @@ knows about that CLI:
 
 - `profile.py`: the `ProviderProfile` subclass that launches, contains, and
   decodes it;
-- `auth.py`: how a member signs it in, verifies, and signs out;
+- `auth.py`: how a member signs it in, verifies, and signs out, when RCP
+  manages that; without one, the CLI's own login applies;
 - `remote.py`: its session-file format and turn fence. This module runs on
   execution hosts, so it imports only the standard library.
 
@@ -50,18 +51,20 @@ from rcp.providers.base import (
 )
 from rcp.providers.claude.profile import ClaudeProfile
 from rcp.providers.codex.profile import CodexProfile
+from rcp.providers.opencode.profile import OpenCodeProfile
 from rcp.providers.session_format import SESSION_FORMATS
 from rcp.providers.turn_fence import TURN_FENCES
 
 PROVIDERS: dict[str, ProviderProfile] = {
-    profile.id: profile for profile in (CodexProfile(), ClaudeProfile())
+    profile.id: profile for profile in (CodexProfile(), ClaudeProfile(), OpenCodeProfile())
 }
 #: Iteration order for every place that walks all providers.
 PROVIDER_IDS: tuple[str, ...] = tuple(PROVIDERS)
 DEFAULT_PROVIDER = CodexProfile.id
 
 for _profile in PROVIDERS.values():
-    SESSION_FORMATS[_profile.id] = _profile.session_format
+    if _profile.session_format is not None:
+        SESSION_FORMATS[_profile.id] = _profile.session_format
     TURN_FENCES.update(_profile.turn_fences)
 
 #: Shipped ahead of every provider's `remote.py`, in this order.
@@ -80,7 +83,11 @@ def remote_bundle(driver: str) -> str:
     first. The registration lines are generated from the same profiles that
     register locally above, so a host and this process cannot disagree.
     """
-    session_formats = {profile.id: type(profile.session_format) for profile in PROVIDERS.values()}
+    session_formats = {
+        profile.id: type(profile.session_format)
+        for profile in PROVIDERS.values()
+        if profile.session_format is not None
+    }
     fences = {
         runtime_id: fence
         for profile in PROVIDERS.values()

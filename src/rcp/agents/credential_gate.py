@@ -294,7 +294,11 @@ def _take_account_lock(path: Path | None) -> int | None:
 
     if path is None:
         return None
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # `parents=True` would give a new `~/.rcp` the umask's mode, which remote
+    # stages refuse on a 0002-umask account.
+    for directory in (*reversed(path.parent.parents), path.parent):
+        if not directory.exists():
+            directory.mkdir(mode=0o700, exist_ok=True)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)

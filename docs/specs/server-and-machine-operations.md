@@ -55,7 +55,8 @@ checkouts and project keys, and service-owned checkpoint payloads. Root owns
 `/etc/rcp/supervisor/`: its separate runtime, selected-release receipt, private
 operation and adoption journals, restore preparation receipts, and bounded logs.
 Provider-native state stays in each provider's normal per-account home path
-(currently `/home/rcp/.codex` and `/home/rcp/.claude`), and SSH state stays in
+(currently `/home/rcp/.codex`, `/home/rcp/.claude`, and OpenCode's
+`/home/rcp/.config/opencode` and `/home/rcp/.local/share/opencode`), and SSH state stays in
 `/home/rcp/.ssh`; RCP does not relocate provider credentials. The one credential
 RCP itself keeps is the Claude setup token, under the application data
 directory at `providers/claude/<account>/setup-token` (0700 directory, 0600
@@ -64,7 +65,11 @@ state from real provider results, refuses new provider work while an account is
 signed out, and signs an account in, verifies it with one real request, and
 signs it out from the product, as any member, per the
 [provider logins decision](../decisions/2026-09-14-provider-logins-are-kept-alive.md).
-The root-entered `server provider update <codex|claude>` command is a bounded
+OpenCode is the exception: RCP manages no OpenCode login, so an operator runs
+OpenCode's own login as `rcp` for a backend that needs a key. Installation does
+not create or check OpenCode's folders; OpenCode makes them inside the 0700
+service home.
+The root-entered `server provider update <codex|claude|opencode>` command is a bounded
 operator wrapper around the provider's native update under `rcp`; it does not
 take ownership of provider releases or credentials and never reads the login. The installed
 service and root-to-service subprocess environment put `/home/rcp/.local/bin`

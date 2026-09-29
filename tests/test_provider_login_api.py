@@ -22,7 +22,11 @@ from rcp.api.dependencies import (
     get_store,
 )
 from rcp.providers import PROVIDER_IDS
-from rcp.runs.provider_sign_in import ProviderLoginRefused, ProviderSignInRunner
+from rcp.runs.provider_sign_in import (
+    ProviderLoginRefused,
+    ProviderPathSource,
+    ProviderSignInRunner,
+)
 from rcp.storage import AppStore
 
 
@@ -294,3 +298,28 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
     reached["account"] = "bob"
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "gpu.example")
+
+
+def test_an_unmanaged_login_note_names_the_saved_executable(tmp_path, monkeypatch):
+    store = AppStore(tmp_path / "login.sqlite3")
+    credentials = ProviderCredentialStore(tmp_path / "providers")
+    accounts = ProviderAccounts(store, credentials)
+    catalog = SimpleNamespace(provider_targets=lambda: [("opencode", "", None)])
+    source = ProviderPathSource(
+        path="/opt/oc bin/opencode", project_id="p", project_name="P", machine_alias="local"
+    )
+    hidden = source.model_copy(update={"path": "/hidden/opencode", "project_id": "q"})
+    monkeypatch.setattr(
+        provider_login, "provider_path_sources", lambda _: {("opencode", ""): [hidden, source]}
+    )
+    runner = ProviderSignInRunner(store, AgentLauncher(accounts=accounts), accounts)
+
+    def note(visible):
+        (account,) = provider_login.provider_login_accounts(
+            store, catalog, credentials, runner, visible
+        )
+        assert not account.managed
+        return account.login_command
+
+    assert note({"p"}) == "'/opt/oc bin/opencode' providers login"
+    assert note(set()) == "opencode providers login"

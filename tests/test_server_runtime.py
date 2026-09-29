@@ -124,7 +124,8 @@ def test_remote_bundle_runs_on_a_bare_interpreter_and_registers_every_provider()
         check=True,
     )
     sources, runtimes = json.loads(result.stdout)
-    assert sources == sorted({*PROVIDERS, "app_chat"})
+    indexed = {provider for provider, profile in PROVIDERS.items() if profile.session_format}
+    assert sources == sorted({*indexed, "app_chat"})
     assert runtimes == sorted(
         runtime_id for profile in PROVIDERS.values() for runtime_id in profile.turn_fences
     )

@@ -21,7 +21,6 @@ from rcp.runs.tasks import auto_research_stream
 from rcp.terminals import profile as terminal_profile
 from rcp.transport import (
     StateMissing,
-    StateUnavailable,
     remote_repository_browser,
     remote_stage_root,
     ssh,
@@ -68,18 +67,17 @@ def test_new_remote_stages_land_under_the_remote_rcp_home(
         assert stage.close()
 
 
-def test_a_stage_parent_others_can_write_is_refused(
+def test_a_stage_parent_another_user_owns_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
-    (home / ".rcp").mkdir(parents=True)
-    (home / ".rcp").chmod(0o777)
-    stage = _local_stage(monkeypatch, home)
-    monkeypatch.setattr(stage, "sweep", lambda **_kwargs: None)
+    (home / ".rcp").mkdir(parents=True, mode=0o700)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(remote_stage_root.os, "geteuid", lambda: os.getuid() + 1)
 
-    with pytest.raises(StateUnavailable):
-        stage.open("op-one")
-    assert not (home / ".rcp" / "stages" / "rcp-run.op-one").exists()
+    with pytest.raises(ValueError, match="unsafe"):
+        remote_stage_root.create_stage("op-one", False)
+    assert not list((home / ".rcp" / "stages").iterdir())
 
 
 def test_a_reused_stage_keeps_its_saved_legacy_tmp_folder(
@@ -272,12 +270,16 @@ def test_a_private_folder_needs_a_parent_no_one_else_can_rename_it_in(tmp_path: 
         shared.rmdir()
 
 
-def test_a_socket_parent_another_user_can_write_is_refused(tmp_path: Path) -> None:
+def test_a_socket_parent_is_repaired_when_ours_and_refused_when_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     parent = tmp_path / "rcp"
     parent.mkdir(mode=0o700)
-    staged_command_broker._private_directory(str(parent))
-    # Such a user could swap the socket folder under it.
     parent.chmod(0o722)
+    staged_command_broker._private_directory(str(parent))
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    # Another user could swap the socket folder under a parent they own.
+    monkeypatch.setattr(staged_command_broker.os, "geteuid", lambda: os.getuid() + 1)
     with pytest.raises(staged_command_broker.BrokerError):
         staged_command_broker._private_directory(str(parent))
 
@@ -313,3 +315,24 @@ def test_a_long_home_moves_sockets_to_one_protected_short_folder(monkeypatch) ->
     assert _CONTROL_DIRECTORY_PATH() == Path("/home/worker/.rcp/ssh")
     monkeypatch.setattr(ssh, "rcp_home", lambda: Path(long_home) / ".rcp")
     assert _CONTROL_DIRECTORY_PATH() == Path(short_root) / "ssh"
+
+
+def test_a_0002_umask_home_made_by_the_credential_gate_still_stages(tmp_path, monkeypatch):
+    from rcp.agents import credential_gate
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("HOME", str(home))
+    previous = os.umask(0o002)
+    try:
+        lock = home / ".rcp" / "credential-locks" / "codex.lock"
+        descriptor = credential_gate._take_account_lock(lock)
+        credential_gate._drop_account_lock(descriptor)
+        assert stat.S_IMODE((home / ".rcp").stat().st_mode) == 0o700
+        # A `~/.rcp` an older release left group-writable is repaired, not refused.
+        (home / ".rcp").chmod(0o775)
+        stage = remote_stage_root.create_stage("", False)
+    finally:
+        os.umask(previous)
+    assert Path(stage).parent == home / ".rcp" / "stages"
+    assert not (home / ".rcp").stat().st_mode & 0o022

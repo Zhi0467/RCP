@@ -294,6 +294,27 @@ is the truth when they disagree. Paste a new token to replace it.
 The token travels once, from the browser to the token field. Never put it in a
 command argument, a log, an issue, chat, or a project file; RCP never prints it.
 
+### OpenCode
+
+Install OpenCode's own build under the `rcp` account. Its installer always
+writes `~/.opencode/bin`, which RCP does not search, so link it into
+`~/.local/bin`; `opencode upgrade` replaces the linked file in place:
+
+```bash
+sudo -u rcp -H /bin/bash -lc \
+  'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path &&
+   mkdir -p ~/.local/bin && ln -sf ~/.opencode/bin/opencode ~/.local/bin/opencode'
+```
+
+OpenCode's free models need no sign-in, so it is ready once installed. RCP does
+not manage an OpenCode login: **Settings, Provider logins** lists OpenCode with
+no sign-in state, only the command to run. For a model backend that needs a
+key, run it as `rcp`:
+
+```bash
+sudo -u rcp -H /bin/bash -lc 'opencode providers login'
+```
+
 ### Verify and sign out
 
 `codex login status` and `claude auth status` read the stored credential and
@@ -327,10 +348,12 @@ executable and version; the login is untouched:
 ```bash
 sudo /usr/local/bin/rcp server provider update codex
 sudo /usr/local/bin/rcp server provider update claude
+sudo /usr/local/bin/rcp server provider update opencode
 ```
 
 The Codex command reruns OpenAI's supported standalone installer under
-`/home/rcp`; the Claude command runs `claude update`. These are the current
+`/home/rcp`; the Claude command runs `claude update`, and the OpenCode command
+runs `opencode upgrade`. These are the current
 provider-owned update paths documented by
 [OpenAI](https://learn.chatgpt.com/docs/codex/cli) and
 [Anthropic](https://code.claude.com/docs/en/cli-usage). An update never
