@@ -152,6 +152,12 @@ export function EpisodeMergePanel({
           {counts.delivered > 0 && <span>{counts.delivered} already merged</span>}
         </div>
       )}
+      {episode.isolation_state?.merge_attempt?.worktree_kept && (
+        <span className="merge-needs-agent">
+          Merged, but the worktree was kept: a job was still running. Merge again once it ends to
+          remove it.
+        </span>
+      )}
       {preview?.needs_agent && (
         <span className="merge-needs-agent">A merge agent will resolve what RCP cannot.</span>
       )}

@@ -1139,6 +1139,9 @@ class EpisodeMergeAttempt(BaseModel):
     merge_tree_output: str | None = None
     # Jobs the human merged over; the code merge agent stops them before it merges.
     unfinished_jobs: list[EpisodeUnfinishedJob] = Field(default_factory=list)
+    # Merge finished but kept the worktree, its branch, and the graph branch listed,
+    # because a job was still unfinished; Merge again removes them once it ends.
+    worktree_kept: bool = False
 
     @model_validator(mode="after")
     def validate_cleanup(self) -> EpisodeMergeAttempt:
