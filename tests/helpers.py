@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import re
@@ -92,6 +93,28 @@ def current_command_client(prompt: str) -> str:
         return changed
     master = launch_contract_path(prompt).read_text(encoding="utf-8")
     return re.search(r"^- Command client: `([^`]+)`$", master, re.MULTILINE)[1]  # type: ignore[index]
+
+
+@functools.cache
+def _frozen_backend_inventory() -> frozenset[str]:
+    from PyInstaller.utils.hooks import collect_data_files
+
+    from rcp.frozen_resources import resource_manifest
+
+    return frozenset(resource_manifest(collect_data_files("rcp", include_py_files=True)))
+
+
+def assert_frozen_backend_ships(*resources: str) -> None:
+    """Each package-relative resource is in the inventory the frozen backend validates.
+
+    The desktop spec collects the whole `rcp` package as data and the startup
+    hook checks that build-derived inventory, so a resource ships exactly when
+    this collection lists it; there is no hand-maintained allowlist to assert.
+    """
+
+    inventory = _frozen_backend_inventory()
+    for resource in resources:
+        assert f"rcp/{resource}" in inventory, f"{resource} is not packaged"
 
 
 def create_named_app(*args: Any, **kwargs: Any):

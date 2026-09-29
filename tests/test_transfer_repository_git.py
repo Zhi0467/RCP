@@ -17,6 +17,8 @@ from rcp.transfer.repository_git import (
 )
 from rcp.transport.ssh import ssh_arguments
 
+from .helpers import assert_frozen_backend_ships
+
 
 def _git(path: Path, *arguments: str) -> str:
     return subprocess.run(
@@ -383,12 +385,7 @@ def test_local_transfer_never_uses_frozen_executable_or_loads_shipped_source(
 
 
 def test_frozen_backend_includes_transfer_source() -> None:
-    root = Path(__file__).resolve().parents[1]
-    specification = (root / "packaging/rcp_backend.spec").read_text()
-    hook = (root / "packaging/hooks/validate_frozen_resources.py").read_text()
-    assert 'TRANSPORT_ROOT / "remote_transfer_git.py"' in specification
-    assert '(str(REMOTE_TRANSFER_GIT), "rcp/transport")' in specification
-    assert "_remote_source()" in hook
+    assert_frozen_backend_ships("transport/remote_transfer_git.py")
 
 
 @pytest.mark.skipif(
