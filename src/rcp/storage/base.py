@@ -2424,11 +2424,35 @@ class AppStoreBase:
         ):
             if name not in columns:
                 connection.execute(f"ALTER TABLE episodes ADD COLUMN {name} {declaration}")
-                if name == "graph_isolation":
-                    connection.execute(
-                        "UPDATE episodes SET graph_isolation = 1 "
-                        "WHERE json_extract(graph_target_json, '$.kind') = 'branch'"
-                    )
+        AppStoreBase._derive_branch_episode_isolation(connection)
+
+    @staticmethod
+    def _derive_branch_episode_isolation(
+        connection: sqlite3.Connection, project_id: str | None = None
+    ) -> None:
+        """Branch episodes stored without isolation choices: legacy rows and transfers.
+
+        A branch target is a graph-isolated episode, and the branch is named for its
+        root episode, which owns the isolation of every continuation on it.
+        """
+        scope = "" if project_id is None else " AND project_id = ?"
+        values = () if project_id is None else (project_id,)
+        connection.execute(
+            "UPDATE episodes SET graph_isolation = 1 "
+            "WHERE json_extract(graph_target_json, '$.kind') = 'branch'" + scope,
+            values,
+        )
+        connection.execute(
+            "UPDATE episodes SET isolation_owner_episode_id = "
+            "json_extract(graph_target_json, '$.branch_id') "
+            "WHERE isolation_owner_episode_id IS NULL "
+            "AND json_extract(graph_target_json, '$.kind') = 'branch' "
+            "AND json_extract(graph_target_json, '$.branch_id') != episode_id "
+            "AND EXISTS (SELECT 1 FROM episodes root WHERE root.project_id = episodes.project_id "
+            "AND root.episode_id = json_extract(episodes.graph_target_json, '$.branch_id'))"
+            + scope,
+            values,
+        )
 
     @staticmethod
     def _migrate_conversation_worktrees(connection: sqlite3.Connection) -> None:

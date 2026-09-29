@@ -3560,20 +3560,27 @@ def test_episode_isolation_identity_and_operation_state_survive_restart(tmp_path
 
 def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
     with sqlite3.connect(":memory:") as connection:
-        connection.execute("CREATE TABLE episodes (episode_id TEXT, graph_target_json TEXT)")
+        connection.execute(
+            "CREATE TABLE episodes (episode_id TEXT, project_id TEXT, graph_target_json TEXT)"
+        )
         connection.executemany(
-            "INSERT INTO episodes VALUES (?, ?)",
+            "INSERT INTO episodes VALUES (?, 'project', ?)",
             [
-                ("branch-owner", '{"kind":"branch","branch_id":"branch"}'),
+                ("branch", '{"kind":"branch","branch_id":"branch"}'),
+                # A legacy continuation on the root's branch belongs to that root.
+                ("continuation", '{"kind":"branch","branch_id":"branch"}'),
                 ("main-owner", '{"kind":"main"}'),
             ],
         )
         AppStore._migrate_episode_isolation(connection)
-        assert connection.execute(
-            "SELECT episode_id, isolation_owner_episode_id, code_worktree, graph_isolation FROM episodes ORDER BY episode_id"
-        ).fetchall() == [("branch-owner", None, 0, 1), ("main-owner", None, 0, 0)]
+        rows = "SELECT episode_id, isolation_owner_episode_id, code_worktree, graph_isolation "
+        assert connection.execute(rows + "FROM episodes ORDER BY episode_id").fetchall() == [
+            ("branch", None, 0, 1),
+            ("continuation", "branch", 0, 1),
+            ("main-owner", None, 0, 0),
+        ]
         connection.execute(
             "UPDATE episodes SET graph_isolation = 1 WHERE episode_id = 'main-owner'"
         )
         AppStore._migrate_episode_isolation(connection)
-        assert connection.execute("SELECT sum(graph_isolation) FROM episodes").fetchone()[0] == 2
+        assert connection.execute("SELECT sum(graph_isolation) FROM episodes").fetchone()[0] == 3

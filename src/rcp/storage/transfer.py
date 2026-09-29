@@ -1314,6 +1314,10 @@ class ProjectTransferStoreMixin:
                     normalized_capture.records,
                     attributions,
                 )
+                # A transfer carries no isolation choices; derive the branch-owned ones.
+                self._derive_branch_episode_isolation(
+                    connection, normalized_capture.records.project_id
+                )
                 self._insert_transfer_views(
                     connection,
                     normalized_capture,
