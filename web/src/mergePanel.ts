@@ -79,3 +79,18 @@ export function mergeRequestBody(
   if (preview.code && choices.targetBranch.trim()) body.target_branch = choices.targetBranch.trim();
   return body;
 }
+
+/** Merge may use a preview only once it answered the target the human typed. */
+export function previewAnswersDraft(
+  preview: MergePreview | null,
+  previewTarget: string | null | undefined,
+  target: string | null,
+  targetDraft: string,
+): preview is MergePreview {
+  const draft = targetDraft.trim();
+  return (
+    preview !== null &&
+    previewTarget === target &&
+    (!preview.code || !draft || preview.code.target_branch === draft)
+  );
+}

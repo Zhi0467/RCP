@@ -187,6 +187,30 @@ def test_cleanup_failure_keeps_delivery_and_retries(manifest, tmp_path, monkeypa
     assert len(harness.branch.merge_receipts()) == 1
 
 
+def test_preview_after_partial_cleanup_reads_the_removed_worktree(manifest, tmp_path, monkeypatch):
+    from rcp.runs.episodes import merge
+
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    _, binding = _isolated(harness, tmp_path)
+    (Path(binding.worktree_path) / "file").write_text("episode")
+    original = merge._git
+
+    def fail_branch_delete(store, binding, operation, **values):
+        if operation == "delete_branch":
+            raise ValueError("fixture_delete_failure")
+        return original(store, binding, operation, **values)
+
+    monkeypatch.setattr(merge, "_git", fail_branch_delete)
+    route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
+    assert harness.client.post(route + "/merge").status_code == 409
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert state.status != "removed"
+    assert "remove_worktree" in state.merge_attempt.cleanup_completed
+    response = harness.client.get(route + "/merge-preview")
+    assert response.status_code == 200, response.text
+    assert response.json()["code"]["status"] == "already_merged"
+
+
 def test_uncertain_landing_reconciles_before_new_merge(manifest, tmp_path, monkeypatch):
     from rcp.runs.episodes import merge
 

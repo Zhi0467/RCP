@@ -1,7 +1,13 @@
 import { LoaderCircle, Network } from "lucide-react";
 import { useEffect, useState } from "react";
 import { loadMergePreview } from "../api";
-import { type MergeChoices, mergeDiffCounts, mergeRequestBody, squashAllowed } from "../mergePanel";
+import {
+  type MergeChoices,
+  mergeDiffCounts,
+  mergeRequestBody,
+  previewAnswersDraft,
+  squashAllowed,
+} from "../mergePanel";
 import type { Episode, MergeEpisodeBody, MergePreview } from "../types";
 
 const CODE_STATUS_LABELS: Record<NonNullable<MergePreview["code"]>["status"], string> = {
@@ -26,6 +32,8 @@ export function EpisodeMergePanel({
   onMerge: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
 }) {
   const [preview, setPreview] = useState<MergePreview | null>(null);
+  // The target the shown preview answered; Merge waits until it matches the typed one.
+  const [previewTarget, setPreviewTarget] = useState<string | null | undefined>(undefined);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
   const [targetDraft, setTargetDraft] = useState("");
@@ -58,6 +66,7 @@ export function EpisodeMergePanel({
       .then((next) => {
         if (!current) return;
         setPreview(next);
+        setPreviewTarget(target);
         if (next.code && !target) setTargetDraft(next.code.target_branch);
       })
       .catch((error) => {
@@ -72,9 +81,10 @@ export function EpisodeMergePanel({
   const counts = preview ? mergeDiffCounts(preview.graph.paths) : null;
   const squash = preview !== null && squashAllowed(preview);
   const historyMode = squash ? choices.historyMode : "merge";
+  const previewCurrent = previewAnswersDraft(preview, previewTarget, target, targetDraft);
 
   const merge = async () => {
-    if (!preview || disabled) return;
+    if (!preview || !previewCurrent || disabled) return;
     setMergeError(null);
     try {
       await onMerge(
@@ -202,7 +212,7 @@ export function EpisodeMergePanel({
       <button
         className="button primary compact campaign-branch-merge"
         type="button"
-        disabled={disabled || !preview}
+        disabled={disabled || !previewCurrent}
         onClick={() => void merge()}
       >
         {busy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}

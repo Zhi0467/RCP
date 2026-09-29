@@ -225,7 +225,15 @@ def merge_preview(
     if binding and binding.worktree and not _code_discarded(state):
         worktree = binding.worktree
         try:
-            if state and state.status == "removed":
+            # A retained cleanup may have removed the worktree before the status says so.
+            removed = state is not None and (
+                state.status == "removed"
+                or (
+                    state.merge_attempt is not None
+                    and "remove_worktree" in state.merge_attempt.cleanup_completed
+                )
+            )
+            if removed:
                 if not state.delivered_source_commit:
                     raise ValueError("code_worktree_removed")
                 verified = _git(

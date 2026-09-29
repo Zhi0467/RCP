@@ -11,6 +11,7 @@ const server = await createServer({
 });
 after(() => server.close());
 const {
+  branchOwnerEpisode,
   experimentStartTarget,
   graphTargetUrl,
   graphSessionKey,
@@ -314,4 +315,15 @@ test("an isolated Experiment started from main expects its own episode branch", 
   });
   assert.deepEqual(experimentStartTarget(main, undefined, "episode"), main);
   assert.deepEqual(experimentStartTarget(branch, true, "episode"), branch);
+});
+
+test("a graph-archived Experiment still owns its branch through the Experiment index", () => {
+  const owner = {
+    episode_id: "episode",
+    graph_branch: { branch_id: "episode", current_episode_id: "episode" },
+  };
+  const target = { kind: "branch", branch_id: "episode" };
+  assert.equal(branchOwnerEpisode(target, [], [{ episode: owner }]), owner);
+  assert.equal(branchOwnerEpisode(target, [], []), null);
+  assert.equal(branchOwnerEpisode({ kind: "main" }, [owner], []), null);
 });

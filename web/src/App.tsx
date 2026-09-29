@@ -3,6 +3,7 @@ import { useUpdateNotice } from "./hooks/useUpdateNotice";
 import { TerminalTab } from "./components/TerminalTab";
 import { branchMergeStateLabel } from "./components/CampaignRuns";
 import {
+  branchOwnerEpisode,
   experimentStartTarget,
   graphSessionKey,
   graphTargetFromHash,
@@ -1248,14 +1249,7 @@ export default function App() {
     isActiveProject,
     runsVisible: view === "execution",
   });
-  const activeBranchEpisode =
-    graphTarget.kind === "branch"
-      ? episodes.find(
-          (episode) =>
-            episode.graph_branch?.branch_id === graphTarget.branch_id &&
-            episode.episode_id === episode.graph_branch.current_episode_id,
-        )
-      : null;
+  const activeBranchEpisode = branchOwnerEpisode(graphTarget, episodes, experimentLoops);
   // The branch diff's merge marks come from the same preview the Merge panel reads.
   const [branchMergePaths, setBranchMergePaths] = useState<MergeDiffPath[] | null>(null);
   const branchMergeKey = activeBranchEpisode

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mergeDiffCounts, mergeDiffMarks, mergeRequestBody } from "../src/mergePanel.ts";
+import {
+  mergeDiffCounts,
+  mergeDiffMarks,
+  mergeRequestBody,
+  previewAnswersDraft,
+} from "../src/mergePanel.ts";
 
 function path(id, flags = {}) {
   return {
@@ -69,4 +74,14 @@ test("a merge that needs an agent never squashes, and squash never keeps the bra
   assert.equal(body.history_mode, "merge");
   assert.equal(body.keep_branch_open, true);
   assert.equal(body.archive_graph_branch, false);
+});
+
+test("Merge waits for the preview of the target the human typed", () => {
+  const preview = { code, graph: { paths: [] } };
+  assert.ok(previewAnswersDraft(preview, null, null, "main"));
+  // Typed but not yet previewed, and previewed for an older target.
+  assert.ok(!previewAnswersDraft(preview, null, null, "release"));
+  assert.ok(!previewAnswersDraft(preview, null, "release", "release"));
+  const release = { ...preview, code: { ...code, target_branch: "release" } };
+  assert.ok(previewAnswersDraft(release, "release", "release", "release"));
 });
