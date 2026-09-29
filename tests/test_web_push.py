@@ -352,7 +352,7 @@ def test_a_resolver_outage_keeps_the_item_for_retry(manifest, tmp_path) -> None:
     assert len(requests) == 1
 
 
-def test_the_startup_pass_leaves_phone_sends_to_the_sender_loop(manifest, tmp_path) -> None:
+def test_a_pass_sends_new_attention_after_reconciling_it(manifest, tmp_path) -> None:
     from .test_notifications import _append, _blocker_patch
 
     app, store, sender, _device = _phone_sender(manifest, tmp_path)
@@ -362,9 +362,8 @@ def test_the_startup_pass_leaves_phone_sends_to_the_sender_loop(manifest, tmp_pa
         lambda request: requests.append(request) or httpx.Response(201)
     )
     sender.run_pass()
-    _append(app, app.state.catalog.open(app.state.default_project_id), _blocker_patch("blk/boot"))
-    sender.run_pass(deliver=False)
     assert requests == []
-    assert len(store.notification_outbox()) == 1
+    _append(app, app.state.catalog.open(app.state.default_project_id), _blocker_patch("blk/boot"))
     sender.run_pass()
+    assert len(store.notification_outbox()) == 1
     assert len(requests) == 1

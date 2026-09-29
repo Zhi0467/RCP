@@ -413,6 +413,10 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
     open_project = app.state.catalog.open
 
     def slow_open(identifier):
+        # Only the sender's read is slow; any other startup or request path
+        # that opens a project must not be mistaken for the readiness gate.
+        if threading.current_thread().name != "rcp-notifications":
+            return open_project(identifier)
         entered.set()
         assert release.wait(10), "graph read was not released"
         return open_project(identifier)

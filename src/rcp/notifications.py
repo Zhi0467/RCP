@@ -150,8 +150,8 @@ class NotificationSender:
             except Exception:
                 _LOG.exception("Notification reconciliation pass failed")
 
-    def run_pass(self, *, deliver: bool = True) -> None:
-        """Reconcile and qualify the outbox; `deliver=False` skips phone sends."""
+    def run_pass(self) -> None:
+        """Reconcile, qualify the outbox, and send phone notifications."""
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open("notification reconciliation")
         with self.admission.mutation("notification reconciliation"), self._lock:
@@ -199,8 +199,7 @@ class NotificationSender:
             )
             for row in self.store.pending_notification_rows():
                 self.store.guard_notification_delivery(row["device_id"], row["notification_id"])
-            if deliver:
-                self._deliver_web_push()
+            self._deliver_web_push()
 
     def reconcile_project(self, project_id: str) -> None:
         # The marker advances even when nobody wants graph notifications, so
