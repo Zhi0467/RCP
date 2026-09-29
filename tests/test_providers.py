@@ -700,15 +700,60 @@ def test_an_unreachable_host_is_not_reported_as_a_missing_install(
 ) -> None:
     from rcp.agents.launcher import AgentLauncher
 
-    # ssh exits 255 when it cannot reach the host; `command -v` exits 1 when the
-    # binary is merely absent. Conflating them tells the human to go install
-    # something on a machine that never answered.
+    # ssh exits 255 when it cannot reach the host; the shipped discovery
+    # program exits 1 when the binary is merely absent. Conflating them tells
+    # the human to go install something on a machine that never answered.
     launcher = AgentLauncher()
     monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 255))
     assert launcher.readiness("codex", host="offline").path_state == "unreachable"
 
     monkeypatch.setattr(AgentLauncher, "_probe", lambda self, host, cmd, **_: _result("", 1))
     assert launcher.readiness("codex", host="online").path_state == "unconfigured"
+
+    # Discovery that did not run at all is named as such, not as a missing install.
+    monkeypatch.setattr(
+        AgentLauncher,
+        "_probe",
+        lambda self, host, cmd, **_: subprocess.CompletedProcess(
+            [], 127, "", "bash: python3: command not found"
+        ),
+    )
+    broken = launcher.readiness("codex", host="no-python")
+    assert broken.path_state == "unconfigured" and not broken.installed
+    assert (
+        broken.reason
+        == "Provider discovery could not run on no-python: bash: python3: command not found"
+    )
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "expected"),
+    [
+        (0, "/home/rcp/.opencode/bin/opencode\n", "", "/home/rcp/.opencode/bin/opencode"),
+        (1, "", "", None),
+        (255, "", "ssh: connect to host gpu port 22: Connection refused", "unreachable"),
+        (127, "", "bash: python3: command not found", "could not run"),
+    ],
+)
+def test_discover_provider_separates_absent_from_no_verdict(
+    monkeypatch: pytest.MonkeyPatch, returncode, stdout, stderr, expected
+) -> None:
+    from rcp.agents.launcher import AgentLauncher, ProviderDiscoveryUnavailable
+
+    monkeypatch.setattr(
+        AgentLauncher,
+        "_probe",
+        lambda self, host, cmd, **_: subprocess.CompletedProcess([], returncode, stdout, stderr),
+    )
+    launcher = AgentLauncher()
+    if expected in (None, stdout.strip()):
+        assert launcher.discover_provider("opencode", host="gpu") == expected
+        return
+    with pytest.raises(ProviderDiscoveryUnavailable) as raised:
+        launcher.discover_provider("opencode", host="gpu")
+    assert expected == "could not run" or "gpu" in str(raised.value)
+    if expected == "could not run":
+        assert str(raised.value) == "Provider discovery could not run on gpu: " + stderr
 
 
 def test_remote_shell_noise_is_not_reported_as_the_failure_reason() -> None:

@@ -761,7 +761,7 @@ class ProjectCatalog:
         self.store = store
         self.launcher = launcher
         self.provider_skills = provider_skills
-        self.on_accepted_transition: Callable[[str], None] | None = None
+        self.on_accepted_transition: Callable[[str, int], None] | None = None
         self._services: dict[str, ProjectService] = {}
         self._services_lock = threading.Lock()
         self._opening: dict[str, Future[tuple[ProjectService, MaterializationResult]]] = {}
@@ -1218,15 +1218,15 @@ class ProjectCatalog:
                 self.store.is_project_member if project_id is not None else None
             ),
             on_accepted_transition=(
-                (lambda: self._notify_accepted_transition(project_id))
+                (lambda revision: self._notify_accepted_transition(project_id, revision))
                 if project_id is not None
                 else None
             ),
         )
 
-    def _notify_accepted_transition(self, project_id: str) -> None:
+    def _notify_accepted_transition(self, project_id: str, revision: int) -> None:
         if self.on_accepted_transition is not None:
-            self.on_accepted_transition(project_id)
+            self.on_accepted_transition(project_id, revision)
 
     def _ensure_registered_identity(self, project_id: str) -> str:
         project_id = self._canonical_project_id(project_id)

@@ -17,6 +17,7 @@ from rcp.server_ops.cli import (
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.provider_update import (
+    _discover_provider,
     prepare_provider_update_command,
 )
 
@@ -137,3 +138,66 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
         )
     else:
         assert (str(binary), "update") in calls
+
+
+@pytest.mark.parametrize(
+    "system_directory",
+    ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"],
+)
+def test_provider_update_prefers_service_path_over_native_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system_directory: str
+) -> None:
+    account = _account(_layout(tmp_path))
+    system = Path(system_directory) / "opencode"
+    native = Path(account.pw_dir) / ".opencode/bin/opencode"
+    available = {system, native}
+    monkeypatch.setattr(Path, "is_file", lambda path: path in available)
+    monkeypatch.setattr(
+        "rcp.server_ops.provider_update.os.access", lambda path, mode: path in available
+    )
+    assert _discover_provider(account, "opencode") == system
+
+
+def test_provider_update_finds_the_native_opencode_install_without_a_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    account = _account(layout)
+    binary = layout.service_home / ".opencode" / "bin" / "opencode"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+    monkeypatch.setattr("rcp.server_ops.provider_update.pwd.getpwnam", lambda _name: account)
+    calls: list[tuple[str, ...]] = []
+    state = {"updated": False}
+
+    def runner(_account, argv: tuple[str, ...], _timeout: float):
+        calls.append(argv)
+        if argv[-1] == "--version":
+            version = "1.18.34" if state["updated"] else "1.18.33"
+            return subprocess.CompletedProcess(argv, 0, version, "")
+        if argv == (str(binary), "upgrade"):
+            state["updated"] = True
+            return subprocess.CompletedProcess(argv, 0, "upgraded", "")
+        raise AssertionError(f"unexpected provider command: {argv}")
+
+    output = StringIO()
+    exit_code = run_server_command(
+        _parse("opencode"),
+        handler=lambda request, identity: prepare_provider_update_command(
+            request,
+            identity,
+            runner=runner,
+            layout=layout,
+        ),
+        identity=CallerIdentity(uid=0, username="root", host="lab"),
+        stream=output,
+    )
+
+    assert exit_code == 0, output.getvalue()
+    assert state["updated"] is True
+    # The documented install writes only ~/.opencode/bin; no symlink is needed.
+    assert (str(binary), "upgrade") in calls
+    events = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert events[-1]["step"]["state"] == "succeeded"

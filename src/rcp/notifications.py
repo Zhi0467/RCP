@@ -9,17 +9,18 @@ import threading
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 import httpx
 
 if TYPE_CHECKING:
     from rcp.background import StartupEffectFence
+    from rcp.core.materialize import MaterializationResult
 
 from rcp import web_push
 from rcp.core.attention import project_graph_attention
-from rcp.core.models import GraphState
+from rcp.core.models import GraphState, Patch
 from rcp.episode_health import load_episode_health
 from rcp.limits import (
     NOTIFICATION_RECHECK_SECONDS,
@@ -108,13 +109,20 @@ class NotificationSender:
         # Projects a running pass took from the dirty set but has not yet
         # reconciled; pulls hold their graph items too.
         self._reconciling: set[str] = set()
+        # Lowest accepted main revision signalled per project since its last
+        # successful reconciliation. A silent first baseline taken at or past
+        # it would swallow attention accepted after the API began serving.
+        self._signalled: dict[str, int] = {}
+        # Upper revision of attention still swallowed by this process's silent
+        # first baseline. Late signals backfill it without rewinding the marker.
+        self._first_baselines: dict[str, int] = {}
 
     def start(self) -> None:
         if self.is_running():
             return
         self._stop.clear()
-        # The first loop pass runs now, so a startup pass that skipped phone
-        # sends is followed promptly by one that makes them.
+        # Reconcile immediately in the sender thread: remote graph reads must
+        # not delay API readiness. Dirty projects remain held during the pass.
         self._wake.set()
         self._thread = threading.Thread(target=self._run, name="rcp-notifications", daemon=True)
         self._thread.start()
@@ -133,8 +141,15 @@ class NotificationSender:
             if self._dirty is not None:
                 self._dirty.add(project_id)
 
-    def signal(self, project_id: str) -> None:
-        self._mark_dirty(project_id)
+    def signal(self, project_id: str, revision: int | None = None) -> None:
+        """Wake the sender for an accepted main transition at `revision`."""
+        with self._dirty_lock:
+            if self._dirty is not None:
+                self._dirty.add(project_id)
+            if revision is not None:
+                self._signalled[project_id] = min(
+                    self._signalled.get(project_id, revision), revision
+                )
         self._wake.set()
 
     def _run(self) -> None:
@@ -144,14 +159,19 @@ class NotificationSender:
             if self._stop.is_set():
                 break
             try:
-                self.run_pass()
+                self._run_pass(interruptible=True)
             except MaintenanceAdmissionClosed:
                 return
             except Exception:
                 _LOG.exception("Notification reconciliation pass failed")
 
-    def run_pass(self, *, deliver: bool = True) -> None:
-        """Reconcile and qualify the outbox; `deliver=False` skips phone sends."""
+    def run_pass(self) -> None:
+        """Reconcile, qualify the outbox, and send phone notifications."""
+        self._run_pass(interruptible=False)
+
+    def _run_pass(self, *, interruptible: bool) -> None:
+        # Only the sender thread yields to stop() between projects; a direct
+        # pass always completes.
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open("notification reconciliation")
         with self.admission.mutation("notification reconciliation"), self._lock:
@@ -162,32 +182,46 @@ class NotificationSender:
                 self._reconciling = (
                     {project.project_id for project in projects} if dirty is None else set(dirty)
                 )
-            for project in projects:
-                if project.retired_at is not None:
-                    continue
+            active = [project for project in projects if project.retired_at is None]
+            # Episode health is local. Observe it for every project before any
+            # graph replay, so one slow remote cannot delay another project's
+            # episode baseline or observation.
+            for project in active:
                 try:
                     self._recheck_episodes(project)
                 except Exception:
                     _LOG.exception(
                         "Could not recheck episode notifications for %s", project.project_id
                     )
-                # Replaying history is costly, and remote state reads cross SSH,
-                # so only projects with an accepted change or a failed pass replay.
-                if dirty is not None and project.project_id not in dirty:
-                    continue
+            # Replaying history is costly, and remote state reads cross SSH,
+            # so only projects with an accepted change or a failed pass replay.
+            pending = [
+                project.project_id
+                for project in active
+                if dirty is None or project.project_id in dirty
+            ]
+            while pending:
+                if interruptible and self._stop.is_set():
+                    # An update boundary is waiting on this pass. Projects it
+                    # did not reach stay dirty and held for the next owner.
+                    with self._dirty_lock:
+                        self._dirty.update(pending)
+                        self._reconciling = set()
+                    return
+                project_id = pending.pop(0)
                 try:
-                    self.reconcile_project(project.project_id)
+                    self.reconcile_project(project_id)
                 except Exception:
-                    self._mark_dirty(project.project_id)
+                    self._mark_dirty(project_id)
                     # Inaccessible canonical state is not empty attention.
                     _LOG.warning(
                         "Could not reconcile graph notifications for %s",
-                        project.project_id,
+                        project_id,
                         exc_info=True,
                     )
                 finally:
                     with self._dirty_lock:
-                        self._reconciling.discard(project.project_id)
+                        self._reconciling.discard(project_id)
             with self._dirty_lock:
                 self._reconciling = set()
             self.store.prune_notification_devices()
@@ -199,8 +233,7 @@ class NotificationSender:
             )
             for row in self.store.pending_notification_rows():
                 self.store.guard_notification_delivery(row["device_id"], row["notification_id"])
-            if deliver:
-                self._deliver_web_push()
+            self._deliver_web_push()
 
     def reconcile_project(self, project_id: str) -> None:
         # The marker advances even when nobody wants graph notifications, so
@@ -218,23 +251,27 @@ class NotificationSender:
                 raise RuntimeError("main notification history contains a different target")
             if replay.state.replay_status != "complete":
                 raise RuntimeError("notification graph replay is incomplete")
+            # Read after the graph, so every transition signalled before the
+            # read completed is known to this pass.
+            with self._dirty_lock:
+                signalled = self._signalled.get(project_id)
             marker = self.store.notification_graph_marker(project_id)
+            first_baseline = self._first_baselines.get(project_id)
             if marker is None:
-                self.store.consume_notification_graph_boundary(
-                    project_id,
-                    "main",
-                    replay.state.revision,
-                    None,
-                    _attention(replay.state),
-                    [],
-                )
-                return
+                marker = self._baseline(project_id, replay, patches, signalled)
             if marker["revision"] > replay.state.revision:
                 raise RuntimeError("graph is behind its notification marker")
-            previous = json.loads(marker["attention_json"])
-            for boundary, (_, patch, _) in zip(boundaries, patches, strict=True):
-                if boundary.revision <= marker["revision"]:
+            backfill = []
+            baseline_before = None
+            for boundary, (before, patch, _) in zip(boundaries, patches, strict=True):
+                swallowed = (
+                    signalled is not None
+                    and first_baseline is not None
+                    and signalled <= boundary.revision <= first_baseline
+                )
+                if boundary.revision <= marker["revision"] and not swallowed:
                     continue
+                previous = _attention(before)
                 current = _attention(boundary.state)
                 notifications = [
                     _notification(
@@ -249,15 +286,59 @@ class NotificationSender:
                     for kind, ids in current.items()
                     for item_id in sorted(set(ids) - set(previous.get(kind, [])))
                 ]
-                self.store.consume_notification_graph_boundary(
-                    project_id,
-                    "main",
-                    boundary.revision,
-                    boundary.transition_id,
-                    current,
-                    notifications,
-                )
-                previous = current
+                if swallowed:
+                    if baseline_before is None:
+                        baseline_before = before.revision
+                    backfill.extend(notifications)
+                else:
+                    self.store.consume_notification_graph_boundary(
+                        project_id,
+                        "main",
+                        boundary.revision,
+                        boundary.transition_id,
+                        current,
+                        notifications,
+                    )
+            if baseline_before is not None:
+                # A newer signal may already have advanced the marker and sent
+                # attention. Recover only the silent prefix; never replay those
+                # delivered boundaries or roll current attention backwards.
+                self.store.backfill_notification_graph_attention(backfill)
+                self._first_baselines[project_id] = baseline_before
+            with self._dirty_lock:
+                # A signal that arrived during this pass may name a revision the
+                # read did not see, or one this baseline swallowed; keep it.
+                if self._signalled.get(project_id) == signalled:
+                    self._signalled.pop(project_id, None)
+
+    def _baseline(
+        self,
+        project_id: str,
+        replay: MaterializationResult,
+        patches: list[tuple[GraphState, Patch, GraphState]],
+        signalled: int | None,
+    ) -> dict[str, Any]:
+        """Persist the silent first baseline and return it as a marker.
+
+        The baseline is the graph as it stood before the API began serving.
+        An accepted transition signalled before the baseline is taken places
+        the baseline before that revision. Signals arriving later recover the
+        swallowed prefix separately, without rewinding an advanced marker.
+        A signalled revision the read did not reach is not in this baseline
+        either; the next pass delivers it from the marker.
+        """
+        state = replay.state
+        if signalled is not None:
+            for before, patch, _ in patches:
+                if patch.revision == signalled:
+                    state = before
+                    break
+        attention = _attention(state)
+        self.store.consume_notification_graph_boundary(
+            project_id, "main", state.revision, None, attention, []
+        )
+        self._first_baselines[project_id] = state.revision
+        return {"revision": state.revision, "attention_json": json.dumps(attention)}
 
     def _recheck_episodes(self, project: ProjectRecord) -> None:
         baseline_at = self.store.now()

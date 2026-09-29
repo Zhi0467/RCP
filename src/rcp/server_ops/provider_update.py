@@ -189,14 +189,20 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
 
 
 def _discover_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path | None:
-    search = (
-        Path(account.pw_dir) / ".local" / "bin",
-        Path("/usr/local/bin"),
-        Path("/usr/bin"),
-        Path("/bin"),
+    """Find the account's executable as root, with fixed directories standing in for its PATH."""
+    home = Path(account.pw_dir)
+    candidates = (
+        home / ".local" / "bin" / provider,
+        Path("/usr/local/sbin") / provider,
+        Path("/usr/local/bin") / provider,
+        Path("/usr/sbin") / provider,
+        Path("/usr/bin") / provider,
+        Path("/sbin") / provider,
+        Path("/bin") / provider,
+        # Native locations are fallback candidates, as in readiness discovery.
+        *(home / relative for relative in profile_for(provider).install_paths),
     )
-    for directory in search:
-        candidate = directory / provider
+    for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return candidate
     return None

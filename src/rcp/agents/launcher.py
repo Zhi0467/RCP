@@ -7,7 +7,6 @@ import os
 import pwd
 import re
 import shlex
-import shutil
 import signal
 import stat
 import subprocess
@@ -63,6 +62,7 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
+from rcp.transport.provider_discovery import discover_provider
 from rcp.transport.remote_terminate_provider import ABSENT as REMOTE_PROBE_ABSENT
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import StateUnreachable, _remote_script
@@ -601,21 +601,22 @@ class _PrePromptRuntimeFailure(RuntimeError):
     """A provider runtime ended before it could have accepted RCP's prompt."""
 
 
+class ProviderDiscoveryUnavailable(RuntimeError):
+    """Discovery gave no verdict: the host did not answer or the program did not run.
+
+    Distinct from an absent executable, which discovery reports as None.
+    """
+
+
+def _discovery_failure_reason(host: str, probe: subprocess.CompletedProcess[str]) -> str:
+    # The shipped discovery answers 0 or 1. Anything else means it did not
+    # run: no python3, or a login shell that broke it.
+    detail = _meaningful_stderr(probe.stderr) or f"exit status {probe.returncode}"
+    return f"Provider discovery could not run on {host}: {detail}"
+
+
 def _discover_local_provider(provider: str) -> str | None:
-    discovered = shutil.which(provider)
-    if discovered:
-        # Keep the command path stable across provider-native updates. Native
-        # installers commonly replace a symlink target with a versioned binary;
-        # persisting the resolved target would pin RCP to the old version.
-        return str(Path(discovered))
-    try:
-        account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
-    except KeyError:
-        return None
-    candidate = account_home / ".local" / "bin" / provider
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
-    return None
+    return discover_provider(provider, profile_for(provider).install_paths)
 
 
 class _ProbeNoVerdict(subprocess.CompletedProcess):
@@ -892,12 +893,10 @@ class AgentLauncher:
                 )
             installed = True
         elif host:
-            installed_probe = self._probe(host, ["command", "-v", provider])
+            installed_probe, candidate = self._discover_remote_provider(provider, host)
             if installed_probe.returncode == 255:
                 return _unreachable_readiness(provider, installed_probe, host=host)
-            discovered = installed_probe.stdout.strip().splitlines()
-            candidate = discovered[-1] if installed_probe.returncode == 0 and discovered else None
-            installed = bool(candidate and PurePosixPath(candidate).is_absolute())
+            installed = candidate is not None
         else:
             candidate = _discover_local_provider(provider)
             installed = candidate is not None
@@ -907,6 +906,8 @@ class AgentLauncher:
                 f"No {provider} executable is recorded; the CLI is not installed "
                 f"or discoverable{where}."
             )
+            if host and installed_probe.returncode != 1:
+                reason = _discovery_failure_reason(host, installed_probe)
             return ProviderReadiness(
                 provider=provider,
                 label=profile.label,
@@ -1854,6 +1855,49 @@ class AgentLauncher:
             capability=capability,
             provider_version=provider_version,
         )
+
+    def _discover_remote_provider(
+        self, provider: str, host: str
+    ) -> tuple[subprocess.CompletedProcess[str], str | None]:
+        """Run the shipped discovery on the host; the candidate is its last stdout line."""
+        probe = self._probe(
+            host,
+            [
+                "python3",
+                "-c",
+                _remote_script("provider_discovery.py"),
+                provider,
+                *profile_for(provider).install_paths,
+            ],
+        )
+        discovered = probe.stdout.strip().splitlines()
+        candidate = discovered[-1] if probe.returncode == 0 and discovered else None
+        if candidate is not None and not PurePosixPath(candidate).is_absolute():
+            candidate = None
+        return probe, candidate
+
+    def discover_provider(self, provider: str, *, host: str) -> str | None:
+        """The executable an unconfigured launch on this account would run.
+
+        None means the account has no discoverable executable. A host that did
+        not answer, or one where the discovery program could not run, raises
+        `ProviderDiscoveryUnavailable` with the same reason readiness reports,
+        so a caller never mistakes either for an absent CLI.
+        """
+        if not host:
+            return _discover_local_provider(provider)
+        probe, candidate = self._discover_remote_provider(provider, host)
+        if probe.returncode == 255:
+            raise ProviderDiscoveryUnavailable(
+                _unreachable_reason(probe, host=host, checked=provider)
+            )
+        if probe.returncode == 0 and candidate is None:
+            raise ProviderDiscoveryUnavailable(
+                f"Provider discovery on {host} returned no absolute executable path."
+            )
+        if candidate is None and probe.returncode != 1:
+            raise ProviderDiscoveryUnavailable(_discovery_failure_reason(host, probe))
+        return candidate
 
     @staticmethod
     def _probe(

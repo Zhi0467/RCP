@@ -690,6 +690,13 @@ class NotificationStoreMixin:
             )
             return True
 
+    def backfill_notification_graph_attention(self, notifications: list[dict[str, Any]]) -> None:
+        """Recover a silent startup prefix without changing the current graph marker."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for notification in notifications:
+                self.enqueue_notification(connection, **notification)
+
     def notification_episode_observations(self, project_id: str) -> dict[str, dict[str, Any]]:
         with self.connection() as connection:
             return {

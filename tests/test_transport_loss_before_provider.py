@@ -81,7 +81,7 @@ def test_a_link_lost_at_a_later_readiness_probe_is_typed_and_never_cached(
 
     def probe(self, host, command, **_kwargs):
         probes.append(command)
-        if command[:2] == ["command", "-v"]:
+        if command[:2] == ["python3", "-c"]:
             return subprocess.CompletedProcess(command, 0, "/opt/codex\n", "")
         if command[-1] == "--version":
             return subprocess.CompletedProcess(command, 0, "codex 1.0\n", "")

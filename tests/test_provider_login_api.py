@@ -290,14 +290,78 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
             host=host, reachable=True, os_account=reached["account"]
         ),
     )
-    # With no project path saved, the machine's PATH resolves the provider.
-    assert runner.provider_binary("codex", "gpu.example") == ("codex", set())
+    # With no project path saved, the machine's own discovery resolves the
+    # provider, so an install off the login shell's PATH still signs in.
+    monkeypatch.setattr(
+        launcher,
+        "discover_provider",
+        lambda provider, *, host: f"/home/{reached['account']}/.local/bin/{provider}",
+    )
+    assert runner.provider_binary("codex", "gpu.example") == (
+        "/home/alice/.local/bin/codex",
+        set(),
+    )
+    # A host that gave no discovery verdict is refused with that reason, not
+    # as a missing executable.
+    from rcp.agents.launcher import ProviderDiscoveryUnavailable
+
+    def unanswered(provider, *, host):
+        raise ProviderDiscoveryUnavailable(f"{host} did not answer the discovery probe.")
+
+    monkeypatch.setattr(launcher, "discover_provider", unanswered)
+    with pytest.raises(ProviderLoginRefused) as refused:
+        runner.provider_binary("codex", "gpu.example")
+    assert refused.value.detail == "gpu.example did not answer the discovery probe."
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "unknown.example")
     # SSH configuration now lands on another account; its provider state is not the card's.
     reached["account"] = "bob"
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "gpu.example")
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "detail"),
+    [
+        (255, "", "ssh: Connection refused", "gpu.example is unreachable"),
+        (127, "", "bash: python3: command not found", "python3: command not found"),
+        (127, "", "", "exit status 127"),
+        (0, "relative/provider", "", "returned no absolute executable path"),
+        (1, "", "", "Codex executable was not found"),
+    ],
+)
+@pytest.mark.parametrize("action", ["verify", "sign-in"])
+def test_sign_in_preserves_remote_discovery_failure(
+    tmp_path, monkeypatch, returncode, stdout, stderr, detail, action
+):
+    store = AppStore(tmp_path / "login.sqlite3")
+    store.create_space_machine(name="GPU", host="gpu.example", os_account="")
+    launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
+    probes = []
+
+    def probe(host, command, **_kwargs):
+        assert host == "gpu.example"
+        assert command[:2] == ["python3", "-c"]
+        probes.append(command)
+        return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+
+    monkeypatch.setattr(launcher, "_probe", probe)
+    monkeypatch.setattr(
+        provider_login,
+        "get_identity_access",
+        lambda _: SimpleNamespace(acting_user=lambda _: SimpleNamespace(user_id="member")),
+    )
+    runner = ProviderSignInRunner(store, launcher, launcher.accounts)
+    app = FastAPI()
+    app.include_router(provider_login.router)
+    app.dependency_overrides[get_provider_sign_ins] = lambda: runner
+    response = TestClient(app).post(
+        f"/api/providers/codex/logins/{action}", json={"host": "gpu.example"}
+    )
+    assert response.status_code == 409
+    assert detail in response.json()["detail"]
+    assert len(probes) == 1
+    assert store.provider_login_states() == []
 
 
 def test_an_unmanaged_login_note_names_the_saved_executable(tmp_path, monkeypatch):

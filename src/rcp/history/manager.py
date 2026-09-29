@@ -412,7 +412,7 @@ class HistoryManager:
         require_attribution: bool = False,
         agent_authority_resolver: Callable[[str, str], AgentTaskAuthority] | None = None,
         project_membership_check: ProjectMembershipCheck | None = None,
-        on_accepted_transition: Callable[[], None] | None = None,
+        on_accepted_transition: Callable[[int], None] | None = None,
     ) -> None:
         if expected_space_id is not None:
             parsed = uuid.UUID(expected_space_id)
@@ -978,13 +978,14 @@ class HistoryManager:
                 authorized_by=authorized_by,
             )
         if accepted[0].admission == "accepted":
-            self._notify_accepted_transition()
+            self._notify_accepted_transition(accepted[1].state.revision)
         return accepted
 
-    def _notify_accepted_transition(self) -> None:
+    def _notify_accepted_transition(self, revision: int) -> None:
+        """Report the accepted head revision, so listeners can tell what they saw."""
         if self.on_accepted_transition is not None:
             try:
-                self.on_accepted_transition()
+                self.on_accepted_transition(revision)
             except Exception:
                 # The canonical commit succeeded. Operational reconciliation
                 # catches up on its next pass without changing that outcome.
@@ -1624,7 +1625,7 @@ class HistoryManager:
                 ):
                     raise
             self._remember_accepted_revision(result)
-        self._notify_accepted_transition()
+        self._notify_accepted_transition(result.state.revision)
         return [prepared], result
 
     def materialize(

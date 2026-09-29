@@ -8,15 +8,29 @@ Auto-research orchestration and episode graph branches are in
 ## Human notification observations
 
 Notification reconciliation is independent of graph watchers. Every main
-target reconciles accepted attention boundaries at startup and after accepted
-main transitions, even while no member wants graph notifications, so turning a
-kind on never replays old attention; a failed attempt retries on the next
-sender pass, and a pass with no change replays nothing. Graph items of a
-project awaiting reconciliation are held, not delivered. An unreachable
-canonical project produces no observation. The notification marker
-and per-device outbox rows advance in one SQLite transaction; empty attention
-is still a durable first-run baseline. The first baseline sends nothing. A
-delivered row is deleted once its 24-hour delivery window has passed.
+target reconciles accepted attention boundaries in the sender thread, starting
+immediately after startup and again after each accepted main transition. This
+reconciliation never runs on the API readiness path, so a slow remote graph
+read cannot hold the health endpoint closed. Each pass observes every project's
+local episode health before it replays any graph, so one slow remote delays no
+other project's episode baseline. Reconciliation runs even while no member
+wants graph notifications, so turning a kind on never replays old attention; a
+failed attempt retries on the next sender pass, and a pass with no change
+replays nothing. Graph items of a project awaiting reconciliation are held, not
+delivered. An unreachable canonical project produces no observation. The
+notification marker and per-device outbox rows advance in one SQLite
+transaction; empty attention is still a durable first-run baseline. The first
+baseline sends nothing, and it is the graph as it stood before the API began
+serving: an accepted main transition signals its revision, and a first baseline
+that would swallow a signalled revision is placed before it so that attention
+is delivered. A signal arriving after that first baseline recovers only its
+silently swallowed attention, even if newer transitions have already delivered.
+The current marker and delivered receipts never move backwards or replay.
+A delivered row is deleted once its 24-hour delivery window has passed.
+
+An update boundary stops the sender between projects: the graph read it finds
+in flight completes, and projects the pass did not reach stay dirty and held
+for the resumed or relaunched owner.
 
 Every 15 seconds the sender rechecks unfinished episodes and ended episodes
 whose recorded observation is not yet terminal. It uses the same batched health
@@ -504,7 +518,10 @@ standing predicate, new-node arrival, or relation predicate.
 ## Graph-condition delivery
 
 Graph conditions evaluate at accepted revision boundaries and at startup, using
-the exact target's canonical transition order. A staged draft never fires them.
+the exact target's canonical transition order. The startup sweep runs on the
+watcher retry worker immediately after the API is ready, never on the readiness
+path; a remote read that fails there retries with the ordinary poll-pass
+backoff. A staged draft never fires them.
 Halted/degraded replay means not yet for that target; other targets still
 reconcile, and their callbacks cannot clear a pending transient retry elsewhere.
 A node removed after arming retires its condition.

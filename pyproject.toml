@@ -72,7 +72,7 @@ pythonpath = ["supervisor/src"]
 # plain single-file run. Pass `-n0` to debug serially.
 addopts = "-q --strict-markers -n auto --dist loadfile"
 markers = [
-  "real_provider_discovery: exercise the real local provider discovery helper; only for a test that stubs `shutil.which` and `pwd.getpwuid` itself",
+  "real_provider_discovery: exercise the real provider discovery helper; only for a test that replaces `PATH` and the OS account home itself, in every process it runs",
 ]
 
 [tool.ruff]
