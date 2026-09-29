@@ -1248,7 +1248,8 @@ export default function App() {
   // The branch diff's merge marks come from the same preview the Merge panel reads.
   const [branchMergePaths, setBranchMergePaths] = useState<MergeDiffPath[] | null>(null);
   const branchMergeKey = activeBranchEpisode
-    ? JSON.stringify([activeBranchEpisode.episode_id, activeBranchEpisode.graph_branch?.head])
+    ? // The whole summary: a delivery changes the receipt and merge state, not the head.
+      JSON.stringify([activeBranchEpisode.episode_id, activeBranchEpisode.graph_branch])
     : null;
   useEffect(() => {
     setBranchMergePaths(null);

@@ -1873,3 +1873,20 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
 
     monkeypatch.setattr(AppStore, "_migrate_episode_stop_provenance", unexpected_migration)
     assert AppStore(path).episode("legacy").stop_initiated_by == "human:researcher"
+
+
+def test_a_request_persisted_before_isolation_fields_still_roundtrips():
+    from rcp.background import _persisted_request_roundtrips
+    from rcp.service import AutoResearchRunRequest
+
+    request = AutoResearchRunRequest(
+        episode_id="e", role="orchestrator", actor_operation_id="a", provider="codex", run_on="m"
+    )
+    stored = request.model_dump(mode="json")
+    for key in ("code_worktree", "graph_isolation", "isolation_owner_episode_id"):
+        stored.pop(key, None)
+    assert _persisted_request_roundtrips(AutoResearchRunRequest.model_validate(stored), stored)
+    # A stored value that differs from the parsed one still fails.
+    assert not _persisted_request_roundtrips(
+        request.model_copy(update={"code_worktree": True}), stored
+    )

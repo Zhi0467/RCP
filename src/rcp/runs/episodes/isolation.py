@@ -230,8 +230,8 @@ def validate_episode_launch(
     ):
         raise ValueError("episode_isolation_unavailable")
     binding = isolation.worktree
-    if binding is None:
-        # A graph-only merge writes no repository.
+    # A graph-only merge writes no repository, including after a recorded removal.
+    if binding is None or state.status == "removed":
         if merge_launch and scope.repository_roots:
             raise ValueError("episode_isolation_scope_mismatch")
         return

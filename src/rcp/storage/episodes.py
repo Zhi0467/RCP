@@ -2253,6 +2253,10 @@ class EpisodeStoreMixin:
     def _active_branch_merge_exists(
         connection: sqlite3.Connection, project_id: str, graph_target: GraphTargetRef
     ) -> bool:
+        # A main-target merge task is code-only; its owner's reservation fences its own
+        # binding, and it does not touch other episodes on main.
+        if graph_target.kind != "branch":
+            return False
         return (
             connection.execute(
                 """

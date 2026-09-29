@@ -440,6 +440,19 @@ def test_code_conflict_runs_one_code_merge_task(manifest, tmp_path, monkeypatch,
         # Code that did not land blocks the graph commit.
         assert harness.service.history.state().revision == revision
         assert not harness.branch.merge_receipts()
+        # Without reconciliation first (a click racing the task's end), nothing is cleaned.
+        from rcp.runs.episodes import merge
+
+        with pytest.raises(ValueError, match="episode_merge_reserved"):
+            merge.merge_episode(
+                harness.service,
+                harness.store,
+                harness.episode,
+                merge.MergeEpisodeBody(),
+                authorized_by=harness.episode.authorized_by,
+                dispatch_graph=lambda *_args, **_kwargs: None,
+            )
+        assert Path(binding.worktree_path).exists()
         # The next Merge releases the failed attempt and starts a fresh one.
         again = harness.client.post(
             f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
@@ -474,6 +487,15 @@ def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeyp
     state = harness.store.episode_isolation_state(harness.project_id, owner_id)
     assert state.delivered_source_commit == state.merge_attempt.source_commit
     assert state.merge_reservation is None
+    # The Experiment's own reconciliation never mistakes the merge for an invocation.
+    import logging
+
+    from rcp.runs.episodes.reconcile import EpisodeReconciler
+
+    reconciler = EpisodeReconciler(
+        harness.store, harness.app.state.background_tasks, logger=logging.getLogger(__name__)
+    )
+    assert reconciler.latest_experiment_leaf(owner_id) is None
 
 
 def test_diff_paths_carry_the_merge_builders_classification(manifest, tmp_path):
@@ -530,3 +552,55 @@ def test_merge_task_failing_after_its_receipt_completes_on_the_next_merge(
     assert (state.merge_attempt.phase, state.merge_reservation) == ("done", None)
     assert not Path(binding.worktree_path).exists()
     assert len(harness.branch.merge_receipts()) == 1
+
+
+def test_graph_residue_merges_after_the_worktree_was_discarded(manifest, tmp_path, monkeypatch):
+    from .test_branch_merge_api import _candidate_for, _PatchWritingLauncher
+
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    _, binding = _isolated(harness, tmp_path)
+    url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
+    discarded = harness.client.post(
+        f"{url}/cleanup", json={"remove_worktree": True, "confirm_discard": True}
+    )
+    assert discarded.status_code == 200, discarded.text
+    competing = _branch_patch(harness.root.operation_id, "evidence")
+    competing.ops[0].nodes[0].observation = "Main recorded a different result."
+    append_fixture_patch(harness.service, competing)
+    launcher = _PatchWritingLauncher(_candidate_for("evidence"))
+    monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
+
+    response = harness.client.post(
+        f"{url}/merge", json={"remove_worktree": False, "delete_code_branch": False}
+    )
+    assert response.status_code == 202, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert not state.merge_attempt.code_by_agent
+    task = wait_for_task(harness.store, state.merge_attempt.graph_task_id)
+    # The graph-only task reaches its provider with no repository roots.
+    assert launcher.calls >= 1, task.error
+
+
+def test_a_later_graph_only_merge_keeps_the_code_delivery(manifest, tmp_path):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    _, binding = _isolated(harness, tmp_path)
+    (Path(binding.worktree_path) / "file").write_text("episode")
+    url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
+    assert harness.client.post(f"{url}/merge", json={"keep_branch_open": True}).status_code == 202
+    assert harness.client.post(f"{url}/cleanup", json={"remove_worktree": True}).status_code == 200
+    delivered = harness.store.episode_isolation_state(
+        harness.project_id, harness.episode.episode_id
+    ).delivered_source_commit
+    assert delivered
+    harness.branch.append(
+        _branch_patch(harness.root.operation_id, "evidence", suffix="-later"),
+        expected_revision=harness.branch.head_ref().revision,
+    )
+
+    later = harness.client.post(
+        f"{url}/merge", json={"remove_worktree": False, "delete_code_branch": False}
+    )
+    assert later.status_code == 202, later.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert len(harness.branch.merge_receipts()) == 2
+    assert (state.status, state.delivered_source_commit) == ("removed", delivered)

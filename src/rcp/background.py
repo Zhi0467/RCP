@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Protocol, cast, get_args
 
+from pydantic import BaseModel
+
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
 from rcp.agents.git_access import ProviderGitAccess
@@ -1471,7 +1473,7 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "The admitted task has no valid persisted request for its kind."
             ) from exc
-        if request.model_dump(mode="json") != record.request:
+        if not _persisted_request_roundtrips(request, record.request):
             raise ValueError("The admitted task request failed its persisted roundtrip.")
 
         try:
@@ -1683,7 +1685,7 @@ class BackgroundAgentTasks:
             self._validate_request_type(current.kind, current_request)
         except (TypeError, ValueError) as exc:
             raise ValueError("The committed task lost its persisted request contract.") from exc
-        if current_request.model_dump(mode="json") != current.request:
+        if not _persisted_request_roundtrips(current_request, current.request):
             raise ValueError("The committed task request failed its persisted roundtrip.")
         return current
 
@@ -2799,6 +2801,21 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
+
+
+def _persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
+    """A row written before a field existed omits it; its default is the legacy meaning."""
+    dumped = request.model_dump(mode="json")
+    fields = type(request).model_fields
+    added = {
+        key
+        for key, value in dumped.items()
+        if key not in stored
+        and key in fields
+        and not fields[key].is_required()
+        and value == fields[key].get_default(call_default_factory=True)
+    }
+    return {key: value for key, value in dumped.items() if key not in added} == stored
 
 
 def _runtime_fallback_payload(text: str) -> dict[str, object]:

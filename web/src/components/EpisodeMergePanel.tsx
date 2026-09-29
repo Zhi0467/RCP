@@ -39,7 +39,7 @@ export function EpisodeMergePanel({
   });
   // A new branch head, attempt, or target means a new preview.
   const refreshKey = JSON.stringify([
-    episode.graph_branch?.head,
+    episode.graph_branch,
     episode.isolation_state?.merge_attempt?.attempt_id,
     episode.isolation_state?.status,
     target,

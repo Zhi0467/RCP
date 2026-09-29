@@ -453,6 +453,10 @@ def _cleanup(service, store, owner, binding, attempt):
 
 
 def _resume(service, store, owner, binding, attempt):
+    if attempt.phase == "agent_merging":
+        # Only the merge task's completion, or its reconciliation, moves past this phase;
+        # nothing here may land, commit, or clean up undelivered work.
+        raise ValueError("episode_merge_reserved")
     if attempt.phase == "landing":
         # No source commit means this attempt carries no code side.
         if binding.worktree and attempt.source_commit:
@@ -494,15 +498,17 @@ def _resume(service, store, owner, binding, attempt):
                 )["verified"]:
                     raise ValueError("code_landing_unverified")
         attempt = _save(store, owner, attempt, phase="verified")
-        store.update_episode_merge_attempt(
-            owner.project_id,
-            owner.episode_id,
-            expected_attempt_id=attempt.attempt_id,
-            attempt=attempt,
-            delivered_source_commit=attempt.source_commit,
-            delivered_target_branch=attempt.target_branch,
-            squash_commit=attempt.squash_commit,
-        )
+        # A graph-only attempt keeps the code delivery an earlier attempt recorded.
+        if attempt.source_commit:
+            store.update_episode_merge_attempt(
+                owner.project_id,
+                owner.episode_id,
+                expected_attempt_id=attempt.attempt_id,
+                attempt=attempt,
+                delivered_source_commit=attempt.source_commit,
+                delivered_target_branch=attempt.target_branch,
+                squash_commit=attempt.squash_commit,
+            )
     if attempt.phase == "verified" and attempt.graph_task_id:
         return attempt
     if attempt.phase == "verified":
