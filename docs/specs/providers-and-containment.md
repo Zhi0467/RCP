@@ -394,6 +394,12 @@ own agents can widen them. The agent is named after a digest of its rules, so no
 user agent can share the name and be merged in. Every launch also passes
 `--pure`, because a plugin's config hook could rewrite the rules.
 
+The rules deny every tool first, then allow only OpenCode's built-in read-only
+tools, then add each capability's edit and shell rules. So OpenCode subagents
+(`task`) are unavailable, since every subagent, built-in ones included, runs
+under its own rules. So are MCP and custom tools from the member's global
+config.
+
 Edit rules deny everything, then allow the exact workspace and admitted roots,
 then deny protected paths, then allow again each root inside a protected path,
 such as a stage inside RCP storage; OpenCode applies the last rule that matches.
