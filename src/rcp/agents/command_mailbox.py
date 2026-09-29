@@ -37,10 +37,12 @@ from rcp.limits import (
     COMMAND_MAILBOX_POLL_SECONDS,
     COMMAND_MAILBOX_TIMEOUT_SECONDS,
     COMMAND_REJECTION_NOTICE_MAX_BYTES,
+    COMMAND_REJECTION_NOTICE_MAX_COUNT,
 )
 from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
 
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
+_CREDENTIAL = re.compile(r"^[a-f0-9]{64}$")
 _REQUEST_FILE = re.compile(
     r"^rcp-command-(?P<mailbox_id>[a-f0-9]{32})-"
     r"(?P<request_id>[a-f0-9]{32})\.request\.json$"
@@ -50,6 +52,11 @@ _REJECTION_FILE = re.compile(
     r"^rcp-command-(?P<mailbox_id>[a-f0-9]{32})-(?P<notice_id>[a-f0-9]{32})\.rejected\.json$"
 )
 _COMMAND_STATE_PREFIXES = ("rcp-command-", ".rcp-command-", ".rcp-mailbox-")
+# The broker signs refusal notices under this prefix, never a request.
+REJECTION_NOTICE_DOMAIN = b"rcp-rejection-notice\n"
+_REJECTION_NOTICE_FIELDS = frozenset(
+    {"version", "mailbox_id", "notice_id", "status", "message", "credential"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,19 +136,24 @@ class CommandTurnCredential:
             and secrets.compare_digest(expected, request.credential)
         )
 
-    def accepts_rejection_notice(self, document: str) -> bool:
-        """Check a broker refusal notice signed with this turn's broker token."""
+    def accepts_rejection_notice(self, value: dict[str, object]) -> bool:
+        """Check a shape-validated refusal notice against this turn's broker token."""
 
-        if self.identity.authority != "broker" or self._state != "active":
+        credential = value.get("credential")
+        if (
+            self.identity.authority != "broker"
+            or self._state != "active"
+            or value.get("mailbox_id") != self.mailbox_id
+            or not isinstance(credential, str)
+            or _CREDENTIAL.fullmatch(credential) is None
+        ):
             return False
-        value = json.loads(document)
-        credential = value.get("credential") if isinstance(value, dict) else None
-        if not isinstance(credential, str) or value.get("mailbox_id") != self.mailbox_id:
-            return False
+        unsigned = {name: item for name, item in value.items() if name != "credential"}
+        payload = json.dumps(
+            unsigned, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
         expected = hmac.new(
-            self._token.encode("ascii"),
-            command_authentication_payload(document),
-            hashlib.sha256,
+            self._token.encode("ascii"), REJECTION_NOTICE_DOMAIN + payload, hashlib.sha256
         ).hexdigest()
         return secrets.compare_digest(expected, credential)
 
@@ -326,18 +338,28 @@ async def serve_command_mailbox(
         raise ValueError("validate-only mailbox does not accept a provider invocation gate")
     credential.activate()
     seen: set[str] = set()
+    recorded = 0
+
+    async def record(status: str, message: str) -> None:
+        # Bounded here too: an agent can write request files or copy notices freely.
+        nonlocal recorded
+        if record_rejection is None or recorded >= COMMAND_REJECTION_NOTICE_MAX_COUNT:
+            return
+        recorded += 1
+        await asyncio.to_thread(record_rejection, status, message)
+
     try:
         while not stop.is_set():
             names = await asyncio.to_thread(staged.mailbox.entry_names)
             for name in sorted(
                 name
                 for name in names
-                if name not in seen and _rejection_notice_name(name, credential.mailbox_id)
+                if name not in seen and _rejection_notice_id(name, credential.mailbox_id)
             ):
                 seen.add(name)
                 notice = await asyncio.to_thread(_read_rejection_notice, staged, name)
-                if notice is not None and record_rejection is not None:
-                    await asyncio.to_thread(record_rejection, *notice)
+                if notice is not None:
+                    await record(*notice)
             requests = sorted(
                 name
                 for name in names
@@ -356,10 +378,8 @@ async def serve_command_mailbox(
                     staged=staged,
                     handler=handler,
                 )
-                if not handled and record_rejection is not None:
-                    await asyncio.to_thread(
-                        record_rejection, response.status, response.message or ""
-                    )
+                if not handled:
+                    await record(response.status, response.message or "")
                 response_name = name.removesuffix(".request.json") + ".response.json"
                 await asyncio.to_thread(
                     staged.mailbox.write_text,
@@ -428,25 +448,39 @@ def _error_response(
     return CommandResponse(request_id=request_id, status=status, message=message[:2_000])
 
 
-def _rejection_notice_name(name: str, mailbox_id: str) -> bool:
+def _rejection_notice_id(name: str, mailbox_id: str) -> str | None:
     match = _REJECTION_FILE.fullmatch(name)
-    return match is not None and secrets.compare_digest(match.group("mailbox_id"), mailbox_id)
+    if match is None or not secrets.compare_digest(match.group("mailbox_id"), mailbox_id):
+        return None
+    return match.group("notice_id")
 
 
 def _read_rejection_notice(staged: StagedCommandMailbox, name: str) -> tuple[str, str] | None:
-    """Return (status, message) from one authentic broker refusal notice, else None."""
+    """Return (status, message) from one authentic broker refusal notice, else None.
 
+    Anything else in the workspace is inert: the agent can write there.
+    """
+
+    notice_id = _rejection_notice_id(name, staged.credential.mailbox_id)
     try:
-        document = staged.mailbox.read_text(name, max_bytes=COMMAND_REJECTION_NOTICE_MAX_BYTES)
-        if not staged.credential.accepts_rejection_notice(document):
-            return None
-        value = json.loads(document)
+        value = json.loads(
+            staged.mailbox.read_text(name, max_bytes=COMMAND_REJECTION_NOTICE_MAX_BYTES)
+        )
     except (OSError, StateUnavailable, UnicodeError, ValueError):
         return None
-    status, message = value.get("status"), value.get("message")
-    if status not in {"invalid", "unavailable"} or not isinstance(message, str):
+    if not isinstance(value, dict) or set(value) != _REJECTION_NOTICE_FIELDS:
         return None
-    return status, " ".join(message.split())[:2_000]
+    status, message = value["status"], value["message"]
+    if (
+        value["version"] != 1
+        or value["notice_id"] != notice_id  # a renamed copy is not a new notice
+        or status not in ("invalid", "unavailable")
+        or not isinstance(message, str)
+        or len(message) > 2_000
+        or not staged.credential.accepts_rejection_notice(value)
+    ):
+        return None
+    return str(status), " ".join(message.split())
 
 
 def _request_identity_from_name(name: str, mailbox_id: str) -> str | None:

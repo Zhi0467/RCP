@@ -25,6 +25,9 @@ _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 # Mirrors rcp.limits.COMMAND_REJECTION_NOTICE_MAX_COUNT; this file ships alone.
 _REJECTION_NOTICE_MAX_COUNT = 20
+# Notice signatures carry this prefix, so a signed request can never pass as a notice.
+# Mirrors rcp.agents.command_mailbox.REJECTION_NOTICE_DOMAIN.
+_REJECTION_NOTICE_DOMAIN = b"rcp-rejection-notice\n"
 _rejection_notices = 0
 _rejection_notice_lock = threading.Lock()
 # Keyed commands this broker already sent, by exact verb, key, and arguments.
@@ -364,14 +367,12 @@ def _error(request_id, message, status, delivery):
     }
 
 
-def _signed(value, token):
+def _signed(value, token, domain=b""):
     payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
         "utf-8"
     )
-    return {
-        **value,
-        "credential": hmac.new(token.encode("ascii"), payload, hashlib.sha256).hexdigest(),
-    }
+    signature = hmac.new(token.encode("ascii"), domain + payload, hashlib.sha256).hexdigest()
+    return {**value, "credential": signature}
 
 
 def _publish_rejection(workspace, mailbox_id, token, status, message):
@@ -394,7 +395,7 @@ def _publish_rejection(workspace, mailbox_id, token, status, message):
         _atomic_json(
             workspace,
             f"rcp-command-{mailbox_id}-{notice_id}.rejected.json",
-            _signed(notice, token),
+            _signed(notice, token, _REJECTION_NOTICE_DOMAIN),
         )
 
 
@@ -411,9 +412,11 @@ def _unavailable(request_id, error, written):
 
 
 def _joined_response(entry, request_id, response_timeout):
+    """Return (response, from_entry); only an entry's own answer can mark it delivered."""
+
     if not entry.done.wait(response_timeout):
-        return _unavailable(request_id, "command response timed out", True)
-    return {**entry.response, "request_id": request_id}
+        return _unavailable(request_id, "command response timed out", True), False
+    return {**entry.response, "request_id": request_id}, True
 
 
 def _handle(
@@ -431,6 +434,7 @@ def _handle(
     written = False
     entry = None
     owner = False
+    answers_entry = False
     try:
         pid, uid = _peer_identity(connection)
         value = _read_message(connection)
@@ -445,7 +449,7 @@ def _handle(
         entry, owner = _join_keyed_command(signature) if signature else (None, True)
         if not owner:
             written = True  # the first send of this exact keyed call carries it
-            response = _joined_response(entry, request_id, response_timeout)
+            response, answers_entry = _joined_response(entry, request_id, response_timeout)
         else:
             unsigned = dict(value)
             unsigned.pop("credential", None)
@@ -467,13 +471,14 @@ def _handle(
         entry.response = response
         entry.sent = written
         entry.done.set()
+        answers_entry = True
     if not written:
         _publish_rejection(workspace, mailbox_id, token, response["status"], response["message"])
     try:
         connection.sendall(
             json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
         )
-        if entry is not None and entry.done.is_set():
+        if answers_entry:
             entry.delivered = True
     except OSError:
         pass

@@ -1251,6 +1251,35 @@ def test_command_result_must_fit_the_durable_event_ledger() -> None:
         AutoResearchCommandEffectResult(result={"too_large": "x" * 40_000})
 
 
+def test_first_admission_refuses_unreadable_command_files(tmp_path) -> None:
+    """The client sends only a name, so RCP alone judges a fresh file's contents."""
+
+    from rcp.transport.workspace_mailbox import RunStageMailbox
+
+    store, auto_research, root = _setup_auto_research(tmp_path)
+    effects = _Effects(store, auto_research, root)
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    (workspace / "target.md").write_text("Target task.\n", encoding="utf-8")
+    (workspace / "linked.md").symlink_to(workspace / "target.md")
+    (workspace / "blank.md").write_text(" \n\t", encoding="utf-8")
+    (workspace / "oversized.md").write_bytes(b"x" * (16 * 1024 + 1))
+    (workspace / "invalid.md").write_bytes(b"\xff")
+    mailbox = RunStageMailbox(workspace=workspace)
+    dispatcher = AutoResearchCommandDispatcher(
+        store,
+        effects.bundle(),
+        command_file_reader=lambda name, max_bytes: mailbox.read_text(name, max_bytes=max_bytes),
+    )
+    for index, name in enumerate(("linked.md", "blank.md", "oversized.md", "invalid.md")):
+        request = _spawn_request(f"{index + 1:032x}", key=f"spawn-{name}")
+        request = request.model_copy(
+            update={"arguments": request.arguments.model_copy(update={"instruction_file": name})}
+        )
+        assert dispatcher.dispatch(root.operation_id, request).status == "invalid", name
+    assert effects.spawn_calls == []
+
+
 def test_status_worker_id_is_normalized_and_bounded_before_durable_start(tmp_path) -> None:
     request = _request(
         StatusCommandRequest,

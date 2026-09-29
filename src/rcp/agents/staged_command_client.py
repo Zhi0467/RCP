@@ -12,7 +12,6 @@ import os
 import pwd
 import re
 import socket
-import stat
 import sys
 import tempfile
 import time
@@ -27,7 +26,6 @@ COMMAND_MAILBOX_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # its complete durable blocker snapshot outside the compact event ledger, and no
 # finite response bound is proved by admission. The socket timeout still bounds a
 # peer that stalls before closing the newline-framed response.
-PROMPT_FILE_MAX_BYTES = 16 * 1024
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -100,47 +98,15 @@ def _regular_workspace_file(workspace, path, label, required_name=None):
     return absolute
 
 
-def _workspace_text_filename(
-    workspace, path, label, max_bytes, require_nonblank=False, required_name=None
-):
-    """Name one keyed command file, checking it locally only while it still exists.
+def _keyed_command_file(workspace, path, label, required_name=None):
+    """Name one keyed command file; RCP, not this client, reads its contents.
 
-    RCP snapshots the file on first admission and may consume it (Apply does).
-    A retry of the same key must still reach RCP, which answers from its record.
+    RCP snapshots the file under its key on first admission and may consume it
+    (Apply does). A retry of the same key must reach RCP whatever the path now
+    holds, because RCP answers a known key from its record.
     """
 
-    absolute = _workspace_file_path(workspace, path, label, required_name)
-    if not os.path.lexists(absolute):
-        return os.path.basename(absolute)
-    absolute = _regular_workspace_file(workspace, path, label, required_name)
-    try:
-        descriptor = os.open(
-            absolute,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            file_stat = os.fstat(descriptor)
-            if not stat.S_ISREG(file_stat.st_mode):
-                raise ClientInputError(f"{label} is unavailable or not a regular file")
-            if file_stat.st_size > max_bytes:
-                raise ClientInputError(f"{label} exceeds the {max_bytes}-byte limit")
-            with os.fdopen(descriptor, "rb", closefd=False) as stream:
-                content = stream.read(max_bytes + 1)
-        finally:
-            os.close(descriptor)
-    except ClientInputError:
-        raise
-    except OSError as exc:
-        raise ClientInputError(f"{label} could not be read: {exc}") from exc
-    if len(content) > max_bytes:
-        raise ClientInputError(f"{label} exceeds the {max_bytes}-byte limit")
-    try:
-        text = content.decode("utf-8")
-    except UnicodeError as exc:
-        raise ClientInputError(f"{label} must be UTF-8 text") from exc
-    if require_nonblank and not text.strip():
-        raise ClientInputError(f"{label} must not be blank")
-    return os.path.basename(absolute)
+    return os.path.basename(_workspace_file_path(workspace, path, label, required_name))
 
 
 def _read_json(path, label):
@@ -279,21 +245,13 @@ def _request_arguments(namespace, workspace):
         return verb, None, {"worker_id": worker_id, "episode_id": episode_id}
     key = _nonblank(namespace.key, "idempotency key")
     if verb == "apply":
-        patch_file = _workspace_text_filename(
-            workspace,
-            namespace.patch_path,
-            "patch.json",
-            COMMAND_MAILBOX_MAX_REQUEST_BYTES,
-            required_name="patch.json",
+        patch_file = _keyed_command_file(
+            workspace, namespace.patch_path, "patch.json", required_name="patch.json"
         )
         arguments = {"patch_file": patch_file}
     elif verb == "spawn":
-        instruction_file = _workspace_text_filename(
-            workspace,
-            namespace.instruction_file,
-            "instruction file",
-            PROMPT_FILE_MAX_BYTES,
-            require_nonblank=True,
+        instruction_file = _keyed_command_file(
+            workspace, namespace.instruction_file, "instruction file"
         )
         arguments = {
             "seat_node_id": _nonblank(namespace.seat_node, "seat node"),
@@ -332,13 +290,7 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError("invocation limit must be a positive integer")
             goal_file = namespace.goal_file
             if goal_file is not None:
-                goal_file = _workspace_text_filename(
-                    workspace,
-                    goal_file,
-                    "goal file",
-                    PROMPT_FILE_MAX_BYTES,
-                    require_nonblank=True,
-                )
+                goal_file = _keyed_command_file(workspace, goal_file, "goal file")
             arguments = {
                 "action": "kick_off_experiment",
                 "node_id": _nonblank(node_id, "Experiment node"),
@@ -550,12 +502,23 @@ def _run(namespace):
     return _not_answered(namespace.verb, namespace.timeout)
 
 
+def _remaining(deadline):
+    """Seconds left for the next blocking step of one invocation."""
+
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("invocation deadline reached")
+    return remaining
+
+
 def _run_brokered(namespace, broker, request_content, request_id):
+    # One deadline for the whole invocation, not one allowance per socket step.
+    deadline = time.monotonic() + namespace.timeout
     connection = None
     content = bytearray()
     try:
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(namespace.timeout)
+        connection.settimeout(_remaining(deadline))
         connection.connect(broker)
     except (OSError, TimeoutError) as exc:
         if connection is not None:
@@ -567,8 +530,10 @@ def _run_brokered(namespace, broker, request_content, request_id):
             "not_sent",
         )
     try:
+        connection.settimeout(_remaining(deadline))
         connection.sendall(request_content)
         while True:
+            connection.settimeout(_remaining(deadline))
             chunk = connection.recv(65536)
             if not chunk:
                 break
