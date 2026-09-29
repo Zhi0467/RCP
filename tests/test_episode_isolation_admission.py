@@ -422,16 +422,20 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, code):
 
 
 @pytest.mark.parametrize(
-    "status,worktree,code",
+    "status,worktree,condition,code",
     [
-        ("active", True, "episode_binding_job_live"),
-        ("degraded", True, "episode_binding_job_unobservable"),
-        ("completed", True, None),
+        ("active", True, None, "episode_binding_job_live"),
+        ("degraded", True, None, "episode_binding_job_unobservable"),
+        ("completed", True, None, None),
         # A graph-only binding has no worktree a job could write.
-        ("active", False, None),
+        ("active", False, None, None),
+        # A graph-condition watcher observes the graph and runs no job.
+        ("active", True, "{}", None),
     ],
 )
-def test_merge_job_gate_sees_scheduler_watchers(manifest, tmp_path, status, worktree, code):
+def test_merge_job_gate_sees_scheduler_watchers(
+    manifest, tmp_path, status, worktree, condition, code
+):
     # A scheduler job has no compute-job row; only its watcher observes it.
     store, owner, attempt = _merge_owner(manifest, tmp_path)
     with store.connection() as connection:
@@ -443,10 +447,10 @@ def test_merge_job_gate_sees_scheduler_watchers(manifest, tmp_path, status, work
         connection.execute(
             "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
             "origin_task_kind, chat_id, episode_id, execution_host, check_command, log_path, "
-            "cwd, continuation_json, status, created_at) "
+            "cwd, continuation_json, status, created_at, graph_condition_json) "
             "VALUES ('w', 'project', 'origin', 'node_chat', 'chat', 'owner', '', 'squeue', "
-            "'/tmp/log', '/tmp', '{}', ?, ?)",
-            (status, store.now()),
+            "'/tmp/log', '/tmp', '{}', ?, ?, ?)",
+            (status, store.now(), condition),
         )
     if code:
         with pytest.raises(ValueError) as error:

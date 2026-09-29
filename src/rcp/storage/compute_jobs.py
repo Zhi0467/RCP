@@ -120,12 +120,14 @@ class ComputeJobStoreMixin:
             )
         # Scheduler jobs have no registry row; their watcher is the only observer. Only a
         # worktree can be written by one, so a graph-only binding merges over its watchers.
+        # A graph-condition watcher observes the canonical graph and runs no job.
         watcher = connection.execute(
             "SELECT w.status FROM watchers w JOIN episodes e ON e.episode_id = w.episode_id "
             "JOIN episode_isolations i ON i.project_id = w.project_id "
             "AND i.owner_episode_id = COALESCE(e.isolation_owner_episode_id, e.episode_id) "
             "WHERE w.project_id = ? AND i.owner_episode_id = ? "
             "AND json_extract(i.binding_json, '$.worktree') IS NOT NULL "
+            "AND w.graph_condition_json IS NULL "
             "AND w.status IN ('active', 'degraded') ORDER BY w.watcher_id LIMIT 1",
             (project_id, owner_episode_id),
         ).fetchone()
