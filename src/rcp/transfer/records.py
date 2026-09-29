@@ -29,7 +29,7 @@ from rcp.transfer.archive import (
     TransferGraphTarget,
 )
 
-TRANSFER_RECORD_SCHEMA_VERSION = 2
+TRANSFER_RECORD_SCHEMA_VERSION = 3
 
 TRANSFER_RECORD_TABLES = frozenset(
     {
@@ -84,6 +84,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "compute_jobs",
         "compute_backend_probes",
         "conversation_worktrees",
+        "episode_isolations",
+        "episode_isolation_states",
         "graph_watcher_reconciliation",
         "notification_preferences",
         "notification_outbox",
@@ -970,6 +972,8 @@ class TransferEpisodeRecord(_StrictTransferRecord):
     ended_at: AwareTimestamp
     continues_episode_id: str | None = None
     archive: TransferEpisodeArchiveRecord | None = None
+    # A merged graph branch that cleanup archived; only its isolation owner carries it.
+    graph_archived: bool = False
     invocations: tuple[TransferEpisodeInvocation, ...] = ()
     report_attempts: tuple[TransferEpisodeReportAttempt, ...] = ()
     wrapup: TransferEpisodeWrapup | None = None
@@ -1003,6 +1007,8 @@ class TransferEpisodeRecord(_StrictTransferRecord):
             raise ValueError("Auto-research history must retain its same-id graph branch")
         if self.continues_episode_id == self.episode_id:
             raise ValueError("episode history cannot continue itself")
+        if self.graph_archived and self.graph_target.kind != "branch":
+            raise ValueError("only a branch episode's graph archive state can transfer")
         if self.graph_target.kind == "main" and self.graph_base_head is not None:
             raise ValueError("main-target episode history cannot carry a branch base head")
         if self.graph_target.kind == "branch" and (
@@ -1051,7 +1057,7 @@ class TransferPaperDraft(_StrictTransferRecord):
 
 
 class TransferRecordBundle(_StrictTransferRecord):
-    schema_version: Literal[1, TRANSFER_RECORD_SCHEMA_VERSION] = 1
+    schema_version: Literal[1, 2, TRANSFER_RECORD_SCHEMA_VERSION] = 1
     project_id: str = Field(min_length=1)
     attributions: tuple[TransferArchiveAttribution, ...]
     tasks: tuple[TransferTaskRecord, ...]
@@ -1070,6 +1076,8 @@ class TransferRecordBundle(_StrictTransferRecord):
     def validate_bundle(self) -> TransferRecordBundle:
         if self.schema_version == 1 and any(episode.archive for episode in self.episodes):
             raise ValueError("episode archive state requires transfer record schema version 2")
+        if self.schema_version < 3 and any(episode.graph_archived for episode in self.episodes):
+            raise ValueError("graph branch archive state requires transfer record schema version 3")
         attribution_ids = {item.archive_actor_id for item in self.attributions}
         references = {
             item.authorized_by_attribution_id
@@ -1163,6 +1171,10 @@ class TransferRecordBundle(_StrictTransferRecord):
     @model_serializer(mode="wrap")
     def serialize_version(self, handler: SerializerFunctionWrapHandler) -> dict[str, object]:
         data = handler(self)
+        if self.schema_version < 3:
+            # Older payloads predate the graph archive flag; keep their canonical bytes.
+            for episode in data.get("episodes", []):
+                episode.pop("graph_archived", None)
         if self.schema_version == 1:
             # The canonical v1 payload predates this field. Preserve its exact
             # shape so decoding an old archive preserves its canonical bytes.

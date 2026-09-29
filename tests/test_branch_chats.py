@@ -3,14 +3,17 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent
-from rcp.api.episode_branches import ensure_auto_research_graph_target
+from rcp.api.episode_branches import ensure_episode_graph_target
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import reserve_auto_research
+from rcp.runs.episodes.isolation import ensure_episode_isolation
+from rcp.service import RunRequest
 
 from .helpers import (
     agent_patch_json,
@@ -26,16 +29,35 @@ from .test_branch_history import _branch_patch
 from .test_branch_target_storage import _merge_task
 
 
-def _app_branch(manifest, tmp_path, *, include_experiment=False):
+def _app_branch(manifest, tmp_path, *, include_experiment=False, owner_mode="auto_research"):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.catalog.open(app.state.default_project_id)
     append_fixture_patch(service, seed_patch())
-    if include_experiment:
+    if include_experiment or owner_mode == "experiment_loop":
         append_fixture_patch(service, _experiment_fixture_patch())
-    episode, root, _ = reserve_auto_research(
+    if owner_mode == "experiment_loop":
+        with patch.object(
+            app.state.background_tasks, "_spawn_record", side_effect=lambda record, *a, **kw: record
+        ):
+            response = TestClient(app).post(
+                f"/api/projects/{app.state.default_project_id}/experiments/exp%2Fbounded-loop/run",
+                json={"chat_id": str(uuid.uuid4()), "graph_isolation": True},
+            )
+        assert response.status_code == 202, response.json()
+        root = app.state.catalog.store.agent_task(response.json()["operation_id"])
+        episode = app.state.catalog.store.episode(root.episode_id)
+        ensure_episode_isolation(
+            service,
+            app.state.catalog.store,
+            episode.episode_id,
+            RunRequest.model_validate(root.request),
+        )
+        return app, service, episode, root
+    episode, root, request = reserve_auto_research(
         app.state.background_tasks,
         app.state.default_project_id,
         AutoResearchStartRequest(
+            code_worktree=False,
             invocation_ceiling=3,
             provider="codex",
             model="",
@@ -46,7 +68,8 @@ def _app_branch(manifest, tmp_path, *, include_experiment=False):
         authorized_by=authorized_human(app),
         graph_base_head=service.history.head_ref(),
     )
-    ensure_auto_research_graph_target(episode, catalog=app.state.catalog)
+    ensure_episode_graph_target(episode, catalog=app.state.catalog)
+    ensure_episode_isolation(service, app.state.catalog.store, episode.episode_id, request)
     app.state.catalog.store.activate_auto_research_reservation(
         episode.episode_id, root.operation_id
     )
@@ -54,10 +77,11 @@ def _app_branch(manifest, tmp_path, *, include_experiment=False):
 
 
 @pytest.mark.parametrize("kind", ["project_chat", "node_chat"])
+@pytest.mark.parametrize("owner_mode", ["auto_research", "experiment_loop"])
 def test_branch_discuss_and_work_share_normal_session_during_and_after_episode(
-    manifest, tmp_path, monkeypatch, kind
+    manifest, tmp_path, monkeypatch, kind, owner_mode
 ):
-    app, main, episode, root = _app_branch(manifest, tmp_path)
+    app, main, episode, root = _app_branch(manifest, tmp_path, owner_mode=owner_mode)
     client = TestClient(app)
     store = app.state.catalog.store
     project_id = app.state.default_project_id
@@ -311,10 +335,13 @@ def test_branch_chat_patch_repair_does_not_apply_to_main(manifest, tmp_path, mon
     assert "ev/repaired-branch-work" not in main.history.state().nodes
 
 
+@pytest.mark.parametrize("owner_mode", ["auto_research", "experiment_loop"])
 def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
-    manifest, tmp_path, monkeypatch
+    manifest, tmp_path, monkeypatch, owner_mode
 ):
-    app, main, branch_episode, root = _app_branch(manifest, tmp_path, include_experiment=True)
+    app, main, branch_episode, root = _app_branch(
+        manifest, tmp_path, include_experiment=True, owner_mode=owner_mode
+    )
     store = app.state.catalog.store
     client = TestClient(app)
     base = f"/api/projects/{branch_episode.project_id}"
@@ -348,6 +375,9 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
         yield AgentEvent(event="answer", text="The bounded check is complete.")
         yield AgentEvent(event="done")
 
+    if owner_mode == "experiment_loop":
+        store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+        store.mark_episode_stop_skipped(branch_episode.episode_id)
     monkeypatch.setattr(app.state.launcher, "stream", launch)
     started = client.post(
         f"{base}/experiments/exp%2Fbounded-loop/run?branch_id={branch_episode.episode_id}",
@@ -360,6 +390,7 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
     assert previous.episode_id not in {None, branch_episode.episode_id}
     experiment = store.episode(previous.episode_id)
     assert experiment.graph_base_head == branch_episode.graph_base_head
+    assert experiment.isolation_owner_episode_id == branch_episode.episode_id
     assert store.auto_research_child_experiments(branch_episode.episode_id) == []
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.mark_episode_stop_skipped(branch_episode.episode_id)
@@ -375,3 +406,42 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
         in main.for_graph_target(branch_episode.graph_target).history.state().nodes
     )
     assert "ev/experiment-review" not in main.history.state().nodes
+
+
+def test_restart_creates_and_launches_a_reserved_experiment_branch(
+    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from functools import partial
+
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.experiment_admission import reconcile_reserved_experiment_branch_roots
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.catalog.open(app.state.default_project_id)
+    append_fixture_patch(service, seed_patch())
+    append_fixture_patch(service, _experiment_fixture_patch())
+    tasks = app.state.background_tasks
+    # The process stops after admission commits and before the branch exists.
+    with (
+        patch("rcp.api.experiments.ensure_episode_graph_target", lambda *a, **kw: None),
+        patch.object(tasks, "_spawn_record", side_effect=lambda record, *a, **kw: record),
+    ):
+        response = TestClient(app).post(
+            f"/api/projects/{app.state.default_project_id}/experiments/exp%2Fbounded-loop/run",
+            json={"chat_id": str(uuid.uuid4()), "graph_isolation": True},
+        )
+    assert response.status_code == 202, response.json()
+    root = tasks.store.agent_task(response.json()["operation_id"])
+    assert root.status == "queued"
+    with pytest.raises(KeyError):
+        service.history.branch(root.episode_id)
+
+    restarted = BackgroundAgentTasks(tasks.store, tasks.stream)
+    spawned: list[str] = []
+    monkeypatch.setattr(
+        restarted, "_spawn_record", lambda record, *a, **kw: spawned.append(record.operation_id)
+    )
+    ensure = partial(ensure_episode_graph_target, catalog=app.state.catalog)
+    assert reconcile_reserved_experiment_branch_roots(restarted, ensure) == [root.operation_id]
+    assert spawned == [root.operation_id]
+    assert service.history.branch(root.episode_id).head_ref().target.branch_id == root.episode_id

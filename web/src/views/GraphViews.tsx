@@ -3,7 +3,28 @@ import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "../branchGraph";
 import { graphSessionKey } from "../graphTarget";
 import { ChangedFields, ChangeHistory } from "../components/BranchChangeDetail";
-import type { GraphBranchChanges, GraphTargetRef } from "../types";
+import { EpisodeMergePanel } from "../components/EpisodeMergePanel";
+import { type BranchDiffWord, branchDiffWord, mergeDiffMarks } from "../mergePanel";
+import type { GraphBranchChanges, GraphTargetRef, MergeDiffPath, MergeEpisodeBody } from "../types";
+
+const BRANCH_DIFF_WORDS: Record<BranchDiffWord, string> = {
+  created: "Added",
+  updated: "Changed",
+  removed: "Removed",
+  changed: "Changed",
+  delivered: "Already merged",
+  proposal: "Proposal",
+  needs_agent: "Needs agent",
+  conflict: "Conflict",
+};
+const BRANCH_DIFF_LEGEND: BranchDiffWord[] = [
+  "created",
+  "updated",
+  "removed",
+  "proposal",
+  "needs_agent",
+  "conflict",
+];
 import {
   ChevronDown,
   CircleDot,
@@ -196,6 +217,8 @@ export function ScientificView({ graph, trustView, onSelectNode, ...editing }: S
 interface DagProps extends Props, GraphEditingProps {
   graphTarget?: GraphTargetRef;
   branchChanges?: GraphBranchChanges | null;
+  /** The branch's changed fields as the merge builder classifies them, when loaded. */
+  mergePaths?: MergeDiffPath[] | null;
   onInspectTask?: (taskId: string) => void;
   /** Session-scoped pan and zoom, owned by the shell so it survives leaving the view. */
   viewportRef: MutableRefObject<DagViewport | null>;
@@ -218,6 +241,7 @@ export function DagView({
   projectId,
   graphTarget,
   branchChanges,
+  mergePaths,
   onInspectTask,
   viewportRef,
   relationFocusNodeId,
@@ -242,6 +266,7 @@ export function DagView({
     () => new Map(branchChanges?.edges.map((change) => [change.edge_id, change]) ?? []),
     [branchChanges],
   );
+  const mergeMarks = useMemo(() => mergeDiffMarks(mergePaths ?? []), [mergePaths]);
   const changeTasks = useMemo(
     () => [
       ...new Map(
@@ -731,9 +756,11 @@ export function DagView({
             </button>
           )}
           <div className="branch-change-legend" aria-label="Change legend">
-            <span className="branch-change-badge created">Created</span>
-            <span className="branch-change-badge updated">Updated</span>
-            <span className="branch-change-badge removed">Removed</span>
+            {BRANCH_DIFF_LEGEND.map((word) => (
+              <span key={word} className={`branch-diff-word diff-${word}`}>
+                {BRANCH_DIFF_WORDS[word]}
+              </span>
+            ))}
           </div>
         </div>
       )}
@@ -1002,9 +1029,13 @@ export function DagView({
                     !brightTypes.has(node.type) ||
                     Boolean(focusedRelations && !focusedRelations.nodeIds.has(node.id)) ||
                     Boolean(selectedTaskId && !taskHighlights.has(node.id));
+                  const nodeChange = nodeChanges.get(node.id);
+                  const diffWord = nodeChange
+                    ? branchDiffWord(nodeChange.change, mergeMarks.get(`node:${node.id}`))
+                    : null;
                   return (
                     <div
-                      className={`dag-node ${nodeChanges.has(node.id) ? `branch-${nodeChanges.get(node.id)!.change}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
+                      className={`dag-node ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
                       data-node-id={node.id}
                       style={
                         {
@@ -1028,18 +1059,14 @@ export function DagView({
                         type="button"
                         onClick={() => inspectNode(node)}
                       >
-                        <span className="eyebrow">
-                          {nodeTypeLabel(node)}
-                          {nodeChanges.has(node.id) && (
-                            <span
-                              className={`branch-change-badge ${nodeChanges.get(node.id)!.change}`}
-                            >
-                              {nodeChanges.get(node.id)!.change}
-                            </span>
-                          )}
-                        </span>
+                        {!branchChanges && <span className="eyebrow">{nodeTypeLabel(node)}</span>}
                         <strong>{node.title}</strong>
-                        <small>
+                        {branchChanges && (
+                          <span className={`branch-diff-word diff-${diffWord ?? "context"}`}>
+                            {diffWord ? BRANCH_DIFF_WORDS[diffWord] : "Context"}
+                          </span>
+                        )}
+                        <small className="dag-node-standing">
                           <span className={`standing ${node.standing}`}>{node.standing}</span>
                           <span>{node.status || node.validity || ""}</span>
                         </small>
@@ -1110,7 +1137,7 @@ interface ExecutionProps {
   onInspectTask: (operationId: string) => void;
   onStopEpisode: (episodeId: string) => Promise<void>;
   onArchiveEpisode: ArchiveEpisodeAction;
-  onMergeEpisode: (episodeId: string) => Promise<void>;
+  onMergeEpisode: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
   onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
@@ -1563,6 +1590,8 @@ export function ExecutionView({
         taskActionId={taskActionId}
         archiveDisabled={episodeAction !== null}
         onArchive={onArchiveEpisode}
+        mergeBusy={episodeAction === `merge:${episode.episode_id}`}
+        onMerge={onMergeEpisode}
         experimentConversation={selectedExperimentConversation}
         indexedEntry={indexedEntry}
         watchedByParentAutoResearch={watchedByParentAutoResearch}
@@ -1620,6 +1649,8 @@ function ExperimentEpisodeCard({
   taskActionId,
   archiveDisabled,
   onArchive,
+  mergeBusy,
+  onMerge,
   experimentConversation,
   indexedEntry,
   watchedByParentAutoResearch,
@@ -1650,6 +1681,8 @@ function ExperimentEpisodeCard({
   taskActionId: string | null;
   archiveDisabled: boolean;
   onArchive: ArchiveEpisodeAction;
+  mergeBusy: boolean;
+  onMerge: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
   experimentConversation?: ReactNode;
   indexedEntry: ExperimentLoopIndexEntry | null;
   watchedByParentAutoResearch: boolean;
@@ -1756,6 +1789,15 @@ function ExperimentEpisodeCard({
             }}
             episodeReportHref={episodeReportHref}
           />
+          {(episode.graph_branch || episode.code_worktree) && (
+            <EpisodeMergePanel
+              apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
+              episode={episode}
+              disabled={archiveDisabled || mutationsDisabled}
+              busy={mergeBusy}
+              onMerge={onMerge}
+            />
+          )}
         </div>
       )}
     </article>

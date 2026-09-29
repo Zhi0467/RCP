@@ -24,8 +24,9 @@ Capabilities are fixed in code:
   focused-Experiment graph and watcher contract.
 - **Auto-research orchestrate** uses Work-like project repository access plus
   its dedicated staged command client and orchestrator graph profile.
-- **graph merge** is graph-only; it writes its scratch candidate and receives no
-  repository write roots.
+- **episode merge** writes its scratch candidate. It receives no repository
+  write roots unless it lands episode code; then it receives exactly chat
+  Integrate's local-merge roots, the episode worktree and the shared checkout.
 - **generic graph correction** rewrites only retained scratch output; Work-like
   correction retains the same native session and the same exact Work write
   scope so it can repair reflection without repeating operational effects.
@@ -341,7 +342,7 @@ use; one owned by another account is refused.
 
 ## Provider enforcement
 
-A durable conversation worktree binding replaces exactly one registered alias's
+A durable chat or episode worktree binding replaces exactly one registered alias's
 root with its validated worktree root on the same execution machine and host.
 Catalog ownership and overlap checks validate the registered checkout and
 the planned sibling before creation, and the replacement before launch. The
@@ -351,6 +352,11 @@ admitting shared checkout files. The scope prompt renders this same root. The sh
 Discuss receives the same worktree pointer as read context only. A
 human-selected local integration turn alone admits both exact roots. Its target
 is backend-resolved and persisted, never taken from a client-supplied path.
+
+Episode Work and orchestrate use the owner's binding. They never receive the
+shared checkout as a repository write root. Each launch refuses a machine grant
+covering that checkout. A default temporary grant that covers it is omitted.
+Repository context renders the same bound worktree used by enforcement.
 
 ### Codex
 

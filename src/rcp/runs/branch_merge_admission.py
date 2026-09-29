@@ -1,7 +1,7 @@
-"""Admission for one graph-only Auto-research branch merge.
+"""Admission for one graph-only episode branch merge.
 
 Branch-merge policy, not engine plumbing: the checks below are about what an
-ended Auto-research branch is, and none of them generalise to any other task
+episode graph branch is, and none of them generalise to any other task
 kind.  It takes the engine because launching needs the engine's launch gate.
 """
 
@@ -26,6 +26,7 @@ def start_branch_merge(
     *,
     authorized_by: AuthorizedHuman,
     operation_id: str | None = None,
+    launch: bool = True,
 ) -> AgentTaskRecord:
     """Dispatch one graph-only merge without reopening or spending the episode."""
 
@@ -35,18 +36,26 @@ def start_branch_merge(
     if (
         episode is None
         or episode.project_id != project_id
-        or episode.mode != "auto_research"
-        or episode.graph_target.kind != "branch"
-        or episode.graph_target.branch_id != episode.episode_id
+        or episode.graph_target.branch_id not in {None, episode.episode_id}
     ):
-        raise ValueError("branch merge requires its exact Auto-research episode branch")
+        raise ValueError("branch merge requires its exact owner episode branch")
+    isolation = tasks.store.episode_isolation(project_id, episode.episode_id)
+    if episode.graph_target.kind == "main" and (
+        isolation is None or isolation.graph_branch_id is not None or isolation.worktree is None
+    ):
+        # Only a code-only isolation owner merges without a graph branch.
+        raise ValueError("branch merge requires its exact owner episode branch")
     # Branch facts only: a live graph-capable writer blocks the merge; the
     # episode's status, ending, and paused turns do not.
     active_branch_writers = [
         item
-        for item in tasks.store.unsettled_graph_target_tasks(
-            project_id,
-            episode.graph_target,
+        for item in (
+            []
+            if episode.graph_target.kind == "main"
+            else tasks.store.unsettled_graph_target_tasks(
+                project_id,
+                episode.graph_target,
+            )
         )
         if item.kind != "branch_merge"
         and item.status in {"queued", "running", "pausing"}
@@ -96,4 +105,22 @@ def start_branch_merge(
         dispatch_authority=authority,
     )
     stored = tasks.store.create_branch_merge_task(record)
-    return tasks.launch_admitted(stored.operation_id)
+    return tasks.launch_admitted(stored.operation_id) if launch else stored
+
+
+def settle_agentless_merge(tasks, service, operation_id):
+    """Deliver the usual post-commit observers without creating a provider turn."""
+    from rcp.agents import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+
+    record = tasks.store.agent_task(operation_id)
+    if record is None or record.status != "succeeded" or record.kind != "branch_merge":
+        return
+    execution = AgentTaskExecution(
+        operation_id=operation_id,
+        store=tasks.store,
+        control=AgentProcessControl(),
+        applied_revision=record.applied_revision,
+        applied_graph_state=service.history.state(),
+    )
+    tasks._task_settled(record, BranchMergeRunRequest.model_validate(record.request), execution)

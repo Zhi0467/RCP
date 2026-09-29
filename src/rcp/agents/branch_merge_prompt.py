@@ -8,7 +8,7 @@ from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
 
 # Bumped when the branch-merge task contract's stable policy prose changes.
-BRANCH_MERGE_POLICY_VERSION = "branch-merge-v1"
+BRANCH_MERGE_POLICY_VERSION = "branch-merge-v2"
 
 
 def branch_merge_task_contract(
@@ -21,17 +21,26 @@ def branch_merge_task_contract(
     plan_path: str,
     residue_block: str,
     ontology_extensions: bool = False,
+    code_block: str = "",
 ) -> str:
-    """Describe one fresh semantic rebase without exposing repositories."""
+    """Describe one fresh semantic rebase; repositories appear only with a code block."""
 
     _require_inputs(context_path, context_id, patch_path, validator_command)
-    return f"""# RCP graph-branch merge
+    authority = (
+        "This task carries orchestrator graph authority and the one repository write boundary\n"
+        "in the code merge section below, and no authority over project configuration,\n"
+        "ontology, membership, or Proposal approval."
+        if code_block
+        else "This task carries orchestrator graph authority, but it carries no repository\n"
+        "authority and no authority over project configuration, ontology, membership, or\n"
+        "Proposal approval."
+    )
+    return f"""# RCP episode merge
 
 {PROVIDER_NATIVE_SUBAGENT_LIFETIME}
 
-You are the dedicated graph-only merge agent for one human-dispatched Auto-research branch
-merge. This task carries orchestrator graph authority, but it carries no repository authority
-and no authority over project configuration, ontology, membership, or Proposal approval.
+You are the dedicated merge agent for one human-dispatched episode merge. {authority}
+{code_block}
 
 Exact immutable inputs:
 - merge context: `{context_path}`
@@ -43,7 +52,7 @@ Exact immutable inputs:
 The merge context contains the immutable branch-base graph, exact branch-head graph, current
 main graph, a typed base-to-branch semantic delta, branch Patch summaries, transition-manager
 contracts, and deterministic three-way conflicts. Treat those files and heads as exact. Do not
-infer a different base, inspect canonical state directories, or inspect any repository.
+infer a different base or inspect canonical state directories.
 
 RCP has already built every ordinary operation. The exact built plan is the file at the
 operation-plan path above. RCP prepends those operations during both self-check and commit, so
@@ -100,10 +109,11 @@ Only permitted file output:
   `change_summary`, and `agent_action` only when the operation actually chooses a Decision.
 - Preserve non-conflicting `source_refs` verbatim. For a source-ref conflict, choose among
   the supplied main and branch refs; never invent a ref or remove provenance just to pass
-  validation. This task reads no repository.
+  validation. Read no repository for the graph Patch.
 - Do not include revisions, graph heads, merge ids, branch provenance, authorizers, task ids,
   transition traces, admission fields, or other RCP bookkeeping. RCP supplies all of them.
-- Do not write repository files, watcher files, artifacts, or canonical `.research` files.
+- Do not write watcher files, artifacts, or canonical `.research` files, and write repository
+  files only as the code merge section allows.
 
 Before finishing, run the exact validator command. Exit 0 means the candidate is semantically
 valid against the live current main graph, exit 1 supplies a correction diagnostic, and exit 2
@@ -114,7 +124,28 @@ not commit anything; RCP revalidates and commits atomically or commits nothing.
 """
 
 
-def branch_merge_correction_parts(*, diagnostics_path: str) -> list[str]:
+def code_merge_task_contract(*, code_block: str) -> str:
+    """Describe a merge turn that lands code alone; RCP carries any graph itself."""
+
+    if not code_block:
+        raise ValueError("a code merge contract requires its code merge section")
+    return f"""# RCP episode merge
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
+You are the dedicated merge agent for one human-dispatched episode merge. This turn merges
+the episode's code only. The graph needs no judgment, so RCP carries it itself: write no
+`patch.json`. The turn carries the one repository write boundary in the code merge section
+below, and no graph authority and no authority over project configuration, ontology,
+membership, or Proposal approval.
+{code_block}
+
+When the merge commit is in place, reply with a short summary of how you resolved each
+conflict.
+"""
+
+
+def branch_merge_correction_parts(*, diagnostics_path: str, code: bool = False) -> list[str]:
     """Request one bounded scratch-only correction in the same native session."""
 
     if not diagnostics_path:
@@ -124,9 +155,9 @@ def branch_merge_correction_parts(*, diagnostics_path: str) -> list[str]:
         "the branch and main heads have not changed.",
         f"- Validation diagnostics: `{diagnostics_path}`\n"
         "Correct only the residue operations and rewrite the Patch so it validates; RCP still "
-        "prepends the built operations. Perform no operational side effect, inspect no "
-        "repositories, add no RCP bookkeeping or branch provenance, and write nothing but the "
-        "Patch.",
+        "prepends the built operations. Perform no operational side effect, "
+        + ("leave the code merge as it stands, " if code else "inspect no repositories, ")
+        + "add no RCP bookkeeping or branch provenance, and write nothing but the Patch.",
     ]
 
 
@@ -135,6 +166,7 @@ def branch_merge_rebase_parts(
     previous_context_id: str,
     context_id: str,
     new_reason_legend: str,
+    code: bool = False,
 ) -> list[str]:
     """Replace a discarded candidate after main moved, preserving the native session.
 
@@ -155,6 +187,10 @@ def branch_merge_rebase_parts(
         "residue: the `residue` listed below replaces the master's list; if none is listed, "
         "the master's list still holds."
     ]
+    if code:
+        parts.append(
+            "Only the graph moved. Keep the code merge you already landed; do not redo it."
+        )
     if new_reason_legend:
         parts.append("What each new residue reason means:\n" + new_reason_legend)
     return parts

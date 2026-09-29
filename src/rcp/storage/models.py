@@ -2352,6 +2352,9 @@ class EpisodeRecord(BaseModel):
     episode_id: str
     project_id: str
     mode: EpisodeMode
+    code_worktree: bool = False
+    graph_isolation: bool = False
+    isolation_owner_episode_id: str | None = None
     control_node_id: str | None = None
     graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
     graph_base_head: GraphHeadRef | None = None
@@ -2393,6 +2396,7 @@ class EpisodeRecord(BaseModel):
         if self.graph_target.kind == "main" and self.graph_base_head is not None:
             raise ValueError("a main-target episode cannot carry a branch base head")
         if self.graph_target.kind == "branch":
+            self.graph_isolation = True
             if self.graph_base_head is None or self.graph_base_head.target.kind != "main":
                 raise ValueError("a branch-target episode requires its immutable main base head")
             if (
@@ -3411,6 +3415,8 @@ def watcher_next_check_at(
 
 
 _EXPERIMENT_EPISODE_PINNED_FIELDS = (
+    "code_worktree",
+    "graph_isolation",
     "run_on",
     "run_truth_scope",
     "chat_id",
@@ -3425,6 +3431,8 @@ _EXPERIMENT_EPISODE_PINNED_FIELDS = (
 
 def _experiment_pinned_value(request: dict[str, object], field: str) -> object:
     value = request.get(field)
+    if field in {"code_worktree", "graph_isolation"}:
+        return bool(value)
     if field == "run_truth_scope" and isinstance(value, list):
         return sorted({str(item) for item in value})
     return value
@@ -3623,6 +3631,8 @@ _PROJECT_ID_TABLES = (
     "writing_sessions",
     "chat_session_contexts",
     "conversation_worktrees",
+    "episode_isolations",
+    "episode_isolation_states",
     "result_views",
     "artifact_revision_candidates",
     "graph_runs",

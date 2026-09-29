@@ -354,7 +354,12 @@ def _prepare_data(
     if empty_branch:
         base = history.head_ref()
         branch_id = str(uuid.uuid4())
-        branch = history.create_auto_research_branch(
+        # This script also seeds data under every published release, which named
+        # the creator create_auto_research_branch before episode isolation.
+        create_branch = getattr(history, "create_episode_branch", None) or (
+            history.create_auto_research_branch
+        )
+        branch = create_branch(
             GraphBranchMetadata(
                 branch_id=branch_id,
                 episode_id=branch_id,

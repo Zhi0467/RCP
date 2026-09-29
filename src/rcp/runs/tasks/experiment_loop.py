@@ -449,13 +449,6 @@ async def _stage_work_turn(
                 artifact_scope_id,
                 reuse=resuming,
             )
-        read_dirs = _chat_read_dirs(
-            context,
-            local_stage,
-            remote_stage,
-            service,
-            resolved.execution_machine_alias,
-        )
         write_scope = _project_write_scope(
             context,
             service,
@@ -466,6 +459,14 @@ async def _stage_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+            episode_request=request,
+        )
+        read_dirs = _chat_read_dirs(
+            context,
+            local_stage,
+            remote_stage,
+            service,
+            resolved.execution_machine_alias,
         )
         compute_commands = (
             WorkComputeCommands(
@@ -2742,13 +2743,6 @@ async def _stream_work_graph_repair(
             control_node_id=request.control_node_id,
             control_decision_bundle=request.control_decision_bundle,
         )
-        read_dirs = _chat_read_dirs(
-            context,
-            local_stage,
-            remote_stage,
-            service,
-            execution_machine.alias,
-        )
         write_scope = _project_write_scope(
             context,
             service,
@@ -2759,6 +2753,14 @@ async def _stream_work_graph_repair(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
+            episode_request=request,
+        )
+        read_dirs = _chat_read_dirs(
+            context,
+            local_stage,
+            remote_stage,
+            service,
+            execution_machine.alias,
         )
         write_dirs = [Path(item) for item in write_scope.repository_roots]
         assert validator_lifecycle is not None

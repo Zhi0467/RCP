@@ -1,5 +1,5 @@
 import { BranchChangeDetail } from "./BranchChangeDetail";
-import type { GraphBranchChanges } from "../types";
+import type { GraphBranchChanges, MergeDiffPath } from "../types";
 import { Check, FlaskConical, MessageCircle, Minus, PencilLine, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -20,6 +20,7 @@ import { humanFieldLabels, humanize, nodeTypeLabel, presentNode } from "../nodeP
 import type {
   BeliefTransition,
   Edge,
+  EpisodeIsolationChoice,
   ExperimentControlState,
   GraphNode,
   OntologyState,
@@ -31,6 +32,8 @@ import { RelationMap } from "./RelationMap";
 interface Props {
   node: GraphNode;
   branchChange?: GraphBranchChanges["nodes"][number];
+  /** This node's changed fields, as the merge builder classifies them. */
+  mergePaths?: MergeDiffPath[];
   historical?: boolean;
   onInspectTask?: (taskId: string) => void;
   edges: Edge[];
@@ -71,7 +74,9 @@ interface Props {
   onStage: (changes: Record<string, DraftNodeValue>) => void;
   onApplyField?: (changes: Record<string, DraftNodeValue>, fieldKey: string) => void;
   onDecisionChoice?: (selectedOption: string) => void;
-  onRunExperiment?: () => void;
+  onRunExperiment?: (isolation: EpisodeIsolationChoice) => void;
+  /** On a branch, a new Experiment inherits its owner's isolation; the toggles show it, locked. */
+  inheritedIsolation?: EpisodeIsolationChoice | null;
   onOpenChat: () => void;
   onOpenRelatedNode: (nodeId: string) => void;
   onSelectNode: (nodeId: string) => void;
@@ -105,6 +110,7 @@ const originLabels: Record<NonNullable<GraphNode["origin"]>, string> = {
 export function DetailDrawer({
   node,
   branchChange,
+  mergePaths,
   historical = false,
   onInspectTask,
   edges,
@@ -140,12 +146,17 @@ export function DetailDrawer({
   onApplyField,
   onDecisionChoice,
   onRunExperiment,
+  inheritedIsolation,
   onOpenChat,
   onOpenRelatedNode,
   onSelectNode,
 }: Props) {
   const [editing, setEditing] = useState(behind);
   const [removalConfirmationOpen, setRemovalConfirmationOpen] = useState(false);
+  const [isolation, setIsolation] = useState<EpisodeIsolationChoice>({
+    graph_isolation: false,
+    code_worktree: false,
+  });
   const [editBase, setEditBase] = useState(node);
   const [draft, setDraft] = useState<Record<string, string>>(() => nodeEditDraft(node, ontology));
   const [referenceDraft, setReferenceDraft] = useState<Record<string, string>>(() =>
@@ -365,7 +376,11 @@ export function DetailDrawer({
 
         <div className={`drawer-content${editing ? " editing" : ""}`}>
           {branchChange && (
-            <BranchChangeDetail change={branchChange} onInspectTask={onInspectTask} />
+            <BranchChangeDetail
+              change={branchChange}
+              mergePaths={mergePaths}
+              onInspectTask={onInspectTask}
+            />
           )}
           {stagedForRemoval && (
             <section className="node-removal-staged" role="status">
@@ -584,7 +599,7 @@ export function DetailDrawer({
                         experimentRunBusy ||
                         !experimentControl.ready
                       }
-                      onClick={onRunExperiment}
+                      onClick={() => onRunExperiment(inheritedIsolation ?? isolation)}
                     >
                       <FlaskConical size={13} />{" "}
                       {experimentRunBusy
@@ -593,6 +608,30 @@ export function DetailDrawer({
                           ? "Start new episode"
                           : "Start episode"}
                     </button>
+                  </div>
+                  <div className="experiment-isolation" role="group" aria-label="Isolation">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={(inheritedIsolation ?? isolation).graph_isolation}
+                        disabled={Boolean(inheritedIsolation)}
+                        onChange={(event) =>
+                          setIsolation({ ...isolation, graph_isolation: event.target.checked })
+                        }
+                      />
+                      Work on a graph branch
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={(inheritedIsolation ?? isolation).code_worktree}
+                        disabled={Boolean(inheritedIsolation)}
+                        onChange={(event) =>
+                          setIsolation({ ...isolation, code_worktree: event.target.checked })
+                        }
+                      />
+                      Code worktree
+                    </label>
                   </div>
                   {experimentControl.reasons.length > 0 && (
                     <ul className="experiment-gate-reasons" aria-label="Run requirements">

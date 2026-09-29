@@ -272,6 +272,8 @@ def _experiment_task(
             "mode": "work",
             "trigger": trigger,
             "patch_kind": "experiment_loop",
+            "code_worktree": existing_episode.code_worktree if existing_episode else False,
+            "graph_isolation": graph_target.kind == "branch",
             "control_node_id": node_id,
             "control_revision": 1,
             "control_episode_id": episode_id,

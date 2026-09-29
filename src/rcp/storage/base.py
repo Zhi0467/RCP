@@ -64,6 +64,7 @@ class AppStoreBase:
         (26, "chat_reads_and_pins_v1"),
         (27, "space_machines_v1"),
         (28, "notifications_v1"),
+        (29, "episode_isolation_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -616,6 +617,12 @@ class AppStoreBase:
             version=28,
             name="notifications_v1",
             migration=migrate_notifications,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=29,
+            name="episode_isolation_v1",
+            migration=self._migrate_episode_isolation,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2064,6 +2071,7 @@ class AppStoreBase:
         self._migrate_chat_reads_and_pins(connection)
         self._migrate_space_machines(connection)
         migrate_notifications(connection)
+        self._migrate_episode_isolation(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)
         if issue_bootstrap:
@@ -2386,6 +2394,73 @@ class AppStoreBase:
         )
         connection.execute(
             "CREATE INDEX IF NOT EXISTS compute_jobs_origin ON compute_jobs(origin_operation_id)"
+        )
+
+    @staticmethod
+    def _migrate_episode_isolation(connection: sqlite3.Connection) -> None:
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS episode_isolations (
+                project_id TEXT NOT NULL,
+                owner_episode_id TEXT NOT NULL,
+                graph_branch_id TEXT,
+                binding_json TEXT NOT NULL,
+                PRIMARY KEY(project_id, owner_episode_id),
+                UNIQUE(project_id, graph_branch_id)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS episode_isolation_states (
+                project_id TEXT NOT NULL,
+                owner_episode_id TEXT NOT NULL,
+                state_json TEXT NOT NULL,
+                PRIMARY KEY(project_id, owner_episode_id)
+            )
+        """)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(episodes)")}
+        for name, declaration in (
+            ("isolation_owner_episode_id", "TEXT"),
+            ("code_worktree", "INTEGER NOT NULL DEFAULT 0"),
+            ("graph_isolation", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in columns:
+                connection.execute(f"ALTER TABLE episodes ADD COLUMN {name} {declaration}")
+        AppStoreBase._derive_branch_episode_isolation(connection)
+        # Experiment requests pin graph_isolation; a legacy branch loop's stored requests
+        # must agree with the episode it now derives, or its next delivery is refused.
+        connection.execute(
+            "UPDATE graph_runs SET request_json = "
+            "json_set(request_json, '$.graph_isolation', json('true')) "
+            "WHERE json_extract(graph_target_json, '$.kind') = 'branch' "
+            "AND json_extract(request_json, '$.patch_kind') = 'experiment_loop' "
+            "AND json_type(request_json, '$.graph_isolation') IS NULL"
+        )
+
+    @staticmethod
+    def _derive_branch_episode_isolation(
+        connection: sqlite3.Connection, project_id: str | None = None
+    ) -> None:
+        """Branch episodes stored without isolation choices: legacy rows and transfers.
+
+        A branch target is a graph-isolated episode, and the branch is named for its
+        root episode, which owns the isolation of every continuation on it.
+        """
+        scope = "" if project_id is None else " AND project_id = ?"
+        values = () if project_id is None else (project_id,)
+        connection.execute(
+            "UPDATE episodes SET graph_isolation = 1 "
+            "WHERE json_extract(graph_target_json, '$.kind') = 'branch'" + scope,
+            values,
+        )
+        connection.execute(
+            "UPDATE episodes SET isolation_owner_episode_id = "
+            "json_extract(graph_target_json, '$.branch_id') "
+            "WHERE isolation_owner_episode_id IS NULL "
+            "AND json_extract(graph_target_json, '$.kind') = 'branch' "
+            "AND json_extract(graph_target_json, '$.branch_id') != episode_id "
+            "AND EXISTS (SELECT 1 FROM episodes root WHERE root.project_id = episodes.project_id "
+            "AND root.episode_id = json_extract(episodes.graph_target_json, '$.branch_id'))"
+            + scope,
+            values,
         )
 
     @staticmethod

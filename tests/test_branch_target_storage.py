@@ -369,13 +369,13 @@ def test_branch_merge_task_requires_a_quiet_branch_and_exact_authority(
         store.create_branch_merge_task(_merge_task(store, episode, "merge-active"))
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
 
-    with pytest.raises(ValueError, match="visible attributed branch root"):
+    with pytest.raises(ValueError, match="exact owner episode"):
         store.create_branch_merge_task(
             _merge_task(store, episode, "merge-main", graph_target=GraphTargetRef())
         )
 
     other_target = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
-    with pytest.raises(ValueError, match="exact Auto-research episode"):
+    with pytest.raises(ValueError, match="exact owner episode"):
         store.create_branch_merge_task(
             _merge_task(store, episode, "merge-cross-target", graph_target=other_target)
         )

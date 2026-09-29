@@ -79,7 +79,7 @@ def _deferred_parent_outside_recent_window(manifest, tmp_path):
         stage_root=str(tmp_path),
         authorized_by=parent.authorized_by,
     )
-    store.create_experiment_episode_with_invocation(
+    child = store.create_experiment_episode_with_invocation(
         child, auto_research_route=_experiment_route(store, parent, root, child)
     )
     record_launched_experiment_turn(store, child.operation_id)

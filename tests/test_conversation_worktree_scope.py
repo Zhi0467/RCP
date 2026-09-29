@@ -11,6 +11,7 @@ from threading import Barrier
 import pytest
 
 from rcp.agents.context import RepositoryPointer
+from rcp.agents.prompts import write_scope_section
 from rcp.agents.write_scope import (
     ProjectWriteScope,
     RegisteredRepositoryRoot,
@@ -18,7 +19,7 @@ from rcp.agents.write_scope import (
     resolve_project_write_scope,
 )
 from rcp.config import Manifest
-from rcp.core.models import ConversationWorktreeBinding
+from rcp.core.models import ConversationWorktreeBinding, EpisodeWorktreeBinding, WorktreeBinding
 from rcp.storage import AgentTaskRecord, AppStore, ProjectRecord
 
 
@@ -47,7 +48,7 @@ def _binding(manifest: Manifest, tmp_path: Path) -> ConversationWorktreeBinding:
 def _resolve(
     manifest: Manifest,
     tmp_path: Path,
-    binding: ConversationWorktreeBinding | None,
+    binding: WorktreeBinding | None,
     *,
     pointer_path: str | None = None,
     aliases: list[str] | None = None,
@@ -55,6 +56,7 @@ def _resolve(
     include_shared_checkout: bool = False,
     capability: str = "work_auto",
     app_data_dir: Path | None = None,
+    machine_writable_paths: list[str] | None = None,
 ):
     stage = tmp_path / "stage"
     workspace = stage / "workspace"
@@ -83,6 +85,7 @@ def _resolve(
         ),
         conversation_worktree=binding,
         include_shared_checkout=include_shared_checkout,
+        machine_writable_paths=machine_writable_paths,
     )
 
 
@@ -424,3 +427,33 @@ def test_work_turn_history_uses_only_durable_ordinary_chat_mode(
         assert store.chat_has_work_turn(binding.project_id, binding.chat_id) is expected
     assert not store.chat_has_work_turn("foreign", binding.chat_id)
     assert not store.chat_has_work_turn(binding.project_id, str(uuid.uuid4()))
+
+
+@pytest.mark.parametrize("capability", ["work_auto", "orchestrate"])
+def test_episode_scope_admits_one_worktree_without_shared_ancestor_grants(
+    manifest: Manifest, tmp_path: Path, capability: str
+) -> None:
+    chat_binding = _binding(manifest, tmp_path)
+    binding = EpisodeWorktreeBinding(
+        **chat_binding.model_dump(
+            exclude={"project_id", "chat_id", "chat_scope", "node_id", "status"}
+        ),
+        owner_episode_id=str(uuid.uuid4()),
+    )
+    scope = _resolve(manifest, tmp_path, binding, capability=capability)
+    assert scope.repository_roots == [binding.worktree_path]
+    assert scope.git_metadata_roots == [binding.git_common_dir]
+    assert not any(Path(binding.shared_path).is_relative_to(root) for root in scope.granted_roots)
+    # The prompt's worktree fact is the binding's own identity.
+    assert scope.episode_worktree is not None
+    assert (scope.episode_worktree.branch, scope.episode_worktree.shared_path) == (
+        binding.branch,
+        binding.shared_path,
+    )
+    assert binding.branch in write_scope_section(scope)
+    for grant in (binding.shared_path, str(Path(binding.shared_path).parent)):
+        with pytest.raises(ValueError):
+            _resolve(manifest, tmp_path, binding, machine_writable_paths=[grant])
+    Path(binding.worktree_path).rmdir()
+    with pytest.raises(ValueError):
+        _resolve(manifest, tmp_path, binding)

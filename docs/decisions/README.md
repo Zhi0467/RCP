@@ -1,5 +1,10 @@
 # Active decision records
 
+- [RCP merges clean episode worktrees](2026-09-28-rcp-merges-clean-episode-worktrees.md)
+  records why a human Merge click lets RCP merge a clean episode worktree
+  itself, why conflicts go to the merge agent beside the graph residue, and
+  why chat Integrate stays an agent turn.
+
 - [Machine writable paths protect only RCP's own storage](2026-09-27-machine-writable-paths-protect-only-rcp-storage.md)
   records why machine cards grant extra writable paths and `/tmp` to every
   repository-writing launch, why only RCP's own storage stays read-only, and

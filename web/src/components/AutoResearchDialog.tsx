@@ -79,7 +79,12 @@ interface Props {
   error: string | null;
   initialInvocationCeiling: number;
   onClose: () => void;
-  onAuthorize: (invocationCeiling: number, startingInstruction: string | null) => void;
+  /** `codeWorktree` false opts out; true leaves the choice to the server's eligibility check. */
+  onAuthorize: (
+    invocationCeiling: number,
+    startingInstruction: string | null,
+    codeWorktree: boolean,
+  ) => void;
 }
 
 export function AutoResearchDialog({
@@ -95,11 +100,13 @@ export function AutoResearchDialog({
   const budgetInput = useRef<HTMLInputElement>(null);
   const [budget, setBudget] = useState(String(initialInvocationCeiling));
   const [instruction, setInstruction] = useState("");
+  const [codeWorktree, setCodeWorktree] = useState(true);
 
   useEffect(() => {
     if (!open) return;
     setBudget(String(initialInvocationCeiling));
     setInstruction("");
+    setCodeWorktree(true);
     const returnFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const restoreBackground = dialog.current
@@ -146,7 +153,7 @@ export function AutoResearchDialog({
         onSubmit={(event) => {
           event.preventDefault();
           if (!budgetIsValid || busy) return;
-          onAuthorize(invocationCeiling, instruction.trim() || null);
+          onAuthorize(invocationCeiling, instruction.trim() || null, codeWorktree);
         }}
       >
         <header>
@@ -187,6 +194,21 @@ export function AutoResearchDialog({
               onChange={(event) => setInstruction(event.target.value)}
             />
           </label>
+          <div className="campaign-isolation" role="group" aria-label="Isolation">
+            <label>
+              <input type="checkbox" checked disabled />
+              Work on a graph branch
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={codeWorktree}
+                disabled={busy}
+                onChange={(event) => setCodeWorktree(event.target.checked)}
+              />
+              Code worktree
+            </label>
+          </div>
         </div>
         {error && (
           <div className="campaign-dialog-error" role="alert">

@@ -219,9 +219,10 @@ whether **Check now** is currently available. These are backend decisions, not
 client reconstructions from replay, status, or notification fields.
 
 Every branch route proves the branch belongs to the requested project and
-episode. A branch id alone never grants lookup. Task, watcher, episode, and
-Experiment detail APIs preserve exact `main` versus `branch:<id>` target
-identity.
+episode. Branch lists, targets, indexes, Research, Inbox, Chats, and merge
+eligibility reads accept both Experiment and Auto-research owners. A branch id
+alone never grants lookup. Task, watcher, episode, and Experiment detail APIs
+preserve exact `main` versus `branch:<id>` target identity.
 
 Graph, snapshot, history, Sync/preview, and ordinary chat/task routes accept an
 optional `branch_id` query naming an existing episode branch. Omitting it selects
@@ -245,8 +246,41 @@ outputs; an unavailable canonical refresh fails explicitly.
 Neither a branch response nor a delayed main response may replace the other
 target's state. Experiment controls and graph-wake evaluation use that same
 target. An active branch merge publishes graph mutation as unavailable and
-rejects manual Sync and new graph writers until it settles. Discuss remains
-available with its ordinary read-only capability.
+rejects manual Sync and new graph writers until it settles. An owner merge
+reservation also fences new Discuss turns on that binding through cleanup.
+
+## Episode merge API
+
+`POST /api/projects/{project_id}/episodes/{episode_id}/merge` resolves the
+isolation owner from any member. It also accepts a code-only owner. The optional
+body names `target_branch`, `history_mode` (`merge` or `squash`),
+`remove_worktree`, `delete_code_branch`, `archive_graph_branch`, and
+`keep_branch_open`. Cleanup defaults to all three steps. Squash disallows Keep
+branch open. Deleting the code branch requires worktree removal and delivery.
+Merge stays human-dispatched. A clean merge runs without a provider turn.
+Episode responses include the owner's nullable `isolation_state`. It carries
+the reservation, attempt phase, recorded cleanup steps and errors, delivered
+code commit and target, squash commit, and graph archive flag. Graph receipts
+remain the independent graph delivery record.
+
+`GET /api/projects/{project_id}/episodes/{episode_id}/merge-preview` accepts an
+optional `target_branch`. It recomputes `MergePreview`; no preview is stored.
+The response contains `delivered_baseline`, graph operation count, residue
+paths with reasons, per-path `paths`, optional code status, and `needs_agent`.
+Each path names its entity, id, and field path, its base, branch, and main
+values, and the builder's `delivered`, `conflict`, `needs_agent`,
+`needs_proposal`, and `residue_reason`, from the same builder call as the
+residue. `needs_agent` also covers a code conflict. Code reports its
+repository alias, source and target branches, commits ahead, leftovers, and
+conflict files. Its status is `clean`, `conflict`, `already_merged`,
+`target_dirty`, or `target_missing`.
+
+`POST /api/projects/{project_id}/episodes/{episode_id}/cleanup` accepts the
+three cleanup choices and `confirm_discard`. Unmerged removal or graph archive
+requires that confirmation. Each step is recorded and retryable. Graph archive
+only hides the branch from the default episode list. The list query
+`include_archived_branches=true` includes it again. Explicit episode and branch
+reads remain available, and Patch history is unchanged.
 
 ## Compute setup and job APIs
 
@@ -830,6 +864,22 @@ authority. Entering Agents closes node detail.
 
 ### Runs
 
+Episode Run requests expose `code_worktree` and `graph_isolation`.
+Auto-research `code_worktree` is optional and nullable. It resolves an omitted or
+null code choice to true when eligible, otherwise false. It defaults graph
+isolation to true and refuses `graph_isolation: false`. Experiment starts
+default both to false; graph isolation creates an episode branch. An existing
+branch target retains its branch and owner. Explicit ineligible code isolation
+still refuses with its admission code.
+Only the API start route resolves the omitted Auto-research code default.
+Internal start and run requests default code isolation to false and do no
+eligibility work unless enabled. Disabled admission does not read the manifest
+or probe Git.
+The episode response publishes both choices and `isolation_owner_episode_id`.
+The binding is backend-owned; clients cannot supply worktree paths or an owner.
+Resume, Retry, and Add N turns keep the captured choices and owner.
+These fields have no Run-panel controls yet.
+
 Runs is the episode ledger. Its primary object is the durable Experiment-loop or
 Auto-research episode parent, never an invocation, graph node, or Blocker. It has
 three sections in order: **Needs Action**, **In progress**, then **Completed**.
@@ -957,7 +1007,7 @@ The page keeps each project's episode list, so returning to a project tab shows
 that list at once while it refreshes. A poll never overlaps a list request
 already in flight for the same project; it waits for that request instead.
 Project Runs refreshes this index while visible, so an Experiment dispatched on
-an Auto-research graph branch appears as its own episode card even before anyone
+an episode graph branch appears as its own episode card even before anyone
 opens its exact route. The project-scoped
 `/api/projects/{project_id}/experiment-episodes` path restricts projection work
 to that visible project. The same child appears once as a linked, subordinate
@@ -1034,10 +1084,19 @@ the route shows a History handoff without exposing the newer episode's transcrip
 or controls.
 
 An Auto-research detail shows compact graph-branch identity, base/head, merge
-state, and a persistent **Merge to main** control. A deliberate click checks
+state, and a persistent **Merge** panel. Experiment cards that own a graph
+branch or code worktree show the same panel. A deliberate click checks
 current server eligibility and either starts the merge or displays the blocker
 beside the control, following the
 [branch merge projection](auto-research-and-branch-merge.md#runs-projection).
+The Experiment Run control offers "Work on a graph branch" and "Code worktree"
+toggles, off by default. The Auto-research dialog shows the graph branch as
+always on; its Code worktree choice is left to the server's eligibility check
+unless the human opts out. On a branch, each DAG node shows its title and one
+word: how Merge will treat it (Conflict, Needs agent, Proposal, Already merged),
+else how the branch changed it (Added, Changed, Removed). Standing, status, and
+the connect handle appear on hover. Node detail lists each changed field as
+main before, branch, and main now beside a conflict, each with its own color.
 **Open graph** selects the branch workspace explicitly. An exact branch
 Experiment route may show its historical transcript through Runs without exposing an ordinary
 composer for that episode-owned session. Ordinary chats started in the branch

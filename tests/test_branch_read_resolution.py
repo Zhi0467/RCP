@@ -22,7 +22,7 @@ def branch_service(manifest, tmp_path):
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/branch-only"))
     history.append(_branch_patch("ev/main-only"))
     service = ProjectService(

@@ -2111,8 +2111,14 @@ class EpisodeStoreMixin:
             if task.request.get(field) != getattr(wrapup, field):
                 raise ValueError(f"the hidden report task changed its frozen {field}")
 
-    @staticmethod
-    def _insert_episode(connection: sqlite3.Connection, record: EpisodeRecord) -> None:
+    def _insert_episode(self, connection: sqlite3.Connection, record: EpisodeRecord) -> None:
+        self.require_episode_binding_admission_open(
+            connection,
+            record.project_id,
+            episode_id=record.episode_id,
+            owner_episode_id=record.isolation_owner_episode_id,
+            branch_id=record.graph_target.branch_id,
+        )
         connection.execute(
             """
             INSERT INTO episodes (
@@ -2122,8 +2128,9 @@ class EpisodeStoreMixin:
                 authorized_user_id, authorized_display_name, stop_requested_at,
                 stop_settled_at, ending, ending_diagnostic, wrapup_state,
                 wrapup_error, report_attempts_used, created_at, updated_at, ended_at,
-                continues_episode_id, continuation_request_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                continues_episode_id, continuation_request_id,
+                code_worktree, graph_isolation, isolation_owner_episode_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.episode_id,
@@ -2151,6 +2158,9 @@ class EpisodeStoreMixin:
                 record.ended_at,
                 record.continues_episode_id,
                 record.continuation_request_id,
+                int(record.code_worktree),
+                int(record.graph_isolation),
+                record.isolation_owner_episode_id,
             ),
         )
 
@@ -2243,6 +2253,10 @@ class EpisodeStoreMixin:
     def _active_branch_merge_exists(
         connection: sqlite3.Connection, project_id: str, graph_target: GraphTargetRef
     ) -> bool:
+        # A main-target merge task is code-only; its owner's reservation fences its own
+        # binding, and it does not touch other episodes on main.
+        if graph_target.kind != "branch":
+            return False
         return (
             connection.execute(
                 """

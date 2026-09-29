@@ -592,7 +592,7 @@ test("episode API calls use only the generic endpoints and the continuation body
     {
       path: "/api/projects/demo/episodes/episode%2Falpha/merge",
       method: "POST",
-      body: null,
+      body: "{}",
     },
     {
       path: "/api/projects/demo/episodes/episode%2Falpha/messages",

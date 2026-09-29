@@ -1645,6 +1645,109 @@ export interface BranchMergeReceipt {
   created_at: string;
 }
 
+/** The two independent isolation toggles a Run offers. */
+export interface EpisodeIsolationChoice {
+  graph_isolation: boolean;
+  code_worktree: boolean;
+}
+
+export interface MergeEpisodeBody {
+  target_branch?: string | null;
+  history_mode?: "merge" | "squash";
+  remove_worktree?: boolean;
+  delete_code_branch?: boolean;
+  archive_graph_branch?: boolean;
+  keep_branch_open?: boolean;
+  confirm_unfinished_jobs?: boolean;
+}
+
+/** A job that may still write an episode worktree; Merge pauses on it. */
+export interface EpisodeUnfinishedJob {
+  kind: "compute_job" | "watcher";
+  id: string;
+  status: string;
+  execution_host: string;
+  command: string | null;
+  log_path: string | null;
+}
+
+export interface EpisodeMergeAttempt {
+  attempt_id: string;
+  authorized_by: AuthorizedHuman;
+  phase:
+    "pre_merge" | "landing" | "agent_merging" | "verified" | "graph_committed" | "cleanup" | "done";
+  code_by_agent: boolean;
+  conflict_files: string[];
+  unfinished_jobs?: EpisodeUnfinishedJob[];
+  worktree_kept?: boolean;
+  source_commit: string | null;
+  target_branch: string | null;
+  target_commit: string | null;
+  tree: string | null;
+  landed_commit: string | null;
+  squash_commit: string | null;
+  commit_timestamp: string | null;
+  expected_shared_branch: string | null;
+  graph_head: GraphHeadRef | null;
+  history_mode: "merge" | "squash";
+  remove_worktree: boolean;
+  delete_code_branch: boolean;
+  archive_graph_branch: boolean;
+  keep_branch_open: boolean;
+  confirm_discard: boolean;
+  cleanup_completed: string[];
+  error: string | null;
+  graph_task_id: string | null;
+}
+
+export interface EpisodeIsolationState {
+  owner_episode_id: string;
+  status: "creating" | "ready" | "merging" | "removing" | "removed";
+  merge_reservation: string | null;
+  merge_attempt: EpisodeMergeAttempt | null;
+  delivered_source_commit: string | null;
+  delivered_target_branch: string | null;
+  squash_commit: string | null;
+  graph_archived: boolean;
+}
+
+export interface CleanupEpisodeBody {
+  remove_worktree?: boolean;
+  delete_code_branch?: boolean;
+  archive_graph_branch?: boolean;
+  confirm_discard?: boolean;
+}
+
+/** One changed field on a branch, classified by the same builder call Merge makes. */
+export interface MergeDiffPath {
+  entity: "node" | "edge" | "proposal" | "ambiguity" | "glossary" | "global";
+  id: string;
+  field_path: string;
+  base: unknown;
+  branch: unknown;
+  main: unknown;
+  delivered: boolean;
+  conflict: boolean;
+  needs_agent: boolean;
+  needs_proposal: boolean;
+  residue_reason: string | null;
+}
+
+export interface MergePreview {
+  delivered_baseline: GraphHeadRef | null;
+  graph: { ops: number; residue: { path: string; reason: string }[]; paths: MergeDiffPath[] };
+  code: {
+    repo_alias: string;
+    source_branch: string;
+    target_branch: string;
+    commits_ahead: number;
+    leftover_files: string[];
+    status: "clean" | "conflict" | "already_merged" | "target_dirty" | "target_missing";
+    conflict_files: string[];
+  } | null;
+  needs_agent: boolean;
+}
+
 export interface GraphBranchSummary {
   branch_id: string;
   episode_id: string;
@@ -1905,6 +2008,9 @@ export interface AgentTaskContract {
 }
 
 export interface AgentTaskRequest {
+  code_worktree?: boolean;
+  graph_isolation?: boolean;
+  isolation_owner_episode_id?: string | null;
   worktree?: boolean;
   worktree_integration?: WorktreeIntegrationOption["id"] | null;
   provider?: ProviderId | null;
@@ -2312,6 +2418,10 @@ export interface AutoResearchRecoverySummary {
 }
 
 export interface Episode {
+  code_worktree: boolean;
+  graph_isolation: boolean;
+  isolation_owner_episode_id: string | null;
+  isolation_state: EpisodeIsolationState | null;
   episode_id: string;
   project_id: string;
   mode: EpisodeMode;
@@ -2485,6 +2595,8 @@ export interface EpisodeMessage {
 
 export interface StartEpisodeRequest {
   mode: "auto_research";
+  code_worktree?: boolean | null;
+  graph_isolation?: true;
   invocation_ceiling: number;
   starting_instruction?: string | null;
 }

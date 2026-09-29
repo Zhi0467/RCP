@@ -27,7 +27,9 @@ import type {
   Episode,
   EpisodeTimelineResponse,
   ExperimentLoopIndexEntry,
+  MergeEpisodeBody,
 } from "../types";
+import { EpisodeMergePanel } from "./EpisodeMergePanel";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 import {
   EpisodeArchiveButton,
@@ -63,7 +65,7 @@ export function AutoResearchEpisodeCard({
   onOpenExperimentEntry: (entry: ExperimentLoopIndexEntry) => void;
   onInspectTask: (operationId: string) => void;
   onStop: (episodeId: string) => Promise<void>;
-  onMerge: (episodeId: string) => Promise<void>;
+  onMerge: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
   onContinue: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
@@ -76,8 +78,6 @@ export function AutoResearchEpisodeCard({
   const [additionalTurns, setAdditionalTurns] = useState("");
   const [message, setMessage] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
-  const mergeSnapshot = JSON.stringify(episode.graph_branch);
-  const [mergeError, setMergeError] = useState<{ snapshot: string; message: string } | null>(null);
   const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const apiBase = `/api/projects/${encodeURIComponent(episode.project_id)}`;
   const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
@@ -137,10 +137,6 @@ export function AutoResearchEpisodeCard({
     if (episode.can_continue) setExpanded(true);
   }, [episode.can_continue]);
 
-  useEffect(() => {
-    setMergeError(null);
-  }, [mergeSnapshot]);
-
   const submitContinuation = async () => {
     if (!continuationIsValid || anotherActionBusy) return;
     setLocalError(null);
@@ -172,19 +168,6 @@ export function AutoResearchEpisodeCard({
       await onOperateTask(taskControl.task, taskControl.kind);
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const mergeToMain = async () => {
-    if (!episode.graph_branch || anotherActionBusy) return;
-    setMergeError(null);
-    try {
-      await onMerge(episode.episode_id);
-    } catch (error) {
-      setMergeError({
-        snapshot: mergeSnapshot,
-        message: error instanceof Error ? error.message : String(error),
-      });
     }
   };
 
@@ -432,20 +415,13 @@ export function AutoResearchEpisodeCard({
                     {episode.graph_branch.merge_diagnostic}
                   </div>
                 )}
-              <button
-                className="button primary compact campaign-branch-merge"
-                type="button"
+              <EpisodeMergePanel
+                apiBase={apiBase}
+                episode={episode}
                 disabled={anotherActionBusy}
-                onClick={() => void mergeToMain()}
-              >
-                {mergeBusy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
-                {mergeBusy ? "Starting merge…" : "Merge to main"}
-              </button>
-              {mergeError?.snapshot === mergeSnapshot && (
-                <div className="campaign-branch-diagnostic" role="alert">
-                  {mergeError.message}
-                </div>
-              )}
+                busy={mergeBusy}
+                onMerge={onMerge}
+              />
             </section>
           )}
 

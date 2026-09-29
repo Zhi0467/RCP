@@ -161,7 +161,11 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         background,
         app.state.default_project_id,
         AutoResearchStartRequest(
-            invocation_ceiling=5, provider="codex", run_on="laptop", run_truth_scope=["repo-a"]
+            code_worktree=False,
+            invocation_ceiling=5,
+            provider="codex",
+            run_on="laptop",
+            run_truth_scope=["repo-a"],
         ),
         authorized_by=fabricated_authorizer(),
         graph_base_head=GraphHeadRef(revision=0),
@@ -204,6 +208,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         instruction_sha256=hashlib.sha256(instruction.encode()).hexdigest(),
     )
     child = wait_for_task(store, child.operation_id, expect="succeeded")
+    assert child.request["isolation_owner_episode_id"] == episode.episode_id
     needs_correction = state in {"running", "malformed"}
     assert len(launcher.calls) == (2 if needs_correction else 1)
     assert len(commands.backend.starts) == (0 if state == "nothing" else 1)

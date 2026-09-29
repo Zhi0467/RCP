@@ -275,6 +275,7 @@ async def stream_auto_research_orchestrator_run(
                 data_dir=data_dir,
                 execution=execution,
                 capability="orchestrate",
+                episode_request=turn.request,
             )
             contract_path, prompt, master, values = _orchestrator_prompt(
                 execution,
@@ -518,6 +519,7 @@ async def stream_auto_research_worker_run(
                 data_dir=data_dir,
                 execution=execution,
                 capability="work_auto",
+                episode_request=turn.request,
             )
             contract_path, prompt, master, values = _worker_prompt(
                 service,

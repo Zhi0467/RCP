@@ -105,7 +105,7 @@ def test_archived_record_capability_refuses_previous_target_before_source_releas
 
 def test_target_validates_record_capability_instead_of_echoing_unknown_version(tmp_path):
     with pytest.raises(ValueError, match="does not support the source transfer record schema"):
-        _linked_pair(tmp_path, configuration=_source_configuration(record_schema_version=3))
+        _linked_pair(tmp_path, configuration=_source_configuration(record_schema_version=4))
     target = AppStore(tmp_path / "team" / "rcp.sqlite3")
     source = AppStore(tmp_path / "personal" / "rcp.sqlite3")
     assert target.project_transfer_requests() == []

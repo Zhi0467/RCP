@@ -83,7 +83,7 @@ def _configuration_fixture(manifest, tmp_path: Path):
     )
     history.claim_project_identity("created", project_id=PROJECT_ID)
     branch_base = history.head_ref(history.materialize(write_outputs=False))
-    branch = history.create_auto_research_branch(
+    branch = history.create_episode_branch(
         GraphBranchMetadata(
             branch_id=BRANCH_ID,
             episode_id=BRANCH_ID,
@@ -608,7 +608,7 @@ def test_prior_home_can_read_its_branch_but_cannot_authorize_new_team_work(
     base = target.head_ref(target.materialize(write_outputs=False))
     new_branch_id = str(uuid.uuid4())
     with pytest.raises(ValueError, match="authorizer belongs to a different space"):
-        target.create_auto_research_branch(
+        target.create_episode_branch(
             GraphBranchMetadata(
                 branch_id=new_branch_id,
                 episode_id=new_branch_id,
@@ -624,7 +624,7 @@ def test_prior_home_can_read_its_branch_but_cannot_authorize_new_team_work(
         )
 
     accepted_branch_id = str(uuid.uuid4())
-    accepted = target.create_auto_research_branch(
+    accepted = target.create_episode_branch(
         GraphBranchMetadata(
             branch_id=accepted_branch_id,
             episode_id=accepted_branch_id,

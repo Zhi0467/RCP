@@ -133,6 +133,11 @@ def branch_changes(
 def active_merge(store: AppStore, project_id: str, target: GraphTargetRef) -> bool:
     if target.kind != "branch":
         return False
+    isolation = store.episode_isolation_for_branch(project_id, target.branch_id or "")
+    if isolation is not None:
+        state = store.episode_isolation_state(project_id, isolation.owner_episode_id)
+        if state is not None and state.merge_reservation is not None:
+            return True
     return any(
         task.kind == "branch_merge"
         and task.graph_target == target

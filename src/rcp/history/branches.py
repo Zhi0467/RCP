@@ -1426,7 +1426,7 @@ def _branch_merge_id(metadata: GraphBranchMetadata) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def create_auto_research_branch(
+def create_episode_branch(
     parent: HistoryManager,
     metadata: GraphBranchMetadata,
 ) -> BranchHistoryManager:

@@ -440,6 +440,12 @@ class ProjectStoreMixin:
                     "chat_pins": connection.execute(
                         "DELETE FROM chat_pins WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "episode_isolations": connection.execute(
+                        "DELETE FROM episode_isolations WHERE project_id = ?", (project_id,)
+                    ).rowcount,
+                    "episode_isolation_states": connection.execute(
+                        "DELETE FROM episode_isolation_states WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "conversation_worktrees": connection.execute(
                         "DELETE FROM conversation_worktrees WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -1049,6 +1055,11 @@ class ProjectStoreMixin:
                 "UPDATE chat_pins SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
+            for table in ("episode_isolations", "episode_isolation_states"):
+                connection.execute(
+                    f"UPDATE {table} SET project_id = ? WHERE project_id = ?",
+                    (project_id, legacy_id),
+                )
             connection.execute(
                 "UPDATE conversation_worktrees "
                 "SET project_id = ?, binding_json = json_set(binding_json, '$.project_id', ?) "

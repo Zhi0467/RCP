@@ -25,7 +25,7 @@ def _adopted_loop(manifest, tmp_path, *, branch: bool, old_status: str = "comple
         branch_id = str(uuid.uuid4())
         target = GraphTargetRef(kind="branch", branch_id=branch_id)
         base = loop.service.history.head_ref()
-        loop.service.history.create_auto_research_branch(
+        loop.service.history.create_episode_branch(
             GraphBranchMetadata(
                 branch_id=branch_id,
                 episode_id=branch_id,
@@ -67,6 +67,8 @@ def test_adopted_completions_wake_current_episode_once_with_current_authority(
 ):
     loop, target, old_episode = _adopted_loop(manifest, tmp_path, branch=branch)
     current_policy = {
+        "code_worktree": False,
+        "graph_isolation": branch,
         "workflow_ids": ["current-workflow"] if current_has_skills else [],
         "skill_ids": ["current-skill"] if current_has_skills else [],
         "resolved_skill_packages": (

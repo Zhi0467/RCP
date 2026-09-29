@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Protocol, cast, get_args
 
+from pydantic import BaseModel
+
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.failure_kinds import classify_agent_failure
 from rcp.agents.git_access import ProviderGitAccess
@@ -22,7 +24,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.config import load_manifest
 from rcp.core.authority import require_dispatch
 from rcp.core.models import AuthorizedHuman, GraphState
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     AGENT_TRANSPORT_RETRY_BACKOFF_SECONDS,
     AGENT_TRANSPORT_RETRY_LIMIT,
@@ -425,12 +427,31 @@ class BackgroundAgentTasks:
         )
 
     def admit_provider_task(
-        self, project_id: str, request: AgentTaskRequest, *, execution_host: str | None = None
+        self,
+        project_id: str,
+        request: AgentTaskRequest,
+        *,
+        execution_host: str | None = None,
+        isolation_episode_id: str | None = None,
+        graph_target: GraphTargetRef | None = None,
     ) -> None:
         """Refuse an ineligible execution account before durable allocation or debit."""
 
         if request.provider is None:
             raise ValueError("Provider task admission requires a resolved provider.")
+        if isinstance(request, AutoResearchRunRequest) or (
+            isinstance(request, RunRequest)
+            and (request.patch_kind == "experiment_loop" or isolation_episode_id)
+        ):
+            from rcp.runs.episodes.isolation import validate_episode_admission
+
+            validate_episode_admission(
+                self.store,
+                project_id,
+                request,
+                episode_id=isolation_episode_id,
+                graph_target=graph_target,
+            )
         host = execution_host
         if host is None:
             if request.run_on in {None, "local"}:
@@ -505,10 +526,14 @@ class BackgroundAgentTasks:
             self._transport_retry_admissions = 0
         preserved_dispatches = proven_committed_auto_research_dispatches(self)
         reserved_roots = proven_reserved_auto_research_roots(self)
+        from rcp.runs.experiment_admission import proven_reserved_experiment_branch_roots
+
+        reserved_experiments = proven_reserved_experiment_branch_roots(self)
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
                 *[item.operation_id for item in preserved_dispatches],
                 *[task.operation_id for _episode, task, _request in reserved_roots],
+                *[task.operation_id for _episode, task in reserved_experiments],
             }
         )
         restart_stopping_experiment_recoveries(self)
@@ -528,6 +553,8 @@ class BackgroundAgentTasks:
         stage_host: str | None = None,
         stage_root: str | None = None,
         graph_target: GraphTargetRef | None = None,
+        graph_base_head: GraphHeadRef | None = None,
+        ensure_graph_target: Callable[[EpisodeRecord], None] | None = None,
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task dispatch")
         if kind == "auto_research":
@@ -586,6 +613,8 @@ class BackgroundAgentTasks:
             stage_host=stage_host,
             stage_root=stage_root,
             graph_target=graph_target,
+            graph_base_head=graph_base_head,
+            ensure_graph_target=ensure_graph_target,
         )
 
     def resume(
@@ -1126,6 +1155,8 @@ class BackgroundAgentTasks:
         auto_research_wake_admission: AutoResearchWakeAdmission | None = None,
         claim_graph_repair_parent: bool = False,
         graph_target: GraphTargetRef | None = None,
+        graph_base_head: GraphHeadRef | None = None,
+        ensure_graph_target: Callable[[EpisodeRecord], None] | None = None,
         continues_episode_id: str | None = None,
         continuation_request_id: str | None = None,
     ) -> AgentTaskRecord | None:
@@ -1142,7 +1173,11 @@ class BackgroundAgentTasks:
 
         self._require_startup_effects_open("provider task admission")
         self.admit_provider_task(
-            project_id, request, execution_host=(stage_host or "") if stage_root else None
+            project_id,
+            request,
+            execution_host=(stage_host or "") if stage_root else None,
+            isolation_episode_id=parent.episode_id if parent else None,
+            graph_target=parent.graph_target if parent else graph_target,
         )
         episode: EpisodeRecord | None = None
         task_graph_target = (
@@ -1203,6 +1238,17 @@ class BackgroundAgentTasks:
             )
         ):
             raise ValueError("Only an Experiment Run at invocation 1 can continue an episode.")
+        if (
+            isinstance(request, RunRequest)
+            and request.patch_kind == "experiment_loop"
+            and request.graph_isolation
+            and task_graph_target.kind == "main"
+            and continues_episode_id is None
+            and parent is None
+        ):
+            if graph_base_head is None or ensure_graph_target is None:
+                raise ValueError("experiment_graph_isolation_requires_base")
+            task_graph_target = GraphTargetRef(kind="branch", branch_id=request.control_episode_id)
         operation_id = operation_id or str(uuid.uuid4())
         dispatch_authority = resolved_dispatch_authority(
             self.store,
@@ -1317,6 +1363,7 @@ class BackgroundAgentTasks:
                     request.watcher_ids,
                     continues_episode_id=continues_episode_id,
                     continuation_request_id=continuation_request_id,
+                    graph_base_head=graph_base_head,
                 )
             elif parent is not None and continuation in {
                 "resume",
@@ -1353,6 +1400,31 @@ class BackgroundAgentTasks:
         # the turn's input but reuses the paid allocation, which the wake validator
         # rejects by design.
         try:
+            if ensure_graph_target is not None:
+                owner = self.store.episode(record.episode_id or "")
+                if owner is None:
+                    raise ValueError("episode_isolation_episode_missing")
+                try:
+                    ensure_graph_target(owner)
+                except Exception as exc:
+                    self.store.fail_agent_task(record.operation_id, str(exc))
+                    from rcp.runs.episodes.wrapup import (
+                        EpisodeWrapupSpec,
+                        begin_episode_report_wrapup,
+                    )
+
+                    begin_episode_report_wrapup(
+                        self.store,
+                        EpisodeWrapupSpec(
+                            episode_id=owner.episode_id,
+                            ending="failed",
+                            partial=True,
+                            continuation_operation_id=record.operation_id,
+                            receipt={"reason": "graph_branch_unavailable_before_launch"},
+                            diagnostic=str(exc),
+                        ),
+                    )
+                    raise
             if auto_research_wake_admission is not None or auto_research_mail_delivery is not None:
                 assert isinstance(request, AutoResearchRunRequest)
                 return ensure_auto_research_wake_spawned(
@@ -1401,7 +1473,7 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "The admitted task has no valid persisted request for its kind."
             ) from exc
-        if request.model_dump(mode="json") != record.request:
+        if not _persisted_request_roundtrips(request, record.request):
             raise ValueError("The admitted task request failed its persisted roundtrip.")
 
         try:
@@ -1613,7 +1685,7 @@ class BackgroundAgentTasks:
             self._validate_request_type(current.kind, current_request)
         except (TypeError, ValueError) as exc:
             raise ValueError("The committed task lost its persisted request contract.") from exc
-        if current_request.model_dump(mode="json") != current.request:
+        if not _persisted_request_roundtrips(current_request, current.request):
             raise ValueError("The committed task request failed its persisted roundtrip.")
         return current
 
@@ -2729,6 +2801,21 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             self._controls.pop(operation_id, None)
             self._workers.pop(operation_id, None)
+
+
+def _persisted_request_roundtrips(request: BaseModel, stored: dict) -> bool:
+    """A row written before a field existed omits it; its default is the legacy meaning."""
+    dumped = request.model_dump(mode="json")
+    fields = type(request).model_fields
+    added = {
+        key
+        for key, value in dumped.items()
+        if key not in stored
+        and key in fields
+        and not fields[key].is_required()
+        and value == fields[key].get_default(call_default_factory=True)
+    }
+    return {key: value for key, value in dumped.items() if key not in added} == stored
 
 
 def _runtime_fallback_payload(text: str) -> dict[str, object]:

@@ -41,7 +41,7 @@ from rcp.api.dependencies import (
     get_project_service as _project_service,
 )
 from rcp.api.episode_branches import (
-    ensure_auto_research_graph_target as _ensure_auto_research_graph_target,
+    ensure_episode_graph_target as _ensure_episode_graph_target,
 )
 from rcp.api.episode_branches import (
     graph_branch_summary as _graph_branch_summary,
@@ -123,6 +123,7 @@ from rcp.runs.auto_research_experiments import AutoResearchExperimentCoordinator
 from rcp.runs.auto_research_recovery import reconcile_orphaned_auto_research_failures
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
 from rcp.runs.episodes.reconcile import EpisodeReconciler
+from rcp.runs.experiment_admission import reconcile_reserved_experiment_branch_roots
 from rcp.runs.experiment_loop import (
     experiment_watcher_delivery_request,
     preflight_episode_wake,
@@ -675,8 +676,8 @@ def create_app(
     catalog = ProjectCatalog(app_data, store, launcher, provider_skills)
     attachment_store = ChatAttachmentStore(app_data / "chat-attachments")
 
-    ensure_auto_research_graph_target = partial(
-        _ensure_auto_research_graph_target,
+    ensure_episode_graph_target = partial(
+        _ensure_episode_graph_target,
         catalog=catalog,
     )
     graph_branch_summary = partial(
@@ -778,6 +779,11 @@ def create_app(
             layout=server_layout,
         )
         if task.graph_target.kind == "branch" and kind != "branch_merge":
+            owner = store.episode(task.graph_target.branch_id or "")
+            if owner is None:
+                raise ValueError("episode_isolation_owner_missing")
+            if owner.mode == "experiment_loop" and task.episode_id == owner.episode_id:
+                ensure_episode_graph_target(owner)
             service = service.for_graph_target(
                 task.graph_target,
                 expected_episode_id=task.graph_target.branch_id,
@@ -1588,6 +1594,26 @@ def create_app(
                 # effect fence opens. Recovery must precede every other owner.
                 await terminals.start()
                 background_tasks.recover_at_startup()
+                from rcp.runs.episodes.merge import reconcile_episode_merge
+
+                for project in store.projects():
+                    for episode in store.episodes(project.project_id, limit=None):
+                        state = store.episode_isolation_state(
+                            project.project_id, episode.episode_id
+                        )
+                        if state is None or state.merge_reservation is None:
+                            continue
+                        try:
+                            await asyncio.to_thread(
+                                reconcile_episode_merge,
+                                _project_service(catalog, project.project_id),
+                                store,
+                                episode,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Could not reconcile episode merge %s: %s", episode.episode_id, exc
+                            )
                 if member_removal_coordinator is not None:
                     member_removal_coordinator.reconcile_pending()
                 background_tasks.accept_watcher_notifications()
@@ -1597,7 +1623,12 @@ def create_app(
                 await asyncio.to_thread(
                     reconcile_reserved_auto_research_roots,
                     background_tasks,
-                    ensure_auto_research_graph_target,
+                    ensure_episode_graph_target,
+                )
+                await asyncio.to_thread(
+                    reconcile_reserved_experiment_branch_roots,
+                    background_tasks,
+                    ensure_episode_graph_target,
                 )
                 await asyncio.to_thread(
                     reconcile_committed_auto_research_dispatches,

@@ -26,6 +26,8 @@ from rcp.core.authority import (
 )
 from rcp.core.models import (
     AuthorizedHuman,
+    BranchMergeReceipt,
+    EpisodeIsolationState,
 )
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
@@ -229,7 +231,6 @@ class AgentTaskStoreMixin:
             or not record.visible
             or record.parent_operation_id is not None
             or record.authorized_by is None
-            or record.graph_target.kind != "branch"
         ):
             raise ValueError("a branch merge requires one visible attributed branch root task")
         authority = record.dispatch_authority
@@ -264,16 +265,19 @@ class AgentTaskStoreMixin:
                 if episode is None:
                     raise KeyError(record.episode_id)
                 stored_episode = self._episode_record(episode)
+                code_only = record.graph_target.kind == "main"
                 if (
-                    stored_episode.mode != "auto_research"
+                    stored_episode.graph_target.branch_id
+                    != (None if code_only else stored_episode.episode_id)
                     or stored_episode.project_id != record.project_id
                     or stored_episode.graph_target != record.graph_target
                 ):
-                    raise ValueError("branch merge requires its exact Auto-research episode")
+                    raise ValueError("branch merge requires its exact owner episode")
                 # A branch merges on branch facts: nothing about the episode's
                 # status, ending, or paused turns is a condition, and merging ends
                 # nothing. The only writers that matter are live graph-capable tasks.
-                if any(
+                # A code-only merge writes no graph, so main's writers are not in its way.
+                if not code_only and any(
                     task.kind != "branch_merge"
                     and task.status in {"queued", "running", "pausing"}
                     and task_graph_capable(task.kind, task.request)
@@ -305,6 +309,25 @@ class AgentTaskStoreMixin:
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
         self._require_graph_branch_admission_open(connection, record)
+        if record.kind == "branch_merge":
+            reservation = connection.execute(
+                "SELECT json_extract(state_json, '$.merge_reservation') "
+                "FROM episode_isolation_states WHERE project_id = ? AND owner_episode_id = ?",
+                (record.project_id, record.episode_id),
+            ).fetchone()
+            held = reservation[0] if reservation is not None else None
+            # A code-only merge exists only inside its owner's Merge reservation.
+            if (held is not None or record.graph_target.kind == "main") and (
+                held != record.operation_id
+            ):
+                raise ValueError("episode_merge_reservation_changed")
+        else:
+            self.require_episode_binding_admission_open(
+                connection,
+                record.project_id,
+                episode_id=record.episode_id,
+                branch_id=record.graph_target.branch_id,
+            )
         connection.execute(
             """
             INSERT INTO graph_runs (
@@ -398,13 +421,12 @@ class AgentTaskStoreMixin:
                         "only an ordinary conversation may independently target a branch"
                     )
                 branch = connection.execute(
-                    "SELECT project_id, mode, graph_target_json FROM episodes WHERE episode_id = ?",
+                    "SELECT project_id, graph_target_json FROM episodes WHERE episode_id = ?",
                     (record.graph_target.branch_id,),
                 ).fetchone()
                 if (
                     branch is None
                     or branch["project_id"] != record.project_id
-                    or branch["mode"] != "auto_research"
                     or GraphTargetRef.model_validate_json(branch["graph_target_json"])
                     != record.graph_target
                 ):
@@ -3931,6 +3953,66 @@ class AgentTaskStoreMixin:
                     created_at=now,
                     diagnostic=detail,
                 )
+
+    def reconcile_agentless_merge_task(
+        self,
+        operation_id: str,
+        receipt: BranchMergeReceipt,
+    ) -> None:
+        """Repair a task verdict only from its caller-verified canonical merge receipt."""
+        if receipt.provenance.merge_task_id != operation_id:
+            raise ValueError("episode_merge_receipt_mismatch")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            task = self._agent_task_record(row)
+            state_row = connection.execute(
+                "SELECT state_json FROM episode_isolation_states WHERE project_id = ? AND owner_episode_id = ?",
+                (task.project_id, task.episode_id),
+            ).fetchone()
+            state = EpisodeIsolationState.model_validate_json(state_row[0]) if state_row else None
+            attempt = state.merge_attempt if state else None
+            if (
+                task.kind != "branch_merge"
+                or task.episode_id != receipt.provenance.episode_id
+                or task.authorized_by != receipt.authorized_by
+                or attempt is None
+                or attempt.attempt_id != operation_id
+                or attempt.graph_task_id is not None
+            ):
+                raise ValueError("episode_merge_receipt_mismatch")
+            if task.status == "succeeded":
+                return
+            now = self.now()
+            revision = receipt.result_main_head.revision if receipt.outcome == "committed" else None
+            connection.execute(
+                "UPDATE graph_runs SET status = 'succeeded', updated_at = ?, finished_at = ?, "
+                "status_message = 'Agentless merge completed.', error = NULL, applied_revision = ?, "
+                "result_json = ?, phase = 'complete', last_activity_at = ? WHERE operation_id = ?",
+                (
+                    now,
+                    now,
+                    revision,
+                    self._bounded_result_json({"agentless": True}),
+                    now,
+                    operation_id,
+                ),
+            )
+            self._insert_agent_task_receipt(
+                connection,
+                operation_id,
+                "operation_completed",
+                self._bounded_receipt_payload(
+                    {"status": "succeeded", "applied_revision": revision}
+                ),
+                tier="summary",
+                created_at=now,
+            )
 
     def complete_agent_task(
         self,

@@ -156,6 +156,16 @@ check exercises that sequence and replays the same key without a second launch.
 Per-operation transport and probe limits remain bounded; an interrupted result
 still retains its uncertain receipt.
 
+## Episode merge and removal gate
+
+Merge and Remove worktree check jobs started by every episode sharing the
+isolation owner. A live or unobservable job pauses both actions: RCP lists the
+jobs, and the human either cancels or confirms. Stopping a watcher does not
+prove job completion. A confirmed Merge with a code worktree always runs the code
+merge agent, which receives the confirmed jobs and stops them before it merges.
+If a job still reads as unfinished afterwards, Merge keeps the worktree for a
+later Merge to remove. RCP itself never cancels a job.
+
 ## One watcher and human Cancel contract
 
 Every external `watch.json` entry requires `check_command`, absolute `log_path`,

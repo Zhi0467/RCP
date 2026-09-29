@@ -775,6 +775,107 @@
 .campaign-branch-merge {
   justify-self: end;
 }
+.episode-merge-panel {
+  display: grid;
+  gap: 8px;
+}
+.campaign-isolation,
+.experiment-isolation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.campaign-isolation label,
+.experiment-isolation label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.campaign-dialog-fields .campaign-isolation label {
+  display: inline-flex;
+}
+.campaign-isolation input,
+.experiment-isolation input,
+.merge-check input {
+  width: auto;
+}
+.merge-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--type-sm);
+}
+.merge-pickers {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px 14px;
+  background: var(--sheet);
+  font-size: var(--type-sm);
+}
+.merge-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.merge-picker input,
+.merge-picker select {
+  width: 200px;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--ink);
+  font: inherit;
+}
+.merge-check {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.merge-code-status,
+.merge-note {
+  color: var(--muted);
+  font-size: var(--type-xs);
+}
+.merge-code-status.merge-code-conflict,
+.merge-code-status.merge-code-target_dirty,
+.merge-code-status.merge-code-target_missing {
+  color: var(--coral);
+}
+.merge-conflict-files {
+  margin: 0;
+  padding-left: 18px;
+  font: var(--type-2xs) var(--mono);
+}
+.merge-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.merge-unfinished-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+  color: var(--amber);
+}
+.merge-unfinished-jobs ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--type-2xs);
+}
+.merge-unfinished-actions {
+  display: flex;
+  gap: 6px;
+}
 .campaign-report-actions {
   display: flex;
   flex: 1;

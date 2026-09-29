@@ -94,6 +94,8 @@ def test_continue_resumes_an_ended_auto_research_episode_in_its_session(
         assert continuation_root_id != original_root.operation_id
         assert payload["mode"] == "auto_research"
         assert payload["continues_episode_id"] == original.episode_id
+        assert payload["isolation_owner_episode_id"] == original.episode_id
+        assert (payload["code_worktree"], payload["graph_isolation"]) == (False, True)
         assert payload["continued_by_episode_id"] is None
         assert payload["can_continue"] is False
         # The whole chain is published on every member, with each one's report.

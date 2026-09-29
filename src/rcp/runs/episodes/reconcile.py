@@ -440,7 +440,10 @@ class EpisodeReconciler:
         reconcile_due_auto_research_recoveries(self.background)
 
     def latest_experiment_leaf(self, episode_id: str) -> AgentTaskRecord | None:
-        tasks = self.store.episode_tasks(episode_id)
+        # A human-dispatched merge is not an Experiment invocation.
+        tasks = [
+            task for task in self.store.episode_tasks(episode_id) if task.kind != "branch_merge"
+        ]
         parents = {
             task.parent_operation_id for task in tasks if task.parent_operation_id is not None
         }

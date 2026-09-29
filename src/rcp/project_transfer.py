@@ -29,7 +29,7 @@ def capture_project_transfer_source(
 ) -> tuple[ProjectTransferSourceConfiguration, GraphHeadRef]:
     """Read the live manifest, repository identities, and canonical main head."""
 
-    if record_schema_version not in {1, TRANSFER_RECORD_SCHEMA_VERSION}:
+    if record_schema_version not in {1, 2, TRANSFER_RECORD_SCHEMA_VERSION}:
         raise ValueError("source does not support the required transfer record schema")
     materialization = service.history.current_materialization()
     head = service.history.head_ref(materialization)

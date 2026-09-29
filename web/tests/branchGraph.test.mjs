@@ -10,8 +10,14 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 after(() => server.close());
-const { graphTargetUrl, graphSessionKey, graphTargetFromHash, graphViewHash } =
-  await server.ssrLoadModule("/src/graphTarget.ts");
+const {
+  branchOwnerEpisode,
+  experimentStartTarget,
+  graphTargetUrl,
+  graphSessionKey,
+  graphTargetFromHash,
+  graphViewHash,
+} = await server.ssrLoadModule("/src/graphTarget.ts");
 const { parseProjectHash, projectHashAfterViewChange } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 const { branchGraphProjection, expandBranchContext } =
@@ -298,4 +304,26 @@ test("merge review decodes one same-node content, status and standing bundle", a
     decodeProposal({ ops: [ops[0], { ...ops[2], node_id: "hyp/other" }] }).semantics,
     "legacy",
   );
+});
+
+test("an isolated Experiment started from main expects its own episode branch", () => {
+  const main = { kind: "main" };
+  const branch = { kind: "branch", branch_id: "other" };
+  assert.deepEqual(experimentStartTarget(main, true, "episode"), {
+    kind: "branch",
+    branch_id: "episode",
+  });
+  assert.deepEqual(experimentStartTarget(main, undefined, "episode"), main);
+  assert.deepEqual(experimentStartTarget(branch, true, "episode"), branch);
+});
+
+test("a graph-archived Experiment still owns its branch through the Experiment index", () => {
+  const owner = {
+    episode_id: "episode",
+    graph_branch: { branch_id: "episode", current_episode_id: "episode" },
+  };
+  const target = { kind: "branch", branch_id: "episode" };
+  assert.equal(branchOwnerEpisode(target, [], [{ episode: owner }]), owner);
+  assert.equal(branchOwnerEpisode(target, [], []), null);
+  assert.equal(branchOwnerEpisode({ kind: "main" }, [owner], []), null);
 });

@@ -89,7 +89,7 @@ def create_recoverable_auto_episode(
     authorizer = authorized_human(store)
     graph_base_head = history.head_ref()
     graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
-    history.create_auto_research_branch(
+    history.create_episode_branch(
         GraphBranchMetadata(
             branch_id=episode_id,
             episode_id=episode_id,
@@ -196,7 +196,7 @@ def create_terminal_auto_episode(
     authorizer = authorized_human(store)
     graph_base_head = history.head_ref()
     graph_target = GraphTargetRef(kind="branch", branch_id=episode_id)
-    history.create_auto_research_branch(
+    history.create_episode_branch(
         GraphBranchMetadata(
             branch_id=episode_id,
             episode_id=episode_id,

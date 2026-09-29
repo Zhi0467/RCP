@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from rcp.agents.provider_accounts import account_login_refusal
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.dependencies import require_registered_project
-from rcp.core.models import AuthorizedHuman, GraphBranchSummary
+from rcp.core.models import AuthorizedHuman, EpisodeIsolationState, GraphBranchSummary
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.episode_health import (
     EpisodeBlockedReason,
@@ -79,6 +79,8 @@ class StartEpisodeBody(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     mode: Literal["auto_research"]
+    code_worktree: bool | None = None
+    graph_isolation: Literal[True] = True
     invocation_ceiling: int = Field(ge=1)
     starting_instruction: str | None = Field(
         default=None,
@@ -222,6 +224,10 @@ class EpisodeResponse(BaseModel):
     episode_id: str
     project_id: str
     mode: EpisodeMode
+    code_worktree: bool
+    graph_isolation: bool
+    isolation_owner_episode_id: str | None
+    isolation_state: EpisodeIsolationState | None = None
     control_node_id: str | None
     graph_target: GraphTargetRef
     graph_base_head: GraphHeadRef | None
@@ -316,7 +322,8 @@ def serialize_episode(
         episode.mode != "experiment_loop" or projection_snapshot.episode != episode
     ):
         raise ValueError("Experiment episode projection does not match its durable parent.")
-    owns_graph_branch = episode.mode == "auto_research" and episode.graph_target.kind == "branch"
+    has_graph_branch = episode.graph_target.kind == "branch"
+    owns_graph_branch = has_graph_branch and episode.graph_target.branch_id == episode.episode_id
     if owns_graph_branch and include_graph_branch and branch_summary is None:
         raise ValueError("a branch-target episode requires its strict graph branch summary")
 
@@ -394,12 +401,21 @@ def serialize_episode(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
         mode=episode.mode,
+        code_worktree=episode.code_worktree,
+        graph_isolation=episode.graph_isolation,
+        isolation_owner_episode_id=episode.isolation_owner_episode_id,
+        isolation_state=store.episode_isolation_state(
+            project_id,
+            episode.isolation_owner_episode_id
+            or episode.graph_target.branch_id
+            or episode.episode_id,
+        ),
         control_node_id=episode.control_node_id,
         graph_target=episode.graph_target,
         graph_base_head=episode.graph_base_head,
         graph_branch=(
             branch_summary(episode)
-            if owns_graph_branch and include_graph_branch and branch_summary is not None
+            if has_graph_branch and include_graph_branch and branch_summary is not None
             else None
         ),
         root_operation_id=episode.root_operation_id,
@@ -458,21 +474,33 @@ def serialize_episodes(
     *,
     mode: EpisodeMode | None = None,
     branch_summaries: BranchSummariesResolver | None = None,
+    include_archived_branches: bool = False,
 ) -> list[EpisodeResponse]:
     """Serialize the ordered project list, optionally limited to one episode mode."""
 
     bounded_limit = 50
-    episodes = store.episodes(
-        project_id,
-        limit=500 if mode is not None else bounded_limit,
-    )
-    selected = [episode for episode in episodes if mode is None or episode.mode == mode][
+
+    def listed(episode: EpisodeRecord) -> bool:
+        if mode is not None and episode.mode != mode:
+            return False
+        if include_archived_branches or episode.graph_target.kind != "branch":
+            return True
+        state = store.episode_isolation_state(
+            project_id,
+            episode.isolation_owner_episode_id
+            or episode.graph_target.branch_id
+            or episode.episode_id,
+        )
+        return state is None or not state.graph_archived
+
+    # Filter before the limit so hidden archived branches do not shrink the list.
+    selected = [episode for episode in store.episodes(project_id, limit=None) if listed(episode)][
         :bounded_limit
     ]
     # Retained archives remain discoverable after newer episodes fill the recent list.
     selected_by_id = {episode.episode_id: episode for episode in selected}
     for episode in store.archived_episodes(project_id):
-        if mode is None or episode.mode == mode:
+        if listed(episode):
             selected_by_id[episode.episode_id] = episode
     selected = sorted(
         selected_by_id.values(),
@@ -482,11 +510,7 @@ def serialize_episodes(
     archive_states = store.episode_archive_states(project_id)
     branch_summary: BranchSummaryResolver | None = None
     if branch_summaries is not None:
-        branch_episodes = [
-            episode
-            for episode in selected
-            if episode.mode == "auto_research" and episode.graph_target.kind == "branch"
-        ]
+        branch_episodes = [episode for episode in selected if episode.graph_target.kind == "branch"]
         resolved = branch_summaries(branch_episodes)
         expected_ids = {episode.episode_id for episode in branch_episodes}
         if set(resolved) != expected_ids:

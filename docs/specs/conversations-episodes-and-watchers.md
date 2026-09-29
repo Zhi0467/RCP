@@ -2,7 +2,7 @@
 
 This specification owns ordinary conversations, bounded Experiment control,
 common episode lifecycle, watcher observation/delivery, and visual wrap-up.
-Auto-research-specific orchestration and graph branches are in
+Auto-research orchestration and episode graph branches are in
 [Auto-research and branch merge](auto-research-and-branch-merge.md).
 
 ## Human notification observations
@@ -99,7 +99,7 @@ An exact conversation/native session cannot be reused across a different chat
 or graph target. Main and branch-bound stages fail closed instead of silently
 continuing with the other target's authority.
 
-Opening an Auto-research branch exposes the ordinary node and project composers
+Opening an episode branch exposes the ordinary node and project composers
 for that graph target, during and after the episode. These chats have independent
 human authorization and sessions; they do not route through the orchestrator or
 spend its budget. Canonical chat records carry their graph target. Older records
@@ -121,8 +121,8 @@ and worktree paths, Git common metadata directory, real worktree and starting
 branch names, and starting commit.
 The new branch starts at the shared checkout's captured commit; uncommitted
 shared edits are excluded. Detached starting HEAD is refused. A deterministic
-sibling path and branch derive from the chat id. No worktree belongs to an
-episode or worker, and a path alone never establishes a binding.
+sibling path and branch derive from the chat id. Episodes use the same worktree
+binding path with an episode owner. A path alone never establishes a binding.
 
 Every later Discuss or Work turn uses the bound repository pointer. Discuss
 still has no repository write authority. Native continuation, Pause, Resume,
@@ -148,8 +148,9 @@ branch afterwards, including after aborting its own failed merge. A saved
 integration Resume/Retry may find only that operation's exact admitted target
 checked out in the worktree; it reruns the same clean-checkout and target-existence
 preflight before admission and provider launch. Ordinary turns still require the
-bound branch. RCP never merges, commits dirty files, resets, stashes, or force-pushes. Task completion is
-not an integration receipt.
+bound branch. Chat Integrate leaves Git writes to the provider. RCP never commits
+shared-checkout changes, resets, stashes, or force-pushes. Episode Merge has the
+bounded automatic path described below. Task completion is not an integration receipt.
 
 **Remove worktree** is explicit, refuses an active/paused turn or dirty worktree,
 and serializes with fresh, Resume, Retry, and graph-repair task admission for that
@@ -234,6 +235,68 @@ The parent owns identity, human authorizer, graph target, lifecycle, durable
 ending, native-session binding, operational ceiling, Stop state, report state,
 and restart reconciliation. Mode adapters own their distinct admission,
 authority, watcher/child settlement, and compact wrap-up facts.
+
+### Episode isolation
+
+Run captures independent code and graph isolation choices. Auto-research keeps
+graph isolation locked on. Its omitted code choice resolves on when eligible,
+otherwise off. Experiments default both off. The episode records the resolved
+choices. Explicit code isolation still refuses when ineligible.
+
+An Experiment with graph isolation on creates an episode branch from an
+immutable main head, with its own Patch log. Its isolation owner records that
+branch id. With graph isolation off it keeps its existing graph target. An
+Experiment started on an existing branch keeps that branch and its isolation
+owner. Branch Work has no Decision exception. A new graph-isolated Run starts
+fresh; pending watcher completions on main remain on main.
+
+The episode that first creates isolation owns one immutable `EpisodeIsolation`.
+It records the owner id, optional graph branch id, and optional worktree identity
+before the first provider launch. Worktree identity pins the repository alias,
+machine, execution host, shared path, worktree path, Git common directory, branch,
+starting branch, and starting commit. Operation state is stored separately.
+The choices cannot change after the first launch.
+
+Auto-research children, Add N turns continuations, and human-started Experiments
+on the owner's branch store `isolation_owner_episode_id`. They resolve that
+owner's binding and never create another one. Their execution host must match
+the worktree binding. Graph truth membership is unchanged.
+
+Code isolation requires exactly one run-scope repository and Git 2.38 or later
+on the execution host. The shipped worktree script probes the Git version.
+A machine writable-path grant overlapping the shared checkout makes code
+isolation ineligible.
+Every launch rechecks grants and the exact binding. Work and orchestrate receive
+the worktree as their repository write root. The shared checkout is not writable.
+
+Recovery, Resume, Retry, and restart retain the binding. A missing or moved
+worktree fails before launch. No path falls back to the shared checkout.
+
+Human-dispatched Merge reserves the isolation owner before any Git write. Every
+admission on that binding checks the reservation, including continuations,
+Resume, Retry, and recovery. It stays held through landing, verification, and
+cleanup. Live turns must settle first. Live or unobservable compute jobs pause
+Merge and Remove worktree, even after their watcher stops, until the human
+confirms them. A scheduler job has no registry row, so an active or degraded
+external watcher, or a stopped one with no recorded completion, pauses them on a
+binding with a worktree. A graph-condition watcher runs no job and never pauses
+them. The confirmed jobs are stored on the merge attempt; the code merge agent
+receives them and stops them before it merges, so a confirmed Merge with a code
+worktree always runs that agent. Merge never removes a worktree a job may still
+write: if any job still reads as unfinished after the agent's turn, the merge
+finishes with the worktree, its branch, and the graph branch kept and marked
+`worktree_kept`, and a later Merge removes them once the jobs have ended. A
+standalone Remove worktree removes it over confirmed jobs. RCP itself never
+cancels them.
+
+Episode Merge may commit the episode worktree's leftovers, respecting Gitignore.
+It refuses interrupted Git operations, unmerged entries, and dirty submodules.
+With no code or graph residue, it lands code into the chosen local branch,
+verifies delivery, then commits one graph transition without a provider turn.
+Otherwise one merge task's agent lands the code the way chat Integrate does,
+and RCP verifies it before the graph commit.
+See [episode merge](auto-research-and-branch-merge.md#episode-code-merge-and-cleanup)
+for landing, recovery, and cleanup.
 
 The parent's recorded human authorizer is the authority for every turn inside the
 episode, so a different current human pressing Resume or Retry cannot stand in for

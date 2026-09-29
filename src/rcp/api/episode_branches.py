@@ -11,22 +11,22 @@ from rcp.runs.task_policy import task_graph_capable
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore, EpisodeRecord
 
 
-def ensure_auto_research_graph_target(
+def ensure_episode_graph_target(
     episode: EpisodeRecord,
     *,
     catalog: ProjectCatalog,
 ) -> None:
     if (
-        episode.mode != "auto_research"
-        or episode.graph_target.kind != "branch"
+        episode.graph_target.kind != "branch"
         or episode.graph_target.branch_id != episode.episode_id
         or episode.graph_base_head is None
         or episode.authorized_by is None
     ):
-        raise ValueError("Auto-research reservation lost its exact graph branch identity.")
+        raise ValueError("Episode reservation lost its exact graph branch identity.")
     service = get_project_service(catalog, episode.project_id)
-    service.history.create_auto_research_branch(
+    service.history.create_episode_branch(
         GraphBranchMetadata(
+            kind=episode.mode,
             branch_id=episode.episode_id,
             episode_id=episode.episode_id,
             project_id=episode.project_id,
@@ -53,8 +53,8 @@ def graph_branch_summaries(
 
     branches: dict[str, EpisodeRecord] = {}
     for episode in episodes:
-        if episode.mode != "auto_research" or episode.graph_target.kind != "branch":
-            raise ValueError("only an Auto-research branch has a graph branch summary")
+        if episode.graph_target.kind != "branch":
+            raise ValueError("only a branch-target episode has a graph branch summary")
         branch_id = episode.graph_target.branch_id
         assert branch_id is not None
         root = episode if episode.episode_id == branch_id else store.episode(branch_id)
@@ -63,7 +63,7 @@ def graph_branch_summaries(
             or root.project_id != episode.project_id
             or root.graph_target != episode.graph_target
         ):
-            raise ValueError("an Auto-research branch requires its chain root episode")
+            raise ValueError("a graph branch requires its owner episode")
         branches[branch_id] = root
 
     grouped: dict[str, list[EpisodeRecord]] = {}
@@ -199,6 +199,17 @@ def graph_branch_summary_from_snapshot(
         blocked_reason = f"Branch writers must settle before merging: {writers}."
     else:
         blocked_reason = None
+    binding = store.episode_isolation(
+        episode.project_id, episode.isolation_owner_episode_id or episode.episode_id
+    )
+    state = (
+        store.episode_isolation_state(episode.project_id, binding.owner_episode_id)
+        if binding
+        else None
+    )
+    if state and state.merge_reservation:
+        blocked_reason = "episode_merge_reserved"
+    # Code status is the Merge panel's own preview; a list read never probes Git.
     return GraphBranchSummary(
         branch_id=metadata.branch_id,
         episode_id=metadata.episode_id,
@@ -230,7 +241,7 @@ def graph_branch_summary(
 
 
 __all__ = [
-    "ensure_auto_research_graph_target",
+    "ensure_episode_graph_target",
     "graph_branch_summaries",
     "graph_branch_summary",
     "graph_branch_summary_from_snapshot",

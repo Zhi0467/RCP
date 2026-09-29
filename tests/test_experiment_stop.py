@@ -2973,3 +2973,26 @@ def test_an_ordinary_graph_condition_keeps_its_retirement(manifest, tmp_path) ->
 
     assert response.status_code == 200, response.text
     assert loop.store.watcher("chat-condition").status == "stopped"
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+def test_run_pins_experiment_graph_isolation(loop, isolated) -> None:
+    from rcp.runs.episodes.isolation import ensure_episode_isolation
+
+    loop.record_answers()
+    main_head = loop.service.history.head_ref()
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
+        json={"chat_id": str(uuid.uuid4()), "graph_isolation": isolated},
+    )
+    assert response.status_code == 202, response.text
+    task = response.json()
+    assert loop.store.agent_task(task["operation_id"]).dispatch_authority.profile == "ordinary"
+    episode = loop.store.episode(task["episode_id"])
+    assert episode.graph_target.kind == ("branch" if isolated else "main")
+    binding = ensure_episode_isolation(
+        loop.service, loop.store, episode.episode_id, RunRequest.model_validate(task["request"])
+    )
+    assert binding.graph_branch_id == (episode.episode_id if isolated else None)
+    assert loop.service.history.head_ref() == main_head
+    assert episode.graph_base_head == (main_head if isolated else None)

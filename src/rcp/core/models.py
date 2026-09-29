@@ -21,6 +21,7 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined, to_jsonable_python
 
+from rcp.core.transition_models import GraphHeadRef
 from rcp.providers import PROVIDER_IDS
 
 DISPLAY_NAME_MAX_LENGTH = 120
@@ -29,15 +30,11 @@ EVIDENCE_ASSESSMENT_QUALIFICATION_MAX_LENGTH = 300
 EVIDENCE_ASSESSMENT_MAX_QUALIFICATIONS = 12
 
 
-class ConversationWorktreeBinding(BaseModel):
-    """Durable, immutable repository identity owned by one ordinary chat."""
+class WorktreeBinding(BaseModel):
+    """Immutable repository identity shared by chat and episode owners."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
-    project_id: str = Field(min_length=1)
-    chat_id: str
-    chat_scope: Literal["node", "project"]
-    node_id: str | None = None
     repository_alias: str = Field(min_length=1)
     machine: str = Field(min_length=1)
     execution_host: str
@@ -47,6 +44,41 @@ class ConversationWorktreeBinding(BaseModel):
     branch: str = Field(min_length=1)
     starting_branch: str = Field(min_length=1)
     starting_commit: str = Field(min_length=1)
+
+    @field_validator("git_common_dir")
+    @classmethod
+    def absolute_git_common_dir(cls, value: str) -> str:
+        path = PurePosixPath(value)
+        if not path.is_absolute() or ".." in path.parts or str(path) != value:
+            raise ValueError("Git metadata directory must be absolute and normalized")
+        return value
+
+
+class EpisodeWorktreeBinding(WorktreeBinding):
+    owner_episode_id: str = Field(min_length=1)
+
+
+class EpisodeIsolation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    owner_episode_id: str = Field(min_length=1)
+    graph_branch_id: str | None = None
+    worktree: EpisodeWorktreeBinding | None = None
+
+    @model_validator(mode="after")
+    def validate_owner(self) -> EpisodeIsolation:
+        if self.worktree and self.worktree.owner_episode_id != self.owner_episode_id:
+            raise ValueError("episode worktree must belong to its isolation owner")
+        return self
+
+
+class ConversationWorktreeBinding(WorktreeBinding):
+    """Durable repository identity and legacy chat operation-state projection."""
+
+    project_id: str = Field(min_length=1)
+    chat_id: str
+    chat_scope: Literal["node", "project"]
+    node_id: str | None = None
     status: Literal["creating", "ready", "removing", "removed"] = "creating"
 
     @field_validator("chat_id")
@@ -54,14 +86,6 @@ class ConversationWorktreeBinding(BaseModel):
     def canonical_chat_id(cls, value: str) -> str:
         if str(uuid.UUID(value)) != value:
             raise ValueError("conversation worktree chat id must be a canonical UUID")
-        return value
-
-    @field_validator("git_common_dir")
-    @classmethod
-    def absolute_git_common_dir(cls, value: str) -> str:
-        path = PurePosixPath(value)
-        if not path.is_absolute() or ".." in path.parts or str(path) != value:
-            raise ValueError("conversation Git metadata directory must be absolute and normalized")
         return value
 
     @model_validator(mode="after")
@@ -1068,6 +1092,81 @@ class AuthorizedHuman(BaseModel):
     _normalize_display_name = field_validator("display_name", mode="before")(normalize_display_name)
 
 
+class EpisodeUnfinishedJob(BaseModel):
+    """A job that may still write an episode worktree, as the human confirmed it at Merge."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    kind: Literal["compute_job", "watcher"]
+    id: str = Field(min_length=1)
+    status: str
+    execution_host: str = ""
+    command: str | None = None
+    log_path: str | None = None
+
+
+class EpisodeMergeAttempt(BaseModel):
+    """Durable intent used to reconcile an interrupted human-dispatched merge."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    attempt_id: str = Field(min_length=1)
+    authorized_by: AuthorizedHuman
+    phase: Literal[
+        "pre_merge", "landing", "agent_merging", "verified", "graph_committed", "cleanup", "done"
+    ] = "pre_merge"
+    source_commit: str | None = None
+    target_branch: str | None = None
+    target_commit: str | None = None
+    expected_shared_branch: str | None = None
+    tree: str | None = None
+    landed_commit: str | None = None
+    squash_commit: str | None = None
+    commit_timestamp: str | None = None
+    graph_head: GraphHeadRef | None = None
+    history_mode: Literal["merge", "squash"] = "merge"
+    remove_worktree: bool = True
+    delete_code_branch: bool = True
+    archive_graph_branch: bool = True
+    keep_branch_open: bool = False
+    confirm_discard: bool = False
+    cleanup_completed: list[str] = Field(default_factory=list)
+    error: str | None = None
+    graph_task_id: str | None = None
+    # The merge task's agent lands the code; RCP verifies before the graph commit.
+    code_by_agent: bool = False
+    conflict_files: list[str] = Field(default_factory=list)
+    merge_tree_output: str | None = None
+    # Jobs the human merged over; the code merge agent stops them before it merges.
+    unfinished_jobs: list[EpisodeUnfinishedJob] = Field(default_factory=list)
+    # Merge finished but kept the worktree, its branch, and the graph branch listed,
+    # because a job was still unfinished; Merge again removes them once it ends.
+    worktree_kept: bool = False
+
+    @model_validator(mode="after")
+    def validate_cleanup(self) -> EpisodeMergeAttempt:
+        if self.history_mode == "squash" and self.keep_branch_open:
+            raise ValueError("squash_cannot_keep_branch_open")
+        if self.delete_code_branch and not self.remove_worktree:
+            raise ValueError("delete_branch_requires_remove_worktree")
+        return self
+
+
+class EpisodeIsolationState(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    owner_episode_id: str = Field(min_length=1)
+    status: Literal["creating", "ready", "merging", "removing", "removed"] = "creating"
+    merge_reservation: str | None = None
+    merge_attempt: EpisodeMergeAttempt | None = None
+    delivered_source_commit: str | None = None
+    delivered_target_branch: str | None = None
+    # The target tip the delivery merged into; later cleanup requires it to stay reachable.
+    delivered_target_commit: str | None = None
+    squash_commit: str | None = None
+    graph_archived: bool = False
+
+
 class ProjectHomeTransfer(BaseModel):
     """One ordered, human-authorized change to a project's writable home."""
 
@@ -1105,7 +1204,7 @@ class GraphBranchMetadata(BaseModel):
     branch_id: str
     episode_id: str
     project_id: str = Field(min_length=1)
-    kind: Literal["auto_research"] = "auto_research"
+    kind: Literal["auto_research", "experiment_loop"] = "auto_research"
     base_head: GraphHeadRef
     head: GraphHeadRef
     created_at: datetime = Field(default_factory=utc_now)
@@ -1116,7 +1215,7 @@ class GraphBranchMetadata(BaseModel):
     @model_validator(mode="after")
     def identity_and_heads_are_coherent(self) -> GraphBranchMetadata:
         if self.branch_id != self.episode_id:
-            raise ValueError("an Auto-research graph branch must use its episode UUID")
+            raise ValueError("a graph branch must use its owner episode UUID")
         if self.base_head.target.kind != "main":
             raise ValueError("a graph branch base must name a main head")
         if self.head.target.kind != "branch" or self.head.target.branch_id != self.branch_id:
@@ -1353,7 +1452,7 @@ class Patch(BaseModel):
 # keeps that dependency one-way at runtime and lets Pydantic resolve the two
 # forward references explicitly.
 from rcp.core.operations import GraphOperation, ProposalOperation  # noqa: E402
-from rcp.core.transition_models import GraphHeadRef, TransitionTrace  # noqa: E402
+from rcp.core.transition_models import TransitionTrace  # noqa: E402
 
 Proposal.model_rebuild(_types_namespace={"ProposalOperation": ProposalOperation})
 Patch.model_rebuild(

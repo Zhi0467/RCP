@@ -34,6 +34,7 @@ from rcp.agents.branch_merge_prompt import (
     branch_merge_correction_parts,
     branch_merge_rebase_parts,
     branch_merge_task_contract,
+    code_merge_task_contract,
 )
 from rcp.agents.context import _has_ontology_extensions
 from rcp.agents.continuation_prompt import (
@@ -1140,6 +1141,62 @@ def build_deterministic_merge_ops(
     return ops, residue
 
 
+_ENTITY_COLLECTIONS = {
+    "nodes": "node",
+    "edges": "edge",
+    "proposals": "proposal",
+    "ambiguities": "ambiguity",
+    "glossary": "glossary",
+}
+
+
+def branch_merge_path_dispositions(
+    context: BranchMergeContext, residue: dict[SemanticWritePath, str]
+) -> list[dict[str, Any]]:
+    """Classify every base-to-branch path by the residue Merge's own builder call gave.
+
+    A path an earlier merge already delivered stays listed, marked `delivered`.
+    """
+
+    delivered_base = context.previous_branch_graph or context.base_graph
+    branch = _merge_branch_graph(delivered_base, context.branch_graph)
+    documents = {
+        "base": _graph_semantic_document(context.base_graph),
+        "branch": _graph_semantic_document(branch),
+        "main": _graph_semantic_document(context.main_graph),
+    }
+    pending = _graph_semantic_write_paths(delivered_base, branch)
+    result: list[dict[str, Any]] = []
+    for path in sorted(_graph_semantic_write_paths(context.base_graph, branch) | set(residue)):
+        reason = next(
+            (
+                value
+                for rule, value in residue.items()
+                if _semantic_path_covers(rule, path) or _semantic_path_covers(path, rule)
+            ),
+            None,
+        )
+        entity = _ENTITY_COLLECTIONS.get(path[0])
+        values = {}
+        for side, document in documents.items():
+            value = _semantic_path_value(document, path)
+            values[side] = None if value is _MISSING else _jsonable(value)
+        result.append(
+            {
+                "entity": entity or "global",
+                "id": path[1] if entity else path[0],
+                "field_path": _render_semantic_path(path[2:] if entity else path),
+                **values,
+                "delivered": reason is None and path not in pending,
+                "conflict": reason == "conflict",
+                "needs_proposal": reason == "protected_node",
+                "needs_agent": reason not in {None, "conflict", "protected_node"},
+                "residue_reason": reason,
+            }
+        )
+    return result
+
+
 def render_merge_residue(residue: dict[SemanticWritePath, str]) -> str:
     """Render the remaining paths and the meaning of every reason they carry."""
 
@@ -1756,18 +1813,19 @@ def require_graph_only_merge_scope(
     *,
     context: BranchMergeContext,
     stage: BranchMergeStage,
+    code_roots: list[str] | None = None,
 ) -> None:
-    """Fail closed unless the provider can write only its exact scratch workspace."""
+    """Fail closed unless the provider writes only its scratch and, with code, those roots."""
 
     if scope.capability != "orchestrate":
         raise ValueError("branch merge requires orchestrate capability")
     if scope.project_id != context.metadata.project_id:
         raise ValueError("branch merge write scope belongs to a different project")
-    if scope.repositories or scope.repository_roots:
-        raise ValueError("branch merge agents receive no repository write roots")
+    if sorted(scope.repository_roots) != sorted(code_roots or []):
+        raise ValueError("branch merge repository roots must be exactly its code merge roots")
     if scope.workspace_root != str(stage.workspace):
         raise ValueError("branch merge write scope does not name its exact workspace")
-    if scope.writable_roots != [str(stage.workspace)]:
+    if not code_roots and scope.writable_roots != [str(stage.workspace)]:
         raise ValueError("branch merge writable roots must contain only its scratch workspace")
     if stage.remote_stage is not None:
         assert stage.remote_stage.root is not None
@@ -1833,6 +1891,10 @@ async def stream_branch_merge_run(
     execution: Any | None = None,
     binary: str | None = None,
     max_main_rebases: int = MAX_BRANCH_MERGE_REBASE_ROUNDS,
+    before_commit: Callable[[], None] | None = None,
+    code_block: str = "",
+    code_roots: list[str] | None = None,
+    code_landed: bool = False,
 ) -> AsyncIterator[str]:
     """Run, correct, rebase, and atomically commit one graph-only branch merge.
 
@@ -1850,13 +1912,15 @@ async def stream_branch_merge_run(
         raise ValueError("branch merge main rebase bound must be positive")
 
     context = load_context()
-    require_graph_only_merge_scope(write_scope, context=context, stage=stage)
+    require_graph_only_merge_scope(write_scope, context=context, stage=stage, code_roots=code_roots)
     outcome.merge_id = branch_merge_id(context.metadata)
     outcome.source_branch_head = context.metadata.head
     outcome.rebased_main_head = context.main_head
 
-    if _branch_merge_is_represented(context):
+    if (not code_block or code_landed) and _branch_merge_is_represented(context):
         provenance = branch_merge_provenance(context)
+        if before_commit is not None:
+            before_commit()
         outcome.receipt = BranchMergeReceipt(
             outcome="no_change",
             provenance=provenance,
@@ -1938,6 +2002,7 @@ async def stream_branch_merge_run(
                 plan_path=plan_path,
                 residue_block=render_merge_residue(residue),
                 ontology_extensions=_has_ontology_extensions(context.main_graph),
+                code_block=code_block,
             )
             master_values = merge_values = _merge_master_values(
                 context,
@@ -2034,6 +2099,8 @@ async def stream_branch_merge_run(
             if semantic_delta_is_subsumed(fresh.semantic_delta, fresh.main_graph):
                 context = fresh
                 outcome.rebased_main_head = context.main_head
+                if before_commit is not None:
+                    before_commit()
                 outcome.receipt = BranchMergeReceipt(
                     outcome="no_change",
                     provenance=branch_merge_provenance(context),
@@ -2056,6 +2123,8 @@ async def stream_branch_merge_run(
             ):
                 context = fresh
                 outcome.rebased_main_head = context.main_head
+                if before_commit is not None:
+                    before_commit()
                 outcome.receipt = BranchMergeReceipt(
                     outcome="no_change",
                     provenance=branch_merge_provenance(context),
@@ -2119,6 +2188,7 @@ async def stream_branch_merge_run(
                     previous_context_id=previous_context.context_id,
                     context_id=context.context_id,
                     new_reason_legend=_residue_legend(set(residue.values()) - master_reasons),
+                    code=bool(code_block),
                 )
                 + rules,
                 master=master,
@@ -2185,6 +2255,8 @@ async def stream_branch_merge_run(
         context = fresh
         if candidate is not None and not candidate.ops:
             if branch_merge_can_resolve_without_patch(context):
+                if before_commit is not None:
+                    before_commit()
                 outcome.receipt = BranchMergeReceipt(
                     outcome="no_change",
                     provenance=branch_merge_provenance(context),
@@ -2226,6 +2298,8 @@ async def stream_branch_merge_run(
                 candidate_problem = exc
             else:
                 try:
+                    if before_commit is not None:
+                        before_commit()
                     outcome.committed = commit_branch_merge_with_history(
                         main_history,
                         candidate,
@@ -2330,7 +2404,10 @@ async def stream_branch_merge_run(
         rules, session_master = _changed_graph_rules(context, session_master)
         prompt = compose(
             classify(LaunchPhase(session_id=session_id, phase="correction")),
-            parts=branch_merge_correction_parts(diagnostics_path=diagnostics_path) + rules,
+            parts=branch_merge_correction_parts(
+                diagnostics_path=diagnostics_path, code=bool(code_block)
+            )
+            + rules,
             master=master,
             delta=changed_since_master(master, merge_values),
         )
@@ -2391,6 +2468,69 @@ async def stream_branch_merge_run(
         except (AgentOutputProblem, BranchMergeCandidateProblem, OSError, StateUnavailable) as exc:
             candidate_problem = BranchMergeCandidateProblem(str(exc))
             candidate = None
+
+
+async def stream_code_merge_run(
+    request: RunRequest,
+    launcher: AgentLauncher,
+    *,
+    stage: BranchMergeStage,
+    write_scope: ProjectWriteScope,
+    code_block: str,
+    verify: Callable[[], None],
+    execution: Any | None = None,
+    binary: str | None = None,
+) -> AsyncIterator[str]:
+    """Run one code merge turn with no graph residue, then RCP verifies the landing."""
+
+    if request.provider is None or request.run_on is None:
+        raise ValueError("branch merge request must have a pinned provider and execution machine")
+    contract = code_merge_task_contract(code_block=code_block)
+    contract_path, prompt = _stage_task_contract(
+        stage.local_stage,
+        stage.remote_stage,
+        f"task-{_task_token(execution)}-code-merge.md",
+        contract,
+        execution=execution,
+        role="branch_merge",
+    )
+    _record_agent_launch_receipt(
+        execution,
+        request,
+        prompt=prompt,
+        contract_path=contract_path,
+        remote=bool(write_scope.execution_host),
+        resumed=False,
+        write_scope=write_scope,
+        continuation="initial",
+        extra={
+            "surface": "branch_merge",
+            "mode": "code_merge",
+            "capability": "orchestrate",
+            "network_access": True,
+            "launch_kind": "initial",
+            "round": 0,
+            "write_directory_count": 1 + len(write_scope.repository_roots),
+            "repository_write_root_count": len(write_scope.repository_roots),
+        },
+    )
+    provider, events = _provider_turn(
+        launcher,
+        request,
+        prompt,
+        stage=stage,
+        write_scope=write_scope,
+        execution=execution,
+        binary=binary,
+        session_id=None,
+        required_session_id=None,
+    )
+    async with aclosing(events) as frames:
+        async for frame in frames:
+            yield frame
+    if provider.paused or provider.failed or not provider.completed:
+        raise ValueError("The code merge provider did not complete its turn.")
+    verify()
 
 
 def _require_change_shape(
@@ -3025,10 +3165,10 @@ def _provider_turn(
         workspace=stage.workspace,
         session_id=session_id,
         read_dirs=[inputs],
-        # The provider API treats write_dirs as admitted repository roots.
-        # The scratch workspace is already the cwd/workspace root carried by
-        # ProjectWriteScope, while a graph-only merge admits no repositories.
-        write_dirs=[],
+        # The provider API treats write_dirs as admitted repository roots. The
+        # scratch workspace is already the cwd/workspace root carried by
+        # ProjectWriteScope; only a code merge admits repository roots.
+        write_dirs=[Path(item) for item in write_scope.repository_roots],
         write_scope=write_scope,
         execution_host=write_scope.execution_host,
         execution=execution,
@@ -3073,7 +3213,7 @@ def _record_merge_launch(
             "branch_id": context.metadata.branch_id,
             "branch_head": context.metadata.head.model_dump(mode="json"),
             "main_head": context.main_head.model_dump(mode="json"),
-            "write_directory_count": 1,
-            "repository_write_root_count": 0,
+            "write_directory_count": 1 + len(write_scope.repository_roots),
+            "repository_write_root_count": len(write_scope.repository_roots),
         },
     )

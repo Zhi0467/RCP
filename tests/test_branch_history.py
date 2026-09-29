@@ -110,7 +110,7 @@ def test_branch_starts_at_exact_main_head_and_advances_without_mutating_main(man
     history.append(seed_patch())
     metadata = _branch_metadata(history)
 
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     appended, result = branch.append(
         _branch_patch("ev/branch-only"),
         expected_revision=metadata.base_head.revision,
@@ -147,7 +147,7 @@ def test_branch_glossary_edits_remain_on_branch_and_replay(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     for definition in ("Initial explanation.", "Revised explanation."):
         branch.append(
             Patch(
@@ -177,7 +177,7 @@ def test_apply_authority_is_bound_to_the_exact_main_or_branch_target(manifest) -
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     exact_branch = _task_authority("branch-exact", metadata, branch.graph_target)
     main_only = _task_authority("main-only", metadata, GraphTargetRef())
     branch_only = _task_authority("branch-only", metadata, branch.graph_target)
@@ -220,7 +220,7 @@ def test_branch_replays_immutable_main_prefix_after_main_moves(manifest) -> None
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
 
     history.append(_branch_patch("ev/main-later", "Main-only result"))
     branch.append(_branch_patch("ev/branch-later"))
@@ -241,14 +241,14 @@ def test_branch_replays_immutable_main_prefix_after_main_moves(manifest) -> None
         expected_project_id=metadata.project_id,
     )
     assert reopened.state() == branch.state()
-    assert history.create_auto_research_branch(metadata).head_ref() == branch.head_ref()
+    assert history.create_episode_branch(metadata).head_ref() == branch.head_ref()
 
 
 def test_child_experiment_patch_keeps_its_episode_and_exact_branch_authority(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(
         Patch(
             kind="work",
@@ -350,7 +350,7 @@ def test_branch_base_state_fails_closed_when_accepted_main_prefix_is_tampered(ma
     history = HistoryManager(manifest)
     appended, _result = history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     assert appended.transition is not None
     path = manifest.research_dir / "patches" / f"{appended.revision:06d}.json"
     forged = appended.transition.model_copy(
@@ -378,7 +378,7 @@ def test_branch_open_rejects_identity_mismatch_and_unsafe_paths(manifest, tmp_pa
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    history.create_auto_research_branch(metadata)
+    history.create_episode_branch(metadata)
 
     with pytest.raises(ValueError, match="different episode"):
         history.branch(metadata.branch_id, expected_episode_id=str(uuid.uuid4()))
@@ -399,7 +399,7 @@ def test_branch_transition_target_or_chain_tampering_halts_replay(manifest) -> N
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     appended, _result = branch.append(_branch_patch("ev/tampered"))
     assert appended.transition is not None
     path = branch.patches_dir / f"{appended.revision:06d}.json"
@@ -463,7 +463,7 @@ def test_branch_remote_publication_uses_nested_atomic_commit_points(manifest) ->
     history.append(seed_patch())
     metadata = _branch_metadata(history)
 
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     appended, _result = branch.append(_branch_patch("ev/remote"))
 
     branch_prefix = f"branches/{metadata.branch_id}"
@@ -481,7 +481,7 @@ def test_branch_remote_patch_failure_reconciles_commit_point(manifest, commit_st
     history = HistoryManager(manifest, workspace)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     workspace.patch_failure = commit_status
 
     if commit_status == "present":
@@ -500,7 +500,7 @@ def test_confirmed_remote_branch_patch_fences_and_repairs_before_the_next_write(
     history = HistoryManager(manifest, workspace)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     workspace.patch_failure = "present"
 
     branch.append(_branch_patch("ev/confirmed-before-repair"))
@@ -521,7 +521,7 @@ def test_unknown_remote_branch_commit_is_repaired_if_a_later_refresh_proves_it(m
     history = HistoryManager(manifest, workspace)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     workspace.patch_failure = "unknown"
 
     with pytest.raises(BatchPublishFailed):
@@ -547,7 +547,7 @@ def test_local_branch_output_failure_fences_the_committed_patch_until_repair(
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     write_outputs = branch._write_materialized_outputs
 
     def fail_outputs(_result) -> None:
@@ -570,7 +570,7 @@ def test_branch_read_snapshot_semantically_replays_the_tail_and_fails_closed(man
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     appended, _ = branch.append(_branch_patch("ev/read-tail"))
     path = branch.patches_dir / f"{appended.revision:06d}.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -595,7 +595,7 @@ def test_branch_read_snapshot_keeps_the_exact_base_before_a_rejected_main_patch(
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     rejected, _result = history.append(
         Patch(
             kind="refresh",
@@ -638,7 +638,7 @@ def test_merge_receipts_are_append_only_exact_and_support_no_change(manifest) ->
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/merge-source"))
     branch_head = branch.head_ref()
     main_head = history.head_ref()
@@ -687,7 +687,7 @@ def test_independent_no_change_writers_return_the_first_canonical_receipt(manife
     first_history = HistoryManager(manifest)
     first_history.append(seed_patch())
     metadata = _branch_metadata(first_history)
-    first_branch = first_history.create_auto_research_branch(metadata)
+    first_branch = first_history.create_episode_branch(metadata)
     first_branch.append(_branch_patch("ev/no-change-race"))
     branch_head = first_branch.head_ref()
     main_head = first_history.head_ref()
@@ -733,7 +733,7 @@ def test_remote_present_no_change_receipt_is_parsed_and_validated(manifest) -> N
     history = HistoryManager(manifest, workspace)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/remote-no-change"))
     branch_head = branch.head_ref()
     main_head = history.head_ref()
@@ -761,7 +761,7 @@ def test_merge_receipt_can_be_reconciled_from_committed_main_patch(manifest) -> 
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/merge-reconcile"))
     main_head = history.head_ref()
     provenance = BranchMergeProvenance(
@@ -801,7 +801,7 @@ def test_no_change_writer_reconciles_a_concurrently_committed_main_winner(manife
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/merge-race"))
     main_head = history.head_ref()
     provenance = BranchMergeProvenance(
@@ -846,7 +846,7 @@ def test_no_change_receipt_wins_before_a_concurrent_main_append(manifest) -> Non
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/no-change-wins"))
     main_head = history.head_ref()
     provenance = BranchMergeProvenance(
@@ -887,7 +887,7 @@ def test_reconcile_rejects_corrupted_existing_no_change_receipt(manifest) -> Non
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/corrupt-no-change"))
     branch_head = branch.head_ref()
     main_head = history.head_ref()
@@ -925,7 +925,7 @@ def test_reconcile_rejects_corrupted_existing_committed_receipt(manifest) -> Non
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/corrupt-committed"))
     provenance = BranchMergeProvenance(
         merge_id=branch_merge_id(metadata.model_copy(update={"head": branch.head_ref()})),
@@ -983,7 +983,7 @@ def test_branch_child_enumeration_refuses_symlinked_directories(
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     path = branch.root / child
     path.rmdir()
     outside = tmp_path / f"outside-{child}"
@@ -1002,7 +1002,7 @@ def test_open_branch_refuses_symlinked_metadata(manifest, tmp_path: Path) -> Non
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     metadata_path = branch.root / "branch.json"
     outside = tmp_path / "outside-branch.json"
     outside.write_text(metadata_path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -1033,7 +1033,7 @@ def test_branch_metadata_json_is_current_after_reopen(manifest) -> None:
     history = HistoryManager(manifest)
     history.append(seed_patch())
     metadata = _branch_metadata(history)
-    branch = history.create_auto_research_branch(metadata)
+    branch = history.create_episode_branch(metadata)
     branch.append(_branch_patch("ev/current-head"))
 
     raw = json.loads((branch.root / "branch.json").read_text(encoding="utf-8"))

@@ -120,7 +120,7 @@ def test_branch_glossary_upsert_is_isolated_and_replays_its_own_state(manifest) 
     base = history.head_ref()
     branch_id = str(uuid.uuid4())
     target = GraphTargetRef(kind="branch", branch_id=branch_id)
-    branch = history.create_auto_research_branch(
+    branch = history.create_episode_branch(
         GraphBranchMetadata(
             branch_id=branch_id,
             episode_id=branch_id,

@@ -70,6 +70,7 @@ class ExperimentStoreMixin:
         auto_research_admission_id: str | None = None,
         continues_episode_id: str | None = None,
         continuation_request_id: str | None = None,
+        graph_base_head: GraphHeadRef | None = None,
     ) -> AgentTaskRecord:
         """Atomically create the Experiment parent, mode child, and invocation 1.
 
@@ -97,20 +98,55 @@ class ExperimentStoreMixin:
             if record.graph_target.kind == "branch"
             else None
         )
-        if record.graph_target.kind == "branch" and (
-            graph_branch is None
-            or graph_branch.mode != "auto_research"
-            or graph_branch.project_id != record.project_id
-            or graph_branch.graph_target != record.graph_target
+        owns_branch = (
+            graph_base_head is not None and record.graph_target.branch_id == record.episode_id
+        )
+        if graph_base_head is not None and (
+            not owns_branch
+            or graph_base_head.target.kind != "main"
+            or record.request.get("graph_isolation") is not True
+            or auto_research_route is not None
+            or continues_episode_id is not None
+        ):
+            raise ValueError("experiment_graph_isolation_invalid_base")
+        if (
+            record.graph_target.kind == "branch"
+            and not owns_branch
+            and (
+                graph_branch is None
+                or graph_branch.project_id != record.project_id
+                or graph_branch.graph_target != record.graph_target
+            )
         ):
             raise ValueError("a branch Experiment requires its exact project graph branch")
         episode = self._new_experiment_episode(
             record,
             auto_research_route=auto_research_route,
-            graph_base_head=(graph_branch.graph_base_head if graph_branch else None),
+            graph_base_head=(graph_branch.graph_base_head if graph_branch else graph_base_head),
             continues_episode_id=continues_episode_id,
             continuation_request_id=continuation_request_id,
         )
+        source = self.episode(continues_episode_id) if continues_episode_id else None
+        isolation_parent = source or parent_episode or graph_branch
+        if isolation_parent is not None:
+            episode = episode.model_copy(
+                update={
+                    "isolation_owner_episode_id": isolation_parent.isolation_owner_episode_id
+                    or isolation_parent.episode_id,
+                    "code_worktree": isolation_parent.code_worktree,
+                    "graph_isolation": isolation_parent.graph_isolation,
+                }
+            )
+            record = record.model_copy(
+                update={
+                    "request": {
+                        **record.request,
+                        "isolation_owner_episode_id": episode.isolation_owner_episode_id,
+                        "code_worktree": episode.code_worktree,
+                        "graph_isolation": episode.graph_isolation,
+                    }
+                }
+            )
         self._validate_new_episode(episode)
         self._validate_experiment_watcher_ids(record, ids)
         try:
@@ -509,6 +545,9 @@ class ExperimentStoreMixin:
             episode_id=episode_id,
             project_id=record.project_id,
             mode="experiment_loop",
+            isolation_owner_episode_id=episode_id,
+            code_worktree=bool(request.get("code_worktree", False)),
+            graph_isolation=bool(request.get("graph_isolation", False)),
             control_node_id=control_node_id,
             graph_target=record.graph_target,
             graph_base_head=graph_base_head,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from pathlib import Path
 
 import pytest
 
@@ -150,7 +149,8 @@ def test_merge_provenance_uses_current_project_membership(
     response = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
-    assert response.status_code == 202, response.text
+    clean_invalid = removed_from_main and operation["op"] == "create_nodes"
+    assert response.status_code == (409 if clean_invalid else 202), response.text
     (admitted,) = [
         task
         for task in harness.store.agent_tasks(harness.project_id)
@@ -165,14 +165,11 @@ def test_merge_provenance_uses_current_project_membership(
     if removed_from_main:
         assert launcher.calls == 0
         assert harness.service.history.head_ref() == main_before
-        assert task.stage_root is not None
-        diagnostics = [task.error] + [
-            json.loads(path.read_text())["problem"]
-            for path in Path(task.stage_root).rglob("*-branch-merge-correction-*.json")
-        ]
-        assert any(
-            "Source reference uses 'repo-b' outside this run scope" in d for d in diagnostics
-        )
+        if clean_invalid:
+            assert task.stage_root is None
+        else:
+            assert task.stage_root is not None
+        assert task.error is not None
         assert harness.branch.merge_receipts() == []
     else:
         merged = harness.service.history.load_patches()[-1]

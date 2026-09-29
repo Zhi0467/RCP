@@ -358,3 +358,289 @@ def test_remote_branch_lookup_uses_local_bare_remote_and_reports_unavailability(
     result = run("remote_branch", binding=binding)
     assert result["remote_branch_exists"] is None
     assert result["remote_branch_reason"]
+
+
+def test_episode_uses_shared_worktree_lifecycle_and_fails_closed(repository: Path) -> None:
+    binding = run("plan", shared_path=str(repository), owner_episode_id="owner")
+    assert binding["owner_episode_id"] == "owner"
+    assert "chat_id" not in binding
+    run("create", binding=binding)
+    assert run("inspect", binding=binding)["ahead_count"] == 0
+    worktree = Path(binding["worktree_path"])
+    (worktree / "notes.txt").write_text("episode edit\n")
+    assert (repository / "notes.txt").read_text() == "initial\n"
+    assert run("create", binding=binding)["dirty_worktree"] == [" M notes.txt"]
+    worktree.rename(worktree.with_name("moved"))
+    with pytest.raises(ValueError):
+        run("inspect", binding=binding)
+
+
+@pytest.mark.parametrize("version,supported", [("2.37.9", False), ("2.38.0", True)])
+def test_episode_git_version_probe_runs_on_execution_host(monkeypatch, version, supported) -> None:
+    commands = []
+
+    def probe(arguments, **kwargs):
+        commands.append(arguments)
+        return subprocess.CompletedProcess(arguments, 0, f"git version {version}\n", "")
+
+    monkeypatch.setattr(conversation_worktree.subprocess, "run", probe)
+    assert run("git_version") == {
+        "version": [int(part) for part in version.split(".")],
+        "supported": supported,
+    }
+    assert commands == [["git", "--version"]]
+
+
+def episode_binding(repository: Path) -> dict:
+    binding = run("plan", shared_path=str(repository), owner_episode_id="merge-owner")
+    run("create", binding=binding)
+    return binding
+
+
+def episode_edit(binding: dict, name: str = "episode.txt", text: str = "episode\n") -> Path:
+    worktree = Path(binding["worktree_path"])
+    (worktree / name).write_text(text)
+    return worktree
+
+
+def land_episode(binding: dict, target: str, mode: str = "merge") -> dict:
+    run("commit_leftovers", binding=binding, target_branch=target)
+    preview = run("merge_preview", binding=binding, target_branch=target)
+    payload = {**preview, "binding": binding, "history_mode": mode}
+    prepared = run("prepare_landing", **payload)
+    assert run("land", **payload, **prepared) == prepared
+    assert run("verify_landing", **payload, **prepared)["verified"]
+    return {**payload, **prepared}
+
+
+@pytest.mark.parametrize("target", ["research", "release"])
+@pytest.mark.parametrize("mode", ["merge", "squash"])
+def test_episode_merge_lands_verified_commit_and_retries_cleanup(repository, target, mode):
+    binding = episode_binding(repository)
+    episode_edit(binding)
+    result = land_episode(binding, target, mode)
+    assert git(repository, "rev-parse", target) == result["landed_commit"]
+    assert len(git(repository, "show", "-s", "--format=%P", target).split()) == (
+        2 if mode == "merge" else 1
+    )
+    assert (repository / "episode.txt").exists() == (target == "research")
+    for _ in range(2):
+        assert run("remove_episode_worktree", binding=binding)["removed"]
+        assert run("delete_branch", **result)["deleted"]
+    assert not Path(binding["worktree_path"]).exists()
+
+
+def test_episode_landing_that_drops_target_history_is_unverified(repository):
+    binding = episode_binding(repository)
+    episode_edit(binding)
+    (repository / "human.txt").write_text("human\n")
+    git(repository, "add", "human.txt")
+    git(repository, "commit", "-m", "Target moves after the episode starts")
+    run("commit_leftovers", binding=binding, target_branch="release")
+    git(repository, "branch", "-f", "release", "research")
+    preview = run("merge_preview", binding=binding, target_branch="release")
+    # A provider that resets the target to the source contains the source but drops the target.
+    git(repository, "branch", "-f", "release", preview["source_commit"])
+    payload = {"binding": binding, "target_branch": "release", **preview}
+    assert run("verify_landing", **{**payload, "target_commit": None})["verified"]
+    assert not run("verify_landing", **payload)["verified"]
+
+
+def test_episode_merge_commits_without_an_account_git_identity(repository, monkeypatch):
+    binding = episode_binding(repository)
+    episode_edit(binding)
+    git(repository, "config", "--unset", "user.name")
+    git(repository, "config", "--unset", "user.email")
+    git(repository, "config", "user.useConfigOnly", "true")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    result = land_episode(binding, "release")
+    for commit in (result["landed_commit"], result["source_commit"]):
+        assert git(repository, "show", "-s", "--format=%an %cn", commit) == "RCP RCP"
+
+
+def test_episode_leftovers_respect_ignore_and_do_not_commit_shared_changes(repository):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding)
+    (worktree / ".gitignore").write_text("ignored\n")
+    (worktree / "ignored").write_text("private\n")
+    (repository / "shared.txt").write_text("human\n")
+    result = run("commit_leftovers", binding=binding, target_branch="release")
+    assert set(result["leftover_files"]) == {"episode.txt", ".gitignore"}
+    assert git(worktree, "rev-list", "--count", f"{binding['starting_commit']}..HEAD") == "1"
+    assert git(worktree, "status", "--porcelain") == ""
+    assert git(repository, "status", "--porcelain") == "?? shared.txt"
+    assert (
+        run("commit_leftovers", binding=binding, target_branch="release")["source_commit"]
+        == result["source_commit"]
+    )
+
+
+@pytest.mark.parametrize(
+    "rule,code",
+    [
+        ("missing", "target_missing"),
+        ("same", "target_is_episode_branch"),
+        ("other", "target_checked_out_elsewhere"),
+        ("dirty", "target_dirty"),
+    ],
+)
+def test_episode_target_refusals_preserve_leftovers(repository, rule, code):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding)
+    target = "research"
+    if rule == "missing":
+        target = "missing"
+    elif rule == "same":
+        target = binding["branch"]
+    elif rule == "other":
+        target = "release"
+        git(repository, "worktree", "add", str(repository.parent / "other"), target)
+    else:
+        (repository / "human.txt").write_text("human\n")
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("commit_leftovers", binding=binding, target_branch=target)
+    assert exc.value.code == code
+    assert git(worktree, "rev-parse", "HEAD") == binding["starting_commit"]
+
+
+@pytest.mark.parametrize("marker", ["MERGE_HEAD", "rebase-merge"])
+def test_episode_interrupted_git_is_not_leftovers(repository, marker):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding)
+    marker_path = Path(git(worktree, "rev-parse", "--git-path", marker))
+    if marker.startswith("rebase"):
+        marker_path.mkdir()
+    else:
+        marker_path.write_text(binding["starting_commit"] + "\n")
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("commit_leftovers", binding=binding)
+    assert exc.value.code == "interrupted_git_state"
+    assert git(worktree, "rev-parse", "HEAD") == binding["starting_commit"]
+
+
+def test_episode_conflict_probe_moves_no_refs_or_checkout(repository):
+    binding = episode_binding(repository)
+    episode_edit(binding, "notes.txt", "episode\n")
+    run("commit_leftovers", binding=binding)
+    (repository / "notes.txt").write_text("human\n")
+    git(repository, "commit", "-am", "Human work")
+    before = git(repository, "rev-parse", "HEAD")
+    preview = run("merge_preview", binding=binding)
+    assert preview["status"] == "conflict"
+    assert preview["conflict_files"] == ["notes.txt"]
+    assert git(repository, "rev-parse", "HEAD") == before
+    assert git(repository, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("moved", ["source", "target"])
+def test_episode_landing_refuses_moved_input(repository, moved):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding)
+    run("commit_leftovers", binding=binding)
+    preview = run("merge_preview", binding=binding)
+    prepared = run("prepare_landing", binding=binding, **preview)
+    root = worktree if moved == "source" else repository
+    (root / "moved.txt").write_text("later\n")
+    git(root, "add", "moved.txt")
+    git(root, "commit", "-m", "Moved input")
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("land", binding=binding, **preview, **prepared)
+    assert exc.value.code == f"{moved}_changed"
+
+
+def test_episode_branch_deletion_requires_delivery_and_removed_worktree(repository):
+    binding = episode_binding(repository)
+    episode_edit(binding)
+    source = run("commit_leftovers", binding=binding)["source_commit"]
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("delete_branch", binding=binding, source_commit=source)
+    assert exc.value.code == "worktree_removal_required"
+    run("remove_episode_worktree", binding=binding)
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("delete_branch", binding=binding, source_commit=source)
+    assert exc.value.code == "code_not_delivered"
+
+
+def test_episode_old_git_refuses_merge_before_writes(repository, monkeypatch):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding)
+    original = subprocess.run
+
+    def old_git(arguments, **kwargs):
+        if arguments == ["git", "--version"]:
+            return subprocess.CompletedProcess(arguments, 0, "git version 2.37.0\n", "")
+        return original(arguments, **kwargs)
+
+    monkeypatch.setattr(conversation_worktree.subprocess, "run", old_git)
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("commit_leftovers", binding=binding)
+    assert exc.value.code == "git_version_unsupported"
+    assert git(worktree, "rev-parse", "HEAD") == binding["starting_commit"]
+
+
+def test_episode_landing_rechecks_checkout_identity(repository):
+    binding = episode_binding(repository)
+    episode_edit(binding)
+    run("commit_leftovers", binding=binding)
+    preview = run("merge_preview", binding=binding)
+    prepared = run("prepare_landing", binding=binding, **preview)
+    git(repository, "checkout", "release")
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("land", binding=binding, **preview, **prepared)
+    assert exc.value.code == "shared_checkout_changed"
+
+
+def test_episode_dirty_submodule_cannot_be_committed_as_leftovers(repository):
+    submodule = repository.parent / "submodule"
+    submodule.mkdir()
+    git(submodule, "init", "--initial-branch=main")
+    git(submodule, "config", "user.email", "fixture@example.invalid")
+    git(submodule, "config", "user.name", "Fixture")
+    (submodule / "file").write_text("initial\n")
+    git(submodule, "add", ".")
+    git(submodule, "commit", "-m", "Initial")
+    binding = episode_binding(repository)
+    worktree = Path(binding["worktree_path"])
+    git(worktree, "-c", "protocol.file.allow=always", "submodule", "add", str(submodule), "sub")
+    git(worktree, "commit", "-am", "Submodule")
+    (worktree / "sub" / "file").write_text("dirty\n")
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("commit_leftovers", binding=binding)
+    assert exc.value.code == "interrupted_git_state"
+
+
+def test_episode_unmerged_index_without_operation_marker_refuses_leftovers(repository):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding, "notes.txt", "episode\n")
+    run("commit_leftovers", binding=binding)
+    (repository / "notes.txt").write_text("human\n")
+    git(repository, "commit", "-am", "Human")
+    result = subprocess.run(["git", "-C", str(worktree), "merge", "research"], capture_output=True)
+    assert result.returncode == 1
+    Path(git(worktree, "rev-parse", "--git-path", "MERGE_HEAD")).unlink()
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("commit_leftovers", binding=binding)
+    assert exc.value.code == "interrupted_git_state"
+
+
+def test_episode_leftovers_with_reverted_staging_need_no_empty_commit(repository):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding, "notes.txt", "staged\n")
+    git(worktree, "add", "notes.txt")
+    (worktree / "notes.txt").write_text("initial\n")
+    result = run("commit_leftovers", binding=binding)
+    assert result["source_commit"] == binding["starting_commit"]
+    assert git(worktree, "status", "--porcelain") == ""
+
+
+def test_episode_removal_refuses_code_added_after_delivery(repository):
+    binding = episode_binding(repository)
+    worktree = episode_edit(binding)
+    landed = land_episode(binding, "research")
+    episode_edit(binding, "later.txt", "later\n")
+    run("commit_leftovers", binding=binding)
+    with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
+        run("remove_episode_worktree", binding=binding, source_commit=landed["source_commit"])
+    assert exc.value.code == "source_changed"
+    assert worktree.exists()

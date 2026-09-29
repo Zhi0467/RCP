@@ -3,6 +3,8 @@ import { useUpdateNotice } from "./hooks/useUpdateNotice";
 import { TerminalTab } from "./components/TerminalTab";
 import { branchMergeStateLabel } from "./components/CampaignRuns";
 import {
+  branchOwnerEpisode,
+  experimentStartTarget,
   graphSessionKey,
   graphTargetFromHash,
   graphTargetUrl,
@@ -69,6 +71,7 @@ import {
   loadTeamSessions,
   loadProjectReadiness,
   loadProviderLogins,
+  loadMergePreview,
   mergeEpisodeToMain,
   continueEpisode,
   sendEpisodeMessage,
@@ -93,6 +96,7 @@ import {
 } from "./graphAuthority";
 import { buildGlossaryIndex } from "./glossary";
 import {
+  experimentBoardHref,
   experimentBoardRouteToken,
   experimentIndexEntryForRoute,
   experimentStopPath,
@@ -211,6 +215,9 @@ import type {
   AgentUsageSnapshot,
   AppView,
   Episode,
+  EpisodeIsolationChoice,
+  MergeDiffPath,
+  MergeEpisodeBody,
   ExperimentControlState,
   GraphAttentionProjection,
   GraphHeadRef,
@@ -272,6 +279,7 @@ import {
   type NotificationLink,
 } from "./notificationLinks";
 import { loadNotificationDevices, reconcileWebPush } from "./notificationDevices";
+import { unfinishedJobsFromError } from "./mergePanel";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
@@ -1242,10 +1250,28 @@ export default function App() {
     isActiveProject,
     runsVisible: view === "execution",
   });
-  const activeBranchEpisode =
-    graphTarget.kind === "branch"
-      ? episodes.find((episode) => episode.graph_branch?.branch_id === graphTarget.branch_id)
-      : null;
+  const activeBranchEpisode = branchOwnerEpisode(graphTarget, episodes, experimentLoops);
+  // The branch diff's merge marks come from the same preview the Merge panel reads.
+  const [branchMergePaths, setBranchMergePaths] = useState<MergeDiffPath[] | null>(null);
+  const branchMergeKey = activeBranchEpisode
+    ? // The whole summary: a delivery changes the receipt and merge state, not the head.
+      JSON.stringify([activeBranchEpisode.episode_id, activeBranchEpisode.graph_branch])
+    : null;
+  useEffect(() => {
+    setBranchMergePaths(null);
+    if (!activeBranchEpisode || !apiBase) return;
+    let current = true;
+    loadMergePreview(apiBase, activeBranchEpisode.episode_id, null)
+      .then((preview) => {
+        if (current) setBranchMergePaths(preview.graph.paths);
+      })
+      .catch((error) => {
+        if (current) console.warn("Branch merge marks are unavailable:", error);
+      });
+    return () => {
+      current = false;
+    };
+  }, [apiBase, branchMergeKey]);
   const {
     snapshot: projectHistorySnapshot,
     openProjectHistory,
@@ -3285,7 +3311,11 @@ export default function App() {
   };
 
   const startExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
+    async (
+      node: GraphNode,
+      invocationCeiling?: number,
+      isolation?: EpisodeIsolationChoice,
+    ): Promise<AgentTask> => {
       if (!project || node.type !== "experiment") {
         throw new Error("The requested Experiment is not present in the open project.");
       }
@@ -3316,10 +3346,16 @@ export default function App() {
               // Omitted unless the human reauthorized an explicit count; the
               // backend then keeps the Experiment node's own limit.
               ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
+              ...isolation,
             }),
           },
         );
-        if (!sameGraphTarget(task.graph_target, graphTarget))
+        const expectedTarget = experimentStartTarget(
+          graphTarget,
+          isolation?.graph_isolation,
+          task.episode_id,
+        );
+        if (!sameGraphTarget(task.graph_target, expectedTarget))
           throw new Error("Experiment start returned a different graph target.");
         if (!isActiveGraph(project.id)) return task;
         recordStartedTask(task);
@@ -3359,9 +3395,9 @@ export default function App() {
     ],
   );
   const runExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number) => {
+    async (node: GraphNode, invocationCeiling?: number, isolation?: EpisodeIsolationChoice) => {
       try {
-        await startExperiment(node, invocationCeiling);
+        await startExperiment(node, invocationCeiling, isolation);
       } catch (caught) {
         setNotice({
           kind: "error",
@@ -3407,6 +3443,7 @@ export default function App() {
   const authorizeAutoResearch = async (
     invocationCeiling: number,
     startingInstruction: string | null,
+    codeWorktree = true,
   ) => {
     if (!project || !apiBase || mutationsDisabled || episodeAction || taskStarting) return;
     if (liveAutoResearchEpisode) {
@@ -3429,6 +3466,8 @@ export default function App() {
         mode: "auto_research",
         invocation_ceiling: invocationCeiling,
         starting_instruction: startingInstruction,
+        // Omitted, the server turns code isolation on only where it is eligible.
+        ...(codeWorktree ? {} : { code_worktree: false }),
       });
       replaceEpisode(started);
       replaceExactAutoResearchSelection(started.project_id, started.episode_id);
@@ -3523,18 +3562,21 @@ export default function App() {
     }
   };
 
-  const requestEpisodeMerge = async (episodeId: string) => {
+  const requestEpisodeMerge = async (episodeId: string, body: MergeEpisodeBody = {}) => {
     if (!apiBase || episodeAction) return;
     const finishEpisodeAction = beginEpisodeAction(`merge:${episodeId}`);
     if (!finishEpisodeAction) return;
     try {
-      const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId);
+      const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId, body);
       replaceEpisode(nextEpisode);
       const mergeTask = activeBranchMergeTask(nextEpisode);
       if (mergeTask) recordStartedTask(mergeTask);
       await reload();
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      // A pause on unfinished jobs is the panel's own prompt, not an app error.
+      if (!unfinishedJobsFromError(error)) {
+        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
       throw error;
     } finally {
       finishEpisodeAction();
@@ -4540,7 +4582,16 @@ export default function App() {
               className="button compact secondary"
               onClick={() => {
                 if (activeBranchEpisode) {
-                  window.location.hash = `${graphViewHash(project.id, graphTarget, "execution")}&mode=auto_research&episode=${encodeURIComponent(activeBranchEpisode.episode_id)}`;
+                  window.location.hash =
+                    activeBranchEpisode.mode === "experiment_loop" &&
+                    activeBranchEpisode.control_node_id
+                      ? experimentBoardHref(project.id, {
+                          experiment_id: activeBranchEpisode.control_node_id,
+                          episode_id: activeBranchEpisode.episode_id,
+                          graph_target: graphTarget,
+                          parent_episode_id: null,
+                        })
+                      : `${graphViewHash(project.id, graphTarget, "execution")}&mode=auto_research&episode=${encodeURIComponent(activeBranchEpisode.episode_id)}`;
                 } else changeView("execution");
               }}
             >
@@ -4752,6 +4803,7 @@ export default function App() {
               key={graphSessionKey(project.id, graphTarget)}
               graphTarget={graphTarget}
               branchChanges={project.graph_changes}
+              mergePaths={branchMergePaths}
               onInspectTask={selectTaskInspector}
               {...graphEditingProps}
               graph={presentedGraph}
@@ -4966,6 +5018,9 @@ export default function App() {
             node={node}
             historical={historical}
             branchChange={project.graph_changes?.nodes.find((change) => change.node_id === node.id)}
+            mergePaths={branchMergePaths?.filter(
+              (path) => path.entity === "node" && path.id === node.id,
+            )}
             onInspectTask={selectTaskInspector}
             edges={Object.values(presentedGraph.edges)}
             allNodes={presentedGraph.nodes}
@@ -5021,7 +5076,12 @@ export default function App() {
                 stageDecisionChoice(draft, graph, node.id, selectedOption),
               )
             }
-            onRunExperiment={() => void runExperiment(node)}
+            onRunExperiment={(isolation) => void runExperiment(node, undefined, isolation)}
+            inheritedIsolation={
+              activeBranchEpisode
+                ? { graph_isolation: true, code_worktree: activeBranchEpisode.code_worktree }
+                : null
+            }
             onOpenChat={() => {
               const chatId = ensureConversation(conversations, "node_chat", node, project.name);
               selectChat(chatId);
@@ -5098,8 +5158,8 @@ export default function App() {
         error={autoResearchStartError}
         initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
         onClose={closeAutoResearchDialog}
-        onAuthorize={(invocationCeiling, startingInstruction) =>
-          void authorizeAutoResearch(invocationCeiling, startingInstruction)
+        onAuthorize={(invocationCeiling, startingInstruction, codeWorktree) =>
+          void authorizeAutoResearch(invocationCeiling, startingInstruction, codeWorktree)
         }
       />
       {retryTask && retryConfig && (

@@ -158,13 +158,14 @@ def test_api_dispatches_routed_child_work_without_falling_back_to_ordinary_work(
         project_id,
         AutoResearchStartRequest(
             invocation_ceiling=5,
+            code_worktree=False,
             provider="codex",
             run_on="laptop",
             run_truth_scope=_RUN_TRUTH_SCOPE,
         ),
         authorized_by=authorizer,
         graph_base_head=service.history.head_ref(),
-        ensure_graph_target=lambda episode: api_app_module._ensure_auto_research_graph_target(
+        ensure_graph_target=lambda episode: api_app_module._ensure_episode_graph_target(
             episode,
             catalog=app.state.catalog,
         ),
@@ -690,6 +691,7 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         app.state.default_project_id,
         AutoResearchStartRequest(
             invocation_ceiling=5,
+            code_worktree=False,
             provider=provider,
             run_on="laptop",
             run_truth_scope=["repo-a"],
@@ -1020,6 +1022,7 @@ async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watc
         project_id,
         AutoResearchStartRequest(
             invocation_ceiling=5,
+            code_worktree=False,
             provider="codex",
             run_on="laptop",
             run_truth_scope=["repo-a"],

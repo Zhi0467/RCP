@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -47,6 +47,7 @@ from rcp.artifacts import (
 from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import validate_worktree_binding
+from rcp.core.models import ConversationWorktreeBinding
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_COUNT,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
@@ -87,6 +88,9 @@ from rcp.transport import (
     clear_turn_handoff_files,
 )
 from rcp.transport.run_stage import remote_stage_name
+
+if TYPE_CHECKING:
+    from rcp.runs.auto_research import AutoResearchRunRequest
 
 _CHAT_PROMPT_STATE_ROLE = "chat_prompt_state"
 
@@ -1553,6 +1557,7 @@ def _project_write_scope(
     data_dir: Path,
     execution: AgentTaskExecution | None,
     capability: AgentCapability,
+    episode_request: RunRequest | AutoResearchRunRequest | None = None,
     stage_only: bool = False,
     local_stage: Path | None = None,
     additional_protected_write_paths: list[str] | None = None,
@@ -1588,10 +1593,27 @@ def _project_write_scope(
     binding = None
     include_shared = False
     if task is not None and execution is not None and not stage_only:
-        chat_id = task.request.get("chat_id")
-        if isinstance(chat_id, str):
-            binding = execution.store.conversation_worktree(project_id, chat_id)
-        if binding is not None:
+        if task.episode_id is not None:
+            from rcp.runs.episodes.isolation import ensure_episode_isolation
+
+            if episode_request is None:
+                raise ValueError("episode write scope requires its owner's launch request")
+            isolation = ensure_episode_isolation(
+                service, execution.store, task.episode_id, episode_request
+            )
+            binding = isolation.worktree
+            if binding is not None:
+                context.repositories = [
+                    pointer.model_copy(update={"path": binding.worktree_path})
+                    if pointer.alias == binding.repository_alias
+                    else pointer
+                    for pointer in context.repositories
+                ]
+        else:
+            chat_id = task.request.get("chat_id")
+            if isinstance(chat_id, str):
+                binding = execution.store.conversation_worktree(project_id, chat_id)
+        if isinstance(binding, ConversationWorktreeBinding):
             if task.kind not in {"node_chat", "project_chat"} or task.episode_id is not None:
                 raise ValueError("Episodes and workers cannot use conversation worktrees.")
             request = RunRequest.model_validate(task.request)
@@ -1625,7 +1647,7 @@ def _project_write_scope(
             *(additional_protected_write_paths or []),
         ],
     )
-    if binding is not None and execution is not None:
+    if isinstance(binding, ConversationWorktreeBinding) and execution is not None:
         # Human-authored local integration is the only related-turn root change.
         # Derive both admissible fingerprints from this exact validated binding;
         # a retry of an already-bound operation still requires its original scope.

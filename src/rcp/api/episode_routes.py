@@ -17,6 +17,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_project_service,
     get_store,
+    project_write_admission,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -55,14 +56,26 @@ from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
     record_auto_research_message,
 )
-from rcp.runs.branch_merge_admission import start_branch_merge
+from rcp.runs.branch_merge_admission import settle_agentless_merge, start_branch_merge
 from rcp.runs.branch_merge_request import BranchMergeRunRequest
+from rcp.runs.episodes.isolation import auto_research_code_worktree_eligible
+from rcp.runs.episodes.merge import (
+    CleanupEpisodeBody,
+    MergeEpisodeBody,
+    MergePreview,
+    cleanup_episode,
+    merge_episode,
+    merge_owner,
+    merge_preview,
+    reconcile_episode_merge,
+)
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
+from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
 from rcp.transport import StateUnavailable
 
 from .episode_branches import (
-    ensure_auto_research_graph_target,
+    ensure_episode_graph_target,
     graph_branch_summaries,
     graph_branch_summary,
 )
@@ -121,6 +134,7 @@ def episodes(
     project_id: str,
     mode: Literal["auto_research", "experiment_loop"] | None = None,
     episode_id: str | None = None,
+    include_archived_branches: bool = False,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -144,6 +158,7 @@ def episodes(
         store,
         project_id,
         mode=mode,
+        include_archived_branches=include_archived_branches,
         branch_summaries=_branch_summaries(
             store, catalog, REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
         ),
@@ -204,6 +219,14 @@ def start_episode(
     service = get_project_service(catalog, project_id)
     try:
         start_request = _resolved_auto_research_start_request(service, body)
+        if body.code_worktree is None:
+            start_request = start_request.model_copy(
+                update={
+                    "code_worktree": auto_research_code_worktree_eligible(
+                        store, project_id, start_request
+                    )
+                }
+            )
         service.history.require_writable()
         graph_base_head = service.history.head_ref()
         episode, _ = start_auto_research(
@@ -213,7 +236,7 @@ def start_episode(
             authorized_by=authorized_by,
             graph_base_head=graph_base_head,
             ensure_graph_target=partial(
-                ensure_auto_research_graph_target,
+                ensure_episode_graph_target,
                 catalog=catalog,
             ),
         )
@@ -314,16 +337,24 @@ def stop_episode(
     )
 
 
+def _merge_refusal(exc: ValueError) -> dict:
+    detail = {"code": getattr(exc, "code", str(exc).split(":", 1)[0]), "message": str(exc)}
+    # A pause, not a refusal: the Web lists the jobs and the human can merge anyway.
+    if isinstance(exc, UnfinishedEpisodeJobs):
+        detail["jobs"] = [job.model_dump(mode="json") for job in exc.jobs]
+    return detail
+
+
 @router.post(
     "/api/projects/{project_id}/episodes/{episode_id}/merge",
     response_model=EpisodeResponse,
     status_code=202,
-    dependencies=[Depends(require_project_write_admission)],
 )
 def merge_episode_branch(
     project_id: str,
     episode_id: str,
     request: Request,
+    body: MergeEpisodeBody | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -332,29 +363,44 @@ def merge_episode_branch(
 ) -> EpisodeResponse:
     authorized_by = identity_access.require_patch_capable_identity(request)
     member = _episode_for_http(store, catalog, project_id, episode_id)
-    if member.mode != "auto_research" or member.graph_target.kind != "branch":
-        raise HTTPException(
-            status_code=409,
-            detail="Only an Auto-research graph branch can merge to main.",
-        )
-    # The branch keeps its chain root's id, so the merge binds to the root
-    # whichever chain member's card dispatched it.
-    episode = _episode_for_http(store, catalog, project_id, member.graph_target.branch_id or "")
+    episode = merge_owner(store, member)
     service = get_project_service(catalog, project_id)
     try:
-        summary = graph_branch_summary(episode, store=store, catalog=catalog)
-        if not summary.merge_eligible:
-            raise ValueError(
-                summary.merge_blocked_reason or "This graph branch cannot merge to main yet."
-            )
-        service.history.require_writable()
-        merge_request = _resolved_branch_merge_request(service, episode.episode_id)
-        start_branch_merge(
-            background_tasks,
-            project_id,
-            merge_request,
-            authorized_by=authorized_by,
-        )
+        with project_write_admission(project_id, request):
+            service.history.require_writable()
+            reconciled = reconcile_episode_merge(service, store, episode)
+            if reconciled is None:
+                merge_episode(
+                    service,
+                    store,
+                    episode,
+                    body or MergeEpisodeBody(),
+                    authorized_by=authorized_by,
+                    dispatch_graph=lambda operation_id, launch=True: start_branch_merge(
+                        background_tasks,
+                        project_id,
+                        _resolved_branch_merge_request(
+                            service,
+                            episode.episode_id,
+                            run_on=(
+                                isolation.worktree.machine
+                                if (
+                                    isolation := store.episode_isolation(
+                                        project_id, episode.episode_id
+                                    )
+                                )
+                                and isolation.worktree
+                                else None
+                            ),
+                        ),
+                        authorized_by=authorized_by,
+                        operation_id=operation_id,
+                        launch=launch,
+                    ),
+                )
+        state = store.episode_isolation_state(project_id, episode.episode_id)
+        if state and state.merge_attempt:
+            settle_agentless_merge(background_tasks, service, state.merge_attempt.attempt_id)
         current = store.episode(member.episode_id)
         if current is None:
             raise RuntimeError("The branch merge episode could not be reloaded.")
@@ -365,7 +411,66 @@ def merge_episode_branch(
             branch_summary=_branch_summary(store, catalog),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        state = store.episode_isolation_state(project_id, episode.episode_id)
+        if state and state.merge_attempt:
+            settle_agentless_merge(background_tasks, service, state.merge_attempt.attempt_id)
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
+
+
+@router.post(
+    "/api/projects/{project_id}/episodes/{episode_id}/cleanup",
+    response_model=EpisodeResponse,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def cleanup_episode_branch(
+    project_id: str,
+    episode_id: str,
+    body: CleanupEpisodeBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> EpisodeResponse:
+    actor = identity_access.require_patch_capable_identity(request)
+    member = _episode_for_http(store, catalog, project_id, episode_id)
+    owner = merge_owner(store, member)
+    try:
+        cleanup_episode(
+            get_project_service(catalog, project_id), store, owner, body, authorized_by=actor
+        )
+        return serialize_episode(
+            store, project_id, member, branch_summary=_branch_summary(store, catalog)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
+
+
+@router.get(
+    "/api/projects/{project_id}/episodes/{episode_id}/merge-preview", response_model=MergePreview
+)
+def episode_merge_preview(
+    project_id: str,
+    episode_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    target_branch: str | None = None,
+) -> MergePreview:
+    actor = identity_access.require_patch_capable_identity(request)
+    owner = merge_owner(store, _episode_for_http(store, catalog, project_id, episode_id))
+    try:
+        return merge_preview(
+            get_project_service(catalog, project_id),
+            store,
+            owner,
+            authorized_by=actor,
+            target_branch=target_branch,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
 
 
 @router.post(
@@ -710,6 +815,8 @@ def _resolved_auto_research_start_request(
     profile = service.resolve_agent_profile("orchestrator")
     request = AutoResearchStartRequest(
         invocation_ceiling=body.invocation_ceiling,
+        code_worktree=body.code_worktree if body.code_worktree is not None else False,
+        graph_isolation=body.graph_isolation,
         starting_instruction=body.starting_instruction,
         provider=profile.provider,
         model=profile.model,
@@ -726,6 +833,8 @@ def _resolved_auto_research_start_request(
 def _resolved_branch_merge_request(
     service: ProjectService,
     episode_id: str,
+    *,
+    run_on: str | None = None,
 ) -> BranchMergeRunRequest:
     profile = service.resolve_agent_profile("orchestrator")
     return BranchMergeRunRequest(
@@ -733,7 +842,8 @@ def _resolved_branch_merge_request(
         provider=profile.provider,
         model=profile.model,
         reasoning=profile.reasoning,
-        run_on=profile.run_on,
+        # A code-isolated merge runs where its worktree is.
+        run_on=run_on or profile.run_on,
         run_truth_scope=sorted(set(service.history.state().project_truth_scope)),
         chat_scope="project",
         mode="work",

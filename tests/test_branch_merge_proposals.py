@@ -162,9 +162,12 @@ def _merge(harness, monkeypatch, *ops, expect: str = "succeeded"):
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     )
     assert response.status_code == 202, response.text
-    task = wait_for_task(
-        harness.store, response.json()["graph_branch"]["active_merge_task_id"], expect=expect
+    summary = response.json()["graph_branch"]
+    operation_id = (
+        summary["active_merge_task_id"]
+        or summary["latest_successful_merge"]["provenance"]["merge_task_id"]
     )
+    task = wait_for_task(harness.store, operation_id, expect=expect)
     return task, launcher
 
 

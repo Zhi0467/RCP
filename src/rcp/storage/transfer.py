@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, JsonValue
 
 from rcp.artifacts import html_document_title
+from rcp.core.models import EpisodeIsolation, EpisodeIsolationState
 from rcp.storage.models import ProjectTransferImportRecord
 from rcp.transfer.archive import (
     TransferArchiveAttribution,
@@ -260,7 +261,14 @@ class ProjectTransferStoreMixin:
             """,
             (project_id,),
         ).fetchone()
-        return TRANSFER_RECORD_SCHEMA_VERSION if archived is not None else 1
+        graph_archived = connection.execute(
+            "SELECT 1 FROM episode_isolation_states WHERE project_id = ? "
+            "AND json_extract(state_json, '$.graph_archived') = 1 LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if graph_archived is not None:
+            return TRANSFER_RECORD_SCHEMA_VERSION
+        return 2 if archived is not None else 1
 
     def export_project_transfer_records(
         self,
@@ -287,6 +295,8 @@ class ProjectTransferStoreMixin:
         return TransferRecordBundle(
             schema_version=(
                 TRANSFER_RECORD_SCHEMA_VERSION
+                if any(episode.graph_archived for episode in episodes)
+                else 2
                 if any(episode.archive is not None for episode in episodes)
                 else 1
             ),
@@ -744,6 +754,12 @@ class ProjectTransferStoreMixin:
             (episode_id,),
         ).fetchone()
         cls._validate_episode_report_history(row, attempts, wrapup, report)
+        # Only the portable archive flag travels; bindings and merge state stay local.
+        isolation = connection.execute(
+            "SELECT json_extract(state_json, '$.graph_archived') FROM episode_isolation_states "
+            "WHERE project_id = ? AND owner_episode_id = ?",
+            (row["project_id"], episode_id),
+        ).fetchone()
         return TransferEpisodeRecord(
             episode_id=episode_id,
             mode=row["mode"],
@@ -768,6 +784,7 @@ class ProjectTransferStoreMixin:
             updated_at=row["updated_at"],
             ended_at=row["ended_at"],
             continues_episode_id=row["continues_episode_id"],
+            graph_archived=bool(isolation and isolation[0]),
             archive=(
                 {
                     "archived_by": {
@@ -1313,6 +1330,10 @@ class ProjectTransferStoreMixin:
                     connection,
                     normalized_capture.records,
                     attributions,
+                )
+                # A transfer carries no isolation choices; derive the branch-owned ones.
+                self._derive_branch_episode_isolation(
+                    connection, normalized_capture.records.project_id
                 )
                 self._insert_transfer_views(
                     connection,
@@ -2188,6 +2209,30 @@ class ProjectTransferStoreMixin:
                         html_document_title(report.html),
                     ),
                 )
+        for episode in records.episodes:
+            if not episode.graph_archived:
+                continue
+            # A graph-only binding: the source machine's worktree never transfers.
+            binding = EpisodeIsolation(
+                owner_episode_id=episode.episode_id,
+                graph_branch_id=episode.graph_target.branch_id,
+            )
+            state = EpisodeIsolationState(
+                owner_episode_id=episode.episode_id, status="ready", graph_archived=True
+            )
+            connection.execute(
+                "INSERT INTO episode_isolations VALUES (?, ?, ?, ?)",
+                (
+                    records.project_id,
+                    episode.episode_id,
+                    binding.graph_branch_id,
+                    binding.model_dump_json(),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO episode_isolation_states VALUES (?, ?, ?)",
+                (records.project_id, episode.episode_id, state.model_dump_json()),
+            )
 
     @classmethod
     def _insert_auto_research_history(

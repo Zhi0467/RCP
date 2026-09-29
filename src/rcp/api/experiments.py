@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from functools import partial
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -17,6 +18,7 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.episode_branches import ensure_episode_graph_target
 from rcp.api.episodes import _episode_for_http, episode_on_branch
 from rcp.api.experiment_controls import _experiment_control, _experiment_control_for_target
 from rcp.api.graph_changes import require_graph_edit_admission
@@ -26,6 +28,7 @@ from rcp.control import ExperimentControlState
 from rcp.core.models import AuthorizedHuman, Experiment
 from rcp.keyed_locks import KeyedLocks
 from rcp.projects import ProjectCatalog
+from rcp.runs.episodes.isolation import validate_episode_admission
 from rcp.runs.experiment_admission import (
     experiment_start_message,
     fresh_experiment_run_request,
@@ -89,6 +92,7 @@ def run_experiment(
             raise HTTPException(status_code=409, detail=" ".join(control.reasons))
         client_request = dict(body)
         client_request.pop("resolved_compute_context", None)
+        client_request.pop("isolation_owner_episode_id", None)
         # Reauthorizing the next episode is an operational human act, not research
         # truth, so an explicit ceiling arrives with the Run instead of requiring a
         # staged node edit and a Sync. The node value remains the default.
@@ -112,9 +116,10 @@ def run_experiment(
             raise ValueError("Run requires a chat_id")
         uuid.UUID(supplied.chat_id)
         episode_id = str(uuid.uuid4())
+        creates_branch = supplied.graph_isolation and target.kind == "main"
         pending_group = (
             None
-            if runtime.stop_requested and runtime.stop_settled
+            if creates_branch or (runtime.stop_requested and runtime.stop_settled)
             else store.completed_experiment_watcher_group(
                 project_id,
                 node_id,
@@ -135,6 +140,8 @@ def run_experiment(
             experiment_request = experiment_request.model_copy(
                 update={
                     "run_truth_scope": supplied.run_truth_scope,
+                    "code_worktree": supplied.code_worktree,
+                    "graph_isolation": supplied.graph_isolation,
                     "chat_scope": "node",
                     "node_id": node_id,
                     "message": experiment_start_message(supplied.message, node_id),
@@ -143,6 +150,7 @@ def run_experiment(
                 }
             )
             experiment_request = resolve_experiment_node_work_request(service, experiment_request)
+            validate_episode_admission(store, project_id, experiment_request, graph_target=target)
             record = start_watcher_notification(
                 background_tasks,
                 project_id,
@@ -172,6 +180,10 @@ def run_experiment(
             experiment_request,
             authorized_by=authorized_by,
             graph_target=target,
+            graph_base_head=service.history.head_ref() if creates_branch else None,
+            ensure_graph_target=(
+                partial(ensure_episode_graph_target, catalog=catalog) if creates_branch else None
+            ),
         )
     except AgentTaskAdmissionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
