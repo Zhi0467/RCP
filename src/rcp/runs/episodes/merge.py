@@ -160,7 +160,8 @@ def episode_code_merge(
         return None
     worktree = binding.worktree
     machine = service.manifest.machine_map[worktree.machine]
-    preflight = _git(store, binding, "preflight", target_branch=attempt.target_branch)
+    # Merge-aware: a dirty shared checkout refuses only when it holds the target.
+    facts = _git(store, binding, "merge_preview", target_branch=attempt.target_branch)
     card = store.space_machine_for(machine.host)
     return EpisodeCodeMerge(
         binding=worktree,
@@ -172,7 +173,7 @@ def episode_code_merge(
             path=worktree.worktree_path,
         ),
         machine_writable_paths=list(card.writable_paths) if card else [],
-        target_checked_out=bool(preflight.get("target_checked_out")),
+        target_checked_out=bool(facts["target_checked_out"]),
     )
 
 

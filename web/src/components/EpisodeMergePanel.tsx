@@ -45,8 +45,10 @@ export function EpisodeMergePanel({
     removeWorktree: true,
     deleteCodeBranch: true,
   });
-  // A new branch head, attempt, or target means a new preview.
+  // A new branch head, attempt, target, or episode update (a turn's new code) means a new preview.
   const refreshKey = JSON.stringify([
+    episode.status,
+    episode.updated_at,
     episode.graph_branch,
     episode.isolation_state?.merge_attempt?.attempt_id,
     episode.isolation_state?.status,
@@ -62,6 +64,8 @@ export function EpisodeMergePanel({
   useEffect(() => {
     let current = true;
     setPreviewError(null);
+    // The old preview no longer answers this key; Merge waits for the new one.
+    setPreviewTarget(undefined);
     loadMergePreview(apiBase, episode.episode_id, target)
       .then((next) => {
         if (!current) return;

@@ -494,6 +494,29 @@ def test_code_conflict_runs_one_code_merge_task(manifest, tmp_path, monkeypatch,
     assert state.delivered_source_commit == state.merge_attempt.source_commit
 
 
+def test_code_merge_turn_launches_beside_an_unrelated_dirty_checkout(
+    manifest, tmp_path, monkeypatch
+):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    shared, binding = _conflicting(harness, tmp_path, graph=True)
+    git(shared, "branch", "release")
+    # The target is not checked out, so the shared checkout's own work is untouched.
+    (shared / "scratch.txt").write_text("human work\n")
+    turns = []
+    monkeypatch.setattr(
+        harness.app.state.launcher, "stream", _merge_turn(harness, shared, turns, lands=False)
+    )
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
+        json={"target_branch": "release"},
+    )
+    assert response.status_code == 202, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="failed")
+    assert turns == [sorted([str(shared), binding.worktree_path])]
+    assert (shared / "scratch.txt").read_text() == "human work\n"
+
+
 def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeypatch):
     harness = _code_only_owner(_create_branch_harness(manifest, tmp_path, change="none"))
     owner_id = harness.episode.episode_id
