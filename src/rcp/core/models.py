@@ -1143,6 +1143,8 @@ class EpisodeIsolationState(BaseModel):
     merge_attempt: EpisodeMergeAttempt | None = None
     delivered_source_commit: str | None = None
     delivered_target_branch: str | None = None
+    # The target tip the delivery merged into; later cleanup requires it to stay reachable.
+    delivered_target_commit: str | None = None
     squash_commit: str | None = None
     graph_archived: bool = False
 

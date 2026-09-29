@@ -219,6 +219,7 @@ class ConversationWorktreeStoreMixin:
                 "merge_reservation",
                 "delivered_source_commit",
                 "delivered_target_branch",
+                "delivered_target_commit",
                 "squash_commit",
                 "graph_archived",
             }

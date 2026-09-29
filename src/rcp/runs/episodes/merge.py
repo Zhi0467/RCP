@@ -330,6 +330,9 @@ def verify_episode_merge_code(store, owner):
         target_commit=attempt.target_commit,
     )["verified"]:
         raise ValueError("code_landing_unverified")
+    # The agent may have checked the target out in the worktree; cleanup needs the
+    # worktree back on its bound branch, which binding validation proves.
+    _git(store, binding, "merge_preview", target_branch=attempt.target_branch)
 
 
 def _commit_graph(service, store, owner, attempt):
@@ -524,6 +527,7 @@ def _resume(service, store, owner, binding, attempt):
                 attempt=attempt,
                 delivered_source_commit=attempt.source_commit,
                 delivered_target_branch=attempt.target_branch,
+                delivered_target_commit=attempt.target_commit,
                 squash_commit=attempt.squash_commit,
             )
     if attempt.phase == "verified" and attempt.graph_task_id:
@@ -693,6 +697,7 @@ def complete_graph_merge(service, store, owner):
                 attempt=attempt,
                 delivered_source_commit=attempt.source_commit,
                 delivered_target_branch=attempt.target_branch,
+                delivered_target_commit=attempt.target_commit,
             )
         attempt = _save(store, owner, attempt, phase="graph_committed")
         try:
@@ -810,6 +815,7 @@ def cleanup_episode(service, store, owner, body: CleanupEpisodeBody, *, authoriz
                 "verify_landing",
                 source_commit=state.delivered_source_commit,
                 target_branch=state.delivered_target_branch,
+                target_commit=state.delivered_target_commit,
                 squash_commit=state.squash_commit,
             )["verified"]
         facts = {}
@@ -847,6 +853,7 @@ def cleanup_episode(service, store, owner, body: CleanupEpisodeBody, *, authoriz
             source_commit=facts.get("source_commit") or state.delivered_source_commit,
             target_branch=state.delivered_target_branch
             or (binding.worktree.starting_branch if binding.worktree else None),
+            target_commit=state.delivered_target_commit,
             squash_commit=state.squash_commit,
             confirm_discard=body.confirm_discard,
             cleanup_completed=["remove_worktree"] if state.status == "removed" else [],

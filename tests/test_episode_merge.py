@@ -211,6 +211,30 @@ def test_preview_after_partial_cleanup_reads_the_removed_worktree(manifest, tmp_
     assert response.json()["code"]["status"] == "already_merged"
 
 
+def test_later_cleanup_keeps_the_branch_when_target_history_was_dropped(manifest, tmp_path):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    shared, binding = _isolated(harness, tmp_path)
+    (shared / "other").write_text("target work")
+    git(shared, "add", "other")
+    git(shared, "commit", "-m", "target work")
+    (Path(binding.worktree_path) / "file").write_text("episode")
+    route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
+    response = harness.client.post(
+        route + "/merge",
+        json={"remove_worktree": False, "delete_code_branch": False, "keep_branch_open": True},
+    )
+    assert response.status_code == 202, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert state.delivered_target_commit
+    # The target is reset to the episode's commit, dropping the history it merged into.
+    git(shared, "reset", "--hard", state.delivered_source_commit)
+    response = harness.client.post(
+        route + "/cleanup", json={"remove_worktree": True, "delete_code_branch": True}
+    )
+    assert response.status_code == 409
+    assert git(shared, "rev-parse", binding.branch) == state.delivered_source_commit
+
+
 def test_uncertain_landing_reconciles_before_new_merge(manifest, tmp_path, monkeypatch):
     from rcp.runs.episodes import merge
 
@@ -515,6 +539,47 @@ def test_code_merge_turn_launches_beside_an_unrelated_dirty_checkout(
     wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="failed")
     assert turns == [sorted([str(shared), binding.worktree_path])]
     assert (shared / "scratch.txt").read_text() == "human work\n"
+
+
+def test_code_merge_that_leaves_the_worktree_off_its_branch_is_unverified(
+    manifest, tmp_path, monkeypatch
+):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    shared, binding = _conflicting(harness, tmp_path, graph=True)
+    git(shared, "branch", "release")
+    revision = harness.service.history.state().revision
+    worktree = Path(binding.worktree_path)
+
+    async def stream(_provider, _prompt, **_kwargs):
+        state = harness.store.episode_isolation_state(
+            harness.project_id, harness.episode.episode_id
+        )
+        # Lands into release from the worktree, then never restores the episode branch.
+        git(worktree, "checkout", "release")
+        git(
+            worktree,
+            "merge",
+            "--no-ff",
+            "-X",
+            "theirs",
+            "-m",
+            "merge",
+            state.merge_attempt.source_commit,
+        )
+        yield AgentEvent(event="session", session_id="code-merge")
+        yield AgentEvent(event="provider_exit", text='{"return_code":0}')
+        yield AgentEvent(event="done")
+
+    monkeypatch.setattr(harness.app.state.launcher, "stream", stream)
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
+        json={"target_branch": "release"},
+    )
+    assert response.status_code == 202, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="failed")
+    assert harness.service.history.state().revision == revision
+    assert not harness.branch.merge_receipts()
 
 
 def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeypatch):
