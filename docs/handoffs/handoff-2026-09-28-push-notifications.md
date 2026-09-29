@@ -14,7 +14,11 @@ phone listener, service worker, manifest, and pairing page; slice 5's
 Notifications card, Devices controls in both spaces, visit reconciliation, and
 deep-link resolution; slice 6's Mac shell outbox poller, backlog summary,
 acknowledgment after acceptance, click routing, and Tauri commands. Remaining:
-the real-hardware journeys below.
+the real-hardware journeys below. On 2026-09-28 `RCP Dev.app` on disposable
+data turned on This Mac, posted a banner for a real Blocker, and its click
+opened that Blocker. The first journey still needs the installed app and a
+Proposal. `desktop:build-dev` leaves the bundle unsigned, so macOS refuses
+notification permission (`UNErrorDomain` 1) until it is signed ad hoc.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which landed first (#216): the Mac check below
 runs on an app that install produced. Mac and phone push ship together in one
