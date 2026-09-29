@@ -197,7 +197,9 @@ class ProviderSignInRunner:
                     if host
                     else launcher_module._discover_local_provider(provider)
                 )
-            except launcher_module.ProviderDiscoveryError as exc:
+            except launcher_module.ProviderDiscoveryUnavailable as exc:
+                # An unanswered host or a broken discovery program is not a
+                # missing executable; say which, as readiness would.
                 raise ProviderLoginRefused(str(exc)) from exc
         if binary is None:
             raise ProviderLoginRefused(f"{profile_for(provider).label} executable was not found.")
