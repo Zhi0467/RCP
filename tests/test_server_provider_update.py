@@ -17,6 +17,7 @@ from rcp.server_ops.cli import (
 )
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.provider_update import (
+    _discover_provider,
     prepare_provider_update_command,
 )
 
@@ -137,6 +138,24 @@ def test_provider_update_runs_native_maintenance_as_rcp_without_touching_the_log
         )
     else:
         assert (str(binary), "update") in calls
+
+
+@pytest.mark.parametrize(
+    "system_directory",
+    ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"],
+)
+def test_provider_update_prefers_service_path_over_native_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, system_directory: str
+) -> None:
+    account = _account(_layout(tmp_path))
+    system = Path(system_directory) / "opencode"
+    native = Path(account.pw_dir) / ".opencode/bin/opencode"
+    available = {system, native}
+    monkeypatch.setattr(Path, "is_file", lambda path: path in available)
+    monkeypatch.setattr(
+        "rcp.server_ops.provider_update.os.access", lambda path, mode: path in available
+    )
+    assert _discover_provider(account, "opencode") == system
 
 
 def test_provider_update_finds_the_native_opencode_install_without_a_symlink(

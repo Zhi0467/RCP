@@ -71,6 +71,13 @@ jobs:
       # so backup encryption was only ever exercised against the stub.
       - run: sudo apt-get update && sudo apt-get install -y age
       - run: uv run pytest
+      # Source tests cannot prove that runtime resources survive freezing. Run
+      # the same packaged-agent journey used by the macOS candidate on PRs too.
+      - name: Freeze the backend and exercise a remote agent
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run pyinstaller --clean --noconfirm --distpath packaging/dist --workpath packaging/build packaging/rcp_backend.spec
+          uv run python packaging/smoke-backend.py
 
   old-data-upgrade-tests:
     name: old-data migration tests

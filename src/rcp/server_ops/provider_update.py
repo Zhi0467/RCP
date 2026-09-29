@@ -193,12 +193,14 @@ def _discover_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path
     home = Path(account.pw_dir)
     candidates = (
         home / ".local" / "bin" / provider,
-        # The same provider-native locations readiness discovers, so the
-        # documented installation is the one this command updates.
-        *(home / relative for relative in profile_for(provider).install_paths),
+        Path("/usr/local/sbin") / provider,
         Path("/usr/local/bin") / provider,
+        Path("/usr/sbin") / provider,
         Path("/usr/bin") / provider,
+        Path("/sbin") / provider,
         Path("/bin") / provider,
+        # Native locations are fallback candidates, as in readiness discovery.
+        *(home / relative for relative in profile_for(provider).install_paths),
     )
     for candidate in candidates:
         if candidate.is_file() and os.access(candidate, os.X_OK):
