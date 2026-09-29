@@ -1796,16 +1796,15 @@ function ExperimentEpisodeCard({
             }}
             episodeReportHref={episodeReportHref}
           />
-          {(episode.graph_branch || episode.code_worktree) &&
-            (episode.isolation_owner_episode_id ?? episode.episode_id) === episode.episode_id && (
-              <EpisodeMergePanel
-                apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
-                episode={episode}
-                disabled={archiveDisabled || mutationsDisabled}
-                busy={mergeBusy}
-                onMerge={onMerge}
-              />
-            )}
+          {(episode.graph_branch || episode.code_worktree) && (
+            <EpisodeMergePanel
+              apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
+              episode={episode}
+              disabled={archiveDisabled || mutationsDisabled}
+              busy={mergeBusy}
+              onMerge={onMerge}
+            />
+          )}
         </div>
       )}
     </article>
