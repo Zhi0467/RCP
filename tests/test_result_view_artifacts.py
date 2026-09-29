@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from rcp.artifacts import ResultViewDescriptor, html_preview_document
 
+from .helpers import assert_frozen_backend_ships
+
 
 def _descriptor_values() -> dict[str, object]:
     return {
@@ -70,6 +72,10 @@ def test_ordinary_html_preview_uses_a_private_port_for_trusted_actions() -> None
     assert "value.kind!=='rcp-reference'" in document
     assert "artifact.contentWindow?.postMessage" not in document
     assert "rcp-artifact-box-start" not in document
+
+
+def test_selection_runtime_is_included_in_the_frozen_backend() -> None:
+    assert_frozen_backend_ships("artifact_selection.js", "artifact_comment_panel.js")
 
 
 def test_result_view_preview_strictly_bridges_bounded_gestures_outward() -> None:

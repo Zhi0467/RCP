@@ -33,6 +33,8 @@ from rcp.agents.command_protocol import (
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
 
+from .helpers import assert_frozen_backend_ships
+
 
 async def _run_client(staged, *arguments: str) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
@@ -109,7 +111,7 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
     } == {name: f"retained {name}" for name in ("patch.json", "watch.json", "messages.json")}
 
 
-def test_staged_broker_is_stdlib_only() -> None:
+def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
     source = staged_command_broker_source()
     imports: set[str] = set()
     for node in ast.walk(ast.parse(source)):
@@ -119,6 +121,10 @@ def test_staged_broker_is_stdlib_only() -> None:
             imports.add(node.module.partition(".")[0])
     assert imports <= sys.stdlib_module_names
     assert "from rcp" not in source
+    assert_frozen_backend_ships(
+        "agents/staged_command_broker.py", "agents/staged_command_client.py"
+    )
+    assert "def _atomic_request" in staged_command_client_source()
 
 
 @pytest.mark.asyncio

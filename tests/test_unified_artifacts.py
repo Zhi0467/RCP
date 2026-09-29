@@ -40,7 +40,7 @@ from rcp.storage import AgentTaskRecord, ArtifactRevisionCandidateRecord
 from rcp.transport import LocalStateWorkspace, RemoteRunStage, StateUnavailable
 from rcp.transport.remote_lock_holder import replace_staged_artifact
 
-from .helpers import authorized_human, create_named_app
+from .helpers import assert_frozen_backend_ships, authorized_human, create_named_app
 
 
 def _workspace(tmp_path: Path) -> LocalStateWorkspace:
@@ -2142,3 +2142,9 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
         attachments=[staged.pointer],
     )
     assert str(crop_path) in prompt
+
+
+def test_packaged_backend_ships_the_artifact_replacement_source() -> None:
+    # The lock holder is composed from this file's source text, so the frozen
+    # backend must carry it as data and check it at startup.
+    assert_frozen_backend_ships("artifact_replace.py")
