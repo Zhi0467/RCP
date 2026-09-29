@@ -139,6 +139,7 @@ def test_the_reply_is_every_text_part_and_the_exit_report_ends_the_turn():
     usage = [event.usage for event in events if event.usage is not None]
     assert [item.dedupe_key for item in usage] == ["p1", "p2"]
     assert usage[0].processed_input_tokens == 15
+    assert usage[0].reported_total_tokens is None
     assert [step.complete for step in steps] == [False] * 7 + [True]
 
 

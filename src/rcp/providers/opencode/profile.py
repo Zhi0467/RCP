@@ -30,6 +30,7 @@ from rcp.providers.base import (
     ProviderTurnRequest,
     ProviderUsage,
     _JsonlProviderTurn,
+    _optional_usage_int,
     _require_project_write_scope,
     _require_provider_version,
     _usage_dedupe_key,
@@ -298,7 +299,7 @@ class OpenCodeProfile(ProviderProfile):
             reasoning_output_tokens=_usage_int(tokens.get("reasoning")),
             reported_input_tokens=reported_input,
             reported_output_tokens=output,
-            reported_total_tokens=_usage_int(tokens.get("total")),
+            reported_total_tokens=_optional_usage_int(tokens.get("total")),
             provider_fields={str(key): item for key, item in tokens.items()},
         )
 
