@@ -3,6 +3,7 @@ import { useUpdateNotice } from "./hooks/useUpdateNotice";
 import { TerminalTab } from "./components/TerminalTab";
 import { branchMergeStateLabel } from "./components/CampaignRuns";
 import {
+  experimentStartTarget,
   graphSessionKey,
   graphTargetFromHash,
   graphTargetUrl,
@@ -3354,7 +3355,12 @@ export default function App() {
             }),
           },
         );
-        if (!sameGraphTarget(task.graph_target, graphTarget))
+        const expectedTarget = experimentStartTarget(
+          graphTarget,
+          isolation?.graph_isolation,
+          task.episode_id,
+        );
+        if (!sameGraphTarget(task.graph_target, expectedTarget))
           throw new Error("Experiment start returned a different graph target.");
         if (!isActiveGraph(project.id)) return task;
         recordStartedTask(task);

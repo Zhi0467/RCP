@@ -10,8 +10,13 @@ const server = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 after(() => server.close());
-const { graphTargetUrl, graphSessionKey, graphTargetFromHash, graphViewHash } =
-  await server.ssrLoadModule("/src/graphTarget.ts");
+const {
+  experimentStartTarget,
+  graphTargetUrl,
+  graphSessionKey,
+  graphTargetFromHash,
+  graphViewHash,
+} = await server.ssrLoadModule("/src/graphTarget.ts");
 const { parseProjectHash, projectHashAfterViewChange } =
   await server.ssrLoadModule("/src/experimentBoard.ts");
 const { branchGraphProjection, expandBranchContext } =
@@ -298,4 +303,15 @@ test("merge review decodes one same-node content, status and standing bundle", a
     decodeProposal({ ops: [ops[0], { ...ops[2], node_id: "hyp/other" }] }).semantics,
     "legacy",
   );
+});
+
+test("an isolated Experiment started from main expects its own episode branch", () => {
+  const main = { kind: "main" };
+  const branch = { kind: "branch", branch_id: "other" };
+  assert.deepEqual(experimentStartTarget(main, true, "episode"), {
+    kind: "branch",
+    branch_id: "episode",
+  });
+  assert.deepEqual(experimentStartTarget(main, undefined, "episode"), main);
+  assert.deepEqual(experimentStartTarget(branch, true, "episode"), branch);
 });

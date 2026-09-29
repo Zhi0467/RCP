@@ -7,6 +7,17 @@ export function graphSessionKey(projectId: string, target: GraphTargetRef = MAIN
   return target.kind === "main" ? projectId : `${projectId}:branch:${target.branch_id}`;
 }
 
+/** An isolated Experiment started from main runs on the branch named for its episode. */
+export function experimentStartTarget(
+  current: GraphTargetRef,
+  graphIsolation: boolean | undefined,
+  episodeId: string | null | undefined,
+): GraphTargetRef {
+  return graphIsolation && current.kind === "main" && episodeId
+    ? { kind: "branch", branch_id: episodeId }
+    : current;
+}
+
 export function sameGraphTarget(
   left: GraphTargetRef = MAIN_GRAPH,
   right: GraphTargetRef = MAIN_GRAPH,
