@@ -7,8 +7,9 @@ import {
   mergeRequestBody,
   previewAnswersDraft,
   squashAllowed,
+  unfinishedJobsFromError,
 } from "../mergePanel";
-import type { Episode, MergeEpisodeBody, MergePreview } from "../types";
+import type { Episode, EpisodeUnfinishedJob, MergeEpisodeBody, MergePreview } from "../types";
 
 const CODE_STATUS_LABELS: Record<NonNullable<MergePreview["code"]>["status"], string> = {
   clean: "Merges cleanly",
@@ -36,6 +37,8 @@ export function EpisodeMergePanel({
   const [previewTarget, setPreviewTarget] = useState<string | null | undefined>(undefined);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [mergeError, setMergeError] = useState<string | null>(null);
+  // Merge paused on these jobs; the human can merge anyway and the agent stops them.
+  const [pausedJobs, setPausedJobs] = useState<EpisodeUnfinishedJob[] | null>(null);
   const [targetDraft, setTargetDraft] = useState("");
   const [target, setTarget] = useState<string | null>(null);
   const [choices, setChoices] = useState<MergeChoices>({
@@ -87,16 +90,24 @@ export function EpisodeMergePanel({
   const historyMode = squash ? choices.historyMode : "merge";
   const previewCurrent = previewAnswersDraft(preview, previewTarget, target, targetDraft);
 
-  const merge = async () => {
+  const merge = async (confirmUnfinishedJobs = false) => {
     if (!preview || !previewCurrent || disabled) return;
     setMergeError(null);
+    setPausedJobs(null);
+    const body = mergeRequestBody(
+      preview,
+      { ...choices, targetBranch: targetDraft },
+      hasGraphBranch,
+    );
     try {
       await onMerge(
         episode.episode_id,
-        mergeRequestBody(preview, { ...choices, targetBranch: targetDraft }, hasGraphBranch),
+        confirmUnfinishedJobs ? { ...body, confirm_unfinished_jobs: true } : body,
       );
     } catch (error) {
-      setMergeError(error instanceof Error ? error.message : String(error));
+      const jobs = unfinishedJobsFromError(error);
+      if (jobs) setPausedJobs(jobs);
+      else setMergeError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -222,6 +233,36 @@ export function EpisodeMergePanel({
         {busy ? <LoaderCircle className="spin" size={12} /> : <Network size={12} />}
         {busy ? "Starting merge…" : "Merge"}
       </button>
+      {pausedJobs && (
+        <div className="merge-unfinished-jobs" role="alert">
+          <strong>These jobs may still be writing the worktree.</strong>
+          <ul aria-label="Unfinished jobs">
+            {pausedJobs.map((job) => (
+              <li key={`${job.kind}:${job.id}`}>
+                <code>{job.command ?? job.id}</code> <span>{job.status}</span>
+              </li>
+            ))}
+          </ul>
+          <span>Merge anyway, and the merge agent stops them before it merges.</span>
+          <div className="merge-unfinished-actions">
+            <button
+              className="button primary compact"
+              type="button"
+              disabled={disabled || !previewCurrent}
+              onClick={() => void merge(true)}
+            >
+              Merge anyway
+            </button>
+            <button
+              className="button secondary compact"
+              type="button"
+              onClick={() => setPausedJobs(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {mergeError && (
         <div className="campaign-branch-diagnostic" role="alert">
           {mergeError}

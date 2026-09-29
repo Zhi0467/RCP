@@ -582,6 +582,49 @@ def test_code_merge_that_leaves_the_worktree_off_its_branch_is_unverified(
     assert not harness.branch.merge_receipts()
 
 
+def test_confirmed_unfinished_jobs_go_to_the_code_merge_agent(manifest, tmp_path, monkeypatch):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    shared, binding = _isolated(harness, tmp_path, shared=tmp_path / "repo-a")
+    (Path(binding.worktree_path) / "file").write_text("episode change")
+    with harness.store.connection() as connection:
+        connection.execute(
+            "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
+            "origin_task_kind, chat_id, episode_id, execution_host, check_command, log_path, "
+            "cwd, continuation_json, status, created_at) VALUES ('w', ?, 'origin', 'node_chat', "
+            "'chat', ?, '', 'squeue -j 7', '/tmp/log', '/tmp', '{}', 'active', ?)",
+            (harness.project_id, harness.episode.episode_id, harness.store.now()),
+        )
+    prompts = []
+
+    async def stream(_provider, prompt, **_kwargs):
+        # The staged contract carries the confirmed job for the agent to stop.
+        prompts.append(Path(prompt.split("\n")[1].strip()).read_text())
+        state = harness.store.episode_isolation_state(
+            harness.project_id, harness.episode.episode_id
+        )
+        git(shared, "merge", "--no-ff", "-m", "merge", state.merge_attempt.source_commit)
+        yield AgentEvent(event="session", session_id="code-merge")
+        yield AgentEvent(event="provider_exit", text='{"return_code":0}')
+        yield AgentEvent(event="done")
+
+    monkeypatch.setattr(harness.app.state.launcher, "stream", stream)
+    route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    # Merge pauses on the unfinished job instead of refusing it.
+    paused = harness.client.post(route)
+    assert paused.status_code == 409
+    assert paused.json()["detail"]["code"] == "unfinished_jobs_confirmation_required"
+    assert [job["id"] for job in paused.json()["detail"]["jobs"]] == ["w"]
+    # Confirmed, a merge that would land agentless goes to the agent with the job.
+    response = harness.client.post(route, json={"confirm_unfinished_jobs": True})
+    assert response.status_code == 202, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert state.merge_attempt.code_by_agent
+    wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="succeeded")
+    assert len(prompts) == 1 and "squeue -j 7" in prompts[0]
+    assert (shared / "file").read_text() == "episode change"
+    assert not Path(binding.worktree_path).exists()
+
+
 def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeypatch):
     harness = _code_only_owner(_create_branch_harness(manifest, tmp_path, change="none"))
     owner_id = harness.episode.episode_id

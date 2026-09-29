@@ -6,6 +6,7 @@ import {
   mergeDiffMarks,
   mergeRequestBody,
   previewAnswersDraft,
+  unfinishedJobsFromError,
 } from "../src/mergePanel.ts";
 
 function path(id, flags = {}) {
@@ -84,4 +85,12 @@ test("Merge waits for the preview of the target the human typed", () => {
   assert.ok(!previewAnswersDraft(preview, null, "release", "release"));
   const release = { ...preview, code: { ...code, target_branch: "release" } };
   assert.ok(previewAnswersDraft(release, "release", "release", "release"));
+});
+
+test("a Merge paused on unfinished jobs is told apart from other refusals", () => {
+  const jobs = [{ kind: "watcher", id: "w", status: "stopped" }];
+  const paused = new Error(JSON.stringify({ code: "unfinished_jobs_confirmation_required", jobs }));
+  assert.deepEqual(unfinishedJobsFromError(paused), jobs);
+  assert.equal(unfinishedJobsFromError(new Error(JSON.stringify({ code: "target_dirty" }))), null);
+  assert.equal(unfinishedJobsFromError(new Error("plain")), null);
 });

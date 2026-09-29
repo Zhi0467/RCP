@@ -380,15 +380,10 @@ def test_merge_attempt_updates_preserve_binding_and_delivery(manifest, tmp_path)
 
 
 @pytest.mark.parametrize(
-    "status,code",
-    [
-        ("running", "episode_binding_job_live"),
-        ("lost", "episode_binding_job_unobservable"),
-        ("exited", None),
-        ("cancelled", None),
-    ],
+    "status,pauses",
+    [("running", True), ("lost", True), ("exited", False), ("cancelled", False)],
 )
-def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, code):
+def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, pauses):
     from rcp.compute_jobs.models import ComputeJobRecord
 
     store, owner, attempt = _merge_owner(manifest, tmp_path)
@@ -415,34 +410,25 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, code):
             created_at=store.now(),
         )
     )
-    if code:
-        with pytest.raises(ValueError) as error:
-            store.reserve_episode_merge("project", "owner", attempt)
-        assert error.value.args == (code,)
-        assert store.episode_isolation_state("project", "owner").merge_reservation is None
-    else:
-        assert (
-            store.reserve_episode_merge("project", "owner", attempt).merge_reservation
-            == attempt.attempt_id
-        )
+    _assert_job_gate(store, attempt, ("compute_job", "job") if pauses else None)
 
 
 @pytest.mark.parametrize(
-    "status,worktree,condition,code",
+    "status,worktree,condition,pauses",
     [
-        ("active", True, None, "episode_binding_job_live"),
-        ("degraded", True, None, "episode_binding_job_unobservable"),
-        ("completed", True, None, None),
+        ("active", True, None, True),
+        ("degraded", True, None, True),
+        ("completed", True, None, False),
         # Stop ends observation without proving the job finished.
-        ("stopped", True, None, "episode_binding_job_unobservable"),
+        ("stopped", True, None, True),
         # A graph-only binding has no worktree a job could write.
-        ("active", False, None, None),
+        ("active", False, None, False),
         # A graph-condition watcher observes the graph and runs no job.
-        ("active", True, "{}", None),
+        ("active", True, "{}", False),
     ],
 )
 def test_merge_job_gate_sees_scheduler_watchers(
-    manifest, tmp_path, status, worktree, condition, code
+    manifest, tmp_path, status, worktree, condition, pauses
 ):
     # A scheduler job has no compute-job row; only its watcher observes it.
     store, owner, attempt = _merge_owner(manifest, tmp_path)
@@ -460,12 +446,24 @@ def test_merge_job_gate_sees_scheduler_watchers(
             "'/tmp/log', '/tmp', '{}', ?, ?, ?)",
             (status, store.now(), condition),
         )
-    if code:
-        with pytest.raises(ValueError) as error:
-            store.reserve_episode_merge("project", "owner", attempt)
-        assert error.value.args == (code,)
-    else:
-        assert store.reserve_episode_merge("project", "owner", attempt).merge_reservation
+    _assert_job_gate(store, attempt, ("watcher", "w") if pauses else None)
+
+
+def _assert_job_gate(store, attempt, paused_job):
+    """Unfinished jobs pause Merge until confirmed, then ride on the attempt."""
+    from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
+
+    if paused_job is None:
+        state = store.reserve_episode_merge("project", "owner", attempt)
+        assert state.merge_attempt.unfinished_jobs == []
+        return
+    with pytest.raises(UnfinishedEpisodeJobs) as error:
+        store.reserve_episode_merge("project", "owner", attempt)
+    assert [(job.kind, job.id) for job in error.value.jobs] == [paused_job]
+    assert store.episode_isolation_state("project", "owner").merge_reservation is None
+    state = store.reserve_episode_merge("project", "owner", attempt, confirm_unfinished_jobs=True)
+    assert state.merge_reservation == attempt.attempt_id
+    assert [(job.kind, job.id) for job in state.merge_attempt.unfinished_jobs] == [paused_job]
 
 
 def test_reservation_fences_graph_mutations_without_task(manifest, tmp_path):

@@ -159,9 +159,11 @@ still retains its uncertain receipt.
 ## Episode merge and removal gate
 
 Merge and Remove worktree check jobs started by every episode sharing the
-isolation owner. A live or unobservable job blocks both actions. Stopping a
-watcher does not prove job completion. The gate reuses compute-job records and
-never cancels a job.
+isolation owner. A live or unobservable job pauses both actions: RCP lists the
+jobs, and the human either cancels or confirms. Stopping a watcher does not
+prove job completion. A confirmed Merge with a code worktree always runs the code
+merge agent, which receives the confirmed jobs and stops them before it merges.
+RCP itself never cancels a job.
 
 ## One watcher and human Cancel contract
 

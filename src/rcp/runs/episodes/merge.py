@@ -51,6 +51,8 @@ class MergeEpisodeBody(BaseModel):
     delete_code_branch: bool = True
     archive_graph_branch: bool = True
     keep_branch_open: bool = False
+    # The human saw the unfinished jobs and merges anyway; the merge agent stops them.
+    confirm_unfinished_jobs: bool = False
 
     @model_validator(mode="after")
     def coherent_cleanup(self):
@@ -135,9 +137,26 @@ RCP committed the worktree's leftovers; merge exactly commit `{self.attempt.sour
 Use a merge commit (`git merge --no-ff`), never a squash. RCP checks that `{target}` contains
 that commit before it commits the graph.
 {("Conflicting files from RCP's merge test:" + chr(10) + conflicts) if conflicts else "RCP's merge test found no conflicts."}
-
+{self._unfinished_jobs_section()}
 {instruction}
 {write_scope_section(scope)}"""
+
+    def _unfinished_jobs_section(self) -> str:
+        if not self.attempt.unfinished_jobs:
+            return ""
+        jobs = json.dumps(
+            [job.model_dump(mode="json") for job in self.attempt.unfinished_jobs],
+            ensure_ascii=False,
+            indent=2,
+        )
+        return f"""
+## Unfinished jobs
+
+The human merged while these jobs may still write the worktree. Before you merge, stop each
+one that is still running (its scheduler's cancel, or the process), and confirm it no longer
+writes the worktree. If you cannot stop one, do not merge; report which job and why.
+{jobs}
+"""
 
     def landed_section(self, scope: ProjectWriteScope) -> str:
         target = self.attempt.target_branch or self.binding.starting_branch
@@ -426,7 +445,9 @@ def _cleanup(service, store, owner, binding, attempt):
             continue
         try:
             if step == "remove_worktree":
-                store.require_episode_binding_quiescent(owner.project_id, owner.episode_id)
+                store.require_episode_binding_quiescent(
+                    owner.project_id, owner.episode_id, confirmed_jobs=attempt.unfinished_jobs
+                )
                 _git(
                     store,
                     binding,
@@ -573,9 +594,16 @@ def merge_episode(
             )
         code_side = binding.worktree is not None and state.status != "removed"
         attempt = EpisodeMergeAttempt(
-            attempt_id=str(uuid.uuid4()), authorized_by=authorized_by, **body.model_dump()
+            attempt_id=str(uuid.uuid4()),
+            authorized_by=authorized_by,
+            **body.model_dump(exclude={"confirm_unfinished_jobs"}),
         )
-        store.reserve_episode_merge(owner.project_id, owner.episode_id, attempt)
+        attempt = store.reserve_episode_merge(
+            owner.project_id,
+            owner.episode_id,
+            attempt,
+            confirm_unfinished_jobs=body.confirm_unfinished_jobs,
+        ).merge_attempt
         try:
             context = None
             residue = {}
@@ -611,8 +639,9 @@ def merge_episode(
                 already_merged = preview["status"] == "already_merged"
                 facts = {key: preview[key] for key in ("source_commit", "target_commit", "tree")}
                 facts["target_branch"] = target
-                code_by_agent = not already_merged and (
-                    bool(residue) or preview["status"] == "conflict"
+                # Confirmed unfinished jobs always go to the agent, which stops them first.
+                code_by_agent = bool(attempt.unfinished_jobs) or (
+                    not already_merged and (bool(residue) or preview["status"] == "conflict")
                 )
                 if code_by_agent:
                     # When a merge task runs, its agent lands the code the way Integrate does.
@@ -779,6 +808,7 @@ class CleanupEpisodeBody(BaseModel):
     delete_code_branch: bool = False
     archive_graph_branch: bool = False
     confirm_discard: bool = False
+    confirm_unfinished_jobs: bool = False
 
 
 def cleanup_episode(service, store, owner, body: CleanupEpisodeBody, *, authorized_by):
@@ -858,5 +888,10 @@ def cleanup_episode(service, store, owner, body: CleanupEpisodeBody, *, authoriz
             confirm_discard=body.confirm_discard,
             cleanup_completed=["remove_worktree"] if state.status == "removed" else [],
         )
-        store.reserve_episode_merge(owner.project_id, owner.episode_id, attempt)
+        attempt = store.reserve_episode_merge(
+            owner.project_id,
+            owner.episode_id,
+            attempt,
+            confirm_unfinished_jobs=body.confirm_unfinished_jobs,
+        ).merge_attempt
         return _cleanup(service, store, owner, binding, attempt)

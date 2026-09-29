@@ -8,7 +8,25 @@ from rcp.core.models import (
     EpisodeIsolation,
     EpisodeIsolationState,
     EpisodeMergeAttempt,
+    EpisodeUnfinishedJob,
 )
+
+
+class UnfinishedEpisodeJobs(ValueError):
+    """Merge pauses here: the human confirms these jobs before it goes ahead."""
+
+    code = "unfinished_jobs_confirmation_required"
+
+    def __init__(self, jobs: list[EpisodeUnfinishedJob]) -> None:
+        super().__init__(self.code)
+        self.jobs = jobs
+
+
+def _unconfirmed(
+    jobs: list[EpisodeUnfinishedJob], confirmed: list[EpisodeUnfinishedJob]
+) -> list[EpisodeUnfinishedJob]:
+    known = {(job.kind, job.id) for job in confirmed}
+    return [job for job in jobs if (job.kind, job.id) not in known]
 
 
 class ConversationWorktreeStoreMixin:
@@ -131,11 +149,20 @@ class ConversationWorktreeStoreMixin:
         with self.connection() as connection:
             return self._episode_binding_live_tasks(connection, project_id, owner_episode_id)
 
-    def require_episode_binding_quiescent(self, project_id: str, owner_episode_id: str) -> None:
+    def require_episode_binding_quiescent(
+        self,
+        project_id: str,
+        owner_episode_id: str,
+        *,
+        confirmed_jobs: list[EpisodeUnfinishedJob] | None = None,
+    ) -> None:
+        """Live turns refuse; jobs refuse unless the human already merged over them."""
         with self.connection() as connection:
             if self._episode_binding_live_tasks(connection, project_id, owner_episode_id):
                 raise ValueError("episode_binding_live_turns")
-            self._require_episode_binding_jobs_quiescent(connection, project_id, owner_episode_id)
+            jobs = self._episode_binding_unfinished_jobs(connection, project_id, owner_episode_id)
+            if unconfirmed := _unconfirmed(jobs, confirmed_jobs or []):
+                raise UnfinishedEpisodeJobs(unconfirmed)
 
     @staticmethod
     def _episode_binding_live_tasks(connection, project_id, owner_episode_id) -> list[str]:
@@ -152,7 +179,12 @@ class ConversationWorktreeStoreMixin:
         return [row[0] for row in rows]
 
     def reserve_episode_merge(
-        self, project_id: str, owner_episode_id: str, attempt: EpisodeMergeAttempt
+        self,
+        project_id: str,
+        owner_episode_id: str,
+        attempt: EpisodeMergeAttempt,
+        *,
+        confirm_unfinished_jobs: bool = False,
     ) -> EpisodeIsolationState:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -179,7 +211,12 @@ class ConversationWorktreeStoreMixin:
                 raise ValueError("episode_merge_reserved")
             if self._episode_binding_live_tasks(connection, project_id, owner_episode_id):
                 raise ValueError("episode_binding_live_turns")
-            self._require_episode_binding_jobs_quiescent(connection, project_id, owner_episode_id)
+            # Unfinished jobs pause Merge for the human; once confirmed they ride on the
+            # attempt, and the code merge agent stops them before it merges.
+            jobs = self._episode_binding_unfinished_jobs(connection, project_id, owner_episode_id)
+            if jobs and not confirm_unfinished_jobs:
+                raise UnfinishedEpisodeJobs(jobs)
+            attempt = attempt.model_copy(update={"unfinished_jobs": jobs})
             state = state.model_copy(
                 update={
                     # A removed worktree stays removed; only its graph side can merge.

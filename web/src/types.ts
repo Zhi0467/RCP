@@ -1658,6 +1658,17 @@ export interface MergeEpisodeBody {
   delete_code_branch?: boolean;
   archive_graph_branch?: boolean;
   keep_branch_open?: boolean;
+  confirm_unfinished_jobs?: boolean;
+}
+
+/** A job that may still write an episode worktree; Merge pauses on it. */
+export interface EpisodeUnfinishedJob {
+  kind: "compute_job" | "watcher";
+  id: string;
+  status: string;
+  execution_host: string;
+  command: string | null;
+  log_path: string | null;
 }
 
 export interface EpisodeMergeAttempt {
@@ -1667,6 +1678,7 @@ export interface EpisodeMergeAttempt {
     "pre_merge" | "landing" | "agent_merging" | "verified" | "graph_committed" | "cleanup" | "done";
   code_by_agent: boolean;
   conflict_files: string[];
+  unfinished_jobs?: EpisodeUnfinishedJob[];
   source_commit: string | null;
   target_branch: string | null;
   target_commit: string | null;

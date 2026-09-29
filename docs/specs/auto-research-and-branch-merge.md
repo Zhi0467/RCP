@@ -393,7 +393,8 @@ delete its code branch, and archive its graph branch. Branch deletion requires
 worktree removal and verified delivery or a recorded squash. Archive hides the
 graph branch from the default list and preserves every Patch. Keep branch open
 skips cleanup. Discard worktree or Archive before delivery requires explicit
-confirmation. Live turns and live or unobservable jobs block worktree removal.
+confirmation. Live turns block worktree removal; live or unobservable jobs
+pause it until the human confirms them.
 Cleanup failures remain cleanup failures and can be retried individually.
 
 ## Semantic rebase and merge

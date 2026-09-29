@@ -820,6 +820,24 @@
 .merge-needs-agent {
   color: var(--amber);
 }
+.merge-unfinished-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+  color: var(--amber);
+}
+.merge-unfinished-jobs ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--type-2xs);
+}
+.merge-unfinished-actions {
+  display: flex;
+  gap: 6px;
+}
 .campaign-report-actions {
   display: flex;
   flex: 1;

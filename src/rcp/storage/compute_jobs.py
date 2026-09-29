@@ -11,6 +11,7 @@ from rcp.compute_jobs.models import (
     ComputeJobStatus,
 )
 from rcp.compute_jobs.routes import ComputeRoute
+from rcp.core.models import EpisodeUnfinishedJob
 from rcp.limits import COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT
 
 
@@ -105,48 +106,61 @@ class ComputeJobStoreMixin:
         return [_compute_job_record(row) for row in rows]
 
     @staticmethod
-    def _require_episode_binding_jobs_quiescent(connection, project_id, owner_episode_id) -> None:
-        row = connection.execute(
-            "SELECT j.status FROM compute_jobs j JOIN episodes e ON e.episode_id = j.episode_id "
-            "WHERE j.project_id = ? AND COALESCE(e.isolation_owner_episode_id, e.episode_id) = ? "
-            "AND j.status IN ('running', 'lost') ORDER BY j.job_id LIMIT 1",
-            (project_id, owner_episode_id),
-        ).fetchone()
-        if row is not None:
-            raise ValueError(
-                "episode_binding_job_unobservable"
-                if row[0] == "lost"
-                else "episode_binding_job_live"
+    def _episode_binding_unfinished_jobs(
+        connection, project_id, owner_episode_id
+    ) -> list[EpisodeUnfinishedJob]:
+        """Jobs that may still write the owner's worktree; a lost job is unobservable."""
+        jobs = [
+            EpisodeUnfinishedJob(
+                kind="compute_job",
+                id=row["job_id"],
+                status=row["status"],
+                execution_host=row["execution_host"] or "",
+                command=" ".join(json.loads(row["argv"])),
+                log_path=row["log_path"],
             )
+            for row in connection.execute(
+                "SELECT j.job_id, j.status, j.execution_host, j.argv, j.log_path "
+                "FROM compute_jobs j JOIN episodes e ON e.episode_id = j.episode_id "
+                "WHERE j.project_id = ? AND COALESCE(e.isolation_owner_episode_id, e.episode_id) "
+                "= ? AND j.status IN ('running', 'lost') ORDER BY j.job_id",
+                (project_id, owner_episode_id),
+            )
+        ]
         # Scheduler jobs have no registry row; their watcher is the only observer. Only a
-        # worktree can be written by one, so a graph-only binding merges over its watchers.
+        # worktree can be written by one, so a graph-only binding has no such jobs.
         # A graph-condition watcher observes the canonical graph and runs no job.
-        watcher = connection.execute(
-            "SELECT w.status FROM watchers w JOIN episodes e ON e.episode_id = w.episode_id "
-            "JOIN episode_isolations i ON i.project_id = w.project_id "
-            "AND i.owner_episode_id = COALESCE(e.isolation_owner_episode_id, e.episode_id) "
-            "WHERE w.project_id = ? AND i.owner_episode_id = ? "
-            "AND json_extract(i.binding_json, '$.worktree') IS NOT NULL "
-            "AND w.graph_condition_json IS NULL "
-            # Stop ends observation, not the job: only a recorded completion is safe.
-            "AND (w.status IN ('active', 'degraded') "
-            "OR (w.status = 'stopped' AND w.completed_at IS NULL)) "
-            "ORDER BY w.watcher_id LIMIT 1",
-            (project_id, owner_episode_id),
-        ).fetchone()
-        if watcher is not None:
-            raise ValueError(
-                "episode_binding_job_live"
-                if watcher[0] == "active"
-                else "episode_binding_job_unobservable"
+        jobs += [
+            EpisodeUnfinishedJob(
+                kind="watcher",
+                id=row["watcher_id"],
+                status=row["status"],
+                execution_host=row["execution_host"] or "",
+                command=row["check_command"],
+                log_path=row["log_path"],
             )
+            for row in connection.execute(
+                "SELECT w.watcher_id, w.status, w.execution_host, w.check_command, w.log_path "
+                "FROM watchers w JOIN episodes e ON e.episode_id = w.episode_id "
+                "JOIN episode_isolations i ON i.project_id = w.project_id "
+                "AND i.owner_episode_id = COALESCE(e.isolation_owner_episode_id, e.episode_id) "
+                "WHERE w.project_id = ? AND i.owner_episode_id = ? "
+                "AND json_extract(i.binding_json, '$.worktree') IS NOT NULL "
+                "AND w.graph_condition_json IS NULL "
+                # Stop ends observation, not the job: only a recorded completion is finished.
+                "AND (w.status IN ('active', 'degraded') "
+                "OR (w.status = 'stopped' AND w.completed_at IS NULL)) "
+                "ORDER BY w.watcher_id",
+                (project_id, owner_episode_id),
+            )
+        ]
+        return jobs
 
-    def require_episode_binding_jobs_quiescent(
+    def episode_binding_unfinished_jobs(
         self, project_id: str, owner_episode_id: str
-    ) -> None:
-        """A lost job is unobservable; stopping its watcher does not make it safe."""
+    ) -> list[EpisodeUnfinishedJob]:
         with self.connection() as connection:
-            self._require_episode_binding_jobs_quiescent(connection, project_id, owner_episode_id)
+            return self._episode_binding_unfinished_jobs(connection, project_id, owner_episode_id)
 
     def running_compute_jobs(self) -> list[ComputeJobRecord]:
         with self.connection() as connection:

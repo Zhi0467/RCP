@@ -275,12 +275,15 @@ worktree fails before launch. No path falls back to the shared checkout.
 Human-dispatched Merge reserves the isolation owner before any Git write. Every
 admission on that binding checks the reservation, including continuations,
 Resume, Retry, and recovery. It stays held through landing, verification, and
-cleanup. Live turns must settle first. Live or unobservable compute jobs block
-Merge and Remove worktree, even after their watcher stops. A scheduler job has
-no registry row, so an active or degraded external watcher, or a stopped one
-with no recorded completion, blocks them on a binding with a worktree. A graph-condition watcher runs no job and never
-blocks them. RCP never cancels
-these jobs as part of Merge.
+cleanup. Live turns must settle first. Live or unobservable compute jobs pause
+Merge and Remove worktree, even after their watcher stops, until the human
+confirms them. A scheduler job has no registry row, so an active or degraded
+external watcher, or a stopped one with no recorded completion, pauses them on a
+binding with a worktree. A graph-condition watcher runs no job and never pauses
+them. The confirmed jobs are stored on the merge attempt; the code merge agent
+receives them and stops them before it merges, so a confirmed Merge with a code
+worktree always runs that agent. Cleanup then accepts the confirmed jobs, while a
+job that started later pauses it again. RCP itself never cancels them.
 
 Episode Merge may commit the episode worktree's leftovers, respecting Gitignore.
 It refuses interrupted Git operations, unmerged entries, and dirty submodules.

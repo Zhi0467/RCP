@@ -279,6 +279,7 @@ import {
   type NotificationLink,
 } from "./notificationLinks";
 import { loadNotificationDevices, reconcileWebPush } from "./notificationDevices";
+import { unfinishedJobsFromError } from "./mergePanel";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
@@ -3572,7 +3573,10 @@ export default function App() {
       if (mergeTask) recordStartedTask(mergeTask);
       await reload();
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      // A pause on unfinished jobs is the panel's own prompt, not an app error.
+      if (!unfinishedJobsFromError(error)) {
+        setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      }
       throw error;
     } finally {
       finishEpisodeAction();

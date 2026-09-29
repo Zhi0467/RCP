@@ -1092,6 +1092,19 @@ class AuthorizedHuman(BaseModel):
     _normalize_display_name = field_validator("display_name", mode="before")(normalize_display_name)
 
 
+class EpisodeUnfinishedJob(BaseModel):
+    """A job that may still write an episode worktree, as the human confirmed it at Merge."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    kind: Literal["compute_job", "watcher"]
+    id: str = Field(min_length=1)
+    status: str
+    execution_host: str = ""
+    command: str | None = None
+    log_path: str | None = None
+
+
 class EpisodeMergeAttempt(BaseModel):
     """Durable intent used to reconcile an interrupted human-dispatched merge."""
 
@@ -1124,6 +1137,8 @@ class EpisodeMergeAttempt(BaseModel):
     code_by_agent: bool = False
     conflict_files: list[str] = Field(default_factory=list)
     merge_tree_output: str | None = None
+    # Jobs the human merged over; the code merge agent stops them before it merges.
+    unfinished_jobs: list[EpisodeUnfinishedJob] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_cleanup(self) -> EpisodeMergeAttempt:

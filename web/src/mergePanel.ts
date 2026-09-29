@@ -1,4 +1,4 @@
-import type { MergeDiffPath, MergeEpisodeBody, MergePreview } from "./types";
+import type { EpisodeUnfinishedJob, MergeDiffPath, MergeEpisodeBody, MergePreview } from "./types";
 
 export interface MergeChoices {
   targetBranch: string;
@@ -93,4 +93,17 @@ export function previewAnswersDraft(
     previewTarget === target &&
     (!preview.code || !draft || preview.code.target_branch === draft)
   );
+}
+
+/** The jobs a Merge paused on, or null when the error is not that pause. */
+export function unfinishedJobsFromError(error: unknown): EpisodeUnfinishedJob[] | null {
+  if (!(error instanceof Error)) return null;
+  try {
+    const detail = JSON.parse(error.message) as { code?: unknown; jobs?: unknown };
+    return detail.code === "unfinished_jobs_confirmation_required" && Array.isArray(detail.jobs)
+      ? (detail.jobs as EpisodeUnfinishedJob[])
+      : null;
+  } catch {
+    return null;
+  }
 }

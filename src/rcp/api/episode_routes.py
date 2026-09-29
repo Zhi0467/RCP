@@ -71,6 +71,7 @@ from rcp.runs.episodes.merge import (
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
+from rcp.storage.conversation_worktrees import UnfinishedEpisodeJobs
 from rcp.transport import StateUnavailable
 
 from .episode_branches import (
@@ -336,6 +337,14 @@ def stop_episode(
     )
 
 
+def _merge_refusal(exc: ValueError) -> dict:
+    detail = {"code": getattr(exc, "code", str(exc).split(":", 1)[0]), "message": str(exc)}
+    # A pause, not a refusal: the Web lists the jobs and the human can merge anyway.
+    if isinstance(exc, UnfinishedEpisodeJobs):
+        detail["jobs"] = [job.model_dump(mode="json") for job in exc.jobs]
+    return detail
+
+
 @router.post(
     "/api/projects/{project_id}/episodes/{episode_id}/merge",
     response_model=EpisodeResponse,
@@ -405,10 +414,7 @@ def merge_episode_branch(
         state = store.episode_isolation_state(project_id, episode.episode_id)
         if state and state.merge_attempt:
             settle_agentless_merge(background_tasks, service, state.merge_attempt.attempt_id)
-        raise HTTPException(
-            status_code=409,
-            detail={"code": getattr(exc, "code", str(exc).split(":", 1)[0]), "message": str(exc)},
-        ) from exc
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
 
 
 @router.post(
@@ -437,10 +443,7 @@ def cleanup_episode_branch(
             store, project_id, member, branch_summary=_branch_summary(store, catalog)
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": getattr(exc, "code", str(exc).split(":", 1)[0]), "message": str(exc)},
-        ) from exc
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
 
 
 @router.get(
@@ -467,10 +470,7 @@ def episode_merge_preview(
             target_branch=target_branch,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": getattr(exc, "code", str(exc).split(":", 1)[0]), "message": str(exc)},
-        ) from exc
+        raise HTTPException(status_code=409, detail=_merge_refusal(exc)) from exc
 
 
 @router.post(
