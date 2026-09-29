@@ -67,6 +67,7 @@ import {
   loadEpisodes,
   loadProjectReadiness,
   loadProviderLogins,
+  loadMergePreview,
   mergeEpisodeToMain,
   continueEpisode,
   sendEpisodeMessage,
@@ -210,6 +211,9 @@ import type {
   AgentUsageSnapshot,
   AppView,
   Episode,
+  EpisodeIsolationChoice,
+  MergeDiffPath,
+  MergeEpisodeBody,
   ExperimentControlState,
   GraphAttentionProjection,
   GraphHeadRef,
@@ -1241,6 +1245,26 @@ export default function App() {
             episode.episode_id === episode.graph_branch.current_episode_id,
         )
       : null;
+  // The branch diff's merge marks come from the same preview the Merge panel reads.
+  const [branchMergePaths, setBranchMergePaths] = useState<MergeDiffPath[] | null>(null);
+  const branchMergeKey = activeBranchEpisode
+    ? JSON.stringify([activeBranchEpisode.episode_id, activeBranchEpisode.graph_branch?.head])
+    : null;
+  useEffect(() => {
+    setBranchMergePaths(null);
+    if (!activeBranchEpisode || !apiBase) return;
+    let current = true;
+    loadMergePreview(apiBase, activeBranchEpisode.episode_id, null)
+      .then((preview) => {
+        if (current) setBranchMergePaths(preview.graph.paths);
+      })
+      .catch((error) => {
+        if (current) console.warn("Branch merge marks are unavailable:", error);
+      });
+    return () => {
+      current = false;
+    };
+  }, [apiBase, branchMergeKey]);
   const {
     snapshot: projectHistorySnapshot,
     openProjectHistory,
@@ -3209,7 +3233,11 @@ export default function App() {
   };
 
   const startExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
+    async (
+      node: GraphNode,
+      invocationCeiling?: number,
+      isolation?: EpisodeIsolationChoice,
+    ): Promise<AgentTask> => {
       if (!project || node.type !== "experiment") {
         throw new Error("The requested Experiment is not present in the open project.");
       }
@@ -3240,6 +3268,7 @@ export default function App() {
               // Omitted unless the human reauthorized an explicit count; the
               // backend then keeps the Experiment node's own limit.
               ...(invocationCeiling === undefined ? {} : { invocation_ceiling: invocationCeiling }),
+              ...isolation,
             }),
           },
         );
@@ -3283,9 +3312,9 @@ export default function App() {
     ],
   );
   const runExperiment = useCallback(
-    async (node: GraphNode, invocationCeiling?: number) => {
+    async (node: GraphNode, invocationCeiling?: number, isolation?: EpisodeIsolationChoice) => {
       try {
-        await startExperiment(node, invocationCeiling);
+        await startExperiment(node, invocationCeiling, isolation);
       } catch (caught) {
         setNotice({
           kind: "error",
@@ -3331,6 +3360,7 @@ export default function App() {
   const authorizeAutoResearch = async (
     invocationCeiling: number,
     startingInstruction: string | null,
+    codeWorktree = true,
   ) => {
     if (!project || !apiBase || mutationsDisabled || episodeAction || taskStarting) return;
     if (liveAutoResearchEpisode) {
@@ -3353,6 +3383,8 @@ export default function App() {
         mode: "auto_research",
         invocation_ceiling: invocationCeiling,
         starting_instruction: startingInstruction,
+        // Omitted, the server turns code isolation on only where it is eligible.
+        ...(codeWorktree ? {} : { code_worktree: false }),
       });
       replaceEpisode(started);
       replaceExactAutoResearchSelection(started.project_id, started.episode_id);
@@ -3447,12 +3479,12 @@ export default function App() {
     }
   };
 
-  const requestEpisodeMerge = async (episodeId: string) => {
+  const requestEpisodeMerge = async (episodeId: string, body: MergeEpisodeBody = {}) => {
     if (!apiBase || episodeAction) return;
     const finishEpisodeAction = beginEpisodeAction(`merge:${episodeId}`);
     if (!finishEpisodeAction) return;
     try {
-      const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId);
+      const nextEpisode = await mergeEpisodeToMain(apiBase, episodeId, body);
       replaceEpisode(nextEpisode);
       const mergeTask = activeBranchMergeTask(nextEpisode);
       if (mergeTask) recordStartedTask(mergeTask);
@@ -4685,6 +4717,7 @@ export default function App() {
               key={graphSessionKey(project.id, graphTarget)}
               graphTarget={graphTarget}
               branchChanges={project.graph_changes}
+              mergePaths={branchMergePaths}
               onInspectTask={selectTaskInspector}
               {...graphEditingProps}
               graph={presentedGraph}
@@ -4899,6 +4932,9 @@ export default function App() {
             node={node}
             historical={historical}
             branchChange={project.graph_changes?.nodes.find((change) => change.node_id === node.id)}
+            mergePaths={branchMergePaths?.filter(
+              (path) => path.entity === "node" && path.id === node.id,
+            )}
             onInspectTask={selectTaskInspector}
             edges={Object.values(presentedGraph.edges)}
             allNodes={presentedGraph.nodes}
@@ -4954,7 +4990,7 @@ export default function App() {
                 stageDecisionChoice(draft, graph, node.id, selectedOption),
               )
             }
-            onRunExperiment={() => void runExperiment(node)}
+            onRunExperiment={(isolation) => void runExperiment(node, undefined, isolation)}
             onOpenChat={() => {
               const chatId = ensureConversation(conversations, "node_chat", node, project.name);
               selectChat(chatId);
@@ -5031,8 +5067,8 @@ export default function App() {
         error={autoResearchStartError}
         initialInvocationCeiling={project.default_auto_research_invocation_ceiling}
         onClose={closeAutoResearchDialog}
-        onAuthorize={(invocationCeiling, startingInstruction) =>
-          void authorizeAutoResearch(invocationCeiling, startingInstruction)
+        onAuthorize={(invocationCeiling, startingInstruction, codeWorktree) =>
+          void authorizeAutoResearch(invocationCeiling, startingInstruction, codeWorktree)
         }
       />
       {retryTask && retryConfig && (

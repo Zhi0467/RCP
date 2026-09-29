@@ -11,6 +11,8 @@ import type {
   Episode,
   EpisodeMessage,
   EpisodeTimelineResponse,
+  MergeEpisodeBody,
+  MergePreview,
   EpisodeTimelineText,
   EpisodeMode,
   ExperimentLoopIndexEntry,
@@ -487,10 +489,26 @@ export function continueEpisode(
   });
 }
 
-export function mergeEpisodeToMain(apiBase: string, episodeId: string): Promise<Episode> {
+export function mergeEpisodeToMain(
+  apiBase: string,
+  episodeId: string,
+  body: MergeEpisodeBody = {},
+): Promise<Episode> {
   return api<Episode>(`${apiBase}/episodes/${encodeURIComponent(episodeId)}/merge`, {
     method: "POST",
+    body: JSON.stringify(body),
   });
+}
+
+export function loadMergePreview(
+  apiBase: string,
+  episodeId: string,
+  targetBranch: string | null,
+): Promise<MergePreview> {
+  const query = targetBranch ? `?target_branch=${encodeURIComponent(targetBranch)}` : "";
+  return api<MergePreview>(
+    `${apiBase}/episodes/${encodeURIComponent(episodeId)}/merge-preview${query}`,
+  );
 }
 
 export function fetchEpisodeTimeline(

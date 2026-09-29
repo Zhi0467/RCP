@@ -3,7 +3,18 @@ import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { branchGraphProjection, expandBranchContext } from "../branchGraph";
 import { graphSessionKey } from "../graphTarget";
 import { ChangedFields, ChangeHistory } from "../components/BranchChangeDetail";
-import type { GraphBranchChanges, GraphTargetRef } from "../types";
+import { EpisodeMergePanel } from "../components/EpisodeMergePanel";
+import { type MergeDiffMark, mergeDiffCounts, mergeDiffMarks } from "../mergePanel";
+import type { GraphBranchChanges, GraphTargetRef, MergeDiffPath, MergeEpisodeBody } from "../types";
+
+/** The suffix a changed node's badge carries for how Merge will treat it. */
+const MERGE_NODE_MARKS: Record<MergeDiffMark, string> = {
+  changed: "",
+  delivered: " · merged",
+  proposal: " · → Proposal",
+  needs_agent: " · needs agent",
+  conflict: " · conflict",
+};
 import {
   ChevronDown,
   CircleDot,
@@ -196,6 +207,8 @@ export function ScientificView({ graph, trustView, onSelectNode, ...editing }: S
 interface DagProps extends Props, GraphEditingProps {
   graphTarget?: GraphTargetRef;
   branchChanges?: GraphBranchChanges | null;
+  /** The branch's changed fields as the merge builder classifies them, when loaded. */
+  mergePaths?: MergeDiffPath[] | null;
   onInspectTask?: (taskId: string) => void;
   /** Session-scoped pan and zoom, owned by the shell so it survives leaving the view. */
   viewportRef: MutableRefObject<DagViewport | null>;
@@ -218,6 +231,7 @@ export function DagView({
   projectId,
   graphTarget,
   branchChanges,
+  mergePaths,
   onInspectTask,
   viewportRef,
   relationFocusNodeId,
@@ -241,6 +255,11 @@ export function DagView({
   const edgeChanges = useMemo(
     () => new Map(branchChanges?.edges.map((change) => [change.edge_id, change]) ?? []),
     [branchChanges],
+  );
+  const mergeMarks = useMemo(() => mergeDiffMarks(mergePaths ?? []), [mergePaths]);
+  const mergeCounts = useMemo(
+    () => (mergePaths ? mergeDiffCounts(mergePaths) : null),
+    [mergePaths],
   );
   const changeTasks = useMemo(
     () => [
@@ -735,6 +754,20 @@ export function DagView({
             <span className="branch-change-badge updated">Updated</span>
             <span className="branch-change-badge removed">Removed</span>
           </div>
+          {mergeCounts && (
+            <div className="branch-merge-counts" aria-label="On merge">
+              <span className="merge-mark-badge proposal">{mergeCounts.proposals} → Proposal</span>
+              <span className="merge-mark-badge conflict">{mergeCounts.conflicts} conflict</span>
+              <span className="merge-mark-badge needs_agent">
+                {mergeCounts.needsAgent} needs agent
+              </span>
+              {mergeCounts.delivered > 0 && (
+                <span className="merge-mark-badge delivered">
+                  {mergeCounts.delivered} already merged
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
       <GraphEditingControls
@@ -1004,7 +1037,7 @@ export function DagView({
                     Boolean(selectedTaskId && !taskHighlights.has(node.id));
                   return (
                     <div
-                      className={`dag-node ${nodeChanges.has(node.id) ? `branch-${nodeChanges.get(node.id)!.change}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
+                      className={`dag-node ${nodeChanges.has(node.id) ? `branch-${nodeChanges.get(node.id)!.change}` : ""} ${mergeMarks.has(`node:${node.id}`) ? `merge-${mergeMarks.get(`node:${node.id}`)}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
                       data-node-id={node.id}
                       style={
                         {
@@ -1035,6 +1068,7 @@ export function DagView({
                               className={`branch-change-badge ${nodeChanges.get(node.id)!.change}`}
                             >
                               {nodeChanges.get(node.id)!.change}
+                              {MERGE_NODE_MARKS[mergeMarks.get(`node:${node.id}`) ?? "changed"]}
                             </span>
                           )}
                         </span>
@@ -1110,7 +1144,7 @@ interface ExecutionProps {
   onInspectTask: (operationId: string) => void;
   onStopEpisode: (episodeId: string) => Promise<void>;
   onArchiveEpisode: ArchiveEpisodeAction;
-  onMergeEpisode: (episodeId: string) => Promise<void>;
+  onMergeEpisode: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
   onContinueEpisode: (episodeId: string, invocationCeiling: number) => Promise<void>;
   onSendEpisodeMessage: (episodeId: string, body: string) => Promise<void>;
   onOperateEpisodeTask: (task: AgentTask, action: "pause" | "resume" | "retry") => Promise<void>;
@@ -1563,6 +1597,8 @@ export function ExecutionView({
         taskActionId={taskActionId}
         archiveDisabled={episodeAction !== null}
         onArchive={onArchiveEpisode}
+        mergeBusy={episodeAction === `merge:${episode.episode_id}`}
+        onMerge={onMergeEpisode}
         experimentConversation={selectedExperimentConversation}
         indexedEntry={indexedEntry}
         watchedByParentAutoResearch={watchedByParentAutoResearch}
@@ -1620,6 +1656,8 @@ function ExperimentEpisodeCard({
   taskActionId,
   archiveDisabled,
   onArchive,
+  mergeBusy,
+  onMerge,
   experimentConversation,
   indexedEntry,
   watchedByParentAutoResearch,
@@ -1650,6 +1688,8 @@ function ExperimentEpisodeCard({
   taskActionId: string | null;
   archiveDisabled: boolean;
   onArchive: ArchiveEpisodeAction;
+  mergeBusy: boolean;
+  onMerge: (episodeId: string, body: MergeEpisodeBody) => Promise<void>;
   experimentConversation?: ReactNode;
   indexedEntry: ExperimentLoopIndexEntry | null;
   watchedByParentAutoResearch: boolean;
@@ -1756,6 +1796,16 @@ function ExperimentEpisodeCard({
             }}
             episodeReportHref={episodeReportHref}
           />
+          {(episode.graph_branch || episode.isolation_state) &&
+            (episode.isolation_owner_episode_id ?? episode.episode_id) === episode.episode_id && (
+              <EpisodeMergePanel
+                apiBase={`/api/projects/${encodeURIComponent(episode.project_id)}`}
+                episode={episode}
+                disabled={archiveDisabled || mutationsDisabled}
+                busy={mergeBusy}
+                onMerge={onMerge}
+              />
+            )}
         </div>
       )}
     </article>

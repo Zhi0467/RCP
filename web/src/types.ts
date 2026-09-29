@@ -1645,6 +1645,12 @@ export interface BranchMergeReceipt {
   created_at: string;
 }
 
+/** The two independent isolation toggles a Run offers. */
+export interface EpisodeIsolationChoice {
+  graph_isolation: boolean;
+  code_worktree: boolean;
+}
+
 export interface MergeEpisodeBody {
   target_branch?: string | null;
   history_mode?: "merge" | "squash";
@@ -1657,7 +1663,10 @@ export interface MergeEpisodeBody {
 export interface EpisodeMergeAttempt {
   attempt_id: string;
   authorized_by: AuthorizedHuman;
-  phase: "pre_merge" | "landing" | "verified" | "graph_committed" | "cleanup" | "done";
+  phase:
+    "pre_merge" | "landing" | "agent_merging" | "verified" | "graph_committed" | "cleanup" | "done";
+  code_by_agent: boolean;
+  conflict_files: string[];
   source_commit: string | null;
   target_branch: string | null;
   target_commit: string | null;
@@ -1696,9 +1705,24 @@ export interface CleanupEpisodeBody {
   confirm_discard?: boolean;
 }
 
+/** One changed field on a branch, classified by the same builder call Merge makes. */
+export interface MergeDiffPath {
+  entity: "node" | "edge" | "proposal" | "ambiguity" | "glossary" | "global";
+  id: string;
+  field_path: string;
+  base: unknown;
+  branch: unknown;
+  main: unknown;
+  delivered: boolean;
+  conflict: boolean;
+  needs_agent: boolean;
+  needs_proposal: boolean;
+  residue_reason: string | null;
+}
+
 export interface MergePreview {
   delivered_baseline: GraphHeadRef | null;
-  graph: { ops: number; residue: { path: string; reason: string }[] };
+  graph: { ops: number; residue: { path: string; reason: string }[]; paths: MergeDiffPath[] };
   code: {
     repo_alias: string;
     source_branch: string;

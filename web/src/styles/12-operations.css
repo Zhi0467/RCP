@@ -373,6 +373,45 @@
 .branch-change-badge.removed {
   color: var(--coral);
 }
+.branch-merge-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.merge-mark-badge {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: var(--type-2xs);
+  line-height: 1.2;
+}
+.merge-mark-badge.proposal {
+  color: var(--plum);
+}
+.merge-mark-badge.needs_agent {
+  color: var(--amber);
+}
+.merge-mark-badge.conflict {
+  color: var(--coral);
+}
+.merge-mark-badge.delivered {
+  color: var(--moss);
+}
+.dag-node.merge-conflict {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--coral) 35%, transparent);
+}
+.dag-node.merge-needs_agent {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--amber) 35%, transparent);
+}
+.dag-node.merge-delivered {
+  opacity: 0.7;
+}
+.merge-fields tr.merge-mark-conflict td:last-child {
+  color: var(--coral);
+}
+.merge-fields tr.merge-mark-needs_agent td:last-child {
+  color: var(--amber);
+}
 .dag-node .eyebrow {
   display: flex;
   align-items: center;

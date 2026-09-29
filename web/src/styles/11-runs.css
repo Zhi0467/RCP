@@ -775,6 +775,42 @@
 .campaign-branch-merge {
   justify-self: end;
 }
+.episode-merge-panel {
+  display: grid;
+  gap: 8px;
+}
+.merge-code-summary,
+.merge-graph-counts,
+.merge-options,
+.campaign-isolation,
+.experiment-isolation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+.merge-options {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.merge-options label,
+.campaign-isolation label,
+.experiment-isolation label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.merge-conflict-files {
+  flex-basis: 100%;
+  margin: 0;
+  padding-left: 18px;
+  font-family: var(--font-mono, monospace);
+  font-size: var(--type-2xs);
+}
+.merge-needs-agent {
+  color: var(--amber);
+}
 .campaign-report-actions {
   display: flex;
   flex: 1;

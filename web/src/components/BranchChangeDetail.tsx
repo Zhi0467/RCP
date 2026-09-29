@@ -1,13 +1,24 @@
-import type { GraphBranchChanges, GraphChangeSource } from "../types";
+import type { GraphBranchChanges, GraphChangeSource, MergeDiffPath } from "../types";
+import { mergePathMark } from "../mergePanel";
 import { humanFieldLabels, humanize } from "../nodePresentation";
 
 type NodeChange = GraphBranchChanges["nodes"][number];
 
+const MERGE_MARK_LABELS = {
+  delivered: "Already merged",
+  changed: "Merges",
+  proposal: "Becomes a Proposal",
+  needs_agent: "Needs agent",
+  conflict: "Conflict",
+} as const;
+
 export function BranchChangeDetail({
   change,
+  mergePaths,
   onInspectTask,
 }: {
   change: NodeChange;
+  mergePaths?: MergeDiffPath[];
   onInspectTask?: (taskId: string) => void;
 }) {
   return (
@@ -20,8 +31,43 @@ export function BranchChangeDetail({
         <summary>Before and after</summary>
         <ChangedFields before={change.before} after={change.after} />
       </details>
+      {mergePaths && mergePaths.length > 0 && <MergeFields paths={mergePaths} />}
       <ChangeHistory history={change.history} onInspectTask={onInspectTask} />
     </section>
+  );
+}
+
+/** Field-level base → branch, with main beside a conflict, marked as Merge will treat it. */
+function MergeFields({ paths }: { paths: MergeDiffPath[] }) {
+  return (
+    <details open={paths.some((path) => path.conflict || path.needs_agent)}>
+      <summary>On merge</summary>
+      <table className="branch-change-fields merge-fields">
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>At branch start</th>
+            <th>Branch</th>
+            <th>Main now</th>
+            <th>On merge</th>
+          </tr>
+        </thead>
+        <tbody>
+          {paths.map((path) => {
+            const mark = mergePathMark(path);
+            return (
+              <tr key={path.field_path} className={`merge-mark-${mark}`}>
+                <th>{humanFieldLabels[path.field_path] ?? humanize(path.field_path || "node")}</th>
+                <td>{readableValue(path.base)}</td>
+                <td>{readableValue(path.branch)}</td>
+                <td>{path.conflict ? readableValue(path.main) : ""}</td>
+                <td>{MERGE_MARK_LABELS[mark]}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </details>
   );
 }
 

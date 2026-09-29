@@ -43,6 +43,16 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
       }),
     );
     await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
+    await page.route("**/api/projects/**/merge-preview*", (route) =>
+      route.fulfill({
+        json: {
+          delivered_baseline: null,
+          graph: { ops: 1, residue: [], paths: [] },
+          code: null,
+          needs_agent: false,
+        },
+      }),
+    );
     let requests = 0;
     await page.route("**/api/projects/**/merge", async (route) => {
       assert.equal(route.request().method(), "POST");
@@ -66,7 +76,7 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     await page.goto(
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
     );
-    const merge = page.getByRole("button", { name: "Merge to main", exact: true });
+    const merge = page.getByRole("button", { name: "Merge", exact: true });
     await merge.click();
     const branch = page.getByRole("region", { name: "Episode graph branch" });
     await branch.getByRole("alert").waitFor();
