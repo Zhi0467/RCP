@@ -303,27 +303,31 @@ class OpenCodeProfile(ProviderProfile):
         )
 
 
+#: Built-in tools that change nothing, allowed to every launch. Everything else is
+#: denied first: `task`, whose subagents, built-in ones included, carry their own
+#: rules, and any MCP or custom tool the member's global config adds.
+_READ_TOOLS = ("read", "glob", "grep", "list", "skill", "todowrite", "webfetch", "websearch")
+
+
 def _permission(
     capability: AgentCapability,
     cwd: Path,
     write_dirs: list[Path],
     scope: ProjectWriteScope | None,
 ) -> dict[str, object]:
+    # OpenCode applies the last rule that matches, so the blanket deny comes first.
+    base: dict[str, object] = {"*": "deny", **dict.fromkeys(_READ_TOOLS, "allow")}
+    # Every capability may read outside its folder.
+    base["external_directory"] = "allow"
     if capability == "paper_readonly":
         # Reads its staged inputs outside the project; it can neither edit nor run.
-        return {
-            "edit": "deny",
-            "bash": "deny",
-            "external_directory": "allow",
-            "question": "deny",
-            "webfetch": "allow",
-        }
+        return base
     if scope is not None:
         allowed, denied = scope.writable_roots, scope.protected_write_paths
     else:
         allowed, denied = [str(cwd), *(str(item) for item in write_dirs)], []
-    # OpenCode applies the last rule that matches: grants, then protected
-    # storage, then again each grant inside it, such as a stage in RCP storage.
+    # Grants, then protected storage, then again each grant inside it, such as
+    # a stage in RCP storage.
     edit: dict[str, str] = {"*": "deny"}
     edit.update({_root_pattern(path): "allow" for path in allowed})
     edit.update({_root_pattern(path): "deny" for path in denied})
@@ -331,16 +335,12 @@ def _permission(
         if any(PurePosixPath(item) in PurePosixPath(path).parents for item in denied):
             edit.pop(_root_pattern(path))
             edit[_root_pattern(path)] = "allow"
-    return {
-        "edit": edit,
+    base["edit"] = edit
+    if scope is not None:
         # Only Work runs commands. Nothing bounds the shell's writes, and Discuss
         # and ingestion may write no further than their own folders.
-        "bash": "allow" if scope is not None else "deny",
-        "external_directory": "allow",
-        "webfetch": "allow",
-        "websearch": "allow",
-        "question": "deny",
-    }
+        base["bash"] = "allow"
+    return base
 
 
 def _root_pattern(path: str) -> str:

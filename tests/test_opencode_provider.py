@@ -75,15 +75,23 @@ def test_work_grants_exact_roots_and_denies_protected_storage_after_them():
 def test_paper_coach_denies_every_edit_so_no_path_base_is_needed():
     command, permission = _launch(_request("paper_readonly"))
     assert "rev-parse" not in command[2]
-    assert permission["edit"] == "deny"
-    assert permission["bash"] == "deny"
+    assert "edit" not in permission and "bash" not in permission
     assert permission["external_directory"] == "allow"
+
+
+@pytest.mark.parametrize("capability", ["discuss", "paper_readonly", "work_auto"])
+def test_every_launch_denies_unlisted_tools_first(capability):
+    scope = _scope() if capability == "work_auto" else None
+    _, permission = _launch(_request(capability, scope=scope))
+    # Last match wins: subagents (`task`) and MCP tools fall to this first rule.
+    assert next(iter(permission.items())) == ("*", "deny")
+    assert "task" not in permission
 
 
 def test_discuss_edits_only_its_own_folders_and_has_no_shell():
     command, permission = _launch(_request("discuss", write_dirs=[Path("/work/notes")]))
     assert "--pure" in command
-    assert permission["bash"] == "deny"
+    assert "bash" not in permission
     assert permission["edit"] == {
         "*": "deny",
         "home/rcp/data/stages/s/workspace/**": "allow",
