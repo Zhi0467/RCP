@@ -597,6 +597,10 @@ class _ReadinessProbe:
     error: BaseException | None = None
 
 
+class ProviderDiscoveryError(RuntimeError):
+    """Executable discovery failed before it could establish presence or absence."""
+
+
 class _PrePromptRuntimeFailure(RuntimeError):
     """A provider runtime ended before it could have accepted RCP's prompt."""
 
@@ -1870,11 +1874,20 @@ class AgentLauncher:
     def discover_provider(self, provider: str, *, host: str) -> str | None:
         """The executable an unconfigured launch on this account would run.
 
-        None when nothing is discoverable, or when the host did not answer.
+        None only when discovery confirms no executable is present. Transport
+        and discovery-process failures retain their diagnostic for the caller.
         """
         if not host:
             return _discover_local_provider(provider)
-        return self._discover_remote_provider(provider, host)[1]
+        probe, candidate = self._discover_remote_provider(provider, host)
+        if probe.returncode not in {0, 1}:
+            detail = _meaningful_stderr(probe.stderr) or f"exit status {probe.returncode}"
+            raise ProviderDiscoveryError(f"Provider discovery could not run on {host}: {detail}")
+        if probe.returncode == 0 and candidate is None:
+            raise ProviderDiscoveryError(
+                f"Provider discovery on {host} returned no absolute executable path."
+            )
+        return candidate
 
     @staticmethod
     def _probe(
