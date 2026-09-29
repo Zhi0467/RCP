@@ -1141,6 +1141,62 @@ def build_deterministic_merge_ops(
     return ops, residue
 
 
+_ENTITY_COLLECTIONS = {
+    "nodes": "node",
+    "edges": "edge",
+    "proposals": "proposal",
+    "ambiguities": "ambiguity",
+    "glossary": "glossary",
+}
+
+
+def branch_merge_path_dispositions(
+    context: BranchMergeContext, residue: dict[SemanticWritePath, str]
+) -> list[dict[str, Any]]:
+    """Classify every base-to-branch path by the residue Merge's own builder call gave.
+
+    A path an earlier merge already delivered stays listed, marked `delivered`.
+    """
+
+    delivered_base = context.previous_branch_graph or context.base_graph
+    branch = _merge_branch_graph(delivered_base, context.branch_graph)
+    documents = {
+        "base": _graph_semantic_document(context.base_graph),
+        "branch": _graph_semantic_document(branch),
+        "main": _graph_semantic_document(context.main_graph),
+    }
+    pending = _graph_semantic_write_paths(delivered_base, branch)
+    result: list[dict[str, Any]] = []
+    for path in sorted(_graph_semantic_write_paths(context.base_graph, branch) | set(residue)):
+        reason = next(
+            (
+                value
+                for rule, value in residue.items()
+                if _semantic_path_covers(rule, path) or _semantic_path_covers(path, rule)
+            ),
+            None,
+        )
+        entity = _ENTITY_COLLECTIONS.get(path[0])
+        values = {}
+        for side, document in documents.items():
+            value = _semantic_path_value(document, path)
+            values[side] = None if value is _MISSING else _jsonable(value)
+        result.append(
+            {
+                "entity": entity or "global",
+                "id": path[1] if entity else path[0],
+                "field_path": _render_semantic_path(path[2:] if entity else path),
+                **values,
+                "delivered": reason is None and path not in pending,
+                "conflict": reason == "conflict",
+                "needs_proposal": reason == "protected_node",
+                "needs_agent": reason not in {None, "conflict", "protected_node"},
+                "residue_reason": reason,
+            }
+        )
+    return result
+
+
 def render_merge_residue(residue: dict[SemanticWritePath, str]) -> str:
     """Render the remaining paths and the meaning of every reason they carry."""
 

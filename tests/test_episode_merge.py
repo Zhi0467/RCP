@@ -8,8 +8,8 @@ from rcp.agents import AgentEvent
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
 from rcp.transport import conversation_worktree
 
-from .helpers import wait_for_task
-from .test_branch_merge_api import _create_branch_harness
+from .helpers import append_fixture_patch, wait_for_task
+from .test_branch_merge_api import _branch_patch, _create_branch_harness
 from .test_conversation_worktree_git import git
 
 
@@ -467,3 +467,32 @@ def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeyp
     state = harness.store.episode_isolation_state(harness.project_id, owner_id)
     assert state.delivered_source_commit == state.merge_attempt.source_commit
     assert state.merge_reservation is None
+
+
+def test_diff_paths_carry_the_merge_builders_classification(manifest, tmp_path):
+    harness = _create_branch_harness(manifest, tmp_path, change="evidence")
+    competing = _branch_patch(harness.root.operation_id, "evidence")
+    competing.ops[0].nodes[0].observation = "Main recorded a different result."
+    append_fixture_patch(harness.service, competing)
+    url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge-preview"
+
+    graph = harness.client.get(url).json()["graph"]
+    flagged = {path["residue_reason"] for path in graph["paths"] if path["residue_reason"]}
+    assert flagged == {item["reason"] for item in graph["residue"]}
+    assert any(path["conflict"] for path in graph["paths"])
+    assert not any(path["delivered"] for path in graph["paths"])
+
+
+def test_delivered_paths_stay_listed_after_a_merge(manifest, tmp_path):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
+    before = harness.client.get(f"{url}/merge-preview").json()["graph"]["paths"]
+    assert before and not any(path["delivered"] for path in before)
+    response = harness.client.post(f"{url}/merge", json={"keep_branch_open": True})
+    assert response.status_code == 202, response.text
+
+    after = harness.client.get(f"{url}/merge-preview").json()["graph"]["paths"]
+    assert [(path["id"], path["field_path"]) for path in after] == [
+        (path["id"], path["field_path"]) for path in before
+    ]
+    assert all(path["delivered"] for path in after)

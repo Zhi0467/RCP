@@ -14,9 +14,9 @@ Slice 3, Pre-merge and agentless merge, is implemented in the API. It includes
 owner reservations, job gates, recoverable attempts, Git landing and verification,
 MergePreview, and recorded cleanup. Slice 4, Merge task with code, is
 implemented: a code conflict or graph residue starts one merge task with
-Integrate's roots, and RCP verifies the landing before the graph commit. Diff
-and web controls remain in slices 5–6, and the closing journey remains in
-slice 7. The settled choices below are unchanged.
+Integrate's roots, and RCP verifies the landing before the graph commit.
+Slice 5, the diff projection, is implemented as per-path flags on the merge
+preview. Web controls remain in slice 6, and the closing journey in slice 7. The settled choices below are unchanged.
 
 Close this handoff when, on disposable data:
 
@@ -259,22 +259,15 @@ The diff and the preview are projections. They are recomputed on read and
 never stored.
 
 ```text
-ResearchDiff
-  base_head, branch_head, main_head
-  rows: [ResearchDiffRow]
-  counts: {added, changed, removed, proposals, conflicts, needs_agent}
+GraphBranchChanges              # existing branch read, the diff's rows
+  base_head, head
+  nodes, edges: [{id, change, before, after, history}]
+  changed_node_ids, context_node_ids   # context = one-hop neighbours
 
-ResearchDiffRow
+MergeDiffPath                   # MergePreview.graph.paths
   entity: node | edge | proposal | ambiguity | glossary | global
-  id, type, title
-  change: created | updated | removed
-  neighbours: [id]              # one-hop context
-  revision                      # branch revision that last touched it
-  paths: [ResearchDiffPath]
-
-ResearchDiffPath
-  field_path
-  base, branch, main            # values, as the change views keep today
+  id, field_path
+  base, branch, main            # values at that path
   delivered: bool               # covered by an earlier merge receipt
   conflict: bool
   needs_agent: bool
@@ -283,7 +276,7 @@ ResearchDiffPath
 
 MergePreview
   delivered_baseline            # the builder's previous delivered snapshot
-  graph: {ops: int, residue: [{path, reason}]}
+  graph: {ops: int, residue: [{path, reason}], paths: [MergeDiffPath]}
   code:  {repo_alias, source_branch, target_branch, commits_ahead,
           leftover_files: [path],
           status: clean | conflict | already_merged | target_dirty
@@ -292,14 +285,16 @@ MergePreview
   needs_agent: bool
 ```
 
-`rows` come from the existing `GraphSemanticDelta` (base → branch) and keep
-the values, provenance, and neighbour ids that `src/rcp/api/graph_changes.py`
-already carries. Classification is per path, not per entity: one node can need
-a Proposal and hold a conflict at once. The flags come from the same call to
-`build_deterministic_merge_ops` that Merge uses, against the same delivered
-baseline, so the diff and the merge cannot disagree. Rows an earlier merge
-already delivered stay in the diff, with those paths marked `delivered`. A node's mark in the
-graph is its most severe path.
+The diff view joins two reads by entity id. Rows are the existing
+`GraphBranchChanges` (`src/rcp/api/graph_changes.py`), with values, history,
+and neighbour ids. Field flags are `MergePreview.graph.paths`, built by
+`branch_merge_path_dispositions` from the residue of the same
+`build_deterministic_merge_ops` call the preview makes, against the same
+delivered baseline, so the diff and the merge cannot disagree. Classification
+is per path, not per entity: one node can need a Proposal and hold a conflict
+at once. Paths an earlier merge already delivered stay listed, marked
+`delivered`. A node's mark is its most severe path; the header counts are
+derived in Web from these two reads.
 
 ## Rules this changes
 
@@ -346,7 +341,8 @@ Each slice is one Codex implementation pass, reviewed once as it lands.
    combined prompt, and an **audit of the branch-merge prompt and its
    correction prompt**: what each round says and how it is built, now that it
    also carries code state.
-5. **Diff projection.** `ResearchDiff` and its API.
+5. **Diff projection — implemented.** Per-path merge flags on
+   `MergePreview.graph.paths`, joined in Web with `GraphBranchChanges`.
 6. **Web.** Run toggles, the Branches diff view, and the Merge panel.
 7. **Specs and journey.** Current-behavior spec updates, then the served-app
    journey in the closing condition.

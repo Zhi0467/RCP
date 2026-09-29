@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from rcp.agents.context import RepositoryPointer
 from rcp.agents.prompts import write_scope_section
@@ -29,6 +29,7 @@ from rcp.runs.branch_merge import (
     MAX_BRANCH_MERGE_REBASE_ROUNDS,
     branch_merge_can_resolve_without_patch,
     branch_merge_id,
+    branch_merge_path_dispositions,
     branch_merge_provenance,
     branch_merge_receipt_from_committed_patch,
     build_deterministic_merge_ops,
@@ -70,9 +71,26 @@ class MergeCodePreview(BaseModel):
     conflict_files: list[str]
 
 
+class MergeDiffPath(BaseModel):
+    """One changed field on the branch, classified by the merge builder."""
+
+    entity: Literal["node", "edge", "proposal", "ambiguity", "glossary", "global"]
+    id: str
+    field_path: str
+    base: JsonValue = None
+    branch: JsonValue = None
+    main: JsonValue = None
+    delivered: bool
+    conflict: bool
+    needs_agent: bool
+    needs_proposal: bool
+    residue_reason: str | None = None
+
+
 class MergeGraphPreview(BaseModel):
     ops: int = 0
     residue: list[dict[str, str]] = Field(default_factory=list)
+    paths: list[MergeDiffPath] = Field(default_factory=list)
 
 
 class MergePreview(BaseModel):
@@ -198,6 +216,7 @@ def merge_preview(
             residue=[
                 {"path": "/".join(path), "reason": reason} for path, reason in residue.items()
             ],
+            paths=branch_merge_path_dispositions(context, residue),
         )
         preview.needs_agent = bool(residue)
     state = store.episode_isolation_state(owner.project_id, owner.episode_id)
