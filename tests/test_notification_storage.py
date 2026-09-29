@@ -53,7 +53,7 @@ def test_notification_migration_boundary_and_restore_detachment(tmp_path):
     )
     assert raw_schema_digest(path) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
     store = AppStore(path)
-    assert store.storage_schema_ledger_head() == 28
+    assert store.storage_schema_ledger_head() == 29
     assert _database_schema_sha256(store) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
     assert store.notification_project_baseline("p") is None
     store, _device = _setup(tmp_path / "fresh")

@@ -128,14 +128,17 @@ class ComputeJobStoreMixin:
             "WHERE w.project_id = ? AND i.owner_episode_id = ? "
             "AND json_extract(i.binding_json, '$.worktree') IS NOT NULL "
             "AND w.graph_condition_json IS NULL "
-            "AND w.status IN ('active', 'degraded') ORDER BY w.watcher_id LIMIT 1",
+            # Stop ends observation, not the job: only a recorded completion is safe.
+            "AND (w.status IN ('active', 'degraded') "
+            "OR (w.status = 'stopped' AND w.completed_at IS NULL)) "
+            "ORDER BY w.watcher_id LIMIT 1",
             (project_id, owner_episode_id),
         ).fetchone()
         if watcher is not None:
             raise ValueError(
-                "episode_binding_job_unobservable"
-                if watcher[0] == "degraded"
-                else "episode_binding_job_live"
+                "episode_binding_job_live"
+                if watcher[0] == "active"
+                else "episode_binding_job_unobservable"
             )
 
     def require_episode_binding_jobs_quiescent(

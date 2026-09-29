@@ -277,8 +277,8 @@ admission on that binding checks the reservation, including continuations,
 Resume, Retry, and recovery. It stays held through landing, verification, and
 cleanup. Live turns must settle first. Live or unobservable compute jobs block
 Merge and Remove worktree, even after their watcher stops. A scheduler job has
-no registry row, so an active or degraded external watcher blocks them on a
-binding with a worktree. A graph-condition watcher runs no job and never
+no registry row, so an active or degraded external watcher, or a stopped one
+with no recorded completion, blocks them on a binding with a worktree. A graph-condition watcher runs no job and never
 blocks them. RCP never cancels
 these jobs as part of Merge.
 

@@ -427,6 +427,8 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, code):
         ("active", True, None, "episode_binding_job_live"),
         ("degraded", True, None, "episode_binding_job_unobservable"),
         ("completed", True, None, None),
+        # Stop ends observation without proving the job finished.
+        ("stopped", True, None, "episode_binding_job_unobservable"),
         # A graph-only binding has no worktree a job could write.
         ("active", False, None, None),
         # A graph-condition watcher observes the graph and runs no job.

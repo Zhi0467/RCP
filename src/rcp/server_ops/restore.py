@@ -116,9 +116,10 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # Space machine cards, fresh and upgraded in place.
         "0f0456bec7bb95895d5d7287684b03aa4b97c605fa36ef8fec17459948fbb967",
         "4c04efc71d0177fdb58875e26a4a77b61bef36a2e2253c30fc05aab8b41e9f62",
-        # Episode isolation bindings, state, and pinned toggles, fresh and upgraded.
-        "173e744886f1f09bb6723dddb878f8fa85b0e449f48c7e4802c1b6de5c32f417",
-        "6fa426a9e02ab352c6696cddc9036d11e621d451cfa171c4764ea8f1f34312df",
+        # Episode isolation bindings, state, and pinned toggles after notifications,
+        # fresh and upgraded in place.
+        "4421379d13a17708e5594bb1377b14711cf12332d9746e29f6eb2901bf60d4fd",
+        "473f00f8f63af906b60c8b95b2a9e0317bf2f449dbda47deee487ce4d0e851a9",
     }
 )
 
