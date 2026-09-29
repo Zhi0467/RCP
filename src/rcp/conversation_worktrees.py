@@ -437,8 +437,14 @@ def integration_instruction(
             "Do not modify the shared checkout. If origin is a local filesystem remote, push to "
             "that local remote only and report that GitHub pull-request creation was not exercised."
         )
+    # An episode merge into a branch the shared checkout does not hold never touches it.
+    shared_dirty = (
+        ""
+        if facts.get("shared_checkout_untouched")
+        else "the shared checkout has tracked or untracked changes or "
+    )
     return instruction + (
-        "Refuse if the shared checkout has tracked or untracked changes or the target branch "
+        f"Refuse if {shared_dirty}the target branch "
         "does not exist locally. If the target is checked out in the shared checkout, merge "
         "the worktree branch into it there. Otherwise check the target out in the worktree, "
         "merge the worktree branch, and restore the worktree branch afterwards, including on "

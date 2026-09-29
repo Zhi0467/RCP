@@ -121,7 +121,11 @@ class EpisodeCodeMerge:
         instruction = integration_instruction(
             self.binding,
             option,
-            {"target_checked_out": self.target_checked_out, "resolve_conflicts": True},
+            {
+                "target_checked_out": self.target_checked_out,
+                "resolve_conflicts": True,
+                "shared_checkout_untouched": not self.target_checked_out,
+            },
         )
         conflicts = "\n".join(f"- `{path}`" for path in self.attempt.conflict_files)
         return f"""
