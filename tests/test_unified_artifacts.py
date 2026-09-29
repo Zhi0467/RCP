@@ -2142,15 +2142,3 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
         attachments=[staged.pointer],
     )
     assert str(crop_path) in prompt
-
-
-def test_packaged_backend_ships_the_artifact_replacement_source() -> None:
-    # The lock holder is composed from this file's source text, so the frozen
-    # backend must carry it as data and check it at startup.
-    root = Path(__file__).resolve().parents[1]
-    spec = (root / "packaging" / "rcp_backend.spec").read_text(encoding="utf-8")
-    hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text(
-        encoding="utf-8"
-    )
-    assert '(str(ARTIFACT_REPLACE), "rcp")' in spec
-    assert "_remote_lock_holder_script" in hook

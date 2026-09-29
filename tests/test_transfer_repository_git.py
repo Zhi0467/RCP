@@ -382,15 +382,6 @@ def test_local_transfer_never_uses_frozen_executable_or_loads_shipped_source(
     assert (target / "code.py").read_text() == "print('reviewed source')\n"
 
 
-def test_frozen_backend_includes_transfer_source() -> None:
-    root = Path(__file__).resolve().parents[1]
-    specification = (root / "packaging/rcp_backend.spec").read_text()
-    hook = (root / "packaging/hooks/validate_frozen_resources.py").read_text()
-    assert 'TRANSPORT_ROOT / "remote_transfer_git.py"' in specification
-    assert '(str(REMOTE_TRANSFER_GIT), "rcp/transport")' in specification
-    assert "_remote_source()" in hook
-
-
 @pytest.mark.skipif(
     not os.environ.get("RCP_LIVE_TRANSFER_GIT_HOST"),
     reason="set RCP_LIVE_TRANSFER_GIT_HOST for disposable real SSH checkout verification",

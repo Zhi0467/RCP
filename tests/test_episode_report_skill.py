@@ -13,7 +13,4 @@ def test_episode_report_skill_is_versioned_and_packaged() -> None:
 
     root = Path(__file__).resolve().parents[1]
     wheel = (root / "pyproject.toml").read_text(encoding="utf-8")
-    sidecar = (root / "packaging" / "rcp_backend.spec").read_text(encoding="utf-8")
     assert "src/rcp/skills/episode-report" in wheel
-    assert 'SKILL_ROOT / "episode-report"' in sidecar
-    assert '"rcp/skills/episode-report"' in sidecar

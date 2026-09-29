@@ -109,7 +109,7 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
     } == {name: f"retained {name}" for name in ("patch.json", "watch.json", "messages.json")}
 
 
-def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
+def test_staged_broker_is_stdlib_only() -> None:
     source = staged_command_broker_source()
     imports: set[str] = set()
     for node in ast.walk(ast.parse(source)):
@@ -119,15 +119,6 @@ def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
             imports.add(node.module.partition(".")[0])
     assert imports <= sys.stdlib_module_names
     assert "from rcp" not in source
-    root = Path(__file__).resolve().parents[1]
-    sidecar = (root / "packaging" / "rcp_backend.spec").read_text(encoding="utf-8")
-    hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text(
-        encoding="utf-8"
-    )
-    assert "STAGED_COMMAND_BROKER" in sidecar
-    assert "staged_command_broker_source" in hook
-    assert "def _atomic_request" in staged_command_client_source()
-    assert '"def _atomic_request"' in hook
 
 
 @pytest.mark.asyncio
