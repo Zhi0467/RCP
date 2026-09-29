@@ -101,9 +101,11 @@ shows them as a **Notifications** card after Machines, which also says the
 project name appears on the lock screen.
 
 The Web app resolves a notification link once, at load or on a hash change,
-into the item's ordinary route: a Proposal, Decision, or Blocker opens the Inbox
-and then that node's detail as soon as the graph holds it, resolved or not; an
-episode opens its exact run when it is still listed, else Runs. The link is read
+into the item's ordinary route: a Proposal, Decision, or Blocker opens the Inbox.
+A Decision or Blocker then opens its node detail as soon as the graph holds it,
+resolved or not. A pending Proposal scrolls to its card; a resolved one shows
+its outcome as a notice. An episode opens its exact run when it is still
+listed, else Runs. The link is read
 at module load, so a team sign-in in between still continues to it.
 
 ## Phone push delivery
@@ -119,12 +121,14 @@ it.
 replacing that session's previous phone. A personal space refuses it on the
 owner API. The endpoint must be `https` on the default port at an allowlisted
 push service, and every resolved address must be public; anything else is
-refused before a connection. The request's HTTPS `Origin` becomes the VAPID
+refused before a connection. A resolver outage is not a refusal: registration
+answers 503 and a queued send retries. The request's HTTPS `Origin` becomes the VAPID
 subject. Each send validates again, connects to the checked address with TLS
 verified against the push service's name, and never follows a redirect.
 
 The sender loop delivers due phone items with the same qualification, TTL, and
-backoff as the desktop pull. The stable notification id is the `Topic`. A 2xx
+backoff as the desktop pull, requalifying each item and rereading the
+subscription just before its send. The stable notification id is the `Topic`. A 2xx
 reply means the push service accepted the message; display is best effort. A
 404 or 410 deletes the device, 429 and 5xx retry (honoring `Retry-After`), and
 any other reply drops the item and marks the device Delivery failed.

@@ -207,6 +207,8 @@ def register_web_push(
         web_push.validate_subscription(subscription, resolve=sender.resolve)
     except web_push.WebPushRefused as exc:
         raise HTTPException(status_code=422, detail="This push subscription is refused.") from exc
+    except web_push.WebPushUnavailable as exc:
+        raise HTTPException(status_code=503, detail="The push service is unreachable.") from exc
     store.notification_vapid_key()
     try:
         device = store.register_web_push_device(

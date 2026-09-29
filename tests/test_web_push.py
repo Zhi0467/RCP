@@ -282,3 +282,71 @@ def test_sender_delivers_queued_items_and_drops_gone_phones(manifest, tmp_path, 
     else:
         assert store.notification_device(device["device_id"]) is None
         assert store.notification_outbox() == []
+
+
+def _phone_sender(manifest, tmp_path):
+    from .helpers import create_named_app
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    sender = app.state.notification_sender
+    _, p256dh, auth = _receiver()
+    store.notification_vapid_key()
+    device = store.register_web_push_device(
+        store.local_owner.user_id,
+        session_id=None,
+        endpoint="https://web.push.apple.com/abc",
+        p256dh=p256dh,
+        auth=auth,
+        origin="https://rcp.example.com",
+        opens_links=False,
+    )
+    return app, store, sender, device
+
+
+def test_removing_a_phone_mid_pass_stops_later_sends(manifest, tmp_path) -> None:
+    from .test_notifications import _append, _blocker_patch
+
+    app, store, sender, device = _phone_sender(manifest, tmp_path)
+    sender.resolve = lambda _host: [_PUBLIC_ADDRESS]
+    requests = []
+
+    def remove_on_first(request):
+        requests.append(request)
+        store.delete_notification_device(device["device_id"])
+        return httpx.Response(201)
+
+    sender.transport = httpx.MockTransport(remove_on_first)
+    sender.run_pass()
+    service = app.state.catalog.open(app.state.default_project_id)
+    _append(app, service, _blocker_patch("blk/one"))
+    _append(app, service, _blocker_patch("blk/two"))
+    sender.run_pass()
+    assert len(requests) == 1
+
+
+def test_a_resolver_outage_keeps_the_item_for_retry(manifest, tmp_path) -> None:
+    from .test_notifications import _append, _blocker_patch
+
+    app, store, sender, device = _phone_sender(manifest, tmp_path)
+    requests = []
+    sender.transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(201)
+    )
+
+    def outage(_host):
+        raise OSError("temporary failure in name resolution")
+
+    sender.resolve = outage
+    sender.run_pass()
+    _append(app, app.state.catalog.open(app.state.default_project_id), _blocker_patch("blk/dns"))
+    sender.run_pass()
+    assert requests == []
+    [row] = store.notification_outbox()
+    assert row["last_status"] != "posted"
+    assert store.notification_device(device["device_id"])["last_status"] == "on"
+    sender.resolve = lambda _host: [_PUBLIC_ADDRESS]
+    with store.connection() as connection:
+        connection.execute("UPDATE notification_outbox SET next_attempt_at=created_at")
+    sender.run_pass()
+    assert len(requests) == 1

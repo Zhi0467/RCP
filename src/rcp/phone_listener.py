@@ -82,6 +82,8 @@ def create_phone_listener_app(store: AppStore, resolve: web_push.Resolver) -> Fa
             web_push.validate_subscription(subscription, resolve=resolve)
         except web_push.WebPushRefused as exc:
             raise HTTPException(status_code=422, detail={"code": "subscription_refused"}) from exc
+        except web_push.WebPushUnavailable as exc:
+            raise HTTPException(status_code=503, detail={"code": "push_unreachable"}) from exc
         store.notification_vapid_key()
         try:
             store.redeem_notification_phone_pairing(

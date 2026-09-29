@@ -7,6 +7,7 @@ import json
 import logging
 import threading
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from urllib.parse import quote
@@ -331,10 +332,12 @@ class NotificationSender:
             return
         key = web_push.VapidKey.from_pem(self.store.notification_vapid_key())
         for device_id in sorted(devices):
-            subscription = self.store.web_push_subscription(device_id)
-            if subscription is None:
-                continue
+            # Leasing is lazy, so each row is requalified just before its send,
+            # and the subscription is read again in case the phone was removed.
             for row in self._lease_due(device_id):
+                subscription = self.store.web_push_subscription(device_id)
+                if subscription is None:
+                    break
                 self._send_web_push(key, device_id, subscription, row)
 
     def _send_web_push(
@@ -418,11 +421,13 @@ class NotificationSender:
             )
         return result.outcome
 
-    def _lease_due(self, device_id: str) -> list[dict[str, object]]:
-        """Drop items that no longer qualify, then lease the rest with backoff."""
-        output = []
-        now = datetime.fromisoformat(self.store.now())
+    def _lease_due(self, device_id: str) -> Iterator[dict[str, object]]:
+        """Drop items that no longer qualify, then lease the rest with backoff.
+
+        Each row is qualified and leased only when the caller asks for it.
+        """
         for row in self.store.pending_notification_rows(device_id):
+            now = datetime.fromisoformat(self.store.now())
             notification_id = row["notification_id"]
             if not self.store.guard_notification_delivery(device_id, notification_id):
                 continue
@@ -473,5 +478,4 @@ class NotificationSender:
                 device_id, notification_id, (now + timedelta(seconds=delay)).isoformat()
             ):
                 continue
-            output.append(row)
-        return output
+            yield row

@@ -2377,11 +2377,28 @@ export default function App() {
   }, [teamSpace, desktop]);
   useEffect(() => {
     if (!notificationNode || notificationNode.projectId !== projectId) return;
+    if (notificationNode.kind === "proposal") {
+      // Proposals are not graph nodes: a pending one is shown in the Inbox,
+      // and a resolved one reports its outcome.
+      const proposal = presentedGraph.proposals[notificationNode.itemId];
+      if (!proposal) return;
+      setNotificationNode(null);
+      if (proposal.status === "pending") {
+        window.requestAnimationFrame(() =>
+          document
+            .querySelector(`[data-proposal-id="${CSS.escape(proposal.id)}"]`)
+            ?.scrollIntoView({ block: "center" }),
+        );
+      } else {
+        setNotice({ kind: "info", text: `Proposal "${proposal.title}" was ${proposal.status}.` });
+      }
+      return;
+    }
     const node = presentedGraph.nodes[notificationNode.itemId];
     if (!node) return;
     setNotificationNode(null);
     openNode(node);
-  }, [notificationNode, projectId, presentedGraph.nodes, openNode]);
+  }, [notificationNode, projectId, presentedGraph.nodes, presentedGraph.proposals, openNode]);
   const openRelatedNode = (sourceSlot: DetailWindowSlot, nodeId: string) => {
     openRelatedGraphNode(sourceSlot, presentedGraph.nodes[nodeId] ?? null);
   };

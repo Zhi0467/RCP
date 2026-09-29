@@ -489,19 +489,25 @@ pub async fn set_for_window(
         return Ok(());
     }
     let device = device_id(app, &state, &space, true).await;
-    state.set_enabled(&space, false)?;
     if let Ok(device) = device {
-        request(
+        // Team mutations require a JSON body, and a refused removal must not
+        // read as off while the server keeps queueing for this Mac.
+        let (status, _) = request(
             app,
             &space,
             Method::DELETE,
             &format!("/api/notifications/devices/{device}"),
-            None,
+            Some(&json!({})),
             true,
         )
         .await?;
+        if !(200..300).contains(&status) && status != 404 {
+            return Err(format!(
+                "the server kept this Mac's notifications (HTTP {status})"
+            ));
+        }
     }
-    Ok(())
+    state.set_enabled(&space, false)
 }
 
 pub async fn test(app: &AppHandle) -> &'static str {

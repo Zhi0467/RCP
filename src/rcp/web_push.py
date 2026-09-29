@@ -55,6 +55,10 @@ class WebPushRefused(ValueError):
     """A subscription RCP will not send to; no connection was opened."""
 
 
+class WebPushUnavailable(OSError):
+    """The push service could not be resolved now; retry later."""
+
+
 def b64url_encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
@@ -238,7 +242,8 @@ def validate_subscription(subscription: Subscription, *, resolve: Resolver = res
     try:
         addresses = resolve(host)
     except OSError as exc:
-        raise WebPushRefused("the push service did not resolve") from exc
+        # A resolver outage is temporary; only an unsafe answer is refused.
+        raise WebPushUnavailable("the push service did not resolve") from exc
     if not addresses or not all(ipaddress.ip_address(item).is_global for item in addresses):
         raise WebPushRefused("the push service resolved to a non-public address")
     return addresses[0]
@@ -278,7 +283,10 @@ def send(
     transport: httpx.BaseTransport | None = None,
 ) -> SendResult:
     """Post one encrypted message; redirects are never followed."""
-    address = validate_subscription(subscription, resolve=resolve)
+    try:
+        address = validate_subscription(subscription, resolve=resolve)
+    except WebPushUnavailable:
+        return SendResult("retry")
     endpoint = urlsplit(subscription.endpoint)
     host = endpoint.hostname or ""
     body = encrypt(
