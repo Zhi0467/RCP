@@ -11,9 +11,10 @@ Notification reconciliation is independent of graph watchers. Every main
 target reconciles accepted attention boundaries in the sender thread, starting
 immediately after startup and again after each accepted main transition. This
 reconciliation never runs on the API readiness path, so a slow remote graph
-read cannot hold the health endpoint closed. Each pass observes every project's
-local episode health before it replays any graph, so one slow remote delays no
-other project's episode baseline. Reconciliation runs even while no member
+read cannot hold the health endpoint closed. Episode health is local, so every
+project's episode baseline is taken before the API serves, and each pass
+observes it before replaying any graph, so one slow remote delays no other
+project's episode observation. Reconciliation runs even while no member
 wants graph notifications, so turning a kind on never replays old attention; a
 failed attempt retries on the next sender pass, and a pass with no change
 replays nothing. Graph items of a project awaiting reconciliation are held, not

@@ -586,6 +586,9 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
         try:
             assert entered.wait(5), "startup did not begin graph reconciliation"
             assert serving.wait(5), "API startup waited for the remote graph"
+            # Episode health is local, so its baseline precedes serving even
+            # while the graph read is still blocked.
+            assert store.notification_project_baseline(project_id) is not None
         finally:
             release.set()
         health, pending = request.result(timeout=10)

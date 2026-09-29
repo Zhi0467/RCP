@@ -1735,8 +1735,11 @@ def create_app(
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
-                # Startup graph sweeps and notification reconciliation read
-                # remote graphs, so both run on their workers after readiness.
+                # Episode health is local, so its notification baseline is taken
+                # before serving. Startup graph sweeps and graph notification
+                # reconciliation read remote graphs, so both run on their
+                # workers after readiness.
+                await asyncio.to_thread(notification_sender.observe_episodes)
                 await asyncio.to_thread(request_startup_sweep)
                 graph_watcher_retry_worker.start()
                 graph_watcher_retry_worker.signal()
