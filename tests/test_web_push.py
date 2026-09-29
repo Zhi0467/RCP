@@ -350,3 +350,21 @@ def test_a_resolver_outage_keeps_the_item_for_retry(manifest, tmp_path) -> None:
         connection.execute("UPDATE notification_outbox SET next_attempt_at=created_at")
     sender.run_pass()
     assert len(requests) == 1
+
+
+def test_the_startup_pass_leaves_phone_sends_to_the_sender_loop(manifest, tmp_path) -> None:
+    from .test_notifications import _append, _blocker_patch
+
+    app, store, sender, _device = _phone_sender(manifest, tmp_path)
+    sender.resolve = lambda _host: [_PUBLIC_ADDRESS]
+    requests = []
+    sender.transport = httpx.MockTransport(
+        lambda request: requests.append(request) or httpx.Response(201)
+    )
+    sender.run_pass()
+    _append(app, app.state.catalog.open(app.state.default_project_id), _blocker_patch("blk/boot"))
+    sender.run_pass(deliver=False)
+    assert requests == []
+    assert len(store.notification_outbox()) == 1
+    sender.run_pass()
+    assert len(requests) == 1
