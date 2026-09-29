@@ -17,7 +17,9 @@ acknowledgment after acceptance, click routing, and Tauri commands. Remaining:
 the real-hardware journeys below. On 2026-09-28 `RCP Dev.app` on disposable
 data turned on This Mac, posted a banner for a real Blocker, and its click
 opened that Blocker. The first journey still needs the installed app and a
-Proposal. `desktop:build-dev` leaves the bundle unsigned, so macOS refuses
+Proposal. The same day an iPhone paired notify-only with that personal space
+through `tailscale serve`, and received a push for a real Blocker with no link:
+the fourth journey holds. `desktop:build-dev` leaves the bundle unsigned, so macOS refuses
 notification permission (`UNErrorDomain` 1) until it is signed ad hoc.
 This replaces the 2026-09-25 Inbox-push handoff. The Mac install and update
 work moved to its own handoff and PR, which landed first (#216): the Mac check below
