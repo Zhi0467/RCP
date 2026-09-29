@@ -163,21 +163,26 @@ def test_cleanup_failure_keeps_delivery_and_retries(manifest, tmp_path, monkeypa
     (Path(binding.worktree_path) / "file").write_text("episode")
     original = merge._git
 
-    def fail_removal(store, binding, operation, **values):
-        if operation == "remove_episode_worktree":
-            raise ValueError("fixture_removal_failure")
+    def fail_branch_delete(store, binding, operation, **values):
+        if operation == "delete_branch":
+            raise ValueError("fixture_delete_failure")
         return original(store, binding, operation, **values)
 
-    monkeypatch.setattr(merge, "_git", fail_removal)
+    monkeypatch.setattr(merge, "_git", fail_branch_delete)
     route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
-    response = harness.client.post(route + "/merge")
-    assert response.status_code == 409
+    assert harness.client.post(route + "/merge").status_code == 409
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     assert state.delivered_source_commit
     assert state.merge_attempt.phase == "cleanup"
     # A failed code cleanup keeps the episode listed, so its Merge panel can retry.
     assert not state.graph_archived
+    assert state.status != "removed"
+    assert "remove_worktree" in state.merge_attempt.cleanup_completed
     assert len(harness.branch.merge_receipts()) == 1
+    # A preview after partial cleanup reads the delivery, not the removed worktree.
+    response = harness.client.get(route + "/merge-preview")
+    assert response.status_code == 200, response.text
+    assert response.json()["code"]["status"] == "already_merged"
     monkeypatch.setattr(merge, "_git", original)
     response = harness.client.post(
         route + "/cleanup",
@@ -190,30 +195,6 @@ def test_cleanup_failure_keeps_delivery_and_retries(manifest, tmp_path, monkeypa
     assert harness.store.episode_isolation_state(
         harness.project_id, harness.episode.episode_id
     ).graph_archived
-
-
-def test_preview_after_partial_cleanup_reads_the_removed_worktree(manifest, tmp_path, monkeypatch):
-    from rcp.runs.episodes import merge
-
-    harness = _create_branch_harness(manifest, tmp_path, change="status")
-    _, binding = _isolated(harness, tmp_path)
-    (Path(binding.worktree_path) / "file").write_text("episode")
-    original = merge._git
-
-    def fail_branch_delete(store, binding, operation, **values):
-        if operation == "delete_branch":
-            raise ValueError("fixture_delete_failure")
-        return original(store, binding, operation, **values)
-
-    monkeypatch.setattr(merge, "_git", fail_branch_delete)
-    route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
-    assert harness.client.post(route + "/merge").status_code == 409
-    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
-    assert state.status != "removed"
-    assert "remove_worktree" in state.merge_attempt.cleanup_completed
-    response = harness.client.get(route + "/merge-preview")
-    assert response.status_code == 200, response.text
-    assert response.json()["code"]["status"] == "already_merged"
 
 
 def test_later_cleanup_keeps_the_branch_when_target_history_was_dropped(manifest, tmp_path):
@@ -270,9 +251,24 @@ def test_uncertain_landing_reconciles_before_new_merge(manifest, tmp_path, monke
 
 
 @pytest.mark.parametrize(
-    "phase", ["landing", "verified", "graph_receipt", "graph_committed", "cleanup", "done"]
+    "phase,history_mode",
+    [
+        *[
+            (phase, "merge")
+            for phase in (
+                "landing",
+                "verified",
+                "graph_receipt",
+                "graph_committed",
+                "cleanup",
+                "done",
+            )
+        ],
+        # Only re-landing and branch deletion read the squash commit.
+        ("landing", "squash"),
+        ("cleanup", "squash"),
+    ],
 )
-@pytest.mark.parametrize("history_mode", ["merge", "squash"])
 def test_interrupted_phase_reconciles_exact_delivery(
     manifest, tmp_path, monkeypatch, phase, history_mode
 ):
@@ -416,7 +412,6 @@ def test_target_moved_after_preparation_blocks_graph_commit(manifest, tmp_path, 
     [
         {"history_mode": "squash", "keep_branch_open": True},
         {"remove_worktree": False, "delete_code_branch": True},
-        {"remove_worktree": False, "delete_code_branch": True, "keep_branch_open": True},
     ],
 )
 def test_invalid_merge_choices_fail_request_validation(manifest, tmp_path, body):

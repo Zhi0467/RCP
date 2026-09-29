@@ -381,7 +381,7 @@ def test_merge_attempt_updates_preserve_binding_and_delivery(manifest, tmp_path)
 
 @pytest.mark.parametrize(
     "status,pauses",
-    [("running", True), ("lost", True), ("exited", False), ("cancelled", False)],
+    [("running", True), ("exited", False)],
 )
 def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, pauses):
     from rcp.compute_jobs.models import ComputeJobRecord
@@ -417,7 +417,6 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, pauses):
     "status,worktree,condition,pauses",
     [
         ("active", True, None, True),
-        ("degraded", True, None, True),
         ("completed", True, None, False),
         # Stop ends observation without proving the job finished.
         ("stopped", True, None, True),

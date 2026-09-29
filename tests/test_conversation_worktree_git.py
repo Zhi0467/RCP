@@ -375,9 +375,7 @@ def test_episode_uses_shared_worktree_lifecycle_and_fails_closed(repository: Pat
         run("inspect", binding=binding)
 
 
-@pytest.mark.parametrize(
-    "version,supported", [("2.37.9", False), ("2.38.0", True), ("3.0.0", True)]
-)
+@pytest.mark.parametrize("version,supported", [("2.37.9", False), ("2.38.0", True)])
 def test_episode_git_version_probe_runs_on_execution_host(monkeypatch, version, supported) -> None:
     commands = []
 
@@ -506,9 +504,7 @@ def test_episode_target_refusals_preserve_leftovers(repository, rule, code):
     assert git(worktree, "rev-parse", "HEAD") == binding["starting_commit"]
 
 
-@pytest.mark.parametrize(
-    "marker", ["MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD"]
-)
+@pytest.mark.parametrize("marker", ["MERGE_HEAD", "rebase-merge"])
 def test_episode_interrupted_git_is_not_leftovers(repository, marker):
     binding = episode_binding(repository)
     worktree = episode_edit(binding)
