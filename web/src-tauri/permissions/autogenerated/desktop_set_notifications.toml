@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-desktop-set-notifications"
+description = "Enables the desktop_set_notifications command without any pre-configured scope."
+commands.allow = ["desktop_set_notifications"]
+
+[[permission]]
+identifier = "deny-desktop-set-notifications"
+description = "Denies the desktop_set_notifications command without any pre-configured scope."
+commands.deny = ["desktop_set_notifications"]

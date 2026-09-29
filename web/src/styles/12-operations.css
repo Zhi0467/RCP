@@ -118,6 +118,27 @@
   padding: 0 20px;
 }
 
+/* Project notifications: one toggle per kind, for the calling member. */
+.project-notification-kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.45rem 1rem;
+  padding: 18px 20px 0;
+}
+.project-notification-kinds label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+}
+.project-notification-note {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  margin: 0.6rem 0 0;
+  padding: 0 20px 18px;
+}
+
 /* O6 — one read-only operational ledger for the shared team server. */
 .server-settings > header {
   align-items: center;

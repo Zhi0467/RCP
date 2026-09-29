@@ -110,6 +110,10 @@ export function modelChange(
   reasoning: string,
 ): { model: string; reasoning?: string } {
   const accepted = reasoningFor(models, model);
+  // A catalogued model with no efforts takes none; an old one would only be ignored.
+  if (models.some((item) => item.id === model) && accepted.length === 0) {
+    return { model, reasoning: "" };
+  }
   if (accepted.length === 0 || accepted.includes(reasoning)) return { model };
   // The catalog's default is trusted only when the model's own list contains it.
   const fallback = models.find((item) => item.id === model)?.default_reasoning ?? "";

@@ -110,6 +110,13 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
 
     def cached_readiness(provider: str, *, host: str = "", binary: str | None = None):
         probed.append((provider, host, binary))
+        if provider == "opencode":
+            return ProviderReadiness(
+                provider="opencode",
+                installed=True,
+                authenticated=True,
+                models=[ModelChoice(id="opencode/big-pickle", label="Big Pickle", reasoning=[])],
+            )
         if provider != "codex":
             return None
         return ProviderReadiness(
@@ -138,6 +145,9 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
         "project_chat", provider="codex", model="gpt-5.5", reasoning="medium"
     )
     unknown_catalog = service.resolve_agent_profile("project_chat", provider="claude", model="")
+    no_efforts = service.resolve_agent_profile(
+        "project_chat", provider="opencode", model="", reasoning="medium"
+    )
 
     assert resolved.model == "gpt-5.6-sol"
     # The profile's `medium` was chosen with no model; the head rejects it and its
@@ -148,6 +158,7 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     assert explicit.model == "gpt-5.5"
     assert explicit.reasoning == "medium"
     assert unknown_catalog.model == ""
+    assert (no_efforts.model, no_efforts.reasoning) == ("opencode/big-pickle", "")
 
     # Both projections export the manifest model unchanged beside the model that
     # runs, so an unnamed profile is never pinned by a display and a readiness

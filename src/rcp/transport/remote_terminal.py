@@ -133,7 +133,8 @@ def run_session(settings: dict[str, Any]) -> int:
         # The read-only masks' empty source lives in RCP's own storage, not
         # the /tmp the shell shares with agents.
         temporary_root = Path.home() / ".rcp" / "tmp"
-        temporary_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        for directory in (temporary_root.parent, temporary_root):
+            directory.mkdir(mode=0o700, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="rcp-terminal-", dir=temporary_root) as empty:
             # The far side is the only place that knows this account's home,
             # so the server sends the key's path relative to it. A team

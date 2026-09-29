@@ -9,7 +9,7 @@ Run it alone on a Mac, or share one team space with your lab on a Linux server.
 
 ## Who it's for today
 
-- **Agents:** Codex and Claude Code. More to come.
+- **Agents:** Codex, Claude Code, and OpenCode.
 - **Platforms:** macOS 13+ on Apple Silicon for the desktop app; Ubuntu 22.04
   or 24.04 LTS on x86-64 for the web app and team server.
 - **Install:** the macOS app with one command, or from source with the steps
@@ -45,7 +45,7 @@ access, then send:
 - **Artifacts with a reply path.** Inspect generated artifacts in the built-in
   viewer, annotate text or image regions, and send the annotation back to the
   agent that made it.
-- **Your machines, your subscriptions.** Codex or Claude Code, locally or over
+- **Your machines, your subscriptions.** Codex, Claude Code, or OpenCode, locally or over
   SSH, with provider, runtime, and model settings per agent role. A team space
   on your own Linux server adds shared projects, member attribution, central
   Git checkouts, and backup/restore.

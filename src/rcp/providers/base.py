@@ -153,6 +153,9 @@ class ProviderTurn:
     """Stateful wire conversation for one fresh provider subprocess."""
 
     command: list[str]
+    #: Variables this one process starts with, on top of the provider's own
+    #: environment. For a CLI that reads per-launch policy from its environment.
+    environment: dict[str, str] = {}
     close_input_after_initial: bool = True
     requires_protocol_completion: bool = False
     initial_input_delivers_prompt: bool = True
@@ -310,8 +313,10 @@ class ProviderProfile:
     #: Models known without asking the CLI. Ignored when `catalog_command`
     #: returns a command that answers.
     declared: tuple[ModelChoice, ...] = ()
-    local_session_roots_field: str
-    remote_session_roots_field: str
+    #: The manifest fields naming where this CLI keeps its session files; None
+    #: when RCP does not index its sessions.
+    local_session_roots_field: str | None = None
+    remote_session_roots_field: str | None = None
     usage_profile: str = "unknown.v1"
     legacy_runtime_id: str
     default_runtime: str
@@ -319,8 +324,9 @@ class ProviderProfile:
     runtime_choices: tuple[ProviderRuntimeChoice, ...]
     work_like_minimum_version: tuple[int, int, int] | None = None
     native_update: ProviderNativeUpdate
-    #: How this provider's native session files look; see `remote.py`.
-    session_format: SessionFormat
+    #: How this provider's native session files look; see `remote.py`. None
+    #: when RCP does not index its sessions.
+    session_format: SessionFormat | None = None
     #: The execution-host turn fence for each of this provider's runtime ids.
     turn_fences: dict[str, type[TurnFence]]
 
@@ -332,6 +338,8 @@ class ProviderProfile:
         not require another provider-name branch in the retry assembler.
         """
         field = self.remote_session_roots_field if remote else self.local_session_roots_field
+        if field is None:
+            return []
         roots = getattr(sources, field, None)
         if not isinstance(roots, list) or not all(isinstance(item, str) for item in roots):
             raise ValueError(f"Provider {self.id!r} has no configured session roots")

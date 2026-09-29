@@ -15,6 +15,7 @@ from rcp.agents import ProviderReadiness
 from rcp.api import create_app
 from rcp.config import load_manifest, permissions_for
 from rcp.history import HistoryManager
+from rcp.providers import PROVIDER_IDS
 from rcp.setup import (
     MachineBrowseFailure,
     ProjectSetupRequest,
@@ -326,8 +327,7 @@ def test_setup_records_discovered_provider_paths_in_new_manifest(tmp_path) -> No
     assert created.status_code == 200
     manifest = load_manifest(repository / ".research" / "manifest.toml")
     assert manifest.machine_map["laptop"].provider_paths == {
-        "codex": "/opt/rcp-test/codex",
-        "claude": "/opt/rcp-test/claude",
+        provider: f"/opt/rcp-test/{provider}" for provider in PROVIDER_IDS
     }
 
 

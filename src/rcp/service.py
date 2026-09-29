@@ -1650,6 +1650,7 @@ class ProjectService:
                     (provider, machine.host)
                     for machine in manifest.machines
                     for provider in PROVIDER_IDS
+                    if profile_for(provider).authentication.manages_login
                 }
             )
         ]
@@ -2595,7 +2596,10 @@ class ProjectService:
         filled: dict[str, object] = {"model": head.id}
         # The effort was chosen without a model; keep it only if the head accepts it,
         # and trust the catalog's default only when the head's own list contains it.
-        if head.reasoning and profile.reasoning not in head.reasoning:
+        # A head with no efforts takes none, as the model picker stores it.
+        if not head.reasoning:
+            filled["reasoning"] = ""
+        elif profile.reasoning not in head.reasoning:
             filled["reasoning"] = (
                 head.default_reasoning
                 if head.default_reasoning in head.reasoning

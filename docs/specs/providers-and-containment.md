@@ -164,7 +164,8 @@ records the accepted coupling and rejected extractions.
 ## Provider runtime selection
 
 Each project agent profile selects a provider-owned runtime. An omitted value is
-backward compatible: Codex uses `exec` and Claude uses `stream-json`. Provider
+backward compatible: Codex uses `exec`, Claude uses `stream-json`, and OpenCode
+uses `run-json`. Provider
 readiness exports the allowed names and the one an omitted value resolves to;
 project setup and Project Settings render those answers, and the backend
 validates the saved provider/runtime pair. No surface derives that default from
@@ -334,7 +335,10 @@ unbounded. RCP keeps its own files under `~/.rcp`: remote stages, command and
 SSH control sockets, and temporary files. Two exceptions sit in `/tmp`, and both
 are protected: when a home is too deep for a socket path, sockets use a private
 `/tmp/rcp-<id>` folder named from the home, and a saved legacy `/tmp/rcp-run.*`
-stage still resumes until a later release removes it.
+stage still resumes until a later release removes it. RCP creates `~/.rcp` mode
+700 under any umask. A `~/.rcp` the account owns but others can write, such as
+one an older release made under a 0002 umask, loses that write access on next
+use; one owned by another account is refused.
 
 ## Provider enforcement
 
@@ -389,6 +393,44 @@ on its execution machine. That is an accepted accidental-write gap for this
 provider, not a claim of containment; Codex's native permission profile still
 bounds both. Nothing here widens graph authority, which stays with `patch.json`.
 
+### OpenCode
+
+Every OpenCode launch carries its rules in `OPENCODE_CONFIG_CONTENT`, which
+OpenCode merges last, and sets `OPENCODE_DISABLE_PROJECT_CONFIG`. The rules
+belong to an RCP agent that the launch selects with `--agent`. OpenCode applies
+agent rules after top-level ones, so neither the user's global rules nor their
+own agents can widen them. The agent is named after a digest of its rules, so no
+user agent can share the name and be merged in. Every launch also passes
+`--pure`, because a plugin's config hook could rewrite the rules.
+
+The rules deny every tool first, then allow only OpenCode's built-in read-only
+tools, then add each capability's edit and shell rules. So OpenCode subagents
+(`task`) are unavailable, since every subagent, built-in ones included, runs
+under its own rules. So are MCP and custom tools from the member's global
+config. Every launch also turns off formatters and language servers, which run
+their own commands on edited files outside any tool rule.
+
+Edit rules deny everything, then allow the exact workspace and admitted roots,
+then deny protected paths, then allow again each root inside a protected path,
+such as a stage inside RCP storage; OpenCode applies the last rule that matches.
+The paper coach and every other capability may read outside their folder. OpenCode
+matches them against paths relative to its project root, which is the enclosing
+Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
+path rules therefore refuses to start inside a Git work tree, rather than let
+the rules name the wrong paths. Task stages are outside Git. The paper coach runs
+inside the project and denies every edit and the shell outright, so it needs no
+path rules. Discuss and ingestion may edit only their workspace and their own
+write folders, and have no shell.
+
+Work keeps the shell. Like Claude's rules, these bound every file-editing tool
+and do not bound the shell, so the same accepted accidental-write gap applies.
+A rule that would ask is rejected, because `opencode run` cannot ask.
+
+OpenCode prints no event when a turn ends, and a step that stops can be followed
+by another. The launch wrapper therefore prints one `rcp.provider_exit` line
+after the process exits; that line ends the turn locally and in the remote
+fence. Every text part is part of the reply, as Codex's agent messages are.
+
 ### Version failure
 
 Provider profiles own the minimum supported CLI contract. If the installed
@@ -397,6 +439,29 @@ a provider-compatibility diagnostic. A selected Codex app-server version or
 startup that fails before prompt delivery may use the explicit exec fallback;
 exec must still enforce the same capability and exact roots. RCP never restores
 broad bypass access or treats prompt wording as containment.
+
+### Adding a provider
+
+A provider is one package registered as the `rcp.providers` docstring
+describes. The shared defaults were written for Codex and Claude, so a new
+profile decides each of these explicitly rather than inheriting them:
+
+1. Session files: a session format and roots, or none, which leaves RCP not
+   indexing its history.
+2. Turn end: the event its fence reads, or a wrapper line when the CLI prints
+   none. Both the local decoder and the remote fence must end on it.
+3. Login: an `auth.py` when RCP manages sign-in. Without one, Provider logins
+   shows a note with the CLI's own login command.
+4. Models: probed efforts may be empty, and every stored reasoning field must
+   accept that.
+5. Version floor: the CLI version whose containment was probed, applied to every
+   capability that relies on it.
+
+Containment is proved against the real CLI at that floor: config precedence,
+path bases, and anything that can rewrite the rules, such as plugins. Tests that
+cover every provider iterate `PROVIDER_IDS`; only tests of one provider's
+protocol name it. Before merge, drive the served app through Discuss, Work,
+Provider logins, and the model picker, locally and on an SSH execution machine.
 
 ## Continuation binding
 
@@ -1123,7 +1188,8 @@ The agent reads logs in place. RCP performs only bounded existence/readability
 preflight and reports exact failures without blocking launch. RCP does not parse,
 index, normalize, slice, hash, cache, transfer, or project provider conversation
 content and maintains no per-log cursor or coverage truth. There is no agent-written
-coverage report or coverage-warning banner.
+coverage report or coverage-warning banner. OpenCode keeps its sessions in one
+SQLite database rather than in log files, so RCP names no log roots for it yet.
 
 That is the implemented ordinary-run path, not a promise to abandon source
 history during a pending personal-to-team transfer. The confirmed transfer
@@ -1166,7 +1232,8 @@ A profile probes whatever its CLI can enumerate and declares only the rest.
 Codex reports its models and their per-model reasoning efforts from its own
 catalog. Claude Code cannot enumerate models, so its aliases stay declared and
 dated to the CLI they were read from, while the reasoning efforts it accepts are
-probed from the CLI itself and are provider-wide. A probe that cannot be read
+probed from the CLI itself and are provider-wide. OpenCode lists its models,
+each with the reasoning variants it takes, and many take none. A probe that cannot be read
 falls back to the declared list rather than leaving a surface with no models.
 Navigation never owns provider warmup and ordinary application use remains
 available while it runs.

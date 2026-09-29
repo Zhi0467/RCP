@@ -66,6 +66,90 @@ Per-machine capability and canonical-path refusal are owned by
 session expiry and metadata are owned by
 [Projects, spaces, and operations](projects-spaces-and-operations.md#member-terminal-lifecycle).
 
+## Desktop notification delivery
+
+The backend exposes a desktop delivery target through
+`POST /api/notifications/devices/desktop`. Personal registration belongs to the
+local owner; team registration belongs to the calling member's current session.
+Registration is idempotent for that owner/session. A member cannot pull or
+acknowledge another session's device, including another of their own sessions.
+
+`GET /api/notifications/devices/{device_id}/pending` returns due, unresolved
+items younger than 24 hours. Each item carries its stable notification id and
+only a fixed reason code, project name, and hash-route deep link as content.
+Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
+each value URL-escaped; both episode reasons use `episode` as the link kind.
+Graph item age starts at its accepted Patch, and terminal episode age starts
+at its latest lifecycle update, so downtime does not renew the 24-hour TTL.
+`POST /api/notifications/devices/{device_id}/items/{notification_id}` accepts
+`status: posted` or `status: failed`. Posted means the native notification
+center accepted the request, not proof of display. A failed attempt is retried
+with backoff; an unacknowledged attempt remains eligible for retry with the same
+id. Success for one device does not settle another device's row.
+Each episode item retains its observed health and blocked reason internally;
+delivery drops it if the current pair differs, even within the same toggle.
+
+Delivery pulls and acknowledgments authenticate without refreshing the team's
+idle session expiry or cookie lifetime. Shell polling must call these endpoints
+directly, without an identity-refresh request before each poll.
+
+`GET` and `PATCH /api/projects/{project_id}/notifications` read and update the
+calling member's five toggles: `proposal`, `decision`, `blocker`,
+`episode_needs_action`, and `episode_finished`. All default on except
+`episode_finished`. These routes require project membership. Project Settings
+shows them as a **Notifications** card after Machines, which also says the
+project name appears on the lock screen.
+
+The Web app resolves a notification link once, at load or on a hash change,
+into the item's ordinary route: a Proposal, Decision, or Blocker opens the Inbox.
+A Decision or Blocker then opens its node detail as soon as the graph holds it,
+resolved or not. A pending Proposal scrolls to its card; a resolved one shows
+its outcome as a notice. An episode opens its exact run when it is still
+listed, else Runs. The link is read
+at module load, so a team sign-in in between still continues to it.
+
+## Phone push delivery
+
+Phones use standard Web Push with VAPID. `GET /api/notifications/web-push/key`
+returns the space's application server key; the signing key lives in SQLite,
+so it is part of every backup, and restore keeps it while detaching every
+device. A missing key is never silently replaced while phones still depend on
+it.
+
+`POST /api/notifications/devices/web-push` takes the browser's
+`PushSubscription.toJSON()` shape and binds it to the calling team session,
+replacing that session's previous phone. A personal space refuses it on the
+owner API. The endpoint must be `https` on the default port at an allowlisted
+push service, and every resolved address must be public; anything else is
+refused before a connection. A resolver outage is not a refusal: registration
+answers 503 and a queued send retries. The request's HTTPS `Origin` becomes the VAPID
+subject. Each send validates again, connects to the checked address with TLS
+verified against the push service's name, and never follows a redirect.
+
+The sender loop delivers due phone items with the same qualification, TTL, and
+backoff as the desktop pull, requalifying each item and rereading the
+subscription just before its send. The stable notification id is the `Topic`. A 2xx
+reply means the push service accepted the message; display is best effort. A
+404 or 410 deletes the device, 429 and 5xx retry (honoring `Retry-After`), and
+any other reply drops the item and marks the device Delivery failed.
+`POST /api/notifications/devices/{device_id}/test` sends one test push now and
+sets the device status from its outcome. `DELETE
+/api/notifications/devices/{device_id}` removes the caller's own device of
+either kind. The encrypted payload holds the notification id, reason code,
+project name, and, for a device that may open items, the deep link.
+
+A personal space pairs notify-only phones instead. `POST
+/api/notifications/phone-pairings` issues one code in the team device-code
+format, with the same expiry and lockout, and withdraws any earlier live code.
+While a code is live the backend serves a separate loopback listener on port
+8422; it stops once no code is live. The person routes one HTTPS name to it,
+for example `tailscale serve`. That listener never reaches the owner API: it
+serves only the pairing page, the web-app manifest, the service worker, its
+icons, the public key, and `POST /api/register`, which redeems the code and
+registers the subscription in one transaction. Redemption creates no session
+and returns nothing that grants read access; the phone's payload has no deep
+link. Restore voids every code along with every device.
+
 ## API composition and mutation boundary
 
 One FastAPI backend serves the JSON API and, when built, the React/Vite
@@ -379,7 +463,17 @@ and returns `{"ok": true}`. Unknown, expired, and other members' identifiers all
 return the same 404; the current session returns 409 directing the member to
 Logout. Other sessions and the member credential remain usable. Both routes
 inherit team authentication and mutation-origin enforcement, and return 404 in
-a personal space, whose identity panel has no Devices section.
+a personal space. A personal identity panel's **Devices** section lists
+notification targets instead: **This Mac** and notify-only phones, which have
+Remove rather than Revoke, and **Connect a phone**.
+
+In a team space each session row shows its notification state (on, off, or
+Delivery failed). Only the current device's row has **Turn on**, **Turn off**,
+and **Test**; in the Mac app it drives native notifications, and in a browser it
+subscribes to Web Push, asking for permission only from that tap. A browser
+without Web Push capability is told to add RCP to its Home Screen. Each
+signed-in browser visit re-registers a live subscription, keeping its device,
+and removes a server device whose browser subscription is gone.
 
 Projects hidden by membership never appear as locked cards. Losing access
 closes its open tab and returns to the index.

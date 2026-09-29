@@ -71,6 +71,15 @@ test("moving to a model that rejects the current effort falls back to an accepte
   });
 });
 
+test("a model that takes no effort drops the current one", () => {
+  const models = [{ id: "opencode/big-pickle", label: "Big Pickle", reasoning: [] }];
+  assert.deepEqual(modelChange(models, "opencode/big-pickle", "medium"), {
+    model: "opencode/big-pickle",
+    reasoning: "",
+  });
+  assert.deepEqual(reasoningOptions(models, "opencode/big-pickle", ""), []);
+});
+
 test("an effort the new model still accepts is left alone", () => {
   assert.deepEqual(modelChange(CODEX.models, "gpt-5.5", "high"), { model: "gpt-5.5" });
 });

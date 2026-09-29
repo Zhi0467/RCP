@@ -3128,6 +3128,9 @@ export interface ProviderSignInStatus {
 export interface ProviderLoginAccount extends ProviderLoginState {
   label: string;
   sign_in_methods: string[];
+  /** False when the CLI's own login applies; RCP only says how to run it. */
+  managed: boolean;
+  login_command: string;
   token_instructions: string | null;
   machines: string[];
   token: ProviderCredentialSummary | null;

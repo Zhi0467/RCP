@@ -659,20 +659,24 @@ class BackupManifestAgentProfile(_StrictBackupModel):
     run_on: str
     permissions: AgentPermissions
 
-    @field_validator("runtime", "reasoning", "run_on")
+    @field_validator("runtime", "run_on")
     @classmethod
     def validate_bounded_field(cls, value: str, info) -> str:
         return _safe_line(value, label=f"backup agent {info.field_name}", maximum=200)
 
-    @field_validator("model")
+    # Either may be empty: the provider's default model, or a model that takes
+    # no reasoning effort.
+    @field_validator("model", "reasoning")
     @classmethod
-    def validate_model(cls, value: str) -> str:
+    def validate_model(cls, value: str, info) -> str:
         if len(value) > 200 or any(
             ord(character) < 32 or ord(character) == 127 for character in value
         ):
-            raise ValueError("backup agent model must be one bounded line")
+            raise ValueError(f"backup agent {info.field_name} must be one bounded line")
         if redact_server_text(value) != value:
-            raise ValueError("backup agent model cannot contain credential-shaped text")
+            raise ValueError(
+                f"backup agent {info.field_name} cannot contain credential-shaped text"
+            )
         return value
 
 

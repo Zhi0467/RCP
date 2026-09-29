@@ -26,6 +26,7 @@ from rcp.storage.models import (
     _stored_space_kind,
     normalize_space_name,
 )
+from rcp.storage.notifications import migrate_notifications
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -62,7 +63,8 @@ class AppStoreBase:
         (25, "chat_display_v1"),
         (26, "chat_reads_and_pins_v1"),
         (27, "space_machines_v1"),
-        (28, "episode_isolation_v1"),
+        (28, "notifications_v1"),
+        (29, "episode_isolation_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -613,6 +615,12 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection,
             version=28,
+            name="notifications_v1",
+            migration=migrate_notifications,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=29,
             name="episode_isolation_v1",
             migration=self._migrate_episode_isolation,
         )
@@ -2062,6 +2070,7 @@ class AppStoreBase:
         self._migrate_chat_display(connection)
         self._migrate_chat_reads_and_pins(connection)
         self._migrate_space_machines(connection)
+        migrate_notifications(connection)
         self._migrate_episode_isolation(connection)
         if not schema_template:
             self._normalize_legacy_startup_schema(connection)

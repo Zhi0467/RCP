@@ -44,6 +44,9 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Notifications, fresh and historical graph_runs rebuild shapes.
+        "9081439143959433cd437c8aab3fb7b7e559a64a675b75a4d21bf9c2442d4cf7",
+        "5d43614c384c503556d2ae941b52098ef6c110d54abe2b9c5eb53b3dc34c4f70",
         "91b15bf1f86acba1a9e29d3ad2d222a568fc3ea1781bb09ade823f2d990ca9f0",
         "fc86f6048a4696bdab5b06771271a3651e7972432ad6f5b5ceefc3be40794426",
         "fb854eddda342b3d83507c3c8dd344cc635306b6a82b022382ed5c0dbdbf6f52",

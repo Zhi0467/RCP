@@ -565,7 +565,8 @@ class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
     provider: ProviderId
     runtime_id: str
     model: str = Field(max_length=200)
-    reasoning: str = Field(min_length=1, max_length=80)
+    # Empty for a model that takes no reasoning effort.
+    reasoning: str = Field(max_length=80)
     machine_alias: str
 
     @field_validator("runtime_id")
@@ -592,7 +593,7 @@ class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
         pattern = (
             _PROVISIONING_ALIAS
             if info.field_name == "machine_alias"
-            else re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
+            else re.compile(r"(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,79})?")
         )
         if pattern.fullmatch(value) is None:
             raise ValueError(f"provisioning provider {info.field_name} is invalid")
@@ -3641,6 +3642,11 @@ _PROJECT_ID_TABLES = (
     "compute_backend_probes",
     "watchers",
     "graph_watcher_reconciliation",
+    "notification_preferences",
+    "notification_outbox",
+    "notification_graph_markers",
+    "notification_episode_observations",
+    "notification_project_baselines",
     "auto_research_child_work",
     "auto_research_child_experiments",
     "auto_research_child_admissions",

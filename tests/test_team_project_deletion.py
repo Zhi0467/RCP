@@ -375,7 +375,26 @@ def test_team_delete_waits_for_target_activated_transfer_to_complete(tmp_path: P
         source_request.request_id,
         acknowledgement_sha256=source_request.proof_acknowledgement_sha256,
     )
+    owner = source.local_owner
+    assert owner is not None
+    device = source.register_notification_device(owner.user_id)
+    with source.connection() as connection:
+        for project_id in (source_request.project_id, "other-project"):
+            connection.execute(
+                "INSERT INTO notification_preferences VALUES (?,?,'proposal',1)",
+                (project_id, owner.user_id),
+            )
+            connection.execute(
+                "INSERT INTO notification_outbox(device_id,notification_id,project_id,target,kind,item_id,reason,project_name,deep_link,created_at,next_attempt_at) VALUES (?,?,?,'main','proposal','item','proposal','Project','#/',?,?)",
+                (device["device_id"], project_id, project_id, source.now(), source.now()),
+            )
     source.retire_source_project_transfer(source_request.request_id)
+    assert [row["project_id"] for row in source.notification_outbox()] == ["other-project"]
+    assert source.notification_device(device["device_id"]) is not None
+    with source.connection() as connection:
+        assert [
+            row[0] for row in connection.execute("SELECT project_id FROM notification_preferences")
+        ] == ["other-project"]
     source_request = source.complete_project_transfer_request(source_request.request_id)
     assert source_request.phase == target_request.phase == "completed"
 

@@ -36,6 +36,8 @@ const initial: ProviderLoginAccount = {
     started_at: "2026-09-14T00:00:00Z",
   },
   sign_in_methods: ["device_code"],
+  managed: true,
+  login_command: "codex login",
   token_instructions: null,
 };
 

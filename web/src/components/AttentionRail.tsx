@@ -54,7 +54,11 @@ export function ProposalJudgmentSection({
           ? `Approval conflicts with staged approval: ${conflictingTitles.join(", ")}.`
           : undefined;
         return (
-          <article className={`proposal-card${decision ? " draft-touched" : ""}`} key={proposal.id}>
+          <article
+            className={`proposal-card${decision ? " draft-touched" : ""}`}
+            key={proposal.id}
+            data-proposal-id={proposal.id}
+          >
             <div className="proposal-topline">
               <span className="eyebrow">
                 {decision ? `Pending · staged ${decision}` : "Pending proposal"}

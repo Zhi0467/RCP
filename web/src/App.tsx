@@ -65,6 +65,8 @@ import {
   archiveEpisode,
   ApiError,
   loadEpisodes,
+  loadProjectExperimentEpisodes,
+  loadTeamSessions,
   loadProjectReadiness,
   loadProviderLogins,
   loadMergePreview,
@@ -267,6 +269,14 @@ import {
 } from "./webmcp";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
+import {
+  episodeNotificationHash,
+  graphNotificationHash,
+  initialNotificationLink,
+  parseNotificationLink,
+  type NotificationLink,
+} from "./notificationLinks";
+import { loadNotificationDevices, reconcileWebPush } from "./notificationDevices";
 
 const PROVIDER_SKILL_READINESS_POLL_DELAY_MS = 1_000;
 const PROVIDER_SKILL_READINESS_MAX_FOLLOW_UPS = 20;
@@ -2348,6 +2358,77 @@ export default function App() {
     [presentedGraph.glossary, presentedGraph.revision],
   );
   const openNodeById = (nodeId: string) => openNode(presentedGraph.nodes[nodeId] ?? null);
+  // A notification link resolves once into the item's ordinary route. A graph
+  // item then opens as soon as its project's graph holds it, resolved or not.
+  // It waits for a verified session, so a link opened before team sign-in
+  // still reaches its exact item afterwards.
+  const [notificationNode, setNotificationNode] = useState<NotificationLink | null>(null);
+  const initialLinkPending = useRef(initialNotificationLink);
+  useEffect(() => {
+    if (!backendSessionReady) return;
+    const resolve = async () => {
+      const link = initialLinkPending.current ?? parseNotificationLink(window.location.hash);
+      initialLinkPending.current = null;
+      if (!link) return;
+      let next = graphNotificationHash(link);
+      if (link.kind === "episode") {
+        const [episodes, entries] = await Promise.all([
+          loadEpisodes(
+            `/api/projects/${encodeURIComponent(link.projectId)}`,
+            undefined,
+            link.itemId,
+          ).catch(() => []),
+          loadProjectExperimentEpisodes(link.projectId).catch(() => []),
+        ]);
+        next = episodeNotificationHash(link, episodes[0] ?? null, entries);
+      } else {
+        setNotificationNode(link);
+      }
+      window.location.replace(next);
+    };
+    void resolve();
+    window.addEventListener("hashchange", resolve);
+    return () => window.removeEventListener("hashchange", resolve);
+  }, [backendSessionReady]);
+  // Each signed-in visit keeps the server's phone record in step with this browser.
+  const teamSpace = verifiedHealth?.space_kind === "team";
+  useEffect(() => {
+    if (!teamSpace || desktop) return;
+    void Promise.all([loadTeamSessions(), loadNotificationDevices()])
+      .then(([sessions, devices]) => {
+        const current = sessions.find((session) => session.is_current);
+        return reconcileWebPush(
+          devices.find((device) => device.session_id === current?.session_id) ?? null,
+        );
+      })
+      .catch(() => {
+        // A missed reconciliation is retried on the next visit.
+      });
+  }, [teamSpace, desktop]);
+  useEffect(() => {
+    if (!notificationNode || notificationNode.projectId !== projectId) return;
+    if (notificationNode.kind === "proposal") {
+      // Proposals are not graph nodes: a pending one is shown in the Inbox,
+      // and a resolved one reports its outcome.
+      const proposal = presentedGraph.proposals[notificationNode.itemId];
+      if (!proposal) return;
+      setNotificationNode(null);
+      if (proposal.status === "pending") {
+        window.requestAnimationFrame(() =>
+          document
+            .querySelector(`[data-proposal-id="${CSS.escape(proposal.id)}"]`)
+            ?.scrollIntoView({ block: "center" }),
+        );
+      } else {
+        setNotice({ kind: "info", text: `Proposal "${proposal.title}" was ${proposal.status}.` });
+      }
+      return;
+    }
+    const node = presentedGraph.nodes[notificationNode.itemId];
+    if (!node) return;
+    setNotificationNode(null);
+    openNode(node);
+  }, [notificationNode, projectId, presentedGraph.nodes, presentedGraph.proposals, openNode]);
   const openRelatedNode = (sourceSlot: DetailWindowSlot, nodeId: string) => {
     openRelatedGraphNode(sourceSlot, presentedGraph.nodes[nodeId] ?? null);
   };

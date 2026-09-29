@@ -36,8 +36,11 @@ def create_stage(label: str, reuse: bool) -> str:
     # A parent another user can write could swap a retained stage, so both must be ours.
     for directory in (rcp, base):
         info = os.lstat(directory)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
             raise ValueError("remote stage directory is unsafe")
+        if info.st_mode & 0o022:
+            # Ours but made under a 0002 umask, as `rcp.rcp_home` also repairs.
+            os.chmod(directory, stat.S_IMODE(info.st_mode) & ~0o022)
     if not label:
         return tempfile.mkdtemp(prefix="rcp-run.", dir=base)
     root = os.path.join(base, "rcp-run." + label)

@@ -282,6 +282,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "chat_display_v1",
         "chat_reads_and_pins_v1",
         "space_machines_v1",
+        "notifications_v1",
         "episode_isolation_v1",
     )
     migrated = AppStore(store.path)

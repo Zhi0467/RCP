@@ -27,6 +27,8 @@ test("a registered third provider renders only its declared interactions and bac
       token: null,
       sign_in: null,
       sign_in_methods: ["device_code"],
+      managed: true,
+      login_command: "test-provider login",
       token_instructions: "Paste the test provider token",
     };
     const render = (overrides = {}) =>
@@ -69,6 +71,11 @@ test("a registered third provider renders only its declared interactions and bac
     assert.match(saved, /data-provider-action="verify"/);
     assert.doesNotMatch(saved, /data-provider-action="sign-in"/);
     assert.match(saved, /<form class="provider-login-token"/);
+    // A CLI whose own login applies gets the command to run, and no state or action.
+    const unmanaged = render({ state: "signed_in", sign_in_methods: [], managed: false });
+    assert.match(unmanaged, /data-provider-login="unmanaged"/);
+    assert.match(unmanaged, /<code>test-provider login<\/code>/);
+    assert.doesNotMatch(unmanaged, /data-provider-action=|provider-path-state/);
     const unsupported = render({ sign_in_methods: ["future_method"] });
     assert.match(unsupported, /data-provider-action="verify"/);
     assert.doesNotMatch(unsupported, /data-provider-action="sign-in"|<form/);

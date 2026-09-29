@@ -6,6 +6,7 @@ mod keychain;
 mod lifecycle;
 mod local_https;
 mod navigation;
+mod notifications;
 mod pdf_preview;
 mod project_transfer;
 mod server_commands;
@@ -100,6 +101,9 @@ pub fn run() {
             commands::choose_repository_folder,
             commands::desktop_start_dictation,
             commands::desktop_stop_dictation,
+            commands::desktop_notifications_enabled,
+            commands::desktop_set_notifications,
+            commands::desktop_test_notification,
             commands::open_artifact_preview,
             commands::open_artifact_pdf,
             commands::open_episode_report_preview,
@@ -111,6 +115,16 @@ pub fn run() {
             commands::apply_update,
         ])
         .setup(|app| {
+            // Before launch finishes, so a click that launched the app arrives.
+            notifications::install(app.handle());
+            let notification_state = notifications::NotificationState::for_app(app.handle())
+                .map_err(std::io::Error::other)?;
+            if !app.manage(notification_state) {
+                return Err(std::io::Error::other(
+                    "RCP desktop notification state was already registered",
+                )
+                .into());
+            }
             if let Err(error) = pdf_preview::prepare_cache(app.handle()) {
                 eprintln!("[rcp] PDF preview cache cleanup failed: {error}");
             }
@@ -159,6 +173,7 @@ pub fn run() {
                 .into());
             }
             start_backend(app.handle().clone());
+            notifications::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -240,7 +255,7 @@ fn finish_startup(app: &tauri::AppHandle, status: lifecycle::DesktopStatus) {
     windows::show_when_handshake_does_not_arrive(app);
 }
 
-fn verify_then_prepare_show(app: tauri::AppHandle, reason: &'static str) {
+pub(crate) fn verify_then_prepare_show(app: tauri::AppHandle, reason: &'static str) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<BackendState>().inner().clone();
         let status = match state.status() {

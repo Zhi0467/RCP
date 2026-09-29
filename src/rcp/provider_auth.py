@@ -52,6 +52,11 @@ class ProviderAuthentication:
     token_instructions: str | None = None
     missing_credential_detail = "No managed credential is saved."
 
+    @property
+    def manages_login(self) -> bool:
+        """Whether RCP signs this provider in; otherwise the CLI's own login applies."""
+        return bool(self.methods)
+
     def credential_available(self, credentials: ProviderCredentialStore, host: str) -> bool:
         return True
 

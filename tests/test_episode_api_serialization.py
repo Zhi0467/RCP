@@ -872,7 +872,7 @@ def test_the_projection_decides_lifecycle_state_so_no_surface_has_to(
 ) -> None:
     from types import SimpleNamespace
 
-    from rcp.api.episodes import _episode_projection
+    from rcp.episode_health import _episode_projection
 
     record = EpisodeRecord.model_validate(
         {
