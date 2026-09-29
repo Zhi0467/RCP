@@ -47,6 +47,8 @@ def _launch(request: ProviderTurnRequest) -> tuple[list[str], dict[str, object]]
     turn = OPENCODE.runtime(OPENCODE.legacy_runtime_id).turn(request)
     policy = json.loads(turn.environment["OPENCODE_CONFIG_CONTENT"])
     assert turn.environment["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+    # Member formatters and language servers run commands outside tool rules.
+    assert policy["formatter"] is False and policy["lsp"] is False
     (agent, definition), *others = policy["agent"].items()
     assert not others
     assert turn.command[turn.command.index("--agent") + 1] == agent

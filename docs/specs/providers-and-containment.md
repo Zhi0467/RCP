@@ -401,7 +401,8 @@ The rules deny every tool first, then allow only OpenCode's built-in read-only
 tools, then add each capability's edit and shell rules. So OpenCode subagents
 (`task`) are unavailable, since every subagent, built-in ones included, runs
 under its own rules. So are MCP and custom tools from the member's global
-config.
+config. Every launch also turns off formatters and language servers, which run
+their own commands on edited files outside any tool rule.
 
 Edit rules deny everything, then allow the exact workspace and admitted roots,
 then deny protected paths, then allow again each root inside a protected path,

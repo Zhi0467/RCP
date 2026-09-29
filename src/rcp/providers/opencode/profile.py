@@ -245,6 +245,10 @@ class OpenCodeProfile(ProviderProfile):
             "share": "disabled",
             "autoupdate": False,
             "snapshot": False,
+            # Formatters and language servers from the member's config run their
+            # own commands on edited files, outside any tool rule.
+            "formatter": False,
+            "lsp": False,
             # A dedicated agent, because agent rules are evaluated after
             # top-level ones: neither the user's top-level rules nor their own
             # agents can widen these.
