@@ -110,6 +110,8 @@ def test_unmerged_cleanup_requires_confirmation(manifest, tmp_path):
     )
     assert merged.status_code == 202, merged.text
     assert len(harness.branch.merge_receipts()) == 1
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert (state.status, state.merge_reservation) == ("removed", None)
 
 
 def test_squash_records_commit_and_cleans_once(manifest, tmp_path):
@@ -214,7 +216,9 @@ def test_uncertain_landing_reconciles_before_new_merge(manifest, tmp_path, monke
     assert state.merge_reservation is None
 
 
-@pytest.mark.parametrize("phase", ["landing", "verified", "graph_committed", "cleanup", "done"])
+@pytest.mark.parametrize(
+    "phase", ["landing", "verified", "graph_receipt", "graph_committed", "cleanup", "done"]
+)
 @pytest.mark.parametrize("history_mode", ["merge", "squash"])
 def test_interrupted_phase_reconciles_exact_delivery(
     manifest, tmp_path, monkeypatch, phase, history_mode
@@ -233,6 +237,9 @@ def test_interrupted_phase_reconciles_exact_delivery(
     original = merge._save
 
     def crash_after_save(store, owner, attempt, **changes):
+        # "graph_receipt": the receipt is written, the phase that records it is not.
+        if phase == "graph_receipt" and changes.get("phase") == "graph_committed":
+            raise Crash()
         result = original(store, owner, attempt, **changes)
         if changes.get("phase") == phase:
             raise Crash()
@@ -257,7 +264,7 @@ def test_interrupted_phase_reconciles_exact_delivery(
         )
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     attempt_id = state.merge_attempt.attempt_id
-    assert state.merge_attempt.phase == phase
+    assert state.merge_attempt.phase == ("verified" if phase == "graph_receipt" else phase)
     monkeypatch.setattr(merge, "_save", original)
     harness.app.state.background_tasks.recover_at_startup()
     response = harness.client.post(
@@ -496,3 +503,30 @@ def test_delivered_paths_stay_listed_after_a_merge(manifest, tmp_path):
         (path["id"], path["field_path"]) for path in before
     ]
     assert all(path["delivered"] for path in after)
+
+
+def test_merge_task_failing_after_its_receipt_completes_on_the_next_merge(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.runs.tasks import branch_merge as task_module
+
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    shared, binding = _conflicting(harness, tmp_path, graph=True)
+    monkeypatch.setattr(harness.app.state.launcher, "stream", _merge_turn(harness, shared, []))
+
+    def crash(*_args):
+        raise ValueError("crash after receipt")
+
+    monkeypatch.setattr(task_module, "complete_graph_merge", crash)
+    url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+    assert harness.client.post(url).status_code == 202
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="failed")
+    assert len(harness.branch.merge_receipts()) == 1
+
+    # The next Merge finishes the delivered attempt instead of dropping its cleanup.
+    assert harness.client.post(url).status_code == 202
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert (state.merge_attempt.phase, state.merge_reservation) == ("done", None)
+    assert not Path(binding.worktree_path).exists()
+    assert len(harness.branch.merge_receipts()) == 1

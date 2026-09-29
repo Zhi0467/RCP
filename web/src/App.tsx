@@ -4991,6 +4991,11 @@ export default function App() {
               )
             }
             onRunExperiment={(isolation) => void runExperiment(node, undefined, isolation)}
+            inheritedIsolation={
+              activeBranchEpisode
+                ? { graph_isolation: true, code_worktree: activeBranchEpisode.code_worktree }
+                : null
+            }
             onOpenChat={() => {
               const chatId = ensureConversation(conversations, "node_chat", node, project.name);
               selectChat(chatId);

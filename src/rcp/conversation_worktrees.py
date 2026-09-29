@@ -413,13 +413,20 @@ def integration_instruction(
         "target_branch": option.target_branch,
         "target_checked_out_in_shared_checkout": facts.get("target_checked_out", False),
     }
+    # An episode merge is dispatched to resolve conflicts; chat Integrate refuses them.
+    conflicts = (
+        ". Resolve merge conflicts in place, keeping both sides' intent, and conclude the "
+        "merge commit"
+        if facts.get("resolve_conflicts")
+        else ", or a merge conflicts"
+    )
     instruction = (
         "RCP-authored integration requested by the human: "
         + option.label
         + ".\n"
         + json.dumps(context, ensure_ascii=False, indent=2)
         + "\nRecheck Git state before making changes. Stop and report a refusal if the worktree "
-        "is dirty, a branch or checkout changed, or a merge conflicts. Never reset, stash, "
+        f"is dirty, a branch or checkout changed{conflicts}. Never reset, stash, "
         "auto-commit dirty changes, force-push, delete branches, or remove worktrees. "
         "Task completion alone is not integration. Report the actual Git outcome.\n"
     )

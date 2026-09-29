@@ -253,7 +253,9 @@ Human-dispatched Merge reserves the isolation owner before any Git write. Every
 admission on that binding checks the reservation, including continuations,
 Resume, Retry, and recovery. It stays held through landing, verification, and
 cleanup. Live turns must settle first. Live or unobservable compute jobs block
-Merge and Remove worktree, even after their watcher stops. RCP never cancels
+Merge and Remove worktree, even after their watcher stops. A scheduler job has
+no registry row, so an active or degraded watcher blocks them on a binding
+with a worktree. RCP never cancels
 these jobs as part of Merge.
 
 Episode Merge may commit the episode worktree's leftovers, respecting Gitignore.

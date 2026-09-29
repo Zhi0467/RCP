@@ -421,6 +421,41 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, code):
         )
 
 
+@pytest.mark.parametrize(
+    "status,worktree,code",
+    [
+        ("active", True, "episode_binding_job_live"),
+        ("degraded", True, "episode_binding_job_unobservable"),
+        ("completed", True, None),
+        # A graph-only binding has no worktree a job could write.
+        ("active", False, None),
+    ],
+)
+def test_merge_job_gate_sees_scheduler_watchers(manifest, tmp_path, status, worktree, code):
+    # A scheduler job has no compute-job row; only its watcher observes it.
+    store, owner, attempt = _merge_owner(manifest, tmp_path)
+    with store.connection() as connection:
+        if worktree:
+            connection.execute(
+                "UPDATE episode_isolations SET binding_json = "
+                "json_set(binding_json, '$.worktree', json('{}')) WHERE owner_episode_id = 'owner'"
+            )
+        connection.execute(
+            "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
+            "origin_task_kind, chat_id, episode_id, execution_host, check_command, log_path, "
+            "cwd, continuation_json, status, created_at) "
+            "VALUES ('w', 'project', 'origin', 'node_chat', 'chat', 'owner', '', 'squeue', "
+            "'/tmp/log', '/tmp', '{}', ?, ?)",
+            (status, store.now()),
+        )
+    if code:
+        with pytest.raises(ValueError) as error:
+            store.reserve_episode_merge("project", "owner", attempt)
+        assert error.value.args == (code,)
+    else:
+        assert store.reserve_episode_merge("project", "owner", attempt).merge_reservation
+
+
 def test_reservation_fences_graph_mutations_without_task(manifest, tmp_path):
     from rcp.api.graph_changes import active_merge
     from rcp.core.transition_models import GraphTargetRef

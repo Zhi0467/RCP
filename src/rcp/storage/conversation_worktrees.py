@@ -182,7 +182,8 @@ class ConversationWorktreeStoreMixin:
             self._require_episode_binding_jobs_quiescent(connection, project_id, owner_episode_id)
             state = state.model_copy(
                 update={
-                    "status": "merging",
+                    # A removed worktree stays removed; only its graph side can merge.
+                    "status": "removed" if state.status == "removed" else "merging",
                     "merge_reservation": attempt.attempt_id,
                     "merge_attempt": attempt,
                 }
@@ -238,18 +239,22 @@ class ConversationWorktreeStoreMixin:
         attempt: EpisodeMergeAttempt | None = None,
         **state_updates,
     ) -> EpisodeIsolationState:
+        saved = self.episode_isolation_state(project_id, owner_episode_id)
         if attempt is None:
-            saved = self.episode_isolation_state(project_id, owner_episode_id)
             if saved is None or saved.merge_attempt is None:
                 raise ValueError("episode_isolation_unavailable")
             attempt = saved.merge_attempt.model_copy(update={"phase": "done"})
+        # A worktree removed earlier stays removed after a later graph-only merge.
+        removed = "remove_worktree" in attempt.cleanup_completed or (
+            saved is not None and saved.status == "removed"
+        )
         return self.update_episode_merge_attempt(
             project_id,
             owner_episode_id,
             expected_attempt_id=expected_attempt_id,
             attempt=attempt,
             merge_reservation=None,
-            status="removed" if "remove_worktree" in attempt.cleanup_completed else "ready",
+            status="removed" if removed else "ready",
             **state_updates,
         )
 

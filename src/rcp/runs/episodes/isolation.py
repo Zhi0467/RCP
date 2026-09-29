@@ -226,7 +226,7 @@ def validate_episode_launch(
         if not merge_launch:
             raise ValueError("episode_merge_reserved")
     if state is None or (
-        state.status != "ready" and not (merge_launch and state.status == "merging")
+        state.status != "ready" and not (merge_launch and state.status in {"merging", "removed"})
     ):
         raise ValueError("episode_isolation_unavailable")
     binding = isolation.worktree

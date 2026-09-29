@@ -196,6 +196,14 @@ async def stream_branch_merge_task(
                 "branch_merge_reconciled",
                 existing_receipt.model_dump(mode="json"),
             )
+            # A restart after a crash between the receipt and the episode's own record.
+            state = execution.store.episode_isolation_state(task.project_id, episode.episode_id)
+            if (
+                state
+                and state.merge_attempt
+                and state.merge_attempt.graph_task_id == task.operation_id
+            ):
+                complete_graph_merge(service, execution.store, episode)
             completed = True
             yield _sse(
                 AgentEvent(

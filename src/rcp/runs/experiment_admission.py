@@ -139,7 +139,7 @@ def proven_reserved_experiment_branch_roots(
 
     reserved: list[tuple[EpisodeRecord, AgentTaskRecord]] = []
     for project in tasks.store.projects():
-        for episode in tasks.store.episodes(project.project_id):
+        for episode in tasks.store.episodes(project.project_id, limit=None):
             if (
                 episode.mode != "experiment_loop"
                 or episode.root_operation_id is None

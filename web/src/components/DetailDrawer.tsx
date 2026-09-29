@@ -75,6 +75,8 @@ interface Props {
   onApplyField?: (changes: Record<string, DraftNodeValue>, fieldKey: string) => void;
   onDecisionChoice?: (selectedOption: string) => void;
   onRunExperiment?: (isolation: EpisodeIsolationChoice) => void;
+  /** On a branch, a new Experiment inherits its owner's isolation; the toggles show it, locked. */
+  inheritedIsolation?: EpisodeIsolationChoice | null;
   onOpenChat: () => void;
   onOpenRelatedNode: (nodeId: string) => void;
   onSelectNode: (nodeId: string) => void;
@@ -144,6 +146,7 @@ export function DetailDrawer({
   onApplyField,
   onDecisionChoice,
   onRunExperiment,
+  inheritedIsolation,
   onOpenChat,
   onOpenRelatedNode,
   onSelectNode,
@@ -596,7 +599,7 @@ export function DetailDrawer({
                         experimentRunBusy ||
                         !experimentControl.ready
                       }
-                      onClick={() => onRunExperiment(isolation)}
+                      onClick={() => onRunExperiment(inheritedIsolation ?? isolation)}
                     >
                       <FlaskConical size={13} />{" "}
                       {experimentRunBusy
@@ -610,7 +613,8 @@ export function DetailDrawer({
                     <label>
                       <input
                         type="checkbox"
-                        checked={isolation.graph_isolation}
+                        checked={(inheritedIsolation ?? isolation).graph_isolation}
+                        disabled={Boolean(inheritedIsolation)}
                         onChange={(event) =>
                           setIsolation({ ...isolation, graph_isolation: event.target.checked })
                         }
@@ -620,7 +624,8 @@ export function DetailDrawer({
                     <label>
                       <input
                         type="checkbox"
-                        checked={isolation.code_worktree}
+                        checked={(inheritedIsolation ?? isolation).code_worktree}
+                        disabled={Boolean(inheritedIsolation)}
                         onChange={(event) =>
                           setIsolation({ ...isolation, code_worktree: event.target.checked })
                         }

@@ -118,6 +118,23 @@ class ComputeJobStoreMixin:
                 if row[0] == "lost"
                 else "episode_binding_job_live"
             )
+        # Scheduler jobs have no registry row; their watcher is the only observer. Only a
+        # worktree can be written by one, so a graph-only binding merges over its watchers.
+        watcher = connection.execute(
+            "SELECT w.status FROM watchers w JOIN episodes e ON e.episode_id = w.episode_id "
+            "JOIN episode_isolations i ON i.project_id = w.project_id "
+            "AND i.owner_episode_id = COALESCE(e.isolation_owner_episode_id, e.episode_id) "
+            "WHERE w.project_id = ? AND i.owner_episode_id = ? "
+            "AND json_extract(i.binding_json, '$.worktree') IS NOT NULL "
+            "AND w.status IN ('active', 'degraded') ORDER BY w.watcher_id LIMIT 1",
+            (project_id, owner_episode_id),
+        ).fetchone()
+        if watcher is not None:
+            raise ValueError(
+                "episode_binding_job_unobservable"
+                if watcher[0] == "degraded"
+                else "episode_binding_job_live"
+            )
 
     def require_episode_binding_jobs_quiescent(
         self, project_id: str, owner_episode_id: str

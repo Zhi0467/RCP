@@ -119,7 +119,9 @@ class EpisodeCodeMerge:
             enabled=True,
         )
         instruction = integration_instruction(
-            self.binding, option, {"target_checked_out": self.target_checked_out}
+            self.binding,
+            option,
+            {"target_checked_out": self.target_checked_out, "resolve_conflicts": True},
         )
         conflicts = "\n".join(f"- `{path}`" for path in self.attempt.conflict_files)
         return f"""
@@ -325,6 +327,23 @@ def _commit_graph(service, store, owner, attempt):
         except RevisionConflict:
             if retry == MAX_BRANCH_MERGE_REBASE_ROUNDS - 1:
                 raise
+
+
+def _graph_receipt(service, store, owner, attempt):
+    """This attempt's canonical graph receipt, if its graph already merged."""
+    binding = store.episode_isolation(owner.project_id, owner.episode_id)
+    if binding is None or binding.graph_branch_id is None:
+        return None
+    context = load_branch_merge_context(
+        service, store, owner, operation_id=attempt.attempt_id, authorized_by=attempt.authorized_by
+    )
+    branch = service.history.branch(
+        owner.episode_id, expected_episode_id=owner.episode_id, expected_project_id=owner.project_id
+    )
+    existing = branch.reconcile_merge_receipt(branch_merge_id(context.metadata))
+    return (
+        existing if existing and existing.provenance.merge_task_id == attempt.attempt_id else None
+    )
 
 
 def _commit_graph_once(service, store, owner, attempt):
@@ -693,7 +712,10 @@ def reconcile_episode_merge(service, store, owner):
             task = store.agent_task(attempt.graph_task_id)
             if task and task.status in {"queued", "running", "pausing"}:
                 return
-            if task and task.status == "succeeded":
+            # A task can fail after writing its graph receipt; that graph did merge.
+            if (task and task.status == "succeeded") or _graph_receipt(
+                service, store, owner, attempt
+            ) is not None:
                 complete_graph_merge(service, store, owner)
                 return store.episode_isolation_state(
                     owner.project_id, owner.episode_id
@@ -710,6 +732,8 @@ def reconcile_episode_merge(service, store, owner):
             attempt.phase == "verified"
             and task
             and task.status in {"failed", "interrupted", "paused"}
+            # A crash can fall after the graph receipt and before the phase that records it.
+            and _graph_receipt(service, store, owner, attempt) is None
         ):
             store.finish_episode_merge(
                 owner.project_id,

@@ -547,7 +547,7 @@ def serialize_episodes(
         return state is None or not state.graph_archived
 
     # Filter before the limit so hidden archived branches do not shrink the list.
-    selected = [episode for episode in store.episodes(project_id, limit=500) if listed(episode)][
+    selected = [episode for episode in store.episodes(project_id, limit=None) if listed(episode)][
         :bounded_limit
     ]
     # Retained archives remain discoverable after newer episodes fill the recent list.
