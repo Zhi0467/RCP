@@ -41,6 +41,7 @@ for script_name, required in (
     ("remote_read_kept_view.py", "def main"),
     ("conversation_worktree.py", "def execute"),
     ("remote_terminate_provider.py", "def terminate_provider"),
+    ("provider_discovery.py", "def discover_provider"),
     ("remote_turn_supervisor.py", "def main"),
 ):
     if required not in _remote_script(script_name):

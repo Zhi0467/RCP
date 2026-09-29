@@ -7,7 +7,6 @@ import os
 import pwd
 import re
 import shlex
-import shutil
 import signal
 import stat
 import subprocess
@@ -63,6 +62,7 @@ from rcp.providers import (
     profile_for,
 )
 from rcp.storage.models import ProviderLoginStateRecord, ProviderReadinessSnapshotRecord
+from rcp.transport.provider_discovery import discover_provider
 from rcp.transport.remote_terminate_provider import ABSENT as REMOTE_PROBE_ABSENT
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import StateUnreachable, _remote_script
@@ -602,20 +602,7 @@ class _PrePromptRuntimeFailure(RuntimeError):
 
 
 def _discover_local_provider(provider: str) -> str | None:
-    discovered = shutil.which(provider)
-    if discovered:
-        # Keep the command path stable across provider-native updates. Native
-        # installers commonly replace a symlink target with a versioned binary;
-        # persisting the resolved target would pin RCP to the old version.
-        return str(Path(discovered))
-    try:
-        account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir)
-    except KeyError:
-        return None
-    candidate = account_home / ".local" / "bin" / provider
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
-    return None
+    return discover_provider(provider, profile_for(provider).install_paths)
 
 
 class _ProbeNoVerdict(subprocess.CompletedProcess):
@@ -892,7 +879,16 @@ class AgentLauncher:
                 )
             installed = True
         elif host:
-            installed_probe = self._probe(host, ["command", "-v", provider])
+            installed_probe = self._probe(
+                host,
+                [
+                    "python3",
+                    "-c",
+                    _remote_script("provider_discovery.py"),
+                    provider,
+                    *profile.install_paths,
+                ],
+            )
             if installed_probe.returncode == 255:
                 return _unreachable_readiness(provider, installed_probe, host=host)
             discovered = installed_probe.stdout.strip().splitlines()

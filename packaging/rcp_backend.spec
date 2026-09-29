@@ -65,6 +65,7 @@ analysis = Analysis(
         (str(REMOTE_TRANSFER_GIT), "rcp/transport"),
         (str(CONVERSATION_WORKTREE), "rcp/transport"),
         (str(REMOTE_TERMINATE_PROVIDER), "rcp/transport"),
+        (str(TRANSPORT_ROOT / "provider_discovery.py"), "rcp/transport"),
         (str(REMOTE_TURN_SUPERVISOR), "rcp/transport"),
         (str(REMOTE_TERMINAL), "rcp/transport"),
         (str(REMOTE_TERMINAL_PROBE), "rcp/transport"),

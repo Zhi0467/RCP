@@ -978,11 +978,15 @@ the account in; it never prints a shell login command. Provider credentials
 never enter a project manifest, provisioning request, prompt, backup, or
 member's desktop credential store.
 
-For execution on the server itself, provider discovery first uses the service
-process `PATH`, then the executing account's conventional
-`~/.local/bin/<provider>` location. This covers provider-native per-user installs
-without borrowing another Linux user's shell configuration. A successful check
-still records and later invokes the resolved absolute executable path.
+Provider discovery uses the same filesystem lookup locally and over SSH: first
+`PATH`, then the executing account's `~/.local/bin/<provider>`, then native
+installation paths declared by that provider's profile (OpenCode declares
+`~/.opencode/bin/opencode`). Local execution uses the process environment; SSH
+execution uses the remote interactive login shell's environment. Home-relative
+locations use the execution account's OS home, not an inherited `HOME` value.
+An explicitly configured executable is checked as given; failure never selects
+another installation. A successful check records and later invokes the absolute
+executable path, preserving symlinks so native updates can replace their targets.
 
 The check always resolves an existing configuration boundary:
 `rcp server provider check --request <request-id>` checks the intended profiles

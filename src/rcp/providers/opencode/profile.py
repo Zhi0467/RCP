@@ -105,6 +105,7 @@ class OpenCodeProfile(ProviderProfile):
     # free OpenCode models need none. No credential failure has been observed.
     id = "opencode"
     label = "OpenCode"
+    install_paths = (".opencode/bin/opencode",)
     usage_profile = "opencode.step.v1"
     native_update = ProviderNativeUpdate(self_update_args=("upgrade",))
     legacy_runtime_id = _RUNTIME_ID
