@@ -165,6 +165,27 @@ class NotificationSender:
             except Exception:
                 _LOG.exception("Notification reconciliation pass failed")
 
+    def observe_episodes(self) -> None:
+        """Baseline and observe every project's local episode health.
+
+        Startup runs this before the API serves: it reads only local state, so
+        an episode that reaches attention once serving begins is a change from
+        the baseline rather than part of it.
+        """
+        if self.startup_effect_fence is not None:
+            self.startup_effect_fence.require_open("notification reconciliation")
+        with self.admission.mutation("notification reconciliation"), self._lock:
+            self._observe_episodes(
+                [project for project in self.store.projects() if project.retired_at is None]
+            )
+
+    def _observe_episodes(self, projects: list[ProjectRecord]) -> None:
+        for project in projects:
+            try:
+                self._recheck_episodes(project)
+            except Exception:
+                _LOG.exception("Could not recheck episode notifications for %s", project.project_id)
+
     def run_pass(self) -> None:
         """Reconcile, qualify the outbox, and send phone notifications."""
         self._run_pass(interruptible=False)
@@ -185,14 +206,8 @@ class NotificationSender:
             active = [project for project in projects if project.retired_at is None]
             # Episode health is local. Observe it for every project before any
             # graph replay, so one slow remote cannot delay another project's
-            # episode baseline or observation.
-            for project in active:
-                try:
-                    self._recheck_episodes(project)
-                except Exception:
-                    _LOG.exception(
-                        "Could not recheck episode notifications for %s", project.project_id
-                    )
+            # episode observation.
+            self._observe_episodes(active)
             # Replaying history is costly, and remote state reads cross SSH,
             # so only projects with an accepted change or a failed pass replay.
             pending = [
@@ -258,10 +273,10 @@ class NotificationSender:
             marker = self.store.notification_graph_marker(project_id)
             first_baseline = self._first_baselines.get(project_id)
             if marker is None or (
-                signalled is not None
-                and first_baseline is not None
-                and signalled <= first_baseline == marker["revision"]
+                signalled is not None and first_baseline is not None and signalled <= first_baseline
             ):
+                # Outbox rows are keyed by item and occurrence, so replaying
+                # boundaries a later pass already delivered enqueues nothing new.
                 marker = self._baseline(
                     project_id, replay, patches, signalled, rewind=marker is not None
                 )

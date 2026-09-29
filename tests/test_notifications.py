@@ -428,6 +428,24 @@ def test_a_late_signal_rewinds_only_a_silent_first_baseline(manifest, tmp_path):
     assert len(store.notification_outbox()) == 1
 
 
+def test_out_of_order_startup_signals_still_deliver_the_earlier_revision(manifest, tmp_path):
+    app, store, project_id, _device = _setup(manifest, tmp_path)
+    sender = app.state.notification_sender
+    service = app.state.catalog.open(project_id)
+    _, first = append_fixture_patch(service, _blocker_patch("blk/first"))
+    _, second = append_fixture_patch(service, _blocker_patch("blk/second"))
+    # Two writers' callbacks run after the append lock is released, so the
+    # later revision can signal first while the first baseline is pending.
+    sender.signal(project_id, second.state.revision)
+    sender.run_pass()
+    assert [row["item_id"] for row in store.notification_outbox()] == ["blk/second"]
+    sender.signal(project_id, first.state.revision)
+    sender.run_pass()
+    assert {row["item_id"] for row in store.notification_outbox()} == {"blk/first", "blk/second"}
+    assert len(store.notification_outbox()) == 2
+    assert store.notification_graph_marker(project_id)["revision"] == second.state.revision
+
+
 def test_stop_yields_between_projects_after_every_episode_baseline(manifest, tmp_path, monkeypatch):
     app, store, project_id, _device = _setup(manifest, tmp_path)
     other = "other-project"
@@ -537,6 +555,9 @@ def test_startup_serves_while_graph_reconciliation_is_blocked(
         try:
             assert entered.wait(5), "startup did not begin graph reconciliation"
             assert serving.wait(5), "API startup waited for the remote graph"
+            # Episode health is local, so its baseline precedes serving even
+            # while the graph read is still blocked.
+            assert store.notification_project_baseline(project_id) is not None
         finally:
             release.set()
         health, pending = request.result(timeout=10)

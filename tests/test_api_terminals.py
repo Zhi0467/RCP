@@ -200,21 +200,16 @@ def test_remote_probe_failure_is_projected_without_launch(
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
     with client:
-        # After startup: its notification replay reloads the manifest from disk.
-        manifest = app.state.catalog.open(project_id).manifest
-        manifest.machines.append(MachineConfig(alias="remote", host="compute.example"))
-        manifest.repositories.append(
-            RepositoryConfig(alias="remote-repo", machine="remote", path="/srv/repo")
-        )
-        refused = client.post(path, json={"repository_id": "remote-repo"})
+        _register_remote(app, project_id)
+        refused = client.post(path, json={"repository_id": "remote-0"})
         assert refused.status_code == 409
         response = client.get(f"{path}/repositories")
         assert response.status_code == 200, response.text
         repositories = {item["repository_id"]: item for item in response.json()}
         assert repositories["paper-repo"]["path"] == str(tmp_path / "repo")
-        remote = repositories["remote-repo"]
+        remote = repositories["remote-0"]
         assert remote["eligible"] is False
-        assert remote["path"] == "/srv/repo"
+        assert remote["path"] == "/srv/repo-0"
         assert remote["probe_state"] == state
         assert remote["containment"] is None
         assert remote["unavailable_reason"] == diagnostic == refused.json()["detail"]
@@ -704,7 +699,11 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
 
 
 def _register_remote(app, project_id, *, repositories=1):
-    # Call inside `with client:`; startup's notification replay reloads the manifest.
+    # Call inside `with client:`. The sender's first pass after startup replays
+    # the graph and reloads the manifest from disk, so wait for it before
+    # changing the loaded manifest in memory.
+    store = app.state.background_tasks.store
+    wait_until(lambda: store.notification_graph_marker(project_id))
     manifest = app.state.catalog.open(project_id).manifest
     machine = MachineConfig(alias="remote", host="compute.example")
     manifest.machines.append(machine)
