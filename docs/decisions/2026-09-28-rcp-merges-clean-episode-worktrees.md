@@ -1,7 +1,7 @@
 # RCP merges clean episode worktrees
 
-Date: 2026-09-28. Status: active. Plan in the
-[episode isolation handoff](../handoffs/handoff-2026-09-28-episode-isolation.md).
+Date: 2026-09-28. Status: active. Current behavior is in the
+[auto-research and branch merge spec](../specs/auto-research-and-branch-merge.md).
 
 ## Decision
 

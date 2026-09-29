@@ -1,8 +1,6 @@
 # Active implementation handoffs
 
-- [Episodes run isolated, and a branch view shows the graph diff](handoff-2026-09-28-episode-isolation.md)
-  — design confirmed and reviewed 2026-09-28; slices 1–7 implemented.
-  Real provider runs with both toggles on remain.
+There are no active handoffs.
 
 ## Open live checks
 
