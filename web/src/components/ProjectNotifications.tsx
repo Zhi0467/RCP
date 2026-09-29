@@ -16,12 +16,14 @@ export const NOTIFICATION_KINDS: Array<{ kind: NotificationKind; label: string }
 
 interface Props {
   projectId: string;
-  disabled: boolean;
   api: <T>(path: string, init?: RequestInit) => Promise<T>;
 }
 
-/** The calling member's notification toggles for one project. */
-export function ProjectNotifications({ projectId, disabled, api }: Props) {
+/**
+ * The calling member's notification toggles for one project. They are
+ * member-owned, so a project's write fence never disables them.
+ */
+export function ProjectNotifications({ projectId, api }: Props) {
   const [preferences, setPreferences] = useState<NotificationPreferences | null>(null);
   const [error, setError] = useState<string | null>(null);
   const path = `/api/projects/${encodeURIComponent(projectId)}/notifications`;
@@ -67,7 +69,7 @@ export function ProjectNotifications({ projectId, disabled, api }: Props) {
             <input
               type="checkbox"
               checked={preferences?.[kind] ?? false}
-              disabled={disabled || preferences === null}
+              disabled={preferences === null}
               onChange={(event) => void toggle(kind, event.target.checked)}
             />
             {label}

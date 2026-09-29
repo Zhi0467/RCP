@@ -345,3 +345,17 @@ def test_delivery_drops_changed_observation_even_within_same_kind(tmp_path):
     assert [row["notification_id"] for row in sender.pending_desktop(device["device_id"])] == [
         after[0]["notification_id"]
     ]
+
+
+def test_signal_does_not_wait_for_a_running_pass(manifest, tmp_path):
+    import threading
+
+    app, _store, project_id, _device = _setup(manifest, tmp_path)
+    sender = app.state.notification_sender
+    signalled = threading.Event()
+    with sender._lock:
+        # A pass holds this lock across remote reads and push requests.
+        threading.Thread(
+            target=lambda: (sender.signal(project_id), signalled.set()), daemon=True
+        ).start()
+        assert signalled.wait(5)

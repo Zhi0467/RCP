@@ -98,6 +98,9 @@ class NotificationSender:
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
+        # Guards only the dirty set, so an accepted transition's signal never
+        # waits behind a pass's remote reads or push requests.
+        self._dirty_lock = threading.Lock()
         # None means every project: a new owner has not reconciled any yet.
         # A project leaves the set only after its reconciliation succeeds.
         self._dirty: set[str] | None = None
@@ -118,10 +121,13 @@ class NotificationSender:
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def signal(self, project_id: str) -> None:
-        with self._lock:
+    def _mark_dirty(self, project_id: str) -> None:
+        with self._dirty_lock:
             if self._dirty is not None:
                 self._dirty.add(project_id)
+
+    def signal(self, project_id: str) -> None:
+        self._mark_dirty(project_id)
         self._wake.set()
 
     def _run(self) -> None:
@@ -141,8 +147,9 @@ class NotificationSender:
         if self.startup_effect_fence is not None:
             self.startup_effect_fence.require_open("notification reconciliation")
         with self.admission.mutation("notification reconciliation"), self._lock:
-            dirty = self._dirty
-            self._dirty = set()
+            with self._dirty_lock:
+                dirty = self._dirty
+                self._dirty = set()
             for project in self.store.projects():
                 if project.retired_at is not None:
                     continue
@@ -159,7 +166,7 @@ class NotificationSender:
                 try:
                     self.reconcile_project(project.project_id)
                 except Exception:
-                    self._dirty.add(project.project_id)
+                    self._mark_dirty(project.project_id)
                     # Inaccessible canonical state is not empty attention.
                     _LOG.warning(
                         "Could not reconcile graph notifications for %s",
@@ -427,7 +434,9 @@ class NotificationSender:
             if row["kind"] in _GRAPH_KINDS:
                 # A dirty project's marker may predate an accepted change that
                 # resolved this item; hold it until reconciliation runs.
-                if self._dirty is None or row["project_id"] in self._dirty:
+                with self._dirty_lock:
+                    held = self._dirty is None or row["project_id"] in self._dirty
+                if held:
                     continue
                 # The marker holds the attention of the last reconciled
                 # revision, so a pull never replays canonical history.

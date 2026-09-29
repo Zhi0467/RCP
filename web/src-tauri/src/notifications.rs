@@ -192,7 +192,10 @@ async fn poll_all(app: &AppHandle) {
     let state = app.state::<NotificationState>().inner().clone();
     let pending_click = state.lock().pending_click.take();
     if let Some((space, link)) = pending_click {
-        open(app, &space, &link);
+        // A click that launched the app waits until its space can be reached.
+        if !open(app, &space, &link) {
+            state.lock().pending_click.get_or_insert((space, link));
+        }
     }
     let spaces: Vec<Space> = {
         let inner = state.lock();
@@ -387,13 +390,9 @@ fn handle_event(kind: &str, adapter_id: &str, text: &str) {
             let Some(space) = adapter_id.split('|').next().and_then(Space::from_key) else {
                 return;
             };
-            if text.starts_with("#/") {
-                if app.state::<BackendState>().status().is_ok() {
-                    open(app, &space, text);
-                } else {
-                    // A click that launched the app waits for the backend.
-                    state.lock().pending_click = Some((space, text.to_string()));
-                }
+            if text.starts_with("#/") && !open(app, &space, text) {
+                // The poller retries until the backend or team is reachable.
+                state.lock().pending_click = Some((space, text.to_string()));
             }
         }
         "posted" | "error" => {
@@ -416,7 +415,9 @@ fn handle_event(kind: &str, adapter_id: &str, text: &str) {
     }
 }
 
-fn open(app: &AppHandle, space: &Space, link: &str) {
+/// Navigate to the item and show the window; false when the space is not
+/// reachable yet, so the caller keeps the click.
+fn open(app: &AppHandle, space: &Space, link: &str) -> bool {
     let origin = match space {
         Space::Personal => app
             .state::<BackendState>()
@@ -429,13 +430,16 @@ fn open(app: &AppHandle, space: &Space, link: &str) {
                 Url::parse(&session.connection.local_origin).map_err(|error| error.to_string())
             }),
     };
-    if let (Ok(mut target), Some(window)) = (origin, app.get_webview_window("main")) {
-        target.set_fragment(Some(link.trim_start_matches('#')));
-        if let Err(error) = window.navigate(target) {
-            eprintln!("[rcp] a notification could not open its item: {error}");
-        }
+    let (Ok(mut target), Some(window)) = (origin, app.get_webview_window("main")) else {
+        return false;
+    };
+    target.set_fragment(Some(link.trim_start_matches('#')));
+    if let Err(error) = window.navigate(target) {
+        eprintln!("[rcp] a notification could not open its item: {error}");
+        return false;
     }
     crate::verify_then_prepare_show(app.clone(), "notification");
+    true
 }
 
 async fn adapter_reply(app: &AppHandle, id: &str, send: impl FnOnce()) -> Result<(), String> {

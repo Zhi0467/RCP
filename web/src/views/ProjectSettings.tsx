@@ -857,12 +857,7 @@ export function ProjectSettings({
         )}
       </section>
 
-      <ProjectNotifications
-        key={`notifications:${project.id}`}
-        projectId={project.id}
-        disabled={writesDisabled}
-        api={api}
-      />
+      <ProjectNotifications key={`notifications:${project.id}`} projectId={project.id} api={api} />
 
       <section className="settings-section compute-settings">
         <header>
