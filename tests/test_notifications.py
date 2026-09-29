@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 from rcp.core.models import Patch
 from rcp.notifications import NotificationSender
@@ -355,8 +358,6 @@ def test_delivery_drops_changed_observation_even_within_same_kind(tmp_path):
 
 
 def test_signals_and_pulls_do_not_wait_for_a_running_pass(manifest, tmp_path):
-    import threading
-
     app, _store, project_id, device = _setup(manifest, tmp_path)
     sender = app.state.notification_sender
     done = threading.Event()
@@ -371,3 +372,86 @@ def test_signals_and_pulls_do_not_wait_for_a_running_pass(manifest, tmp_path):
             daemon=True,
         ).start()
         assert done.wait(5)
+
+
+@pytest.mark.parametrize("restarting", [False, True])
+def test_startup_serves_while_graph_reconciliation_is_blocked(
+    manifest, tmp_path, monkeypatch, restarting
+):
+    app, store, project_id, device = _setup(manifest, tmp_path)
+    service = app.state.catalog.open(project_id)
+    if restarting:
+        app.state.notification_sender.run_pass()
+    _append(app, service, _blocker_patch("blk/before-startup"))
+    if restarting:
+        app.state.notification_sender.run_pass()
+        assert len(store.notification_outbox()) == 1
+        _append(
+            app,
+            service,
+            Patch(
+                kind="refresh",
+                author="agent",
+                summary="Resolve attention while the sender is down",
+                run_truth_scope=["repo-a"],
+                repositories_read=["repo-a"],
+                ops=[
+                    {
+                        "op": "update_nodes",
+                        "nodes": [{"id": "blk/before-startup", "changes": {"status": "resolved"}}],
+                    }
+                ],
+            ),
+        )
+    # A fresh application must reconcile existing history before delivering it,
+    # but a remote graph read must not hold its health endpoint closed.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    sender = app.state.notification_sender
+    entered = threading.Event()
+    release = threading.Event()
+    serving = threading.Event()
+    open_project = app.state.catalog.open
+
+    def slow_open(identifier):
+        entered.set()
+        assert release.wait(10), "graph read was not released"
+        return open_project(identifier)
+
+    monkeypatch.setattr(app.state.catalog, "open", slow_open)
+
+    def serve():
+        with TestClient(app) as client:
+            health = client.get("/api/health")
+            pending = client.get(f"/api/notifications/devices/{device['device_id']}/pending")
+            serving.set()
+            assert release.wait(10), "test did not finish checking startup"
+            return health, pending
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        request = executor.submit(serve)
+        try:
+            assert entered.wait(5), "startup did not begin graph reconciliation"
+            assert serving.wait(5), "API startup waited for the remote graph"
+        finally:
+            release.set()
+        health, pending = request.result(timeout=10)
+
+    assert health.status_code == 200
+    assert health.json()["status"] == "ok"
+    assert pending.status_code == 200
+    assert pending.json() == []
+    assert not sender.is_running()
+    marker = store.notification_graph_marker(project_id)
+    assert marker is not None
+    assert marker["revision"] == service.history.materialize(write_outputs=False).state.revision
+    # Old attention is a silent first baseline; stale queued attention after a
+    # restart is dropped once the resolution has been reconciled.
+    assert sender.pending_desktop(device["device_id"]) == []
+    assert store.notification_outbox() == []
+    _append(app, service, _blocker_patch("blk/after-startup"))
+    sender.run_pass()
+    [row] = store.notification_outbox()
+    assert row["item_id"] == "blk/after-startup"
+    assert [item["notification_id"] for item in sender.pending_desktop(device["device_id"])] == [
+        row["notification_id"]
+    ]

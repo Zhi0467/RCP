@@ -1736,9 +1736,6 @@ def create_app(
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
-                # Baselines before serving; phone sends wait for the sender loop
-                # so a slow push service cannot hold the API closed.
-                await asyncio.to_thread(notification_sender.run_pass, deliver=False)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()
                 notification_sender.start()

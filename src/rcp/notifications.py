@@ -113,8 +113,8 @@ class NotificationSender:
         if self.is_running():
             return
         self._stop.clear()
-        # The first loop pass runs now, so a startup pass that skipped phone
-        # sends is followed promptly by one that makes them.
+        # Reconcile immediately in the sender thread: remote graph reads must
+        # not delay API readiness. Dirty projects remain held during the pass.
         self._wake.set()
         self._thread = threading.Thread(target=self._run, name="rcp-notifications", daemon=True)
         self._thread.start()

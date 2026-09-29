@@ -8,9 +8,11 @@ Auto-research orchestration and episode graph branches are in
 ## Human notification observations
 
 Notification reconciliation is independent of graph watchers. Every main
-target reconciles accepted attention boundaries at startup and after accepted
-main transitions, even while no member wants graph notifications, so turning a
-kind on never replays old attention; a failed attempt retries on the next
+target reconciles accepted attention boundaries in the sender thread immediately
+after startup and after accepted main transitions. Remote graph reads never
+block API readiness. Reconciliation runs even while no member wants graph
+notifications, so turning a kind on never replays old attention; a failed attempt
+retries on the next
 sender pass, and a pass with no change replays nothing. Graph items of a
 project awaiting reconciliation are held, not delivered. An unreachable
 canonical project produces no observation. The notification marker

@@ -197,7 +197,7 @@ def test_served_desktop_register_attention_pull_and_ack(manifest, tmp_path, capl
         try:
             wait_until(lambda: server.started)
             wait_until(lambda: app.state.startup_effect_runtime_event.is_set())
-            assert store.notification_graph_marker(project_id) is not None
+            wait_until(lambda: store.notification_graph_marker(project_id))
             with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
                 registered = client.post("/api/notifications/devices/desktop", json={})
                 assert registered.status_code == 200
