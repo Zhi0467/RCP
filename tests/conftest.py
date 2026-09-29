@@ -71,9 +71,9 @@ def unconfigured_local_providers(
     that needs a real child process stages its own stub through
     `sys.executable`.
 
-    `real_provider_discovery` opts a test out. It is for the unit tests of the
-    helper itself, which already stub `shutil.which` and `pwd.getpwuid`, so
-    they reach no installed binary either.
+    `real_provider_discovery` opts a test out. It is for the tests of discovery
+    itself, which replace `PATH` and the OS account home, in this process and
+    in any subprocess they run, so they reach no installed binary either.
     """
 
     if request.node.get_closest_marker("real_provider_discovery"):

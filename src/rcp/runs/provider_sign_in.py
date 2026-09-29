@@ -169,7 +169,8 @@ class ProviderSignInRunner:
 
         The account must be a space machine. A project's saved provider path on
         that host is used when one exists (the first, as `provider_path_sources`
-        orders them); otherwise the machine's PATH resolves the provider.
+        orders them); otherwise the same discovery readiness uses resolves the
+        provider on that machine, so a native install off PATH still signs in.
         """
 
         card = self.store.space_machine_for(host) if host else None
@@ -190,7 +191,11 @@ class ProviderSignInRunner:
         binary = sources[0].path if sources else None
         if binary is None:
             # Read through the module so the suite's discovery seam covers sign-in too.
-            binary = provider if host else launcher_module._discover_local_provider(provider)
+            binary = (
+                self.launcher.discover_provider(provider, host=host)
+                if host
+                else launcher_module._discover_local_provider(provider)
+            )
         if binary is None:
             raise ProviderLoginRefused(f"{profile_for(provider).label} executable was not found.")
         return binary, binaries

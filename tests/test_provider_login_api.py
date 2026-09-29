@@ -290,8 +290,17 @@ def test_a_space_machine_no_project_uses_can_be_signed_in(tmp_path, monkeypatch)
             host=host, reachable=True, os_account=reached["account"]
         ),
     )
-    # With no project path saved, the machine's PATH resolves the provider.
-    assert runner.provider_binary("codex", "gpu.example") == ("codex", set())
+    # With no project path saved, the machine's own discovery resolves the
+    # provider, so an install off the login shell's PATH still signs in.
+    monkeypatch.setattr(
+        launcher,
+        "discover_provider",
+        lambda provider, *, host: f"/home/{reached['account']}/.local/bin/{provider}",
+    )
+    assert runner.provider_binary("codex", "gpu.example") == (
+        "/home/alice/.local/bin/codex",
+        set(),
+    )
     with pytest.raises(ProviderLoginRefused):
         runner.provider_binary("codex", "unknown.example")
     # SSH configuration now lands on another account; its provider state is not the card's.

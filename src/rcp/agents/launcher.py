@@ -879,21 +879,10 @@ class AgentLauncher:
                 )
             installed = True
         elif host:
-            installed_probe = self._probe(
-                host,
-                [
-                    "python3",
-                    "-c",
-                    _remote_script("provider_discovery.py"),
-                    provider,
-                    *profile.install_paths,
-                ],
-            )
+            installed_probe, candidate = self._discover_remote_provider(provider, host)
             if installed_probe.returncode == 255:
                 return _unreachable_readiness(provider, installed_probe, host=host)
-            discovered = installed_probe.stdout.strip().splitlines()
-            candidate = discovered[-1] if installed_probe.returncode == 0 and discovered else None
-            installed = bool(candidate and PurePosixPath(candidate).is_absolute())
+            installed = candidate is not None
         else:
             candidate = _discover_local_provider(provider)
             installed = candidate is not None
@@ -903,6 +892,13 @@ class AgentLauncher:
                 f"No {provider} executable is recorded; the CLI is not installed "
                 f"or discoverable{where}."
             )
+            if host and installed_probe.returncode != 1:
+                # The shipped discovery answers 0 or 1. Anything else means it
+                # did not run: no python3, or a login shell that broke it.
+                detail = _meaningful_stderr(installed_probe.stderr) or (
+                    f"exit status {installed_probe.returncode}"
+                )
+                reason = f"Provider discovery could not run on {host}: {detail}"
             return ProviderReadiness(
                 provider=provider,
                 label=profile.label,
@@ -1850,6 +1846,35 @@ class AgentLauncher:
             capability=capability,
             provider_version=provider_version,
         )
+
+    def _discover_remote_provider(
+        self, provider: str, host: str
+    ) -> tuple[subprocess.CompletedProcess[str], str | None]:
+        """Run the shipped discovery on the host; the candidate is its last stdout line."""
+        probe = self._probe(
+            host,
+            [
+                "python3",
+                "-c",
+                _remote_script("provider_discovery.py"),
+                provider,
+                *profile_for(provider).install_paths,
+            ],
+        )
+        discovered = probe.stdout.strip().splitlines()
+        candidate = discovered[-1] if probe.returncode == 0 and discovered else None
+        if candidate is not None and not PurePosixPath(candidate).is_absolute():
+            candidate = None
+        return probe, candidate
+
+    def discover_provider(self, provider: str, *, host: str) -> str | None:
+        """The executable an unconfigured launch on this account would run.
+
+        None when nothing is discoverable, or when the host did not answer.
+        """
+        if not host:
+            return _discover_local_provider(provider)
+        return self._discover_remote_provider(provider, host)[1]
 
     @staticmethod
     def _probe(

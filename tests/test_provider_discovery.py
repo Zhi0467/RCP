@@ -44,6 +44,16 @@ def discover() -> str | None:
     return provider_discovery.discover_provider("opencode", profile_for("opencode").install_paths)
 
 
+def isolated_script(account: Path, source: str, *arguments: str) -> list[str]:
+    """Run shipped discovery under a fake OS account, so no human home is searched."""
+    prelude = (
+        "import pwd, types; "
+        f"pwd.getpwuid = lambda _: types.SimpleNamespace(pw_dir={str(account)!r}); "
+        f"exec(compile({source!r}, '<remote>', 'exec'))"
+    )
+    return [sys.executable, "-c", prelude, *arguments]
+
+
 @pytest.mark.parametrize("host", ["", "execution.example"])
 def test_native_install_is_ready_without_path_or_symlink(
     account: Path, monkeypatch: pytest.MonkeyPatch, host: str
@@ -54,13 +64,7 @@ def test_native_install_is_ready_without_path_or_symlink(
         # transport and OS account database so no human account is touched.
         def probe(_host: str, command: list[str], **_kwargs):
             if command[:2] == ["python3", "-c"]:
-                source = command[2]
-                prelude = (
-                    "import pwd, types; "
-                    f"pwd.getpwuid = lambda _: types.SimpleNamespace(pw_dir={str(account)!r}); "
-                    f"exec(compile({source!r}, '<remote>', 'exec'))"
-                )
-                command = [sys.executable, "-c", prelude, *command[3:]]
+                command = isolated_script(account, command[2], *command[3:])
             return subprocess.run(command, capture_output=True, text=True, check=False)
 
         monkeypatch.setattr(AgentLauncher, "_probe", staticmethod(probe))
@@ -117,7 +121,7 @@ def test_shipped_discovery_uses_path_in_a_real_subprocess(
     binary = executable(account / "path-bin/opencode")
     monkeypatch.setenv("PATH", str(binary.parent))
     result = subprocess.run(
-        [sys.executable, "-c", _remote_script("provider_discovery.py"), "opencode"],
+        isolated_script(account, _remote_script("provider_discovery.py"), "opencode"),
         env=os.environ.copy(),
         capture_output=True,
         text=True,
