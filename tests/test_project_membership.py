@@ -152,6 +152,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "episode_reconciliation",
         "terminals",
         "notification_sender",
+        "phone_listener",
     )
     assert services.store is app.state.background_tasks.store
     assert services.catalog is app.state.catalog
