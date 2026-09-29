@@ -115,6 +115,14 @@ that commit before it commits the graph.
 {instruction}
 {write_scope_section(scope)}"""
 
+    def landed_section(self, scope: ProjectWriteScope) -> str:
+        target = self.attempt.target_branch or self.binding.starting_branch
+        return f"""
+## Code merge
+
+This episode's code merge already landed in `{target}`. Leave every repository as it stands.
+{write_scope_section(scope)}"""
+
 
 def episode_code_merge(
     service: ProjectService, store: AppStore, owner: EpisodeRecord
@@ -535,9 +543,6 @@ def merge_episode(
                 preview = _git(store, binding, "merge_preview", target_branch=target)
                 if preview["status"] in {"target_missing", "target_dirty"}:
                     raise ValueError(preview["status"])
-                if preview["status"] == "conflict" and context is None:
-                    # A code-only owner has no merge task to resolve a conflict yet.
-                    raise ValueError("code_residue_needs_merge_task")
                 already_merged = preview["status"] == "already_merged"
                 facts = {key: preview[key] for key in ("source_commit", "target_commit", "tree")}
                 facts["target_branch"] = target

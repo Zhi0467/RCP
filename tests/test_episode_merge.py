@@ -4,18 +4,20 @@ from pathlib import Path
 
 import pytest
 
+from rcp.agents import AgentEvent
 from rcp.core.models import EpisodeIsolation, EpisodeWorktreeBinding
-from rcp.runs.episodes.merge import verify_episode_merge_code
 from rcp.transport import conversation_worktree
 
+from .helpers import wait_for_task
 from .test_branch_merge_api import _create_branch_harness
 from .test_conversation_worktree_git import git
 
 
-def _isolated(harness, tmp_path, *, graph=True):
-    shared = tmp_path / "code"
-    shared.mkdir()
+def _isolated(harness, tmp_path, *, graph=True, shared=None):
+    shared = shared or tmp_path / "code"
+    shared.mkdir(exist_ok=True)
     git(shared, "init", "--initial-branch=main")
+    (shared / ".git" / "info" / "exclude").write_text(".research/\n")
     git(shared, "config", "user.name", "Fixture")
     git(shared, "config", "user.email", "fixture@example.invalid")
     (shared / "file").write_text("base")
@@ -275,13 +277,12 @@ def test_interrupted_phase_reconciles_exact_delivery(
     assert (shared / "file").read_text() == "episode"
 
 
-def test_code_only_owner_merges_without_graph_task(manifest, tmp_path):
+def _code_only_owner(harness):
     import uuid
     from dataclasses import replace
 
     from rcp.core.transition_models import GraphTargetRef
 
-    harness = _create_branch_harness(manifest, tmp_path, change="none")
     owner_id = str(uuid.uuid4())
     owner = harness.episode.model_copy(
         update={
@@ -306,7 +307,12 @@ def test_code_only_owner_merges_without_graph_task(manifest, tmp_path):
         }
     )
     harness.store.create_episode(owner)
-    harness = replace(harness, episode=owner)
+    return replace(harness, episode=owner)
+
+
+def test_code_only_owner_merges_without_graph_task(manifest, tmp_path):
+    harness = _code_only_owner(_create_branch_harness(manifest, tmp_path, change="none"))
+    owner_id = harness.episode.episode_id
     shared, binding = _isolated(harness, tmp_path, graph=False)
     (Path(binding.worktree_path) / "file").write_text("code only")
     revision = harness.service.history.state().revision
@@ -367,56 +373,97 @@ def test_invalid_merge_choices_fail_request_validation(manifest, tmp_path, body)
     assert not harness.branch.merge_receipts()
 
 
-@pytest.mark.parametrize("case", ["merge_task", "squash", "code_only"])
-def test_code_conflict_dispatches_one_code_merge_task(manifest, tmp_path, monkeypatch, case):
-    harness = _create_branch_harness(manifest, tmp_path, change="status")
-    shared, binding = _isolated(harness, tmp_path, graph=case != "code_only")
+def _merge_turn(harness, shared, turns, *, lands=True):
+    async def stream(_provider, _prompt, *, write_dirs, session_id=None, **_kwargs):
+        turns.append(sorted(str(path) for path in write_dirs))
+        state = harness.store.episode_isolation_state(
+            harness.project_id, harness.episode.episode_id
+        )
+        if lands:
+            source = state.merge_attempt.source_commit
+            git(shared, "merge", "--no-ff", "-X", "theirs", "-m", "merge", source)
+        yield AgentEvent(event="session", session_id="code-merge")
+        yield AgentEvent(event="provider_exit", text='{"return_code":0}')
+        yield AgentEvent(event="done")
+
+    return stream
+
+
+def _conflicting(harness, tmp_path, *, graph):
+    # The task resolves the registered repository, so the worktree belongs to it.
+    shared, binding = _isolated(harness, tmp_path, graph=graph, shared=tmp_path / "repo-a")
     (shared / "file").write_text("target change")
-    git(shared, "add", "file")
-    git(shared, "commit", "-m", "target change")
-    target_commit = git(shared, "rev-parse", "HEAD")
+    git(shared, "commit", "-am", "target change")
     (Path(binding.worktree_path) / "file").write_text("episode change")
+    return shared, binding
+
+
+@pytest.mark.parametrize("case", ["lands", "skips", "squash"])
+def test_code_conflict_runs_one_code_merge_task(manifest, tmp_path, monkeypatch, case):
+    harness = _create_branch_harness(manifest, tmp_path, change="status")
+    shared, binding = _conflicting(harness, tmp_path, graph=True)
+    target_commit = git(shared, "rev-parse", "HEAD")
+    revision = harness.service.history.state().revision
+    turns = []
     monkeypatch.setattr(
-        harness.app.state.background_tasks, "_spawn_record", lambda record, *a, **kw: record
+        harness.app.state.launcher,
+        "stream",
+        _merge_turn(harness, shared, turns, lands=case == "lands"),
     )
-    before = {task.operation_id for task in harness.store.episode_tasks(harness.episode.episode_id)}
     response = harness.client.post(
         f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
         json={"history_mode": "squash", "keep_branch_open": False} if case == "squash" else {},
     )
-    # RCP never lands conflicting code itself.
-    assert git(shared, "rev-parse", "HEAD") == target_commit
-    assert not harness.branch.merge_receipts()
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
-    if case != "merge_task":
+    if case == "squash":
         assert response.status_code == 409
-        assert (
-            response.json()["detail"]["code"]
-            == {
-                "squash": "squash_needs_agentless_merge",
-                "code_only": "code_residue_needs_merge_task",
-            }[case]
-        )
+        assert response.json()["detail"]["code"] == "squash_needs_agentless_merge"
         assert state.merge_reservation is None
+        assert git(shared, "rev-parse", "HEAD") == target_commit
         return
     assert response.status_code == 202, response.text
-    tasks = [
-        task
-        for task in harness.store.episode_tasks(harness.episode.episode_id)
-        if task.operation_id not in before
-    ]
-    assert [task.kind for task in tasks] == ["branch_merge"]
-    attempt = state.merge_attempt
-    assert (attempt.phase, attempt.code_by_agent, attempt.conflict_files) == (
-        "agent_merging",
-        True,
-        ["file"],
+    wait_for_task(
+        harness.store,
+        state.merge_attempt.graph_task_id,
+        expect="succeeded" if case == "lands" else "failed",
     )
-    assert attempt.graph_task_id == tasks[0].operation_id
-    assert tasks[0].request["run_on"] == binding.machine
-    episode = harness.store.episode(harness.episode.episode_id)
-    with pytest.raises(ValueError, match="code_landing_unverified"):
-        verify_episode_merge_code(harness.store, episode)
-    # The agent's merge commit lands the exact source commit; then RCP may commit the graph.
-    git(shared, "merge", "--no-ff", "-X", "theirs", "-m", "merge", attempt.source_commit)
-    verify_episode_merge_code(harness.store, episode)
+    # One code turn inside Integrate's roots; the graph needed no provider turn.
+    assert turns == [sorted([str(shared), binding.worktree_path])]
+    if case == "skips":
+        # Code that did not land blocks the graph commit.
+        assert harness.service.history.state().revision == revision
+        assert not harness.branch.merge_receipts()
+        # The next Merge releases the failed attempt and starts a fresh one.
+        again = harness.client.post(
+            f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        )
+        assert again.status_code == 202, again.text
+        retried = harness.store.episode_isolation_state(
+            harness.project_id, harness.episode.episode_id
+        ).merge_attempt
+        assert retried.attempt_id != state.merge_attempt.attempt_id
+        wait_for_task(harness.store, retried.graph_task_id, expect="failed")
+        return
+    assert (shared / "file").read_text() == "episode change"
+    assert harness.branch.merge_receipts()[-1].outcome == "committed"
+    state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
+    assert state.delivered_source_commit == state.merge_attempt.source_commit
+
+
+def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeypatch):
+    harness = _code_only_owner(_create_branch_harness(manifest, tmp_path, change="none"))
+    owner_id = harness.episode.episode_id
+    shared, binding = _conflicting(harness, tmp_path, graph=False)
+    revision = harness.service.history.state().revision
+    turns = []
+    monkeypatch.setattr(harness.app.state.launcher, "stream", _merge_turn(harness, shared, turns))
+    response = harness.client.post(f"/api/projects/{harness.project_id}/episodes/{owner_id}/merge")
+    assert response.status_code == 202, response.text
+    state = harness.store.episode_isolation_state(harness.project_id, owner_id)
+    wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="succeeded")
+    assert turns == [sorted([str(shared), binding.worktree_path])]
+    assert (shared / "file").read_text() == "episode change"
+    assert harness.service.history.state().revision == revision
+    state = harness.store.episode_isolation_state(harness.project_id, owner_id)
+    assert state.delivered_source_commit == state.merge_attempt.source_commit
+    assert state.merge_reservation is None

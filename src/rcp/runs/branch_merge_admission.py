@@ -36,17 +36,26 @@ def start_branch_merge(
     if (
         episode is None
         or episode.project_id != project_id
-        or episode.graph_target.kind != "branch"
-        or episode.graph_target.branch_id != episode.episode_id
+        or episode.graph_target.branch_id not in {None, episode.episode_id}
     ):
+        raise ValueError("branch merge requires its exact owner episode branch")
+    isolation = tasks.store.episode_isolation(project_id, episode.episode_id)
+    if episode.graph_target.kind == "main" and (
+        isolation is None or isolation.graph_branch_id is not None or isolation.worktree is None
+    ):
+        # Only a code-only isolation owner merges without a graph branch.
         raise ValueError("branch merge requires its exact owner episode branch")
     # Branch facts only: a live graph-capable writer blocks the merge; the
     # episode's status, ending, and paused turns do not.
     active_branch_writers = [
         item
-        for item in tasks.store.unsettled_graph_target_tasks(
-            project_id,
-            episode.graph_target,
+        for item in (
+            []
+            if episode.graph_target.kind == "main"
+            else tasks.store.unsettled_graph_target_tasks(
+                project_id,
+                episode.graph_target,
+            )
         )
         if item.kind != "branch_merge"
         and item.status in {"queued", "running", "pausing"}

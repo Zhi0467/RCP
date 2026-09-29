@@ -371,8 +371,10 @@ main graph transition. A checked-out target uses a real merge in the clean
 shared checkout. An unchecked-out target uses the tested tree and a
 compare-and-swap ref update. Source and target commits and checkout identity
 are rechecked before landing. RCP never resets, stashes, or force-pushes.
-Code conflicts refuse with `code_residue_needs_merge_task` in this slice.
-Graph residue keeps the existing graph merge task and its correction loop.
+A code conflict or graph residue starts one merge task. Its agent lands the
+code with a merge commit inside chat Integrate's local-merge scope, and RCP
+verifies the landing before the graph commit. A code-only owner's task has no
+graph side. Squash needs an agentless merge.
 
 History defaults to a merge commit (`--no-ff`). Squash records its resulting
 commit and disallows Keep branch open. Verification proves source ancestry or

@@ -231,7 +231,6 @@ class AgentTaskStoreMixin:
             or not record.visible
             or record.parent_operation_id is not None
             or record.authorized_by is None
-            or record.graph_target.kind != "branch"
         ):
             raise ValueError("a branch merge requires one visible attributed branch root task")
         authority = record.dispatch_authority
@@ -266,8 +265,10 @@ class AgentTaskStoreMixin:
                 if episode is None:
                     raise KeyError(record.episode_id)
                 stored_episode = self._episode_record(episode)
+                code_only = record.graph_target.kind == "main"
                 if (
-                    stored_episode.graph_target.branch_id != stored_episode.episode_id
+                    stored_episode.graph_target.branch_id
+                    != (None if code_only else stored_episode.episode_id)
                     or stored_episode.project_id != record.project_id
                     or stored_episode.graph_target != record.graph_target
                 ):
@@ -275,7 +276,8 @@ class AgentTaskStoreMixin:
                 # A branch merges on branch facts: nothing about the episode's
                 # status, ending, or paused turns is a condition, and merging ends
                 # nothing. The only writers that matter are live graph-capable tasks.
-                if any(
+                # A code-only merge writes no graph, so main's writers are not in its way.
+                if not code_only and any(
                     task.kind != "branch_merge"
                     and task.status in {"queued", "running", "pausing"}
                     and task_graph_capable(task.kind, task.request)
@@ -313,10 +315,10 @@ class AgentTaskStoreMixin:
                 "FROM episode_isolation_states WHERE project_id = ? AND owner_episode_id = ?",
                 (record.project_id, record.episode_id),
             ).fetchone()
-            if (
-                reservation is not None
-                and reservation[0] is not None
-                and reservation[0] != record.operation_id
+            held = reservation[0] if reservation is not None else None
+            # A code-only merge exists only inside its owner's Merge reservation.
+            if (held is not None or record.graph_target.kind == "main") and (
+                held != record.operation_id
             ):
                 raise ValueError("episode_merge_reservation_changed")
         else:

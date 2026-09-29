@@ -87,7 +87,11 @@ def test_merge_over_a_paused_orchestrator_leaves_the_episode_exactly_as_it_was(
     admitted = response.json()
     assert admitted["ending"] is None
     assert admitted["status"] == payload["status"]
-    operation_id = admitted["graph_branch"]["active_merge_task_id"]
+    # An ordinary merge is agentless and has already settled; a conflict is still running.
+    operation_id = (
+        admitted["graph_branch"]["active_merge_task_id"]
+        or admitted["graph_branch"]["latest_successful_merge"]["provenance"]["merge_task_id"]
+    )
     wait_for_task(harness.store, operation_id, expect="failed" if provider_fails else "succeeded")
     episode = harness.store.episode(harness.episode.episode_id)
     assert episode.ending is None

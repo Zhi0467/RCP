@@ -34,6 +34,7 @@ from rcp.agents.branch_merge_prompt import (
     branch_merge_correction_parts,
     branch_merge_rebase_parts,
     branch_merge_task_contract,
+    code_merge_task_contract,
 )
 from rcp.agents.context import _has_ontology_extensions
 from rcp.agents.continuation_prompt import (
@@ -1837,6 +1838,7 @@ async def stream_branch_merge_run(
     before_commit: Callable[[], None] | None = None,
     code_block: str = "",
     code_roots: list[str] | None = None,
+    code_landed: bool = False,
 ) -> AsyncIterator[str]:
     """Run, correct, rebase, and atomically commit one graph-only branch merge.
 
@@ -1859,7 +1861,7 @@ async def stream_branch_merge_run(
     outcome.source_branch_head = context.metadata.head
     outcome.rebased_main_head = context.main_head
 
-    if not code_block and _branch_merge_is_represented(context):
+    if (not code_block or code_landed) and _branch_merge_is_represented(context):
         provenance = branch_merge_provenance(context)
         if before_commit is not None:
             before_commit()
@@ -1909,7 +1911,7 @@ async def stream_branch_merge_run(
                 outcome.diagnostic = exc.message
                 yield _sse(AgentEvent(event="error", text=exc.message))
                 return
-        if not residue and not (code_block and first_turn):
+        if not residue:
             _clear_patch_candidates(stage)
             if first_turn:
                 _stage_merge_context(stage, token, context, round_number=outcome.rebase_rounds)
@@ -2410,6 +2412,69 @@ async def stream_branch_merge_run(
         except (AgentOutputProblem, BranchMergeCandidateProblem, OSError, StateUnavailable) as exc:
             candidate_problem = BranchMergeCandidateProblem(str(exc))
             candidate = None
+
+
+async def stream_code_merge_run(
+    request: RunRequest,
+    launcher: AgentLauncher,
+    *,
+    stage: BranchMergeStage,
+    write_scope: ProjectWriteScope,
+    code_block: str,
+    verify: Callable[[], None],
+    execution: Any | None = None,
+    binary: str | None = None,
+) -> AsyncIterator[str]:
+    """Run one code merge turn with no graph residue, then RCP verifies the landing."""
+
+    if request.provider is None or request.run_on is None:
+        raise ValueError("branch merge request must have a pinned provider and execution machine")
+    contract = code_merge_task_contract(code_block=code_block)
+    contract_path, prompt = _stage_task_contract(
+        stage.local_stage,
+        stage.remote_stage,
+        f"task-{_task_token(execution)}-code-merge.md",
+        contract,
+        execution=execution,
+        role="branch_merge",
+    )
+    _record_agent_launch_receipt(
+        execution,
+        request,
+        prompt=prompt,
+        contract_path=contract_path,
+        remote=bool(write_scope.execution_host),
+        resumed=False,
+        write_scope=write_scope,
+        continuation="initial",
+        extra={
+            "surface": "branch_merge",
+            "mode": "code_merge",
+            "capability": "orchestrate",
+            "network_access": True,
+            "launch_kind": "initial",
+            "round": 0,
+            "write_directory_count": 1 + len(write_scope.repository_roots),
+            "repository_write_root_count": len(write_scope.repository_roots),
+        },
+    )
+    provider, events = _provider_turn(
+        launcher,
+        request,
+        prompt,
+        stage=stage,
+        write_scope=write_scope,
+        execution=execution,
+        binary=binary,
+        session_id=None,
+        required_session_id=None,
+    )
+    async with aclosing(events) as frames:
+        async for frame in frames:
+            yield frame
+    if provider.paused or provider.failed or not provider.completed:
+        raise ValueError("The code merge provider did not complete its turn.")
+    verify()
 
 
 def _require_change_shape(
@@ -3092,7 +3157,7 @@ def _record_merge_launch(
             "branch_id": context.metadata.branch_id,
             "branch_head": context.metadata.head.model_dump(mode="json"),
             "main_head": context.main_head.model_dump(mode="json"),
-            "write_directory_count": 1,
-            "repository_write_root_count": 0,
+            "write_directory_count": 1 + len(write_scope.repository_roots),
+            "repository_write_root_count": len(write_scope.repository_roots),
         },
     )

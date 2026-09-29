@@ -225,18 +225,24 @@ def validate_episode_launch(
         )
         if not merge_launch:
             raise ValueError("episode_merge_reserved")
-        if scope.repository_roots:
-            raise ValueError("episode_isolation_scope_mismatch")
     if state is None or (
         state.status != "ready" and not (merge_launch and state.status == "merging")
     ):
         raise ValueError("episode_isolation_unavailable")
     binding = isolation.worktree
     if binding is None:
+        # A graph-only merge writes no repository.
+        if merge_launch and scope.repository_roots:
+            raise ValueError("episode_isolation_scope_mismatch")
         return
-    if scope.execution_host != binding.execution_host or scope.repository_roots not in (
+    # A merge task that lands code gets chat Integrate's roots; any other launch gets
+    # the worktree alone, or no repository.
+    roots = (
+        [binding.worktree_path, binding.shared_path] if merge_launch else [binding.worktree_path]
+    )
+    if scope.execution_host != binding.execution_host or sorted(scope.repository_roots) not in (
         [],
-        [binding.worktree_path],
+        sorted(roots),
     ):
         raise ValueError("episode_isolation_scope_mismatch")
     _check_grants(store, binding.execution_host, binding.shared_path)

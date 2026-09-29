@@ -124,6 +124,27 @@ not commit anything; RCP revalidates and commits atomically or commits nothing.
 """
 
 
+def code_merge_task_contract(*, code_block: str) -> str:
+    """Describe a merge turn that lands code alone; RCP carries any graph itself."""
+
+    if not code_block:
+        raise ValueError("a code merge contract requires its code merge section")
+    return f"""# RCP episode merge
+
+{PROVIDER_NATIVE_SUBAGENT_LIFETIME}
+
+You are the dedicated merge agent for one human-dispatched episode merge. This turn merges
+the episode's code only. The graph needs no judgment, so RCP carries it itself: write no
+`patch.json`. The turn carries the one repository write boundary in the code merge section
+below, and no graph authority and no authority over project configuration, ontology,
+membership, or Proposal approval.
+{code_block}
+
+When the merge commit is in place, reply with a short summary of how you resolved each
+conflict.
+"""
+
+
 def branch_merge_correction_parts(*, diagnostics_path: str, code: bool = False) -> list[str]:
     """Request one bounded scratch-only correction in the same native session."""
 

@@ -12,9 +12,11 @@ branches, and branch reads accept either episode kind. The API exposes the
 toggles and resolves omitted Auto-research code isolation from eligibility.
 Slice 3, Pre-merge and agentless merge, is implemented in the API. It includes
 owner reservations, job gates, recoverable attempts, Git landing and verification,
-MergePreview, and recorded cleanup. Graph residue keeps the existing graph task;
-code residue refuses until slice 4. Diff and web controls remain in slices 5–6,
-and the closing journey remains in slice 7. The settled choices below are unchanged.
+MergePreview, and recorded cleanup. Slice 4, Merge task with code, is
+implemented: a code conflict or graph residue starts one merge task with
+Integrate's roots, and RCP verifies the landing before the graph commit. Diff
+and web controls remain in slices 5–6, and the closing journey remains in
+slice 7. The settled choices below are unchanged.
 
 Close this handoff when, on disposable data:
 
@@ -178,7 +180,10 @@ commits and the checkout's identity and cleanliness.
   - Its prompt carries the full pre-merge output: the graph residue with
     reasons, the code status, the conflict files, and the merge-tree output.
   - The agent merges the code for the one repository, clean or conflicted, the
-    way Integrate does. It writes only the graph residue ops to `patch.json`.
+    way Integrate does, with a merge commit. Squash needs an agentless merge.
+    It writes only the graph residue ops to `patch.json`. With no graph
+    residue, the code lands in its own turn and the graph then merges with no
+    provider turn; a code-only owner's task has no graph side.
     RCP prepends the clean ops, self-checks, runs the existing correction loop
     (`PATCH_CORRECTION_MAX_ROUNDS`), re-prepares if main moved, and commits
     one main transition or nothing. There is no in-turn Apply to main.
@@ -186,7 +191,7 @@ commits and the checkout's identity and cleanliness.
     comes from the binding.
 - **Verification.** Before the graph commits, RCP checks the code landed: the
   target contains the source commit, or the attempt records the squash commit
-  RCP or the agent made. A graph Patch without landed code fails the task.
+  RCP made. A graph Patch without landed code fails the task.
 - **Interrupted attempts.** A new Merge first reconciles any unfinished
   attempt from its record, squash included, before it runs a fresh pre-merge.
   An uncertain SSH result is reconciled the same way, never guessed.
@@ -337,7 +342,7 @@ Each slice is one Codex implementation pass, reviewed once as it lands.
    leftovers commit, the refusals, the merge-tree operation in the shipped
    script, `MergePreview`, landing (checkout merge or compare-and-swap),
    verification, Squash, and recorded cleanup steps.
-4. **Merge task with code.** The Integrate write scope on the merge launch, the
+4. **Merge task with code — implemented.** The Integrate write scope on the merge launch, the
    combined prompt, and an **audit of the branch-merge prompt and its
    correction prompt**: what each round says and how it is built, now that it
    also carries code state.

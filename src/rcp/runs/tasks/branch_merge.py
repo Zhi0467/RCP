@@ -23,9 +23,14 @@ from rcp.runs.branch_merge import (
     parse_branch_merge_candidate,
     prepare_branch_merge_with_history,
     stream_branch_merge_run,
+    stream_code_merge_run,
 )
 from rcp.runs.branch_merge_context import load_branch_merge_context
-from rcp.runs.episodes.merge import episode_code_merge, verify_episode_merge_code
+from rcp.runs.episodes.merge import (
+    complete_graph_merge,
+    episode_code_merge,
+    verify_episode_merge_code,
+)
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -65,8 +70,8 @@ async def stream_branch_merge_task(
         or task.episode_id != episode.episode_id
         or task.project_id != episode.project_id
         or task.graph_target != episode.graph_target
-        or episode.graph_target.kind != "branch"
-        or episode.graph_target.branch_id != episode.episode_id
+        # A code-only owner has no graph branch; its merge carries code alone.
+        or episode.graph_target.branch_id not in {None, episode.episode_id}
         or task.authorized_by is None
     ):
         yield _sse(
@@ -133,6 +138,36 @@ async def stream_branch_merge_task(
         # A merge orchestrator never carries a provider session into its turn.
         execution.bind_write_scope(write_scope, resumes_native_session=False)
 
+        async def code_turn() -> AsyncIterator[str]:
+            # The agent lands the code in its own turn; RCP verifies before anything else.
+            assert code is not None
+            async with aclosing(
+                stream_code_merge_run(
+                    request,
+                    launcher,
+                    stage=stage,
+                    write_scope=write_scope,
+                    code_block=code.prompt_section(write_scope),
+                    verify=lambda: verify_episode_merge_code(execution.store, episode),
+                    execution=execution,
+                    binary=machine.provider_paths.get(request.provider),
+                )
+            ) as stream:
+                async for frame in stream:
+                    if _event(frame).event != "done":
+                        yield frame
+
+        if episode.graph_target.kind == "main":
+            # A code-only owner has no graph side: one code turn completes the merge.
+            if code is None:
+                raise ValueError("The code merge task has no code to merge.")
+            async for frame in code_turn():
+                yield frame
+            complete_graph_merge(service, execution.store, episode)
+            completed = True
+            yield _sse(AgentEvent(event="done"))
+            return
+
         branch = service.history.branch(
             episode.episode_id,
             expected_episode_id=episode.episode_id,
@@ -176,6 +211,16 @@ async def stream_branch_merge_task(
             yield _sse(AgentEvent(event="done"))
             return
 
+        code_block = code.prompt_section(write_scope) if code else ""
+        code_landed = False
+        if code is not None and not build_deterministic_merge_ops(initial_context)[1]:
+            # Only the code needs judgment, so the graph then merges with no provider
+            # turn, as an agentless merge does.
+            async for frame in code_turn():
+                yield frame
+            code_block = code.landed_section(write_scope)
+            code_landed = True
+
         staged_validator = stage_patch_validation_mailbox(
             local_stage=workspace if remote_stage is None else None,
             remote_stage=remote_stage,
@@ -213,8 +258,9 @@ async def stream_branch_merge_task(
                     outcome=outcome,
                     execution=execution,
                     binary=machine.provider_paths.get(request.provider),
-                    code_block=code.prompt_section(write_scope) if code else "",
+                    code_block=code_block,
                     code_roots=list(write_scope.repository_roots) if code else None,
+                    code_landed=code_landed,
                 )
             ) as stream:
                 async for frame in stream:
@@ -238,8 +284,6 @@ async def stream_branch_merge_task(
             "branch_merge_outcome",
             receipt.model_dump(mode="json"),
         )
-        from rcp.runs.episodes.merge import complete_graph_merge
-
         complete_graph_merge(service, execution.store, episode)
         completed = True
         if receipt.outcome == "committed":
