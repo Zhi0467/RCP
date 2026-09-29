@@ -140,6 +140,14 @@ repository; a graph branch does not create another project home.
 
 ## Project membership and invitations
 
+Notification preferences belong to a member and project. Devices belong to the
+space: a personal desktop device belongs to the local owner, and a team desktop
+device belongs to its registering session. Logout, session revocation, expiry,
+and member removal detach the affected team devices. Delivery does not extend
+session expiry. Before every delivery or retry, current membership and the
+current kind preference must still permit the item; otherwise its queued row is
+dropped. An expired owning session deletes the device and its queued rows.
+
 Joining a team space does not join its projects. Project membership stores
 durable `user_id`s operationally in SQLite and never enters `.research`.
 Creating a project seats the creator. Legacy/memberless projects are claimed by

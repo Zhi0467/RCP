@@ -18,3 +18,18 @@ ledger rows. Do not regenerate it with current code.
 The compatibility test expands a disposable copy, checks that restore accepts
 its independently computed schema digest before migration, verifies SQLite and
 foreign-key integrity, and then checks that current migrations can open it.
+
+`pre-notifications-v27.sqlite3.gz` captures the schema boundary before the
+notification migration, based on worktree HEAD
+`658e56e311d226a66ebae0f25cf600e9a14504e2`. It was reconstructed from an
+empty database created by the slice-2 `AppStore`: drop the six
+`notification_*` tables (outbox before devices), remove migration 28, remove
+all `space_users` and `space_identity` rows, checkpoint, and vacuum. Gzip
+uses `mtime=0`. It contains only schema and migration ledger rows.
+
+Its independently computed raw schema digest is
+`0f0456bec7bb95895d5d7287684b03aa4b97c605fa36ef8fec17459948fbb967`,
+matching the already registered pre-notifications fresh schema. The migration
+test verifies this historical fingerprint before opening a disposable copy,
+then verifies migration 28 and the current restore fingerprint. Do not regenerate
+this boundary with a later schema.

@@ -198,14 +198,14 @@ def test_remote_probe_failure_is_projected_without_launch(
     monkeypatch.setattr("rcp.terminals.backends.TerminalBackend.start", launcher)
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
-    manifest = app.state.catalog.open(project_id).manifest
-    manifest.machines.append(MachineConfig(alias="remote", host="compute.example"))
-    manifest.repositories.append(
-        RepositoryConfig(alias="remote-repo", machine="remote", path="/srv/repo")
-    )
-
     path = f"/api/projects/{project_id}/terminals"
     with client:
+        # After startup: its notification replay reloads the manifest from disk.
+        manifest = app.state.catalog.open(project_id).manifest
+        manifest.machines.append(MachineConfig(alias="remote", host="compute.example"))
+        manifest.repositories.append(
+            RepositoryConfig(alias="remote-repo", machine="remote", path="/srv/repo")
+        )
         refused = client.post(path, json={"repository_id": "remote-repo"})
         assert refused.status_code == 409
         response = client.get(f"{path}/repositories")
@@ -704,6 +704,7 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
 
 
 def _register_remote(app, project_id, *, repositories=1):
+    # Call inside `with client:`; startup's notification replay reloads the manifest.
     manifest = app.state.catalog.open(project_id).manifest
     machine = MachineConfig(alias="remote", host="compute.example")
     manifest.machines.append(machine)
@@ -725,9 +726,9 @@ def test_remote_projection_probes_once_per_machine_and_refreshes(tmp_path, remot
     remote_probe.side_effect = probe
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
-    machine = _register_remote(app, project_id, repositories=2)
     path = f"/api/projects/{project_id}/terminals"
     with client:
+        machine = _register_remote(app, project_id, repositories=2)
         try:
             pending = client.get(f"{path}/repositories").json()[1:]
             assert len(pending) == 2
@@ -773,8 +774,8 @@ def test_remote_projection_uses_probed_os(
     )
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
-    machine = _register_remote(app, project_id)
     with client:
+        machine = _register_remote(app, project_id)
         client.portal.call(app.state.services.terminals.probes.ensure, machine)
         remote = client.get(f"/api/projects/{project_id}/terminals/repositories").json()[-1]
         assert remote["eligible"]
@@ -824,7 +825,6 @@ def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
 
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
-    machine = _register_remote(app, project_id)
     monkeypatch.setattr(
         app.state.catalog,
         "repository_ownership_inventory",
@@ -834,6 +834,7 @@ def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
     )
     path = f"/api/projects/{project_id}/terminals"
     with client:
+        machine = _register_remote(app, project_id)
         opened = _open_terminal(client, path, "remote-0")
         session_id = opened["session_id"]
         assert opened["containment"] == "mirrored"

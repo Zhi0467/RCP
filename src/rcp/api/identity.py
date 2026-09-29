@@ -56,14 +56,14 @@ class IdentityAccess:
             samesite="lax",
         )
 
-    def resolve_team_user(self, request: Request) -> SpaceUserRecord:
+    def resolve_team_user(self, request: Request, *, touch_session: bool = True) -> SpaceUserRecord:
         cached = getattr(request.state, "team_member", None)
         if isinstance(cached, SpaceUserRecord):
             return cached
 
         if self._trusted_principal_resolver is None:
             session = request.cookies.get(TEAM_SESSION_COOKIE)
-            member = self._store.resolve_team_session(session)
+            member = self._store.resolve_team_session(session, touch=touch_session)
             if member is None:
                 raise HTTPException(
                     status_code=401,

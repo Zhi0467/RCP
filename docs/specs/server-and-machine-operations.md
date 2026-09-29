@@ -1214,6 +1214,19 @@ merely because the target was restored.
 
 ## Backup and restore
 
+Notification preferences, desktop devices, per-device outbox attempts, graph
+markers, and episode observations are SQLite operational state. Their schema
+participates in migration, restore fingerprinting, and persistence-boundary
+fixtures. Restore detaches every device and resets notification observations
+so recovered projects establish a quiet baseline. Project transfer discards
+only that project's preferences, outbox, and observations; space devices and
+other projects' notification state remain.
+
+The data-directory owner runs the notification sender after startup recovery
+and release of the startup-effect fence. Maintenance closes its admission and
+drains and stops the loop before capture. Reopening admission resumes it.
+Notification reconciliation never edits canonical graph files.
+
 An unattended backup uses an `age` public recipient stored on the server. By
 default, `backup configure` creates its matching identity once at
 `/etc/rcp/backup-recovery.agekey`, owned by root with mode `0600`, and reuses it

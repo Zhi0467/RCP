@@ -87,6 +87,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (25, "chat_display_v1"),
         (26, "chat_reads_and_pins_v1"),
         (27, "space_machines_v1"),
+        (28, "notifications_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -1962,6 +1963,11 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "chat_session_contexts": 1,
         "chat_display": 0,
         "chat_reads": 0,
+        "notification_preferences": 0,
+        "notification_outbox": 0,
+        "notification_graph_markers": 0,
+        "notification_episode_observations": 0,
+        "notification_project_baselines": 0,
         "chat_pins": 0,
         "conversation_worktrees": 0,
         "compute_jobs": 0,

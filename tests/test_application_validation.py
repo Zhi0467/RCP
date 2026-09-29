@@ -293,6 +293,7 @@ def test_fenced_startup_only_plans_recovery_and_rejects_effect_entrypoints(
     with TestClient(app) as client:
         response = client.get("/api/health")
         assert response.status_code == 200
+        assert not app.state.notification_sender.is_running()
         assert app.state.startup_recovery_plan == {
             "active_operation_ids": (),
             "stopping_experiment_operation_ids": (),
@@ -325,10 +326,13 @@ def test_releasing_the_same_startup_fence_starts_the_deferred_runtime(tmp_path: 
 
     with TestClient(app):
         assert not app.state.startup_effect_runtime_started
+        assert not app.state.notification_sender.is_running()
         fence.release()
         assert app.state.startup_effect_runtime_event.wait(timeout=2)
         assert app.state.startup_effect_runtime_started
         assert app.state.startup_effect_release_error is None
+        assert app.state.notification_sender.is_running()
+    assert not app.state.notification_sender.is_running()
 
 
 def test_candidate_child_refuses_when_overlay_ownership_is_already_held(tmp_path: Path) -> None:

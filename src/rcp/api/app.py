@@ -59,6 +59,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
+from rcp.api.notifications import router as notifications_router
 from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
@@ -93,6 +94,8 @@ from rcp.limits import (
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
+from rcp.notifications import NotificationSender
+from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
 from rcp.provider_skills import ProviderSkillInventoryManager
 from rcp.providers import configured_runtime_id
@@ -1362,6 +1365,16 @@ def create_app(
         )
 
     terminals = TerminalManager(app_data, membership_check=terminal_member_active)
+    notification_sender = NotificationSender(
+        store,
+        catalog,
+        admission=background_admission_gate,
+        startup_effect_fence=startup_effect_fence,
+    )
+    catalog.on_accepted_transition = notification_sender.signal
+    phone_listener = (
+        PhoneListener(store, notification_sender.resolve) if space_kind == "personal" else None
+    )
     services = ApiServices(
         store=store,
         catalog=catalog,
@@ -1384,6 +1397,8 @@ def create_app(
         provider_sign_ins=provider_sign_ins,
         episode_reconciliation=reconcile_episodes,
         terminals=terminals,
+        notification_sender=notification_sender,
+        phone_listener=phone_listener,
     )
 
     async def warm_provider_capabilities() -> None:
@@ -1497,6 +1512,13 @@ def create_app(
 
         watcher_poller.stop()
         graph_watcher_retry_worker.stop(timeout=timeout)
+        notification_sender.stop(timeout=timeout)
+        if phone_listener is not None:
+            phone_listener.stop(timeout=timeout)
+        if notification_sender.is_running():
+            raise MaintenanceRefused(
+                "Timed out stopping notification delivery at the update boundary."
+            )
         if watcher_poller.is_running() or graph_watcher_retry_worker.is_running():
             raise MaintenanceRefused("Timed out stopping watcher polling at the update boundary.")
         loop = runtime_loop[0]
@@ -1527,6 +1549,9 @@ def create_app(
     def resume_update_runtime_owners() -> None:
         graph_watcher_retry_worker.start()
         watcher_poller.start()
+        notification_sender.start()
+        if phone_listener is not None:
+            phone_listener.resume()
 
     if control_server is not None:
         assert target_transfer_upload_coordinator is not None
@@ -1680,8 +1705,14 @@ def create_app(
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
                 await asyncio.to_thread(sweep_graph_conditions_at_startup)
+                # Baselines before serving; phone sends wait for the sender loop
+                # so a slow push service cannot hold the API closed.
+                await asyncio.to_thread(notification_sender.run_pass, deliver=False)
                 graph_watcher_retry_worker.start()
                 watcher_poller.start()
+                notification_sender.start()
+                if phone_listener is not None:
+                    await asyncio.to_thread(phone_listener.resume)
                 if control_server is not None and not control_started:
                     control_server.start()
                     control_started = True
@@ -1755,6 +1786,9 @@ def create_app(
             await asyncio.to_thread(release_check.stop)
             watcher_poller.stop()
             graph_watcher_retry_worker.stop()
+            await asyncio.to_thread(notification_sender.stop)
+            if phone_listener is not None:
+                await asyncio.to_thread(phone_listener.stop)
             background_tasks.shutdown()
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
@@ -1777,6 +1811,7 @@ def create_app(
     app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
     app.state.watcher_poller = watcher_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
+    app.state.notification_sender = notification_sender
     app.state.instance_metadata = identity
     app.state.server_control = control_server
     app.state.space_id = space_id
@@ -1839,6 +1874,10 @@ def create_app(
             "/api/team/credential/revoke",
         }
         path_parts = path.split("/")
+        notification_delivery = path_parts[1:4] == ["api", "notifications", "devices"] and (
+            (request.method == "GET" and len(path_parts) == 6 and path_parts[5] == "pending")
+            or (request.method == "POST" and len(path_parts) == 7 and path_parts[5] == "items")
+        )
         native_team_transfer_path = (
             len(path_parts) == 7
             and path_parts[1:5] == ["api", "native", "project-transfers", "target-requests"]
@@ -1855,7 +1894,7 @@ def create_app(
             and not native_team_transfer_path
         ):
             try:
-                resolve_team_user(request)
+                resolve_team_user(request, touch_session=not notification_delivery)
             except HTTPException as exc:
                 return JSONResponse(
                     status_code=exc.status_code,
@@ -1916,12 +1955,20 @@ def create_app(
                     },
                 )
                 session = getattr(request.state, "team_session", None)
-                if isinstance(session, str) and path not in session_ending_paths:
+                if (
+                    isinstance(session, str)
+                    and path not in session_ending_paths
+                    and not notification_delivery
+                ):
                     set_team_session_cookie(response, session)
                 return response
         response = await call_next(request)
         session = getattr(request.state, "team_session", None)
-        if isinstance(session, str) and path not in session_ending_paths:
+        if (
+            isinstance(session, str)
+            and path not in session_ending_paths
+            and not notification_delivery
+        ):
             set_team_session_cookie(response, session)
         return response
 
@@ -1988,6 +2035,7 @@ def create_app(
     app.include_router(server_status_router)
     app.include_router(update_notice_router)
     app.include_router(team_router)
+    app.include_router(notifications_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
     app.include_router(project_provisioning_router)

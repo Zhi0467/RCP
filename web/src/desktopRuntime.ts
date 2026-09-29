@@ -743,6 +743,21 @@ export async function stopDesktopDictation(sessionId: string): Promise<void> {
   await invokeDesktop("desktop_stop_dictation", { sessionId });
 }
 
+/** Whether this Mac posts this space's notifications; it turns on only from its row. */
+export async function desktopNotificationsEnabled(): Promise<boolean> {
+  if (!isDesktopRuntime()) return false;
+  return invokeDesktop<boolean>("desktop_notifications_enabled");
+}
+
+export async function setDesktopNotifications(enabled: boolean): Promise<void> {
+  await invokeDesktop("desktop_set_notifications", { enabled });
+}
+
+/** Post one local test notification through macOS; resolves with its outcome. */
+export async function testDesktopNotification(): Promise<"posted" | "failed"> {
+  return invokeDesktop<"posted" | "failed">("desktop_test_notification");
+}
+
 export function desktopDownloadPath(result: {
   saved: boolean;
   path?: string | null;
