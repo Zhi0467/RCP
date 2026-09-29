@@ -297,13 +297,12 @@ command argument, a log, an issue, chat, or a project file; RCP never prints it.
 ### OpenCode
 
 Install OpenCode's own build under the `rcp` account. Its installer always
-writes `~/.opencode/bin`, which RCP does not search, so link it into
-`~/.local/bin`; `opencode upgrade` replaces the linked file in place:
+writes `~/.opencode/bin`, which RCP discovers automatically without shell
+startup changes or symlinks:
 
 ```bash
 sudo -u rcp -H /bin/bash -lc \
-  'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path &&
-   mkdir -p ~/.local/bin && ln -sf ~/.opencode/bin/opencode ~/.local/bin/opencode'
+  'curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path'
 ```
 
 OpenCode's free models need no sign-in, so it is ready once installed. RCP does
@@ -312,7 +311,7 @@ no sign-in state, only the command to run. For a model backend that needs a
 key, run it as `rcp`:
 
 ```bash
-sudo -u rcp -H /bin/bash -lc 'opencode providers login'
+sudo -u rcp -H /bin/bash -lc '~/.opencode/bin/opencode providers login'
 ```
 
 ### Verify and sign out

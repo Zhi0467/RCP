@@ -15,7 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from rcp.api.app import create_app
 from rcp.api.dependencies import get_project_service
-from rcp.config import MachineConfig, RepositoryConfig
+from rcp.config import MachineConfig, RepositoryConfig, write_added_machine, write_project_scope
 from rcp.storage import AppStore
 from rcp.terminals import launch
 from rcp.terminals.probe import TerminalProbe
@@ -199,8 +199,8 @@ def test_remote_probe_failure_is_projected_without_launch(
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
+    _register_remote(app, project_id)
     with client:
-        _register_remote(app, project_id)
         refused = client.post(path, json={"repository_id": "remote-0"})
         assert refused.status_code == 409
         response = client.get(f"{path}/repositories")
@@ -699,18 +699,18 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
 
 
 def _register_remote(app, project_id, *, repositories=1):
-    # Call inside `with client:`. The sender's first pass after startup replays
-    # the graph and reloads the manifest from disk, so wait for it before
-    # changing the loaded manifest in memory.
-    store = app.state.background_tasks.store
-    wait_until(lambda: store.notification_graph_marker(project_id))
-    manifest = app.state.catalog.open(project_id).manifest
+    # Persist fixture configuration before startup: background reconciliation
+    # may reload it at any time, just as it does in the served application.
+    service = app.state.catalog.open(project_id)
     machine = MachineConfig(alias="remote", host="compute.example")
-    manifest.machines.append(machine)
-    manifest.repositories.extend(
-        RepositoryConfig(alias=f"remote-{index}", machine=machine.alias, path=f"/srv/repo-{index}")
-        for index in range(repositories)
-    )
+    manifest = write_added_machine(service.manifest, machine)
+    for index in range(repositories):
+        manifest = write_project_scope(
+            manifest,
+            manifest.project.truth_scope,
+            {"alias": f"remote-{index}", "machine": machine.alias, "path": f"/srv/repo-{index}"},
+        )
+    service.history.manifest = manifest
     return machine
 
 
@@ -726,8 +726,8 @@ def test_remote_projection_probes_once_per_machine_and_refreshes(tmp_path, remot
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
     path = f"/api/projects/{project_id}/terminals"
+    machine = _register_remote(app, project_id, repositories=2)
     with client:
-        machine = _register_remote(app, project_id, repositories=2)
         try:
             pending = client.get(f"{path}/repositories").json()[1:]
             assert len(pending) == 2
@@ -773,8 +773,8 @@ def test_remote_projection_uses_probed_os(
     )
     app, client, _store, _people, _acting = _team_app(tmp_path)
     project_id = _create_project(client, tmp_path / "repo")
+    machine = _register_remote(app, project_id)
     with client:
-        machine = _register_remote(app, project_id)
         client.portal.call(app.state.services.terminals.probes.ensure, machine)
         remote = client.get(f"/api/projects/{project_id}/terminals/repositories").json()[-1]
         assert remote["eligible"]
@@ -832,8 +832,8 @@ def test_remote_websocket_distinguishes_link_drop_from_shell_exit(
         ),
     )
     path = f"/api/projects/{project_id}/terminals"
+    machine = _register_remote(app, project_id)
     with client:
-        machine = _register_remote(app, project_id)
         opened = _open_terminal(client, path, "remote-0")
         session_id = opened["session_id"]
         assert opened["containment"] == "mirrored"

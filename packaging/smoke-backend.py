@@ -18,6 +18,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import smoke_agent
+
 LAUNCH_TIMEOUT_SECONDS = 30.0
 HEALTH_TIMEOUT_SECONDS = 30.0
 SHUTDOWN_TIMEOUT_SECONDS = 20.0
@@ -143,6 +145,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="rcp-packaging-smoke-") as temporary:
         data_dir = Path(temporary) / "data"
         environment = _environment(data_dir)
+        environment.update(smoke_agent.prepare(Path(temporary)))
         owner = subprocess.Popen(
             _command(backend, _unused_port()),
             env=environment,
@@ -218,6 +221,8 @@ def main() -> None:
                     f"Second launch did not reuse the exact running backend: {reused_outcome}"
                 )
 
+            smoke_agent.verify(base_url, Path(temporary))
+
             # A PyInstaller one-file executable has a supervising bootloader
             # process. The lock metadata names the Python server process, which
             # is the authority that the desktop Quit path must signal.
@@ -228,7 +233,10 @@ def main() -> None:
                 raise RuntimeError("The packaged backend did not shut down gracefully.") from exc
             shutdown_log = _stderr(owner)
             if (data_dir / "rcp-server.json").exists():
-                raise RuntimeError("The packaged backend left stale ownership metadata.")
+                raise RuntimeError(
+                    f"The packaged backend left stale ownership metadata "
+                    f"(exit {return_code}): {shutdown_log}"
+                )
             expected_termination = return_code == 0 or (
                 return_code == -signal.SIGTERM and "Application shutdown complete." in shutdown_log
             )
@@ -247,6 +255,8 @@ def main() -> None:
                 "backend": str(backend),
                 "result": "passed",
                 "toolchain_path": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "remote_agent": "passed",
+                "remote_repository_preview": "passed",
             },
             sort_keys=True,
         )

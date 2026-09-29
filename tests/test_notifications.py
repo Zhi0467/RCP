@@ -407,7 +407,7 @@ def test_attention_accepted_during_the_first_baseline_read_is_delivered(
     assert len(sender.pending_desktop(device["device_id"])) == 1
 
 
-def test_a_late_signal_rewinds_only_a_silent_first_baseline(manifest, tmp_path):
+def test_a_late_signal_recovers_only_a_silent_first_baseline(manifest, tmp_path):
     app, store, project_id, _device = _setup(manifest, tmp_path)
     sender = app.state.notification_sender
     service = app.state.catalog.open(project_id)
@@ -428,22 +428,53 @@ def test_a_late_signal_rewinds_only_a_silent_first_baseline(manifest, tmp_path):
     assert len(store.notification_outbox()) == 1
 
 
-def test_out_of_order_startup_signals_still_deliver_the_earlier_revision(manifest, tmp_path):
-    app, store, project_id, _device = _setup(manifest, tmp_path)
+@pytest.mark.parametrize("resolved", [False, True])
+def test_late_startup_signal_preserves_newer_delivery(manifest, tmp_path, resolved):
+    app, store, project_id, device = _setup(manifest, tmp_path)
     sender = app.state.notification_sender
     service = app.state.catalog.open(project_id)
+    # The canonical write is visible before its post-commit callback runs.
     _, first = append_fixture_patch(service, _blocker_patch("blk/first"))
+    sender.run_pass()
     _, second = append_fixture_patch(service, _blocker_patch("blk/second"))
-    # Two writers' callbacks run after the append lock is released, so the
-    # later revision can signal first while the first baseline is pending.
     sender.signal(project_id, second.state.revision)
     sender.run_pass()
-    assert [row["item_id"] for row in store.notification_outbox()] == ["blk/second"]
+    [delivered] = sender.pending_desktop(device["device_id"])
+    store.acknowledge_notification(device["device_id"], delivered["notification_id"], posted=True)
+    [receipt] = store.notification_outbox()
+    if resolved:
+        _, resolution = append_fixture_patch(
+            service,
+            Patch(
+                kind="refresh",
+                author="agent",
+                summary="Resolve first attention before its delayed signal",
+                run_truth_scope=["repo-a"],
+                repositories_read=["repo-a"],
+                ops=[
+                    {
+                        "op": "update_nodes",
+                        "nodes": [{"id": "blk/first", "changes": {"status": "resolved"}}],
+                    }
+                ],
+            ),
+        )
+        sender.signal(project_id, resolution.state.revision)
+        sender.run_pass()
+    marker = store.notification_graph_marker(project_id)
     sender.signal(project_id, first.state.revision)
     sender.run_pass()
-    assert {row["item_id"] for row in store.notification_outbox()} == {"blk/first", "blk/second"}
-    assert len(store.notification_outbox()) == 2
-    assert store.notification_graph_marker(project_id)["revision"] == second.state.revision
+    assert store.notification_graph_marker(project_id) == marker
+    pending = sender.pending_desktop(device["device_id"])
+    assert [item["reason"] for item in pending] == ([] if resolved else ["blocker"])
+    rows = store.notification_outbox()
+    assert next(row for row in rows if row["item_id"] == "blk/second") == receipt
+    assert {row["item_id"] for row in rows} == (
+        {"blk/second"} if resolved else {"blk/first", "blk/second"}
+    )
+    sender.signal(project_id, first.state.revision)
+    sender.run_pass()
+    assert store.notification_outbox() == rows
 
 
 def test_stop_yields_between_projects_after_every_episode_baseline(manifest, tmp_path, monkeypatch):

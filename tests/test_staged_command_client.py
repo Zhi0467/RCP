@@ -33,6 +33,8 @@ from rcp.agents.command_protocol import (
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
 
+from .helpers import assert_frozen_backend_ships
+
 
 async def _run_client(staged, *arguments: str) -> tuple[int, str]:
     process = await asyncio.create_subprocess_exec(
@@ -119,15 +121,10 @@ def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
             imports.add(node.module.partition(".")[0])
     assert imports <= sys.stdlib_module_names
     assert "from rcp" not in source
-    root = Path(__file__).resolve().parents[1]
-    sidecar = (root / "packaging" / "rcp_backend.spec").read_text(encoding="utf-8")
-    hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text(
-        encoding="utf-8"
+    assert_frozen_backend_ships(
+        "agents/staged_command_broker.py", "agents/staged_command_client.py"
     )
-    assert "STAGED_COMMAND_BROKER" in sidecar
-    assert "staged_command_broker_source" in hook
     assert "def _atomic_request" in staged_command_client_source()
-    assert '"def _atomic_request"' in hook
 
 
 @pytest.mark.asyncio

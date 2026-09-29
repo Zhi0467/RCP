@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from pydantic import ValidationError
 
 from rcp.artifacts import ResultViewDescriptor, html_preview_document
+
+from .helpers import assert_frozen_backend_ships
 
 
 def _descriptor_values() -> dict[str, object]:
@@ -75,14 +75,7 @@ def test_ordinary_html_preview_uses_a_private_port_for_trusted_actions() -> None
 
 
 def test_selection_runtime_is_included_in_the_frozen_backend() -> None:
-    root = Path(__file__).resolve().parents[1]
-    sidecar = (root / "packaging" / "rcp_backend.spec").read_text()
-    hook = (root / "packaging" / "hooks" / "validate_frozen_resources.py").read_text()
-    assert 'SOURCE_ROOT / "rcp" / "artifact_selection.js"' in sidecar
-    assert '(str(ARTIFACT_SELECTION), "rcp")' in sidecar
-    assert '(str(ARTIFACT_COMMENT_PANEL), "rcp")' in sidecar
-    assert "_selection_script()" in hook
-    assert "_comment_panel_script()" in hook
+    assert_frozen_backend_ships("artifact_selection.js", "artifact_comment_panel.js")
 
 
 def test_result_view_preview_strictly_bridges_bounded_gestures_outward() -> None:

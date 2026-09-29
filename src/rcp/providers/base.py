@@ -324,6 +324,8 @@ class ProviderProfile:
     runtime_choices: tuple[ProviderRuntimeChoice, ...]
     work_like_minimum_version: tuple[int, int, int] | None = None
     native_update: ProviderNativeUpdate
+    #: Native executable locations relative to the execution account's home.
+    install_paths: tuple[str, ...] = ()
     #: How this provider's native session files look; see `remote.py`. None
     #: when RCP does not index its sessions.
     session_format: SessionFormat | None = None

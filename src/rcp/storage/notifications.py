@@ -690,26 +690,12 @@ class NotificationStoreMixin:
             )
             return True
 
-    def rewind_notification_graph_marker(
-        self,
-        project_id: str,
-        target: str,
-        revision: int,
-        attention: dict[str, list[str]],
-    ) -> bool:
-        """Move a marker back to `revision`; only a silent first baseline, which sent nothing, may rewind."""
+    def backfill_notification_graph_attention(self, notifications: list[dict[str, Any]]) -> None:
+        """Recover a silent startup prefix without changing the current graph marker."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            if not self._notification_project_active(connection, project_id):
-                return False
-            updated = connection.execute(
-                """
-                UPDATE notification_graph_markers SET revision=?,transition_id=NULL,
-                attention_json=?,updated_at=? WHERE project_id=? AND target=? AND revision>?
-                """,
-                (revision, json.dumps(attention), self.now(), project_id, target, revision),
-            ).rowcount
-            return bool(updated)
+            for notification in notifications:
+                self.enqueue_notification(connection, **notification)
 
     def notification_episode_observations(self, project_id: str) -> dict[str, dict[str, Any]]:
         with self.connection() as connection:

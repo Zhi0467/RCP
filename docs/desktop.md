@@ -213,12 +213,25 @@ the target-specific sidecar, and assembles:
 web/src-tauri/target/release/bundle/macos/RCP.app
 ```
 
+The frozen backend includes the entire first-party Python package as source and
+package data, including SSH helpers, nested skills, and service templates.
+Packaging generates a SHA-256 inventory from those files and the frontend;
+startup verifies the extracted files against it. Adding a runtime resource inside
+the package does not require another per-file packaging or validation list.
+
 Smoke-test the backend inside that exact bundle:
 
 ```bash
 uv run python packaging/smoke-backend.py \
   web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
 ```
+
+The smoke test also creates a disposable remote project and runs a Discuss turn
+through the served API. It uses isolated SSH and provider test executables to
+exercise the packaged staging scripts and verify a persisted agent answer without
+credentials or a real model request. Candidate CI runs it against the bundled backend.
+PR CI also freezes the backend on Linux and runs this same journey; the macOS
+candidate remains the check for the actual desktop artifact.
 
 Then launch that bundle as above, with a throwaway `RCP_DATA_DIR`, and exercise the desktop workflows affected by
 the candidate. Confirm that the project index opens, a project can be read, provider
