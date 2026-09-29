@@ -334,7 +334,10 @@ unbounded. RCP keeps its own files under `~/.rcp`: remote stages, command and
 SSH control sockets, and temporary files. Two exceptions sit in `/tmp`, and both
 are protected: when a home is too deep for a socket path, sockets use a private
 `/tmp/rcp-<id>` folder named from the home, and a saved legacy `/tmp/rcp-run.*`
-stage still resumes until a later release removes it.
+stage still resumes until a later release removes it. RCP creates `~/.rcp` mode
+700 under any umask. A `~/.rcp` the account owns but others can write, such as
+one an older release made under a 0002 umask, loses that write access on next
+use; one owned by another account is refused.
 
 ## Provider enforcement
 

@@ -14,7 +14,11 @@ def operate(operation: str, path: str, payload: str) -> str | None:
     if operation == "resolve":
         return str(target.expanduser())
     if operation == "prepare":
-        target.mkdir(parents=True, exist_ok=False, mode=0o700)
+        # `parents=True` would give new parents, such as `~/.rcp`, the umask's mode.
+        for parent in reversed(target.parents):
+            if not parent.exists():
+                parent.mkdir(mode=0o700, exist_ok=True)
+        target.mkdir(exist_ok=False, mode=0o700)
         try:
             for name, content in json.loads(payload).items():
                 file = target / name
