@@ -1,47 +1,26 @@
+import json
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+from rcp.frozen_resources import MANIFEST_NAME, resource_manifest
 
 
 PROJECT_ROOT = Path(SPECPATH).parent
 SOURCE_ROOT = PROJECT_ROOT / "src"
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
-ARTIFACT_SELECTION = SOURCE_ROOT / "rcp" / "artifact_selection.js"
-ARTIFACT_COMMENT_PANEL = SOURCE_ROOT / "rcp" / "artifact_comment_panel.js"
-RECORD_PARSER = SOURCE_ROOT / "rcp" / "sources" / "record_parsing.py"
-PROVIDERS_ROOT = SOURCE_ROOT / "rcp" / "providers"
-# Shipped to execution hosts as source text by `rcp.providers.remote_bundle`.
-PROVIDER_REMOTE_SOURCES = [
-    (str(PROVIDERS_ROOT / "session_format.py"), "rcp/providers"),
-    (str(PROVIDERS_ROOT / "turn_fence.py"), "rcp/providers"),
-    *(
-        (str(path), f"rcp/providers/{path.parent.name}")
-        for path in sorted(PROVIDERS_ROOT.glob("*/remote.py"))
-    ),
-]
-STAGED_COMMAND_CLIENT = SOURCE_ROOT / "rcp" / "agents" / "staged_command_client.py"
-STAGED_COMMAND_BROKER = SOURCE_ROOT / "rcp" / "agents" / "staged_command_broker.py"
-TRANSPORT_ROOT = SOURCE_ROOT / "rcp" / "transport"
-# Composed into the shipped lock-holder source by `rcp.transport.state`.
-ARTIFACT_REPLACE = SOURCE_ROOT / "rcp" / "artifact_replace.py"
-REMOTE_LOCK_HOLDER = TRANSPORT_ROOT / "remote_lock_holder.py"
-REMOTE_ARCHIVE_RESEARCH = TRANSPORT_ROOT / "remote_archive_research.py"
-REMOTE_READ_KEPT_VIEW = TRANSPORT_ROOT / "remote_read_kept_view.py"
-REMOTE_TRANSFER_GIT = TRANSPORT_ROOT / "remote_transfer_git.py"
-CONVERSATION_WORKTREE = TRANSPORT_ROOT / "conversation_worktree.py"
-REMOTE_TERMINATE_PROVIDER = TRANSPORT_ROOT / "remote_terminate_provider.py"
-REMOTE_TURN_SUPERVISOR = TRANSPORT_ROOT / "remote_turn_supervisor.py"
-REMOTE_TERMINAL = TRANSPORT_ROOT / "remote_terminal.py"
-REMOTE_TERMINAL_PROBE = TRANSPORT_ROOT / "remote_terminal_probe.py"
-TERMINAL_PROFILE = SOURCE_ROOT / "rcp" / "terminals" / "profile.py"
-TERMINAL_GIT_ACCESS = SOURCE_ROOT / "rcp" / "terminals" / "git_access.py"
-SKILL_ROOT = SOURCE_ROOT / "rcp" / "skills"
-SKILL_GRAPH_AUDIT = SKILL_ROOT / "graph-audit"
-SKILL_EVIDENCE_TRIAGE = SKILL_ROOT / "evidence-triage"
-SKILL_EXPERIMENT_CAUSALITY = SKILL_ROOT / "experiment-causality"
-SKILL_EPISODE_REPORT = SKILL_ROOT / "episode-report"
-WORKFLOW_REGISTRY = SKILL_ROOT / "workflows"
 RUNTIME_HOOK = PROJECT_ROOT / "packaging" / "hooks" / "validate_frozen_resources.py"
+
+# Source is runtime data: SSH helpers and inspect.getsource need the actual .py
+# files, not just PyInstaller's importable bytecode. Collect the whole first-party
+# package so new helpers, nested skill assets, and service templates ship by default.
+package_data = collect_data_files("rcp", include_py_files=True)
+datas = [(str(WEB_DIST), "rcp/web_dist"), *package_data]
+manifest_dir = PROJECT_ROOT / "packaging" / "build" / "resources"
+manifest_dir.mkdir(parents=True, exist_ok=True)
+manifest_path = manifest_dir / MANIFEST_NAME
+manifest_path.write_text(json.dumps(resource_manifest(datas), sort_keys=True), encoding="utf-8")
+datas.append((str(manifest_path), "rcp"))
 
 if not (WEB_DIST / "index.html").is_file():
     raise SystemExit("web/dist is missing; run the frontend build before PyInstaller")
@@ -50,33 +29,7 @@ analysis = Analysis(
     [str(SOURCE_ROOT / "rcp" / "__main__.py")],
     pathex=[str(SOURCE_ROOT)],
     binaries=[],
-    datas=[
-        (str(WEB_DIST), "rcp/web_dist"),
-        (str(ARTIFACT_SELECTION), "rcp"),
-        (str(ARTIFACT_COMMENT_PANEL), "rcp"),
-        (str(RECORD_PARSER), "rcp/sources"),
-        *PROVIDER_REMOTE_SOURCES,
-        (str(STAGED_COMMAND_CLIENT), "rcp/agents"),
-        (str(STAGED_COMMAND_BROKER), "rcp/agents"),
-        (str(ARTIFACT_REPLACE), "rcp"),
-        (str(REMOTE_LOCK_HOLDER), "rcp/transport"),
-        (str(REMOTE_ARCHIVE_RESEARCH), "rcp/transport"),
-        (str(REMOTE_READ_KEPT_VIEW), "rcp/transport"),
-        (str(REMOTE_TRANSFER_GIT), "rcp/transport"),
-        (str(CONVERSATION_WORKTREE), "rcp/transport"),
-        (str(REMOTE_TERMINATE_PROVIDER), "rcp/transport"),
-        (str(TRANSPORT_ROOT / "provider_discovery.py"), "rcp/transport"),
-        (str(REMOTE_TURN_SUPERVISOR), "rcp/transport"),
-        (str(REMOTE_TERMINAL), "rcp/transport"),
-        (str(REMOTE_TERMINAL_PROBE), "rcp/transport"),
-        (str(TERMINAL_PROFILE), "rcp/terminals"),
-        (str(TERMINAL_GIT_ACCESS), "rcp/terminals"),
-        (str(SKILL_GRAPH_AUDIT), "rcp/skills/graph-audit"),
-        (str(SKILL_EVIDENCE_TRIAGE), "rcp/skills/evidence-triage"),
-        (str(SKILL_EXPERIMENT_CAUSALITY), "rcp/skills/experiment-causality"),
-        (str(SKILL_EPISODE_REPORT), "rcp/skills/episode-report"),
-        (str(WORKFLOW_REGISTRY), "rcp/skills/workflows"),
-    ],
+    datas=datas,
     hiddenimports=collect_submodules("uvicorn"),
     hookspath=[],
     hooksconfig={},

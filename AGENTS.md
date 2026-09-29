@@ -94,9 +94,9 @@ disk rather than rebuilt under another name. `RCP Dev.app` has its own bundle
 identifier; the other two share one. All three bind the same backend port and
 default data directory, and one process owns a data directory (invariant 8),
 so only one runs at a time. Test builds get a throwaway `RCP_DATA_DIR`
-([docs/desktop.md](docs/desktop.md#build-and-test-a-release-candidate)). A file the backend reads at runtime
-must also be listed in `packaging/rcp_backend.spec` and checked in
-`packaging/hooks/validate_frozen_resources.py`.
+([docs/desktop.md](docs/desktop.md#build-and-test-a-release-candidate)). Runtime
+resources belong inside the `rcp` package, whose source and data are automatically collected and inventoried by `packaging/rcp_backend.spec`.
+Verify affected workflows against the frozen backend, not just source.
 
 ## Stable invariants
 
