@@ -1,5 +1,5 @@
 import type { AnchorHTMLAttributes, MouseEvent, ReactNode } from "react";
-import { openEpisodeReportFromLink } from "../desktopRuntime";
+import { openEpisodeReport } from "../artifactViewer";
 
 interface Props extends Omit<
   AnchorHTMLAttributes<HTMLAnchorElement>,
@@ -21,15 +21,16 @@ export function EpisodeReportLink({
   ...anchorProps
 }: Props) {
   const openReport = async (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
     try {
-      await openEpisodeReportFromLink(event, { projectId, episodeId });
+      await openEpisodeReport({ projectId, episodeId });
     } catch (error) {
       onOpenError(error instanceof Error ? error.message : String(error));
     }
   };
 
   return (
-    <a {...anchorProps} href={href} target="_blank" rel="noopener noreferrer" onClick={openReport}>
+    <a {...anchorProps} href={href} onClick={openReport}>
       {children}
     </a>
   );

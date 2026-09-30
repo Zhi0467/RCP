@@ -1,0 +1,255 @@
+import { useEffect, useRef, useState } from "react";
+import { MessageSquare, PanelRightClose, X } from "lucide-react";
+import { api } from "../api";
+import {
+  closeArtifactViewer,
+  useArtifactViewerTarget,
+  type ArtifactViewerTarget,
+} from "../artifactViewer";
+import {
+  acceptsArtifactEditMessage,
+  artifactVersionChanged,
+  collapseViewer,
+  parseViewerPlacement,
+  type ViewerPlacement,
+} from "../artifactViewerLayout";
+import { errorMessage } from "../errors";
+import { startLiveEpisodePolling } from "../hooks/useEpisodeDialogs";
+import { repositoryFilePreviewUrl } from "../repositoryFileLinks";
+import type { ArtifactViewerState } from "../types";
+import { DraggableWindow } from "./DraggableWindow";
+import "../styles/artifact-viewer.css";
+
+const placementKey = "rcp:artifact-viewer-placement";
+function readPlacement() {
+  try {
+    return parseViewerPlacement(localStorage.getItem(placementKey));
+  } catch {
+    return parseViewerPlacement(null);
+  }
+}
+
+export function ArtifactViewer() {
+  const target = useArtifactViewerTarget();
+  const [placement, setPlacement] = useState(readPlacement);
+  const [loaded, setLoaded] = useState<{
+    target: ArtifactViewerTarget;
+    state: ArtifactViewerState;
+  } | null>(null);
+  const state = loaded?.target === target ? loaded.state : null;
+  const [error, setError] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [undoing, setUndoing] = useState(false);
+  const [reload, setReload] = useState(0);
+  const iframe = useRef<HTMLIFrameElement>(null);
+  const refresh = useRef<() => Promise<void>>(async () => {});
+  const requestGeneration = useRef(0);
+  const updatePlacement = (next: ViewerPlacement) => {
+    setPlacement(next);
+    try {
+      localStorage.setItem(placementKey, JSON.stringify(next));
+    } catch {
+      /* Optional preference. */
+    }
+  };
+
+  useEffect(() => {
+    setLoaded(null);
+    setError("");
+    setEditing(false);
+    setUndoing(false);
+    if (target) setPlacement((current) => collapseViewer(current, false));
+  }, [target]);
+
+  const collapsed = placement.collapsed;
+  useEffect(() => {
+    const generation = ++requestGeneration.current;
+    if (!target || target.kind !== "artifact" || collapsed) return;
+    let disposed = false;
+    let pending: Promise<void> | null = null;
+    let latest: ArtifactViewerState | null = null;
+    let editStarted = false;
+    let editSignal = 0;
+    const url = `/api/projects/${encodeURIComponent(target.projectId)}/artifacts/${encodeURIComponent(target.artifactId)}`;
+    const load = (): Promise<void> => {
+      if (disposed || document.visibilityState !== "visible") return Promise.resolve();
+      if (pending) return pending;
+      const signalAtStart = editSignal;
+      pending = api<ArtifactViewerState>(`${url}/state`)
+        .then((next) => {
+          if (disposed || generation !== requestGeneration.current) return;
+          if (artifactVersionChanged(latest?.current_version ?? null, next.current_version))
+            setReload((value) => value + 1);
+          latest = next;
+          if (signalAtStart === editSignal) editStarted = Boolean(next.editing_operation_id);
+          setLoaded({ target, state: next });
+          setEditing(editStarted);
+          setError("");
+        })
+        .finally(() => {
+          pending = null;
+        });
+      return pending;
+    };
+    refresh.current = async () => {
+      await pending?.catch(() => {});
+      await load();
+    };
+    const showError = (failure: unknown) => {
+      if (!disposed) setError(errorMessage(failure));
+    };
+    const visible = () => {
+      void load().catch(showError);
+    };
+    const message = (event: MessageEvent) => {
+      if (
+        !acceptsArtifactEditMessage(
+          event,
+          iframe.current?.contentWindow,
+          window.location.origin,
+          target.artifactId,
+        )
+      )
+        return;
+      editSignal += 1;
+      editStarted = true;
+      setEditing(true);
+      // The following poll observes publication even when the shell's Send response
+      // arrived while a previous state request was still in flight.
+    };
+    window.addEventListener("message", message);
+    document.addEventListener("visibilitychange", visible);
+    visible();
+    const stop = startLiveEpisodePolling(
+      window,
+      async () => {
+        if (!latest || editStarted || latest.live === "live") await load();
+      },
+      showError,
+      () => {},
+    );
+    return () => {
+      disposed = true;
+      stop();
+      window.removeEventListener("message", message);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [target, collapsed]);
+
+  if (!target) return null;
+  const title =
+    target.kind === "repository"
+      ? target.path.split("/").pop() || target.path
+      : (state?.name ?? "Artifact");
+  if (collapsed)
+    return (
+      <button
+        className="artifact-viewer-tab"
+        onClick={() => updatePlacement(collapseViewer(placement, false))}
+        aria-label={`Restore ${title}`}
+      >
+        {title}
+      </button>
+    );
+  const source =
+    target.kind === "repository"
+      ? repositoryFilePreviewUrl(target.projectId, { path: target.path, line: target.line ?? null })
+      : state?.viewer_url;
+  const undo = async () => {
+    if (target.kind !== "artifact" || undoing) return;
+    const generation = requestGeneration.current;
+    setUndoing(true);
+    try {
+      await api(
+        `/api/projects/${encodeURIComponent(target.projectId)}/artifacts/${encodeURIComponent(target.artifactId)}/undo`,
+        { method: "POST" },
+      );
+      if (generation !== requestGeneration.current) return;
+      await refresh.current();
+      if (generation !== requestGeneration.current) return;
+      setReload((value) => value + 1);
+    } catch (failure) {
+      if (generation === requestGeneration.current) setError(errorMessage(failure));
+    } finally {
+      if (generation === requestGeneration.current) setUndoing(false);
+    }
+  };
+  return (
+    <DraggableWindow
+      className="artifact-viewer"
+      kind="detail"
+      viewer={{ placement, onChange: updatePlacement }}
+      focusRequestToken={target.kind === "artifact" ? target.artifactId : target.path}
+    >
+      <header className="artifact-viewer-header" data-drag-handle>
+        <strong title={title}>{title}</strong>
+        {state?.live && (
+          <span className={`artifact-viewer-status ${state.live}`}>
+            {state.live === "live" ? "Live" : "Finished"}
+          </span>
+        )}
+        {state && <span>v{state.version_number}</span>}
+        {editing && <span role="status">Editing</span>}
+        {state?.can_undo && (
+          <button disabled={undoing} onClick={() => void undo()}>
+            Undo
+          </button>
+        )}
+        {state?.thread_href && (
+          <a
+            className="artifact-viewer-control"
+            href={state.thread_href}
+            aria-label="Open reply thread"
+            title="Open reply thread"
+          >
+            <MessageSquare size={16} />
+          </a>
+        )}
+        <button
+          className="artifact-viewer-control"
+          onClick={() => updatePlacement(collapseViewer(placement, true))}
+          aria-label="Dock viewer"
+          title="Dock viewer"
+        >
+          <PanelRightClose size={16} />
+        </button>
+        <button
+          className="artifact-viewer-control"
+          onClick={closeArtifactViewer}
+          aria-label="Close viewer"
+          title="Close viewer"
+        >
+          <X size={16} />
+        </button>
+      </header>
+      {error && (
+        <div className="artifact-viewer-error" role="alert">
+          {error}
+          <button
+            onClick={() =>
+              void refresh.current().catch((failure) => setError(errorMessage(failure)))
+            }
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {source ? (
+        <iframe
+          ref={iframe}
+          key={`${target.kind === "artifact" ? target.artifactId : target.path}:${reload}`}
+          src={source}
+          title={title}
+        />
+      ) : state ? (
+        <a className="artifact-viewer-file" href={state.download_url} download={state.name}>
+          Download {title}
+        </a>
+      ) : (
+        <div className="artifact-viewer-loading" role="status">
+          Loading…
+        </div>
+      )}
+    </DraggableWindow>
+  );
+}

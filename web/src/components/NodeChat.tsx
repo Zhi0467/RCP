@@ -57,13 +57,16 @@ import {
   startConversationTurn,
   toggleConversationMode,
 } from "../chatWorkspace";
+import {
+  openArtifact as openArtifactPanel,
+  openRepositoryFile as openRepositoryFilePanel,
+} from "../artifactViewer";
 import { MarkdownAnswer } from "../chatMarkdown";
 import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
   chatAnnotationTextControlSelection,
   chatAnnotationViewportMetrics,
-  MAX_ARTIFACT_SELECTIONS,
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
@@ -96,20 +99,12 @@ import {
   isDesktopRuntime,
   listenDesktopEvent,
   openDesktopArtifactPdf,
-  openDesktopArtifactPreview,
-  openDesktopRepositoryFilePreview,
   startDesktopDictation,
   stopDesktopDictation,
 } from "../desktopRuntime";
-import {
-  repositoryFilePreviewUrl,
-  resolveRepositoryFileHref,
-  turnArtifactName,
-} from "../repositoryFileLinks";
+import { resolveRepositoryFileHref, turnArtifactName } from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
-  ArtifactBoxElement,
-  ArtifactSelection,
   AgentTask,
   ChatMessage,
   ChatAttachmentDescriptor,
@@ -205,26 +200,7 @@ type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnot
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
 
-const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
-
-interface ArtifactContextPayload {
-  type: "rcp-artifact-context";
-  version: 1;
-  project_id: string;
-  chat_id: string;
-  operation_id: string;
-  source?: "task" | "episode_report";
-  episode_id?: string | null;
-  artifact_id: string;
-  artifact_name: string;
-  media_type: string;
-  selections: ArtifactSelection[];
-}
-
-function artifactContextStorageKey(projectId: string, chatId: string): string {
-  return `rcp:artifact-context:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
-}
 
 export function reconcileChatRunScope(
   current: string[],
@@ -237,155 +213,6 @@ export function reconcileChatRunScope(
   return candidate.filter(
     (repository, index) => allowed.has(repository) && candidate.indexOf(repository) === index,
   );
-}
-
-export function parseArtifactContextPayload(value: unknown): ArtifactContextPayload | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const candidate = value as Record<string, unknown>;
-  const allowedKeys = new Set([
-    "type",
-    "version",
-    "project_id",
-    "chat_id",
-    "operation_id",
-    "source",
-    "episode_id",
-    "artifact_id",
-    "artifact_name",
-    "media_type",
-    "selections",
-  ]);
-  if (
-    Object.keys(candidate).some((key) => !allowedKeys.has(key)) ||
-    candidate.type !== "rcp-artifact-context" ||
-    candidate.version !== 1 ||
-    !isBoundedArtifactText(candidate.project_id, 1, 512) ||
-    !isBoundedArtifactText(candidate.chat_id, 1, 512) ||
-    !isBoundedArtifactText(candidate.operation_id, 1, 512) ||
-    (candidate.source !== undefined &&
-      candidate.source !== "task" &&
-      candidate.source !== "episode_report") ||
-    (candidate.source === "episode_report" && typeof candidate.episode_id !== "string") ||
-    (candidate.source !== "episode_report" &&
-      candidate.episode_id !== undefined &&
-      candidate.episode_id !== null) ||
-    typeof candidate.artifact_id !== "string" ||
-    !ARTIFACT_ID_PATTERN.test(candidate.artifact_id) ||
-    !isBoundedArtifactText(candidate.artifact_name, 1, 255) ||
-    !isBoundedArtifactText(candidate.media_type, 1, 64) ||
-    !Array.isArray(candidate.selections) ||
-    candidate.selections.length < 1 ||
-    candidate.selections.length > MAX_ARTIFACT_SELECTIONS
-  )
-    return null;
-  const selections: ArtifactSelection[] = [];
-  for (const raw of candidate.selections) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const selection = raw as Record<string, unknown>;
-    if (
-      selection.kind === "text" &&
-      isBoundedArtifactText(selection.text, 1, 4096) &&
-      isBoundedArtifactText(selection.surrounding_text, 0, 6144) &&
-      isBoundedArtifactText(selection.comment, 0, 2048)
-    ) {
-      selections.push({
-        kind: "text",
-        text: selection.text,
-        surrounding_text: selection.surrounding_text,
-        comment: selection.comment,
-      });
-      continue;
-    }
-    if (
-      selection.kind === "box" &&
-      isArtifactSelectionRect(selection.rect) &&
-      isArtifactViewport(selection.viewport) &&
-      (selection.elements === undefined || isArtifactBoxElements(selection.elements)) &&
-      (selection.labels === undefined || isBoundedArtifactText(selection.labels, 0, 4096)) &&
-      isBoundedArtifactText(selection.comment, 0, 2048)
-    ) {
-      selections.push({
-        kind: "box",
-        rect: selection.rect,
-        viewport: selection.viewport,
-        // A box from the older viewer carries no elements; the server must see that.
-        ...(selection.elements !== undefined ? { elements: selection.elements } : {}),
-        ...(selection.labels ? { labels: selection.labels } : {}),
-        comment: selection.comment,
-      });
-      continue;
-    }
-    return null;
-  }
-  return { ...(candidate as unknown as ArtifactContextPayload), selections };
-}
-
-function isBoundedArtifactText(value: unknown, minimum: number, maximum: number): value is string {
-  return typeof value === "string" && value.length >= minimum && value.length <= maximum;
-}
-
-function isArtifactSelectionRect(
-  value: unknown,
-): value is { x: number; y: number; width: number; height: number } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const rect = value as Record<string, unknown>;
-  if (
-    Object.keys(rect).some((key) => !["x", "y", "width", "height"].includes(key)) ||
-    ![rect.x, rect.y, rect.width, rect.height].every(
-      (part) => typeof part === "number" && Number.isFinite(part),
-    )
-  )
-    return false;
-  const x = rect.x as number;
-  const y = rect.y as number;
-  const width = rect.width as number;
-  const height = rect.height as number;
-  return x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1 && y + height <= 1;
-}
-
-function isArtifactBoxElements(value: unknown): value is ArtifactBoxElement[] {
-  return (
-    Array.isArray(value) &&
-    value.length <= 8 &&
-    value.every(
-      (element) =>
-        element &&
-        typeof element === "object" &&
-        !Array.isArray(element) &&
-        Object.keys(element).every((key) => ["path", "label", "text", "region"].includes(key)) &&
-        isBoundedArtifactText(element.path, 1, 512) &&
-        isBoundedArtifactText(element.label, 0, 256) &&
-        isBoundedArtifactText(element.text, 0, 512) &&
-        (element.region === undefined || isArtifactSelectionRect(element.region)),
-    )
-  );
-}
-
-function isArtifactViewport(value: unknown): value is { width: number; height: number } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const viewport = value as Record<string, unknown>;
-  return (
-    Object.keys(viewport).every((key) => key === "width" || key === "height") &&
-    [viewport.width, viewport.height].every(
-      (part) => typeof part === "number" && Number.isInteger(part) && part >= 1 && part <= 32768,
-    )
-  );
-}
-
-// How the composer names an artifact selection its comment is about.
-export function describeArtifactSelection(selection: ArtifactSelection): string {
-  if (selection.kind === "text") return `"${selection.text}"`;
-  if (!selection.elements) return `boxed ${selection.labels || "area"}`;
-  const [first, ...rest] = selection.elements;
-  if (!first) return `boxed area at ${describeArtifactRegion(selection.rect)}`;
-  const name = first.label || first.text.slice(0, 80) || first.path;
-  if (first.region) return `boxed ${name}, ${describeArtifactRegion(first.region)}`;
-  return `boxed ${rest.length ? `${name} and ${rest.length} more` : name}`;
-}
-
-function describeArtifactRegion(rect: { x: number; y: number; width: number; height: number }) {
-  const percent = (value: number) => `${Math.round(value * 100)}%`;
-  return `x ${percent(rect.x)}–${percent(rect.x + rect.width)}, y ${percent(rect.y)}–${percent(rect.y + rect.height)}`;
 }
 
 export function NodeChat({
@@ -494,7 +321,6 @@ export function NodeChat({
   const projectTruthScopeKey = project.project_truth_scope.join("\0");
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
-  const artifactContextKey = artifactContextStorageKey(project.id, chatId);
   const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
   const annotationPanelId = useId();
   const derivedMode = useMemo(
@@ -509,8 +335,6 @@ export function NodeChat({
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
     readStagedChatAnnotations(annotationsKey),
   );
-  const annotationsRef = useRef(annotations);
-  annotationsRef.current = annotations;
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
@@ -599,76 +423,6 @@ export function NodeChat({
     ? steeringTask.steer_action_label
     : [...relatedTasks].reverse().find((task) => task.active)?.steer_unavailable_reason;
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
-  useEffect(() => {
-    const accept = (raw: unknown) => {
-      const payload = parseArtifactContextPayload(raw);
-      if (!payload || payload.project_id !== project.id || payload.chat_id !== chatId) return;
-      const source = relatedTasks.find((task) => task.operation_id === payload.operation_id);
-      const sourceKind = payload.source ?? "task";
-      const sourceArtifact = source?.result?.artifacts?.find(
-        (artifact) => artifact.artifact_id === payload.artifact_id,
-      );
-      if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_discuss)))
-        return;
-      // A viewer sends all of its selections each time, so they replace the staged
-      // artifact comments and leave comments on answer text alone.
-      removeStorage(artifactContextKey);
-      removeStorage(`${artifactContextKey}:applied`);
-      const answerComments = annotationsRef.current.filter((annotation) => !annotation.artifact);
-      if (answerComments.length + payload.selections.length > MAX_CHAT_ANNOTATIONS) {
-        setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
-        return;
-      }
-      const context = {
-        source: sourceKind,
-        operation_id: payload.operation_id,
-        artifact_id: payload.artifact_id,
-        ...(sourceKind === "episode_report" && payload.episode_id
-          ? { episode_id: payload.episode_id }
-          : {}),
-      };
-      setAnnotations([
-        ...answerComments,
-        ...payload.selections.map((selection) => ({
-          id: crypto.randomUUID(),
-          selectedText: describeArtifactSelection(selection),
-          comment: selection.comment,
-          artifact: { context, name: payload.artifact_name, selection },
-        })),
-      ]);
-      setAnnotationsOpen(true);
-      // The preview can bring a different window or chat surface forward.
-      window.requestAnimationFrame(() => textareaRef.current?.focus());
-    };
-    const stored = readStorage(artifactContextKey);
-    if (stored) {
-      try {
-        accept(JSON.parse(stored));
-      } catch {
-        removeStorage(artifactContextKey);
-      }
-    }
-    const storage = (event: StorageEvent) => {
-      if (event.key !== artifactContextKey || !event.newValue) return;
-      try {
-        accept(JSON.parse(event.newValue));
-      } catch {
-        removeStorage(artifactContextKey);
-      }
-    };
-    window.addEventListener("storage", storage);
-    let channel: BroadcastChannel | null = null;
-    try {
-      channel = new BroadcastChannel("rcp-artifact-context");
-      channel.addEventListener("message", (event) => accept(event.data));
-    } catch {
-      // Storage events remain the cross-window path where BroadcastChannel is unavailable.
-    }
-    return () => {
-      window.removeEventListener("storage", storage);
-      channel?.close();
-    };
-  }, [artifactContextKey, chatId, project.id, relatedTasks]);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherVisibility = useHiddenWatchers(apiBase);
   const watcherRows = useMemo(
@@ -1412,44 +1166,31 @@ export function NodeChat({
     });
   };
 
-  const openArtifact = async (
-    taskId: string,
-    artifact: AgentArtifactDescriptor,
-    reserved: Window | null = null,
-  ) => {
+  const openArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
     const systemPdf = desktop && artifact.view === "pdf" && artifact.can_download;
     if (!artifact.can_open && !systemPdf) return;
-    if (desktop) {
-      const key = `${taskId}:${artifact.artifact_id}`;
-      setArtifactShellErrors((current) => withoutMapKey(current, key));
-      try {
-        await (systemPdf ? openDesktopArtifactPdf : openDesktopArtifactPreview)({
+    if (artifact.view !== "pdf") {
+      openArtifactPanel({ projectId: project.id, artifactId: artifact.artifact_id });
+      return;
+    }
+    const key = `${taskId}:${artifact.artifact_id}`;
+    setArtifactShellErrors((current) => withoutMapKey(current, key));
+    try {
+      if (desktop) {
+        await openDesktopArtifactPdf({
           projectId: project.id,
           taskId,
           artifactId: artifact.artifact_id,
         });
-      } catch (error) {
-        setArtifactShellErrors((current) =>
-          withMapValue(
-            current,
-            key,
-            `Open failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
       }
-      return;
-    }
-    const target = reserved ?? window.open("about:blank", "_blank");
-    if (!target) {
-      markArtifactPreviewFailed(taskId, artifact.artifact_id);
-      return;
-    }
-    target.opener = null;
-    try {
-      target.location.replace(artifactUrl(project.id, taskId, artifact.artifact_id, "viewer"));
-    } catch {
-      target.close();
-      markArtifactPreviewFailed(taskId, artifact.artifact_id);
+    } catch (error) {
+      setArtifactShellErrors((current) =>
+        withMapValue(
+          current,
+          key,
+          `Open failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
     }
   };
 
@@ -1509,9 +1250,6 @@ export function NodeChat({
       const name = resolution.reason === "no-match" ? turnArtifactName(href, taskId) : null;
       if (name) {
         const known = relatedTasks.find((candidate) => candidate.operation_id === taskId);
-        // A popup is only granted during the click, so claim the window before any
-        // await; the desktop shell opens its own and needs no reservation.
-        const reserved = known || desktop ? null : window.open("about:blank", "_blank");
         // An older answer's task has aged out of the recent list, so fetch the exact
         // task rather than refusing a citation the transcript still displays.
         const task = known ?? (await onRefreshTask(taskId).catch(() => null));
@@ -1519,9 +1257,8 @@ export function NodeChat({
         if (artifact) {
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
           if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
-            await openArtifact(taskId, artifact, reserved);
+            await openArtifact(taskId, artifact);
           } else {
-            reserved?.close();
             if (!known)
               await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
             const card = document.getElementById(`artifact-${taskId}-${artifact.artifact_id}`);
@@ -1530,53 +1267,17 @@ export function NodeChat({
           }
           return;
         }
-        reserved?.close();
       }
       setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;
     }
 
     setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-    const target = resolution.target;
-    if (desktop) {
-      try {
-        await openDesktopRepositoryFilePreview({ projectId: project.id, ...target });
-      } catch (error) {
-        setRepositoryFileErrors((current) =>
-          withMapValue(
-            current,
-            messageId,
-            `Open failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-      }
-      return;
-    }
-
-    const preview = window.open("about:blank", "_blank");
-    if (!preview) {
-      setRepositoryFileErrors((current) =>
-        withMapValue(current, messageId, "Repository file preview could not be opened."),
-      );
-      return;
-    }
-    preview.opener = null;
-    const url = repositoryFilePreviewUrl(project.id, target);
-    if (!(await resourceIsAvailable(url))) {
-      preview.close();
-      setRepositoryFileErrors((current) =>
-        withMapValue(current, messageId, "Repository file preview is unavailable."),
-      );
-      return;
-    }
-    try {
-      preview.location.replace(url);
-    } catch {
-      preview.close();
-      setRepositoryFileErrors((current) =>
-        withMapValue(current, messageId, "Repository file preview could not be opened."),
-      );
-    }
+    openRepositoryFilePanel({
+      projectId: project.id,
+      path: resolution.target.path,
+      line: resolution.target.line ?? undefined,
+    });
   };
 
   const watcherToggle = watcherRows.length > 0 && (
@@ -2708,13 +2409,4 @@ function withoutMapKey(map: Map<string, string>, key: string): Map<string, strin
   const next = new Map(map);
   next.delete(key);
   return next;
-}
-
-async function resourceIsAvailable(url: string): Promise<boolean> {
-  try {
-    const response = await fetch(url, { method: "HEAD" });
-    return response.ok;
-  } catch {
-    return false;
-  }
 }

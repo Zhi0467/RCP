@@ -2226,7 +2226,6 @@ export interface AgentArtifactDescriptor {
   can_download: boolean;
   can_keep: boolean;
   can_discuss: boolean;
-  can_revise: boolean;
 }
 
 /** `GET /api/projects/{project_id}/artifacts/{artifact_id}/state`: the in-app

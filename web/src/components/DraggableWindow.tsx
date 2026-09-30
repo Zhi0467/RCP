@@ -15,6 +15,15 @@ import {
 } from "../floatingWindow";
 import { NODE_DETAIL_RESIZE_MIN_HEIGHT, NODE_DETAIL_RESIZE_MIN_WIDTH } from "../uiConstants";
 
+import {
+  floatViewer,
+  moveViewer,
+  resizeViewer,
+  toggleViewerFullscreen,
+  viewerRect,
+  type ViewerPlacement,
+} from "../artifactViewerLayout";
+
 let topFloatingZIndex = 110;
 
 interface Props {
@@ -25,6 +34,7 @@ interface Props {
   sizeStorageKey?: string;
   detailSlot?: DetailWindowSlot;
   focusRequestToken?: string | number;
+  viewer?: { placement: ViewerPlacement; onChange: (placement: ViewerPlacement) => void };
 }
 
 export function shouldStartWindowDrag(target: Element): boolean {
@@ -46,6 +56,7 @@ export function DraggableWindow({
   sizeStorageKey,
   detailSlot,
   focusRequestToken,
+  viewer,
 }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const preferredSize = useRef<Size | null>(null);
@@ -72,6 +83,12 @@ export function DraggableWindow({
     return clampFloatingPosition(defaultFloatingPosition(kind, viewport), initialSize, viewport);
   });
   const [zIndex, setZIndex] = useState(() => ++topFloatingZIndex);
+  const [viewport, setViewport] = useState(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  }));
+  const viewerDrag = useRef<{ placement: ViewerPlacement; pointer: Point } | null>(null);
+  const viewerResize = useRef<{ placement: ViewerPlacement; x: number } | null>(null);
   const drag = useRef<{ origin: Point; pointer: Point } | null>(null);
   const resize = useRef<{
     corner: ResizeCorner;
@@ -116,6 +133,7 @@ export function DraggableWindow({
   useEffect(() => {
     const onResize = () => {
       const viewport = { width: window.innerWidth, height: window.innerHeight };
+      setViewport(viewport);
       const nextSize =
         resizable && preferredSize.current
           ? clampFloatingSize(preferredSize.current, viewport, detailMinimumSize)
@@ -143,6 +161,8 @@ export function DraggableWindow({
     setZIndex(++topFloatingZIndex);
   }, [focusRequestToken]);
 
+  const panelRect = viewer ? viewerRect(viewer.placement, viewport) : null;
+
   return (
     <div
       ref={root}
@@ -152,16 +172,47 @@ export function DraggableWindow({
         top: position.y,
         zIndex,
         ...(size ? { width: size.width, height: size.height } : {}),
+        ...(panelRect
+          ? {
+              left: panelRect.x,
+              top: panelRect.y,
+              width: panelRect.width,
+              height: panelRect.height,
+              maxHeight: "100vh",
+            }
+          : {}),
+      }}
+      onDoubleClick={(event) => {
+        if (viewer && shouldStartWindowDrag(event.target as Element)) {
+          viewer.onChange(toggleViewerFullscreen(viewer.placement));
+        }
       }}
       onPointerDownCapture={() => setZIndex(++topFloatingZIndex)}
       onFocusCapture={() => setZIndex(++topFloatingZIndex)}
       onPointerDown={(event) => {
         const target = event.target as HTMLElement;
         if (!shouldStartWindowDrag(target)) return;
+        if (viewer) {
+          viewerDrag.current = {
+            placement: floatViewer(viewer.placement, viewport),
+            pointer: { x: event.clientX, y: event.clientY },
+          };
+          event.currentTarget.setPointerCapture(event.pointerId);
+          return;
+        }
         drag.current = { origin: position, pointer: { x: event.clientX, y: event.clientY } };
         event.currentTarget.setPointerCapture(event.pointerId);
       }}
       onPointerMove={(event) => {
+        if (viewer && viewerDrag.current) {
+          const delta = {
+            x: event.clientX - viewerDrag.current.pointer.x,
+            y: event.clientY - viewerDrag.current.pointer.y,
+          };
+          if (Math.abs(delta.x) + Math.abs(delta.y) > 3)
+            viewer.onChange(moveViewer(viewerDrag.current.placement, delta, viewport));
+          return;
+        }
         if (!drag.current) return;
         setPosition(
           clamp(
@@ -172,7 +223,16 @@ export function DraggableWindow({
           ),
         );
       }}
+      onPointerCancel={() => {
+        viewerDrag.current = null;
+        drag.current = null;
+      }}
+      onLostPointerCapture={() => {
+        viewerDrag.current = null;
+        drag.current = null;
+      }}
       onPointerUp={(event) => {
+        viewerDrag.current = null;
         drag.current = null;
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
           event.currentTarget.releasePointerCapture(event.pointerId);
@@ -180,6 +240,48 @@ export function DraggableWindow({
       }}
     >
       {children}
+      {viewer && !viewer.placement.fullscreen && (
+        <div
+          className="artifact-viewer-resize"
+          role="separator"
+          aria-label="Viewer width"
+          aria-orientation="vertical"
+          tabIndex={0}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            viewer.onChange(
+              resizeViewer(viewer.placement, event.key === "ArrowLeft" ? -24 : 24, viewport),
+            );
+          }}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            viewerResize.current = { placement: viewer.placement, x: event.clientX };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            if (!viewerResize.current) return;
+            viewer.onChange(
+              resizeViewer(
+                viewerResize.current.placement,
+                event.clientX - viewerResize.current.x,
+                viewport,
+              ),
+            );
+          }}
+          onPointerUp={(event) => {
+            viewerResize.current = null;
+            if (event.currentTarget.hasPointerCapture(event.pointerId))
+              event.currentTarget.releasePointerCapture(event.pointerId);
+          }}
+          onPointerCancel={() => {
+            viewerResize.current = null;
+          }}
+          onLostPointerCapture={() => {
+            viewerResize.current = null;
+          }}
+        />
+      )}
       {resizable &&
         size &&
         (["top-left", "top-right", "bottom-left", "bottom-right"] as const).map((corner) => (

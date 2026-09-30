@@ -53,7 +53,6 @@ function artifact(overrides = {}) {
     can_download: true,
     can_keep: true,
     can_discuss: true,
-    can_revise: true,
     ...overrides,
   };
 }
@@ -394,7 +393,6 @@ test("historical artifact decisions survive transcript reconciliation without UI
     can_open: false,
     can_download: false,
     can_keep: false,
-    can_revise: false,
   });
   const completed = task({
     operation_id: "historical-artifact",

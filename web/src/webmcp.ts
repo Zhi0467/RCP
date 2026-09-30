@@ -636,7 +636,8 @@ type ArtifactFilter = {
   episodeId: string | null;
 };
 
-type ProjectArtifactRecord = {
+export type ProjectArtifactRecord = {
+  artifact_id: string | null;
   viewer_id: string;
   kind: "task_artifact" | "episode_report";
   name: string;
@@ -765,6 +766,7 @@ function projectArtifactRecords(
     .filter((task) => taskMatchesArtifactFilter(task, filter))
     .flatMap((task) =>
       taskArtifacts(task).map((artifact) => ({
+        artifact_id: artifact.artifact_id,
         viewer_id: `task:${task.operation_id}:${artifact.artifact_id}`,
         kind: "task_artifact" as const,
         name: compactText(artifact.name, 120),
@@ -794,6 +796,7 @@ function projectArtifactRecords(
         episodeMatchesArtifactFilter(episode, tasks, filter),
     )
     .map((episode) => ({
+      artifact_id: null,
       viewer_id: `report:${episode.episode_id}`,
       kind: "episode_report" as const,
       name: `${episode.ending ?? "Experiment"} episode report`,
@@ -838,7 +841,10 @@ export async function listProjectArtifacts(
     recent_episode_count: episodes.length,
     artifacts: records
       .slice(0, ARTIFACT_LIST_LIMIT)
-      .map(({ sort_time: _, viewer_url: __, content_url: ___, ...record }) => record),
+      .map(
+        ({ sort_time: _, viewer_url: __, content_url: ___, artifact_id: ____, ...record }) =>
+          record,
+      ),
   };
 }
 
@@ -856,11 +862,7 @@ export async function openProjectArtifact(
   tasks: AgentTask[],
   episodes: Episode[],
   input: Record<string, unknown>,
-  openViewer: (
-    viewerUrl: string,
-    contentUrl: string,
-    view: ArtifactView,
-  ) => boolean | Promise<boolean>,
+  openViewer: (record: ProjectArtifactRecord, projectId: string) => boolean | Promise<boolean>,
   source: WebMcpArtifactSource,
 ): Promise<Record<string, unknown>> {
   const viewerId = requiredStringInput(input, "viewer_id");
@@ -880,7 +882,7 @@ export async function openProjectArtifact(
   if (!record.available || !record.can_open) {
     throw new Error(record.unavailable_reason ?? `Artifact viewer ${viewerId} is unavailable.`);
   }
-  if (!(await openViewer(record.viewer_url, record.content_url, record.view))) {
+  if (!(await openViewer(record, project.id))) {
     throw new Error("The RCP artifact viewer could not be shown.");
   }
   return {
@@ -895,11 +897,7 @@ export function projectArtifactToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   episodes: Episode[],
-  openViewer: (
-    viewerUrl: string,
-    contentUrl: string,
-    view: ArtifactView,
-  ) => boolean | Promise<boolean>,
+  openViewer: (record: ProjectArtifactRecord, projectId: string) => boolean | Promise<boolean>,
   source: WebMcpArtifactSource,
 ): WebMcpToolDefinition[] {
   return [

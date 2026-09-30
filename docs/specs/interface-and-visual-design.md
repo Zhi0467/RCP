@@ -24,7 +24,7 @@ focus indicators remain distinct. Clickable Overview rows, Runs card headers,
 space Runs rows, and available artifact rows also rise from the surface and
 press inward while held. Expanded run detail and unavailable artifacts do not
 use the same action cue. An available artifact's preview link spans its entire
-row and keeps the existing browser or desktop preview behavior. Its **Source
+row and opens the shared in-app viewer panel. Its **Source
 chat** link remains a separate click target. Artifact comments edit the existing
 artifact; the chat has no candidate comparison dialog or Accept/Reject controls.
 
@@ -136,7 +136,8 @@ replaced through that draft. Backend preview validates the full batch before
 Sync; the UI does not derive lifecycle effects or imply that staging committed.
 Removing a node removes its current incident edges, not its history. Existing
 accepted-node and active-Experiment safeguards still apply. Artifact selections
-remain chat context, not graph-editing controls or Evidence creation shortcuts.
+stay in the viewer for in-place editing; they are not graph-editing controls or
+Evidence creation shortcuts.
 
 ## DAG controls
 
@@ -400,6 +401,32 @@ own container at narrow widths. Colors use existing theme tokens in Classic,
 Aqua, and dark mode. Watcher controls and the task inspector retain their own
 surfaces.
 
-Result views are revised by acting on the picture — box a region, underscore
-items — not by describing it in the composer. A gesture writes a visible draft
-and never dispatches a turn by itself.
+## Artifact viewer
+
+One viewer panel is mounted in the project shell. Chat artifacts, Artifacts,
+History reports, Runs, repository-file links, and WebMCP all open it. Its default is
+right-docked and full height. Dragging its left edge resizes it; dragging the
+title bar floats it. Double-clicking the title bar enters full screen and
+repeats to restore the prior placement. The dock control collapses it to a
+slim tab at the top right; the tab restores it. There is no mode button row.
+Size and placement persist on this browser origin and remain reachable after
+viewport changes.
+
+The title bar contains the name, Live or Finished when supplied, version,
+Undo when offered, the reply-thread control when supplied, dock, and close.
+An admitted edit shows Editing until the server clears it; the panel refreshes
+the iframe when the current version changes. State polling runs only while
+open and visible. Undo reloads the current version. Errors remain explicit and
+retryable.
+
+The iframe hosts the same-origin viewer shell, which owns selection, comments,
+Send, and the reason Send is unavailable. Agent HTML stays in the shell's
+opaque sandbox; the panel never reads that inner frame. A selection alone
+never dispatches an edit or stages a chat draft. Repository files use their
+script-free preview. PDFs open in the desktop system viewer; in the browser
+they offer Download only, with no Open action.
+
+Each Runs card lists its report first, followed by every turn and worker
+artifact, with name, kind, time, and the worker label when present. Worker and
+turn timeline popovers show artifacts from their exact producing operation,
+using the same fetched run list. Every preview opens the shared panel.

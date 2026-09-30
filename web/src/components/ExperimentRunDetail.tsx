@@ -3,6 +3,8 @@ import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { fetchEpisodeTimeline } from "../api";
+import { useRunArtifacts } from "../hooks/useRunArtifacts";
+import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
 import {
   type ExperimentRun,
@@ -119,6 +121,12 @@ export function ExperimentRunDetail({
   const episode = control.episode;
   const [timeline, setTimeline] = useState<EpisodeTimelineResponse | null>(null);
   const [timelineError, setTimelineError] = useState<string | null>(null);
+  const runArtifacts = useRunArtifacts(
+    apiBase,
+    episode?.episode_id,
+    true,
+    `${episode?.updated_at}:${currentTask?.operation_id}:${currentTask?.status}:${currentTask?.updated_at}`,
+  );
   const watcherSignature = run.watchers
     .map((watcher) => `${watcher.watcher_id}:${watcher.status}:${watcher.completed_at ?? ""}`)
     .join("|");
@@ -245,18 +253,21 @@ export function ExperimentRunDetail({
               {stopBusy || stopUnsettled ? "Stopping" : "Stop loop"}
             </button>
           )}
-          {control.can_open_report && control.report_episode_id && episode && (
-            <EpisodeReportLink
-              className="button primary compact"
-              href={episodeReportHref(control.report_episode_id)}
-              projectId={episode.project_id}
-              episodeId={control.report_episode_id}
-              onOpenError={setReportOpenError}
-            >
-              <ExternalLink size={12} aria-hidden="true" />
-              {control.report_is_current ? "Open report" : "Previous episode report"}
-            </EpisodeReportLink>
-          )}
+          {control.can_open_report &&
+            !control.report_is_current &&
+            control.report_episode_id &&
+            episode && (
+              <EpisodeReportLink
+                className="button primary compact"
+                href={episodeReportHref(control.report_episode_id)}
+                projectId={episode.project_id}
+                episodeId={control.report_episode_id}
+                onOpenError={setReportOpenError}
+              >
+                <ExternalLink size={12} aria-hidden="true" />
+                Previous episode report
+              </EpisodeReportLink>
+            )}
           {allowStart && !control.node_closed && (reauthorizing || canContinue) && (
             <label className="experiment-reauthorize-count">
               <span className="eyebrow">{canContinue ? "Turns to add" : "Invocations"}</span>
@@ -315,6 +326,14 @@ export function ExperimentRunDetail({
         </div>
       </div>
 
+      {episode && (
+        <RunArtifacts
+          projectId={episode.project_id}
+          {...runArtifacts}
+          onRetry={runArtifacts.reload}
+        />
+      )}
+
       <div className={`experiment-run-recommendation ${recommendation.step}`}>
         <span className="eyebrow">Recommended next step</span>
         <strong>{recommendation.label}</strong>
@@ -328,6 +347,8 @@ export function ExperimentRunDetail({
       {episode && timeline?.episode_id === episode.episode_id && (
         <EpisodeTimeline
           response={timeline}
+          projectId={episode.project_id}
+          artifacts={runArtifacts.artifacts}
           apiBase={apiBase}
           episodeId={episode.episode_id}
           graphTarget={episode.graph_target}
