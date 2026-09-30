@@ -165,7 +165,7 @@ def test_expiry_preserves_kept_artifact_and_clears_inventory(tmp_path):
         ("supplier", "other"),
         ("media_type", "invalid"),
         ("expires_at", "invalid"),
-        ("kept_at", AppStore.now().removesuffix("+00:00")),
+        ("kept_at", "2000-01-01T00:00:00"),
     ],
 )
 def test_artifact_rejects_invalid_imported_metadata(tmp_path, field, value):
