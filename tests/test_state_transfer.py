@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from rcp.transport import state_transfer
+from rcp.transport.run_stage import RemoteStageTransportFailure
 
 
 @pytest.fixture(autouse=True)
@@ -252,7 +253,7 @@ def test_probe_transport_failure_is_not_cached_or_warned(monkeypatch, caplog, fa
         with pytest.raises(StateUnavailable) as error:
             state_transfer.get_engine("fixture")
         assert type(error.value) is (
-            StateUnreachable if failure == "ssh_exit" else StateUnavailable
+            StateUnreachable if failure == "ssh_exit" else RemoteStageTransportFailure
         )
         assert state_transfer.diagnostics("fixture") is None
         assert not state_transfer._WARNED

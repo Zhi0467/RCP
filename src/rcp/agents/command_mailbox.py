@@ -439,6 +439,8 @@ async def serve_command_mailbox(
     reason = (terminal or {}).get(
         "reason", "Command mailbox permanently closed: turn stopped or entered settlement."
     )
+    # A turn that simply ends closes its mailbox quietly; only a failure warns.
+    failed = bool(terminal and terminal.get("reason"))
     try:
         while not interrupted(drain=False) and not (terminal and terminal.get("reason")):
             names = await retry(lambda: asyncio.to_thread(staged.mailbox.entry_names))
@@ -511,14 +513,19 @@ async def serve_command_mailbox(
     except _MailboxInterrupted:
         pass
     except Exception as exc:
+        failed = True
         reason = f"Command mailbox permanently closed: {' '.join(str(exc).split())}"[:2_000]
     finally:
+        if terminal and terminal.get("reason") and terminal["reason"] != reason:
+            failed = True
+            reason = terminal["reason"]
         if suspend is None or not suspend.is_set():
             if terminal is not None:
                 terminal["reason"] = reason
                 if checkpoint is not None:
                     await asyncio.to_thread(checkpoint)
-            await transport("closed", reason)
+            if failed:
+                await transport("closed", reason)
             try:
                 await retry(
                     lambda: asyncio.to_thread(
