@@ -2309,6 +2309,8 @@ export interface AgentTask {
   runtime_label: string;
   provider_label: string;
   native_session_id?: string | null;
+  /** Current chat binding resolved by the server, independent of this historical turn. */
+  current_chat_session_id?: string | null;
   history_only: boolean;
   stage_host?: string | null;
   stage_root?: string | null;

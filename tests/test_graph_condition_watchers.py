@@ -2151,7 +2151,7 @@ def test_watcher_notification_admission_fence_owns_claim_and_spawn(
 
     def observed_spawn(record, _request, *, continuation, parent=None):
         assert fence_active, "watcher task spawn escaped the generation fence"
-        assert continuation == "fresh"
+        assert continuation == "watcher_wake"
         assert parent is None
         return record
 

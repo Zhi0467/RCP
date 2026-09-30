@@ -226,6 +226,18 @@ def _agent_task_response(
     discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    if record.kind in {"node_chat", "project_chat"}:
+        chat_id = record.request.get("chat_id")
+        current = (
+            store.current_chat_session(record.project_id, record.kind, chat_id)
+            if isinstance(chat_id, str)
+            else None
+        )
+        response["current_chat_session_id"] = (
+            current.native_session_id
+            if current is not None and not current.history_only and current.stage_root
+            else None
+        )
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),
@@ -1528,28 +1540,24 @@ def _admit_artifact_context_request(
                 or "The artifact's native session is unavailable. Start a fresh session "
                 "explicitly before asking about it."
             )
-    pinned_values = {
-        "provider": origin.request.get("provider"),
-        "model": origin.request.get("model"),
-        "reasoning": origin.request.get("reasoning"),
-        "run_on": origin.request.get("run_on"),
-        "session_id": origin.native_session_id,
-    }
-    required_values = (
-        pinned_values["provider"],
-        pinned_values["reasoning"],
-        pinned_values["run_on"],
-        pinned_values["session_id"],
-    )
-    if not all(isinstance(value, str) and value for value in required_values) or not isinstance(
-        pinned_values["model"], str
-    ):
-        raise ValueError(
-            "The artifact's native session is unavailable. Start a fresh session explicitly "
-            "before asking about it."
+    current = store.current_chat_session(project_id, kind, request.chat_id)
+    if current is None or current.history_only:
+        return _resolved_graph_request(
+            service, kind, request.model_copy(update={"session_id": None})
         )
-    pinned = RunRequest.model_validate({**request.model_dump(mode="python"), **pinned_values})
-    return _resolved_graph_request(service, kind, pinned)
+    profile = {
+        key: current.request.get(key) for key in ("provider", "model", "reasoning", "run_on")
+    }
+    if not all(
+        isinstance(profile[key], str) and (profile[key] or key == "model") for key in profile
+    ):
+        raise ValueError("The chat's current session profile is unavailable. Start a new chat.")
+    # Insertion owns atomic session selection and stage binding. Artifact ownership
+    # does not pin this new turn to the artifact's historical native session.
+    resolved = RunRequest.model_validate(
+        {**request.model_dump(mode="python"), **profile, "session_id": None}
+    )
+    return _resolved_graph_request(service, kind, resolved)
 
 
 def _validated_task_request(
@@ -1606,6 +1614,7 @@ def _validated_task_request(
         update={
             "chat_scope": chat_scope,
             "node_id": request.node_id if chat_scope == "node" else None,
+            "session_id": None,
         }
     )
     if not request.message or not request.message.strip() or not request.chat_id:
@@ -1619,10 +1628,8 @@ def _validated_task_request(
         uuid.UUID(request.chat_id)
     except ValueError as exc:
         raise ValueError("chat_id must be a UUID") from exc
-    # Artifact-context admission resolves the exact execution profile and native
-    # session recorded by the originating turn. Do not first resolve transient
-    # settings from the currently open chat; stale settings must not prevent a
-    # valid origin-session continuation.
+    # Artifact-context admission resolves the chat's current execution profile.
+    # Do not first resolve stale settings from the currently open client.
     if request.artifact_context is not None:
         return request
     return _resolved_graph_request(service, kind, request)

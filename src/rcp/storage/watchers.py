@@ -18,6 +18,7 @@ from rcp.limits import (
 )
 from rcp.storage.experiments import ExperimentStoreMixin
 from rcp.storage.models import (
+    AgentTaskAdmissionConflict,
     AgentTaskRecord,
     AutoResearchActorBusy,
     AutoResearchRole,
@@ -1349,7 +1350,7 @@ class WatcherStoreMixin:
                 )
                 if cursor.rowcount != len(ids):
                     raise RuntimeError("watcher notification changed during its transaction")
-        except AutoResearchActorBusy:
+        except (AutoResearchActorBusy, AgentTaskAdmissionConflict):
             return None
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not queue the watcher notification task.") from exc

@@ -45,7 +45,7 @@ import {
   artifactUrl,
   chatTasksMissingFromHistory,
   isActiveTask,
-  latestNativeSessionId,
+  resolvedChatSessionId,
   orderTranscriptLines,
   reconcileChatHistoryArtifacts,
   reconstructTaskTranscript,
@@ -750,11 +750,7 @@ export function NodeChat({
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
-  const sessionId =
-    latestNativeSessionId(relatedTasks) ??
-    [...historyMessages].reverse().find((message) => message.native_session_id)
-      ?.native_session_id ??
-    null;
+  const sessionId = resolvedChatSessionId(relatedTasks);
   const mode = modeState.value;
   modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;

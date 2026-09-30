@@ -77,6 +77,25 @@ but RCP never reads, indexes, copies, projects, validates, or authorizes from
 prior RCP transcript text. Provider-native session continuation may retain the
 provider's context without making the displayed transcript an RCP input.
 
+Task insertion resolves an ordinary chat's current native session from the
+latest task of that exact chat that established one, inside the same transaction
+as the overlap guard and stage binding. Human turns and generic watcher wakes
+use this rule; client session hints and transcript text do not select sessions.
+An active, paused/resumable, or unresolved current turn blocks a new turn, and
+watcher delivery defers without claiming completion. Resolution never searches
+back past an unusable current binding. History-only, abandoned-recovery, or missing-stage bindings
+start fresh with a durable `chat_session_resolution` receipt explaining why.
+The exact provider, machine, chat, graph target, stage, and launch write scope
+remain enforced. A watcher's provider/model/machine mismatch records a failed
+notification task with an actionable reason; its completion is claimed once
+without launching a provider. A human provider/model/machine change starts a
+fresh session and records that reason. **New session** creates a new chat id.
+
+A chat watcher wake is a new logical `watcher_wake` turn, clears prior handoffs,
+and selects the `wake` prompt node when continuing a session. It carries the
+compact delta and compatible master pointer, bootstrapping the master when
+necessary. Experiment and Auto-research child wakes retain their own policies.
+
 The first ordinary turn in an RCP-owned native session receives one master
 context. It supplies shared project context once: the current graph target and
 head, focused node, exact run-scope repository pointers, enabled-package
