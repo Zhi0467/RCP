@@ -3079,6 +3079,7 @@ def _apply_work_patch(
     source_effect_id: str | None = None,
     cancelled: Callable[[], bool] | None = None,
     under_lock: Callable[[], None] | None = None,
+    prior_commit_status: Literal["present", "unknown"] | None = None,
 ) -> tuple[GraphUpdateResult | None, _DeliverableFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
@@ -3118,6 +3119,7 @@ def _apply_work_patch(
         ),
         cancelled=cancelled,
         under_lock=under_lock,
+        prior_commit_status=prior_commit_status,
     )
 
 

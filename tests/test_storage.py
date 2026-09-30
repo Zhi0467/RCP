@@ -3393,6 +3393,25 @@ def test_agent_task_result_keeps_a_bounded_latest_tail_of_graph_updates(tmp_path
     )
 
 
+def test_completed_task_status_tells_each_unavailable_commit_certainty_apart(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    messages = set()
+    for commit_status in ("absent", "present", "unknown"):
+        store.create_agent_task(
+            _task_record(now, operation_id=commit_status, kind="node_chat", status="running")
+        )
+        store.complete_agent_task(
+            commit_status,
+            applied_revision=None,
+            result={"graph_update": {"status": "unavailable", "commit_status": commit_status}},
+        )
+        record = store.agent_task(commit_status)
+        assert record is not None
+        messages.add(record.status_message)
+    assert len(messages) == 3
+
+
 def test_work_graph_repair_admission_rolls_back_claim_and_child_together(
     tmp_path, monkeypatch
 ) -> None:

@@ -748,6 +748,14 @@ export function NodeChat({
       ),
     [relatedTasks],
   );
+  // Earlier receipts of one task stay as history; only its latest offers recovery.
+  const latestGraphReceiptLineIds = useMemo(() => {
+    const latest = new Map<string, string>();
+    for (const line of transcript) {
+      if (line.role === "agent" && line.graphUpdate) latest.set(line.taskId, line.lineId);
+    }
+    return new Set(latest.values());
+  }, [transcript]);
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
@@ -2070,6 +2078,7 @@ export function NodeChat({
                     readOnly || graphChangesDisabled || relatedActive || submitting || reviewPending
                   }
                   repairContinued={continuedTaskIds.has(line.taskId)}
+                  latestReceipt={latestGraphReceiptLineIds.has(line.lineId)}
                   canApplyAgain={
                     relatedTasks.find((task) => task.operation_id === line.taskId)
                       ?.can_apply_again === true
@@ -2663,6 +2672,7 @@ function GraphUpdateReceipt({
   repairBusy,
   repairDisabled,
   repairContinued,
+  latestReceipt,
   canApplyAgain,
   repairError,
   onInspectTask,
@@ -2675,6 +2685,7 @@ function GraphUpdateReceipt({
   repairBusy: boolean;
   repairDisabled: boolean;
   repairContinued: boolean;
+  latestReceipt: boolean;
   canApplyAgain: boolean;
   repairError: string | null;
   onInspectTask: (taskId: string) => void;
@@ -2716,13 +2727,13 @@ function GraphUpdateReceipt({
             {proposalCount} proposal{proposalCount === 1 ? "" : "s"} sent to Inbox
           </button>
         )}
-        {update.status === "rejected" && update.repairable && !repairContinued && (
+        {latestReceipt && update.status === "rejected" && update.repairable && !repairContinued && (
           <button type="button" disabled={repairBusy || repairDisabled} onClick={onRepair}>
             <RotateCcw className={repairBusy ? "spin" : undefined} size={12} />
             Repair graph update
           </button>
         )}
-        {update.status === "unavailable" && canApplyAgain && (
+        {latestReceipt && update.status === "unavailable" && canApplyAgain && (
           <button type="button" disabled={repairBusy || repairDisabled} onClick={onApplyAgain}>
             <RotateCcw className={repairBusy ? "spin" : undefined} size={12} />
             Apply again
