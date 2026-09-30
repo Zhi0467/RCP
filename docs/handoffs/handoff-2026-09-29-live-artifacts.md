@@ -67,7 +67,10 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
   relative to that folder, never by absolute path, so a relocated or copied
   data directory still resolves.
 - A turn's artifacts are copied into that folder when RCP discovers them, within
-  the existing per-turn count and size caps. Viewing no longer proxies from a
+  the existing per-turn count and size caps. Auto-research worker turns get an
+  artifact directory today but are never discovered; they now go through the
+  same discovery, including retry and recovered turns, and their artifacts show
+  on the episode timeline's turn popover. Viewing no longer proxies from a
   local or remote stage.
 - Each artifact keeps its original plus its last N versions, capped by total
   bytes. N and the byte cap live in `limits.py`.
