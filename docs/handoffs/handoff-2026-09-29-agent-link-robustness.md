@@ -287,9 +287,15 @@ the app was started.
 | `ps`, `systemctl`, `systemd-run`, `launchctl` | execution host | bare name | terminal and launch-helper probes |
 | provider CLIs | desktop or execution host | configured path, or discovery, then `--version` | readiness probe |
 
-Next: audit each owner in turn, separating discovery, existence checks,
-feature contracts, and tested compatibility. Existing checks stay with their
-owners; there is no universal tool registry.
+Settled 2026-09-29: the rsync rule above is the general dependency policy, not
+an rsync special case. Every external tool RCP runs is listed in one table in
+[server and machine operations](../specs/server-and-machine-operations.md):
+where it runs, its owning module, its contract, how it is probed, and its
+fallback or refusal. A test scans the source for every external command RCP
+starts and fails when one is missing from the table. Probes and fallbacks stay
+with their owners; there is no universal runtime registry. Each owner states
+discovery, existence check, feature contract, and tested compatibility
+separately.
 
 ## Temporary states
 
