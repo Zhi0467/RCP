@@ -228,20 +228,20 @@ def _agent_task_response(
     background_tasks: BackgroundAgentTasks,
     degradations: Mapping[str, str] | None = None,
     discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
+    chat_sessions: dict[tuple[str, str], str | None] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
     if record.kind in {"node_chat", "project_chat"}:
         chat_id = record.request.get("chat_id")
-        current = (
-            store.current_chat_session(record.project_id, record.kind, chat_id)
-            if isinstance(chat_id, str)
-            else None
-        )
-        response["current_chat_session_id"] = (
-            current.native_session_id
-            if current is not None and not current.history_only and current.stage_root
-            else None
-        )
+        session_id = None
+        if isinstance(chat_id, str):
+            # A list shares one lookup per chat; a single task reads its own.
+            cache = chat_sessions if chat_sessions is not None else {}
+            key = (record.kind, chat_id)
+            if key not in cache:
+                cache[key] = _current_chat_session_id(store, record.project_id, *key)
+            session_id = cache[key]
+        response["current_chat_session_id"] = session_id
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),
@@ -284,6 +284,17 @@ def _agent_task_response(
         )
     result["artifacts"] = projected
     return response
+
+
+def _current_chat_session_id(
+    store: AppStore, project_id: str, kind: str, chat_id: str
+) -> str | None:
+    current = store.current_chat_session(project_id, kind, chat_id)
+    return (
+        current.native_session_id
+        if current is not None and not current.history_only and current.stage_root
+        else None
+    )
 
 
 def _can_apply_again(store: AppStore, record: AgentTaskRecord) -> bool:
@@ -443,8 +454,11 @@ def agent_tasks(
     records = store.agent_tasks(project_id, graph_target=target)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
+    chat_sessions: dict[tuple[str, str], str | None] = {}
     return [
-        _agent_task_response(store, record, background_tasks, degradations, discoveries)
+        _agent_task_response(
+            store, record, background_tasks, degradations, discoveries, chat_sessions
+        )
         for record in records
     ]
 

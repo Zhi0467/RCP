@@ -52,7 +52,7 @@ from rcp.limits import (
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
-from rcp.providers import ProviderUsage, require_runtime_id
+from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_PROJECTION_FIELDS,
@@ -339,8 +339,8 @@ class AgentTaskStoreMixin:
                 history_only, stage_root, graph_target_json, write_scope_fingerprint,
                 estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
-                authorized_user_id, authorized_display_name, visible
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                authorized_user_id, authorized_display_name, visible, failure_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
@@ -379,6 +379,7 @@ class AgentTaskStoreMixin:
                 record.authorized_by.user_id if record.authorized_by is not None else None,
                 record.authorized_by.display_name if record.authorized_by is not None else None,
                 int(record.visible),
+                record.failure_kind,
             ),
         )
         self._insert_agent_task_receipt(
@@ -707,7 +708,21 @@ class AgentTaskStoreMixin:
                   AND receipt.category IN (
                       'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
                   )
-            ) AS recovery_abandoned
+            ) AS recovery_abandoned, (
+                SELECT CASE
+                    WHEN SUM(receipt.category = 'provider_terminal_error'
+                             AND json_extract(receipt.payload_json, '$.classification')
+                                 = 'session_limit') THEN 'session_limit'
+                    WHEN SUM(receipt.category = 'provider_terminal_error'
+                             AND json_extract(receipt.payload_json, '$.classification')
+                                 = 'stale_session') THEN 'session_stale'
+                    WHEN SUM(receipt.category = 'continuation_context_unavailable'
+                             AND json_extract(receipt.payload_json, '$.retry_required') = 1)
+                        THEN 'session_context_unavailable'
+                END
+                FROM graph_run_receipts AS receipt
+                WHERE receipt.operation_id = run.operation_id
+            ) AS session_dropped
             FROM graph_runs AS run
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
@@ -717,6 +732,20 @@ class AgentTaskStoreMixin:
             (project_id, kind, chat_id),
         ).fetchone()
 
+    @staticmethod
+    def _dropped_chat_session_reason(row: sqlite3.Row) -> str | None:
+        """Why the provider can no longer continue this row's session, when it cannot.
+
+        The same classification Retry uses to refuse resuming a dropped session.
+        """
+
+        classification = classify_terminal_error(row["error"] or "")
+        if row["session_dropped"] == "session_limit" or classification == "session_limit":
+            return "session_limit"
+        if row["session_dropped"] == "session_stale" or classification == "stale_session":
+            return "session_stale"
+        return row["session_dropped"]
+
     def current_chat_session(
         self, project_id: str, kind: str, chat_id: str
     ) -> AgentTaskRecord | None:
@@ -725,8 +754,11 @@ class AgentTaskStoreMixin:
             row = self._current_chat_session_row(connection, project_id, kind, chat_id)
         if row is None:
             return None
-        current = self._agent_task_record(row)
-        if row["recovery_abandoned"]:
+        dropped = self._dropped_chat_session_reason(row)
+        data = dict(row)
+        data.pop("session_dropped")
+        current = self._agent_task_record(data)
+        if row["recovery_abandoned"] or dropped is not None:
             return current.model_copy(update={"native_session_id": None})
         return current
 
@@ -841,6 +873,7 @@ class AgentTaskStoreMixin:
                             "error": message,
                             "status_message": message,
                             "finished_at": record.created_at,
+                            "failure_kind": "session_refused",
                         }
                     ), {
                         "outcome": "refused",
@@ -852,6 +885,8 @@ class AgentTaskStoreMixin:
                         reason = "session_history_only"
                     elif current["recovery_abandoned"]:
                         reason = "session_recovery_abandoned"
+                    elif (dropped := self._dropped_chat_session_reason(current)) is not None:
+                        reason = dropped
                     elif not current["stage_root"]:
                         reason = "session_stage_unavailable"
                     else:
