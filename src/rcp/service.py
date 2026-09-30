@@ -128,6 +128,7 @@ from rcp.sources import (
     project_cache_roots,
 )
 from rcp.transport import repository_access as build_repository_access
+from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 
 _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
     "seed",
@@ -1725,6 +1726,11 @@ class ProjectService:
         return {
             "provider_logins": ProjectService.provider_logins_for(manifest, launcher),
             "provider_readiness": readiness_by_machine,
+            "state_transfers": {
+                machine.alias: state_transfer_diagnostics(machine.host)
+                for machine in manifest.machines
+                if machine.host
+            },
             "providers": readiness_by_machine[coach_machine],
         }
 

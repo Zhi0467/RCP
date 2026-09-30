@@ -1,13 +1,14 @@
 # Agent link robustness
 
 Date: 2026-09-29
-Status: slice B implemented. An xhigh design review ran on 2026-09-29 and
+Status: slices B and 2a implemented. An xhigh design review ran on 2026-09-29 and
 its findings are folded in below. The remaining slices await implementation
 and the human decisions below.
 
-Implemented: fix B (newline-only SSE and JSONL text readers).
-Remaining: fixes A, C, and D, the open decisions marked **Human decision**, and the
-tool audit's remaining owners.
+Implemented: fix B (newline-only SSE and JSONL text readers), and slice 2a
+(external dependency map and state-transfer rsync detection with visible tar fallback).
+Remaining: fixes A, C, and the retry/recovery portions of D, the open decisions
+marked **Human decision**, and the tool audit's remaining owners.
 
 Settled with the human on 2026-09-29:
 
@@ -217,7 +218,9 @@ Today:
 
 - The state pull (`_sync_remote_tree`), ordinary publication (`_publish`), and
   committed-history publication (`_publish_committed_history`) in
-  `src/rcp/transport/state.py` shell out to `rsync` on the shared SSH master.
+  `src/rcp/transport/state.py` now select a checked rsync or tar-over-SSH engine
+  through `src/rcp/transport/state_transfer.py` (slice 2a). Other rsync owners
+  still require rsync and have no fallback.
 - Committed-history publication already retries materialization when the
   commit is present, and lost lock ownership triggers commit reconciliation
   (`src/rcp/history/manager.py`). A failed rsync transfer is not retried.
@@ -225,9 +228,9 @@ Today:
   `StateUnavailable` and `ReplayHalted` into a non-correctable failure. The
   task says "the graph update was rejected", the words used for a Patch the
   rules refused, and it is not repairable.
-- Those three transfers set `timeout=120` without catching
-  `subprocess.TimeoutExpired`. The background boundary records it as an
-  unexpected error and fails the task.
+- Those three transfers now use a timeout owned by `limits.py` and normalize
+  process/timeout failures into the existing state-transfer failure boundary.
+  Classified resumability and bounded retry remain for the next slice.
 - Transfer stderr is captured whole, then collapsed and cut to 1,600
   characters in the task event (`src/rcp/runs/tasks/work.py`).
 
@@ -252,20 +255,47 @@ Target:
 
 Settled 2026-09-29: feature detection with a visible fallback.
 
-- RCP probes `rsync` once per connection, on the desktop and on the execution
-  host, and caches the result with that connection. It never probes per call.
-- Contract: rsync 3.1.0 or newer, protocol 31 or newer, on both ends. Apple's
-  openrsync reports protocol 29 and fails it. A `PATH` search may offer several
-  candidates; the first that passes is used, and its path and version are
-  recorded.
-- When both ends pass, transfers use rsync. Otherwise they use a tar stream
-  over plain SSH: a full copy, no delta, no extra dependency.
-- The fallback is never silent. RCP records it once per connection as a
-  warning, shows a non-blocking hint that says what to install and where, and
-  reports the active engine in diagnostics. It never blocks the work.
-- Retry after a killed connection (above) applies to both engines.
+- RCP probes `rsync` once per execution host per backend process, on the backend
+  and execution host, and caches completed contract verdicts in the transfer
+  owner. Exit 127 or a protocol mismatch invalidates the cached result and
+  triggers a new probe. SSH exit 255, timeouts and process-start errors are
+  surfaced as unavailable-host failures without caching or warning; the next
+  call probes again.
+- Updated human decision, 2026-09-29: this is a feature contract, with no rsync
+  release-version floor. Both ends require protocol 29 or newer and `-a`,
+  `--delete`, `--exclude`, `-R` over `-e ssh`. RCP passes those flags before
+  `--version` and parses GNU rsync and openrsync output. Stock macOS openrsync
+  passes. A `PATH` search may offer several candidates; the first that passes
+  is used, and its absolute path and version are recorded.
+- When both ends pass, transfers use rsync. Only a missing or contract-failing
+  rsync selects a tar stream over plain SSH: a full copy, no delta.
+- The fallback is never silent. RCP logs it once per execution host per backend
+  process and also records it through the task-event path when first selected
+  during a running task. The warning names the failing end, observed version,
+  and required installation. Existing project readiness reports cached engine,
+  selected local path, and versions per machine in `state_transfers`; an
+  unprobed host has no cached result. No new UI surface was added.
+- Retry after a killed connection (above) must apply to both engines; that retry
+  work remains outside slice 2a.
 
-Checks: a transfer killed mid-stream is retried and the commit lands once; a
+Implemented in slice 2a: PATH-ordered executable candidates with no path or OS
+preference; both-end protocol/feature checks; state-only tar pull/push; and
+source-module shipment of remote tar code. Pushes retain the same staged paths
+and canonical lock-holder commit protocol. Pull verifies the complete archive
+and extraction, then updates the existing mirror per entry. New or changed files
+publish through temporary siblings and `os.replace`; directories and symlinks are
+created before stale entries are deleted. Excluded names remain untouched, and
+the mirror root is never swapped. Failed transfer or extraction leaves the prior
+tree intact. A failure during application leaves complete old or new files;
+repeating the pull converges.
+
+Slice 2a checks cover version parsing, PATH selection, cached warnings, engine
+invalidation, uncached transport failures, tar mirroring/excludes, interrupted
+application and convergence, staged pushes, and the task-event/readiness
+integration. Network retry, commit reconciliation
+changes, and migration of other rsync owners remain unimplemented.
+
+Remaining checks: a transfer killed mid-stream is retried and the commit lands once; a
 killed acknowledgement after a confirmed commit leaves one commit; a timeout
 reaches a classified outcome.
 
@@ -278,22 +308,22 @@ guessed folders (`~/.local/bin`, `~/.npm-global/bin`, Homebrew,
 `/usr/bin` came first, so `rsync` was the system openrsync. Order depends on how
 the app was started.
 
-| Tool | Where | How found | What RCP checks |
-| --- | --- | --- | --- |
-| `rsync` | desktop, and the far end on the execution host | bare name | nothing at runtime; macOS desktop CI runs `/usr/bin/rsync` through a local wrapper, not over SSH |
-| `ssh` | desktop | bare name for the backend; `/usr/bin/ssh` for native team tunnels | nothing |
-| `python3` | execution host, for shipped remote scripts and the staged broker and client | bare name in the remote shell | used during discovery; no version gate, though the shipped scripts need 3.9 or newer |
-| `git` | desktop and execution host | bare name | 2.38 or newer for conversation worktrees; server doctor on Linux servers |
-| `ps`, `systemctl`, `systemd-run`, `launchctl` | execution host | bare name | terminal and launch-helper probes |
-| provider CLIs | desktop or execution host | configured path, or discovery, then `--version` | readiness probe |
+Slice 2a replaces the preliminary tool list with the source-derived dependency
+map in the specification below. State transfers now inspect every executable
+named `rsync` on backend PATH in order and use the first passing absolute path;
+the inherited PATH is unchanged. Other rsync call sites still require rsync and
+have no fallback. Non-rsync feature gates and fallbacks remain with their owners;
+the table explicitly marks missing probes rather than claiming they exist.
 
 Settled 2026-09-29: the rsync rule above is the general dependency policy, not
 an rsync special case. Every external tool RCP runs is listed in one table in
 [server and machine operations](../specs/server-and-machine-operations.md):
 where it runs, its owning module, its contract, how it is probed, and its
-fallback or refusal. A test scans the source for every external command RCP
-starts and fails when one is missing from the table. Probes and fallbacks stay
-with their owners; there is no universal runtime registry. Each owner states
+fallback or refusal. Slice 2a implements that map and
+`tests/test_external_dependencies.py`: an AST scan checks external command names
+against the table in both directions, including SSH helper argv and literal
+remote commands. Fully dynamic argv and `sys.executable` are excluded from the
+static name check. Probes and fallbacks stay with their owners; there is no universal runtime registry. Each owner states
 discovery, existence check, feature contract, and tested compatibility
 separately.
 

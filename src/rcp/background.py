@@ -7,7 +7,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, suppress
+from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Protocol, cast, get_args
@@ -95,6 +95,7 @@ from rcp.storage import (
 )
 from rcp.storage.models import AgentTaskAlreadyContinued
 from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
+from rcp.transport.state_transfer import warning_context
 
 logger = logging.getLogger(__name__)
 
@@ -2500,7 +2501,14 @@ class BackgroundAgentTasks:
         # than leaving it suspended for the garbage collector: its `finally` is
         # what releases the canonical run lock and retains the scratch folder.
         frames = source if source is not None else self.stream(project_id, kind, request, execution)
-        async with aclosing(frames) as stream:
+        async with AsyncExitStack() as contexts, aclosing(frames) as stream:
+            contexts.enter_context(
+                warning_context(
+                    lambda message: self.store.record_agent_task_event(
+                        execution.operation_id, message, level="warning"
+                    )
+                )
+            )
             async for frame in stream:
                 event = _event_from_sse(frame)
                 if event.usage is not None:

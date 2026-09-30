@@ -442,3 +442,7 @@ WEB_PUSH_MAX_ORIGIN_BYTES = 512
 WEB_PUSH_VAPID_LIFETIME_SECONDS = 12 * 60 * 60
 # The personal phone listener stops once no pairing code is live.
 PHONE_LISTENER_POLL_SECONDS = 2.0
+
+# State transfer capability negotiation and one complete snapshot transfer.
+STATE_TRANSFER_PROBE_TIMEOUT_SECONDS = 15
+STATE_TRANSFER_TIMEOUT_SECONDS = 120

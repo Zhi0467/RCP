@@ -53,6 +53,7 @@ from rcp.server_ops.backup_models import (
     BackupCanonicalSourceFile,
     BackupCanonicalSourcePlan,
 )
+from rcp.transport import state_transfer
 from rcp.transport.remote_read_kept_view import MISSING as _REMOTE_VIEW_MISSING
 from rcp.transport.remote_read_kept_view import TOO_LARGE as _REMOTE_VIEW_TOO_LARGE
 from rcp.transport.remote_read_kept_view import UNSAFE as _REMOTE_VIEW_UNSAFE
@@ -2036,25 +2037,23 @@ class SSHStateWorkspace(StateWorkspace):
 
     def _sync_remote_tree(self) -> bool:
         remote = f"{self.host}:{shlex.quote(str(self.remote_root))}/"
-        result = subprocess.run(
-            [
-                "rsync",
-                "-a",
-                "--delete",
-                "--exclude=.refresh.lock",
-                "--exclude=.agent-run.lock",
-                "--exclude=.append.lock",
-                "--exclude=.chat.lock",
-                "--exclude=.publish",
-                *rsync_ssh_arguments(),
-                remote,
-                f"{self.root}/",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
+        engine = state_transfer.get_engine(self.host)
+        excludes = (".refresh.lock", ".agent-run.lock", ".append.lock", ".chat.lock", ".publish")
+        if engine.engine == "rsync":
+            result = state_transfer.run_rsync(
+                self.host,
+                [
+                    engine.local_path,
+                    "-a",
+                    "--delete",
+                    *(f"--exclude={name}" for name in excludes),
+                    *rsync_ssh_arguments(),
+                    remote,
+                    f"{self.root}/",
+                ],
+            )
+        else:
+            result = state_transfer.pull_tar(self.host, self.remote_root, self.root, excludes)
         if result.returncode:
             self._mark_unreachable(result.stderr)
             raise StateUnavailable(self.error or "canonical state sync failed")
@@ -2685,6 +2684,19 @@ class SSHStateWorkspace(StateWorkspace):
             self._mark_reachable(synced=True)
             return True
 
+    def _push_state_files(
+        self, stage: PurePosixPath, sources: list[str]
+    ) -> subprocess.CompletedProcess[str]:
+        engine = state_transfer.get_engine(self.host)
+        if engine.engine == "tar":
+            return state_transfer.push_tar(self.host, stage, self.root, sources)
+        destination = f"{self.host}:{shlex.quote(str(stage))}/"
+        return state_transfer.run_rsync(
+            self.host,
+            [engine.local_path, "-aR", *rsync_ssh_arguments(), *sources, destination],
+            cwd=self.root,
+        )
+
     def _publish(self, relative_paths: list[Path | str], lease: RunLockLease) -> None:
         sources: list[str] = []
         for raw_relative in relative_paths:
@@ -2700,15 +2712,7 @@ class SSHStateWorkspace(StateWorkspace):
         if prepared.returncode:
             self._mark_unreachable(prepared.stderr)
             raise StateUnavailable(self.error or "canonical state is unreachable")
-        destination = f"{self.host}:{shlex.quote(str(stage))}/"
-        result = subprocess.run(
-            ["rsync", "-aR", *rsync_ssh_arguments(), *sources, destination],
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
+        result = self._push_state_files(stage, sources)
         if result.returncode:
             self._mark_unreachable(result.stderr)
             raise StateUnavailable(self.error or "canonical state publish failed")
@@ -2818,15 +2822,7 @@ class SSHStateWorkspace(StateWorkspace):
                 self.error or "canonical state staging failed",
                 commit_status="absent",
             )
-        destination = f"{self.host}:{shlex.quote(str(stage))}/"
-        result = subprocess.run(
-            ["rsync", "-aR", *rsync_ssh_arguments(), *sources, destination],
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
+        result = self._push_state_files(stage, sources)
         if result.returncode:
             self._mark_unreachable(result.stderr)
             raise BatchPublishFailed(

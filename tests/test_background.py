@@ -3527,3 +3527,27 @@ def test_shutdown_waits_for_a_reattempt_that_is_already_admitting(
     # A reattempt that arrives once shutdown has begun stands down instead.
     tasks._run_transport_retry("dropped", attempt=0)
     assert observed == [False]
+
+
+def test_state_transfer_fallback_records_one_task_warning(tmp_path, monkeypatch):
+    from rcp.transport import state_transfer
+
+    monkeypatch.setattr(state_transfer, "_CACHE", {})
+    monkeypatch.setattr(state_transfer, "_WARNED", set())
+    monkeypatch.setattr(state_transfer, "_local_candidate", lambda: (None, "missing"))
+    monkeypatch.setattr(state_transfer, "_probe", lambda _argv, **_kwargs: (True, "3.2.7"))
+    store = _store(tmp_path)
+
+    async def stream(_project_id, _kind, _request, _execution):
+        assert state_transfer.get_engine("research.example").engine == "tar"
+        assert state_transfer.get_engine("research.example").engine == "tar"
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(store, operation_id="transfer-warning")
+    tasks.launch_admitted(task.operation_id)
+    wait_for_task(store, task.operation_id, expect="succeeded")
+    warnings = [
+        event for event in store.agent_task_events(task.operation_id) if event.level == "warning"
+    ]
+    assert len(warnings) == 1
