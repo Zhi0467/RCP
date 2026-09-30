@@ -75,6 +75,8 @@ def _agent_task_control_flags(
         and status in {"paused", "interrupted", "failed"}
         and status not in ACTIVE_AGENT_TASK_STATUSES
         and not recovery_abandoned
+        # A refused wake would replay the same refused policy.
+        and row.get("failure_kind") != "session_refused"
     )
     if row.get("kind") == "branch_merge":
         # A merge retry is a new human dispatch against the then-current main

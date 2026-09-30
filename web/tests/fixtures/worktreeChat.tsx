@@ -60,6 +60,7 @@ function Fixture() {
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
             native_session_id: "session-one",
+            current_chat_session_id: "session-one",
             result: { answers: [] },
           } as unknown as AgentTask;
           setTasks((current) => [...current, task]);

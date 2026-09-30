@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import subprocess
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
+from concurrent.futures import Future
 from contextlib import aclosing, suppress
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from rcp.agents import AgentEvent, AgentLauncher
-from rcp.agents.command_mailbox import CommandHandler, StagedCommandMailbox
+from rcp.agents.command_mailbox import (
+    CommandHandler,
+    CommandTurnCredential,
+    CommandTurnIdentity,
+    StagedCommandMailbox,
+)
+from rcp.agents.command_protocol import CommandResponse
 from rcp.agents.context import ChatContext
+from rcp.agents.invocation_broker import ProviderInvocationGate
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskContinuation, AgentTaskExecution
 from rcp.config import AgentSurface
@@ -35,7 +45,17 @@ from rcp.runs.tasks.result_views import ResultViewSnapshot, _PreparedResultView
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import ResultViewRecord
-from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
+from rcp.storage.command_mailbox import CommandMailboxStore
+from rcp.transport import (
+    BatchPublishFailed,
+    RemoteRunStage,
+    RunLockCancelled,
+    RunLockOwnershipLost,
+    RunStageMailbox,
+    StateUnavailable,
+    StateUnreachable,
+)
+from rcp.transport.run_stage import RemoteStageTransportFailure
 
 
 @dataclass(frozen=True)
@@ -51,6 +71,30 @@ class DeliverableFailure:
     correctable: bool
     change_summary: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
+    # Set only when Apply could not reach canonical state: what its commit point
+    # showed. The rules never judged the Patch, so this is not a rejection.
+    commit_status: Literal["absent", "present", "unknown"] | None = None
+
+
+def failed_graph_update(
+    failure: DeliverableFailure,
+    *,
+    bounded_messages: Callable[..., list[str]],
+    correction_rounds: int = 0,
+    repairable: bool = False,
+) -> GraphUpdateResult:
+    """Record a failed Apply as a rejection, or as unavailable canonical state."""
+
+    unavailable = failure.commit_status is not None
+    return GraphUpdateResult(
+        status="unavailable" if unavailable else "rejected",
+        change_summary=list(failure.change_summary),
+        proposal_ids=list(failure.proposal_ids),
+        validation_messages=bounded_messages(failure.message),
+        correction_rounds=correction_rounds,
+        repairable=repairable and not unavailable,
+        commit_status=failure.commit_status,
+    )
 
 
 @dataclass(frozen=True)
@@ -64,21 +108,52 @@ class CorrectionPatchRead:
 class WorkValidatorMailboxLifecycle:
     staged: StagedCommandMailbox
     execution: AgentTaskExecution | None
-    stop: asyncio.Event
-    task: asyncio.Task[None]
+    stop: asyncio.Event | threading.Event
+    task: asyncio.Task[None] | Future[None]
     closed: bool = False
+    detached: bool = False
+    suspension: threading.Event = field(default_factory=threading.Event)
+    thread: threading.Thread | None = None
+    _ownership_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def detach(self) -> None:
+        if self.thread is None:
+            raise RuntimeError("A detached mailbox requires its own worker thread")
+        with self._ownership_lock:
+            self.detached = True
+
+    def settle(self) -> None:
+        """Hand admission and all in-flight effects back to recorded settlement."""
+        with self._ownership_lock:
+            self.detached = False
+        asyncio.run(self.close())
+        if self.suspension.is_set():
+            raise StateUnavailable("Mailbox settlement suspended for backend shutdown")
+
+    def suspend(self, *, timeout: float | None = None) -> None:
+        """Backend shutdown leaves the same credential and checkpoint resumable."""
+        self.suspension.set()
+        if self.thread is not None:
+            self.thread.join(timeout)
 
     async def close(self, *, primary_error: BaseException | None = None) -> None:
-        if self.closed:
-            return
-        self.closed = True
+        with self._ownership_lock:
+            if self.closed or self.detached:
+                return
+            self.closed = True
         await close_work_validator_mailbox(
             self.staged,
             stop=self.stop,
             task=self.task,
             execution=self.execution,
             primary_error=primary_error,
+            suspend=self.suspension,
         )
+        if self.execution is not None and self.thread is not None and not self.suspension.is_set():
+            CommandMailboxStore.for_data_dir(self.execution.store.path.parent).delete(
+                self.execution.operation_id,
+                mailbox_id=self.staged.credential.mailbox_id,
+            )
 
 
 @dataclass
@@ -140,7 +215,7 @@ class WorkTurn:
     @property
     def uses_master_protocol(self) -> bool:
         return (
-            self.request.trigger in {"human", "orchestrator"}
+            _chat_trigger(self.request.trigger, self.continuation)
             and self.request.patch_kind == "work"
             and not self.retry_attempt
         )
@@ -221,10 +296,18 @@ class WorkFinalizationContext:
     @property
     def uses_master_protocol(self) -> bool:
         return (
-            self.request.trigger in {"human", "orchestrator"}
+            _chat_trigger(self.request.trigger, self.continuation)
             and self.request.patch_kind == "work"
             and self.continuation not in {"retry", "handoff"}
         )
+
+
+def _chat_trigger(trigger: str, continuation: AgentTaskContinuation) -> bool:
+    """A human or orchestrator turn, or an ordinary chat's watcher wake."""
+
+    return trigger in {"human", "orchestrator"} or (
+        trigger == "watcher" and continuation in {"watcher_wake", "resume"}
+    )
 
 
 @dataclass(frozen=True)
@@ -426,7 +509,10 @@ async def stream_work_agent_events(
         primary_error = exc
         raise
     finally:
-        await validator_lifecycle.close(primary_error=primary_error)
+        if outcome.remote_result_pending:
+            validator_lifecycle.detach()
+        else:
+            await validator_lifecycle.close(primary_error=primary_error)
 
 
 def start_work_validator_mailbox(
@@ -437,36 +523,194 @@ def start_work_validator_mailbox(
     validate: Callable[[str], PatchValidationResult],
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
     command_handler: CommandHandler | None = None,
+    resume_context: dict[str, object] | None = None,
+    responses: dict[str, CommandResponse] | None = None,
+    terminal: dict[str, str] | None = None,
 ) -> WorkValidatorMailboxLifecycle:
-    stop = asyncio.Event()
-    try:
-        task = asyncio.create_task(
-            serve(
-                staged=staged,
-                execution=execution,
-                validate=validate,
-                stop=stop,
-                budget=budget,
-                **({"command_handler": command_handler} if command_handler is not None else {}),
-            )
-        )
-    except BaseException:
-        with suppress(BaseException):
-            staged.cleanup()
-        raise
-    return WorkValidatorMailboxLifecycle(
-        staged=staged,
-        execution=execution,
-        stop=stop,
-        task=task,
+    remote = staged.mailbox.remote_stage
+    kwargs = dict(staged=staged, execution=execution, validate=validate, budget=budget)
+    if command_handler is not None:
+        kwargs["command_handler"] = command_handler
+    if remote is None:
+        stop = asyncio.Event()
+        try:
+            task = asyncio.create_task(serve(stop=stop, **kwargs))
+        except BaseException:
+            with suppress(BaseException):
+                staged.cleanup()
+            raise
+        return WorkValidatorMailboxLifecycle(staged, execution, stop, task)
+
+    stop = threading.Event()
+    result: Future[None] = Future()
+    owner = WorkValidatorMailboxLifecycle(staged, execution, stop, result)
+    responses = responses if responses is not None else {}
+    terminal = terminal if terminal is not None else {}
+    checkpoint_store = (
+        CommandMailboxStore.for_data_dir(execution.store.path.parent) if execution else None
     )
+    document = {
+        "version": 1,
+        "identity": asdict(staged.credential.identity),
+        "mailbox_id": staged.credential.mailbox_id,
+        "token": staged.credential.token,
+        "host": remote.host,
+        "root": str(remote.root),
+        "workspace": staged.workspace,
+        "client_path": staged.client_path,
+        "credential_path": staged.credential_path,
+        "gate": asdict(staged.invocation_gate) if staged.invocation_gate else None,
+        "timeout_seconds": staged.timeout_seconds,
+        "context": resume_context,
+    }
+
+    def checkpoint() -> None:
+        if checkpoint_store is not None:
+            checkpoint_store.save(
+                execution.operation_id,
+                {
+                    **document,
+                    "budget_count": budget.count,
+                    "budget_requests": budget.requests,
+                    "terminal": terminal,
+                    "responses": {
+                        key: value.model_dump(mode="json") for key, value in responses.items()
+                    },
+                },
+            )
+
+    checkpoint()
+
+    def run() -> None:
+        try:
+            asyncio.run(
+                serve(
+                    stop=stop,
+                    suspend=owner.suspension,
+                    responses=responses,
+                    terminal=terminal,
+                    checkpoint=checkpoint,
+                    **kwargs,
+                )
+            )
+        except BaseException as exc:
+            result.set_exception(exc)
+        else:
+            result.set_result(None)
+
+    owner.thread = threading.Thread(
+        target=run,
+        name=f"command-mailbox-{staged.credential.mailbox_id}",
+        daemon=True,
+    )
+    if execution is not None:
+        execution.command_mailbox = owner
+    owner.thread.start()
+    return owner
+
+
+def load_work_mailbox_context(execution: AgentTaskExecution) -> dict[str, object] | None:
+    saved = CommandMailboxStore.for_data_dir(execution.store.path.parent).load(
+        execution.operation_id
+    )
+    return saved.get("context") if saved is not None else None
+
+
+def restore_work_validator_mailbox(
+    execution: AgentTaskExecution,
+    *,
+    validate: Callable[[str], PatchValidationResult],
+    command_handler: CommandHandler | None = None,
+    serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
+) -> WorkValidatorMailboxLifecycle | None:
+    """Continue this turn's private credential; never stage, clear, or reissue it."""
+    saved = CommandMailboxStore.for_data_dir(execution.store.path.parent).load(
+        execution.operation_id
+    )
+    if saved is None:
+        return None
+    identity = CommandTurnIdentity(**saved["identity"])
+    if (
+        saved["version"] != 1
+        or identity.task_id != execution.operation_id
+        or saved["host"] != execution.stage_host
+        or saved["root"] != execution.stage_root
+    ):
+        raise ValueError("The saved command mailbox does not belong to this task stage")
+    remote = RemoteRunStage(saved["host"])
+    # This binding already passed launch-time stage admission. Listing performs
+    # the first host check so an unreachable host still gets an owner and backoff.
+    remote.root = PurePosixPath(saved["root"])
+    mailbox = RunStageMailbox.for_stage(local_stage=None, remote_stage=remote)
+    if str(mailbox.workspace) != saved["workspace"]:
+        raise ValueError("The saved command mailbox workspace changed")
+    staged = StagedCommandMailbox(
+        mailbox=mailbox,
+        credential=CommandTurnCredential(identity, saved["mailbox_id"], saved["token"]),
+        client_path=saved["client_path"],
+        credential_path=saved["credential_path"],
+        invocation_gate=ProviderInvocationGate(**saved["gate"]) if saved["gate"] else None,
+        timeout_seconds=saved["timeout_seconds"],
+    )
+    owner = start_work_validator_mailbox(
+        staged,
+        execution=execution,
+        budget=PatchValidationBudget(saved["budget_count"], saved["budget_requests"]),
+        validate=validate,
+        command_handler=command_handler,
+        serve=serve,
+        resume_context=saved["context"],
+        terminal=saved["terminal"],
+        responses={
+            key: CommandResponse.model_validate(value) for key, value in saved["responses"].items()
+        },
+    )
+    owner.detach()
+    return owner
+
+
+def discard_work_mailbox_checkpoint(data_dir: Path, operation_id: str) -> dict[str, object] | None:
+    """Forget a turn's saved credential; return what it named, if readable."""
+
+    store = CommandMailboxStore.for_data_dir(data_dir)
+    try:
+        saved = store.load(operation_id)
+    except (OSError, ValueError):
+        saved = None
+    store.delete(operation_id)
+    return saved
+
+
+def clear_saved_remote_mailbox(saved: dict[str, object]) -> bool:
+    """Remove a discarded turn's command files from its stage; report success.
+
+    Only names carrying this mailbox's random id go, so a newer turn on the
+    same stage keeps its own requests and credential. A malformed document has
+    nothing to clean and counts as done.
+    """
+
+    mailbox_id, host, root = (str(saved.get(key) or "") for key in ("mailbox_id", "host", "root"))
+    if len(mailbox_id) != 32 or not host or not root:
+        return True
+    try:
+        remote = RemoteRunStage(host)
+        remote.root = PurePosixPath(root)
+        mailbox = RunStageMailbox.for_stage(local_stage=None, remote_stage=remote)
+        for name in mailbox.entry_names():
+            if mailbox_id in name:
+                mailbox.remove(name, missing_ok=True)
+    except Exception:
+        return False
+    return True
 
 
 async def _wait_for_work_validator_task(
-    task: asyncio.Task[None],
+    task: asyncio.Task[None] | Future[None],
 ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
     """Wait without allowing caller cancellation to abandon an owned mailbox task."""
 
+    if isinstance(task, Future):
+        task = asyncio.wrap_future(task)
     caller_cancelled: asyncio.CancelledError | None = None
     while not task.done():
         try:
@@ -486,10 +730,11 @@ async def _wait_for_work_validator_task(
 async def close_work_validator_mailbox(
     staged: StagedCommandMailbox,
     *,
-    stop: asyncio.Event | None,
-    task: asyncio.Task[None] | None,
+    stop: asyncio.Event | threading.Event | None,
+    task: asyncio.Task[None] | Future[None] | None,
     execution: AgentTaskExecution | None,
     primary_error: BaseException | None = None,
+    suspend: threading.Event | None = None,
 ) -> None:
     if stop is not None:
         stop.set()
@@ -499,6 +744,8 @@ async def close_work_validator_mailbox(
     if task is not None:
         serve_error, caller_cancelled = await _wait_for_work_validator_task(task)
 
+    if suspend is not None and suspend.is_set():
+        return
     cleanup_task = asyncio.create_task(asyncio.to_thread(staged.cleanup))
     cleanup_error, cleanup_cancelled = await _wait_for_work_validator_task(cleanup_task)
     if caller_cancelled is None:
@@ -555,7 +802,9 @@ def validate_work_patch_live(
     try:
         candidate = prepare_candidate(patch_text)
         prepared, report, state = service.history.validate_candidate(candidate.patch)
-    except (ReplayHalted, StateUnavailable, OSError) as exc:
+    except (StateUnreachable, RemoteStageTransportFailure):
+        raise
+    except (ReplayHalted, StateUnavailable, OSError, subprocess.TimeoutExpired) as exc:
         return PatchValidationResult(status="unavailable", messages=[str(exc)])
     except ValueError as exc:
         return PatchValidationResult(status="invalid", messages=[str(exc)])
@@ -590,8 +839,20 @@ def apply_work_patch(
     bounded_messages: Callable[..., list[str]],
     record_lock_wait: Callable[[str, str], None] | None = None,
     record_lock_lost: Callable[[str, str], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    under_lock: Callable[[], None] | None = None,
+    prior_commit_status: Literal["present", "unknown"] | None = None,
 ) -> tuple[GraphUpdateResult | None, DeliverableFailure | None]:
-    """Validate and atomically commit one candidate prepared by its concrete owner."""
+    """Validate and atomically commit one candidate prepared by its concrete owner.
+
+    A transport failure is classified by how far the commit got: before the
+    append it is absent, after it present, and inside it what the commit point
+    reported. An unknown commit is never retried here (invariants 6 and 6b).
+    ``under_lock`` runs once the canonical run lock is owned and before anything
+    is read or appended; an exception it raises leaves history untouched.
+    ``prior_commit_status`` is what an earlier attempt with the same source
+    binding established; a failure before this attempt's history check keeps it.
+    """
 
     if execution is not None:
         execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
@@ -604,6 +865,7 @@ def apply_work_patch(
     change_summary: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
     canonical_patch: Patch | None = None
+    commit_phase: Literal["before", "appending", "committed"] = "before"
     try:
         candidate = prepare_candidate(patch_text)
         patch = candidate.patch
@@ -628,9 +890,14 @@ def apply_work_patch(
                 if record_lock_lost is not None
                 else None
             ),
-            cancelled=(execution.control.pause_requested.is_set if execution is not None else None),
+            cancelled=(
+                execution.control.pause_requested.is_set if execution is not None else cancelled
+            ),
         ) as lease:
             lease.assert_owned()
+            if under_lock is not None:
+                under_lock()
+                lease.assert_owned()
             if source_operation_id:
                 matches = [
                     item
@@ -648,18 +915,23 @@ def apply_work_patch(
                     canonical_patch = matches[0]
                     if not canonical_matches(canonical_patch, patch):
                         raise ValueError(canonical_binding_error)
+                    # The commit is present from here on, even if materializing it fails.
+                    commit_phase = "committed"
                     result = service.history.current_materialization()
                     appended = canonical_patch
                 else:
+                    commit_phase = "appending"
                     appended, result = service.history.append(
                         patch,
                         discard_on_reject=True,
                     )
             else:
+                commit_phase = "appending"
                 appended, result = service.history.append(
                     patch,
                     discard_on_reject=True,
                 )
+            commit_phase = "committed"
     except PatchRejected as exc:
         messages = [item.message for item in exc.report.messages if item.level == "reject"]
         detail = "; ".join(messages) or str(exc) or rejected_patch_error
@@ -676,12 +948,39 @@ def apply_work_patch(
             change_summary=change_summary,
             proposal_ids=proposal_ids,
         )
-    except (ReplayHalted, StateUnavailable) as exc:
+    except ReplayHalted as exc:
+        # Canonical history is read-only until a human repairs it. That is not
+        # a lost link, so it stays a non-correctable rejection.
         return None, DeliverableFailure(
             str(exc),
             correctable=False,
             change_summary=change_summary,
             proposal_ids=proposal_ids,
+        )
+    except StateUnavailable as exc:
+        commit_status: Literal["absent", "present", "unknown"]
+        if commit_phase == "committed":
+            commit_status = "present"
+        elif commit_phase == "appending" and isinstance(exc, BatchPublishFailed):
+            commit_status = exc.commit_status
+        elif commit_phase == "appending" and isinstance(exc, RunLockOwnershipLost):
+            # The append's own lease is also checked after publication, so a
+            # lost lease there cannot say which side of the commit it was on.
+            commit_status = "unknown"
+        elif commit_phase == "before" and prior_commit_status is not None:
+            # This attempt never read history, so it has no evidence to lower
+            # what an earlier attempt established.
+            commit_status = prior_commit_status
+        else:
+            # Before the commit point, or inside append before it published:
+            # history reports a failed publication as BatchPublishFailed.
+            commit_status = "absent"
+        return None, DeliverableFailure(
+            str(exc),
+            correctable=False,
+            change_summary=change_summary,
+            proposal_ids=proposal_ids,
+            commit_status=commit_status,
         )
     except ValueError as exc:
         return None, DeliverableFailure(
@@ -774,11 +1073,9 @@ def settle_graph_repair_patch(
         )
     if graph_update is None:
         assert failure is not None
-        graph_update = GraphUpdateResult(
-            status="rejected",
-            change_summary=list(failure.change_summary),
-            proposal_ids=list(failure.proposal_ids),
-            validation_messages=bounded_messages(failure.message),
+        graph_update = failed_graph_update(
+            failure,
+            bounded_messages=bounded_messages,
             correction_rounds=1,
         )
         record_rejection(graph_update)

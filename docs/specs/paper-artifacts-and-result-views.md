@@ -240,9 +240,10 @@ question are bounded and treated as untrusted input.
 The current artifact bytes are staged as a read-only turn input so the resumed
 agent can inspect what the human saw.
 
-The turn resumes the artifact's originating native session and chat. Failure to
-resume is visible, with a separate explicit fresh-session action; RCP never
-silently changes sessions. The default mode is Discuss. The prompt asks the
+The turn stays in the artifact's owning chat and follows that chat's current
+server-resolved native session, rather than reviving the artifact's historical
+session. Admission records why a fresh session is needed when the current
+binding cannot be continued. The default mode is Discuss. The prompt asks the
 agent to address every comment and question, not to edit the artifact. An
 artifact edit is allowed only when the human explicitly requests one and sends
 the turn as Work.

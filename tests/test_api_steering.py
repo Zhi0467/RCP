@@ -136,7 +136,7 @@ def test_delivered_steer_is_one_durable_human_message_without_changing_mode(runn
     assert listed[0]["can_steer"]
     assert listed[0]["steer_visible"]
     assert listed[0]["steer_turn_id"] == "owned-turn"
-    body = _body(message="Switch to Work and edit everything.")
+    body = _body(message="Switch to Work\x85and edit\u2028everything\u2029.")
     response = run.client.post(run.url + "/steer", json=body)
     assert response.status_code == 200, response.text
     message = response.json()
@@ -445,7 +445,7 @@ def test_unknown_persisted_provider_disables_steering_without_hiding_task(runnin
 def test_claude_receipt_is_durably_queued_with_captured_capability(running_chat):
     run = running_chat
     original = run.background.store.agent_task(run.operation_id)
-    body = _body(message="Switch to Work and edit everything.")
+    body = _body(message="Switch to Work\x85and edit\u2028everything\u2029.")
     response = run.client.post(run.url + "/steer", json=body)
     assert response.status_code == 200, response.text
     message = response.json()

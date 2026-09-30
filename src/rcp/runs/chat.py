@@ -303,7 +303,14 @@ def _prepare_chat_prompt_state(
     """Persist a candidate baseline and return the turn's node, master, and compact delta."""
 
     previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
-    node = classify(LaunchPhase(session_id=request.session_id, phase="turn"))
+    node = classify(
+        LaunchPhase(
+            session_id=request.session_id,
+            phase="wake"
+            if execution is not None and execution.continuation == "watcher_wake"
+            else "turn",
+        )
+    )
     master_operation_id: str | None = None
     master_sha256: str | None = None
     master_source = "rendered"
@@ -395,6 +402,7 @@ def _prepare_chat_prompt_state(
             execution.operation_id,
             "chat_master_context",
             {
+                "node": node,
                 "bootstrapped": must_bootstrap,
                 "master_context_version": CHAT_MASTER_CONTEXT_VERSION,
                 "master_context_path": master_context_path,
@@ -1768,9 +1776,9 @@ def _append_chat_graph_receipt(
     request: RunRequest,
     native_session_id: str | None,
     graph_update: GraphUpdateResult,
-    execution: AgentTaskExecution,
+    operation_id: str,
 ) -> None:
-    """Append only a durable receipt for a manual patch repair continuation."""
+    """Append only a durable receipt for a patch repair or an Apply again."""
 
     assert request.chat_id is not None
     with service.history.workspace.transaction():
@@ -1787,7 +1795,7 @@ def _append_chat_graph_receipt(
             "executionMachine": request.run_on,
             "cwd": str(service.manifest.research_dir.parent),
             "timestamp": datetime.now(UTC).isoformat(),
-            "operationId": execution.operation_id,
+            "operationId": operation_id,
             "mode": "work",
             "trigger": request.trigger,
             "activeComputeIds": request.active_compute_ids,
@@ -1823,7 +1831,7 @@ def _append_chat_records(
                 # A live steer may already have recorded this attempt's original
                 # human prompt, or finalization may be resuming after appending
                 # the answer. Inspect only identity, never use transcript as input.
-                existing = [json.loads(line) for line in path.read_text().splitlines() if line]
+                existing = [json.loads(line) for line in path.read_text().split("\n") if line]
                 recorded = {
                     (item.get("operationId"), item.get("role"))
                     for item in existing

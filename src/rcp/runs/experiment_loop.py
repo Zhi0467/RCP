@@ -1332,6 +1332,17 @@ def experiment_graph_result_summary(graph_update: GraphUpdateResult) -> str:
             else "the graph rejected it"
         )
         return f"rejected: {detail[:400]}"
+    if graph_update.status == "unavailable":
+        detail = (
+            graph_update.validation_messages[0]
+            if graph_update.validation_messages
+            else "canonical state was unavailable"
+        )
+        if graph_update.commit_status == "present":
+            return f"committed, but canonical state was lost before confirming it: {detail[:400]}"
+        if graph_update.commit_status == "unknown":
+            return f"may have been committed; canonical state was lost at the commit point: {detail[:400]}"
+        return f"not applied, canonical state was unreachable: {detail[:400]}"
     return "no graph change"
 
 

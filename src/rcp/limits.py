@@ -98,6 +98,19 @@ REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS = 5.0
 # slow RCP starts reporting a perfectly good command as a broker-side failure.
 COMMAND_MAILBOX_TIMEOUT_SECONDS = 30.0
 COMMAND_MAILBOX_POLL_SECONDS = 0.2
+COMMAND_MAILBOX_REMOTE_POLL_SECONDS = 2.0
+COMMAND_MAILBOX_RETRY_INITIAL_SECONDS = 0.5
+COMMAND_MAILBOX_RETRY_MAX_SECONDS = 30.0
+COMMAND_MAILBOX_RETRY_JITTER = 0.25
+COMMAND_MAILBOX_STOP_POLL_SECONDS = 0.1
+# After Stop or settlement, each drain step gets only this many failed attempts.
+COMMAND_MAILBOX_STOP_MAX_FAILED_ATTEMPTS = 3
+# A handler whose own SSH call gave no verdict is re-run at most this many more
+# times, and only for a turn that checkpoints its responses; then "unavailable".
+COMMAND_MAILBOX_HANDLER_MAX_RETRIES = 2
+# Reconciliation passes that may retry resuming a saved mailbox after a
+# transient read error, before that turn's mailbox is refused for this process.
+COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS = 5
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
 # How long one client invocation waits before it returns "not answered yet".
 # Provider shell tools kill long commands (Claude Code's Bash stops at 120 s,
@@ -295,6 +308,9 @@ STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS = 30.0
 STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS = 20.0
 STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS = 5.0
 STATE_LOCK_POLL_INTERVAL_SECONDS = 0.2
+# A human's Apply again gives up on the agent-run lock rather than holding the
+# request open behind a long graph-writing run.
+APPLY_AGAIN_RUN_LOCK_WAIT_SECONDS = 20.0
 # Holder-enforced liveness tolerates command round trips and missed heartbeats.
 STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS = 10.0
 STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS = 60.0
@@ -442,3 +458,13 @@ WEB_PUSH_MAX_ORIGIN_BYTES = 512
 WEB_PUSH_VAPID_LIFETIME_SECONDS = 12 * 60 * 60
 # The personal phone listener stops once no pairing code is live.
 PHONE_LISTENER_POLL_SECONDS = 2.0
+
+# State transfer capability negotiation and one complete snapshot transfer.
+STATE_TRANSFER_PROBE_TIMEOUT_SECONDS = 15
+STATE_TRANSFER_TIMEOUT_SECONDS = 120
+# A transfer that dies mid-stream is retried this many times in all, with capped
+# backoff; each retry re-sends the same bytes to the same destination.
+STATE_TRANSFER_ATTEMPTS = 3
+STATE_TRANSFER_RETRY_INITIAL_SECONDS = 1.0
+STATE_TRANSFER_RETRY_MAX_SECONDS = 8.0
+STATE_TRANSFER_STDERR_BYTES = 4096

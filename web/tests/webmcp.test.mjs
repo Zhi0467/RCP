@@ -287,6 +287,7 @@ function conversationFixtures() {
     runtime_id: "exec",
     runtime_label: "Codex exec",
     native_session_id: "session-1",
+    current_chat_session_id: "session-1",
     graph_target: { kind: "main" },
     active: false,
     awaiting_human: false,

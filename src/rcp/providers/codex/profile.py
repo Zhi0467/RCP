@@ -97,7 +97,7 @@ class CodexProfile(ProviderProfile):
 
     def probe_failure_evidence(self, result: subprocess.CompletedProcess[str]) -> str:
         diagnostics = [result.stderr]
-        for line in result.stdout.splitlines():
+        for line in result.stdout.split("\n"):
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:

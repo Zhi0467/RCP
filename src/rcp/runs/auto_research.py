@@ -55,6 +55,7 @@ from rcp.storage import (
     EpisodeNotRunning,
     EpisodeRecord,
 )
+from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
@@ -1192,7 +1193,8 @@ class AutoResearchCommandDispatcher:
             )
         except AutoResearchCommandInvalid as exc:
             outcome = AutoResearchCommandEffectResult(status="invalid", message=str(exc))
-        except (AutoResearchCommandUnavailable, OSError) as exc:
+        except (AutoResearchCommandUnavailable, OSError, StateUnavailable) as exc:
+            # A lost link answers this command; it never leaves the ledger row open.
             outcome = AutoResearchCommandEffectResult(status="unavailable", message=str(exc))
         except KeyError as exc:
             outcome = AutoResearchCommandEffectResult(

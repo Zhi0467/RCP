@@ -2,7 +2,7 @@ import { sameGraphTarget } from "./graphTarget";
 import type { GraphTargetRef } from "./types";
 import {
   artifactUrl,
-  latestNativeSessionId,
+  resolvedChatSessionId,
   relatedChatTasks,
   resumablePausedChatTask,
   taskArtifacts,
@@ -1117,11 +1117,7 @@ async function resolveProjectConversationContext(
     readiness,
     providerReady,
     runTruthScope,
-    sessionId:
-      latestNativeSessionId(relatedTasks) ??
-      [...transcript.messages].reverse().find((message) => message.native_session_id)
-        ?.native_session_id ??
-      null,
+    sessionId: resolvedChatSessionId(relatedTasks),
     refusal: conversationRefusal(
       latestTask,
       relatedTasks,

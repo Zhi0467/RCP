@@ -2,6 +2,10 @@
 
 - [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
   — implemented 2026-09-28 on the same PR; real Mac and iPhone journeys remain.
+- [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)
+  — implemented on its PR: chat wake sessions, event parsing, the validator
+  poller, state-transfer retry, and Apply again; live checks and the remaining
+  tool audit remain.
 
 ## Open live checks
 

@@ -820,3 +820,27 @@ def test_remote_execution_keeps_same_machine_sources_out_of_permanent_cache(
     assert all(session.source_path_is_remote for session in result.sessions)
     assert all(session.remote_source_host == "research.example" for session in result.sessions)
     assert cache_calls == []
+
+
+def test_remote_index_preserves_unicode_line_separators(manifest, monkeypatch):
+    text = "before\x85middle\u2028more\u2029after"
+    payload = (
+        "\r\n".join(
+            json.dumps(record, ensure_ascii=False)
+            for record in [
+                {"kind": "session", "session_id": text},
+                {"kind": "summary", "unmatched_files": 0, "malformed_files": 0},
+            ]
+        )
+        + "\r\n"
+    )
+    monkeypatch.setattr(
+        source_indexer.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, payload, ""),
+    )
+    result = ConversationIndexer(manifest)._inspect_remote_root(
+        "example.invalid", "/sessions", "claude", "remote"
+    )
+    assert result.sessions[0]["session_id"] == text
+    assert result.unmatched_files == result.malformed_files == 0

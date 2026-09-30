@@ -88,7 +88,14 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from rcp.transport import RunLockCancelled, RunLockLease, SSHStateWorkspace, StateUnavailable
+from rcp.transport import (
+    BatchPublishFailed,
+    RunLockCancelled,
+    RunLockLease,
+    SSHStateWorkspace,
+    StateUnavailable,
+    StateUnreachable,
+)
 from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
 
 from .helpers import (
@@ -3690,6 +3697,21 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert origin is not None and origin.native_session_id
     revisable_viewer = client.get(viewer_url)
     assert "rcp-artifact-context" in revisable_viewer.text
+    latest = store.create_agent_task(
+        origin.model_copy(
+            update={
+                "operation_id": str(uuid.uuid4()),
+                "created_at": store.now(),
+                "updated_at": store.now(),
+                "native_session_id": "newer-chat-session",
+                "request": {**origin.request, "reasoning": "low"},
+                "result": None,
+            }
+        )
+    )
+    projected = client.get(f"/api/projects/{project_id}/tasks/{origin.operation_id}")
+    assert projected.status_code == 200
+    assert projected.json()["current_chat_session_id"] == latest.native_session_id
     admitted_requests: list[RunRequest] = []
 
     def capture_artifact_question(
@@ -3727,8 +3749,8 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             "chat_id": origin.request["chat_id"],
             "message": "Why does this section jump?",
             "mode": "discuss",
-            # Artifact-context admission ignores stale settings from the current
-            # chat and resumes the exact profile recorded by the origin turn.
+            # Artifact-context admission uses the chat's current session profile.
+            # Atomic task insertion resolves its session and stage.
             "run_on": "stale-machine",
             "artifact_context": {
                 "source": "task",
@@ -3741,7 +3763,8 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert asked.status_code == 202
     admitted = admitted_requests[-1]
     assert admitted.mode == "discuss"
-    assert admitted.session_id == origin.native_session_id
+    assert admitted.session_id is None
+    assert admitted.reasoning == latest.request["reasoning"]
     assert admitted.artifact_context is not None
     assert admitted.artifact_context.operation_id == origin.operation_id
 
@@ -5252,6 +5275,7 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(manifest,
         "validation_messages": [],
         "correction_rounds": 0,
         "repairable": False,
+        "commit_status": None,
     }
     assert service.history.state().revision == 2
     assert launcher.launch_kwargs[0]["capability"] == "work_auto"
@@ -5819,7 +5843,8 @@ async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_app
     ]
     graph_update = _graph_update(frames)
     assert graph_update is not None
-    assert graph_update["status"] == "rejected"
+    assert graph_update["status"] == "unavailable"
+    assert graph_update["commit_status"] == "absent"
     assert graph_update["repairable"] is False
     assert "lock holder" in graph_update["validation_messages"][0]
     assert launcher.calls == 1
@@ -6171,6 +6196,321 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     assert transcript.messages[-1].graph_update is not None
     assert transcript.messages[-1].graph_update.status == "applied"
     assert transcript.last_message_preview == "The operational work completed."
+
+
+def _work_turn_whose_apply_loses_canonical_state(
+    manifest,
+    tmp_path,
+    monkeypatch,
+    failure: Exception,
+    *,
+    lands_before_failure: bool = False,
+    later_turns: tuple[dict[str, str], ...] = (),
+):
+    app, service = _seeded_project(manifest, tmp_path)
+    patch_text = agent_patch_json(
+        refresh_patch("rq/applied-again").model_copy(update={"kind": "work"})
+    )
+    launcher = ScriptedLauncher(
+        [{"patch.json": patch_text}, *later_turns], message="The operational work completed."
+    )
+    real_append = service.history.append
+
+    def fail_once(*args, **kwargs):
+        monkeypatch.setattr(service.history, "append", real_append)
+        if lands_before_failure:
+            real_append(*args, **kwargs)
+        raise failure
+
+    monkeypatch.setattr(service.history, "append", fail_once)
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "message": "Run the operation and reflect it.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert started.status_code == 202
+    task = _wait_for_run(client, project_id, started.json()["operation_id"])
+    assert task["status"] == "succeeded", task
+    return app, service, client, task, patch_text
+
+
+def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest, tmp_path, monkeypatch, StateUnreachable("ssh exited 255")
+    )
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    operation_id = task["operation_id"]
+    update = task["result"]["graph_update"]
+    assert update["status"] == "unavailable"
+    assert update["commit_status"] == "absent"
+    assert update["repairable"] is False
+    assert task["can_apply_again"] is True
+    assert store.agent_task_patch_output(operation_id) == patch_text
+    revision = service.history.state().revision
+
+    applied = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert applied.status_code == 200, applied.text
+    body = applied.json()
+    assert body["result"]["graph_update"]["status"] == "applied"
+    assert body["result"]["graph_update"]["applied_revision"] == revision + 1
+    assert body["can_apply_again"] is False
+    assert "rq/applied-again" in service.history.state().nodes
+    assert store.agent_task_patch_output(operation_id) is None
+
+    repeated = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert repeated.status_code == 409
+    assert service.history.state().revision == revision + 1
+
+
+def test_apply_again_records_an_unknown_commit_that_landed_without_appending_twice(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        BatchPublishFailed("commit probe failed", commit_status="unknown"),
+        lands_before_failure=True,
+    )
+    project_id = app.state.default_project_id
+    operation_id = task["operation_id"]
+    assert task["result"]["graph_update"]["commit_status"] == "unknown"
+    assert task["can_apply_again"] is True
+    landed_revision = service.history.state().revision
+    assert "rq/applied-again" in service.history.state().nodes
+
+    # The binding check finds the landed commit; replaying it then fails, and the
+    # outcome must keep what was observed: the commit is present.
+    real_load_patches = service.history.load_patches
+    real_materialization = service.history.current_materialization
+
+    def fail_materialization_once():
+        monkeypatch.setattr(service.history, "current_materialization", real_materialization)
+        raise StateUnreachable("ssh exited 255")
+
+    def arm_materialization_failure():
+        monkeypatch.setattr(service.history, "load_patches", real_load_patches)
+        monkeypatch.setattr(service.history, "current_materialization", fail_materialization_once)
+        return real_load_patches()
+
+    monkeypatch.setattr(service.history, "load_patches", arm_materialization_failure)
+    unconfirmed = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert unconfirmed.status_code == 200, unconfirmed.text
+    update = unconfirmed.json()["result"]["graph_update"]
+    assert (update["status"], update["commit_status"]) == ("unavailable", "present")
+    assert unconfirmed.json()["can_apply_again"] is True
+
+    recorded = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert recorded.status_code == 200, recorded.text
+    update = recorded.json()["result"]["graph_update"]
+    assert (update["status"], update["applied_revision"]) == ("applied", landed_revision)
+    assert service.history.state().revision == landed_revision
+    receipts = [
+        message.graph_update.status
+        for message in service.chat_transcript(task["request"]["chat_id"]).messages
+        if message.operation_id == operation_id and message.graph_update is not None
+    ]
+    assert receipts == ["unavailable", "unavailable", "applied"]
+
+
+def test_apply_again_rechecks_for_a_later_applied_turn_under_the_run_lock(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    later_patch = agent_patch_json(
+        refresh_patch("rq/later-turn").model_copy(update={"kind": "work"})
+    )
+    app, service, client, task, _patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        StateUnreachable("ssh exited 255"),
+        later_turns=({"patch.json": later_patch},),
+    )
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    operation_id = task["operation_id"]
+    later = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": task["request"]["chat_id"],
+            "message": "Run the next operation.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert later.status_code == 202, later.text
+    later_task = _wait_for_run(client, project_id, later.json()["operation_id"])
+    assert later_task["result"]["graph_update"]["status"] == "applied"
+    revision = service.history.state().revision
+
+    # The eligibility check ran before the later turn committed; only the
+    # recheck under the run lock can see it.
+    real_later_applied = store.later_chat_turn_may_have_committed
+
+    def not_yet(record):
+        monkeypatch.setattr(store, "later_chat_turn_may_have_committed", real_later_applied)
+        return False
+
+    monkeypatch.setattr(store, "later_chat_turn_may_have_committed", not_yet)
+    refused = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert refused.status_code == 409
+    assert service.history.state().revision == revision
+    assert "rq/applied-again" not in service.history.state().nodes
+    assert store.agent_task(operation_id).result["graph_update"]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize("commit_status", ["present", "unknown"])
+@pytest.mark.parametrize("failing", ["run_lock", "refresh"])
+def test_apply_again_failing_before_the_history_check_keeps_commit_certainty(
+    manifest, tmp_path, monkeypatch, commit_status: str, failing: str
+) -> None:
+    app, service, client, task, _patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        BatchPublishFailed("commit probe failed", commit_status=commit_status),
+        lands_before_failure=True,
+    )
+    project_id = app.state.default_project_id
+    operation_id = task["operation_id"]
+    assert task["result"]["graph_update"]["commit_status"] == commit_status
+    revision = service.history.state().revision
+
+    def unreachable(*_args, **_kwargs):
+        raise StateUnreachable("ssh exited 255")
+
+    monkeypatch.setattr(service.history.workspace, failing, unreachable)
+    for _attempt in range(2):
+        failed = client.post(
+            f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        )
+        assert failed.status_code == 200, failed.text
+        update = failed.json()["result"]["graph_update"]
+        assert (update["status"], update["commit_status"]) == ("unavailable", commit_status)
+        assert failed.json()["can_apply_again"] is True
+    assert service.history.state().revision == revision
+
+
+@pytest.mark.parametrize("later_commit_status", ["present", "unknown"])
+def test_apply_again_refuses_after_a_later_turn_that_committed_or_may_have(
+    manifest, tmp_path, monkeypatch, later_commit_status: str
+) -> None:
+    later_patch = agent_patch_json(
+        refresh_patch("rq/later-turn").model_copy(update={"kind": "work"})
+    )
+    app, service, client, task, _patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        StateUnreachable("ssh exited 255"),
+        later_turns=({"patch.json": later_patch},),
+    )
+    project_id = app.state.default_project_id
+    operation_id = task["operation_id"]
+    real_append = service.history.append
+
+    def land_then_lose(*args, **kwargs):
+        monkeypatch.setattr(service.history, "append", real_append)
+        real_append(*args, **kwargs)
+        raise BatchPublishFailed("commit probe failed", commit_status=later_commit_status)
+
+    monkeypatch.setattr(service.history, "append", land_then_lose)
+    later = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": task["request"]["chat_id"],
+            "message": "Run the next operation.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert later.status_code == 202, later.text
+    later_update = _wait_for_run(client, project_id, later.json()["operation_id"])["result"][
+        "graph_update"
+    ]
+    assert (later_update["status"], later_update["commit_status"]) == (
+        "unavailable",
+        later_commit_status,
+    )
+    revision = service.history.state().revision
+
+    assert (
+        client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()["can_apply_again"]
+        is False
+    )
+    refused = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert refused.status_code == 409
+    assert service.history.state().revision == revision
+    assert "rq/applied-again" not in service.history.state().nodes
+
+
+def test_apply_again_records_a_landed_unknown_commit_after_a_later_applied_turn(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    later_patch = agent_patch_json(
+        refresh_patch("rq/later-turn").model_copy(update={"kind": "work"})
+    )
+    app, service, client, task, _patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        BatchPublishFailed("commit probe failed", commit_status="unknown"),
+        lands_before_failure=True,
+        later_turns=({"patch.json": later_patch},),
+    )
+    project_id = app.state.default_project_id
+    operation_id = task["operation_id"]
+    landed_revision = service.history.state().revision
+    later = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": task["request"]["chat_id"],
+            "message": "Run the next operation.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert later.status_code == 202, later.text
+    later_task = _wait_for_run(client, project_id, later.json()["operation_id"])
+    assert later_task["result"]["graph_update"]["status"] == "applied"
+    revision = service.history.state().revision
+
+    recorded = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert recorded.status_code == 200, recorded.text
+    update = recorded.json()["result"]["graph_update"]
+    assert (update["status"], update["applied_revision"]) == ("applied", landed_revision)
+    assert service.history.state().revision == revision
 
 
 def _experiment_fixture_patch(

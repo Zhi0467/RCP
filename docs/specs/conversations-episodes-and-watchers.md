@@ -77,6 +77,49 @@ but RCP never reads, indexes, copies, projects, validates, or authorizes from
 prior RCP transcript text. Provider-native session continuation may retain the
 provider's context without making the displayed transcript an RCP input.
 
+Task insertion resolves an ordinary chat's current native session from the
+latest task of that exact chat that established one, inside the same transaction
+as the overlap guard and stage binding. Human turns and generic watcher wakes
+use this rule; client session hints and transcript text do not select sessions.
+Resolution never searches back past an unusable current binding.
+
+Human turns and watcher wakes differ in what blocks them and what they compare:
+
+- An active turn or a paused, resumable turn blocks both. A human turn is
+  refused; a wake defers without claiming its completion.
+- Only a wake also waits on an unresolved current turn (queued, running,
+  pausing, paused, or interrupted). A human turn after an interrupted turn
+  continues its session.
+- A human turn keeps the current session across a model change. A human
+  provider or machine change starts a fresh session and records that reason.
+- A wake's recorded provider, model, or machine must match the current
+  session. A mismatch records a failed notification task with an actionable
+  reason; its completion is claimed once, no provider launches, and the task
+  offers no Retry, because a retry would replay the refused policy.
+
+A deferred wake shows its reason on each completed watcher it would claim.
+The reason replaces itself rather than accumulating and clears when the wake
+is admitted.
+
+Every resolution records a durable `chat_session_resolution` receipt with its
+outcome and reason code. A binding that cannot be continued starts fresh with
+one of these reasons: `no_session_yet`, `session_history_only`,
+`session_recovery_abandoned`, `session_stage_unavailable`, or a provider drop
+of the current session: `session_stale` (the provider no longer has it) or
+`session_context_unavailable` (the saved continuation context failed and
+requires a retry), the classification Retry uses to refuse resuming a dropped
+session. A `session_limit` failure continues the session: its classification
+also matches account quota, after which the session can still resume. A
+result-view revision runs on the view's saved session and never becomes the
+chat's current session. The exact provider, machine, chat, graph target,
+stage, and launch write scope remain enforced. **New session** creates a new
+chat id.
+
+A chat watcher wake is a new logical `watcher_wake` turn, clears prior handoffs,
+and selects the `wake` prompt node when continuing a session. It carries the
+compact delta and compatible master pointer, bootstrapping the master when
+necessary. Experiment and Auto-research child wakes retain their own policies.
+
 The first ordinary turn in an RCP-owned native session receives one master
 context. It supplies shared project context once: the current graph target and
 head, focused node, exact run-scope repository pointers, enabled-package

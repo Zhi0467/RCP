@@ -338,13 +338,9 @@ export function artifactRevisionContentUrl(projectId: string, candidateId: strin
   return `/api/projects/${encodeURIComponent(projectId)}/artifact-revisions/${encodeURIComponent(candidateId)}/content`;
 }
 
-export function latestNativeSessionId(tasks: AgentTask[]): string | null {
-  return (
-    [...tasks]
-      .sort(compareTaskTime)
-      .reverse()
-      .find((task) => task.native_session_id)?.native_session_id ?? null
-  );
+/** The server resolves the chat binding; task or transcript session ids are history. */
+export function resolvedChatSessionId(tasks: AgentTask[]): string | null {
+  return [...tasks].sort(compareTaskTime).at(-1)?.current_chat_session_id ?? null;
 }
 
 function compareTaskTime(left: AgentTask, right: AgentTask): number {

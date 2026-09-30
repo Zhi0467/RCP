@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
+from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
 from rcp.storage import (
     AgentTaskRecord,
@@ -1501,6 +1502,223 @@ def test_queue_and_notified_ledger_are_atomic_and_wait_behind_live_task(store) -
     assert {item.notification_operation_id for item in reopened.watchers("project")} == {
         "watcher-turn"
     }
+
+
+def _completed_chat_turn(
+    store, operation_id, session_id, *, request_updates=None, status="succeeded"
+):
+    task = _task(store, operation_id, [])
+    task.request.update({"trigger": "human", **(request_updates or {})})
+    task = AgentTaskRecord.model_validate(task.model_dump(exclude={"runtime_id"}))
+    store.create_agent_task(task)
+    store.mark_agent_task_running(operation_id)
+    store.checkpoint_agent_task(
+        operation_id,
+        native_session_id=session_id,
+        stage_host="",
+        stage_root=str(store.path.parent / "chat-stage"),
+    )
+    if status == "failed":
+        store.fail_agent_task(operation_id, "The prior turn failed after establishing its session.")
+    else:
+        store.complete_agent_task(operation_id, applied_revision=None, result={})
+    return store.agent_task(operation_id)
+
+
+def _session_resolution(store, operation_id):
+    receipts = [
+        receipt.payload
+        for receipt in store.agent_task_receipts(operation_id)
+        if receipt.category == "chat_session_resolution"
+    ]
+    assert len(receipts) == 1
+    return receipts[0]
+
+
+@pytest.mark.parametrize("status", ["succeeded", "failed"])
+def test_chat_wake_and_following_human_turn_share_the_current_native_session(store, status) -> None:
+    previous = _completed_chat_turn(store, "human-before", "chat-native-session", status=status)
+    store.create_watchers([_record("done", origin=previous.operation_id, status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None
+    assert wake.request["session_id"] == previous.native_session_id
+    assert wake.native_session_id == previous.native_session_id
+    assert (wake.stage_host or "", wake.stage_root) == (
+        previous.stage_host or "",
+        previous.stage_root,
+    )
+    assert _session_resolution(store, wake.operation_id)["outcome"] == "continued"
+    store.mark_agent_task_running(wake.operation_id)
+    store.complete_agent_task(wake.operation_id, applied_revision=None, result={})
+
+    human = _task(store, "human-after", [])
+    human.request["trigger"] = "human"
+    store.create_agent_task(human)
+    stored = store.agent_task(human.operation_id)
+    assert stored.request["session_id"] == wake.native_session_id
+    assert stored.native_session_id == wake.native_session_id
+    assert stored.stage_root == wake.stage_root
+
+
+@pytest.mark.parametrize("status", ["paused", "interrupted"])
+def test_chat_wake_defers_behind_unresolved_turn_without_claiming_watchers(store, status) -> None:
+    task = _task(store, "paused-human", [])
+    task.request["trigger"] = "human"
+    store.create_agent_task(task)
+    store.mark_agent_task_running(task.operation_id)
+    store.checkpoint_agent_task(
+        task.operation_id,
+        native_session_id="paused-session",
+        stage_root=str(store.path.parent / "chat-stage"),
+    )
+    if status == "paused":
+        store.pause_agent_task(task.operation_id)
+    else:
+        store.fail_agent_task(task.operation_id, "Lost provider transport", status="interrupted")
+    store.create_watchers([_record("done", status="completed")])
+
+    assert store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"]) is None
+    assert store.agent_task("wake") is None
+    assert store.watcher("done").notified is False
+    assert store.watcher("done").notification_operation_id is None
+    # The deferral is visible on the watcher, and the later claim clears it.
+    assert store.watcher("done").last_error
+    if status == "interrupted":  # only a terminal turn can be set aside as history
+        store.mark_agent_tasks_history_only([task.operation_id])
+        assert store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+        assert store.watcher("done").last_error is None
+
+
+@pytest.mark.parametrize(
+    ("changed_policy", "reason_code"),
+    [({"provider": "claude"}, "provider_mismatch"), ({"model": "other-model"}, "model_mismatch")],
+)
+def test_chat_wake_refuses_policy_mismatch_with_durable_reason(store, changed_policy, reason_code):
+    _completed_chat_turn(store, "human-before", "current-session", request_updates=changed_policy)
+    store.create_watchers([_record("done", status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None
+    assert wake.status == "failed"
+    assert wake.error
+    assert wake.finished_at
+    resolution = _session_resolution(store, wake.operation_id)
+    assert resolution["outcome"] == "refused"
+    assert resolution["reason_code"] == reason_code
+    assert store.watcher("done").notification_operation_id == wake.operation_id
+    assert store.watcher("done").notified is True
+    # Retry would replay the refused policy: no offer, and the engine refuses it.
+    assert store.agent_task(wake.operation_id).can_retry is False
+    with pytest.raises(ValueError):
+        BackgroundAgentTasks(store, None).retry(wake.operation_id)
+
+
+def test_human_turn_keeps_its_session_across_a_model_switch(store) -> None:
+    previous = _completed_chat_turn(
+        store, "human-before", "current-session", request_updates={"model": "other-model"}
+    )
+
+    human = _task(store, "human-after", [])
+    human.request["trigger"] = "human"
+    store.create_agent_task(human)
+
+    stored = store.agent_task(human.operation_id)
+    assert stored.native_session_id == previous.native_session_id
+    assert _session_resolution(store, human.operation_id)["outcome"] == "continued"
+
+
+def test_chat_wake_without_a_session_records_why_it_starts_fresh(store) -> None:
+    store.create_watchers([_record("done", status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None and wake.status == "queued"
+    assert wake.request.get("session_id") is None
+    assert wake.native_session_id is None
+    resolution = _session_resolution(store, wake.operation_id)
+    assert resolution["outcome"] == "fresh"
+    assert resolution["reason_code"] == "no_session_yet"
+
+
+@pytest.mark.parametrize("reason_code", ["session_history_only", "session_stage_unavailable"])
+def test_chat_wake_never_searches_past_unusable_latest_session(store, reason_code) -> None:
+    older = _completed_chat_turn(store, "older", "older-session")
+    latest = _task(store, "latest", []).model_copy(
+        update={
+            "status": "succeeded",
+            "native_session_id": "latest-session",
+            "stage_root": older.stage_root if reason_code == "session_history_only" else None,
+        }
+    )
+    latest.request["trigger"] = "human"
+    store.create_agent_task(latest)
+    if reason_code == "session_history_only":
+        store.mark_agent_tasks_history_only([latest.operation_id])
+    store.create_watchers([_record("done", origin=older.operation_id, status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None and wake.status == "queued"
+    assert wake.request.get("session_id") is None
+    assert wake.native_session_id is None
+    resolution = _session_resolution(store, wake.operation_id)
+    assert resolution["outcome"] == "fresh"
+    assert resolution["reason_code"] == reason_code
+    assert resolution["source_operation_id"] == latest.operation_id
+
+
+@pytest.mark.parametrize(
+    ("category", "payload", "reason_code"),
+    [
+        # A quota limit leaves the session itself resumable.
+        ("provider_terminal_error", {"classification": "session_limit"}, None),
+        ("provider_terminal_error", {"classification": "stale_session"}, "session_stale"),
+        (
+            "continuation_context_unavailable",
+            {"retry_required": True},
+            "session_context_unavailable",
+        ),
+    ],
+)
+def test_chat_wake_starts_fresh_when_the_provider_dropped_the_current_session(
+    store, category, payload, reason_code
+) -> None:
+    latest = _completed_chat_turn(store, "latest", "dropped-session", status="failed")
+    store.record_agent_task_receipt(latest.operation_id, category, payload)
+    store.create_watchers([_record("done", origin=latest.operation_id, status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None and wake.status == "queued"
+    resolution = _session_resolution(store, wake.operation_id)
+    if reason_code is None:
+        assert wake.native_session_id == latest.native_session_id
+        assert resolution["outcome"] == "continued"
+    else:
+        assert wake.native_session_id is None
+        assert resolution["outcome"] == "fresh"
+        assert resolution["reason_code"] == reason_code
+    assert resolution["source_operation_id"] == latest.operation_id
+
+
+def test_result_view_revision_does_not_become_the_chat_session(store) -> None:
+    chat = _completed_chat_turn(store, "human-before", "chat-native-session")
+    _completed_chat_turn(
+        store,
+        "revision",
+        "view-session",
+        request_updates={"result_view": {"action": "revise", "view_id": "a" * 24}},
+    )
+    store.create_watchers([_record("done", origin=chat.operation_id, status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None
+    assert wake.native_session_id == chat.native_session_id
+    assert _session_resolution(store, wake.operation_id)["source_operation_id"] == "human-before"
 
 
 def test_a_human_release_takes_a_watcher_out_of_the_polling_set(store) -> None:

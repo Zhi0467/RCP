@@ -128,6 +128,7 @@ from rcp.sources import (
     project_cache_roots,
 )
 from rcp.transport import repository_access as build_repository_access
+from rcp.transport.state_transfer import diagnostics as state_transfer_diagnostics
 
 _SETTINGS_SURFACES: tuple[AgentExecutionProfile, ...] = (
     "seed",
@@ -292,13 +293,16 @@ def _stage_sync_patch(state: GraphState, patch: Patch) -> GraphState:
 class GraphUpdateResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["none", "applied", "rejected"]
+    # "unavailable": Apply could not reach canonical state. The rules never
+    # judged the Patch, and `commit_status` says what the commit point showed.
+    status: Literal["none", "applied", "rejected", "unavailable"]
     applied_revision: int | None = Field(default=None, ge=0)
     change_summary: list[str] = Field(default_factory=list)
     proposal_ids: list[str] = Field(default_factory=list)
     validation_messages: list[str] = Field(default_factory=list)
     correction_rounds: int = Field(default=0, ge=0)
     repairable: bool = False
+    commit_status: Literal["absent", "present", "unknown"] | None = None
 
 
 class SteeringReceipt(BaseModel):
@@ -1389,7 +1393,7 @@ class ProjectService:
                     return None
                 with os.fdopen(descriptor, encoding="utf-8") as handle:
                     descriptor = -1
-                    lines = handle.read().splitlines()
+                    lines = handle.read().split("\n")
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)
@@ -1725,6 +1729,11 @@ class ProjectService:
         return {
             "provider_logins": ProjectService.provider_logins_for(manifest, launcher),
             "provider_readiness": readiness_by_machine,
+            "state_transfers": {
+                machine.alias: state_transfer_diagnostics(machine.host)
+                for machine in manifest.machines
+                if machine.host
+            },
             "providers": readiness_by_machine[coach_machine],
         }
 

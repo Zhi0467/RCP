@@ -35,6 +35,7 @@ import type {
   ChatDisplay,
   ChatTranscript,
   GraphNode,
+  GraphUpdateRecovery,
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
@@ -66,7 +67,7 @@ interface Props {
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onOpenNode?: (nodeId: string) => void;
-  onRepairGraphUpdate: (taskId: string) => Promise<void>;
+  onRepairGraphUpdate: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
   onStopWatcher?: (watcherId: string) => void;
   onNewSession: (conversation: ChatConversation) => void;
   onRemoveDraft: (chatId: string) => void;

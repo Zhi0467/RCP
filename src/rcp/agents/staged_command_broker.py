@@ -334,6 +334,25 @@ def _atomic_json(workspace, name, value):
             os.unlink(temporary)
 
 
+def _closed_response(workspace, mailbox_id, request_id):
+    path = os.path.join(workspace, f"rcp-command-{mailbox_id}.closed.json")
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = json.loads(stream.read(MAX_REQUEST_BYTES + 1))
+    except FileNotFoundError:
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != VERSION
+        or value.get("mailbox_id") != mailbox_id
+        or not isinstance(value.get("message"), str)
+    ):
+        raise BrokerUnavailable("command mailbox closure is malformed")
+    response = _error(request_id, value["message"], "unavailable", "not_sent")
+    response["result"]["permanent"] = True
+    return response
+
+
 def _read_response(path, request_id, timeout):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -344,6 +363,11 @@ def _read_response(path, request_id, timeout):
             with open(path, encoding="utf-8") as stream:
                 value = json.load(stream)
         except FileNotFoundError:
+            mailbox_id = os.path.basename(path).split("-")[2]
+            closed = _closed_response(os.path.dirname(path), mailbox_id, request_id)
+            if closed is not None:
+                closed["result"]["delivery"] = "unknown"
+                return closed
             time.sleep(0.05)
             continue
         except (OSError, UnicodeError, ValueError) as exc:
@@ -445,6 +469,13 @@ def _handle(
             raise BrokerError("command client is outside the current provider invocation")
         if value.get("version") != VERSION or value.get("mailbox_id") != mailbox_id:
             raise BrokerError("command request mailbox identity does not match")
+        closed = _closed_response(workspace, mailbox_id, request_id)
+        if closed is not None:
+            try:
+                connection.sendall(json.dumps(closed).encode("utf-8") + b"\n")
+            finally:
+                connection.close()
+            return
         signature = _keyed_signature(value)
         entry, owner = _join_keyed_command(signature) if signature else (None, True)
         if not owner:

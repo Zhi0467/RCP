@@ -484,3 +484,17 @@ def test_probe_evidence_distinguishes_success_data_from_error_envelopes(provider
         subprocess.CompletedProcess([], 0, json.dumps(error), "")
     )
     assert profile.credential_failure(evidence)
+
+
+def test_claude_inventory_preserves_unicode_line_separators():
+    payload = json.dumps(
+        {
+            "type": "system",
+            "subtype": "init",
+            "skills": ["review"],
+            "cwd": "before\x85middle\u2028more\u2029after",
+        },
+        ensure_ascii=False,
+    )
+    skills = profile_for("claude").parse_skills(payload + "\r\n")
+    assert [skill.name for skill in skills] == ["review"]
