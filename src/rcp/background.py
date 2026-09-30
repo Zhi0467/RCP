@@ -2830,7 +2830,7 @@ def _runtime_fallback_payload(text: str) -> dict[str, object]:
 
 def _event_from_sse(frame: str) -> AgentEvent:
     data = next(
-        (line[6:] for line in frame.splitlines() if line.startswith("data: ")),
+        (line[6:] for line in frame.split("\n") if line.startswith("data: ")),
         "",
     )
     if not data:

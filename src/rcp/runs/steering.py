@@ -125,7 +125,7 @@ def begin_chat_steer(
             _fold_chat_receipts(
                 [
                     _StoredChatRecord.model_validate_json(line)
-                    for line in path.read_text().splitlines()
+                    for line in path.read_text().split("\n")
                     if line
                 ]
             )

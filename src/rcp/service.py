@@ -1389,7 +1389,7 @@ class ProjectService:
                     return None
                 with os.fdopen(descriptor, encoding="utf-8") as handle:
                     descriptor = -1
-                    lines = handle.read().splitlines()
+                    lines = handle.read().split("\n")
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)

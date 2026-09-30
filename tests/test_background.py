@@ -71,6 +71,15 @@ def _sse(event: AgentEvent) -> str:
     return f"data: {event.model_dump_json()}\n\n"
 
 
+@pytest.mark.parametrize("newline", ["\n", "\r\n"])
+def test_sse_preserves_unicode_line_separators(newline):
+    from rcp.runs.shared import _sse as encode_sse
+
+    event = AgentEvent(event="answer", text="before\x85middle\u2028more\u2029after")
+    frame = encode_sse(event).replace("\n", newline)
+    assert background_module._event_from_sse(frame) == event
+
+
 def _store(tmp_path: Path) -> AppStore:
     store = AppStore(tmp_path / "rcp.sqlite3")
     store.upsert_project(

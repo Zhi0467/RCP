@@ -1823,7 +1823,7 @@ def _append_chat_records(
                 # A live steer may already have recorded this attempt's original
                 # human prompt, or finalization may be resuming after appending
                 # the answer. Inspect only identity, never use transcript as input.
-                existing = [json.loads(line) for line in path.read_text().splitlines() if line]
+                existing = [json.loads(line) for line in path.read_text().split("\n") if line]
                 recorded = {
                     (item.get("operationId"), item.get("role"))
                     for item in existing

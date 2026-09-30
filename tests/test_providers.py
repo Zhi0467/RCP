@@ -879,3 +879,15 @@ def test_every_runtime_has_a_fence_and_every_indexed_provider_a_session_format()
     assert set(SESSION_FORMATS) == {*indexed, "app_chat"}
     assert set(TURN_FENCES) == runtime_ids
     assert all(profile.native_update for profile in PROVIDERS.values())
+
+
+@pytest.mark.parametrize("profile", [ClaudeProfile(), CodexProfile()])
+def test_probe_error_preserves_unicode_line_separators(profile):
+    payload = {
+        "type": "result",
+        "is_error": True,
+        "error": {"message": "before\x85middle\u2028more\u2029after"},
+    }
+    line = json.dumps(payload, ensure_ascii=False)
+    evidence = profile.probe_failure_evidence(_result(line + "\r\n"))
+    assert json.loads(evidence) == payload

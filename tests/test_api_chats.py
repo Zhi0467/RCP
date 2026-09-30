@@ -15,6 +15,24 @@ from rcp.transport import StateUnavailable
 from .helpers import create_named_app
 
 
+def test_chat_append_and_projection_preserve_unicode_line_separators(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    service = app.state.service
+    text = "before\x85middle\u2028more\u2029after"
+    request = RunRequest(chat_id=str(uuid.uuid4()), chat_scope="project", message=text)
+    _append_chat_exchange(service, request, text, None, None)
+    _append_chat_exchange(service, request, text, None, None)
+
+    transcript = service.chat_transcript(request.chat_id)
+    assert transcript is not None
+    assert [(item.role, item.text) for item in transcript.messages] == [
+        ("user", text),
+        ("assistant", text),
+        ("user", text),
+        ("assistant", text),
+    ]
+
+
 def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
     manifest, tmp_path, monkeypatch
 ):

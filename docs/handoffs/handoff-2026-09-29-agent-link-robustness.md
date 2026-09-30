@@ -1,12 +1,12 @@
 # Agent link robustness
 
 Date: 2026-09-29
-Status: design only. No code yet. An xhigh design review ran on 2026-09-29 and
-its findings are folded in below. The investigation continues in this PR, and
-implementation starts here once the human says so.
+Status: slice B implemented. An xhigh design review ran on 2026-09-29 and
+its findings are folded in below. The remaining slices await implementation
+and the human decisions below.
 
-Implemented: nothing.
-Remaining: fixes A–D, the open decisions marked **Human decision**, and the
+Implemented: fix B (newline-only SSE and JSONL text readers).
+Remaining: fixes A, C, and D, the open decisions marked **Human decision**, and the
 tool audit's remaining owners.
 
 Settled with the human on 2026-09-29:
@@ -141,10 +141,13 @@ Affected readers:
   `src/rcp/providers/claude/profile.py` and `src/rcp/providers/codex/profile.py`.
 
 Already safe: the launcher's byte framing, recorded turns, and remote journal
-files. The remote source index uses `splitlines()` but its writer escapes
-Unicode; fix it anyway so the reader does not depend on that.
+files. The remote source index writer escapes Unicode; its reader now splits
+on newlines too, so it does not depend on that escaping.
 
-Fix: split on `"\n"` only, in every reader above.
+Implemented: split on `"\n"` only in every reader above and the remote source
+index reader. Writers retain their existing escaping. JSON parsers retain
+the existing tolerance for trailing carriage returns. The supervisor backup
+receipt reader uses bytes and already preserves Unicode separators.
 
 Checks: records holding each of the three characters survive live and recorded
 events, transcript append, read, and steering, with identical results.
@@ -199,9 +202,10 @@ Decisions:
    and what the agent sees then. Recommended: back off while the same accepted
    remote pass is unresolved, then answer every call with a stated permanent
    reason.
-2. **Human decision:** backend restart or desktop update while a detached turn
-   still needs its mailbox. Recommended: the update waits for accepted passes,
-   or the new backend resumes the same mailbox with the same credential.
+2. Settled 2026-09-29: on a backend restart or desktop update while a detached
+   turn still needs its mailbox, the new backend resumes the same mailbox with
+   the same credential. Updates do not wait on agent turns. This needs the
+   credential persisted with the same protection as other task secrets.
 
 Checks: one failed listing and then a request is answered; a request is
 answered after `remote_result_pending`; a lost response after a successful side
@@ -246,12 +250,20 @@ Target:
   artifacts and result views, and the source index. An accepted provider is
   never relaunched only to redo a transfer.
 
-Decision:
+Settled 2026-09-29: feature detection with a visible fallback.
 
-- **Human decision:** how Apply and the state sync move files. Recommended:
-  RCP's own shipped scripts over plain SSH, one mechanism on both ends, for
-  these small files. Alternatives: bundle a pinned rsync, or state a minimum
-  rsync contract and check it wherever rsync runs.
+- RCP probes `rsync` once per connection, on the desktop and on the execution
+  host, and caches the result with that connection. It never probes per call.
+- Contract: rsync 3.1.0 or newer, protocol 31 or newer, on both ends. Apple's
+  openrsync reports protocol 29 and fails it. A `PATH` search may offer several
+  candidates; the first that passes is used, and its path and version are
+  recorded.
+- When both ends pass, transfers use rsync. Otherwise they use a tar stream
+  over plain SSH: a full copy, no delta, no extra dependency.
+- The fallback is never silent. RCP records it once per connection as a
+  warning, shows a non-blocking hint that says what to install and where, and
+  reports the active engine in diagnostics. It never blocks the work.
+- Retry after a killed connection (above) applies to both engines.
 
 Checks: a transfer killed mid-stream is retried and the commit lands once; a
 killed acknowledgement after a confirmed commit leaves one commit; a timeout
