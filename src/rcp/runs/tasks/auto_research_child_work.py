@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+import threading
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import aclosing, suppress
+from contextlib import aclosing
 from dataclasses import replace
+from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import Literal, get_args
 
@@ -63,6 +65,7 @@ from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
     command_rejection_recorder,
+    command_transport_recorder,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.session_master import record_inline_prompt
@@ -97,6 +100,7 @@ from rcp.runs.tasks.work import (
     _recorded_retry_deliverable_baseline,
     _resolve_work_execution,
     _ResolvedWorkExecution,
+    _resume_work_compute_commands,
     _RetryDeliverableBaseline,
     _settle_patch_deliverable,
     _settle_watch_deliverable,
@@ -111,9 +115,16 @@ from rcp.runs.tasks.work import (
     _work_contract_text,
     _work_execution_instructions,
     _work_finalization_context,
+    _work_mailbox_context,
     _work_prompt_values,
+    _WorkMailboxContext,
     _WorkValidatorMailboxLifecycle,
     open_recorded_work_turn,
+)
+from rcp.runs.tasks.work_turn_runtime import (
+    load_work_mailbox_context,
+    restore_work_validator_mailbox,
+    start_work_validator_mailbox,
 )
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
@@ -841,29 +852,62 @@ def _start_auto_research_child_validator_mailbox(
     compute_commands: WorkComputeCommands,
     run_truth_scope: list[str],
 ) -> _WorkValidatorMailboxLifecycle:
-    stop = asyncio.Event()
-    try:
-        task = asyncio.create_task(
-            _serve_auto_research_child_work_mailbox(
-                service,
-                staged=staged,
-                execution=execution,
-                route=route,
-                stop=stop,
-                budget=budget,
-                compute_commands=compute_commands,
-                run_truth_scope=run_truth_scope,
-            )
-        )
-    except BaseException:
-        with suppress(BaseException):
-            staged.cleanup()
-        raise
-    return _WorkValidatorMailboxLifecycle(
-        staged=staged,
+    return start_work_validator_mailbox(
+        staged,
         execution=execution,
-        stop=stop,
-        task=task,
+        budget=budget,
+        validate=lambda text: _validate_work_patch_live(
+            service,
+            text,
+            run_truth_scope=run_truth_scope,
+            source_operation_id=execution.operation_id,
+        ),
+        serve=partial(
+            _serve_auto_research_child_work_mailbox,
+            route=route,
+            compute_commands=compute_commands,
+        ),
+        resume_context=_ChildMailboxContext(
+            **_work_mailbox_context(run_truth_scope, compute_commands).model_dump(),
+            route=route,
+        ).model_dump(mode="json"),
+    )
+
+
+class _ChildMailboxContext(_WorkMailboxContext):
+    route: AutoResearchChildWorkRecord
+
+
+def resume_child_work_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> _WorkValidatorMailboxLifecycle | None:
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    context = _ChildMailboxContext.model_validate(saved)
+    route = execution.store.auto_research_child_work_for_operation(execution.operation_id)
+    if route is None or (
+        route.worker_id != context.route.worker_id
+        or route.episode_id != context.route.episode_id
+        or context.route.current_operation_id != execution.operation_id
+    ):
+        raise ValueError("The retained child Work mailbox route no longer names this turn.")
+    compute_commands = _resume_work_compute_commands(execution, context)
+    if compute_commands is None:
+        raise ValueError("The retained child Work mailbox has no compute scope.")
+    return restore_work_validator_mailbox(
+        execution,
+        validate=lambda text: _validate_work_patch_live(
+            service(),
+            text,
+            run_truth_scope=context.run_truth_scope,
+            source_operation_id=execution.operation_id,
+        ),
+        serve=partial(
+            _serve_auto_research_child_work_mailbox,
+            route=context.route,
+            compute_commands=compute_commands,
+        ),
     )
 
 
@@ -1394,15 +1438,18 @@ def _dispatch_auto_research_child_reply(
 
 
 async def _serve_auto_research_child_work_mailbox(
-    service: ProjectService,
     *,
     staged: StagedCommandMailbox,
     execution: AgentTaskExecution,
     route: AutoResearchChildWorkRecord,
-    stop: asyncio.Event,
+    stop: asyncio.Event | threading.Event,
     budget: PatchValidationBudget,
     compute_commands: WorkComputeCommands,
-    run_truth_scope: list[str],
+    validate: Callable[[str], PatchValidationResult],
+    responses: dict[str, CommandResponse] | None = None,
+    terminal: dict[str, str] | None = None,
+    checkpoint: Callable[[], None] | None = None,
+    suspend: threading.Event | None = None,
 ) -> None:
     async def handle(
         request: CommandRequest,
@@ -1415,20 +1462,16 @@ async def _serve_auto_research_child_work_mailbox(
                 message="This child Work command credential is bound to another turn.",
             )
         if isinstance(request, ValidateCommandRequest):
-            budget.count += 1
+            budget.reserve(request.request_id)
+            if checkpoint is not None:
+                checkpoint()
             if budget.count > PATCH_SELF_CHECK_MAX_COUNT:
                 result = PatchValidationResult(
                     status="unavailable",
                     messages=["This task has reached its bounded RCP validator self-check limit."],
                 )
             else:
-                result = await asyncio.to_thread(
-                    _validate_work_patch_live,
-                    service,
-                    request.arguments.patch,
-                    run_truth_scope=run_truth_scope,
-                    source_operation_id=execution.operation_id,
-                )
+                result = await asyncio.to_thread(validate, request.arguments.patch)
             execution.store.record_agent_task_event(
                 execution.operation_id,
                 f"Patch self-check {budget.count}/{PATCH_SELF_CHECK_MAX_COUNT}: {result.status}.",
@@ -1473,9 +1516,16 @@ async def _serve_auto_research_child_work_mailbox(
             staged=staged,
             handler=handle,
             stop=stop,
-            poll_seconds=PATCH_SELF_CHECK_POLL_SECONDS,
+            poll_seconds=(
+                PATCH_SELF_CHECK_POLL_SECONDS if staged.mailbox.remote_stage is None else None
+            ),
             invocation_gate=staged.invocation_gate,
             record_rejection=command_rejection_recorder(execution),
+            record_transport=command_transport_recorder(execution),
+            responses=responses,
+            terminal=terminal,
+            checkpoint=checkpoint,
+            suspend=suspend,
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         execution.store.record_agent_task_event(

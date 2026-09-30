@@ -45,7 +45,7 @@ from rcp.artifacts import AgentArtifactDescriptor
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskExecution
 from rcp.compute_jobs.job_managers import JOB_MANAGERS
-from rcp.config import AgentSurface
+from rcp.config import AgentSurface, Manifest
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.core.authority import AgentProfile
 from rcp.core.models import Patch
@@ -157,7 +157,9 @@ from rcp.runs.tasks.work_turn_runtime import (
     _StagedWorkInputs,
     _WorkValidatorMailboxLifecycle,
     apply_work_patch,
+    load_work_mailbox_context,
     read_correction_patch,
+    restore_work_validator_mailbox,
     settle_graph_repair_patch,
     start_work_validator_mailbox,
     validate_work_patch_live,
@@ -2878,10 +2880,76 @@ def _start_work_validator_mailbox(
         budget=budget,
         command_handler=compute_commands,
         serve=serve_patch_validation_mailbox,
+        resume_context=_work_mailbox_context(run_truth_scope, compute_commands).model_dump(
+            mode="json"
+        ),
         validate=lambda text: _validate_work_patch_live(
             service,
             text,
             run_truth_scope=run_truth_scope,
+            source_operation_id=_work_patch_source_operation_id(execution),
+        ),
+    )
+
+
+class _WorkMailboxContext(BaseModel):
+    """Launch-time validation and compute scope retained with the turn secret."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    run_truth_scope: list[str]
+    write_scope: ProjectWriteScope | None = None
+    episode_id: str | None = None
+    manifest: Manifest | None = None
+
+
+def _work_mailbox_context(
+    run_truth_scope: list[str], compute_commands: WorkComputeCommands | None
+) -> _WorkMailboxContext:
+    return _WorkMailboxContext(
+        run_truth_scope=run_truth_scope,
+        write_scope=compute_commands.write_scope if compute_commands is not None else None,
+        episode_id=compute_commands.episode_id if compute_commands is not None else None,
+        manifest=compute_commands.manifest if compute_commands is not None else None,
+    )
+
+
+def _resume_work_compute_commands(
+    execution: AgentTaskExecution,
+    context: _WorkMailboxContext,
+) -> WorkComputeCommands | None:
+    scope = context.write_scope
+    if scope is None:
+        return None
+    task = execution.store.agent_task(execution.operation_id)
+    if (
+        task is None
+        or scope.project_id != task.project_id
+        or scope.fingerprint != execution.write_scope_fingerprint
+        or scope.stage_root != execution.stage_root
+        or scope.execution_host != execution.stage_host
+        or context.manifest is None
+    ):
+        raise ValueError("The retained command mailbox compute scope no longer names this turn.")
+    stage = RemoteRunStage(scope.execution_host)
+    stage.root = PurePosixPath(scope.stage_root)
+    return WorkComputeCommands(execution, context.manifest, scope, stage, context.episode_id)
+
+
+def resume_work_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> _WorkValidatorMailboxLifecycle | None:
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    context = _WorkMailboxContext.model_validate(saved)
+    return restore_work_validator_mailbox(
+        execution,
+        command_handler=_resume_work_compute_commands(execution, context),
+        validate=lambda text: _validate_work_patch_live(
+            service(),
+            text,
+            run_truth_scope=context.run_truth_scope,
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )

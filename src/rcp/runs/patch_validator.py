@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -48,6 +49,13 @@ class PatchValidationResult(BaseModel):
 @dataclass
 class PatchValidationBudget:
     count: int = 0
+    requests: dict[str, int] = field(default_factory=dict)
+
+    def reserve(self, request_id: str) -> int:
+        if request_id not in self.requests:
+            self.count += 1
+            self.requests[request_id] = self.count
+        return self.requests[request_id]
 
 
 def stage_patch_validation_mailbox(
@@ -102,9 +110,13 @@ async def serve_patch_validation_mailbox(
     staged: StagedCommandMailbox,
     execution: AgentTaskExecution | None,
     validate: Callable[[str], PatchValidationResult],
-    stop: asyncio.Event,
+    stop: asyncio.Event | threading.Event,
     budget: PatchValidationBudget,
     command_handler: CommandHandler | None = None,
+    responses: dict[str, CommandResponse] | None = None,
+    terminal: dict[str, str] | None = None,
+    checkpoint: Callable[[], None] | None = None,
+    suspend: threading.Event | None = None,
 ) -> None:
     """Serve bounded live Patch checks over the unified staged command mailbox."""
 
@@ -120,8 +132,9 @@ async def serve_patch_validation_mailbox(
                 status="invalid",
                 message="This validator credential authorizes Patch validation only.",
             )
-        budget.count += 1
-        count = budget.count
+        count = budget.reserve(request.request_id)
+        if checkpoint is not None:
+            checkpoint()
         if count > PATCH_SELF_CHECK_MAX_COUNT:
             result = PatchValidationResult(
                 status="unavailable",
@@ -137,12 +150,34 @@ async def serve_patch_validation_mailbox(
             staged=staged,
             handler=handle,
             stop=stop,
-            poll_seconds=PATCH_SELF_CHECK_POLL_SECONDS,
+            poll_seconds=(
+                PATCH_SELF_CHECK_POLL_SECONDS if staged.mailbox.remote_stage is None else None
+            ),
             invocation_gate=staged.invocation_gate,
             record_rejection=command_rejection_recorder(execution),
+            record_transport=command_transport_recorder(execution),
+            responses=responses,
+            terminal=terminal,
+            checkpoint=checkpoint,
+            suspend=suspend,
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         _record_mailbox_unavailable(execution, str(exc))
+
+
+def command_transport_recorder(execution: AgentTaskExecution | None):
+    """One event per outage boundary, never one event per failed poll."""
+    if execution is None:
+        return None
+
+    def record(status: str, message: str) -> None:
+        execution.store.record_agent_task_event(
+            execution.operation_id,
+            f"Command mailbox {status}: {' '.join(message.split())[:400]}",
+            level="info" if status == "recovered" else "warning",
+        )
+
+    return record
 
 
 def command_rejection_recorder(

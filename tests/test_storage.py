@@ -32,9 +32,51 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from rcp.storage.command_mailbox import CommandMailboxStore
 
 from .helpers import NON_UUID4
 from .test_compute_jobs_storage import job_record
+
+
+def test_command_mailbox_checkpoint_resumes_privately(tmp_path: Path) -> None:
+    import stat
+
+    store = CommandMailboxStore.for_data_dir(tmp_path)
+    checkpoint = {
+        "mailbox_id": "a" * 32,
+        "token": "b" * 64,
+        "budget": {"requests": 3},
+        "responses": {"request": {"status": "ok"}},
+        "permanent_reason": None,
+    }
+    assert store.load("operation") is None
+    store.save("operation", checkpoint)
+    path = next(store.root.glob("*.json"))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert path.parent.parent == tmp_path / "providers"
+    restarted = CommandMailboxStore.for_data_dir(tmp_path)
+    assert restarted.load("operation") == checkpoint
+    checkpoint["permanent_reason"] = "stopped"
+    restarted.save("operation", checkpoint)
+    assert store.load("operation") == checkpoint
+    restarted.delete("operation")
+    assert store.load("operation") is None
+    restarted.delete("operation")
+
+
+def test_command_mailbox_checkpoint_refuses_corrupt_or_unsafe_state(tmp_path: Path) -> None:
+    store = CommandMailboxStore.for_data_dir(tmp_path)
+    store.save("operation", {"token": "secret"})
+    path = next(store.root.glob("*.json"))
+    path.write_text("[]")
+    with pytest.raises(ValueError, match="object"):
+        store.load("operation")
+    store.root.chmod(0o755)
+    with pytest.raises(RuntimeError, match="unsafe"):
+        store.load("operation")
+    with pytest.raises(ValueError, match="identifier"):
+        store.save(" ", {})
 
 
 def _project(project_id: str) -> ProjectRecord:

@@ -212,6 +212,16 @@ class StartupRecoveryPlan:
         }
 
 
+class TaskCommandMailbox(Protocol):
+    """The concrete turn owner transfers this resource across worker lifetimes."""
+
+    execution: AgentTaskExecution | None
+
+    def detach(self) -> None: ...
+    def settle(self) -> None: ...
+    def suspend(self, *, timeout: float | None = None) -> None: ...
+
+
 @dataclass
 class AgentTaskExecution:
     operation_id: str
@@ -237,6 +247,7 @@ class AgentTaskExecution:
     #: has, since no process exists to leave an exit code. In memory because it
     #: describes this attempt, not the task.
     stage_unreachable: bool = False
+    command_mailbox: TaskCommandMailbox | None = field(default=None, repr=False)
 
     @property
     def reuses_native_checkpoint(self) -> bool:
@@ -395,6 +406,8 @@ class BackgroundAgentTasks:
         startup_effect_fence: StartupEffectFence | None = None,
         runtime_admission_gate: RuntimeAdmissionGate | None = None,
         recorded_stream: RecordedAgentTaskStream | None = None,
+        resume_command_mailbox: Callable[[AgentTaskExecution], TaskCommandMailbox | None]
+        | None = None,
     ) -> None:
         self.store = store
         self.stream = stream
@@ -405,6 +418,9 @@ class BackgroundAgentTasks:
         self.startup_effect_fence = startup_effect_fence
         self.runtime_admission_gate = runtime_admission_gate
         self.recorded_stream = recorded_stream
+        self.resume_command_mailbox = resume_command_mailbox
+        self._detached_mailboxes: dict[str, TaskCommandMailbox] = {}
+        self._mailbox_resume_refusals: set[str] = set()
         self._controls: dict[str, AgentProcessControl] = {}
         self._workers: dict[str, threading.Thread] = {}
         self._controls_lock = threading.Lock()
@@ -1028,6 +1044,12 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "The remote provider stopped; RCP will reconcile its recorded result before Pause."
             )
+        with self._controls_lock:
+            mailbox = self._detached_mailboxes.get(record.operation_id)
+        if mailbox is not None:
+            mailbox.settle()
+            with self._controls_lock:
+                self._detached_mailboxes.pop(record.operation_id, None)
         self.store.request_agent_task_pause(record.operation_id)
         self.store.finish_remote_provider_pass(record.operation_id, pid_file)
         self.store.pause_agent_task(
@@ -1098,6 +1120,9 @@ class BackgroundAgentTasks:
                 reconciliation_timer = self._remote_reconciliation_timer
                 self._remote_reconciliation_timer = None
                 workers.append(self._remote_reconciliation_worker)
+                mailboxes = list(self._detached_mailboxes.values())
+        for mailbox in mailboxes:
+            mailbox.suspend(timeout=max(0, deadline - time.monotonic()))
         for timer in pending_retries:
             timer.cancel()
         if reconciliation_timer is not None:
@@ -1845,6 +1870,13 @@ class BackgroundAgentTasks:
             )
         except TaskAwaitingRemoteResult as exc:
             awaiting_remote_result = True
+            if execution.command_mailbox is not None:
+                execution.command_mailbox.detach()
+                with self._controls_lock:
+                    self._detached_mailboxes[operation_id] = execution.command_mailbox
+                    suspending = self._shutdown_requested
+                if suspending:
+                    execution.command_mailbox.suspend(timeout=0)
             self.store.update_agent_task_message(
                 operation_id,
                 str(exc),
@@ -2118,12 +2150,56 @@ class BackgroundAgentTasks:
             self._remote_reconciliation_timer = timer
         timer.start()
 
+    def _recorded_execution(self, record: AgentTaskRecord) -> AgentTaskExecution:
+        continuation = self.store.agent_task_continuation_cause(record.operation_id) or "fresh"
+        if continuation not in _AGENT_TASK_CONTINUATIONS:
+            continuation = "fresh"
+        return AgentTaskExecution(
+            operation_id=record.operation_id,
+            store=self.store,
+            control=AgentProcessControl(),
+            runtime_id=record.runtime_id,
+            stage_host=record.stage_host,
+            stage_root=record.stage_root,
+            write_scope_fingerprint=record.write_scope_fingerprint,
+            continuation=cast(AgentTaskContinuation, continuation),
+        )
+
     def _reconcile_remote_results(self) -> bool:
         """Advance every host-journalled pass that has no live local consumer."""
 
         # Import lazily: the owner table imports Work, whose runtime types import
         # this module. Background owns scheduling, not owner registration.
         from rcp.runs.remote_finalization import plan_remote_reconciliation
+
+        # Reattach before even probing the provider: a live, unreachable pass
+        # still owns its mailbox, credential, budget and process control.
+        if self.resume_command_mailbox is not None:
+            for operation_id in self.store.operation_ids_awaiting_remote_result():
+                with self._controls_lock:
+                    if self._shutdown_requested:
+                        return False
+                    if (
+                        operation_id in self._detached_mailboxes
+                        or operation_id in self._mailbox_resume_refusals
+                    ):
+                        continue
+                    record = self._require_operation(operation_id)
+                    execution = self._recorded_execution(record)
+                    try:
+                        owner = self.resume_command_mailbox(execution)
+                    except (ValueError, KeyError, TypeError):
+                        # Corrupt private state cannot grant authority. Isolate
+                        # the refusal so other detached passes still reconcile.
+                        self._mailbox_resume_refusals.add(operation_id)
+                        self.store.record_agent_task_event(
+                            operation_id,
+                            "Command mailbox permanently unavailable: its saved turn binding is invalid.",
+                            level="warning",
+                        )
+                        continue
+                    if owner is not None:
+                        self._detached_mailboxes[operation_id] = owner
 
         retry = False
         for waiting in plan_remote_reconciliation(self.store):
@@ -2140,21 +2216,17 @@ class BackgroundAgentTasks:
             try:
                 record = self._require_operation(waiting.record.operation_id)
                 request = self._request_from_record(record)
-                continuation = (
-                    self.store.agent_task_continuation_cause(record.operation_id) or "fresh"
+                with self._controls_lock:
+                    mailbox = self._detached_mailboxes.get(record.operation_id)
+                execution = (
+                    mailbox.execution if mailbox is not None else self._recorded_execution(record)
                 )
-                if continuation not in _AGENT_TASK_CONTINUATIONS:
-                    continuation = "fresh"
-                execution = AgentTaskExecution(
-                    operation_id=record.operation_id,
-                    store=self.store,
-                    control=AgentProcessControl(),
-                    runtime_id=record.runtime_id,
-                    stage_host=record.stage_host,
-                    stage_root=record.stage_root,
-                    write_scope_fingerprint=record.write_scope_fingerprint,
-                    continuation=cast(AgentTaskContinuation, continuation),
-                )
+                assert execution is not None
+                if mailbox is not None:
+                    # No admission or handler may race Apply or watcher settlement.
+                    mailbox.settle()
+                    with self._controls_lock:
+                        self._detached_mailboxes.pop(record.operation_id, None)
                 pid_file = decision.pid_file
                 assert pid_file is not None
                 if decision.action == "fail":

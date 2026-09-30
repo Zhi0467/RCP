@@ -1,12 +1,13 @@
 # Agent link robustness
 
 Date: 2026-09-29
-Status: slice B implemented. An xhigh design review ran on 2026-09-29 and
-its findings are folded in below. The remaining slices await implementation
-and the human decisions below.
+Status: slices B and C implemented; C verification gaps are recorded below.
+An xhigh design review ran on 2026-09-29 and its findings are folded in below.
+The remaining slices await implementation and the human decisions below.
 
-Implemented: fix B (newline-only SSE and JSONL text readers).
-Remaining: fixes A, C, and D, the open decisions marked **Human decision**, and the
+Implemented: fix B (newline-only SSE and JSONL text readers) and fix C
+(durable command mailbox ownership and retry).
+Remaining: fixes A and D, the open decisions marked **Human decision**, and the
 tool audit's remaining owners.
 
 Settled with the human on 2026-09-29:
@@ -159,57 +160,60 @@ the provider on the execution host, to a request file in the stage, to RCP's
 poller, which lists the stage over SSH. The mailbox carries validation and
 compute commands.
 
-Three things lose calls today:
+Implemented:
 
-1. `serve_command_mailbox` in `src/rcp/agents/command_mailbox.py` exits on the
-   first failed listing and expires the turn's credential, which serves exactly
-   one turn.
-2. When the stream drops after the host accepted the turn
-   (`remote_result_pending`), the Work turn stops and cleans up its mailbox.
-   Its worker's event loop then ends, and recorded settlement later runs in a
-   new execution. In one case the agent worked 27 minutes with no poller.
-3. A request is marked seen before it is read, handled, and answered. A read
-   failure answers `unavailable`. A failure while writing the response ends the
-   loop after the handler may already have acted.
+- `WorkValidatorMailboxLifecycle` owns a remote mailbox on a dedicated thread,
+  including its credential, validation budget, completed responses, process
+  control, and cancellation events. Work, Experiment, and child Work retain
+  their own validation and command policies. Local mailboxes retain their
+  turn-local event loop.
+- A `remote_result_pending` handoff detaches that owner from the turn worker;
+  ending the worker's event loop does not stop serving commands. Background
+  reconciliation retains the owner while waiting for the provider. Once the
+  provider exits, recorded settlement stops admission and drains the owner
+  before graph or watcher settlement; shutdown can still suspend a draining
+  owner.
+- Listing, reading, handling, and response writing have separate retry
+  boundaries. Requests become handled only after durable response publication.
+  Completed responses are checkpointed and rewritten after a lost write without
+  repeating the handler. Validation retries reserve one budget unit per request;
+  keyed command replay retains its existing durable meaning, including #225's
+  consumed-file case.
+- SSH exit 255, no-verdict transport failures, and timeouts retry with capped
+  exponential backoff and jitter. Each outage and recovery records one event.
+  A malformed mailbox or refused credential closes the mailbox with a permanent
+  reason; the staged broker and client answer later calls with that reason.
+  Stop fences new requests and bounds failed drain attempts. An unreachable host
+  is never evidence that the provider exited. Remote polls use their own interval;
+  polling, retry, jitter, and Stop bounds live in `limits.py`.
+- Private restart checkpoints retain the mailbox id, same token, launch policy,
+  budget reservations, completed responses, and terminal reason. They reuse the
+  provider credential store's atomic mode-0600 writer under its private,
+  backup-excluded directory. No secret enters task projections. Startup restores
+  the concrete owner before liveness reconciliation, without staging, clearing
+  handoffs, reissuing a credential, or requiring a reachable graph host.
 
-The staged broker survives a lost link: the remote turn supervisor ignores
-`SIGHUP` and treats uplink loss as detachment, and the broker lives while its
-provider runs. #225 caps each client wait at 90 s and tells the agent to repeat
-the same call. Neither brings the poller back.
+Settled decisions, 2026-09-29:
 
-The poller lists a remote stage with a new `ssh` process and a remote `python3`
-start, then waits `PATCH_SELF_CHECK_POLL_SECONDS` (0.2 s), the value used for
-local stages. That is thousands of SSH calls per turn, and one failure ends it.
+1. Back off while the same accepted remote pass is unresolved. Permanent failure
+   or Stop closes it explicitly; later calls receive the stated permanent reason.
+   When Stop coincides with an unreachable host, delivery of a closure marker
+   cannot be guaranteed; failed delivery is diagnostic and does not hang settlement.
+2. A backend restart or desktop update resumes that same mailbox and credential
+   for that one turn. Shutdown suspension preserves the checkpoint; startup does
+   not clear or recreate the remote mailbox. Updates do not wait for agent turns.
 
-Target:
+Verification: regression coverage exercises listing/read/handler/write blips,
+response replay after a successful effect, permanent later answers, detached
+serving after the original event loop exits, restart with the same credential and
+budget, and reattachment before reconciliation. Settlement ordering and private
+storage permissions are covered. No real host or human data was used.
 
-- One named owner holds the mailbox, credential, command budget, and cancel
-  control from launch until settlement, across detachment. Ownership passes
-  explicitly. Before settlement it stops admitting requests and drains the
-  ones in flight.
-- Each step has its own retry boundary: listing, reading, handling, and
-  writing the response. A completed response survives a failed write and is
-  written again. Command idempotency keys keep their meaning.
-- Temporary failures are classified and retried with bounded backoff. A
-  permanent failure or Stop ends the mailbox explicitly. An unreachable host
-  never implies a dead provider.
-- A remote stage gets its own poll interval, or a design that does not poll.
-- Bounds live in `limits.py`.
-
-Decisions:
-
-1. **Human decision:** how long an outage lasts before the mailbox gives up,
-   and what the agent sees then. Recommended: back off while the same accepted
-   remote pass is unresolved, then answer every call with a stated permanent
-   reason.
-2. Settled 2026-09-29: on a backend restart or desktop update while a detached
-   turn still needs its mailbox, the new backend resumes the same mailbox with
-   the same credential. Updates do not wait on agent turns. This needs the
-   credential persisted with the same protection as other task secrets.
-
-Checks: one failed listing and then a request is answered; a request is
-answered after `remote_result_pending`; a lost response after a successful side
-effect is replayed, not repeated.
+Remaining verification: the live remote and packaged-desktop journeys are not
+verified in this worktree. Existing integration tests that start an account-home
+Unix-socket broker are blocked by the execution sandbox (`Operation not
+permitted`); module and acceptance results are recorded in the implementation's
+commit plan. Fix C has no remaining design decision.
 
 ## D. Apply survives a killed connection
 

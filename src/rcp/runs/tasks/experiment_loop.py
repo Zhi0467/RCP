@@ -157,6 +157,7 @@ from rcp.runs.tasks.work import (
     _rejected_graph_update_for_repair,
     _resolve_work_execution,
     _ResolvedWorkExecution,
+    _resume_work_compute_commands,
     _retained_primary_answer,
     _RetryDeliverableBaseline,
     _SettledWorkDeliverables,
@@ -166,7 +167,9 @@ from rcp.runs.tasks.work import (
     _work_execution_instructions,
     _work_finalization_context,
     _work_graph_repairable,
+    _work_mailbox_context,
     _work_patch_proposal_ids,
+    _WorkMailboxContext,
     _WorkValidatorMailboxLifecycle,
     _write_recorded_patch,
 )
@@ -174,7 +177,9 @@ from rcp.runs.tasks.work_turn_runtime import (
     WorkFinalizationContext,
     _PreparedWorkPatch,
     apply_work_patch,
+    load_work_mailbox_context,
     read_correction_patch,
+    restore_work_validator_mailbox,
     settle_graph_repair_patch,
     start_work_validator_mailbox,
     validate_work_patch_live,
@@ -3005,12 +3010,43 @@ def _start_work_validator_mailbox(
         budget=budget,
         command_handler=compute_commands,
         serve=serve_patch_validation_mailbox,
+        resume_context=_ExperimentMailboxContext(
+            **_work_mailbox_context(run_truth_scope, compute_commands).model_dump(),
+            control_node_id=control_node_id,
+            control_decision_bundle=control_decision_bundle,
+        ).model_dump(mode="json"),
         validate=lambda text: _validate_work_patch_live(
             service,
             text,
             run_truth_scope=run_truth_scope,
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
+            source_operation_id=_work_patch_source_operation_id(execution),
+        ),
+    )
+
+
+class _ExperimentMailboxContext(_WorkMailboxContext):
+    control_node_id: str | None
+    control_decision_bundle: list[ExperimentDecisionPin]
+
+
+def resume_experiment_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> _WorkValidatorMailboxLifecycle | None:
+    saved = load_work_mailbox_context(execution)
+    if saved is None:
+        return None
+    context = _ExperimentMailboxContext.model_validate(saved)
+    return restore_work_validator_mailbox(
+        execution,
+        command_handler=_resume_work_compute_commands(execution, context),
+        validate=lambda text: _validate_work_patch_live(
+            service(),
+            text,
+            run_truth_scope=context.run_truth_scope,
+            control_node_id=context.control_node_id,
+            control_decision_bundle=context.control_decision_bundle,
             source_operation_id=_work_patch_source_operation_id(execution),
         ),
     )
