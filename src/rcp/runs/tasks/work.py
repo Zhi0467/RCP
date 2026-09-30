@@ -3078,6 +3078,7 @@ def _apply_work_patch(
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
     cancelled: Callable[[], bool] | None = None,
+    under_lock: Callable[[], None] | None = None,
 ) -> tuple[GraphUpdateResult | None, _DeliverableFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
@@ -3116,6 +3117,7 @@ def _apply_work_patch(
             else None
         ),
         cancelled=cancelled,
+        under_lock=under_lock,
     )
 
 
@@ -3182,10 +3184,15 @@ def record_work_graph_failure(
             if graph_update.validation_messages
             else "Canonical state was unavailable."
         )
+        if graph_update.commit_status == "present":
+            outcome = "was committed, but RCP lost canonical state before confirming it"
+        elif graph_update.commit_status == "unknown":
+            outcome = "may have been committed; RCP lost canonical state at the commit point"
+        else:
+            outcome = "could not reach canonical state and was not applied"
         store.record_agent_task_event(
             operation_id,
-            "Operational work completed, but its graph update could not reach canonical "
-            f"state and was not applied: {detail}",
+            f"Operational work completed, but its graph update {outcome}: {detail}",
             level="warning",
         )
         return

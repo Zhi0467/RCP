@@ -2702,7 +2702,12 @@ function GraphUpdateReceipt({
         )}
         {update.status === "unavailable" && (
           <strong>
-            <AlertTriangle size={12} /> Graph update not applied: canonical state unreachable
+            <AlertTriangle size={12} />{" "}
+            {update.commit_status === "present"
+              ? "Graph update committed, but canonical state became unreachable"
+              : update.commit_status === "unknown"
+                ? "Graph update may have been committed: canonical state unreachable"
+                : "Graph update not applied: canonical state unreachable"}
           </strong>
         )}
         {update.status === "applied" && proposalCount > 0 && (

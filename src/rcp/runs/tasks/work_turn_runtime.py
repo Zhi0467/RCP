@@ -804,12 +804,15 @@ def apply_work_patch(
     record_lock_wait: Callable[[str, str], None] | None = None,
     record_lock_lost: Callable[[str, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    under_lock: Callable[[], None] | None = None,
 ) -> tuple[GraphUpdateResult | None, DeliverableFailure | None]:
     """Validate and atomically commit one candidate prepared by its concrete owner.
 
     A transport failure is classified by how far the commit got: before the
     append it is absent, after it present, and inside it what the commit point
     reported. An unknown commit is never retried here (invariants 6 and 6b).
+    ``under_lock`` runs once the canonical run lock is owned and before anything
+    is read or appended; an exception it raises leaves history untouched.
     """
 
     if execution is not None:
@@ -853,6 +856,9 @@ def apply_work_patch(
             ),
         ) as lease:
             lease.assert_owned()
+            if under_lock is not None:
+                under_lock()
+                lease.assert_owned()
             if source_operation_id:
                 matches = [
                     item
@@ -870,6 +876,8 @@ def apply_work_patch(
                     canonical_patch = matches[0]
                     if not canonical_matches(canonical_patch, patch):
                         raise ValueError(canonical_binding_error)
+                    # The commit is present from here on, even if materializing it fails.
+                    commit_phase = "committed"
                     result = service.history.current_materialization()
                     appended = canonical_patch
                 else:

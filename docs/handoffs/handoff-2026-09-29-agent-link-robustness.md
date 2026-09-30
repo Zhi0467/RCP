@@ -1,15 +1,20 @@
 # Agent link robustness
 
 Date: 2026-09-29
-Status: fixes A, B and C and slice 2a implemented. An xhigh design review ran
-on 2026-09-29 and its findings are folded in below.
+Status: fixes A, B and C and D's state-transfer and Apply-recovery work
+implemented; live checks remain. An xhigh design review ran on 2026-09-29 and
+its findings are folded in below.
 
 Implemented: fix A (server-owned chat wake session binding), fix B
 (newline-only SSE and JSONL text readers), fix C (durable command mailbox
-ownership and retry), and slice 2a (external dependency map and
-state-transfer rsync detection with a visible tar fallback).
-Remaining: the retry and recovery parts of D, A's real-provider wake check,
-and the tool audit's remaining owners.
+ownership and retry), slice 2a (external dependency map and state-transfer
+rsync detection with a visible tar fallback), slice 2b (bounded retry of a
+dropped state transfer), and D's Apply recovery (the `unavailable` outcome and
+Apply again).
+Remaining: A's real-provider wake check, D's remaining checks (a killed
+acknowledgement after a confirmed commit leaves one commit; a timeout reaches a
+classified outcome) and its other rsync owners, and the tool audit's remaining
+owners.
 
 Settled with the human on 2026-09-29:
 
@@ -255,13 +260,18 @@ Target:
   Work turn offers **Apply again**
   (`POST …/apply-graph-update-again`, `src/rcp/runs/tasks/work_apply_again.py`,
   projected as `can_apply_again`). It re-applies the retained text through the
-  same source binding, so a landed commit is recorded, never appended twice. It
-  is refused when the commit is `unknown`, when the text is gone, while the
-  chat is active, after a later applied turn in the chat, and for
-  Experiment-loop or Auto-research child turns. Rules:
+  same source binding, and Apply refreshes canonical state under the run lock
+  before the binding check, so a landed commit is recorded, never appended
+  twice. That makes it safe for `absent`, `present` and `unknown` alike; a new
+  Work turn, with a new source id, is the unsafe path. It is refused when the
+  text is gone, while the chat is active, after a later applied turn in the
+  chat (except for `present`, which is only recorded), and for Experiment-loop
+  or Auto-research child turns. The chat checks repeat under the run lock, so a
+  turn admitted while Apply again waits still refuses it. A matching canonical
+  commit is marked present before materialization, so a later failure keeps
+  that certainty. Every Apply-again outcome appends a chat receipt, and the task
+  event and chat receipt name the commit status. Rules:
   [graph history](../specs/graph-history-and-transitions.md#human-preview-and-agent-correction).
-  Still open: nothing yet turns an `unknown` commit into `present` or `absent`
-  on the task, so such a turn needs a new Work turn.
 - Every failed transfer records bounded raw stderr, the exit code, the phase,
   the partition, and the commit certainty.
 - Timeouts are normalized without erasing commit uncertainty.
