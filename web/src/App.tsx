@@ -225,6 +225,7 @@ import type {
   GraphNode,
   GraphState,
   GraphTargetRef,
+  GraphUpdateRecovery,
   Health,
   PaperSnapshot,
   ProjectCard,
@@ -3652,7 +3653,10 @@ export default function App() {
     await refreshEpisodes();
   };
 
-  const repairGraphUpdate = async (operationId: string): Promise<void> => {
+  const repairGraphUpdate = async (
+    operationId: string,
+    action: GraphUpdateRecovery = "repair",
+  ): Promise<void> => {
     const finishTaskRepair = beginTaskRepair(operationId);
     if (!finishTaskRepair) {
       throw new Error("Another task action is already being submitted.");
@@ -3660,6 +3664,15 @@ export default function App() {
     try {
       if (mutationsDisabled) {
         throw new Error("Graph repair is unavailable while replay is degraded.");
+      }
+      if (action === "apply_again") {
+        const updated = await api<AgentTask>(
+          `${apiBase}/tasks/${encodeURIComponent(operationId)}/apply-graph-update-again`,
+          { method: "POST" },
+        );
+        upsertTask(updated);
+        setNotice(null);
+        return;
       }
       const next = await api<AgentTask>(
         `${apiBase}/tasks/${encodeURIComponent(operationId)}/repair-graph-update`,

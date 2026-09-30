@@ -302,6 +302,9 @@ STATE_LOCK_ATTEMPT_TIMEOUT_SECONDS = 30.0
 STATE_LOCK_REFRESH_WAIT_TIMEOUT_SECONDS = 20.0
 STATE_LOCK_HOLDER_STOP_TIMEOUT_SECONDS = 5.0
 STATE_LOCK_POLL_INTERVAL_SECONDS = 0.2
+# A human's Apply again gives up on the agent-run lock rather than holding the
+# request open behind a long graph-writing run.
+APPLY_AGAIN_RUN_LOCK_WAIT_SECONDS = 20.0
 # Holder-enforced liveness tolerates command round trips and missed heartbeats.
 STATE_LOCK_HOLDER_HEARTBEAT_INTERVAL_SECONDS = 10.0
 STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS = 60.0

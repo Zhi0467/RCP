@@ -321,6 +321,29 @@ indexes, rule, cause chain, affected ids, and invariant and returns that input t
 the same native session's correction path. No rejected preparation creates a
 canonical revision or an operational receipt claiming that it did.
 
+When Apply cannot reach canonical state (the state workspace is unavailable or
+unreachable, or the lock is lost), the rules never judged the Patch. The graph
+update is recorded as `unavailable`, not `rejected`. It carries the commit
+status: `absent` before the commit point, `present` after it, or `unknown`
+when the commit point's answer was lost. It is never correctable or
+repairable. A halted replay stays a non-correctable rejection: history is
+read-only until a human repairs it, and a lost link is not the cause. The task
+keeps its Patch text (invariant 9).
+
+An ordinary conversation Work turn in that state offers **Apply again**
+(`POST …/tasks/{operation_id}/apply-graph-update-again`, patch-capable identity,
+merge fence). It re-applies the retained Patch text without running the agent,
+through the same Apply path, source binding and current-graph validation. If
+the earlier commit did land, the canonical-binding check records it rather than
+appending again. The outcome replaces the task's graph update: applied, which
+drops the retained text and appends a chat receipt; rejected, which may then
+offer Repair; or unavailable again. The task projects `can_apply_again`. Apply
+again is refused when the commit status is `unknown` (invariants 6 and 6b). It
+is also refused when the retained text is gone, when a turn in the same chat is
+active, when a later turn in that chat has applied a graph update, and for
+Experiment-loop and Auto-research child turns, whose control bookkeeping a bare
+re-apply would skip. Nothing reaches the graph unless a human clicks it.
+
 ## Coherent projections and operational events
 
 Every successful mutation response carries one `ProjectTransitionProjection`:

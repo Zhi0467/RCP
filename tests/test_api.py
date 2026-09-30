@@ -88,7 +88,14 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
-from rcp.transport import RunLockCancelled, RunLockLease, SSHStateWorkspace, StateUnavailable
+from rcp.transport import (
+    BatchPublishFailed,
+    RunLockCancelled,
+    RunLockLease,
+    SSHStateWorkspace,
+    StateUnavailable,
+    StateUnreachable,
+)
 from rcp.watchers import WatcherBinding, WatcherCheckResult, WatchSpec
 
 from .helpers import (
@@ -5268,6 +5275,7 @@ async def test_work_without_patch_succeeds_without_spending_a_revision(manifest,
         "validation_messages": [],
         "correction_rounds": 0,
         "repairable": False,
+        "commit_status": None,
     }
     assert service.history.state().revision == 2
     assert launcher.launch_kwargs[0]["capability"] == "work_auto"
@@ -5835,7 +5843,8 @@ async def test_work_lock_ownership_loss_preserves_the_answer_and_skips_graph_app
     ]
     graph_update = _graph_update(frames)
     assert graph_update is not None
-    assert graph_update["status"] == "rejected"
+    assert graph_update["status"] == "unavailable"
+    assert graph_update["commit_status"] == "absent"
     assert graph_update["repairable"] is False
     assert "lock holder" in graph_update["validation_messages"][0]
     assert launcher.calls == 1
@@ -6187,6 +6196,108 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     assert transcript.messages[-1].graph_update is not None
     assert transcript.messages[-1].graph_update.status == "applied"
     assert transcript.last_message_preview == "The operational work completed."
+
+
+def _work_turn_whose_apply_loses_canonical_state(
+    manifest, tmp_path, monkeypatch, failure: Exception
+):
+    app, service = _seeded_project(manifest, tmp_path)
+    patch_text = agent_patch_json(
+        refresh_patch("rq/applied-again").model_copy(update={"kind": "work"})
+    )
+    launcher = ScriptedLauncher(
+        [{"patch.json": patch_text}], message="The operational work completed."
+    )
+    real_append = service.history.append
+
+    def fail_once(*_args, **_kwargs):
+        monkeypatch.setattr(service.history, "append", real_append)
+        raise failure
+
+    monkeypatch.setattr(service.history, "append", fail_once)
+
+    async def stream(_project_id, _kind, request, execution):
+        async for frame in stream_work_run(
+            service, launcher, request, tmp_path / "data", execution=execution
+        ):
+            yield frame
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    started = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": str(uuid.uuid4()),
+            "message": "Run the operation and reflect it.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert started.status_code == 202
+    task = _wait_for_run(client, project_id, started.json()["operation_id"])
+    assert task["status"] == "succeeded", task
+    return app, service, client, task, patch_text
+
+
+def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest, tmp_path, monkeypatch, StateUnreachable("ssh exited 255")
+    )
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    operation_id = task["operation_id"]
+    update = task["result"]["graph_update"]
+    assert update["status"] == "unavailable"
+    assert update["commit_status"] == "absent"
+    assert update["repairable"] is False
+    assert task["can_apply_again"] is True
+    assert store.agent_task_patch_output(operation_id) == patch_text
+    revision = service.history.state().revision
+
+    applied = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert applied.status_code == 200, applied.text
+    body = applied.json()
+    assert body["result"]["graph_update"]["status"] == "applied"
+    assert body["result"]["graph_update"]["applied_revision"] == revision + 1
+    assert body["can_apply_again"] is False
+    assert "rq/applied-again" in service.history.state().nodes
+    assert store.agent_task_patch_output(operation_id) is None
+
+    repeated = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert repeated.status_code == 409
+    assert service.history.state().revision == revision + 1
+
+
+def test_apply_again_is_refused_while_the_commit_is_unknown(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        BatchPublishFailed("commit probe failed", commit_status="unknown"),
+    )
+    project_id = app.state.default_project_id
+    operation_id = task["operation_id"]
+    assert task["result"]["graph_update"]["status"] == "unavailable"
+    assert task["result"]["graph_update"]["commit_status"] == "unknown"
+    assert task["can_apply_again"] is False
+    assert app.state.background_tasks.store.agent_task_patch_output(operation_id) == patch_text
+    revision = service.history.state().revision
+
+    refused = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert refused.status_code == 409
+    assert service.history.state().revision == revision
+    assert "rq/applied-again" not in service.history.state().nodes
 
 
 def _experiment_fixture_patch(

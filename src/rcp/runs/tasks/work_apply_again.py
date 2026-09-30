@@ -1,0 +1,165 @@
+"""Apply again: re-apply a Work turn's retained Patch after canonical state was unreachable.
+
+The agent does not run again. The retained Patch text is revalidated against
+the graph as it is now, through the same Apply path and canonical-binding check
+the turn used, and the outcome is recorded on the same task.
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from typing import Literal, cast
+
+from rcp.core.models import AuthorizedHuman
+from rcp.limits import APPLY_AGAIN_RUN_LOCK_WAIT_SECONDS
+from rcp.runs.chat import _append_chat_graph_receipt
+from rcp.runs.task_policy import load_stored_request
+from rcp.runs.tasks.work import (
+    _apply_work_patch,
+    _bounded_graph_messages,
+    record_work_graph_failure,
+)
+from rcp.runs.tasks.work_turn_runtime import failed_graph_update
+from rcp.service import ProjectService, RunRequest
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.transport import RunLockCancelled, StateUnavailable
+
+_APPLY_AGAIN_GUARD = threading.Lock()
+
+
+def apply_again_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
+    """Why this task cannot apply its graph update again, or None when it can."""
+
+    graph_update = record.result.get("graph_update") if record.result else None
+    if not isinstance(graph_update, dict) or graph_update.get("status") != "unavailable":
+        return "This task has no graph update waiting for canonical state."
+    if record.history_only:
+        return "This task is retained as history and cannot be controlled or continued."
+    request = record.request
+    if (
+        record.status != "succeeded"
+        or record.kind not in {"node_chat", "project_chat"}
+        or request.get("mode") != "work"
+        or request.get("patch_kind") == "experiment_loop"
+        or store.auto_research_child_work_for_operation(record.operation_id) is not None
+    ):
+        return "Only an ordinary Work turn can apply its graph update again."
+    if graph_update.get("commit_status") == "unknown":
+        # Invariants 6 and 6b: a commit whose acknowledgement was lost is never rerun.
+        return (
+            "RCP could not confirm whether this graph update was committed, so it cannot "
+            "be applied again. Start a new Work turn instead."
+        )
+    chat_id = request.get("chat_id")
+    if isinstance(chat_id, str) and store.has_active_chat_task(
+        record.project_id,
+        cast(Literal["node_chat", "project_chat"], record.kind),
+        chat_id,
+    ):
+        return "Wait for the running turn in this chat to finish."
+    if store.later_chat_turn_applied_graph_update(record):
+        return "A later turn in this chat already applied a graph update."
+    if store.agent_task_patch_output(record.operation_id) is None:
+        return "The retained patch is no longer available. Start a new Work turn instead."
+    return None
+
+
+def apply_work_graph_update_again(
+    service: ProjectService,
+    store: AppStore,
+    operation_id: str,
+    *,
+    authorized_by: AuthorizedHuman | None,
+) -> AgentTaskRecord:
+    """Apply one retained Work Patch once more and record the outcome on its task."""
+
+    if not _APPLY_AGAIN_GUARD.acquire(blocking=False):
+        raise ValueError("Another Apply again is already running. Try again when it finishes.")
+    try:
+        record = store.agent_task(operation_id)
+        if record is None:
+            raise KeyError(operation_id)
+        refusal = apply_again_refusal(store, record)
+        if refusal is not None:
+            raise ValueError(refusal)
+        assert record.result is not None
+        expected = record.result["graph_update"]
+        assert isinstance(expected, dict)
+        patch_text = store.agent_task_patch_output(operation_id)
+        assert patch_text is not None
+        request = load_stored_request(RunRequest, record.request, operation_id=operation_id)
+        assert isinstance(request, RunRequest)
+        deadline = time.monotonic() + APPLY_AGAIN_RUN_LOCK_WAIT_SECONDS
+        try:
+            # The same source binding as the turn: if the earlier commit did land,
+            # the canonical-binding check records it instead of appending twice.
+            result, failure = _apply_work_patch(
+                service,
+                None,
+                patch_text,
+                run_truth_scope=list(
+                    request.run_truth_scope or service.manifest.agent.default_run_truth_scope
+                ),
+                source_operation_id=operation_id,
+                cancelled=lambda: time.monotonic() > deadline,
+            )
+        except RunLockCancelled as exc:
+            raise ValueError(
+                "Another graph-writing run holds canonical state. Try again when it finishes."
+            ) from exc
+        correction_rounds = expected.get("correction_rounds")
+        rounds = correction_rounds if isinstance(correction_rounds, int) else 0
+        if result is None:
+            assert failure is not None
+            graph_update = failed_graph_update(
+                failure,
+                bounded_messages=_bounded_graph_messages,
+                correction_rounds=rounds,
+                repairable=bool(
+                    failure.correctable and record.native_session_id and record.stage_root
+                ),
+            )
+            record_work_graph_failure(store, operation_id, graph_update)
+        else:
+            graph_update = result.model_copy(update={"correction_rounds": rounds})
+            store.record_agent_task_event(
+                operation_id,
+                f"Apply again applied the retained graph update at revision "
+                f"{graph_update.applied_revision}.",
+            )
+        store.record_agent_task_receipt(
+            operation_id,
+            "work_graph_update_applied_again",
+            {
+                "status": graph_update.status,
+                "applied_revision": graph_update.applied_revision,
+                "commit_status": graph_update.commit_status,
+                "authorized_user_id": authorized_by.user_id if authorized_by else None,
+            },
+        )
+        store.replace_agent_task_graph_update(
+            operation_id,
+            expected=expected,
+            graph_update=graph_update.model_dump(mode="json"),
+        )
+        if graph_update.status == "applied":
+            try:
+                _append_chat_graph_receipt(
+                    service,
+                    request,
+                    record.native_session_id,
+                    graph_update,
+                    operation_id,
+                )
+            except (OSError, StateUnavailable, ValueError) as exc:
+                store.record_agent_task_event(
+                    operation_id,
+                    f"Apply again completed but its chat receipt could not be written: {exc}",
+                    level="warning",
+                )
+        updated = store.agent_task(operation_id)
+        assert updated is not None
+        return updated
+    finally:
+        _APPLY_AGAIN_GUARD.release()

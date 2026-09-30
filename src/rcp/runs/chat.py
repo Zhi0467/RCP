@@ -1776,9 +1776,9 @@ def _append_chat_graph_receipt(
     request: RunRequest,
     native_session_id: str | None,
     graph_update: GraphUpdateResult,
-    execution: AgentTaskExecution,
+    operation_id: str,
 ) -> None:
-    """Append only a durable receipt for a manual patch repair continuation."""
+    """Append only a durable receipt for a patch repair or an Apply again."""
 
     assert request.chat_id is not None
     with service.history.workspace.transaction():
@@ -1795,7 +1795,7 @@ def _append_chat_graph_receipt(
             "executionMachine": request.run_on,
             "cwd": str(service.manifest.research_dir.parent),
             "timestamp": datetime.now(UTC).isoformat(),
-            "operationId": execution.operation_id,
+            "operationId": operation_id,
             "mode": "work",
             "trigger": request.trigger,
             "activeComputeIds": request.active_compute_ids,

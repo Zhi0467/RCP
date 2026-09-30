@@ -122,6 +122,7 @@ import type {
   ChatAttachmentDescriptor,
   ConversationMode,
   GraphNode,
+  GraphUpdateRecovery,
   GraphUpdateResult,
   ProjectSnapshot,
   StartAgentTask,
@@ -164,7 +165,7 @@ interface Props {
   onStartTask: StartAgentTask;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
-  onRepairGraphUpdate: (taskId: string) => Promise<void>;
+  onRepairGraphUpdate: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
   onOpenNode?: (nodeId: string) => void;
   onStopWatcher?: (watcherId: string) => void;
   onNewSession: () => void;
@@ -1444,12 +1445,12 @@ export function NodeChat({
     }
   };
 
-  const repairGraphUpdate = async (taskId: string) => {
+  const repairGraphUpdate = async (taskId: string, action: GraphUpdateRecovery = "repair") => {
     if (readOnly || repairingTaskId) return;
     setRepairingTaskId(taskId);
     setRepairErrors((current) => withoutMapKey(current, taskId));
     try {
-      await onRepairGraphUpdate(taskId);
+      await onRepairGraphUpdate(taskId, action);
     } catch (error) {
       setRepairErrors((current) =>
         withMapValue(current, taskId, error instanceof Error ? error.message : String(error)),
@@ -2069,10 +2070,15 @@ export function NodeChat({
                     readOnly || graphChangesDisabled || relatedActive || submitting || reviewPending
                   }
                   repairContinued={continuedTaskIds.has(line.taskId)}
+                  canApplyAgain={
+                    relatedTasks.find((task) => task.operation_id === line.taskId)
+                      ?.can_apply_again === true
+                  }
                   repairError={repairErrors.get(line.taskId) ?? null}
                   onInspectTask={onInspectTask}
                   onOpenInbox={onOpenInbox}
                   onRepair={() => void repairGraphUpdate(line.taskId)}
+                  onApplyAgain={() => void repairGraphUpdate(line.taskId, "apply_again")}
                 />
               )}
             </div>
@@ -2657,20 +2663,24 @@ function GraphUpdateReceipt({
   repairBusy,
   repairDisabled,
   repairContinued,
+  canApplyAgain,
   repairError,
   onInspectTask,
   onOpenInbox,
   onRepair,
+  onApplyAgain,
 }: {
   update: GraphUpdateResult;
   taskId: string;
   repairBusy: boolean;
   repairDisabled: boolean;
   repairContinued: boolean;
+  canApplyAgain: boolean;
   repairError: string | null;
   onInspectTask: (taskId: string) => void;
   onOpenInbox: () => void;
   onRepair: () => void;
+  onApplyAgain: () => void;
 }) {
   if (update.status === "none") return null;
   const proposalCount = update.proposal_ids.length;
@@ -2690,6 +2700,11 @@ function GraphUpdateReceipt({
             <AlertTriangle size={12} /> Graph update rejected
           </strong>
         )}
+        {update.status === "unavailable" && (
+          <strong>
+            <AlertTriangle size={12} /> Graph update not applied: canonical state unreachable
+          </strong>
+        )}
         {update.status === "applied" && proposalCount > 0 && (
           <button type="button" onClick={onOpenInbox}>
             <Inbox size={12} />
@@ -2702,6 +2717,12 @@ function GraphUpdateReceipt({
             Repair graph update
           </button>
         )}
+        {update.status === "unavailable" && canApplyAgain && (
+          <button type="button" disabled={repairBusy || repairDisabled} onClick={onApplyAgain}>
+            <RotateCcw className={repairBusy ? "spin" : undefined} size={12} />
+            Apply again
+          </button>
+        )}
       </div>
       {update.change_summary.length > 0 && (
         <ul className="chat-graph-change-summary">
@@ -2710,13 +2731,14 @@ function GraphUpdateReceipt({
           ))}
         </ul>
       )}
-      {update.status === "rejected" && update.validation_messages.length > 0 && (
-        <ul className="chat-graph-validation">
-          {update.validation_messages.map((item, index) => (
-            <li key={`${index}:${item}`}>{item}</li>
-          ))}
-        </ul>
-      )}
+      {(update.status === "rejected" || update.status === "unavailable") &&
+        update.validation_messages.length > 0 && (
+          <ul className="chat-graph-validation">
+            {update.validation_messages.map((item, index) => (
+              <li key={`${index}:${item}`}>{item}</li>
+            ))}
+          </ul>
+        )}
       {repairError && (
         <strong className="chat-graph-repair-error" role="alert">
           {repairError}

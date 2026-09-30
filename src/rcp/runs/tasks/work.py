@@ -157,6 +157,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     _StagedWorkInputs,
     _WorkValidatorMailboxLifecycle,
     apply_work_patch,
+    failed_graph_update,
     load_work_mailbox_context,
     read_correction_patch,
     restore_work_validator_mailbox,
@@ -176,7 +177,12 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
-from rcp.storage import ExperimentWatcherResourceRecord, ResultViewRecord, WatcherContinuation
+from rcp.storage import (
+    AppStore,
+    ExperimentWatcherResourceRecord,
+    ResultViewRecord,
+    WatcherContinuation,
+)
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -1522,16 +1528,15 @@ def _reject_patch_deliverable(
         settled.native_session_id,
         failure,
     )
-    settled.graph_update = GraphUpdateResult(
-        status="rejected",
-        change_summary=list(failure.change_summary),
-        proposal_ids=list(failure.proposal_ids),
-        validation_messages=_bounded_graph_messages(failure.message),
+    settled.graph_update = failed_graph_update(
+        failure,
+        bounded_messages=_bounded_graph_messages,
         correction_rounds=correction_rounds,
         repairable=repairable,
     )
     if turn.execution is None or not turn.execution.store.agent_task_has_receipt(
-        turn.execution.operation_id, "work_graph_update_rejected"
+        turn.execution.operation_id,
+        _work_graph_failure_receipt(settled.graph_update),
     ):
         _record_work_graph_rejection(turn.execution, settled.graph_update)
     return _DeliverableStep()
@@ -2849,7 +2854,7 @@ async def _stream_work_graph_repair(
             request,
             outcome.session_id,
             graph_update,
-            execution,
+            execution.operation_id,
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         execution.store.record_agent_task_event(
@@ -3072,6 +3077,7 @@ def _apply_work_patch(
     profile: AgentProfile = "ordinary",
     source_operation_id: str | None = None,
     source_effect_id: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[GraphUpdateResult | None, _DeliverableFailure | None]:
     """Validate and atomically apply one Work patch candidate."""
 
@@ -3109,6 +3115,7 @@ def _apply_work_patch(
             if execution is not None
             else None
         ),
+        cancelled=cancelled,
     )
 
 
@@ -3142,24 +3149,53 @@ def _work_graph_repairable(
     )
 
 
+def _work_graph_failure_receipt(graph_update: GraphUpdateResult) -> str:
+    if graph_update.status == "unavailable":
+        return "work_graph_update_unavailable"
+    return "work_graph_update_rejected"
+
+
 def _record_work_graph_rejection(
     execution: AgentTaskExecution | None,
     graph_update: GraphUpdateResult,
 ) -> None:
+    """Record a failed Apply: a rejection, or canonical state it could not reach."""
+
     if execution is None:
         return
-    execution.store.record_agent_task_receipt(
-        execution.operation_id,
-        "work_graph_update_rejected",
+    record_work_graph_failure(execution.store, execution.operation_id, graph_update)
+
+
+def record_work_graph_failure(
+    store: AppStore,
+    operation_id: str,
+    graph_update: GraphUpdateResult,
+) -> None:
+    store.record_agent_task_receipt(
+        operation_id,
+        _work_graph_failure_receipt(graph_update),
         graph_update.model_dump(mode="json"),
     )
+    if graph_update.status == "unavailable":
+        detail = (
+            graph_update.validation_messages[0]
+            if graph_update.validation_messages
+            else "Canonical state was unavailable."
+        )
+        store.record_agent_task_event(
+            operation_id,
+            "Operational work completed, but its graph update could not reach canonical "
+            f"state and was not applied: {detail}",
+            level="warning",
+        )
+        return
     detail = (
         graph_update.validation_messages[0]
         if graph_update.validation_messages
         else "The graph update was rejected."
     )
-    execution.store.record_agent_task_event(
-        execution.operation_id,
+    store.record_agent_task_event(
+        operation_id,
         f"Operational work completed, but the graph update was rejected: {detail}",
         level="warning",
     )

@@ -26,6 +26,7 @@ from rcp.api.dependencies import (
     get_project_service,
     get_result_view_keep_locks,
     get_store,
+    get_watcher_delivery,
     project_write_admission,
     require_project_membership,
     require_project_write_admission,
@@ -72,6 +73,7 @@ from rcp.runs.steering import (
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
+from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
@@ -85,6 +87,7 @@ from rcp.storage import (
 )
 from rcp.transport import RemoteRunStage, StateUnavailable
 from rcp.transport.state import StateWorkspace
+from rcp.watchers import WatcherDelivery
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -105,6 +108,7 @@ ArtifactMutationLocksDependency = Annotated[
     KeyedLocks,
     Depends(get_artifact_mutation_locks),
 ]
+WatcherDeliveryDependency = Annotated[WatcherDelivery, Depends(get_watcher_delivery)]
 
 
 class ArtifactRevisionCandidateResponse(BaseModel):
@@ -248,6 +252,7 @@ def _agent_task_response(
         # The provider ran without part of what the launch asked for. Exported
         # here so no surface has to read exit receipts to learn it.
         degradation=(degradations or {}).get(record.operation_id),
+        can_apply_again=_can_apply_again(store, record),
     )
     result = response.get("result")
     stored_artifacts = record.result.get("artifacts") if record.result else None
@@ -279,6 +284,13 @@ def _agent_task_response(
         )
     result["artifacts"] = projected
     return response
+
+
+def _can_apply_again(store: AppStore, record: AgentTaskRecord) -> bool:
+    graph_update = record.result.get("graph_update") if record.result else None
+    if not isinstance(graph_update, dict) or graph_update.get("status") != "unavailable":
+        return False
+    return apply_again_refusal(store, record) is None
 
 
 def _reject_history_only_control(record: AgentTaskRecord) -> None:
@@ -1089,6 +1101,55 @@ def repair_agent_task_graph_update(
         raise HTTPException(status_code=404, detail="Agent task not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def apply_agent_task_graph_update_again(
+    project_id: str,
+    operation_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+    watcher_delivery: WatcherDeliveryDependency,
+) -> dict[str, object]:
+    """Re-apply a Work turn's retained Patch after canonical state was unreachable."""
+
+    previous = store.agent_task(operation_id)
+    if previous is None or previous.project_id != project_id or not previous.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(previous)
+    if not task_graph_capable(previous.kind, previous.request):
+        raise HTTPException(status_code=409, detail="This task cannot change the graph.")
+    authorized_by = identity_access.require_patch_capable_identity(request)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    target = service.history.graph_target
+    require_graph_edit_admission(store, catalog.resolve_project_id(project_id), target)
+    try:
+        record = apply_work_graph_update_again(
+            service,
+            store,
+            operation_id,
+            authorized_by=authorized_by,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Agent task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    graph_update = record.result.get("graph_update") if record.result else None
+    if isinstance(graph_update, dict) and graph_update.get("status") == "applied":
+        watcher_delivery.evaluate_graph_wake_boundary(
+            catalog.resolve_project_id(project_id),
+            None,
+            source="Apply again",
+            graph_target=target,
+        )
+    return _agent_task_response(store, record, background_tasks)
 
 
 @router.post(

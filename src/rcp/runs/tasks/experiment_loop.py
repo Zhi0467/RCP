@@ -177,6 +177,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     WorkFinalizationContext,
     _PreparedWorkPatch,
     apply_work_patch,
+    failed_graph_update,
     load_work_mailbox_context,
     read_correction_patch,
     restore_work_validator_mailbox,
@@ -1844,11 +1845,9 @@ async def _apply_experiment_loop_turn(
                     applied.native_session_id,
                     final_failure,
                 )
-                applied.graph_update = GraphUpdateResult(
-                    status="rejected",
-                    change_summary=list(final_failure.change_summary),
-                    proposal_ids=list(final_failure.proposal_ids),
-                    validation_messages=_bounded_graph_messages(final_failure.message),
+                applied.graph_update = failed_graph_update(
+                    final_failure,
+                    bounded_messages=_bounded_graph_messages,
                     correction_rounds=loop_patch_correction_rounds,
                     repairable=repairable,
                 )
@@ -2976,7 +2975,7 @@ async def _stream_work_graph_repair(
             request,
             outcome.session_id,
             graph_update,
-            execution,
+            execution.operation_id,
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         execution.store.record_agent_task_event(

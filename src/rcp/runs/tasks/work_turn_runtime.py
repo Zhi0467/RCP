@@ -47,8 +47,10 @@ from rcp.skill_registry import SkillSelection
 from rcp.storage import ResultViewRecord
 from rcp.storage.command_mailbox import CommandMailboxStore
 from rcp.transport import (
+    BatchPublishFailed,
     RemoteRunStage,
     RunLockCancelled,
+    RunLockOwnershipLost,
     RunStageMailbox,
     StateUnavailable,
     StateUnreachable,
@@ -69,6 +71,30 @@ class DeliverableFailure:
     correctable: bool
     change_summary: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
+    # Set only when Apply could not reach canonical state: what its commit point
+    # showed. The rules never judged the Patch, so this is not a rejection.
+    commit_status: Literal["absent", "present", "unknown"] | None = None
+
+
+def failed_graph_update(
+    failure: DeliverableFailure,
+    *,
+    bounded_messages: Callable[..., list[str]],
+    correction_rounds: int = 0,
+    repairable: bool = False,
+) -> GraphUpdateResult:
+    """Record a failed Apply as a rejection, or as unavailable canonical state."""
+
+    unavailable = failure.commit_status is not None
+    return GraphUpdateResult(
+        status="unavailable" if unavailable else "rejected",
+        change_summary=list(failure.change_summary),
+        proposal_ids=list(failure.proposal_ids),
+        validation_messages=bounded_messages(failure.message),
+        correction_rounds=correction_rounds,
+        repairable=repairable and not unavailable,
+        commit_status=failure.commit_status,
+    )
 
 
 @dataclass(frozen=True)
@@ -769,8 +795,14 @@ def apply_work_patch(
     bounded_messages: Callable[..., list[str]],
     record_lock_wait: Callable[[str, str], None] | None = None,
     record_lock_lost: Callable[[str, str], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[GraphUpdateResult | None, DeliverableFailure | None]:
-    """Validate and atomically commit one candidate prepared by its concrete owner."""
+    """Validate and atomically commit one candidate prepared by its concrete owner.
+
+    A transport failure is classified by how far the commit got: before the
+    append it is absent, after it present, and inside it what the commit point
+    reported. An unknown commit is never retried here (invariants 6 and 6b).
+    """
 
     if execution is not None:
         execution.store.record_agent_task_patch_output(execution.operation_id, patch_text)
@@ -783,6 +815,7 @@ def apply_work_patch(
     change_summary: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
     canonical_patch: Patch | None = None
+    commit_phase: Literal["before", "appending", "committed"] = "before"
     try:
         candidate = prepare_candidate(patch_text)
         patch = candidate.patch
@@ -807,7 +840,9 @@ def apply_work_patch(
                 if record_lock_lost is not None
                 else None
             ),
-            cancelled=(execution.control.pause_requested.is_set if execution is not None else None),
+            cancelled=(
+                execution.control.pause_requested.is_set if execution is not None else cancelled
+            ),
         ) as lease:
             lease.assert_owned()
             if source_operation_id:
@@ -830,15 +865,18 @@ def apply_work_patch(
                     result = service.history.current_materialization()
                     appended = canonical_patch
                 else:
+                    commit_phase = "appending"
                     appended, result = service.history.append(
                         patch,
                         discard_on_reject=True,
                     )
             else:
+                commit_phase = "appending"
                 appended, result = service.history.append(
                     patch,
                     discard_on_reject=True,
                 )
+            commit_phase = "committed"
     except PatchRejected as exc:
         messages = [item.message for item in exc.report.messages if item.level == "reject"]
         detail = "; ".join(messages) or str(exc) or rejected_patch_error
@@ -855,12 +893,35 @@ def apply_work_patch(
             change_summary=change_summary,
             proposal_ids=proposal_ids,
         )
-    except (ReplayHalted, StateUnavailable) as exc:
+    except ReplayHalted as exc:
+        # Canonical history is read-only until a human repairs it. That is not
+        # a lost link, so it stays a non-correctable rejection.
         return None, DeliverableFailure(
             str(exc),
             correctable=False,
             change_summary=change_summary,
             proposal_ids=proposal_ids,
+        )
+    except StateUnavailable as exc:
+        commit_status: Literal["absent", "present", "unknown"]
+        if commit_phase == "committed":
+            commit_status = "present"
+        elif commit_phase == "appending" and isinstance(exc, BatchPublishFailed):
+            commit_status = exc.commit_status
+        elif commit_phase == "appending" and isinstance(exc, RunLockOwnershipLost):
+            # The append's own lease is also checked after publication, so a
+            # lost lease there cannot say which side of the commit it was on.
+            commit_status = "unknown"
+        else:
+            # Before the commit point, or inside append before it published:
+            # history reports a failed publication as BatchPublishFailed.
+            commit_status = "absent"
+        return None, DeliverableFailure(
+            str(exc),
+            correctable=False,
+            change_summary=change_summary,
+            proposal_ids=proposal_ids,
+            commit_status=commit_status,
         )
     except ValueError as exc:
         return None, DeliverableFailure(
@@ -953,11 +1014,9 @@ def settle_graph_repair_patch(
         )
     if graph_update is None:
         assert failure is not None
-        graph_update = GraphUpdateResult(
-            status="rejected",
-            change_summary=list(failure.change_summary),
-            proposal_ids=list(failure.proposal_ids),
-            validation_messages=bounded_messages(failure.message),
+        graph_update = failed_graph_update(
+            failure,
+            bounded_messages=bounded_messages,
             correction_rounds=1,
         )
         record_rejection(graph_update)

@@ -228,10 +228,9 @@ Today:
   staging folder before any commit command runs, so the commit protocol is
   unchanged. The final failure's stderr lists every attempt's exit code and
   bounded stderr, and each retry logs a warning.
-- `apply_work_patch` in `src/rcp/runs/tasks/work_turn_runtime.py` turns
-  `StateUnavailable` and `ReplayHalted` into a non-correctable failure. The
-  task says "the graph update was rejected", the words used for a Patch the
-  rules refused, and it is not repairable.
+- `apply_work_patch` in `src/rcp/runs/tasks/work_turn_runtime.py` records
+  `StateUnavailable` as graph update `unavailable`, which offers Apply again
+  (see Target). `ReplayHalted` remains a non-correctable rejection.
 - Those three transfers now use a timeout owned by `limits.py` and normalize
   process/timeout failures into the existing state-transfer failure boundary.
 - Transfer stderr is captured whole, then collapsed and cut to 1,600
@@ -246,7 +245,23 @@ Target:
   (invariant 9), and `patch.json` stays the only graph-change channel
   (invariant 4b).
 - Transport unavailability is its own outcome, not a rejection, and it can be
-  repaired or resumed.
+  repaired or resumed. Implemented: `apply_work_patch` records a transport
+  failure as graph update `unavailable` with its commit status (`absent`,
+  `present`, or `unknown`). Every owner that calls it does this: Work, graph
+  repair, Experiment loop, and Auto-research. `HistoryManager` now raises a
+  publication failure whose commit point was never observed as
+  `BatchPublishFailed(unknown)`. `ReplayHalted` stays a non-correctable
+  rejection. Completion keeps the Patch text for `unavailable` too. An ordinary
+  Work turn offers **Apply again**
+  (`POST …/apply-graph-update-again`, `src/rcp/runs/tasks/work_apply_again.py`,
+  projected as `can_apply_again`). It re-applies the retained text through the
+  same source binding, so a landed commit is recorded, never appended twice. It
+  is refused when the commit is `unknown`, when the text is gone, while the
+  chat is active, after a later applied turn in the chat, and for
+  Experiment-loop or Auto-research child turns. Rules:
+  [graph history](../specs/graph-history-and-transitions.md#human-preview-and-agent-correction).
+  Still open: nothing yet turns an `unknown` commit into `present` or `absent`
+  on the task, so such a turn needs a new Work turn.
 - Every failed transfer records bounded raw stderr, the exit code, the phase,
   the partition, and the commit certainty.
 - Timeouts are normalized without erasing commit uncertainty.

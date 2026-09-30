@@ -838,7 +838,8 @@ def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path)
         store,
         "project-contract-recovery",
         "watcher-wake",
-        request,
+        # The chat's first turn has no native session for the server to bind.
+        request.model_copy(update={"session_id": None}),
         continuation="watcher_wake",
         stage_root=str(stage),
     )
@@ -917,7 +918,7 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
         store,
         "project-stage-boundary",
         "old-binding",
-        request,
+        request.model_copy(update={"session_id": None}),
         stage_root=str(old_stage),
     )
     contract = "old provider contract\n"

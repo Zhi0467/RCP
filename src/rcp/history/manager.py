@@ -1077,6 +1077,10 @@ class HistoryManager:
                 scope_changed=scope_changed,
                 manifest_before=manifest_before,
             ):
+                if isinstance(exc, StateUnavailable) and not isinstance(exc, BatchPublishFailed):
+                    # Reconciliation treated this as an unobserved commit point;
+                    # the caller must not read it as a commit that never happened.
+                    raise BatchPublishFailed(str(exc), commit_status="unknown") from exc
                 raise
         self._remember_accepted_revision(result)
         if raise_on_reject and result.reports[revision].rejected:

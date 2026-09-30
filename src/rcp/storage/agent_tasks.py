@@ -776,6 +776,8 @@ class AgentTaskStoreMixin:
             and record.request.get("control_episode_id") is None
             and record.request.get("trigger", "human") in {"human", "watcher"}
             and continuation_cause in {"fresh", "watcher_wake"}
+            # A result-view revision continues the view's own saved session and stage.
+            and (record.request.get("result_view") or {}).get("action") != "revise"
         ):
             if self._has_resumable_paused_chat_task(
                 connection, record.project_id, record.kind, chat_id
@@ -1516,6 +1518,82 @@ class AgentTaskStoreMixin:
         claimed = self.agent_task(operation_id)
         assert claimed is not None
         return claimed
+
+    def later_chat_turn_applied_graph_update(self, record: AgentTaskRecord) -> bool:
+        """Whether a later task in this exact chat already applied a graph update."""
+
+        chat_id = record.request.get("chat_id")
+        if not isinstance(chat_id, str) or not chat_id:
+            return False
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND kind = ? AND operation_id != ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND created_at > ?
+                  AND json_extract(result_json, '$.graph_update.status') = 'applied'
+                LIMIT 1
+                """,
+                (
+                    record.project_id,
+                    record.kind,
+                    record.operation_id,
+                    chat_id,
+                    record.created_at,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def replace_agent_task_graph_update(
+        self,
+        operation_id: str,
+        *,
+        expected: dict[str, object],
+        graph_update: dict[str, object],
+    ) -> None:
+        """Replace a succeeded task's graph update, only if it still reads `expected`."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, result_json FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            result = json.loads(row["result_json"]) if row and row["result_json"] else None
+            if (
+                row is None
+                or row["status"] != "succeeded"
+                or not isinstance(result, dict)
+                or result.get("graph_update") != expected
+            ):
+                raise ValueError("This task's graph update changed. Reload the task.")
+            applied_revision = graph_update.get("applied_revision")
+            status = graph_update.get("status")
+            now = self.now()
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET result_json = ?, applied_revision = COALESCE(?, applied_revision),
+                    status_message = CASE WHEN ? IS NULL THEN status_message ELSE ? END,
+                    updated_at = ?
+                WHERE operation_id = ?
+                """,
+                (
+                    self._bounded_result_json({**result, "graph_update": graph_update}),
+                    applied_revision,
+                    applied_revision,
+                    f"Project graph updated to revision {applied_revision}.",
+                    now,
+                    operation_id,
+                ),
+            )
+            if status not in {"rejected", "unavailable"}:
+                # Invariant 9: retained Patch text is dropped only once it applied.
+                connection.execute(
+                    "DELETE FROM graph_run_outputs WHERE operation_id = ?",
+                    (operation_id,),
+                )
 
     def create_agent_task_graph_repair(
         self,
@@ -3063,6 +3141,7 @@ class AgentTaskStoreMixin:
             "none",
             "applied",
             "rejected",
+            "unavailable",
         }:
             raw_change_summary = raw_graph_update.get("change_summary")
             raw_proposal_ids = raw_graph_update.get("proposal_ids")
@@ -3070,6 +3149,7 @@ class AgentTaskStoreMixin:
             change_count, change_length = (2, 200) if concise else (32, 1600)
             proposal_count, proposal_length = (8, 100) if concise else (32, 400)
             validation_count, validation_length = (2, 200) if concise else (8, 1600)
+            commit_status = raw_graph_update.get("commit_status")
             return {
                 "status": raw_graph_update["status"],
                 "applied_revision": (
@@ -3112,6 +3192,11 @@ class AgentTaskStoreMixin:
                     else 0
                 ),
                 "repairable": raw_graph_update.get("repairable") is True,
+                **(
+                    {"commit_status": commit_status}
+                    if commit_status in {"absent", "present", "unknown"}
+                    else {}
+                ),
             }
         return None
 
@@ -4206,13 +4291,23 @@ class AgentTaskStoreMixin:
                     (item for item in reversed(graph_updates) if isinstance(item, dict)),
                     None,
                 )
-        graph_rejected = isinstance(graph_update, dict) and graph_update.get("status") == "rejected"
+        graph_status = graph_update.get("status") if isinstance(graph_update, dict) else None
+        graph_unavailable = graph_status == "unavailable"
+        # Both keep the retained Patch text: a rejection for repair, and an
+        # unavailable Apply for Apply again (invariant 9).
+        graph_rejected = graph_status == "rejected" or graph_unavailable
         status_message = (
-            "Completed; graph update rejected." if graph_rejected else "Agent task completed."
+            "Completed; graph update not applied."
+            if graph_unavailable
+            else "Completed; graph update rejected."
+            if graph_rejected
+            else "Agent task completed."
         )
         message = (
             f"Project graph updated to revision {applied_revision}."
             if applied_revision is not None
+            else "Operational work completed; its graph update could not reach canonical state."
+            if graph_unavailable
             else "Operational work completed, but its graph update was rejected."
             if graph_rejected
             else "Agent task completed."

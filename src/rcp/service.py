@@ -293,13 +293,16 @@ def _stage_sync_patch(state: GraphState, patch: Patch) -> GraphState:
 class GraphUpdateResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["none", "applied", "rejected"]
+    # "unavailable": Apply could not reach canonical state. The rules never
+    # judged the Patch, and `commit_status` says what the commit point showed.
+    status: Literal["none", "applied", "rejected", "unavailable"]
     applied_revision: int | None = Field(default=None, ge=0)
     change_summary: list[str] = Field(default_factory=list)
     proposal_ids: list[str] = Field(default_factory=list)
     validation_messages: list[str] = Field(default_factory=list)
     correction_rounds: int = Field(default=0, ge=0)
     repairable: bool = False
+    commit_status: Literal["absent", "present", "unknown"] | None = None
 
 
 class SteeringReceipt(BaseModel):
