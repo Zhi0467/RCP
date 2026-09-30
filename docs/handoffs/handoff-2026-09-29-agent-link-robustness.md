@@ -218,14 +218,22 @@ Today:
   still require rsync and have no fallback.
 - Committed-history publication already retries materialization when the
   commit is present, and lost lock ownership triggers commit reconciliation
-  (`src/rcp/history/manager.py`). A failed rsync transfer is not retried.
+  (`src/rcp/history/manager.py`).
+- Slice 2b: each of the three transfers is retried as a whole, up to
+  `STATE_TRANSFER_ATTEMPTS` in all with capped backoff (`limits.py`), when the
+  stream drops: SSH exit 255, rsync exit 10, 12, 20, 30 or 35, or stderr naming
+  a reset, closed or timed-out connection, an unexpected end of file, a MAC
+  error, or a failed key exchange. A refused transfer (for example exit 23, or
+  127) is not retried. A retry re-sends the same staged paths to the same
+  staging folder before any commit command runs, so the commit protocol is
+  unchanged. The final failure's stderr lists every attempt's exit code and
+  bounded stderr, and each retry logs a warning.
 - `apply_work_patch` in `src/rcp/runs/tasks/work_turn_runtime.py` turns
   `StateUnavailable` and `ReplayHalted` into a non-correctable failure. The
   task says "the graph update was rejected", the words used for a Patch the
   rules refused, and it is not repairable.
 - Those three transfers now use a timeout owned by `limits.py` and normalize
   process/timeout failures into the existing state-transfer failure boundary.
-  Classified resumability and bounded retry remain for the next slice.
 - Transfer stderr is captured whole, then collapsed and cut to 1,600
   characters in the task event (`src/rcp/runs/tasks/work.py`).
 
@@ -270,8 +278,7 @@ Settled 2026-09-29: feature detection with a visible fallback.
   and required installation. Existing project readiness reports cached engine,
   selected local path, and versions per machine in `state_transfers`; an
   unprobed host has no cached result. No new UI surface was added.
-- Retry after a killed connection (above) must apply to both engines; that retry
-  work remains outside slice 2a.
+- Retry after a killed connection (above) applies to both engines (slice 2b).
 
 Implemented in slice 2a: PATH-ordered executable candidates with no path or OS
 preference; both-end protocol/feature checks; state-only tar pull/push; and
@@ -287,10 +294,10 @@ repeating the pull converges.
 Slice 2a checks cover version parsing, PATH selection, cached warnings, engine
 invalidation, uncached transport failures, tar mirroring/excludes, interrupted
 application and convergence, staged pushes, and the task-event/readiness
-integration. Network retry, commit reconciliation
-changes, and migration of other rsync owners remain unimplemented.
+integration. Commit reconciliation changes and migration of other rsync owners
+remain unimplemented.
 
-Remaining checks: a transfer killed mid-stream is retried and the commit lands once; a
+Remaining checks: a
 killed acknowledgement after a confirmed commit leaves one commit; a timeout
 reaches a classified outcome.
 
