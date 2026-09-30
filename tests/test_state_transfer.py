@@ -277,6 +277,8 @@ def test_probe_transport_failure_is_not_cached_or_warned(monkeypatch, caplog, fa
         (9, 255, "Corrupted MAC on input", 3, 255),
         (9, 23, "some files could not be transferred", 1, 23),
         (9, 127, "rsync: command not found", 1, 127),
+        (9, 12, "protocol version mismatch -- is your shell clean?", 1, 12),
+        (9, 255, "Permission denied (publickey).", 1, 255),
     ],
 )
 def test_dropped_transfer_retries_boundedly(monkeypatch, failures, code, stderr, attempts, final):

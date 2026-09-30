@@ -1673,7 +1673,8 @@ def test_chat_wake_never_searches_past_unusable_latest_session(store, reason_cod
 @pytest.mark.parametrize(
     ("category", "payload", "reason_code"),
     [
-        ("provider_terminal_error", {"classification": "session_limit"}, "session_limit"),
+        # A quota limit leaves the session itself resumable.
+        ("provider_terminal_error", {"classification": "session_limit"}, None),
         ("provider_terminal_error", {"classification": "stale_session"}, "session_stale"),
         (
             "continuation_context_unavailable",
@@ -1692,11 +1693,32 @@ def test_chat_wake_starts_fresh_when_the_provider_dropped_the_current_session(
     wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
 
     assert wake is not None and wake.status == "queued"
-    assert wake.native_session_id is None
     resolution = _session_resolution(store, wake.operation_id)
-    assert resolution["outcome"] == "fresh"
-    assert resolution["reason_code"] == reason_code
+    if reason_code is None:
+        assert wake.native_session_id == latest.native_session_id
+        assert resolution["outcome"] == "continued"
+    else:
+        assert wake.native_session_id is None
+        assert resolution["outcome"] == "fresh"
+        assert resolution["reason_code"] == reason_code
     assert resolution["source_operation_id"] == latest.operation_id
+
+
+def test_result_view_revision_does_not_become_the_chat_session(store) -> None:
+    chat = _completed_chat_turn(store, "human-before", "chat-native-session")
+    _completed_chat_turn(
+        store,
+        "revision",
+        "view-session",
+        request_updates={"result_view": {"action": "revise", "view_id": "a" * 24}},
+    )
+    store.create_watchers([_record("done", origin=chat.operation_id, status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None
+    assert wake.native_session_id == chat.native_session_id
+    assert _session_resolution(store, wake.operation_id)["source_operation_id"] == "human-before"
 
 
 def test_a_human_release_takes_a_watcher_out_of_the_polling_set(store) -> None:

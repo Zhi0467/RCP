@@ -111,12 +111,14 @@ Implemented:
   different ordinary-chat session. **New session** still creates a new chat id.
 - Round-1 review fixes: a wake whose trigger is `watcher` now uses the compact
   chat prompt protocol and advances the chat baseline. A current session the
-  provider dropped (`session_limit`, `stale_session`, or unavailable
-  continuation context, as Retry already classifies them) starts fresh with its
-  reason code. A refused wake is stored as failure kind `session_refused` and
+  provider dropped (`stale_session` or unavailable continuation context, as
+  Retry classifies them) starts fresh with its reason code; `session_limit`
+  continues, because it also matches account quota (see Temporary states). A
+  wake deferred behind a running turn records that reason too. A refused wake is stored as failure kind `session_refused` and
   cannot be retried. A deferred wake writes its reason to the watcher's
   `last_error`; graph-condition watchers do not project it yet. Result-view
-  revisions keep their own saved session outside this binding. A human's
+  revisions keep their own saved session outside this binding and never
+  become the chat's current session. A resumed wake keeps the compact protocol. A human's
   session continues across a model switch; only a wake must match the model.
 
 Verification covers same-session human/wake/human admission, paused and
@@ -246,7 +248,8 @@ Today:
   stream drops: SSH exit 255, rsync exit 10, 12, 20, 30 or 35, or stderr naming
   a reset, closed or timed-out connection, an unexpected end of file, a MAC
   error, or a failed key exchange. A refused transfer (for example exit 23, or
-  127) is not retried. A retry re-sends the same staged paths to the same
+  127), a protocol mismatch, an authentication or host-key refusal, and a
+  transfer that used its whole timeout are not retried. A retry re-sends the same staged paths to the same
   staging folder before any commit command runs, so the commit protocol is
   unchanged. The final failure's stderr lists every attempt's exit code and
   bounded stderr, and each retry logs a warning.

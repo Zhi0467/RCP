@@ -305,7 +305,7 @@ def _chat_trigger(trigger: str, continuation: AgentTaskContinuation) -> bool:
     """A human or orchestrator turn, or an ordinary chat's watcher wake."""
 
     return trigger in {"human", "orchestrator"} or (
-        trigger == "watcher" and continuation == "watcher_wake"
+        trigger == "watcher" and continuation in {"watcher_wake", "resume"}
     )
 
 

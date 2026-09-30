@@ -105,11 +105,13 @@ Every resolution records a durable `chat_session_resolution` receipt with its
 outcome and reason code. A binding that cannot be continued starts fresh with
 one of these reasons: `no_session_yet`, `session_history_only`,
 `session_recovery_abandoned`, `session_stage_unavailable`, or a provider drop
-of the current session: `session_limit` (the session reached its limit),
-`session_stale` (the provider no longer has it), or
+of the current session: `session_stale` (the provider no longer has it) or
 `session_context_unavailable` (the saved continuation context failed and
-requires a retry). These use the same classification Retry uses to refuse
-resuming a dropped session. The exact provider, machine, chat, graph target,
+requires a retry), the classification Retry uses to refuse resuming a dropped
+session. A `session_limit` failure continues the session: its classification
+also matches account quota, after which the session can still resume. A
+result-view revision runs on the view's saved session and never becomes the
+chat's current session. The exact provider, machine, chat, graph target,
 stage, and launch write scope remain enforced. **New session** creates a new
 chat id.
 

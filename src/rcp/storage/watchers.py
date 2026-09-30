@@ -1308,7 +1308,7 @@ class WatcherStoreMixin:
                 if self._auto_research_wake_is_stopped(connection, record):
                     return None
                 if self._has_active_chat_overlap(connection, record):
-                    return None
+                    raise AgentTaskAdmissionConflict("a turn in this chat is running")
                 if record.kind == "auto_research":
                     episode_id = record.request.get("episode_id")
                     if not isinstance(episode_id, str) or episode_id != record.episode_id:

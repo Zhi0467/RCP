@@ -432,8 +432,25 @@ _TRANSIENT_STDERR = re.compile(
 )
 
 
+# Failures that repeat on every attempt, even with a transient exit code; a
+# whole-transfer timeout is not retried either, since it already waited in full.
+_PERMANENT_STDERR = re.compile(
+    "|".join(
+        (
+            "protocol version mismatch",
+            "permission denied",
+            "host key verification failed",
+            "timed out after",
+        )
+    ),
+    re.IGNORECASE,
+)
+
+
 def _transient(result: subprocess.CompletedProcess[str]) -> bool:
     if result.returncode == 0 or result.returncode == 127:
+        return False
+    if _PERMANENT_STDERR.search(result.stderr or ""):
         return False
     return result.returncode in _TRANSIENT_EXIT_CODES or bool(
         _TRANSIENT_STDERR.search(result.stderr or "")

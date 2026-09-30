@@ -712,9 +712,6 @@ class AgentTaskStoreMixin:
                 SELECT CASE
                     WHEN SUM(receipt.category = 'provider_terminal_error'
                              AND json_extract(receipt.payload_json, '$.classification')
-                                 = 'session_limit') THEN 'session_limit'
-                    WHEN SUM(receipt.category = 'provider_terminal_error'
-                             AND json_extract(receipt.payload_json, '$.classification')
                                  = 'stale_session') THEN 'session_stale'
                     WHEN SUM(receipt.category = 'continuation_context_unavailable'
                              AND json_extract(receipt.payload_json, '$.retry_required') = 1)
@@ -727,6 +724,8 @@ class AgentTaskStoreMixin:
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
               AND native_session_id IS NOT NULL AND native_session_id != ''
+              -- A result-view revision runs on the view's own saved session.
+              AND json_extract(request_json, '$.result_view.action') IS NOT 'revise'
             ORDER BY created_at DESC, run.rowid DESC LIMIT 1
             """,
             (project_id, kind, chat_id),
@@ -736,12 +735,12 @@ class AgentTaskStoreMixin:
     def _dropped_chat_session_reason(row: sqlite3.Row) -> str | None:
         """Why the provider can no longer continue this row's session, when it cannot.
 
-        The same classification Retry uses to refuse resuming a dropped session.
+        The classification Retry uses to refuse resuming a dropped session, except
+        `session_limit`: it also matches account quota, after which the session
+        itself can still continue.
         """
 
         classification = classify_terminal_error(row["error"] or "")
-        if row["session_dropped"] == "session_limit" or classification == "session_limit":
-            return "session_limit"
         if row["session_dropped"] == "session_stale" or classification == "stale_session":
             return "session_stale"
         return row["session_dropped"]
