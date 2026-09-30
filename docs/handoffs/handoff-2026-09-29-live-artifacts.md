@@ -1,37 +1,29 @@
 # Live artifacts and the docked viewer
 
 Date: 2026-09-29
-Status: design settled with the human on 2026-09-29, then revised the same day
-after an xhigh design review and the human's answers to its two open
-questions. Slice 1 is implemented in this worktree: version storage, report and
-legacy-view migration, turn discovery including child Work recovery, and typed
-backup/transfer inventories. Slice 2a is implemented: per-project background
-import of legacy local, SSH, and repository-kept bytes; ordinary artifacts for
-unresolved candidates on their own turns; durable failure reasons and retry
-backoff; and one SQLite snapshot for transfer artifact metadata and inventory.
-Imported temporary artifacts expire at the source stage's last-touch time plus
-the existing retention period; unresolved candidates receive at least a full
-retention period from import time, and kept artifacts have no expiry. Import never
-accepts a candidate or removes repository-kept files. Slice 2b is implemented:
-comments edit staged files under Discuss or revoking scratch-only authority,
-admission reserves sessions and stages across launch owners, publication uses
-version compare-and-set with retry identity, Undo moves back a version, and
-candidate creation and Accept/Reject are removed. Reply destinations follow the
-settled episode rule below. Explicit fresh sessions retain those destinations.
-Slices 3 and 4 are implemented: the rendered artifact contract and live
-section, the `live-pages` skill, per-version source resolution for discovered
-and edited versions, the snapshot endpoint and shell relay, and server-saved
-final snapshots. Slice 5A is implemented: viewer state and run artifact endpoints,
-direct comments in the embedded shell, same-origin preview framing, and removal
-of native preview windows. Slice 5B remains open: the React panel and its
-consumers, including removal of chat-draft handoff and candidate-era fields.
-Integrated served-app and packaged desktop checks remain open. Docs and code
-land in one PR.
+Status: design settled with the human on 2026-09-29 and revised the same day
+after an xhigh design review. All five slices are implemented, and two local
+review rounds are fixed. Docs and code land in one PR.
 
-Slice 1 verification still needs the installed Linux coordinator transition and
-a rehearsal on a copy of real team data. Local storage, route, recovery, and
-archive tests cover the implemented paths. Browser automation is blocked by
-macOS Chromium launch permissions in this environment.
+- Storage, migration, and import: artifact records and versions in the data
+  directory, reports out of SQLite, background import of legacy bytes, typed
+  backup, transfer, and restore inventories.
+- Editing: comments edit a staged copy under Discuss or a revoking launch,
+  admission reserves the exact session and stage, publication is
+  compare-and-set with retry identity, and Undo steps back. Candidates and
+  Accept/Reject are gone. Edit tasks never join their origin episode.
+- Prompts and live data: the rendered artifact contract, the `live-pages`
+  skill, per-version source resolution, the snapshot endpoint and relay, and
+  server-saved final snapshots.
+- Viewer: one docked in-app panel, no native preview window, and every run
+  artifact on its Runs card.
+
+What remains is verification that needs a served app, a packaged build, or real
+data: the served-app journeys below with a real provider, the rebuilt desktop
+app, the installed Linux coordinator transition, and a rehearsal on a copy of
+real team data. A browser check on disposable data covered the panel's
+placement, Undo, Send, and version reload; the in-app browser cannot render the
+sandboxed page itself.
 
 Close this handoff when all of these hold on a served app with disposable data:
 
@@ -169,6 +161,8 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
   holds the session, Send waits and shows the existing unavailable reason.
   Comments do not steer and are not queued. An edit spends no episode budget
   and passes the episode's Stop fence untouched.
+  An edit task is never a member of its origin episode: it names only the
+  thread its reply goes to, so episode health, wakes, and budgets never see it.
 - **Re-opening the master.** The existing check that re-opens the master after
   a report widens to every revoking launch, and its clearing query counts only
   operational launches, so a finished edit never clears the requirement.
@@ -277,7 +271,7 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
   while agent HTML stays opaque. PDFs still open in the system viewer.
 - There is no mode button row. Drag the left edge to resize, drag the title bar
   to float, double-click the title bar for full screen. The dock control
-  collapses it to a slim tab at the top right of the RCP window.
+  collapses it to a slim tab at the right edge, just below the project header.
 - The title bar holds the name, the Live or Finished indicator, the version,
   Undo, a control that brings the chat up, dock, and close. All of it is RCP
   chrome outside the agent's HTML.
@@ -308,8 +302,8 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
 Current behavior docs change with their slice: `docs/design.md`,
 `paper-artifacts-and-result-views.md`, `conversations-episodes-and-watchers.md`,
 `providers-and-containment.md`, `interface-and-visual-design.md`,
-`api-web-and-desktop-projections.md`, `projects-spaces-and-operations.md`, and
-`server-and-machine-operations.md`.
+`api-web-and-desktop-projections.md`, `server-and-machine-operations.md`,
+`compute-jobs.md`, `auto-research-and-branch-merge.md`, and `docs/desktop.md`.
 
 ## Checks
 

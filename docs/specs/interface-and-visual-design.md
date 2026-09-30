@@ -352,7 +352,7 @@ content rather than a redundant canonical-file banner. The authored Markdown
 switches between Write and Preview in the same pane, using the chat renderer so
 unsaved text can be read without creating a second document.
 
-## Auto-research and result views
+## Auto-research and episode history
 
 Auto-research starts from the project header, beside Ask, because the action is
 project-wide and belongs where project-wide actions live. Its budget is typed in
@@ -409,7 +409,7 @@ History reports, Runs, repository-file links, and WebMCP all open it. Its defaul
 right-docked and full height. Dragging its left edge resizes it; dragging the
 title bar floats it. Double-clicking the title bar enters full screen and
 repeats to restore the prior placement. Enter or Space on the focused title bar
-does the same. The dock control collapses it to a slim tab at the top right;
+does the same. The dock control collapses it to a slim tab on the right edge, just below the project header;
 the tab restores it in docked mode. There is no mode button row.
 Size and placement persist on this browser origin and remain reachable after
 viewport changes.

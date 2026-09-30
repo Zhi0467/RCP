@@ -711,7 +711,8 @@ standalone turn owns nothing there and may move to any reachable one. A failed r
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed. Age-based cleanup first excludes exact
 stages owned by active tasks, committed native chat sessions, live episodes,
-pending or running report wrap-ups, and unexpired temporary result views. One
+pending or running report wrap-ups, and legacy candidate and source stages
+awaiting background import. One
 storage projection supplies the same ownership and required-stage decisions to
 cleanup and update checkpointing; terminal debris follows normal retention.
 

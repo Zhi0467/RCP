@@ -237,8 +237,8 @@ and the main composer shows their count. Several annotations may be staged. They
 remain a per-chat draft, including after a comment is edited blank, and block
 send until completed or removed. On send, each contributes only its copied
 selected text followed by `comment: <comment>` to the ordinary human message.
-A comment on an artifact selection is the same annotation; its artifact target
-is described in [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
+Artifact comments are not chat annotations. They are sent from the artifact
+viewer; see [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
 There are no message references, source identifiers, offsets, durable
 annotation records, or graph authority. Staging clears when the turn is accepted
 and otherwise remains a client-side draft for that chat.

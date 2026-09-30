@@ -20,6 +20,9 @@ Once RCP keeps versions itself, the repository adds nothing an artifact needs.
 Team members already share the team server's data directory. Artifacts do not
 travel with a clone, and that is intended.
 
+The report viewer's **Save copy**, which wrote into the same folder, is retired
+for the same reason; **Download** replaces it.
+
 ## Why no Accept step
 
 Accept existed because an edit could overwrite a file the human might also be

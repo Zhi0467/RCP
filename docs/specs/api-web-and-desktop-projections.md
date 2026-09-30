@@ -1067,7 +1067,7 @@ beneath it. It links turn and attempt spans to the existing task inspector,
 excludes reports from that navigation, and resolves child Experiment navigation
 by episode id. Watcher controls remain with their existing owners. Layout,
 selection, and gesture behavior follow the
-[interface specification](interface-and-visual-design.md#auto-research-and-result-views).
+[interface specification](interface-and-visual-design.md#auto-research-and-episode-history).
 
 An active child card names its current Experiment turn and links that row to the
 ordinary task inspector. Until the turn finishes, the card labels the durable

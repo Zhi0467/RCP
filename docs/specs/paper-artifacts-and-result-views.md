@@ -165,15 +165,10 @@ The report is retrospective only. It has no Patch, watcher, command, Proposal,
 or graph channel and never determines the episode verdict. A final generation
 error remains visible and nonblocking.
 
-The report viewer offers **Save copy**, including when its originating chat is
-unavailable. It writes the captured HTML into the state repository's `artifacts/`
-directory through the existing artifact publication path, requires project write
-admission, and shows the repository-relative saved path. Each explicit save
-creates a collision-free copy and preserves existing files. A failed save is
-visible and retryable. The stored report, its preview, and the episode lifecycle
-remain unchanged; saving does not create a graph Patch. The legacy report viewer retains this action. The in-app panel opens the report
-through its stored-artifact viewer and shows its current version; the lifecycle
-record remains bound to the immutable first version.
+A report opens in the in-app panel through its stored-artifact viewer, which
+shows its current version and offers **Download**. The lifecycle record stays
+bound to the immutable first version. RCP never writes a report copy into the
+state repository.
 
 ## Artifacts panel
 
@@ -182,9 +177,7 @@ chat artifacts and durable episode reports across project history, including
 archived episodes, without depending on the recent task or episode window.
 Temporary outputs remain in their originating chats until kept.
 
-Reports appear as soon as their immutable bytes are captured; **Save copy** is
-not required to make them discoverable. Saving a repository copy does not add a
-duplicate report entry. Cards show the artifact title and a **Source chat** link
+Reports appear as soon as their immutable bytes are captured. Cards show the artifact title and a **Source chat** link
 when its originating conversation is available. Outputs originating in an
 episode also carry one compact **Experiment** or **Auto-research** tag. Ordinary
 chat artifacts have no episode tag. The listing retains episode
@@ -215,8 +208,9 @@ authority.
 There is no separate result-view kind. A task that draws a custom HTML result
 produces an ordinary task artifact, through the same artifact directory,
 descriptor, chat card, viewer route, and lifecycle as any other HTML artifact.
-The artifact is available in its originating Node or Project chat, and after
-Keep in the project's Artifacts panel. It is not shown in unrelated chats.
+The artifact is available in its originating Node or Project chat, on its
+run's Runs card when an episode produced it, and after Keep in the project's
+Artifacts panel. It is not shown in unrelated chats.
 
 Previously stored result-view rows migrate into Artifact records. Their legacy
 URLs redirect to artifact routes for compatibility. The current web client exposes no result-view
@@ -347,8 +341,7 @@ meshes, performance traces, and other specialist formats.
 ## Keeping an artifact
 
 **Keep** stops the artifact's expiry and refreshes its task projection. It does
-not write to the state repository. The report viewer's explicit **Save copy**
-continues to publish a separate repository copy from the immutable first version.
+not write to the state repository.
 
 Artifact metadata is in SQLite. Version files live in one folder per artifact
 under the data directory, referenced by relative digest identifiers. Writes use

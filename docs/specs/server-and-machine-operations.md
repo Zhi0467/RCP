@@ -446,8 +446,9 @@ runs in two stages: before the release commits it touches only local state, whic
 rollback restores; the live check compares a remote project's local display cache
 when current and otherwise leaves it unopened, since validation already replayed
 its captured history on copies. A remote project is opened only after the release
-is chosen, where no rollback applies. Kept artifacts
-and result views outside replacement roots retain their typed checks.
+is chosen, where no rollback applies. Artifact versions live inside the data
+directory's replacement root; legacy repository-kept files keep their typed
+checks until background import brings them in.
 An intact startup-effect fence prevents probation from changing external state.
 
 Offline validation exercises real API projections, main and branch replay,
@@ -934,7 +935,7 @@ needed to render the stopped episode also travels; a pending child, delivery,
 recovery, report, or watcher must settle or be terminalized before export and
 never crosses as runnable state. Native-session/stage bindings, pending wake
 fields, wrap-up output paths, space membership/authentication, project
-invitations, provider-skill inventories, disposable result views,
+invitations, provider-skill inventories, unkept expired artifacts,
 reconciliation watermarks, and source machine-operation leases do not travel. A
 schema-inventory test requires every later project-linked table to be
 classified explicitly. Temporary human-input attachment bytes remain excluded.
@@ -978,11 +979,11 @@ viewable and downloadable after transfer or restore from their version inventory
 but cannot revise through detached native sessions. A legacy artifact not yet
 imported from its excluded stage is projected explicitly unavailable. Every task-artifact
 response publishes `available`, `unavailable_reason`, `view`, `can_open`,
-`can_download`, `can_keep`, `can_discuss`, and `can_revise`; the unavailable case
-makes every `can_*` false and has no stage URL. `view` names the backend's
-viewer for the stored type; `can_open` is false for a type with no RCP viewer,
-and `can_discuss` and `can_revise` are false for a type that does not support
-selection. Content, download, Keep, and artifact-context admission recheck
+`can_download`, `can_keep`, and `can_discuss`; the unavailable case makes every
+`can_*` false and has no stage URL. `view` names the backend's viewer for the
+stored type; `can_open` is false for a type with no RCP viewer, and
+`can_discuss` is false for a type that cannot be commented on. A history-only
+origin is offered Edit in a new session instead. Content, download, Keep, and artifact-context admission recheck
 those durable facts. The Web renders the backend answers, never infers
 availability from `history_only`, `kept_filename`, or a remembered stage path,
 and never constructs or probes a route for an unavailable action.
@@ -1090,8 +1091,8 @@ source-to-target id maps, an import receipt, and the exact pre-publication targe
 configuration receipt, including retained-history evidence. It then publishes the reviewed
 target manifest, canonical history, transformed RCP chats, Paper, facts, kept
 files, and imported provider histories through their concrete atomic owners.
-Imported task rows are history-only; imported kept result views are already
-kept and non-revisable; no project row or writing session is created. Each
+Imported task rows are history-only; legacy kept files restore to their old
+location and background-import as kept artifacts; no project row or writing session is created. Each
 publication call verifies the declared bytes, canonical replay verifies the
 observed head, and one deterministic completion digest binds those readbacks.
 The publication sequence is repairable rather than one cross-filesystem
@@ -1259,6 +1260,9 @@ artifact inventory. Legacy stage-only candidates await background import and
 are excluded from offline backup. Candidate mutation is retired; restoring
 bytes never accepts a candidate. Server update checkpoints preserve whole
 stopped roots, including local legacy import sources.
+A project inventory accepts every canonical task identity RCP mints: UUID4 for
+ordinary tasks and deterministic UUID5 for Auto-research child Experiments, so a
+project that has run one such episode stays capturable and updatable.
 
 The app-data inventory is closed rather than an implicit recursive copy.
 `rcp.sqlite3` enters only through SQLite's online snapshot, and transferred
@@ -1518,7 +1522,9 @@ Protected restore uses the same supervisor operation and filesystem publication
 protocol as release update. Before replacement, it validates the exact archive,
 matching protected age identity, canonical manifest, every declared byte,
 accepted schema boundary and full source identity. The app produces detached
-candidate data, local canonical trees and typed kept-artifact/view payloads.
+candidate data, local canonical trees and typed artifact payloads: the
+artifact-version inventory, or the legacy kept-file and view payloads of older
+archives.
 Rollback captures every existing destination and records absent destinations
 without creating them. Additional local project, artifact and view roots are
 fully copied before activation. Candidate artifact and view trees preserve
