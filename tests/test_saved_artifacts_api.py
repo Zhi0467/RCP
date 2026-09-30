@@ -588,3 +588,63 @@ def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tm
     assert entry["episode_id"] is None
     assert "/tasks/" in entry["viewer_url"]
     assert client.get(entry["viewer_url"]).status_code == 200
+
+
+@pytest.mark.parametrize("owner", ["experiment", "worker"])
+@pytest.mark.parametrize("valid_origin", [True, False])
+def test_edit_outputs_keep_bounded_runs_links(manifest, tmp_path, owner, valid_origin):
+    app, _, parent, parent_root = _app_branch(manifest, tmp_path, include_experiment=True)
+    store = app.state.background_tasks.store
+    if owner == "experiment":
+        origin, _ = _create_chat_report(app, tmp_path, parent=parent, parent_root=parent_root)
+    else:
+        origin = _routed_worker(
+            store,
+            parent,
+            admitted_by=parent_root,
+            worker_id=str(uuid.uuid4()),
+            seat_node_id="rq/learning-after-shift",
+            instruction="Measure recall.",
+        )
+        store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+        _save_source_chat(app, origin)
+    edit = origin.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "episode_id": None,
+            "kind": "artifact_edit" if owner == "experiment" else "node_chat",
+            "status": "queued",
+            "dispatch_authority": None,
+            "request": {
+                **origin.request,
+                "patch_kind": "work",
+                "mode": "discuss",
+                "control_episode_id": None,
+                "artifact_edit": {
+                    "episode_id": origin.episode_id,
+                    "origin_operation_id": origin.operation_id if valid_origin else "missing",
+                },
+            },
+        }
+    )
+    store.create_artifact_edit_task(edit)
+    result = _keep_task_artifact(app, edit.model_copy(update={"episode_id": origin.episode_id}))
+    store.complete_agent_task(edit.operation_id, applied_revision=None, result=result)
+    artifact_id = result["artifacts"][0]["artifact_id"]
+    client = TestClient(app)
+    response = client.get(f"/api/projects/{edit.project_id}/artifacts")
+    assert response.status_code == 200, response.text
+    saved = next(item for item in response.json() if item["operation_id"] == edit.operation_id)
+    state = client.get(f"/api/projects/{edit.project_id}/artifacts/{artifact_id}/state")
+    assert state.status_code == 200, state.text
+    if not valid_origin:
+        assert saved["source_chat_href"] is None
+        assert state.json()["thread_href"] is None
+        return
+    assert saved["episode_mode"] == (
+        "experiment_loop" if owner == "experiment" else "auto_research"
+    )
+    assert state.json()["thread_href"] == saved["source_chat_href"]
+    query = parse_qs(urlsplit(saved["source_chat_href"].removeprefix("#")).query)
+    assert query["view"] == ["runs"]
+    assert query["episode"] == [origin.episode_id]

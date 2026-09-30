@@ -36,6 +36,7 @@ from rcp.server_ops.backup_integrity import (
 )
 from rcp.server_ops.backup_models import BackupArchiveManifest, artifact_backup_entries
 from rcp.storage import AppStore
+from rcp.storage.artifacts import write_artifact_file
 
 RESTORE_DIRECTORY_MODE = 0o700
 
@@ -1194,6 +1195,9 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         copy_proof_tree(payload, capture_root)
         snapshot = capture_root / "rcp.sqlite3"
         store.online_snapshot(snapshot)
+        inventory = tuple(store.artifact_inventory())
+        for entry in inventory:
+            write_artifact_file(capture_root, entry, store.artifact_file_path(entry).read_bytes())
         digest, size = _hash_regular_file(snapshot)
         inventories = tuple(
             BackupSnapshotProjectInventory(
@@ -1232,7 +1236,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             ),
             app_data_plan=plan,
             projects=inventories,
-            artifact_inventory=tuple(store.artifact_inventory()),
+            artifact_inventory=inventory,
             status="partial"
             if any(p.status == "uncaptured" for p in manifest.projects)
             else "complete",

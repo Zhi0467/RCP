@@ -62,7 +62,8 @@ retain their identities and supplier bindings. Temporary imports expire at the
 stage's last-touch time plus its existing retention period; kept imports have no
 expiry and leave the repository file in place. Unresolved candidates import as
 ordinary artifacts on their own producing turns, without accepting a version of
-the source. Import failures retain a durable reason shown by artifact routes;
+the source, and receive at least a full retention period from import time. Import
+failures retain a durable reason shown by artifact routes;
 transient failures retry with capped exponential backoff, while missing files,
 expired stages, and invalid sources are terminal. Repeated or interrupted import
 never replaces an existing artifact. Maintenance and shutdown drain active
@@ -133,8 +134,11 @@ through scripts navigating their own frame; this is not a zero-network promise.
 
 Server reconciliation captures final data after every watched job and episode
 has ended, without requiring an open viewer. A failed read stays incomplete and
-retries with bounded backoff. Only a complete capture becomes the immutable final
-snapshot, served after source files disappear. Node/file-only pages have no final
+retries with bounded backoff and a bounded attempt count, retaining its error
+after exhaustion. Expired unkept artifacts are skipped; invalid ownership,
+lineage, and history-only sources are terminal. Source reads happen outside the
+artifact lock; saving rechecks the version under the lock. Only a complete
+capture becomes the immutable final snapshot, served after source files disappear. Node/file-only pages have no final
 snapshot. Snapshot bytes live beside version bytes and share their typed backup,
 transfer, retention, and integrity inventory.
 
@@ -296,8 +300,9 @@ uses the frozen decision. Comments never become Work turns.
 Admission atomically reserves the native session and stage against every launch
 owner. A busy session returns 409 with its unavailable reason; comments are
 neither queued nor steered. Edits spend no episode invocation and do not change
-Stop or episode health. The next operational launch reopens its master after a
-revoking edit; an edit finishing does not clear that requirement.
+Stop or episode health. Edit tasks have no operational episode membership; their
+admission snapshot retains episode provenance for replies and display. The next
+operational launch reopens its master after a revoking edit; an edit finishing does not clear that requirement.
 
 The reply destination comes from durable origin and episode records. Chat and
 child Work artifacts use their own chat. Experiment artifacts and reports use
@@ -308,6 +313,8 @@ and the open view has no routing authority.
 
 RCP stages the admitted base bytes at a writable file in turn scratch, preserving
 its filename. Recovery and Retry reuse that exact staged file and operation key.
+Unchanged bytes do not publish or fork. Once publication is recorded, retries
+retain that result; publication failures retain the answer and an error receipt.
 RCP reads it after settlement and publishes under the artifact lock only if the
 base is still current. If Undo moved the pointer, the edited bytes become an
 ordinary new artifact on that turn. Other files in the artifact directory are
@@ -320,12 +327,14 @@ while an edit is admitted. Version bases awaiting staging are retained so
 concurrent publication cannot remove the admitted bytes.
 
 A history-only origin or missing native session or stage returns an unavailable
-reason. The explicit fresh-session flag authorizes a new provider session and
+reason. Only after exact-session admission identifies a resumability failure
+does the explicit fresh-session flag authorize a new provider session and
 scratch while retaining the same reply thread; it never restores the old
 execution authority. Candidate creation, comparison, Accept, and Reject are
 removed. Legacy rows are read only for background import and archive capture.
-The read-only viewer state check reuses this admission code and the session
-reservation check. Its offers never replace enforcement by the comments POST.
+The read-only viewer state checks durable origin, master presence, and session
+reservations without SSH or content hashing. Its offers never replace full
+admission and integrity enforcement by the comments POST.
 
 ### Shape boundary
 

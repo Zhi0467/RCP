@@ -1492,10 +1492,8 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
     assert "missing" in live[published.current_version].invalid_reason
     if not undo_during_edit:
         assert len(store.artifact_versions(source.artifact_id)) == 3
-        from rcp.storage.artifact_models import ArtifactOperationConflict
-
         target.write_bytes(b"<p>different retry bytes</p>")
-        with pytest.raises(ArtifactOperationConflict):
+        assert (
             finalize_artifact_edit(
                 request,
                 execution,
@@ -1505,6 +1503,9 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
                 artifacts=discovered,
                 service=app.state.service,
             )
+            == discovered
+        )
+        assert store.read_artifact_bytes(source.artifact_id) == edited
 
 
 def test_comment_eligibility_matches_viewer_types():

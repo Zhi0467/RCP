@@ -56,6 +56,7 @@ OperationalEpisodeTaskKind = Literal[
     "paper_coach",
     "auto_research",
     "branch_merge",
+    "artifact_edit",
 ]
 
 BranchSummaryResolver = Callable[[EpisodeRecord], GraphBranchSummary]
@@ -130,7 +131,7 @@ class EpisodeMessageBody(BaseModel):
 
 
 class EpisodeTaskResponse(BaseModel):
-    """The public, operational-only projection of an episode task."""
+    """A public episode turn or artifact edit, with operational controls when applicable."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -452,8 +453,7 @@ def serialize_episode(
                 depth=0,
                 degradation=None,
             )
-            for task in store.episode_tasks(episode.episode_id, include_hidden=True)
-            if task.visible and isinstance(task.request.get("artifact_edit"), dict)
+            for task in store.episode_artifact_edit_tasks(episode.episode_id)
         ],
         report=report,
         can_stop=(

@@ -229,6 +229,7 @@ class AgentTaskStoreMixin:
             record.kind not in {"artifact_edit", "node_chat", "project_chat"}
             or not isinstance(record.request.get("artifact_edit"), dict)
             or record.dispatch_authority is not None
+            or record.episode_id is not None
         ):
             raise ValueError("An artifact edit requires its snapshot and no graph authority.")
         with self.connection() as connection:
@@ -247,7 +248,7 @@ class AgentTaskStoreMixin:
                     "AND project_id = ? AND mode = 'auto_research'",
                     (reply_episode_id, record.project_id),
                 ).fetchone()
-                if episode is None or reply_episode_id != record.episode_id:
+                if episode is None or reply_episode_id != edit.get("episode_id"):
                     raise ValueError("The artifact edit reply thread does not match its episode.")
                 author = record.authorized_by
                 connection.execute(
@@ -532,7 +533,7 @@ class AgentTaskStoreMixin:
         if record.episode_id is None:
             if record.graph_target.kind == "branch":
                 if (
-                    record.kind not in {"node_chat", "project_chat"}
+                    record.kind not in {"node_chat", "project_chat", "artifact_edit"}
                     or record.request.get("patch_kind", "work") != "work"
                     or record.request.get("control_episode_id") is not None
                 ):
@@ -1612,7 +1613,7 @@ class AgentTaskStoreMixin:
             rows = connection.execute(
                 """
                 SELECT graph_runs.* FROM graph_runs
-                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
+                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat', 'artifact_edit')
                   AND EXISTS (
                       SELECT 1 FROM json_each(graph_runs.result_json, '$.artifacts') AS artifact
                       WHERE artifact.type = 'object'
@@ -1764,8 +1765,7 @@ class AgentTaskStoreMixin:
                            ) AS recovery_abandoned
                     FROM graph_runs
                     WHERE episode_id = ?
-                      AND (? OR (visible = 1
-                        AND json_extract(request_json, '$.artifact_edit') IS NULL))
+                      AND (? OR visible = 1)
                     ORDER BY created_at DESC, operation_id DESC
                 """
                 + ("    LIMIT ?" if newest is not None else "")
@@ -1773,6 +1773,21 @@ class AgentTaskStoreMixin:
                 ) ORDER BY created_at, operation_id
                 """,
                 (episode_id, int(include_hidden)) + (() if newest is None else (newest,)),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def episode_artifact_edit_tasks(self, episode_id: str) -> list[AgentTaskRecord]:
+        """Read edits for display without granting episode operational membership."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM graph_runs
+                WHERE json_extract(request_json, '$.artifact_edit.episode_id') = ?
+                  AND visible = 1
+                ORDER BY created_at, operation_id
+                """,
+                (episode_id,),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
@@ -4005,7 +4020,6 @@ class AgentTaskStoreMixin:
                     FROM graph_runs AS run
                     JOIN episodes AS episode ON episode.episode_id = run.episode_id
                     WHERE run.operation_id = ?
-                      AND json_extract(run.request_json, '$.artifact_edit') IS NULL
                     """,
                     (operation_id,),
                 ).fetchone()

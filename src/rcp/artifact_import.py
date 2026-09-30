@@ -120,6 +120,11 @@ def _read_source(
         or hashlib.sha256(data).hexdigest() != candidate.candidate_sha256
     ):
         raise ValueError("candidate bytes no longer match their recorded digest")
+    if candidate is not None:
+        expires_at = max(
+            expires_at,
+            datetime.fromisoformat(store.now()) + timedelta(days=RUN_STAGE_RETENTION_DAYS),
+        )
     return scope, data, None if descriptor.is_kept() else expires_at.isoformat()
 
 

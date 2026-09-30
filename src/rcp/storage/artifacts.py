@@ -15,6 +15,7 @@ from pathlib import Path
 
 from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
 from rcp.live_artifacts import ResolvedLiveVersion
+from rcp.server_ops._local_primitives import fsync_directory
 from rcp.storage.artifact_models import (
     Artifact,
     ArtifactFile,
@@ -82,6 +83,7 @@ def write_artifact_file(root: Path, entry: ArtifactFile, data: bytes) -> Path:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        fsync_directory(path.parent)
     finally:
         Path(temporary).unlink(missing_ok=True)
     return path
@@ -361,14 +363,18 @@ class ArtifactStoreMixin:
             lineage = self._artifact_ancestors(current, versions) + [current]
             version = version.model_copy(update={"ancestors": [v.version_id for v in lineage]})
             ancestors = [v for v in lineage if v.sequence > 0]
+            statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
             with self.connection() as connection:
                 pending = connection.execute(
                     "SELECT json_extract(request_json, '$.artifact_edit.base_version') FROM graph_runs g "
                     "WHERE json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
-                    "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r WHERE "
-                    "r.operation_id = json_extract(g.request_json, '$.artifact_edit.operation_id') "
+                    f"AND g.status IN ({','.join('?' for _ in statuses)}) "
+                    "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r "
+                    "JOIN graph_runs attempt ON attempt.operation_id = r.operation_id WHERE "
+                    "json_extract(attempt.request_json, '$.artifact_edit.operation_id') = "
+                    "json_extract(g.request_json, '$.artifact_edit.operation_id') "
                     "AND r.category = 'artifact_edit_staged')",
-                    (artifact_id,),
+                    (artifact_id, *statuses),
                 ).fetchall()
             pinned = {row[0] for row in pending}
 
@@ -464,6 +470,8 @@ class ArtifactStoreMixin:
                     or artifact.kept_at
                     or not artifact.expires_at
                     or datetime.fromisoformat(artifact.expires_at) > now
+                    or self.artifact_edit_operation_id(artifact.project_id, artifact_id) is not None
+                    or artifact_id in self.protected_edit_artifact_ids()
                 ):
                     continue
                 with _capture_guard(self.path.parent).deletion():
@@ -544,6 +552,10 @@ def migrate_artifacts(connection: sqlite3.Connection, file_root: Path) -> None:
             "UPDATE episode_reports SET artifact_id = ?, artifact_version_id = ? WHERE report_id = ?",
             (artifact.artifact_id, digest, row["report_id"]),
         )
+    if connection.execute(
+        "SELECT 1 FROM episode_reports WHERE artifact_id IS NULL LIMIT 1"
+    ).fetchone():
+        raise ValueError("Artifact migration refused: an episode report has no owning episode.")
     connection.execute("ALTER TABLE episode_reports DROP COLUMN html")
     for row in connection.execute("SELECT * FROM result_views").fetchall():
         data = row["html"].encode("utf-8")

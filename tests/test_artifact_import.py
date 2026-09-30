@@ -352,3 +352,17 @@ def test_invalid_descriptor_batch_does_not_hide_later_valid_sources(store, tmp_p
     assert store.artifact_import_status(invalid.artifact_id)["state"] == "missing"
     assert _run(store) is None
     assert store.read_artifact_bytes(valid.artifact_id) == b"page"
+
+
+def test_old_unresolved_candidate_gets_retention_after_import(store, tmp_path):
+    _, _, turn, descriptor, _ = _candidate(store, tmp_path)
+    old = (store.test_clock[0] - timedelta(days=RUN_STAGE_RETENTION_DAYS + 1)).timestamp()
+    os.utime(turn.stage_root, (old, old))
+    assert _run(store) is None
+    artifact = store.artifact(descriptor.artifact_id)
+    assert datetime.fromisoformat(artifact.expires_at) == store.test_clock[0] + timedelta(
+        days=RUN_STAGE_RETENTION_DAYS
+    )
+    assert descriptor.artifact_id not in store.legacy_artifact_import_ids()
+    store.expire_artifacts()
+    assert store.read_artifact_bytes(descriptor.artifact_id) == b"page"

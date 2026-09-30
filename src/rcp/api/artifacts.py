@@ -63,6 +63,11 @@ class SavedArtifactResponse(BaseModel):
     unavailable_reason: str | None = None
 
 
+def _task_artifact_episode_id(task: AgentTaskRecord) -> str | None:
+    edit = task.request.get("artifact_edit")
+    return edit.get("episode_id") if isinstance(edit, dict) else task.episode_id
+
+
 def _episode_runs_query(
     store: AppStore,
     project_id: str,
@@ -70,6 +75,24 @@ def _episode_runs_query(
     branch_id: str,
 ) -> dict[str, str] | None:
     """Name the Runs surface that owns one episode-bound branch conversation."""
+    # Edits retain episode provenance in their immutable admission, but never
+    # participate in episode operations. Validate the operational origin before
+    # exposing its bounded transcript, including edits of forked edit outputs.
+    visited: set[str] = set()
+    while isinstance(task.request.get("artifact_edit"), dict):
+        if task.operation_id in visited:
+            return None
+        visited.add(task.operation_id)
+        edit = task.request["artifact_edit"]
+        origin = store.agent_task(edit.get("origin_operation_id", ""))
+        if (
+            origin is None
+            or origin.project_id != project_id
+            or origin.graph_target != task.graph_target
+            or edit.get("episode_id") != _task_artifact_episode_id(origin)
+        ):
+            return None
+        task = origin
     episode = store.episode(task.episode_id) if task.episode_id else None
     if (
         episode is None
@@ -123,7 +146,11 @@ def _saved_chat_origins(
     """Verify source conversations once per exact graph, without reading report bytes."""
     by_target: dict[str | None, list[AgentTaskRecord]] = {}
     for task in tasks:
-        if task.project_id != project_id or task.kind not in {"node_chat", "project_chat"}:
+        if task.project_id != project_id or task.kind not in {
+            "node_chat",
+            "project_chat",
+            "artifact_edit",
+        }:
             continue
         chat_id = task.request.get("chat_id")
         if not isinstance(chat_id, str):
@@ -152,7 +179,7 @@ def _saved_chat_origins(
             query = {"view": "chats", "chat": chat_id}
             if branch_id is not None:
                 query["branch_id"] = branch_id
-                if task.episode_id is not None:
+                if _task_artifact_episode_id(task) is not None:
                     # This session belongs to a bounded episode. Runs owns its
                     # read-only transcript; ordinary Chats would expose a composer.
                     runs_query = _episode_runs_query(store, project_id, task, branch_id)
@@ -193,7 +220,8 @@ def saved_artifacts(
         raw_artifacts = task.result.get("artifacts") if task.result else None
         if not isinstance(raw_artifacts, list):
             continue
-        episode = store.episode(task.episode_id) if task.episode_id else None
+        episode_id = _task_artifact_episode_id(task)
+        episode = store.episode(episode_id) if episode_id else None
         episode_mode = episode.mode if episode and episode.project_id == project_id else None
         for raw in raw_artifacts:
             try:
@@ -348,7 +376,7 @@ def _artifact_thread_href(store: AppStore, artifact) -> str | None:
         episode = store.episode(artifact.episode_id or origin.episode_id or "")
         if branch_id:
             query["branch_id"] = branch_id
-            if episode and episode.mode == "experiment_loop":
+            if episode:
                 query = _episode_runs_query(store, artifact.project_id, origin, branch_id)
                 if query is None:
                     return None

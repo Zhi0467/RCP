@@ -10,7 +10,8 @@ import of legacy local, SSH, and repository-kept bytes; ordinary artifacts for
 unresolved candidates on their own turns; durable failure reasons and retry
 backoff; and one SQLite snapshot for transfer artifact metadata and inventory.
 Imported temporary artifacts expire at the source stage's last-touch time plus
-the existing retention period; kept artifacts have no expiry. Import never
+the existing retention period; unresolved candidates receive at least a full
+retention period from import time, and kept artifacts have no expiry. Import never
 accepts a candidate or removes repository-kept files. Slice 2b is implemented:
 comments edit staged files under Discuss or revoking scratch-only authority,
 admission reserves sessions and stages across launch owners, publication uses
@@ -127,7 +128,8 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
     stay in place;
   - each unresolved revision candidate, imported as an ordinary new artifact on
     its own turn, never as an accepted version.
-  Each keeps its identity and expiry. A source that cannot be read, such as an
+  Each keeps its identity; unresolved candidates receive at least a full
+  retention period after import. A source that cannot be read, such as an
   offline SSH host, is recorded as unavailable and retried; the artifact shows
   that reason until import succeeds.
 - **Server update rehearsal.** The installed release's coordinator migrates the

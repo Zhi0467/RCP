@@ -498,3 +498,155 @@ def test_edit_origin_chain_stops_at_its_independent_fresh_stage(manifest, tmp_pa
         execution,
     )
     assert workspace == fresh_root
+
+
+@pytest.mark.parametrize("undo", [False, True])
+def test_unchanged_edit_does_not_publish_or_fork(manifest, tmp_path, undo):
+    from rcp.runs.chat import (
+        finalize_artifact_edit,
+        prepare_artifact_edit_directory,
+        stage_artifact_context,
+    )
+
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    store = execution.store
+    directory = prepare_artifact_edit_directory(request, execution, workspace, None)
+    stage_artifact_context(
+        app.state.service,
+        request,
+        execution,
+        local_stage=workspace.parent,
+        remote_stage=None,
+        artifact_path=str(directory),
+    )
+    if undo:
+        store.undo_artifact(source.artifact_id)
+    before = store.artifact(source.artifact_id)
+    versions = store.artifact_versions(source.artifact_id)
+    assert (
+        finalize_artifact_edit(
+            request,
+            execution,
+            artifact_scope_id="edit",
+            artifact_directory=directory,
+            remote_stage=None,
+            artifacts=[],
+            service=app.state.service,
+        )
+        == []
+    )
+    assert store.artifact(source.artifact_id) == before
+    assert store.artifact_versions(source.artifact_id) == versions
+
+
+@pytest.mark.parametrize("damage", ["deleted", "renamed", "type_changed"])
+@pytest.mark.asyncio
+async def test_finalize_failure_preserves_answer(manifest, tmp_path, damage):
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+
+    class DamagedEdit(_EditLauncher):
+        async def stream(self, *args, **kwargs):
+            async for event in super().stream(*args, **kwargs):
+                if event.event == "done":
+                    target = workspace / "turns" / "edit" / "artifacts" / "chart.html"
+                    if damage == "deleted":
+                        target.unlink()
+                    elif damage == "renamed":
+                        target.rename(target.with_name("renamed.html"))
+                    else:
+                        target.write_bytes(b"\x00\xff\x00")
+                yield event
+
+    events = await _run(app, request, execution, DamagedEdit(), tmp_path)
+    assert any(event.event == "answer" for event in events)
+    assert events[-1].event == "done"
+    assert execution.store.agent_task_has_receipt("edit", "artifact_edit_publish_failed")
+    assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>base</p>"
+
+
+def test_revoking_edit_without_provider_result_emits_error(manifest, tmp_path):
+    from rcp.runs.shared import _ProviderOutcome
+    from rcp.runs.tasks.artifact_edit import _settle
+
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    outcome = _ProviderOutcome()
+    frames = list(
+        _settle(app.state.service, request, execution, workspace, None, workspace, outcome)
+    )
+    events = [
+        AgentEvent.model_validate_json(frame.removeprefix("data: ").strip()) for frame in frames
+    ]
+    assert [event.event for event in events] == ["error"]
+    assert outcome.failed
+
+
+def test_large_selection_pointer_survives_staging_and_retry(manifest, tmp_path):
+    from rcp.runs.chat import (
+        finalize_artifact_edit,
+        prepare_artifact_edit_directory,
+        stage_artifact_context,
+    )
+
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    context = request.artifact_context.model_dump(mode="json")
+    context["selections"] = [
+        {"kind": "text", "text": "x" * 4000, "comment": "change"} for _ in range(10)
+    ]
+    request = RunRequest.model_validate(
+        {**request.model_dump(mode="json"), "artifact_context": context}
+    )
+    directory = prepare_artifact_edit_directory(request, execution, workspace, None)
+
+    def stage():
+        return stage_artifact_context(
+            app.state.service,
+            request,
+            execution,
+            local_stage=workspace.parent,
+            remote_stage=None,
+            artifact_path=str(directory),
+        )
+
+    staged = stage()
+    assert stage().pointer == staged.pointer
+    receipt = next(
+        r
+        for r in execution.store.agent_task_receipts("edit")
+        if r.category == "artifact_edit_staged"
+    )
+    assert receipt.payload["path"] == staged.pointer["path"]
+    assert "pointer" not in receipt.payload
+    (directory / source.name).write_bytes(b"<p>updated</p>")
+    finalize_artifact_edit(
+        request,
+        execution,
+        artifact_scope_id="edit",
+        artifact_directory=directory,
+        remote_stage=None,
+        artifacts=[],
+        service=app.state.service,
+    )
+    assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>updated</p>"
+
+
+def test_additional_edit_artifact_retains_episode_provenance(manifest, tmp_path):
+    import json
+
+    from rcp.runs.chat import _discover_chat_artifacts
+
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    record = execution.store.agent_task("edit")
+    saved = record.request
+    saved["artifact_edit"]["episode_id"] = "origin-episode"
+    with execution.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
+            (json.dumps(saved), "edit"),
+        )
+    directory = workspace / "turns" / "edit" / "artifacts"
+    directory.mkdir(parents=True)
+    (directory / "additional.txt").write_text("additional output")
+    artifacts = _discover_chat_artifacts(execution, "edit", directory, None)
+    assert len(artifacts) == 1
+    assert execution.store.artifact(artifacts[0].artifact_id).episode_id == "origin-episode"
+    assert execution.store.agent_task("edit").episode_id is None

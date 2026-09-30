@@ -1079,3 +1079,43 @@ def test_graph_archive_hides_default_list_but_keeps_explicit_reads(tmp_path) -> 
         serialize_episode(store, "project", episode, branch_summary=_branch_summary).episode_id
         == episode.episode_id
     )
+
+
+def test_orchestrator_artifact_edit_keeps_reply_thread_without_episode_membership(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _project(store)
+    episode, root = _auto_episode(store, "edit-thread")
+    before = serialize_episode(store, "project", episode, branch_summary=_branch_summary)
+    edit = root.model_copy(
+        update={
+            "operation_id": "artifact-edit",
+            "episode_id": None,
+            "kind": "artifact_edit",
+            "dispatch_authority": None,
+            "request": {
+                "message": "Update the figure",
+                "artifact_edit": {
+                    "episode_id": episode.episode_id,
+                    "reply_episode_id": episode.episode_id,
+                    "origin_operation_id": root.operation_id,
+                    "operation_id": "artifact-edit",
+                },
+            },
+            "created_at": store.now(),
+        }
+    )
+    store.create_artifact_edit_task(edit)
+    after = serialize_episode(store, "project", episode, branch_summary=_branch_summary)
+    assert after.current_control_task_id == before.current_control_task_id
+    assert after.health == before.health
+    assert after.budget == before.budget
+    assert [task.operation_id for task in after.tasks].count(edit.operation_id) == 1
+    assert after.tasks[-1].kind == "artifact_edit"
+    assert after.tasks[-1].role == "orchestrator"
+    assert [task.operation_id for task in store.episode_tasks(episode.episode_id)] == [
+        root.operation_id
+    ]
+    message = store.auto_research_messages(episode.episode_id)[-1]
+    assert message.body == "Update the figure"
+    assert message.delivery_operation_id == edit.operation_id
+    assert message.recipient_task_id == root.operation_id
