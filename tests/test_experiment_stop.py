@@ -25,7 +25,6 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeRecord,
-    EpisodeReportRecord,
     EpisodeWrapupRecord,
     GraphWatcherRecord,
     WatcherContinuation,
@@ -35,6 +34,7 @@ from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import NodeStatusGraphCondition
 from rcp.watchers import WatcherBinding
 
+from .episode_report_helpers import stored_report
 from .helpers import (
     append_fixture_patch,
     authorized_human,
@@ -409,7 +409,8 @@ class _Loop:
         html = "<html><body><figure>Result</figure></body></html>"
         self.store.finish_episode_report_ready(
             attempt.attempt_id,
-            EpisodeReportRecord(
+            stored_report(
+                self.store,
                 report_id=f"{self.episode_id}-report",
                 episode_id=self.episode_id,
                 attempt_id=attempt.attempt_id,

@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, ProviderReadiness
+from rcp.artifacts import html_document_title
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata
@@ -26,6 +27,7 @@ from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    Artifact,
     AutoResearchStateRecord,
     EpisodeRecord,
     EpisodeReportRecord,
@@ -287,6 +289,21 @@ def create_terminal_auto_episode(
 
     report: EpisodeReportRecord | None = None
     if report_html is not None:
+        stored = store.create_artifact(
+            Artifact(
+                artifact_id=hashlib.sha256(f"{episode_id}-report".encode()).hexdigest()[:24],
+                project_id=project_id,
+                supplier="episode_ending",
+                supplier_id=episode_id,
+                source_name="episode-report.html",
+                media_type="text/html",
+                created_at=store.now(),
+                episode_id=episode_id,
+                display_title=html_document_title(report_html),
+                origin_operation_id=allocation_operation_id,
+            ),
+            data=report_html.encode(),
+        )
         report = EpisodeReportRecord(
             report_id=f"{episode_id}-report",
             episode_id=episode_id,
@@ -294,7 +311,8 @@ def create_terminal_auto_episode(
             allocation_operation_id=allocation_operation_id,
             ending="exhausted",
             sha256=hashlib.sha256(report_html.encode("utf-8")).hexdigest(),
-            html=report_html,
+            artifact_id=stored.artifact_id,
+            artifact_version_id=stored.current_version,
             created_at=store.now(),
         )
         store.finish_episode_report_ready(attempt.attempt_id, report)
@@ -1071,13 +1089,17 @@ def test_save_episode_report_copies_immutable_bytes_without_overwriting(manifest
         assert saved.status_code == 200
         first_path = repository / saved.json()["path"]
         assert first_path.parent == repository / "artifacts"
-        assert first_path.read_bytes() == report.html.encode("utf-8")
+        assert first_path.read_bytes() == store.read_artifact_bytes(
+            report.artifact_id, report.artifact_version_id
+        )
         first_path.write_text("Human edited copy", encoding="utf-8")
         again = client.post(url)
         assert again.status_code == 200
         second_path = repository / again.json()["path"]
         assert second_path != first_path
-        assert second_path.read_bytes() == report.html.encode("utf-8")
+        assert second_path.read_bytes() == store.read_artifact_bytes(
+            report.artifact_id, report.artifact_version_id
+        )
         assert first_path.read_text() == "Human edited copy"
         assert store.episode_report(episode.episode_id) == report
         assert store.episode(episode.episode_id) == episode

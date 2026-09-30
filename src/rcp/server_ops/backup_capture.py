@@ -49,7 +49,8 @@ from rcp.server_ops.backup_models import (
 from rcp.server_ops.models import redact_server_text
 from rcp.server_runtime import ServerMetadata, data_dir_identity
 from rcp.sources.imported import ImportedProviderSourceStore
-from rcp.storage import AppStore, ProjectRecord, ResultViewRecord
+from rcp.storage import AppStore, ProjectRecord
+from rcp.storage.artifact_models import ArtifactFile
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,7 @@ class BackupSQLiteCaptureReceipt(_StrictCaptureModel):
     app_data_plan: BackupAppDataCapturePlan
     projects: tuple[BackupSnapshotProjectInventory, ...]
     imported_source_inventories: tuple[BackupImportedProviderSourceInventory, ...] = ()
+    artifact_inventory: tuple[ArtifactFile, ...] = ()
     status: Literal["complete", "partial"]
 
     @field_validator("capture_id", "space_id")
@@ -450,7 +452,24 @@ class BackupCaptureCoordinator:
                 or "The application database is unavailable."
             )
         snapshot_path = capture_root / "rcp.sqlite3"
-        self.store.online_snapshot(snapshot_path)
+        with self.store.artifact_capture():
+            self.store.online_snapshot(snapshot_path)
+            captured_store = AppStore.open_read_only_snapshot(snapshot_path)
+            artifact_inventory = tuple(captured_store.artifact_inventory())
+            for item in artifact_inventory:
+                source = self.store.artifact_file_path(item)
+                target = capture_root / "artifacts" / item.artifact_id / item.file_id
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                data = source.read_bytes()
+                if len(data) != item.size_bytes or hashlib.sha256(data).hexdigest() != item.sha256:
+                    raise BackupCaptureUnavailable("Artifact bytes differ from the database.")
+                temporary = target.with_suffix(".partial")
+                with temporary.open("wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.chmod(0o400)
+                os.replace(temporary, target)
         snapshot_store = AppStore.open_read_only_snapshot(snapshot_path)
         space_id = snapshot_store.space_id
         space_name = snapshot_store.space_name
@@ -522,6 +541,7 @@ class BackupCaptureCoordinator:
             app_data_plan=app_data_plan,
             projects=projects,
             imported_source_inventories=imported_source_inventories,
+            artifact_inventory=artifact_inventory,
             status="partial" if partial else "complete",
         )
         receipt_path = capture_root / "sqlite-capture.json"
@@ -594,10 +614,6 @@ def inspect_snapshot_project_inventory(
             )
         }
         artifacts = _kept_artifact_references(tasks, unresolved_revisions)
-        views = tuple(
-            _kept_result_view_reference(view)
-            for view in snapshot_store.kept_result_views(record.project_id)
-        )
         return BackupSnapshotProjectInventory(
             project_id=record.project_id,
             home_space_id=record.home_space_id,
@@ -606,7 +622,7 @@ def inspect_snapshot_project_inventory(
             recovery=registration.recovery,
             task_operation_ids=task_ids,
             kept_artifacts=artifacts,
-            kept_result_views=views,
+            kept_result_views=(),
         )
     except BackupProjectUnavailable as exc:
         reason = str(exc)
@@ -687,20 +703,6 @@ def _kept_artifact_references(
                 reference.artifact_id,
             ),
         )
-    )
-
-
-def _kept_result_view_reference(view: ResultViewRecord) -> BackupKeptResultViewReference:
-    if view.kept_filename is None or view.kept_at is None:
-        raise BackupProjectInventoryUnavailable("A kept result-view binding is incomplete.")
-    return BackupKeptResultViewReference(
-        view_id=view.view_id,
-        origin_operation_id=view.origin_operation_id,
-        latest_operation_id=view.latest_operation_id,
-        kept_filename=view.kept_filename,
-        content_sha256=view.content_sha256,
-        size_bytes=view.size_bytes,
-        kept_at=view.kept_at,
     )
 
 

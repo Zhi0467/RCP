@@ -42,17 +42,6 @@ ACCEPTANCE_CAMPAIGN_REAUTHORIZED_RELEASE_FILE = ".rcp-acceptance-campaign-reauth
 
 _STATE_FILE = ".rcp-acceptance-agent.json"
 _JOBS_DIRECTORY = "acceptance-agent-jobs"
-_RESULT_VIEW_AUTHORING_MARKER = "RCP result-view authoring contract:"
-_RESULT_VIEW_CREATE_PREFIX = (
-    "- Create exactly one bounded, self-contained, descriptively named HTML file directly inside `"
-)
-_RESULT_VIEW_CREATE_SUFFIX = "`."
-_RESULT_VIEW_REVISE_PREFIX = "- Edit the existing HTML file `"
-_RESULT_VIEW_REVISE_SUFFIX = (
-    "` in place. Keep its exact path and name; atomic replacement at that path is allowed."
-)
-_RESULT_VIEW_NAME = "loss-curves-by-seed.html"
-_RESULT_VIEW_STATE_KEY = "result_view"
 _CAMPAIGN_STATE_KEY = "campaign_actor"
 _CAMPAIGN_FIXTURE_STATE_KEY = "campaign_fixture"
 _CAMPAIGN_WORKER_REPLY_MARKER = "[RCP acceptance: campaign worker reply]"
@@ -85,7 +74,6 @@ class AcceptanceLaunchRecord:
     scenario: Literal[
         "experiment_loop",
         "generic_watchers",
-        "result_view",
         "campaign",
         "unsupported",
     ]
@@ -263,18 +251,13 @@ class AcceptanceAgentLauncher(AgentLauncher):
         # to holds what the session learned at start, which the persisted fixture state already
         # caches, and expired commands that must never stand in for a missing current one.
         contract = (
-            prompt
-            if _RESULT_VIEW_AUTHORING_MARKER in prompt
-            else _campaign_inline_contract(prompt)
+            _campaign_inline_contract(prompt)
             if prompt.partition("\n")[0] in _CAMPAIGN_CONTRACTS
             else _read_launch_contract(prompt)
         )
         scenario = _scenario(prompt, contract, state)
-        active_contract = prompt if _RESULT_VIEW_AUTHORING_MARKER in prompt else contract
         campaign_contract = _campaign_contract(contract)
-        if scenario == "result_view":
-            action = _result_view_action(active_contract)
-        elif scenario == "campaign":
+        if scenario == "campaign":
             action = (
                 "report_correction"
                 if campaign_contract == ("report", "report")
@@ -315,7 +298,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
             yield AgentEvent(
                 event="error",
                 text=(
-                    "The acceptance agent only runs an Experiment-loop invocation, a result-view "
+                    "The acceptance agent only runs an Experiment-loop invocation, an artifact "
                     "authoring Work turn, an auto-research campaign actor turn, or an ordinary "
                     "Work turn containing "
                     f"{ACCEPTANCE_GENERIC_WATCHER_MARKER!r}."
@@ -341,14 +324,6 @@ class AcceptanceAgentLauncher(AgentLauncher):
             except _AcceptancePauseRequested:
                 yield AgentEvent(event="paused", text="Paused during acceptance fixture work.")
                 return
-        elif scenario == "result_view":
-            answer = _author_result_view(
-                resolved_cwd,
-                active_contract,
-                state,
-                stable_session,
-                action,
-            )
         elif action == "initial":
             focused_experiment_id = _focused_experiment_id(contract)
             _start_fixture_jobs(resolved_cwd)
@@ -508,14 +483,9 @@ def _scenario(
 ) -> Literal[
     "experiment_loop",
     "generic_watchers",
-    "result_view",
     "campaign",
     "unsupported",
 ]:
-    # Result-view Work turns can reuse a cwd that carries older acceptance
-    # fixture state. The explicit current contract must win over that receipt.
-    if _RESULT_VIEW_AUTHORING_MARKER in prompt or _RESULT_VIEW_AUTHORING_MARKER in contract:
-        return "result_view"
     if _campaign_contract(contract) is not None:
         return "campaign"
     persisted = state.get("scenario")
@@ -1274,148 +1244,6 @@ def _campaign_usage(
     )
 
 
-def _result_view_action(contract: str) -> Literal["create", "revise"]:
-    section = _result_view_section(contract)
-    action_lines = [
-        line
-        for line in section.splitlines()
-        if line.startswith((_RESULT_VIEW_CREATE_PREFIX, _RESULT_VIEW_REVISE_PREFIX))
-    ]
-    if len(action_lines) != 1:
-        raise ValueError("Acceptance result-view contract must name exactly one authoring action.")
-    return "create" if action_lines[0].startswith(_RESULT_VIEW_CREATE_PREFIX) else "revise"
-
-
-def _result_view_section(contract: str) -> str:
-    sections = [
-        section
-        for section in contract.split("\n\n")
-        if section.startswith(f"{_RESULT_VIEW_AUTHORING_MARKER}\n")
-    ]
-    if len(sections) != 1:
-        raise ValueError("Acceptance result-view contract must contain one authoring section.")
-    return sections[0]
-
-
-def _author_result_view(
-    cwd: Path,
-    contract: str,
-    state: dict[str, object],
-    session_id: str,
-    action: Literal["create", "revise"],
-) -> str:
-    if action == "create":
-        slot = _result_view_slot(cwd, contract)
-        try:
-            entries = list(slot.iterdir())
-        except OSError as exc:
-            raise ValueError(f"Acceptance result-view slot is unreadable: {exc}") from exc
-        if entries:
-            raise ValueError("Acceptance result-view create slot must be empty.")
-        target = slot / _RESULT_VIEW_NAME
-        _write_text_atomically(target, _result_view_html(revision=1))
-        updated_state = dict(state)
-        updated_state[_RESULT_VIEW_STATE_KEY] = {
-            "cwd": str(cwd),
-            "path": str(target),
-            "revision": 1,
-            "session_id": session_id,
-        }
-        _write_state(cwd, updated_state)
-        return "Created the deterministic acceptance loss-curves result view."
-
-    target = _existing_result_view_path(cwd, contract)
-    receipt = state.get(_RESULT_VIEW_STATE_KEY)
-    if not isinstance(receipt, dict):
-        raise ValueError("Acceptance result-view revision has no persisted create receipt.")
-    if receipt.get("cwd") != str(cwd):
-        raise ValueError("Acceptance result-view revision changed the conversation cwd.")
-    if receipt.get("session_id") != session_id:
-        raise ValueError("Acceptance result-view revision changed the native session.")
-    if receipt.get("path") != str(target):
-        raise ValueError("Acceptance result-view revision changed the stable file path.")
-    if receipt.get("revision") != 1:
-        raise ValueError("Acceptance result-view fixture supports exactly one revision.")
-    try:
-        entries = list(target.parent.iterdir())
-    except OSError as exc:
-        raise ValueError(f"Acceptance result-view slot is unreadable: {exc}") from exc
-    if len(entries) != 1 or entries[0].resolve() != target:
-        raise ValueError("Acceptance result-view revision requires exactly the created view file.")
-
-    _write_text_atomically(target, _result_view_html(revision=2))
-    updated_state = dict(state)
-    updated_state[_RESULT_VIEW_STATE_KEY] = {
-        "cwd": str(cwd),
-        "path": str(target),
-        "revision": 2,
-        "session_id": session_id,
-    }
-    _write_state(cwd, updated_state)
-    return "Revised the existing acceptance loss-curves result view in place."
-
-
-def _result_view_slot(cwd: Path, contract: str) -> Path:
-    raw_path = _result_view_contract_path(
-        contract,
-        prefix=_RESULT_VIEW_CREATE_PREFIX,
-        suffix=_RESULT_VIEW_CREATE_SUFFIX,
-    )
-    slot = _resolve_existing_result_view_path(raw_path, label="create slot")
-    relative = _result_view_relative_path(cwd, slot)
-    if len(relative.parts) != 2 or relative.parts[0] != "views" or not slot.is_dir():
-        raise ValueError("Acceptance result-view create slot is not the stable stage slot.")
-    return slot
-
-
-def _existing_result_view_path(cwd: Path, contract: str) -> Path:
-    raw_path = _result_view_contract_path(
-        contract,
-        prefix=_RESULT_VIEW_REVISE_PREFIX,
-        suffix=_RESULT_VIEW_REVISE_SUFFIX,
-    )
-    if raw_path.is_symlink():
-        raise ValueError("Acceptance result-view revision target cannot be a symlink.")
-    target = _resolve_existing_result_view_path(raw_path, label="revision target")
-    relative = _result_view_relative_path(cwd, target)
-    if (
-        len(relative.parts) != 3
-        or relative.parts[0] != "views"
-        or target.name != _RESULT_VIEW_NAME
-        or not target.is_file()
-    ):
-        raise ValueError("Acceptance result-view revision target is not the stable HTML file.")
-    return target
-
-
-def _result_view_contract_path(contract: str, *, prefix: str, suffix: str) -> Path:
-    matches = [
-        line[len(prefix) : -len(suffix)]
-        for line in _result_view_section(contract).splitlines()
-        if line.startswith(prefix) and line.endswith(suffix)
-    ]
-    if len(matches) != 1 or not matches[0] or "`" in matches[0]:
-        raise ValueError("Acceptance result-view contract has no exact stable path.")
-    path = Path(matches[0])
-    if not path.is_absolute():
-        raise ValueError("Acceptance result-view contract path must be absolute.")
-    return path
-
-
-def _resolve_existing_result_view_path(path: Path, *, label: str) -> Path:
-    try:
-        return path.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError(f"Acceptance result-view {label} is unavailable: {exc}") from exc
-
-
-def _result_view_relative_path(cwd: Path, path: Path) -> Path:
-    try:
-        return path.relative_to(cwd)
-    except ValueError as exc:
-        raise ValueError("Acceptance result-view path left the conversation cwd.") from exc
-
-
 def _action(
     contract: str,
     state: dict[str, object],
@@ -1685,147 +1513,6 @@ def _completion_patch(
             "Proposed marking the tested fixture Hypothesis as supported.",
         ],
     }
-
-
-def _result_view_html(*, revision: Literal[1, 2]) -> str:
-    revision_label = (
-        "Revision 1 — initial curves" if revision == 1 else "Revision 2 — late spike annotated"
-    )
-    annotation = (
-        ""
-        if revision == 1
-        else """
-          <circle cx="653" cy="91" r="10" class="annotation-dot" />
-          <text x="518" y="72" class="annotation-label">reviewed late spike</text>"""
-    )
-    template = """<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Acceptance loss curves by seed</title>
-  <style>
-    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; }
-    body { margin: 0; background: #f4f1ea; color: #18251f; }
-    main { max-width: 860px; margin: 0 auto; padding: 28px; }
-    header { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
-    h1 { margin: 0; font-family: Georgia, serif; font-size: 30px; font-weight: 600; }
-    .revision { color: #315f4c; font-size: 14px; font-weight: 700; }
-    .plot-card { margin-top: 18px; padding: 16px; background: #fffdf8; border: 1px solid #d4cec1;
-      border-radius: 14px; box-shadow: 0 12px 30px rgb(40 48 43 / 9%); }
-    svg { display: block; width: 100%; height: auto; user-select: none; }
-    .grid { stroke: #e8e2d7; stroke-width: 1; }
-    .axis { stroke: #69756f; stroke-width: 1.5; }
-    .axis-label { fill: #5c6862; font-size: 13px; }
-    .seed-one { fill: none; stroke: #26745b; stroke-width: 4; }
-    .seed-two { fill: none; stroke: #d0693d; stroke-width: 4; }
-    .selection { fill: rgb(63 113 181 / 15%); stroke: #315f9a; stroke-width: 2;
-      stroke-dasharray: 7 5; }
-    .annotation-dot { fill: #fffdf8; stroke: #a53d2d; stroke-width: 4; }
-    .annotation-label { fill: #873326; font-size: 14px; font-weight: 700; }
-    #gesture-surface { cursor: crosshair; touch-action: none; }
-    .legend { display: flex; gap: 20px; margin: 12px 0 0; font-size: 14px; }
-    .legend span::before { display: inline-block; width: 22px; height: 4px; margin: 0 7px 3px 0;
-      border-radius: 2px; content: ""; }
-    .legend .one::before { background: #26745b; }
-    .legend .two::before { background: #d0693d; }
-    .instruction { margin: 16px 0 0; color: #45534c; font-size: 15px; }
-    #selection-summary { min-height: 24px; margin: 8px 0 0; color: #315f9a; font-weight: 700; }
-  </style>
-</head>
-<body>
-  <main>
-    <header>
-      <div>
-        <h1>Loss curves by seed</h1>
-        <div class="instruction">Drag a box over the plot to point at a region.</div>
-      </div>
-      <div class="revision" data-revision="__REVISION__">__REVISION_LABEL__</div>
-    </header>
-    <section class="plot-card" aria-label="Overlaid loss curves">
-      <svg id="curve-plot" viewBox="0 0 760 380" role="img"
-           aria-label="Training loss by step for seed two and seed three">
-        <line x1="64" y1="42" x2="64" y2="322" class="axis" />
-        <line x1="64" y1="322" x2="724" y2="322" class="axis" />
-        <line x1="64" y1="112" x2="724" y2="112" class="grid" />
-        <line x1="64" y1="182" x2="724" y2="182" class="grid" />
-        <line x1="64" y1="252" x2="724" y2="252" class="grid" />
-        <text x="64" y="348" class="axis-label">0</text>
-        <text x="361" y="348" class="axis-label">5k steps</text>
-        <text x="686" y="348" class="axis-label">10k</text>
-        <text x="15" y="188" class="axis-label" transform="rotate(-90 15 188)">loss</text>
-        <polyline class="seed-one"
-          points="64,72 130,126 196,166 262,205 328,236 394,258 460,276 526,288 592,297 658,303 724,307" />
-        <polyline class="seed-two"
-          points="64,82 130,133 196,176 262,214 328,244 394,265 460,282 526,294 592,302 625,300 653,91 682,299 724,306" />
-        __REVISION_ANNOTATION__
-        <rect id="selection" class="selection" x="0" y="0" width="0" height="0" hidden />
-        <rect id="gesture-surface" x="64" y="42" width="660" height="280" fill="transparent" />
-      </svg>
-      <div class="legend"><span class="one">seed 2</span><span class="two">seed 3</span></div>
-      <p id="selection-summary" aria-live="polite"></p>
-    </section>
-  </main>
-  <script>
-    (() => {
-      'use strict';
-      const plot = document.getElementById('curve-plot');
-      const surface = document.getElementById('gesture-surface');
-      const selection = document.getElementById('selection');
-      const summary = document.getElementById('selection-summary');
-      let start = null;
-      const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
-      const pointFor = (event) => {
-        const bounds = plot.getBoundingClientRect();
-        return {
-          x: clamp((event.clientX - bounds.left) * 760 / bounds.width, 64, 724),
-          y: clamp((event.clientY - bounds.top) * 380 / bounds.height, 42, 322)
-        };
-      };
-      const drawSelection = (first, last) => {
-        selection.hidden = false;
-        selection.setAttribute('x', String(Math.min(first.x, last.x)));
-        selection.setAttribute('y', String(Math.min(first.y, last.y)));
-        selection.setAttribute('width', String(Math.abs(first.x - last.x)));
-        selection.setAttribute('height', String(Math.abs(first.y - last.y)));
-      };
-      surface.addEventListener('pointerdown', (event) => {
-        event.preventDefault();
-        start = pointFor(event);
-        drawSelection(start, start);
-      });
-      surface.addEventListener('pointermove', (event) => {
-        if (start === null) return;
-        drawSelection(start, pointFor(event));
-      });
-      surface.addEventListener('pointerup', (event) => {
-        if (start === null) return;
-        const end = pointFor(event);
-        drawSelection(start, end);
-        const width = Math.abs(start.x - end.x);
-        const height = Math.abs(start.y - end.y);
-        start = null;
-        if (width < 12 || height < 12) {
-          selection.hidden = true;
-          return;
-        }
-        summary.textContent = 'Boxed late spike across steps 8,000–9,000 for seed 3.';
-        window.parent.postMessage({type:'rcp-result-view-gesture',version:1,gesture:'box',description:'late spike across steps 8,000–9,000 for seed 3'}, '*');
-      });
-      surface.addEventListener('pointercancel', () => {
-        start = null;
-        selection.hidden = true;
-      });
-    })();
-  </script>
-</body>
-</html>
-"""
-    return (
-        template.replace("__REVISION__", str(revision))
-        .replace("__REVISION_LABEL__", revision_label)
-        .replace("__REVISION_ANNOTATION__", annotation)
-    )
 
 
 def _write_text_atomically(path: Path, value: str) -> None:

@@ -542,7 +542,6 @@ async def _stage_work_turn(
             token=token,
             artifact_scope_id=artifact_scope_id,
             artifact_directory=artifact_directory,
-            prepared_result_view=None,
             experiment_resources=experiment_resources,
             experiment_resource_pointers=experiment_resource_pointers,
             skill_selection=skill_selection,

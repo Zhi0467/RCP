@@ -23,6 +23,7 @@ from rcp.rcp_home import rcp_temp_dir
 from rcp.service import ProjectService
 from rcp.sources import ImportedProviderSourceInventory
 from rcp.storage import ProjectTransferImportRecord
+from rcp.storage.artifacts import write_artifact_file
 from rcp.transfer.archive import (
     TransferArchiveEntry,
     TransferArchiveEnvelope,
@@ -47,6 +48,7 @@ _PROJECT_FILE_GROUPS = frozenset(
         "paper_introduction",
         "fact",
         "kept_artifact",
+        "artifact_version",
         "legacy_kept_result_view",
     }
 )
@@ -89,6 +91,9 @@ def import_project_transfer(
     _validate_capture(archive, capture)
     kept_html = _kept_result_view_html(archive_root, capture)
     owners = _target_owners(catalog, archive, target_configuration)
+    for item in capture.artifact_inventory:
+        source = archive_root / "artifacts" / item.artifact_id / item.file_id
+        write_artifact_file(store.path.parent, item, source.read_bytes())
 
     store.begin_project_transfer_import(
         archive.target_request_id,
@@ -352,6 +357,8 @@ def _publish_project_files(
                     expected_sha256=entry.sha256,
                     expected_size=entry.size_bytes,
                 )
+            elif entry.group == "artifact_version":
+                continue  # Published through the RCP artifact owner before database import.
             elif entry.group == "kept_artifact":
                 owners.workspace.restore_kept_artifact(
                     path.name,
@@ -419,6 +426,7 @@ def _publication_sha256(
         "paper_introduction",
         "fact",
         "kept_artifact",
+        "artifact_version",
         "legacy_kept_result_view",
         "provider_history",
     }

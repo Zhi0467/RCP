@@ -780,25 +780,6 @@ class GraphSyncRequest(BaseModel):
         return self
 
 
-class CreateResultViewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    action: Literal["create"]
-
-
-class ReviseResultViewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    action: Literal["revise"]
-    view_id: str = Field(pattern=r"^[0-9a-f]{24}$")
-
-
-ResultViewRequest = Annotated[
-    CreateResultViewRequest | ReviseResultViewRequest,
-    Field(discriminator="action"),
-]
-
-
 class ArtifactSelectionRect(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -906,10 +887,6 @@ class RunRequest(BaseModel):
     worktree_integration_target: str | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
-    result_view: ResultViewRequest | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-    )
     artifact_context: ArtifactContextRequest | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -947,14 +924,6 @@ class RunRequest(BaseModel):
     resolved_compute_context: ResolvedComputeContext = Field(
         default_factory=ResolvedComputeContext,
     )
-
-    @model_validator(mode="after")
-    def result_view_requires_node_work(self) -> RunRequest:
-        if self.result_view is None:
-            return self
-        if self.mode != "work" or self.chat_scope != "node" or not self.node_id:
-            raise ValueError("a result view requires node-scoped Work with a node_id")
-        return self
 
 
 class CoachRequest(BaseModel):

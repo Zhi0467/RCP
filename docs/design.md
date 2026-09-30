@@ -147,9 +147,10 @@ number here.
 - A **task** is one durable provider invocation or recovery attempt.
 - A **conversation** is one reusable native-session scratch workspace containing
   explicitly labelled Discuss and Work turns.
-- An **artifact** is a supported file produced by a task and owned by its
-  conversation. It may remain temporary or be kept as a live file at the state
-  repository root; it is never a graph object or a second answer channel.
+- An **artifact** is an RCP-owned file supplied by a turn or episode ending.
+  Its metadata lives in SQLite and immutable versions live in the data directory.
+  Turn outputs expire unless kept; reports are permanent. It is never a graph
+  object or a second answer channel.
 - An **artifact revision candidate** is a validated Work output held beside its
   unchanged source until one human Accept or Reject disposition.
 - An **episode** is the persisted parent for bounded Experiment control or

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-import threading
 import uuid
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -24,7 +23,6 @@ from rcp.api.dependencies import (
     get_graph_service,
     get_identity_access,
     get_project_service,
-    get_result_view_keep_locks,
     get_store,
     project_write_admission,
     require_project_membership,
@@ -36,15 +34,13 @@ from rcp.api.identity import IdentityAccess
 from rcp.api.task_requests import _resolved_auto_research_request, _resolved_graph_request
 from rcp.artifact_comments import comment_panel, selection_frame_addon, supports_comments
 from rcp.artifact_replace import ArtifactReplacementConflict
-from rcp.artifact_views import artifact_viewer_document, markdown_document, text_document
+from rcp.artifact_views import artifact_content, artifact_viewer_document
 from rcp.artifacts import (
     AgentArtifactDescriptor,
     ArtifactView,
     artifact_view,
     classify_artifact_bytes,
     html_preview_document,
-    read_local_regular_file,
-    replace_local_regular_file,
 )
 from rcp.artifacts import (
     artifact_id as scoped_artifact_id,
@@ -52,13 +48,11 @@ from rcp.artifacts import (
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import AgentTaskRequest, BackgroundAgentTasks
 from rcp.conversation_worktrees import conversation_worktree_recovery_admission
-from rcp.core.models import Experiment
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
-from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES, STEERING_MESSAGE_MAX_CHARS
+from rcp.limits import STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
-    _local_chat_artifact_directory,
     _logical_chat_turn_operation_id,
     artifact_omissions,
 )
@@ -83,8 +77,8 @@ from rcp.storage import (
     ArtifactRevisionCandidateRecord,
     ArtifactRevisionConflict,
 )
-from rcp.transport import RemoteRunStage, StateUnavailable
-from rcp.transport.state import StateWorkspace
+from rcp.storage.artifacts import ArtifactVersionConflict
+from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -97,14 +91,9 @@ ExperimentAdmissionDependency = Annotated[
     ExperimentAdmission,
     Depends(get_experiment_admission),
 ]
-ResultViewKeepLocksDependency = Annotated[
-    KeyedLocks,
-    Depends(get_result_view_keep_locks),
-]
-ArtifactMutationLocksDependency = Annotated[
-    KeyedLocks,
-    Depends(get_artifact_mutation_locks),
-]
+
+
+ArtifactMutationLocksDependency = Annotated[KeyedLocks, Depends(get_artifact_mutation_locks)]
 
 
 class ArtifactRevisionCandidateResponse(BaseModel):
@@ -171,19 +160,25 @@ def _agent_artifact_response(
     record: AgentTaskRecord,
     descriptor: AgentArtifactDescriptor,
 ) -> AgentArtifactResponse:
-    kept = descriptor.kept_filename is not None
-    retained_stage = bool(record.stage_root) and not record.history_only
-    available = kept or retained_stage
+    revision_candidate = store.unresolved_artifact_revision_candidate(
+        record.operation_id,
+        descriptor.artifact_id,
+    )
+    stored = store.artifact(descriptor.artifact_id)
+    kept = stored is not None and stored.kept_at is not None
+    if stored is not None:
+        descriptor = descriptor.model_copy(update={"kept_at": stored.kept_at})
+    available = stored is not None and (
+        stored.expires_at is None
+        or stored.expires_at > store.now()
+        or descriptor.artifact_id in store.protected_revision_artifact_ids()
+    )
     unavailable_reason = (
         None
         if available
         else "Artifact bytes were not retained with this task history."
         if record.history_only
         else "Artifact bytes are no longer available."
-    )
-    revision_candidate = store.unresolved_artifact_revision_candidate(
-        record.operation_id,
-        descriptor.artifact_id,
     )
     can_discuss = (
         available
@@ -293,7 +288,6 @@ def start_agent_task(
     identity_access: IdentityDependency,
     attachment_store: AttachmentStoreDependency,
     background_tasks: BackgroundTasksDependency,
-    result_view_keep_locks: ResultViewKeepLocksDependency,
     branch_id: str | None = None,
 ) -> dict[str, object]:
     if kind in {"auto_research", "branch_merge", "episode_report"}:
@@ -307,10 +301,7 @@ def start_agent_task(
         raise HTTPException(
             status_code=422, detail="Only ordinary conversations can target a graph branch here."
         )
-    admission_lock: threading.Lock | None = None
     chat_admission_lock = None
-    result_view_stage_host: str | None = None
-    result_view_stage_root: str | None = None
     try:
         request = _validated_task_request(service, kind, body)
         if task_graph_capable(kind, request):
@@ -318,16 +309,6 @@ def start_agent_task(
                 store, catalog.resolve_project_id(project_id), service.history.graph_target
             )
         if isinstance(request, RunRequest):
-            if request.result_view is not None and request.result_view.action == "revise":
-                admission_lock = result_view_keep_locks(request.result_view.view_id)
-                admission_lock.acquire()
-            request = _admit_result_view_request(
-                store,
-                service,
-                project_id,
-                kind,
-                request,
-            )
             request = _admit_artifact_context_request(
                 store,
                 service,
@@ -335,12 +316,7 @@ def start_agent_task(
                 kind,
                 request,
             )
-            if request.result_view is not None and request.result_view.action == "revise":
-                view = store.result_view(request.result_view.view_id)
-                if view is None:
-                    raise ValueError("The result view is unavailable or expired.")
-                result_view_stage_host = view.stage_host or None
-                result_view_stage_root = view.stage_root
+
         if kind in {"node_chat", "project_chat"}:
             assert isinstance(request, RunRequest)
             assert request.chat_id is not None
@@ -380,8 +356,6 @@ def start_agent_task(
                 request,
                 operation_id=operation_id,
                 authorized_by=authorized_by,
-                stage_host=result_view_stage_host,
-                stage_root=result_view_stage_root,
                 graph_target=service.history.graph_target,
             )
         except BaseException:
@@ -395,8 +369,6 @@ def start_agent_task(
     finally:
         if chat_admission_lock is not None:
             chat_admission_lock.__exit__(None, None, None)
-        if admission_lock is not None:
-            admission_lock.release()
     # A task admitted a moment ago has not run, so it can carry no note yet.
     return _agent_task_response(store, record, background_tasks)
 
@@ -503,50 +475,32 @@ async def content_agent_artifact(
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> Response:
-    service = get_project_service(catalog, project_id)
+    require_registered_project(catalog, project_id)
     descriptor, data = await asyncio.to_thread(
         _load_agent_artifact,
         store,
-        service.history.workspace,
         project_id,
         operation_id,
         artifact_id,
         "open",
     )
-    headers = {
-        "Cache-Control": "no-store",
-        "X-Content-Type-Options": "nosniff",
-    }
-    if descriptor.media_type == "text/html":
-        try:
-            document, csp = html_preview_document(
-                data, frame_addon=selection_frame_addon() if descriptor.can_discuss else None
-            )
-        except Exception as exc:
-            # Rendering is an optional preview boundary. A malformed document
-            # or renderer defect makes only this attachment unavailable.
-            raise HTTPException(status_code=410, detail="Preview unavailable") from exc
-        headers["Content-Security-Policy"] = csp
-        return Response(
-            b"" if request.method == "HEAD" else document,
-            media_type="text/html",
-            headers=headers,
+    try:
+        document, media_type, csp = artifact_content(
+            descriptor.name,
+            descriptor.media_type,
+            data,
+            frame_addon=selection_frame_addon() if descriptor.can_discuss else None,
         )
-    if descriptor.view in {"markdown", "text"}:
-        document, csp = (
-            markdown_document(data)
-            if descriptor.view == "markdown"
-            else text_document(descriptor.name, data)
-        )
-        headers["Content-Security-Policy"] = csp
-        return Response(
-            b"" if request.method == "HEAD" else document, media_type="text/html", headers=headers
-        )
-    headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    except ValueError as exc:
+        raise HTTPException(status_code=410, detail="Preview unavailable") from exc
     return Response(
-        b"" if request.method == "HEAD" else data,
-        media_type=descriptor.media_type,
-        headers=headers,
+        b"" if request.method == "HEAD" else document,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": csp,
+        },
     )
 
 
@@ -603,11 +557,10 @@ async def download_agent_artifact(
     catalog: CatalogDependency,
     store: StoreDependency,
 ) -> Response:
-    service = get_project_service(catalog, project_id)
+    require_registered_project(catalog, project_id)
     descriptor, data = await asyncio.to_thread(
         _load_agent_artifact,
         store,
-        service.history.workspace,
         project_id,
         operation_id,
         artifact_id,
@@ -657,11 +610,10 @@ async def _artifact_viewer_response(
     store: StoreDependency,
     head: bool = False,
 ) -> Response:
-    service = get_project_service(catalog, project_id)
+    require_registered_project(catalog, project_id)
     descriptor, _ = await asyncio.to_thread(
         _load_agent_artifact,
         store,
-        service.history.workspace,
         project_id,
         operation_id,
         artifact_id,
@@ -727,30 +679,21 @@ def keep_agent_artifact(
     store: StoreDependency,
     artifact_mutation_locks: ArtifactMutationLocksDependency,
 ) -> dict[str, object]:
-    service = get_project_service(catalog, project_id)
+    require_registered_project(catalog, project_id)
     with artifact_mutation_locks(_artifact_mutation_key(project_id, operation_id, artifact_id)):
         descriptor, data = _load_agent_artifact(
             store,
-            service.history.workspace,
             project_id,
             operation_id,
             artifact_id,
             "keep",
         )
-        project_name = catalog.card(project_id)["name"]
-        if not isinstance(project_name, str):
-            raise HTTPException(status_code=503, detail="Artifact Keep unavailable")
         try:
-            kept_filename = service.history.workspace.keep_artifact(
-                source_name=descriptor.name,
-                project_name=project_name,
-                data=data,
-            )
+            stored = store.keep_artifact(artifact_id)
             kept = store.mark_agent_artifact_kept(
                 operation_id,
                 artifact_id,
-                kept_filename=kept_filename,
-                kept_at=store.now(),
+                kept_at=stored.kept_at,
             )
         except (FileNotFoundError, OSError, StateUnavailable, ValueError) as exc:
             raise HTTPException(status_code=503, detail="Artifact Keep unavailable") from exc
@@ -819,7 +762,7 @@ def accept_artifact_revision_candidate(
     identity_access: IdentityDependency,
     artifact_mutation_locks: ArtifactMutationLocksDependency,
 ) -> dict[str, object]:
-    service = get_project_service(catalog, project_id)
+    require_registered_project(catalog, project_id)
     candidate = _artifact_revision_candidate(store, project_id, candidate_id)
     lock_key = _artifact_mutation_key(
         project_id,
@@ -854,7 +797,6 @@ def accept_artifact_revision_candidate(
         try:
             source, current_data = _read_agent_artifact_bytes(
                 store,
-                service.history.workspace,
                 project_id,
                 candidate.source_operation_id,
                 candidate.source_artifact_id,
@@ -888,8 +830,7 @@ def accept_artifact_revision_candidate(
         try:
             replaced = _replace_agent_artifact_bytes(
                 store,
-                service.history.workspace,
-                candidate.source_operation_id,
+                candidate.revision_operation_id,
                 source,
                 candidate_data,
                 expected_sha256=current_sha256,
@@ -986,7 +927,6 @@ def resume_agent_task(
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
     experiment_admission: ExperimentAdmissionDependency,
-    result_view_keep_locks: ResultViewKeepLocksDependency,
 ) -> dict[str, object]:
     previous = store.agent_task(operation_id)
     if previous is None or previous.project_id != project_id or not previous.visible:
@@ -999,25 +939,7 @@ def resume_agent_task(
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
     service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
-    result_view_resume_lock: threading.Lock | None = None
     try:
-        if previous.kind not in {"paper_coach", "auto_research"}:
-            stored_request = load_stored_request(
-                RunRequest, previous.request, operation_id=previous.operation_id
-            )
-            if (
-                stored_request.result_view is not None
-                and stored_request.result_view.action == "revise"
-            ):
-                result_view_resume_lock = result_view_keep_locks(stored_request.result_view.view_id)
-                result_view_resume_lock.acquire()
-                _admit_result_view_request(
-                    store,
-                    service,
-                    project_id,
-                    previous.kind,
-                    stored_request,
-                )
         experiment_admission.require_current(service, previous.request)
         skills = _validate_stored_task_request(service, previous.kind, previous.request)
         with _chat_recovery_admission(service, store, previous):
@@ -1030,9 +952,6 @@ def resume_agent_task(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    finally:
-        if result_view_resume_lock is not None:
-            result_view_resume_lock.release()
 
 
 @router.post(
@@ -1095,7 +1014,6 @@ def retry_agent_task(
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
     experiment_admission: ExperimentAdmissionDependency,
-    result_view_keep_locks: ResultViewKeepLocksDependency,
 ) -> dict[str, object]:
     previous = store.agent_task(operation_id)
     if previous is None or previous.project_id != project_id or not previous.visible:
@@ -1108,7 +1026,6 @@ def retry_agent_task(
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
     service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
-    result_view_retry_lock: threading.Lock | None = None
     try:
         overrides = body.model_dump(exclude_none=True) if body is not None else {}
         if previous.kind == "auto_research":
@@ -1123,20 +1040,6 @@ def retry_agent_task(
                 request_type,
                 {**previous.request, **overrides, "session_id": None},
                 operation_id=previous.operation_id,
-            )
-        if (
-            isinstance(candidate, RunRequest)
-            and candidate.result_view is not None
-            and candidate.result_view.action == "revise"
-        ):
-            result_view_retry_lock = result_view_keep_locks(candidate.result_view.view_id)
-            result_view_retry_lock.acquire()
-            _admit_result_view_request(
-                store,
-                service,
-                project_id,
-                previous.kind,
-                candidate,
             )
         if isinstance(candidate, RunRequest):
             candidate = _admit_artifact_context_request(
@@ -1180,9 +1083,6 @@ def retry_agent_task(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    finally:
-        if result_view_retry_lock is not None:
-            result_view_retry_lock.release()
 
 
 def _chat_recovery_admission(
@@ -1219,33 +1119,13 @@ def _artifact_revision_candidate_bytes(
     store: AppStore,
     candidate: ArtifactRevisionCandidateRecord,
 ) -> bytes:
-    revision = store.agent_task(candidate.revision_operation_id)
-    if (
-        revision is None
-        or revision.project_id != candidate.project_id
-        or (revision.stage_host or "") != candidate.stage_host
-        or revision.stage_root != candidate.stage_root
-    ):
-        raise FileNotFoundError(candidate.source_name)
     if not supports_comments(candidate.media_type):
         raise ValueError("artifact revision candidate descriptor changed")
-    if candidate.stage_host:
-        stage = RemoteRunStage(candidate.stage_host).attach_artifact_source(candidate.stage_root)
-        data = stage.read_artifact_bytes(
-            candidate.artifact_scope_id,
-            candidate.source_name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    else:
-        data = read_local_regular_file(
-            _local_chat_artifact_directory(
-                store,
-                revision,
-                candidate.artifact_scope_id,
-            ),
-            candidate.source_name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
+    stored_id = scoped_artifact_id(candidate.artifact_scope_id, candidate.source_name)
+    stored = store.artifact(stored_id)
+    if stored is None or stored.project_id != candidate.project_id:
+        raise FileNotFoundError(candidate.source_name)
+    data = store.read_artifact_bytes(stored_id)
     if (
         len(data) != candidate.candidate_size_bytes
         or classify_artifact_bytes(candidate.source_name, data) != candidate.media_type
@@ -1257,59 +1137,40 @@ def _artifact_revision_candidate_bytes(
 
 def _replace_agent_artifact_bytes(
     store: AppStore,
-    workspace: StateWorkspace,
     operation_id: str,
     descriptor: AgentArtifactResponse,
     data: bytes,
     *,
     expected_sha256: str,
 ) -> bool:
-    record = store.agent_task(operation_id)
-    if record is None:
+    stored = store.artifact(descriptor.artifact_id)
+    if stored is None:
         raise FileNotFoundError(descriptor.name)
-    scope_id = _logical_chat_turn_operation_id(store, operation_id)
-    if descriptor.kept_filename is not None:
-        return workspace.replace_kept_artifact(
-            descriptor.kept_filename,
-            data,
-            expected_sha256=expected_sha256,
+    if hashlib.sha256(store.read_artifact_bytes(stored.artifact_id)).hexdigest() != expected_sha256:
+        return False
+    try:
+        store.publish_artifact_version(
+            stored.artifact_id,
+            base_version=stored.current_version,
+            operation_id=operation_id,
+            data=data,
         )
-    elif record.stage_host:
-        stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root or "")
-        return stage.replace_artifact_bytes(
-            scope_id,
-            descriptor.name,
-            data,
-            expected_sha256=expected_sha256,
-        )
-    elif record.stage_root:
-        recovery_key = hashlib.sha256(f"{record.stage_root}\0{scope_id}".encode()).hexdigest()[:32]
-        return replace_local_regular_file(
-            _local_chat_artifact_directory(store, record, scope_id),
-            descriptor.name,
-            data,
-            expected_sha256=expected_sha256,
-            recovery_directory=(
-                Path(record.stage_root) / "inputs" / ".artifact-replacements" / recovery_key
-            ),
-        )
-    else:
-        raise FileNotFoundError(descriptor.name)
+    except ArtifactVersionConflict:
+        return False
+    return True
 
 
 def _load_agent_artifact(
     store: AppStore,
-    workspace: StateWorkspace,
     project_id: str,
     operation_id: str,
     artifact_id: str,
     action: Literal["open", "download", "keep"],
 ) -> tuple[AgentArtifactResponse, bytes]:
-    """Resolve an attachment only through its persisted task descriptor and stage."""
+    """Resolve an attachment through its persisted task and RCP-owned bytes."""
     try:
         projected, data = _read_agent_artifact_bytes(
             store,
-            workspace,
             project_id,
             operation_id,
             artifact_id,
@@ -1320,7 +1181,7 @@ def _load_agent_artifact(
             and classify_artifact_bytes(projected.name, data) != projected.media_type
         ):
             raise ValueError("artifact media type changed")
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, KeyError) as exc:
         raise HTTPException(status_code=410, detail="Preview unavailable") from exc
     except StateUnavailable as exc:
         raise HTTPException(status_code=503, detail="Preview unavailable") from exc
@@ -1331,7 +1192,6 @@ def _load_agent_artifact(
 
 def _read_agent_artifact_bytes(
     store: AppStore,
-    workspace: StateWorkspace,
     project_id: str,
     operation_id: str,
     artifact_id: str,
@@ -1362,26 +1222,10 @@ def _read_agent_artifact_bytes(
     scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
     if scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
         raise ValueError("artifact descriptor does not match its task scope")
-    if descriptor.kept_filename is not None:
-        data = workspace.read_kept_artifact(
-            descriptor.kept_filename,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    elif not record.stage_root:
+    stored = store.artifact(artifact_id)
+    if stored is None or stored.project_id != project_id:
         raise FileNotFoundError(descriptor.name)
-    elif record.stage_host:
-        stage = RemoteRunStage(record.stage_host).attach_artifact_source(record.stage_root)
-        data = stage.read_artifact_bytes(
-            scope_id,
-            descriptor.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    else:
-        data = read_local_regular_file(
-            _local_chat_artifact_directory(store, record, scope_id),
-            descriptor.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
+    data = store.read_artifact_bytes(artifact_id)
     return projected, data
 
 
@@ -1401,55 +1245,6 @@ def _agent_artifact_descriptor(
     raise HTTPException(status_code=404, detail="Artifact not found")
 
 
-def _admit_result_view_request(
-    store: AppStore,
-    service: ProjectService,
-    project_id: str,
-    kind: AgentTaskKind,
-    request: RunRequest,
-) -> RunRequest:
-    intent = request.result_view
-    if intent is None:
-        return request
-    if (
-        kind != "node_chat"
-        or request.chat_scope != "node"
-        or request.mode != "work"
-        or request.trigger != "human"
-        or request.patch_kind != "work"
-        or request.control_node_id is not None
-        or request.watcher_ids
-    ):
-        raise ValueError("Result views require an ordinary node Work turn.")
-    if request.node_id is None or not isinstance(
-        service.history.state().nodes.get(request.node_id),
-        Experiment,
-    ):
-        raise ValueError("Result views require an Experiment node.")
-    if intent.action == "create":
-        return request
-
-    record = store.result_view(intent.view_id)
-    if record is None or record.project_id != project_id:
-        raise ValueError("The result view is unavailable or expired.")
-    if record.kept_filename is not None:
-        raise ValueError("A kept result view cannot be revised.")
-    if record.experiment_id != request.node_id or record.chat_id != request.chat_id:
-        raise ValueError("The result view does not belong to this Experiment conversation.")
-
-    pinned = RunRequest.model_validate(
-        {
-            **request.model_dump(mode="python"),
-            "provider": record.provider,
-            "model": record.model,
-            "reasoning": record.reasoning,
-            "run_on": record.run_on,
-            "session_id": record.native_session_id,
-        }
-    )
-    return _resolved_graph_request(service, kind, pinned)
-
-
 def _admit_artifact_context_request(
     store: AppStore,
     service: ProjectService,
@@ -1460,7 +1255,7 @@ def _admit_artifact_context_request(
     context = request.artifact_context
     if context is None:
         return request
-    if request.result_view is not None or kind not in {"node_chat", "project_chat"}:
+    if kind not in {"node_chat", "project_chat"}:
         raise ValueError("Artifact context belongs to one ordinary chat turn.")
     origin = store.agent_task(context.operation_id)
     if context.source == "episode_report":
@@ -1583,11 +1378,6 @@ def _validated_task_request(
             "attachments": [],
         }
     )
-    if request.result_view is not None:
-        raise ValueError(
-            "Result views are ordinary task artifacts now. Ask the chat to create or revise "
-            "the artifact through the unified viewer."
-        )
     if kind in {"seed", "refresh"}:
         if request.worktree or request.worktree_integration:
             raise ValueError("Only ordinary conversations can use worktrees.")

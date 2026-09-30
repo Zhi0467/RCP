@@ -922,7 +922,9 @@ archive. It contains the durable project identity, accepted main and graph-branc
 canonical history and exact heads; typed canonical RCP chat transcripts; the
 current Paper draft and canonical introduction; opaque `.research/facts/`
 files; all finished human-visible operational history; and the exact bytes of
-referenced kept artifacts and legacy kept result views. Immutable branch
+all database-referenced artifact versions, using one typed inventory. Legacy
+archives with inline report HTML and repository-kept files remain importable.
+Immutable branch
 metadata, Patches, and merge receipts travel; main and branch materialized
 outputs do not. Finished database history includes terminal task attempts and
 their events/receipts/usage, the current Paper draft, and stopped
@@ -971,11 +973,10 @@ origin proof and chat responses therefore expose no source continuation. A later
 target task is a new ordinary task under target configuration; imported failure
 is not relabeled as success or as an abandoned target recovery.
 
-Safe artifact metadata remains part of that terminal history even when its
-disposable stage bytes do not. A referenced kept artifact remains openable
-and downloadable through its repository owner, but cannot Keep again or revise
-through the detached native session. An unkept artifact whose stage is excluded
-from transfer or restore is projected explicitly unavailable. Every task-artifact
+Artifact metadata remains part of terminal history. Captured artifacts remain
+viewable and downloadable after transfer or restore from their version inventory,
+but cannot revise through detached native sessions. A legacy artifact not yet
+imported from its excluded stage is projected explicitly unavailable. Every task-artifact
 response publishes `available`, `unavailable_reason`, `view`, `can_open`,
 `can_download`, `can_keep`, `can_discuss`, and `can_revise`; the unavailable case
 makes every `can_*` false and has no stage URL. `view` names the backend's
@@ -1240,8 +1241,12 @@ canonical heads, and the append-only main/branch history needed to replay or
 validate those heads. Immutable branch metadata, Patches, and merge receipts are
 included; derived main and branch materializations are not. It separately
 captures canonical RCP chat JSONL, the optional canonical Paper introduction,
-safe regular `.research/facts/` files, and only the kept artifacts and legacy
-kept result views referenced by the SQLite snapshot. It also contains
+safe regular `.research/facts/` files, and the artifact version files referenced
+by the SQLite snapshot. One typed artifact inventory binds every relative file
+identifier, digest, and size. SQLite snapshot and file capture hold the artifact
+pruning lock; only inventoried files are copied. Restore relocates these files
+under the replacement data directory. Old repository-kept files remain
+capturable while their background import is pending. It also contains
 project-owned provider histories imported by personal-to-team transfer because
 those files may be the team's only durable Seed/Refresh source. It excludes Git and provider
 authentication/configuration stores, live provider homes and logs, SSH keys,
@@ -1249,20 +1254,12 @@ source repositories, other materialized outputs, temporary input attachments,
 run/transfer staging, scratch, and caches. Backup does not pause dispatch or
 Apply and never marks an unreachable project protected.
 
-Pending artifact revision candidates are task-stage state and are likewise not
-copied into an offline backup. Restore atomically marks them Abandoned before
-task-session detachment; it never publishes candidate bytes, and the original
-temporary or kept artifact remains unchanged. Server update checkpoints preserve
-whole stopped roots, including unresolved local candidates, before old preparation
-settles any accepting local temporary or kept-artifact replacement journal.
-Semantic preparation separately validates the recovery-stage inventory and
-refuses if replacement state remains unresolved.
-When the SQLite snapshot contains an unresolved kept-artifact revision, its
-kept-file inventory is bound to the candidate's base digest. A later mismatch
-makes that project uncaptured instead of archiving unaccepted candidate bytes.
-A project inventory accepts every canonical task identity RCP mints: UUID4 for
-ordinary tasks and deterministic UUID5 for Auto-research child Experiments, so a
-project that has run one such episode stays capturable and updatable.
+New artifact revision candidates are included in the typed artifact inventory.
+Legacy stage-only candidates await background import and are excluded from
+offline backup. Restore marks unresolved candidates Abandoned before native
+session detachment; restoring bytes never accepts a candidate. Server update
+checkpoints preserve whole stopped roots, including unresolved local legacy
+candidates and their replacement journals.
 
 The app-data inventory is closed rather than an implicit recursive copy.
 `rcp.sqlite3` enters only through SQLite's online snapshot, and transferred

@@ -127,26 +127,7 @@ class AgentArtifactDescriptor(BaseModel):
     kept_at: str | None = None
 
     def is_kept(self) -> bool:
-        return self.kept_filename is not None
-
-
-class ResultViewDescriptor(BaseModel):
-    """Public metadata for one stable, conversation-scoped result view."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    view_id: str = Field(pattern=r"^[0-9a-f]{24}$")
-    chat_id: str = Field(min_length=1)
-    experiment_id: str = Field(min_length=1)
-    name: str = Field(min_length=1, max_length=255)
-    media_type: Literal["text/html"]
-    state: Literal["temporary", "kept"]
-    created_at: str = Field(min_length=1)
-    updated_at: str = Field(min_length=1)
-    expires_at: str = Field(min_length=1)
-    kept_filename: str | None = None
-    kept_at: str | None = None
-    can_revise: bool
+        return self.kept_at is not None or self.kept_filename is not None
 
 
 class _HTMLDocumentTitleParser(HTMLParser):
@@ -184,12 +165,6 @@ def html_document_title(document: str) -> str | None:
     if len(title) > ARTIFACT_DISPLAY_TITLE_MAX_CHARS:
         title = title[: ARTIFACT_DISPLAY_TITLE_MAX_CHARS - 1].rstrip() + "…"
     return title or None
-
-
-def validate_result_view_id(value: str) -> str:
-    if re.fullmatch(r"[0-9a-f]{24}", value) is None:
-        raise ValueError("result view id must be exactly 24 lowercase hexadecimal characters")
-    return value
 
 
 def artifact_id(scope_id: str, name: str) -> str:

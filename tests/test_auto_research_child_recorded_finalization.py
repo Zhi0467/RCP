@@ -79,6 +79,10 @@ async def test_recorded_child_finalization_can_resume_without_applying_twice(tmp
     service, request, execution = await _retained_child_turn(tmp_path)
     launcher = ScriptedLauncher([{}], message="must not launch")
     recorded = _recorded_child_pass()
+    retained = json.loads(execution.store.agent_task_contract(execution.operation_id, _ROLE))
+    output = Path(retained["artifact_directory"]) / "child.txt"
+    output.write_text("child artifact", encoding="utf-8")
+    artifact_ids = []
 
     for _attempt in range(2):
         frames = [
@@ -88,6 +92,14 @@ async def test_recorded_child_finalization_can_resume_without_applying_twice(tmp
             )
         ]
         assert _decided_output(frames)[-1] == {"event": "done"}
+        events = [json.loads(frame.removeprefix("data: ")) for frame in frames]
+        artifact_ids.append(
+            next(item["artifact"]["artifact_id"] for item in events if item["event"] == "artifact")
+        )
+
+    assert artifact_ids[0] == artifact_ids[1]
+    output.unlink()
+    assert execution.store.read_artifact_bytes(artifact_ids[0]) == b"child artifact"
 
     transcript = [
         json.loads(line)

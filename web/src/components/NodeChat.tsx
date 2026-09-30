@@ -1986,7 +1986,7 @@ export function NodeChat({
                     <span>
                       {artifact.name}
                       {artifact.size_bytes != null && ` · ${formatBytes(artifact.size_bytes)}`}
-                      {artifact.kept_filename && <em>Kept</em>}
+                      {(artifact.kept_at || artifact.kept_filename) && <em>Kept</em>}
                     </span>
                     {unavailableReason && <strong>{unavailableReason}</strong>}
                     <div className="chat-artifact-actions">

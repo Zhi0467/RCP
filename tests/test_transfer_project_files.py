@@ -17,7 +17,7 @@ from rcp.service import (
     canonical_chat_backup_sources,
     iter_canonical_chat_transfer,
 )
-from rcp.storage import AgentTaskRecord, ResultViewRecord
+from rcp.storage import AgentTaskRecord, Artifact
 from rcp.transfer import TransferArchiveActor, TransferArchiveAttribution
 from rcp.transfer import project_files as project_files_module
 from rcp.transfer.project_files import (
@@ -77,36 +77,21 @@ def _finished_project(manifest, tmp_path: Path, source_name: str = "result.html"
         )
     )
     view_bytes = b"<!doctype html><p>legacy kept view</p>"
-    view_filename = service.history.workspace.keep_result_view(
-        source_name="legacy.html",
-        project_name="Transfer fixture",
-        data=view_bytes,
-    )
-    store.create_result_view(
-        ResultViewRecord(
-            view_id="a" * 24,
+    view_filename = "a" * 24 + "/" + hashlib.sha256(view_bytes).hexdigest()
+    store.create_artifact(
+        Artifact(
+            artifact_id="a" * 24,
             project_id=project_id,
-            experiment_id="experiment-1",
-            chat_id="chat-1",
+            supplier="turn",
+            supplier_id=operation_id,
             origin_operation_id=operation_id,
-            latest_operation_id=operation_id,
-            provider="codex",
-            model="gpt-5.6-sol",
-            reasoning="high",
-            run_on="laptop",
-            native_session_id="native-view-session",
-            stage_host="laptop",
-            stage_root="/source/stage",
+            chat_id="chat-1",
             source_name="legacy.html",
-            content_sha256=hashlib.sha256(view_bytes).hexdigest(),
-            size_bytes=len(view_bytes),
+            media_type="text/html",
             created_at=now,
-            updated_at=now,
-            expires_at=now,
-            kept_filename=view_filename,
             kept_at=now,
         ),
-        html=view_bytes,
+        data=view_bytes,
     )
     attribution = TransferArchiveAttribution(
         archive_actor_id=str(uuid.uuid4()),
@@ -207,17 +192,19 @@ def test_project_file_capture_transforms_human_history_and_binds_kept_bytes(
 
     capture = capture_project_transfer_files(service, records, capture_root)
 
-    assert [entry.archive_path for entry in capture.entries] == [
-        f"artifacts/{artifact_name}",
-        f"chats/project-{chat_id}.jsonl",
-        "facts/methods/protocol.bin",
-        "paper/introduction.md",
-        f"result-views/{view_name}",
-    ]
+    assert [entry.archive_path for entry in capture.entries] == sorted(
+        [
+            f"artifacts/{artifact_name}",
+            f"chats/project-{chat_id}.jsonl",
+            "facts/methods/protocol.bin",
+            "paper/introduction.md",
+            f"artifacts/{view_name}",
+        ]
+    )
     assert (capture_root / "paper/introduction.md").read_bytes() == b"# Canonical introduction\n"
     assert (capture_root / "facts/methods/protocol.bin").read_bytes() == b"opaque fact bytes"
     assert (capture_root / "artifacts" / artifact_name).read_bytes() == artifact
-    assert (capture_root / "result-views" / view_name).read_bytes() == view
+    assert (capture_root / "artifacts" / view_name).read_bytes() == view
     transferred_chat = [
         json.loads(line)
         for line in (capture_root / f"chats/project-{chat_id}.jsonl")
@@ -233,24 +220,14 @@ def test_project_file_capture_transforms_human_history_and_binds_kept_bytes(
     bound = capture.records.tasks[0].artifacts[0]
     assert bound.content_sha256 == hashlib.sha256(artifact).hexdigest()
     assert records.tasks[0].artifacts[0].content_sha256 is None
-    assert len(capture.kept_result_views) == 1
-    transferred_view = capture.kept_result_views[0]
-    assert transferred_view.view_id == "a" * 24
-    assert transferred_view.experiment_id == "experiment-1"
+    assert not capture.kept_result_views
+    transferred_view = capture.artifacts[0]
+    assert transferred_view.artifact_id == "a" * 24
     assert transferred_view.chat_id == "chat-1"
-    assert transferred_view.kept_filename == view_name
-    assert transferred_view.content_sha256 == hashlib.sha256(view).hexdigest()
-    serialized_view = transferred_view.model_dump(mode="json")
-    assert {
-        "run_on",
-        "native_session_id",
-        "stage_host",
-        "stage_root",
-    }.isdisjoint(serialized_view)
-
+    assert capture.artifact_inventory[0].sha256 == hashlib.sha256(view).hexdigest()
     invalid = capture.model_dump(mode="python")
-    invalid["kept_result_views"][0]["content_sha256"] = "0" * 64
-    with pytest.raises(ValueError, match="does not match"):
+    invalid["artifact_inventory"][0]["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="inventory differs"):
         TransferProjectFileCapture.model_validate(invalid)
 
 
@@ -313,7 +290,7 @@ def test_project_file_capture_uses_the_remote_export_and_named_reader_seams(
     assert capture.entries
     assert len(remote_calls) == 2
     assert artifact_reads == 2
-    assert view_reads == 2
+    assert view_reads == 0
 
 
 def test_project_file_capture_rejects_a_missing_remote_kept_file(
@@ -473,3 +450,24 @@ def test_project_file_capture_fails_closed_without_a_partial_root(
         capture_project_transfer_files(service, records, capture_root)
 
     assert not capture_root.exists()
+
+
+def test_transfer_inventory_retains_original_and_current_artifact_versions(
+    manifest, tmp_path: Path
+) -> None:
+    service, records, *_ = _finished_project(manifest, tmp_path)
+    store = service.paper.store
+    artifact = store.artifact("a" * 24)
+    store.publish_artifact_version(
+        artifact.artifact_id,
+        base_version=artifact.current_version,
+        operation_id=str(uuid.uuid4()),
+        data=b"<p>edited</p>",
+    )
+    capture_root = tmp_path / "capture"
+    capture = capture_project_transfer_files(service, records, capture_root)
+    assert len(capture.artifact_versions) == len(capture.artifact_inventory) == 2
+    for entry in capture.artifact_inventory:
+        assert (
+            capture_root / "artifacts" / entry.artifact_id / entry.file_id
+        ).read_bytes() == store.artifact_file_path(entry).read_bytes()

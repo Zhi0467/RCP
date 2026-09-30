@@ -386,3 +386,80 @@ def test_tampered_archive_structure_never_changes_live_state(restore_request, tm
         prepare_restore(RestorePrepareRequest(**value))
     assert database.read_bytes() == original
     assert Path(state["research"]).is_dir()
+
+
+@pytest.mark.parametrize("omit_inventory", [False, True])
+def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omit_inventory):
+    import json
+    import tarfile
+
+    from rcp.server_ops.backup_models import BackupArchiveManifest
+    from rcp.storage import AppStore, Artifact
+
+    value, _, previous = restore_request
+    proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
+    root = Path(proof.capture_root)
+    database = root / "rcp.sqlite3"
+    database.chmod(0o600)
+    store = AppStore(database)
+    artifact = store.create_artifact(
+        Artifact(
+            artifact_id="restore-versions",
+            project_id=store.projects()[0].project_id,
+            supplier="turn",
+            supplier_id=str(uuid.uuid4()),
+            source_name="page.html",
+            media_type="text/html",
+            created_at=store.now(),
+        ),
+        data=b"original",
+    )
+    edited = store.publish_artifact_version(
+        artifact.artifact_id,
+        base_version=artifact.current_version,
+        operation_id=str(uuid.uuid4()),
+        data=b"edited",
+    )
+    with tarfile.open(value["plaintext_path"]) as archive:
+        manifest = BackupArchiveManifest.model_validate_json(
+            archive.extractfile("manifest.json").read()
+        )
+    inventory = tuple(store.artifact_inventory())
+    snapshot = manifest.sqlite_snapshot.model_copy(
+        update={
+            "sha256": hashlib.sha256(database.read_bytes()).hexdigest(),
+            "size_bytes": database.stat().st_size,
+        }
+    )
+    manifest = manifest.model_copy(
+        update={
+            "sqlite_snapshot": snapshot,
+            "artifact_inventory": inventory,
+            "total_bytes": manifest.total_bytes
+            - manifest.sqlite_snapshot.size_bytes
+            + snapshot.size_bytes
+            + sum(i.size_bytes for i in inventory),
+        }
+    )
+    if omit_inventory:
+        old_payload = manifest.model_dump(mode="json")
+        old_payload.pop("artifact_inventory")
+        old_payload["total_bytes"] -= sum(item.size_bytes for item in inventory)
+        manifest = BackupArchiveManifest.model_validate_json(json.dumps(old_payload))
+    with Path(value["plaintext_path"]).open("wb") as stream:
+        _write_deterministic_archive(stream, manifest, root)
+    value["plaintext_sha256"] = hashlib.sha256(
+        Path(value["plaintext_path"]).read_bytes()
+    ).hexdigest()
+    if omit_inventory:
+        with pytest.raises(RestoreRefused, match="requires its protected inventory"):
+            prepare_restore(RestorePrepareRequest(**value))
+        return
+    review = prepare_restore(RestorePrepareRequest(**value))
+    result = prepare_restore(_confirm(value, review, tmp_path / "artifact-restore-ready"))
+    assert result["status"] == "prepared"
+    candidate = AppStore(Path(result["roots"][0]["payload"]) / "rcp.sqlite3")
+    assert (
+        candidate.read_artifact_bytes(artifact.artifact_id, artifact.current_version) == b"original"
+    )
+    assert candidate.read_artifact_bytes(artifact.artifact_id, edited.version_id) == b"edited"

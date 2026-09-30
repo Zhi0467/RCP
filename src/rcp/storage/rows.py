@@ -23,7 +23,6 @@ from rcp.storage.models import (
     ExperimentEpisodeRecord,
     GraphWatcherRecord,
     ProjectRecord,
-    ResultViewRecord,
     SpaceUserRecord,
     StoredWatcherRecord,
     WatcherRecord,
@@ -97,12 +96,6 @@ class RowMappingMixin:
     @staticmethod
     def _chat_session_context_record(row: sqlite3.Row) -> ChatSessionContextRecord:
         return ChatSessionContextRecord.model_validate(dict(row))
-
-    @staticmethod
-    def _result_view_record(row: sqlite3.Row) -> ResultViewRecord:
-        data = dict(row)
-        data.pop("html", None)
-        return ResultViewRecord.model_validate(data)
 
     @staticmethod
     def _project_record(row: sqlite3.Row) -> ProjectRecord:

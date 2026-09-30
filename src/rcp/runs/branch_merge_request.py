@@ -32,7 +32,6 @@ class BranchMergeRunRequest(RunRequest):
             or self.node_id is not None
             or self.message is not None
             or self.session_id is not None
-            or self.result_view is not None
             or self.control_node_id is not None
             or self.control_revision is not None
             or self.control_episode_id is not None

@@ -29,8 +29,8 @@ class RestoreDetachmentStoreMixin:
             self.abandon_artifact_revisions_for_restore(
                 connection,
                 diagnostic=(
-                    "Pending artifact revision candidate bytes are not part of an offline "
-                    "backup; the unchanged source was preserved."
+                    "The unresolved artifact revision was abandoned during restore; "
+                    "the unchanged source was preserved."
                 ),
                 now=now,
             )

@@ -664,8 +664,9 @@ dispatch-reset fence newer than the old worker's attempt receipts. Only that
 durable fence makes the requeued operation launchable; public receipt writers
 cannot forge it, and the previous attempt remains inspectable history.
 
-A valid `episode-report.html` is captured as bounded immutable HTML and served
-in the opaque artifact sandbox. The report has no Patch, watcher, command,
+A valid `episode-report.html` is captured as an Artifact with permanent original
+bytes in RCP storage and served in the opaque artifact sandbox. Its report
+lifecycle record binds that first version rather than retaining inline HTML. The report has no Patch, watcher, command,
 Proposal, or graph channel and never determines the episode verdict. Final
 report failure is a durable visible nonblocking error with no manual report
 Retry; the episode still terminalizes. It is shown beside the ending it belongs

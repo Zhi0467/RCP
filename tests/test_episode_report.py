@@ -379,7 +379,9 @@ async def test_report_runner_stages_only_minimal_resume_inputs(manifest, tmp_pat
     assert hashlib.sha256(receipt.encode()).hexdigest() == wrapup.receipt_sha256
     report = store.episode_report("episode")
     assert report is not None
-    assert report.html.startswith("<html>")
+    assert store.read_artifact_bytes(report.artifact_id, report.artifact_version_id).startswith(
+        b"<html>"
+    )
     assert [attempt.status for attempt in store.episode_report_attempts("episode")] == ["succeeded"]
 
 

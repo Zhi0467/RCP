@@ -4,6 +4,7 @@ import json
 import sqlite3
 
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.artifacts import artifact_id as scoped_artifact_id
 from rcp.core.models import AuthorizedHuman
 from rcp.storage.models import (
     ArtifactRevisionCandidateRecord,
@@ -13,6 +14,24 @@ from rcp.storage.models import (
 
 class ArtifactRevisionStoreMixin:
     """Durable human disposition for one candidate replacement at a time."""
+
+    def protected_revision_artifact_ids(self) -> frozenset[str]:
+        with self.connection() as connection:
+            candidates = connection.execute(
+                "SELECT source_artifact_id, artifact_scope_id, source_name "
+                "FROM artifact_revision_candidates "
+                "WHERE status IN ('pending', 'accepting', 'conflicted')"
+            ).fetchall()
+            active = connection.execute(
+                "SELECT json_extract(request_json, '$.artifact_context.artifact_id') "
+                "FROM graph_runs WHERE status IN "
+                "('queued', 'running', 'pausing', 'paused', 'interrupted') "
+                "AND json_extract(request_json, '$.mode') = 'work'"
+            ).fetchall()
+        return frozenset(
+            [value for row in candidates for value in (row[0], scoped_artifact_id(row[1], row[2]))]
+            + [row[0] for row in active if isinstance(row[0], str)]
+        )
 
     def create_artifact_revision_candidate(
         self,

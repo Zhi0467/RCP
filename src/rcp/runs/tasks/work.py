@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from rcp.agents import (
     AgentEvent,
@@ -131,15 +131,6 @@ from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import (
     _process_experiment_watcher_maintenance,
 )
-from rcp.runs.tasks.result_views import (
-    ResultViewSnapshot,
-    _finalize_result_view_turn,
-    _preflight_result_view_revision,
-    _prepare_result_view_turn,
-    _PreparedResultView,
-    _record_result_view_rejection,
-    _roll_result_view_retention,
-)
 from rcp.runs.tasks.work_turn_runtime import (
     WORK_CORRECTION_SESSION_ROLE,
     WorkFinalizationContext,
@@ -174,7 +165,7 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
-from rcp.storage import ExperimentWatcherResourceRecord, ResultViewRecord, WatcherContinuation
+from rcp.storage import ExperimentWatcherResourceRecord, WatcherContinuation
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -190,19 +181,6 @@ WORK_FINALIZATION_CONTEXT_ROLE = "work_finalization_context"
 _WORK_PRIMARY_ANSWER_ROLE = "work_primary_answer"
 
 
-class _StoredResultViewFinalization(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    action: Literal["create", "revise"]
-    view_id: str
-    prompt_path: str
-    origin_operation_id: str | None = None
-    record: ResultViewRecord | None = None
-    before_name: str | None = None
-    before_size: int | None = Field(default=None, ge=0)
-    before_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
-
-
 class _StoredExperimentFinalizationResource(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -216,6 +194,13 @@ class _StoredWorkFinalizationContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def discard_retired_empty_view(cls, value: object) -> object:
+        if isinstance(value, dict) and value.get("result_view", True) is None:
+            return {key: item for key, item in value.items() if key != "result_view"}
+        return value
+
     version: Literal[1] = 1
     request: RunRequest
     stage_host: str
@@ -225,7 +210,6 @@ class _StoredWorkFinalizationContext(BaseModel):
     write_scope: ProjectWriteScope
     artifact_scope_id: str
     artifact_directory: str
-    result_view: _StoredResultViewFinalization | None = None
     experiment_resources: list[_StoredExperimentFinalizationResource]
     skill_selection: SkillSelection
     compute_commands: bool
@@ -261,7 +245,6 @@ def _prepare_work_chat_prompt(
     stable_values: dict[str, object],
     skill_pointers: list[dict[str, object]],
     attachment_pointers: list[dict[str, object]],
-    result_view: _PreparedResultView | None,
     launch_instructions: str,
     ontology_extensions: bool,
 ) -> tuple[str, str]:
@@ -293,8 +276,6 @@ def _prepare_work_chat_prompt(
         ),
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
-        result_view_action=result_view.action if result_view is not None else None,
-        result_view_path=result_view.prompt_path if result_view is not None else None,
         launch_instructions=launch_instructions if first_work_turn else None,
     )
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
@@ -371,67 +352,12 @@ def _resolve_work_execution(
         run_on=request.run_on,
     )
     request = _pinned_to_profile(request, profile)
-    revision_preflight = _preflight_result_view_revision(request, execution)
     execution_machine = service.manifest.machine_map[profile.run_on]
     return _ResolvedWorkExecution(
         request=request,
         execution_machine_alias=execution_machine.alias,
         execution_host=execution_machine.host,
         provider_binary=execution_machine.provider_paths.get(profile.provider),
-        revision_preflight=revision_preflight,
-    )
-
-
-def _stored_result_view(
-    prepared: _PreparedResultView | None,
-) -> _StoredResultViewFinalization | None:
-    if prepared is None:
-        return None
-    before = prepared.before
-    return _StoredResultViewFinalization(
-        action=prepared.action,
-        view_id=prepared.view_id,
-        prompt_path=prepared.prompt_path,
-        origin_operation_id=prepared.origin_operation_id,
-        record=prepared.record,
-        before_name=before.name if before is not None else None,
-        before_size=before.size if before is not None else None,
-        before_sha256=before.sha256 if before is not None else None,
-    )
-
-
-def _prepared_result_view(
-    stored: _StoredResultViewFinalization | None,
-) -> _PreparedResultView | None:
-    if stored is None:
-        return None
-    before_values = (stored.before_name, stored.before_size, stored.before_sha256)
-    if any(value is not None for value in before_values) and not all(
-        value is not None for value in before_values
-    ):
-        raise ValueError("The retained result-view finalization snapshot is incomplete.")
-    before = (
-        ResultViewSnapshot(
-            name=stored.before_name,
-            size=stored.before_size,
-            sha256=stored.before_sha256,
-            # Finalization compares identity, size and digest. The launch-time
-            # bytes remain in the result-view store and need not be duplicated
-            # in this immutable task contract.
-            data=b"",
-        )
-        if stored.before_name is not None
-        and stored.before_size is not None
-        and stored.before_sha256 is not None
-        else None
-    )
-    return _PreparedResultView(
-        action=stored.action,
-        view_id=stored.view_id,
-        prompt_path=stored.prompt_path,
-        origin_operation_id=stored.origin_operation_id,
-        record=stored.record,
-        before=before,
     )
 
 
@@ -454,7 +380,6 @@ def _work_finalization_context(
         outcome=turn.outcome,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=staged.artifact_directory,
-        prepared_result_view=staged.prepared_result_view,
         experiment_resources=list(staged.experiment_resources),
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands,
@@ -492,7 +417,6 @@ def _record_work_finalization_context(
         write_scope=turn.write_scope,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=str(staged.artifact_directory),
-        result_view=_stored_result_view(staged.prepared_result_view),
         experiment_resources=[
             _StoredExperimentFinalizationResource(
                 resource=item.resource,
@@ -586,7 +510,6 @@ def _load_work_finalization_context(
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
         artifact_scope_id=stored.artifact_scope_id,
         artifact_directory=artifact_directory,
-        prepared_result_view=_prepared_result_view(stored.result_view),
         experiment_resources=experiment_resources,
         skill_selection=stored.skill_selection,
         compute_commands=compute_commands,
@@ -657,6 +580,7 @@ async def _stage_work_turn(
                     ),
                 )
             assert remote_stage.root is not None
+            remote_stage.touch()
             if execution is not None:
                 execution.checkpoint_stage(resolved.execution_host, str(remote_stage.root))
             context = context.model_copy(
@@ -686,7 +610,6 @@ async def _stage_work_turn(
             )
             if execution is not None:
                 execution.checkpoint_stage("", str(local_stage))
-        _roll_result_view_retention(request, execution, local_stage, remote_stage)
         token = _task_token(execution)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
@@ -706,15 +629,6 @@ async def _stage_work_turn(
             else execution.operation_id
             if execution is not None
             else str(uuid.uuid4())
-        )
-        prepared_result_view = _prepare_result_view_turn(
-            request,
-            execution,
-            workspace if remote_stage is None else None,
-            remote_stage,
-            focused_node=context.node,
-            logical_operation_id=artifact_scope_id,
-            revision_preflight=resolved.revision_preflight,
         )
         if remote_stage is not None:
             artifact_directory: Path | PurePosixPath = remote_stage.prepare_artifact_directory(
@@ -842,7 +756,6 @@ async def _stage_work_turn(
             token=token,
             artifact_scope_id=artifact_scope_id,
             artifact_directory=artifact_directory,
-            prepared_result_view=prepared_result_view,
             experiment_resources=experiment_resources,
             experiment_resource_pointers=experiment_resource_pointers,
             skill_selection=skill_selection,
@@ -1072,14 +985,6 @@ def _compose_work_recovery_prompt(
         turn_mode="work",
         diagnostics_path=diagnostics_path,
         artifact_path=str(staged.artifact_directory),
-        result_view_action=(
-            staged.prepared_result_view.action if staged.prepared_result_view is not None else None
-        ),
-        result_view_path=(
-            staged.prepared_result_view.prompt_path
-            if staged.prepared_result_view is not None
-            else None
-        ),
     )
     prompt = _work_continuation(
         turn,
@@ -1175,7 +1080,6 @@ def _compose_fresh_prompt(
         stable_values=values,
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
-        result_view=staged.prepared_result_view,
         ontology_extensions=turn.context.ontology_extensions,
     )
     return _ComposedWorkPrompt(
@@ -1211,15 +1115,8 @@ def _compose_retry_prompt(
     current_contract_path = _stage_work_contract(
         turn, staged, retry_diagnostics_path=retry_diagnostics_path
     )
-    result_view_handoff = bool(
-        turn.continuation == "handoff" and staged.prepared_result_view is not None
-    )
-    original_contract_path = (
-        current_contract_path
-        if result_view_handoff
-        else retry_original_contract_path(
-            turn.execution, turn.local_stage, turn.remote_stage, current_contract_path
-        )
+    original_contract_path = retry_original_contract_path(
+        turn.execution, turn.local_stage, turn.remote_stage, current_contract_path
     )
     retry_contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,
@@ -1238,14 +1135,6 @@ def _compose_retry_prompt(
             skill_ids=turn.request.invoked_skill_ids,
         ),
         invoked_provider_skills=turn.request.resolved_provider_skills,
-        result_view_action=(
-            staged.prepared_result_view.action if staged.prepared_result_view is not None else None
-        ),
-        result_view_path=(
-            staged.prepared_result_view.prompt_path
-            if staged.prepared_result_view is not None
-            else None
-        ),
     )
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
@@ -2198,32 +2087,26 @@ async def _launch_and_stream_work_turn(
         await turn.validator_lifecycle.close(primary_error=exc)
         raise
     try:
-        try:
-            async with aclosing(
-                _stream_turn_agent_events(
-                    turn,
-                    launcher,
-                    prompt,
-                    session_id=turn.request.session_id,
-                    required_session_id=required_session_id,
-                    outcome=turn.outcome,
-                    supervise_remote=supervise_remote,
-                )
-            ) as stream:
-                async for frame in stream:
-                    yield frame
-        except Exception:
-            turn.outcome.failed = True
-            raise
-
-        if turn.outcome.remote_result_pending:
-            return
-        for frame in _settle_work_outcome(finalization):
-            yield frame
-    except BaseException as exc:
-        if turn.execution is not None and staged.prepared_result_view is not None:
-            _record_result_view_rejection(turn.execution, staged.prepared_result_view, str(exc))
+        async with aclosing(
+            _stream_turn_agent_events(
+                turn,
+                launcher,
+                prompt,
+                session_id=turn.request.session_id,
+                required_session_id=required_session_id,
+                outcome=turn.outcome,
+                supervise_remote=supervise_remote,
+            )
+        ) as stream:
+            async for frame in stream:
+                yield frame
+    except Exception:
+        turn.outcome.failed = True
         raise
+    if turn.outcome.remote_result_pending:
+        return
+    for frame in _settle_work_outcome(finalization):
+        yield frame
     turn.answer = finalization.answer
     if finalization.answer is not None:
         yield _sse(AgentEvent(event="answer", text=finalization.answer))
@@ -2294,14 +2177,6 @@ def _settle_work_outcome(turn: WorkFinalizationContext) -> list[str]:
         ]
     if turn.uses_master_protocol:
         _commit_chat_prompt_state(turn.execution, turn.request, turn.outcome.session_id)
-    _finalize_result_view_turn(
-        turn.request,
-        turn.execution,
-        turn.prepared_result_view,
-        turn.workspace if turn.remote_stage is None else None,
-        turn.remote_stage,
-        native_session_id=turn.outcome.session_id,
-    )
     turn.answer = answer
     if turn.execution is not None:
         store = turn.execution.store
@@ -2491,10 +2366,7 @@ async def stream_work_run(
         if resuming:
             composed_prompt = _compose_resume_prompt(turn, staged)
         else:
-            result_view_handoff = bool(
-                turn.continuation == "handoff" and staged.prepared_result_view is not None
-            )
-            if turn.retrying or result_view_handoff:
+            if turn.retrying:
                 composed_prompt = _compose_retry_prompt(turn, staged)
             else:
                 retry_diagnostics_path = _stage_retry_diagnostics(turn, staged)
@@ -2723,7 +2595,6 @@ async def _stream_work_graph_repair(
             token=token,
             artifact_scope_id=execution.operation_id,
             artifact_directory=workspace / "turns" / execution.operation_id / "artifacts",
-            prepared_result_view=None,
             experiment_resources=[],
             experiment_resource_pointers=[],
             skill_selection=skill_selection,

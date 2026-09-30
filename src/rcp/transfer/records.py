@@ -34,6 +34,8 @@ TRANSFER_RECORD_SCHEMA_VERSION = 3
 TRANSFER_RECORD_TABLES = frozenset(
     {
         "agent_usage",
+        "artifacts",
+        "artifact_versions",
         "auto_research_apply_results",
         "auto_research_child_admissions",
         "auto_research_child_experiments",
@@ -105,7 +107,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "project_transfer_restore_reentries",
         "project_transfer_uploads",
         "projects",
-        "result_views",
+        "artifact_operations",
         "writing_sessions",
     }
 )
@@ -300,7 +302,7 @@ class TransferArtifactReference(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_kept_reference(self) -> TransferArtifactReference:
-        if (self.kept_filename is None) != (self.kept_at is None):
+        if self.kept_filename is not None and self.kept_at is None:
             raise ValueError("kept artifact history requires both its filename and kept time")
         return self
 
@@ -683,13 +685,26 @@ class TransferEpisodeReport(_StrictTransferRecord):
     attempt_id: str = Field(min_length=1)
     allocation_operation_id: str = Field(min_length=1)
     ending: Literal["completed", "exhausted", "stopped", "failed", "human_pause"]
-    sha256: str
-    html: str
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    html: str | None = None
+    artifact_id: str | None = None
+    artifact_version_id: str | None = None
+    display_title: str | None = None
     created_at: AwareTimestamp
+
+    @model_serializer(mode="wrap")
+    def serialize_report(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue]:
+        data = handler(self)
+        for name in ("artifact_id", "artifact_version_id", "display_title"):
+            if name not in self.model_fields_set:
+                data.pop(name, None)
+        return data
 
     @model_validator(mode="after")
     def validate_report(self) -> TransferEpisodeReport:
-        if hashlib.sha256(self.html.encode()).hexdigest() != self.sha256:
+        if self.html is None and not (self.artifact_id and self.artifact_version_id):
+            raise ValueError("episode report requires content or an artifact binding")
+        if self.html is not None and hashlib.sha256(self.html.encode()).hexdigest() != self.sha256:
             raise ValueError("episode report content does not match its digest")
         return self
 

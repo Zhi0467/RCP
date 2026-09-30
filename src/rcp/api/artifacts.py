@@ -5,7 +5,8 @@ import uuid
 from typing import Annotated, Literal
 from urllib.parse import quote, urlencode
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from rcp.api.dependencies import (
@@ -13,11 +14,13 @@ from rcp.api.dependencies import (
     get_graph_service,
     get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.episodes import episode_on_branch
 from rcp.api.tasks import _agent_artifact_response
-from rcp.artifacts import AgentArtifactDescriptor, ArtifactView
+from rcp.artifact_views import artifact_content, artifact_viewer_document
+from rcp.artifacts import AgentArtifactDescriptor, ArtifactView, artifact_view
 from rcp.projects import ProjectCatalog
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeMode
 from rcp.transport import StateUnavailable
@@ -183,7 +186,7 @@ def saved_artifacts(
                 artifact = AgentArtifactDescriptor.model_validate(raw)
             except (TypeError, ValueError):
                 continue
-            if artifact.kept_filename is None:
+            if not artifact.is_kept():
                 continue
             projected = _agent_artifact_response(store, task, artifact)
             artifact_url = (
@@ -195,7 +198,7 @@ def saved_artifacts(
                     name=artifact.name,
                     kind="artifact",
                     created_at=artifact.kept_at or task.created_at,
-                    path=f"artifacts/{artifact.kept_filename}",
+                    path=f"artifacts/{artifact.kept_filename}" if artifact.kept_filename else None,
                     operation_id=task.operation_id,
                     artifact_id=artifact.artifact_id,
                     episode_mode=episode_mode,
@@ -230,4 +233,150 @@ def saved_artifacts(
                 viewer_url=f"{base}/episodes/{quote(report.episode_id, safe='')}/report/viewer",
             )
         )
+    represented = {entry.artifact_id for entry in entries if entry.artifact_id}
+    represented.update(
+        report.artifact_id
+        for summary in reports
+        if (report := store.episode_report(summary.episode_id)) is not None
+    )
+    for artifact in store.artifacts(project_id):
+        if artifact.artifact_id in represented or artifact.expires_at is not None:
+            continue
+        view = artifact_view(artifact.media_type)
+        artifact_url = f"{base}/artifacts/{quote(artifact.artifact_id, safe='')}"
+        entries.append(
+            SavedArtifactResponse(
+                id=f"artifact:{artifact.artifact_id}",
+                name=artifact.display_title or artifact.source_name,
+                kind="artifact",
+                created_at=artifact.created_at,
+                artifact_id=artifact.artifact_id,
+                operation_id=artifact.origin_operation_id,
+                episode_id=artifact.episode_id,
+                viewer_url=f"{artifact_url}/viewer" if view not in {"file", "pdf"} else None,
+                view=view,
+                available=True,
+                can_download=True,
+                download_url=f"{artifact_url}/download",
+                can_open=view not in {"file", "pdf"},
+            )
+        )
     return sorted(entries, key=lambda entry: (entry.created_at, entry.id), reverse=True)
+
+
+def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
+    artifact = store.artifact(artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if (
+        artifact.expires_at is not None
+        and artifact.expires_at <= store.now()
+        and artifact_id not in store.protected_revision_artifact_ids()
+    ):
+        raise HTTPException(status_code=410, detail="Artifact expired")
+    return artifact
+
+
+@router.get("/api/projects/{project_id}/artifacts/{artifact_id}/content")
+@router.head("/api/projects/{project_id}/artifacts/{artifact_id}/content")
+def stored_artifact_content(
+    project_id: str,
+    artifact_id: str,
+    request: Request,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+) -> Response:
+    artifact = _stored_artifact(store, project_id, artifact_id)
+    try:
+        data = store.read_artifact_bytes(artifact_id)
+        document, media_type, csp = artifact_content(
+            artifact.source_name, artifact.media_type, data
+        )
+    except (OSError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=410, detail="Artifact unavailable") from exc
+    return Response(
+        b"" if request.method == "HEAD" else document,
+        media_type=media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": csp,
+        },
+    )
+
+
+@router.get("/api/projects/{project_id}/artifacts/{artifact_id}/viewer")
+@router.head("/api/projects/{project_id}/artifacts/{artifact_id}/viewer")
+def stored_artifact_viewer(
+    project_id: str,
+    artifact_id: str,
+    request: Request,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+) -> Response:
+    artifact = _stored_artifact(store, project_id, artifact_id)
+    base = f"/api/projects/{quote(project_id, safe='')}/artifacts/{quote(artifact_id, safe='')}"
+    descriptor = AgentArtifactDescriptor(
+        artifact_id=artifact.artifact_id,
+        name=artifact.source_name,
+        media_type=artifact.media_type,
+        kept_at=artifact.kept_at,
+    )
+    try:
+        document, csp = artifact_viewer_document(
+            descriptor,
+            content_url=f"{base}/content",
+            keep_url=f"{base}/keep" if artifact.expires_at else None,
+            state="temporary" if artifact.expires_at else "kept",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Artifact has no viewer") from exc
+    return Response(
+        b"" if request.method == "HEAD" else document,
+        media_type="text/html",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": csp,
+        },
+    )
+
+
+@router.post(
+    "/api/projects/{project_id}/artifacts/{artifact_id}/keep",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def keep_stored_artifact(
+    project_id: str,
+    artifact_id: str,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+):
+    _stored_artifact(store, project_id, artifact_id)
+    return store.keep_artifact(artifact_id)
+
+
+@router.get("/api/projects/{project_id}/artifacts/{artifact_id}/download")
+@router.head("/api/projects/{project_id}/artifacts/{artifact_id}/download")
+def download_stored_artifact(
+    project_id: str,
+    artifact_id: str,
+    request: Request,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+) -> Response:
+    artifact = _stored_artifact(store, project_id, artifact_id)
+    try:
+        data = store.read_artifact_bytes(artifact_id)
+    except (OSError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=410, detail="Artifact unavailable") from exc
+    return Response(
+        b"" if request.method == "HEAD" else data,
+        media_type=artifact.media_type,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(artifact.source_name, safe='')}",
+            "Content-Length": str(len(data)),
+        },
+    )

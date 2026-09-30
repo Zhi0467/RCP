@@ -53,6 +53,7 @@ from rcp.server_ops.backup_models import (
     BackupArchiveManifest,
     BackupFileEntry,
     BackupProjectCapture,
+    artifact_backup_entries,
 )
 from rcp.server_ops.backup_project_files import (
     BackupProjectFileCaptureCoordinator,
@@ -691,9 +692,11 @@ def build_archive_manifest(
         uncaptured_app_data_entries=uncaptured_app_data,
         projects=project_receipt.projects,
         imported_sources=project_receipt.imported_sources,
+        artifact_inventory=sqlite_receipt.artifact_inventory,
         status=("partial" if project_receipt.status == "partial" else "complete"),
         total_bytes=(
             sqlite_receipt.sqlite_snapshot.size_bytes
+            + sum(item.size_bytes for item in sqlite_receipt.artifact_inventory)
             + sum(project.total_bytes for project in project_receipt.projects)
             + sum(capture.total_bytes for capture in project_receipt.imported_sources)
         ),
@@ -1026,6 +1029,7 @@ def _write_deterministic_archive(
         _add_bytes_to_tar(archive, "manifest.json", manifest_bytes)
         entries = (
             manifest.sqlite_snapshot,
+            *artifact_backup_entries(manifest.artifact_inventory),
             *(entry for project in manifest.projects for entry in project.files),
             *(entry for capture in manifest.imported_sources for entry in capture.files),
         )

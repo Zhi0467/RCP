@@ -12,6 +12,8 @@ from pydantic import BaseModel, JsonValue
 
 from rcp.artifacts import html_document_title
 from rcp.core.models import EpisodeIsolation, EpisodeIsolationState
+from rcp.storage.artifact_models import Artifact, ArtifactVersion
+from rcp.storage.artifacts import insert_artifact, write_artifact_file
 from rcp.storage.models import ProjectTransferImportRecord
 from rcp.transfer.archive import (
     TransferArchiveAttribution,
@@ -896,7 +898,9 @@ class ProjectTransferStoreMixin:
             allocation_operation_id=row["allocation_operation_id"],
             ending=row["ending"],
             sha256=row["sha256"],
-            html=row["html"],
+            artifact_id=row["artifact_id"],
+            artifact_version_id=row["artifact_version_id"],
+            display_title=row["display_title"],
             created_at=row["created_at"],
         )
 
@@ -1326,6 +1330,16 @@ class ProjectTransferStoreMixin:
                     attributions,
                 )
                 self._insert_transfer_watchers(connection, normalized_capture.records)
+                for artifact in normalized_capture.artifacts:
+                    insert_artifact(
+                        connection,
+                        artifact,
+                        [
+                            v
+                            for v in normalized_capture.artifact_versions
+                            if v.artifact_id == artifact.artifact_id
+                        ],
+                    )
                 self._insert_transfer_episodes(
                     connection,
                     normalized_capture.records,
@@ -1596,7 +1610,7 @@ class ProjectTransferStoreMixin:
         project_tables = (
             "projects",
             "paper_drafts",
-            "result_views",
+            "artifacts",
             "artifact_revision_candidates",
             "graph_runs",
             "episodes",
@@ -1749,9 +1763,10 @@ class ProjectTransferStoreMixin:
                 ),
             ),
             (
-                "result_views",
-                "view_id",
-                tuple(view.view_id for view in capture.kept_result_views),
+                "artifacts",
+                "artifact_id",
+                tuple(item.artifact_id for item in capture.artifacts)
+                + tuple(view.view_id for view in capture.kept_result_views),
             ),
         )
         for table, column, values in keyed_ids:
@@ -2016,9 +2031,8 @@ class ProjectTransferStoreMixin:
                 ),
             )
 
-    @classmethod
     def _insert_transfer_episodes(
-        cls,
+        self,
         connection: sqlite3.Connection,
         records: TransferRecordBundle,
         attributions: Mapping[str, TransferArchiveAttribution],
@@ -2115,7 +2129,7 @@ class ProjectTransferStoreMixin:
                     ),
                 )
             if episode.auto_research is not None:
-                cls._insert_auto_research_history(
+                self._insert_auto_research_history(
                     connection,
                     records.project_id,
                     episode,
@@ -2190,12 +2204,43 @@ class ProjectTransferStoreMixin:
                 )
             if episode.report is not None:
                 report = episode.report
+                artifact_id = report.artifact_id
+                version_id = report.artifact_version_id
+                if report.html is not None:
+                    data = report.html.encode()
+                    artifact_id = hashlib.sha256(report.report_id.encode()).hexdigest()[:24]
+                    version_id = report.sha256
+                    artifact = Artifact(
+                        artifact_id=artifact_id,
+                        project_id=records.project_id,
+                        supplier="episode_ending",
+                        supplier_id=episode.episode_id,
+                        source_name="episode-report.html",
+                        media_type="text/html",
+                        created_at=report.created_at,
+                        current_version=version_id,
+                        episode_id=episode.episode_id,
+                        origin_operation_id=report.allocation_operation_id,
+                        display_title=html_document_title(report.html),
+                    )
+                    version = ArtifactVersion(
+                        artifact_id=artifact_id,
+                        version_id=version_id,
+                        file_id=version_id,
+                        sha256=version_id,
+                        size_bytes=len(data),
+                        operation_id=episode.episode_id,
+                        created_at=report.created_at,
+                        sequence=0,
+                    )
+                    write_artifact_file(self.path.parent, version, data)
+                    insert_artifact(connection, artifact, [version])
                 connection.execute(
                     """
                     INSERT INTO episode_reports (
                         report_id, episode_id, attempt_id, allocation_operation_id,
-                        ending, sha256, html, created_at, display_title
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ending, sha256, artifact_id, artifact_version_id, created_at, display_title
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         report.report_id,
@@ -2204,9 +2249,11 @@ class ProjectTransferStoreMixin:
                         report.allocation_operation_id,
                         report.ending,
                         report.sha256,
-                        report.html,
+                        artifact_id,
+                        version_id,
                         report.created_at,
-                        html_document_title(report.html),
+                        report.display_title
+                        or (html_document_title(report.html) if report.html else None),
                     ),
                 )
         for episode in records.episodes:
@@ -2520,49 +2567,39 @@ class ProjectTransferStoreMixin:
                 ),
             )
 
-    @staticmethod
     def _insert_transfer_views(
+        self,
         connection: sqlite3.Connection,
         capture: TransferProjectFileCapture,
         html_by_filename: Mapping[str, str],
     ) -> None:
         for view in capture.kept_result_views:
-            html = html_by_filename[view.kept_filename]
-            connection.execute(
-                """
-                INSERT INTO result_views (
-                    view_id, project_id, experiment_id, chat_id, origin_operation_id,
-                    latest_operation_id, provider, model, reasoning, run_on,
-                    native_session_id, stage_host, stage_root, source_name,
-                    content_sha256, size_bytes, html, created_at, updated_at,
-                    expires_at, kept_filename, kept_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    view.view_id,
-                    capture.project_id,
-                    view.experiment_id,
-                    view.chat_id,
-                    view.origin_operation_id,
-                    view.latest_operation_id,
-                    view.provider,
-                    view.model,
-                    view.reasoning,
-                    _TRANSFER_IMPORT_INERT_PROVIDER,
-                    _TRANSFER_IMPORT_INERT_PROVIDER,
-                    _TRANSFER_IMPORT_INERT_PROVIDER,
-                    _TRANSFER_IMPORT_INERT_STAGE_ROOT,
-                    view.source_name,
-                    view.content_sha256,
-                    view.size_bytes,
-                    html,
-                    view.created_at,
-                    view.updated_at,
-                    view.expires_at,
-                    view.kept_filename,
-                    view.kept_at,
-                ),
+            data = html_by_filename[view.kept_filename].encode()
+            artifact = Artifact(
+                artifact_id=view.view_id,
+                project_id=capture.project_id,
+                supplier="turn",
+                supplier_id=view.origin_operation_id,
+                origin_operation_id=view.origin_operation_id,
+                chat_id=view.chat_id,
+                source_name=view.source_name,
+                media_type="text/html",
+                created_at=view.created_at,
+                kept_at=view.kept_at,
+                current_version=view.content_sha256,
             )
+            version = ArtifactVersion(
+                artifact_id=view.view_id,
+                version_id=view.content_sha256,
+                file_id=view.content_sha256,
+                sha256=view.content_sha256,
+                size_bytes=view.size_bytes,
+                operation_id=view.origin_operation_id,
+                created_at=view.created_at,
+                sequence=0,
+            )
+            write_artifact_file(self.path.parent, version, data)
+            insert_artifact(connection, artifact, [version])
 
     @staticmethod
     def _insert_transfer_paper(

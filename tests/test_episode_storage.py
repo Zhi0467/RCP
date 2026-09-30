@@ -15,6 +15,7 @@ from rcp.providers import ProviderUsage
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    Artifact,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeRecord,
@@ -37,7 +38,25 @@ def _authorizer(store: AppStore) -> AuthorizedHuman:
     )
 
 
+def _downgrade_artifacts(connection: sqlite3.Connection) -> None:
+    if not any(
+        row[1] == "artifact_id" for row in connection.execute("PRAGMA table_info(episode_reports)")
+    ):
+        return
+    assert connection.execute("SELECT COUNT(*) FROM episode_reports").fetchone()[0] == 0
+    connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT NOT NULL DEFAULT ''")
+    connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
+    connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
+    for table in ("artifacts", "artifact_versions", "artifact_operations"):
+        connection.execute(f"DROP TABLE {table}")
+    for row in AppStore._legacy_storage_schema_cache:
+        if row[0] == "table" and row[1] == "result_views":
+            connection.execute(row[3])
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 30")
+
+
 def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
+    _downgrade_artifacts(connection)
     connection.executescript(
         """
         DROP TABLE IF EXISTS _legacy_campaign_invocations_archive;
@@ -86,6 +105,7 @@ def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
 
 
 def _create_legacy_experiment_episode_table(connection: sqlite3.Connection) -> None:
+    _downgrade_artifacts(connection)
     connection.executescript(
         """
         CREATE TABLE experiment_episodes (
@@ -660,6 +680,21 @@ def test_successful_report_is_immutable_and_closes_semantic_ending(tmp_path) -> 
     store.record_episode_report_attempt_error(first.attempt_id, "transient")
     second = store.allocate_episode_report_attempt("episode")
     html = "<html><title>Adaptation preserves recall</title><body><figure>Result</figure></body></html>"
+    artifact = store.create_artifact(
+        Artifact(
+            artifact_id=hashlib.sha256(b"report").hexdigest()[:24],
+            project_id="project",
+            supplier="episode_ending",
+            supplier_id="episode",
+            episode_id="episode",
+            origin_operation_id=second.allocation_operation_id,
+            source_name="report.html",
+            media_type="text/html",
+            created_at=store.now(),
+            display_title="Adaptation preserves recall",
+        ),
+        data=html.encode(),
+    )
     report = EpisodeReportRecord(
         report_id="report",
         episode_id="episode",
@@ -667,7 +702,8 @@ def test_successful_report_is_immutable_and_closes_semantic_ending(tmp_path) -> 
         allocation_operation_id=second.allocation_operation_id,
         ending="completed",
         sha256=hashlib.sha256(html.encode()).hexdigest(),
-        html=html,
+        artifact_id=artifact.artifact_id,
+        artifact_version_id=artifact.current_version,
         created_at=store.now(),
     )
 
@@ -704,6 +740,20 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
         episode_id = f"episode-{index}"
         _start_wrapping(store, episode_id)
         attempt = store.allocate_episode_report_attempt(episode_id)
+        artifact = store.create_artifact(
+            Artifact(
+                artifact_id=hashlib.sha256(f"report-{index}".encode()).hexdigest()[:24],
+                project_id="project",
+                supplier="episode_ending",
+                supplier_id=episode_id,
+                episode_id=episode_id,
+                origin_operation_id=attempt.allocation_operation_id,
+                source_name="report.html",
+                media_type="text/html",
+                created_at=store.now(),
+            ),
+            data=html.encode(),
+        )
         report = EpisodeReportRecord(
             report_id=f"report-{index}",
             episode_id=episode_id,
@@ -711,7 +761,8 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
             allocation_operation_id=attempt.allocation_operation_id,
             ending="completed",
             sha256=hashlib.sha256(html.encode()).hexdigest(),
-            html=html,
+            artifact_id=artifact.artifact_id,
+            artifact_version_id=artifact.current_version,
             created_at=store.now(),
         )
         store.finish_episode_report_ready(attempt.attempt_id, report)
@@ -719,6 +770,18 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
 
     # Restore the immediately preceding schema, retaining its original report bytes.
     with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT")
+        for report in reports:
+            connection.execute(
+                "UPDATE episode_reports SET html = ? WHERE report_id = ?",
+                (store.read_artifact_bytes(report.artifact_id).decode(), report.report_id),
+            )
+        connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
+        connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
+        for table in ("artifacts", "artifact_versions", "artifact_operations"):
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 30")
+        connection.execute("CREATE TABLE result_views (view_id TEXT, html TEXT)")
         connection.execute("ALTER TABLE episode_reports DROP COLUMN display_title")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 17")
     upgraded = AppStore(path)
@@ -1117,7 +1180,7 @@ def test_campaign_migration_keeps_latest_report_and_is_idempotent(tmp_path) -> N
     assert episode.status == "completed"
     assert episode.invocation_ceiling == episode.invocations_used == 1
     assert report.report_id == "latest"
-    assert report.html == latest_html
+    assert migrated.read_artifact_bytes(report.artifact_id).decode() == latest_html
     assert migrated.agent_task("latest-report-task").kind == "episode_report"
     assert migrated.agent_task("old-report-task").kind == "episode_report"
     assert migrated.agent_task("latest-report-task").visible is False
@@ -1393,6 +1456,7 @@ def test_experiment_migration_removes_its_impossible_modern_wrapup(tmp_path) -> 
         "modern-operation",
     )
     with store.connection() as connection:
+        _downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 5, 6)"
         )
@@ -1610,6 +1674,7 @@ def _downgrade_wrapups_to_not_null(path, *, episode_id: str) -> None:
     """
 
     connection = sqlite3.connect(path)
+    _downgrade_artifacts(connection)
     connection.execute(
         """
         INSERT OR IGNORE INTO episodes (
@@ -1824,6 +1889,7 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
     store = AppStore(path)
     original = store.create_episode(_episode(store, "legacy"))
     with sqlite3.connect(path) as connection:
+        _downgrade_artifacts(connection)
         connection.execute("ALTER TABLE episodes DROP COLUMN stop_initiated_by")
         connection.execute(
             "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN wake_suppressed"

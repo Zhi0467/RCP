@@ -122,7 +122,9 @@ PROJECT_LINKED_TABLES = {
     "project_transfer_restore_reentries",
     "project_transfer_uploads",
     "projects",
-    "result_views",
+    "artifacts",
+    "artifact_versions",
+    "artifact_operations",
     "watchers",
     "writing_sessions",
 }

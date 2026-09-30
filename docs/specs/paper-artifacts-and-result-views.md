@@ -45,14 +45,19 @@ verdict, Patch verdict, or graph.
 For an ordinary turn, RCP discovers bounded direct regular children of the
 exact RCP-created artifact directory, of any type. It ignores provider
 directives, provider-owned paths, URLs in prose, nested files, and symlinks.
-Discovery reads at most eight files in filename order, each at most 16 MiB, and
-attaches at most 32 MiB per turn; a size is checked before a read is spent.
+Discovery reads at most eight files, each at most 16 MiB, and attaches at most
+32 MiB per turn; a size is checked before a read is spent. Files are considered
+in filename order, with an explicitly requested revision replacement first so
+extra outputs cannot crowd its candidate out of the same bounded discovery.
 Empty files and files past a bound get no card, but the turn reports how many
 were left out and why, and says so when discovery itself failed. The report
 comes from the durable discovery receipt; it carries counts, never paths.
-Bytes remain in temporary local or remote scratch and are proxied on demand
-until the human keeps them. Descriptors are durable with the task but do not
-copy bytes into chat or canonical graph storage.
+Discovery copies bytes into RCP's data directory and attaches their identifiers
+with the task. Chat, Experiment, and Auto-research child Work use this path,
+including retries and recovered turns. Viewing and Download read only storage;
+stage availability no longer decides whether newly captured outputs are viewable.
+Existing stage-only and repository-kept outputs await the separate background
+import slice.
 
 HTML previews run in an opaque sandbox. Agent scripts cannot access or navigate
 the RCP parent, open popups, submit forms, initiate downloads, or use ordinary
@@ -91,7 +96,9 @@ report lifecycle described in
 [Conversations, episodes, and watchers](conversations-episodes-and-watchers.md#visual-wrap-up).
 
 The provider writes one exact `episode-report.html`. RCP validates and captures
-immutable bounded bytes before serving them through the opaque sandbox. The
+immutable bounded bytes into an Artifact before serving them through the opaque
+sandbox. The lifecycle record binds the first version permanently; it stores no
+HTML. Viewing that report does not resettle the episode. The
 versioned official report skill requires a visual retrospective; runtime safety
 validation does not mechanically score visual quality.
 
@@ -157,8 +164,8 @@ descriptor, chat card, viewer route, and lifecycle as any other HTML artifact.
 The artifact is available in its originating Node or Project chat, and after
 Keep in the project's Artifacts panel. It is not shown in unrelated chats.
 
-Previously stored result-view rows remain readable through their legacy backend
-routes only for compatibility. The current web client exposes no result-view
+Previously stored result-view rows migrate into Artifact records. Their legacy
+URLs redirect to artifact routes for compatibility. The current web client exposes no result-view
 type, selector, card, or authoring request, and the task API rejects new legacy
 create or revise intents.
 
@@ -289,9 +296,9 @@ An unresolved row blocks project transfer; settled disposition rows are excluded
 from the transfer archive, while the accepted source artifact follows its normal
 temporary-or-kept transfer policy.
 
-A server update checkpoint carries recovery-critical local candidate stages and
-remote candidates remain on their named host, so an interrupted update can
-resume disposition. Offline backups intentionally exclude task staging. Restore
+New candidates are copied into artifact storage at discovery. A server update
+checkpoint also carries legacy recovery-critical local candidate stages; legacy
+remote candidates remain on their named host until background import. Offline backups intentionally exclude task staging. Restore
 therefore marks every unresolved candidate **Abandoned** before detaching native
 sessions and preserves the unchanged source; a new Work turn is required.
 
@@ -305,24 +312,24 @@ meshes, performance traces, and other specialist formats.
 
 ## Keeping an artifact
 
-**Keep** writes the current artifact into an `artifacts/` directory at the
-canonical state repository root, outside `.research/`, through the normal state
-workspace lock and explicit publication. If `artifacts/` already exists as a
-real directory, RCP reuses it and preserves every existing file. A file or
-symlink at that path makes Keep fail visibly. Initial Keep chooses a safe,
-collision-free filename and never overwrites an existing entry. The filename
-keeps a short, safe suffix from the original name; otherwise it has none. Any
-type can be kept, and the kept file is viewed by its original name's type.
+**Keep** stops the artifact's expiry and refreshes its task projection. It does
+not write to the state repository. The report viewer's explicit **Save copy**
+continues to publish a separate repository copy from the immutable first version.
 
-Keep records the artifact's stable repository filename. It does not freeze the
-file: humans and tools may still edit it normally. A later Work revision is
-published only after explicit human Accept and only if the current bytes still
-match the bytes that Work received; an intervening external edit produces a
-visible candidate conflict instead of being overwritten.
+Artifact metadata is in SQLite. Version files live in one folder per artifact
+under the data directory, referenced by relative digest identifiers. Writes use
+temporary files and atomic replacement. Original bytes are retained with the
+last bounded number of versions, subject to the byte cap in `limits.py`.
+Publishing checks the base version under the same artifact lock used by Keep,
+expiry, and pruning, and records an operation idempotency key. Capture pins the
+exact typed file inventory while copying it, so pruning cannot race backup or
+transfer. The report migration writes digest files before committing bindings
+and removing inline HTML; migration checks use a throwaway file root.
 
-A kept artifact appends no Patch, spends no revision, creates no Proposal,
-changes no attention count, and grants no graph authority. It is a live
-repository artifact beside the research record, not part of graph truth.
+The existing candidate flow remains until the editing slice. Accept publishes a
+stored version only when the source still matches the candidate's base. It never
+writes the source stage or repository. Keep and Accept append no Patch, spend no
+graph revision, create no Proposal, and grant no graph authority.
 
 ## Repository-file previews
 

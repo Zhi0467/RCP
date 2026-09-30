@@ -36,6 +36,7 @@ from rcp.server_ops._local_primitives import (
 from rcp.server_ops.github import GitHubRepositoryRef
 from rcp.server_ops.models import redact_server_text
 from rcp.skill_registry import SkillDefaults
+from rcp.storage.artifact_models import ArtifactFile
 
 BACKUP_MANIFEST_SCHEMA_VERSION = 1
 
@@ -47,7 +48,7 @@ _HOST = re.compile(r"[A-Za-z0-9_.@:-]{0,255}")
 _ACCOUNT = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 
 BACKUP_APP_DATA_DATABASE = "rcp.sqlite3"
-BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources"})
+BACKUP_APP_DATA_CAPTURED = frozenset({"project-sources", "artifacts"})
 BACKUP_APP_DATA_EXCLUSIONS = frozenset(
     {
         "bootstrap-manifests",
@@ -108,6 +109,7 @@ BACKUP_MATERIALIZED_NAMES = frozenset(
 
 BackupFileGroup = Literal[
     "sqlite_snapshot",
+    "artifact_version",
     "canonical",
     "chat",
     "paper_introduction",
@@ -272,6 +274,12 @@ class BackupFileEntry(_StrictBackupModel):
             len(source.parts) > 2 and source.parts[:2] == (".research", "facts")
         ):
             raise ValueError("fact backup entries must stay below .research/facts")
+        elif self.group == "artifact_version" and not (
+            len(source.parts) == 3
+            and source.parts[0] == "artifacts"
+            and self.archive_path == self.source_relative_path
+        ):
+            raise ValueError("artifact versions must name an artifact-relative file")
         elif self.group == "kept_artifact" and not (
             len(source.parts) == 2 and source.parts[0] == "artifacts"
         ):
@@ -1227,6 +1235,7 @@ class BackupArchiveManifest(_StrictBackupModel):
     uncaptured_app_data_entries: tuple[str, ...]
     projects: tuple[BackupProjectCapture, ...]
     imported_sources: tuple[BackupImportedProviderSourceCapture, ...] = ()
+    artifact_inventory: tuple[ArtifactFile, ...] = ()
     status: Literal["complete", "partial"]
     total_bytes: int = Field(ge=0)
 
@@ -1317,7 +1326,7 @@ class BackupArchiveManifest(_StrictBackupModel):
         )
         if self.status != ("partial" if partial else "complete"):
             raise ValueError("backup manifest status does not match its capture results")
-        entries = [self.sqlite_snapshot]
+        entries = [self.sqlite_snapshot, *artifact_backup_entries(self.artifact_inventory)]
         entries.extend(entry for project in self.projects for entry in project.files)
         entries.extend(entry for capture in self.imported_sources for entry in capture.files)
         paths = [entry.archive_path for entry in entries]
@@ -1401,6 +1410,19 @@ def inspect_app_data_capture_plan(data_dir: Path) -> BackupAppDataCapturePlan:
     )
 
 
+def artifact_backup_entries(inventory: tuple[ArtifactFile, ...]) -> tuple[BackupFileEntry, ...]:
+    return tuple(
+        BackupFileEntry(
+            archive_path=f"artifacts/{item.artifact_id}/{item.file_id}",
+            source_relative_path=f"artifacts/{item.artifact_id}/{item.file_id}",
+            group="artifact_version",
+            sha256=item.sha256,
+            size_bytes=item.size_bytes,
+        )
+        for item in inventory
+    )
+
+
 __all__ = [
     "BACKUP_APP_DATA_DATABASE",
     "BACKUP_APP_DATA_CAPTURED",
@@ -1426,4 +1448,5 @@ __all__ = [
     "BackupRecoveryMachine",
     "BackupRecoveryRepository",
     "inspect_app_data_capture_plan",
+    "artifact_backup_entries",
 ]

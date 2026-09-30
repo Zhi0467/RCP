@@ -177,7 +177,7 @@ def test_backup_streams_one_deterministic_tar_into_an_atomic_age_archive(tmp_pat
         assert archive.getnames() == ["manifest.json", "database/rcp.sqlite3"]
         assert archive.extractfile("database/rcp.sqlite3").read() == database
         restored_manifest = json.load(archive.extractfile("manifest.json"))
-    assert restored_manifest == manifest.model_dump(mode="json")
+    assert BackupArchiveManifest.model_validate_json(json.dumps(restored_manifest)) == manifest
     assert first.receipt.capture_status == "complete"
     assert first.receipt.captured_bytes == len(database)
     assert first.receipt.readback == "passed"

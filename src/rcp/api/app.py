@@ -738,7 +738,6 @@ def create_app(
     # FastAPI may enter and exit the synchronous admission dependency on
     # different worker threads, so this must remain a primitive Lock, not RLock.
     experiment_operation_lock = KeyedLocks()
-    result_view_keep_lock = KeyedLocks()
     artifact_mutation_locks = KeyedLocks()
     experiment_admission = ExperimentAdmission(
         experiment_operation_lock,
@@ -1389,7 +1388,6 @@ def create_app(
         setup=setup,
         attachment_store=attachment_store,
         watcher_poller=watcher_poller,
-        result_view_keep_locks=result_view_keep_lock,
         artifact_mutation_locks=artifact_mutation_locks,
         project_display_cache=project_display_cache,
         watcher_delivery=watcher_delivery,

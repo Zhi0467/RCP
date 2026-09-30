@@ -6,7 +6,6 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
@@ -30,7 +29,6 @@ from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.conversation_worktrees import conversation_worktree_context
 from rcp.history import ReplayHalted
-from rcp.limits import RUN_STAGE_RETENTION_DAYS
 from rcp.runs.chat import (
     _append_chat_exchange,
     _chat_read_dirs,
@@ -83,52 +81,9 @@ from rcp.runs.shared import (
     _swept_stage_root,
     _task_token,
 )
-from rcp.runs.tasks.result_views import touch_conversation_stage, touch_saved_conversation_stages
 from rcp.service import ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.transport import RemoteRunStage, StateUnavailable
-
-
-def _refresh_result_view_retention(
-    execution: AgentTaskExecution | None,
-    request: RunRequest,
-    *,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-) -> None:
-    """Roll one conversation workspace and its unkept views forward together."""
-
-    current_binding = touch_conversation_stage(local_stage, remote_stage)
-    if execution is None or not request.chat_id:
-        return
-    task = execution.store.agent_task(execution.operation_id)
-    if task is None:
-        return
-    try:
-        now = datetime.fromisoformat(execution.store.now()).astimezone(UTC)
-        views = execution.store.list_result_views(
-            task.project_id,
-            chat_id=request.chat_id,
-            as_of=now,
-        )
-        touch_saved_conversation_stages(
-            ((view.stage_host, view.stage_root) for view in views if view.kept_filename is None),
-            current_binding=current_binding,
-        )
-        expires_at = (now + timedelta(days=RUN_STAGE_RETENTION_DAYS)).isoformat()
-        execution.store.refresh_result_view_expiry(
-            task.project_id,
-            request.chat_id,
-            expires_at=expires_at,
-            as_of=now,
-        )
-    except Exception as exc:
-        with suppress(Exception):
-            execution.store.record_agent_task_event(
-                execution.operation_id,
-                f"Result-view retention could not be refreshed: {exc}",
-                level="warning",
-            )
 
 
 def _prepare_discuss_chat_prompt(
@@ -541,6 +496,7 @@ async def stream_discuss_run(
                         ),
                     )
                 assert remote_stage.root is not None
+                remote_stage.touch()
                 if execution is not None:
                     execution.checkpoint_stage(execution_host, str(remote_stage.root))
                 if not reusing_checkpoint or retrying:
@@ -568,12 +524,6 @@ async def stream_discuss_run(
                 )
                 if execution is not None:
                     execution.checkpoint_stage("", str(local_stage))
-            _refresh_result_view_retention(
-                execution,
-                request,
-                local_stage=local_stage,
-                remote_stage=remote_stage,
-            )
             if not reusing_checkpoint:
                 # A reused folder must not hand this turn any previous turn output.
                 _clear_stale_turn_handoffs(workspace, remote_stage)

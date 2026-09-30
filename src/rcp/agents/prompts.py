@@ -562,30 +562,6 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
     return "\n".join(lines)
 
 
-def _result_view_authoring_section(
-    action: Literal["create", "revise"] | None,
-    path: str | None,
-) -> str:
-    if action is None and path is None:
-        return ""
-    if action is None or path is None:
-        raise ValueError("result view authoring requires both an action and exact path")
-    instruction = (
-        f"Create exactly one bounded, self-contained, descriptively named HTML file directly "
-        f"inside `{path}`."
-        if action == "create"
-        else f"Edit the existing HTML file `{path}` in place. Keep its exact path and name; "
-        "atomic replacement at that path is allowed."
-    )
-    return f"""RCP result-view authoring contract:
-- {instruction}
-- Keep this stable view independent of the turn artifact directory and do not create another view
-  file.
-- The page may omit gestures. If it emits one, it may postMessage only
-  `{{type:'rcp-result-view-gesture',version:1,gesture:'box'|'underscore',description}}`, where
-  `description` is short selection text. No other outbound message shape is supported."""
-
-
 def _ingestion_watermark(value: datetime | str | None) -> str:
     if value is None:
         return "none (no prior successful Seed/Refresh)"
@@ -710,8 +686,6 @@ class PromptFactory:
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         attachments: list[dict[str, object]] | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
         launch_instructions: str | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
@@ -724,8 +698,6 @@ class PromptFactory:
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
             attachments=attachments,
-            result_view_action=result_view_action,
-            result_view_path=result_view_path,
             launch_instructions=launch_instructions,
         )
 
@@ -741,8 +713,6 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
         launch_instructions: str | None = None,
     ) -> str:
         """Render one chat turn: its marker, what is new for it, and the human's bytes.
@@ -759,11 +729,6 @@ class PromptFactory:
             parts.append(
                 f"Launch instructions for this session's Work turns:\n{launch_instructions}"
             )
-        result_view = _result_view_authoring_section(result_view_action, result_view_path).strip()
-        if result_view:
-            if marker != "Work":
-                raise ValueError("result view authoring is available only on Work turns")
-            parts.append(result_view)
         invocation = _invoked_package_section(invoked_skill_pointers).strip()
         if invocation:
             parts.append(invocation)
@@ -1351,8 +1316,6 @@ Authorship contract:
         diagnostics_path: str | None = None,
         watcher_diagnostic: str | None = None,
         artifact_path: str | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
     ) -> str:
         """The part a continuation adds beside its session's master pointer.
 
@@ -1380,9 +1343,6 @@ Authorship contract:
             sections.append(facts.strip())
         if mode in _INLINE_CONTINUATION_RULES:
             sections.append(_INLINE_CONTINUATION_RULES[mode])
-        result_view = _result_view_authoring_section(result_view_action, result_view_path)
-        if result_view:
-            sections.append(result_view)
         return "\n\n".join(sections)
 
     @staticmethod
@@ -1403,8 +1363,6 @@ Authorship contract:
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
         artifact_path: str | None = None,
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         execution_host: str = "",
@@ -1540,10 +1498,6 @@ Resume authority:
             if validator_command and mode in {"resume", "retry"}
             else ""
         )
-        result_view_rules = _result_view_authoring_section(
-            result_view_action,
-            result_view_path,
-        )
         experiment_resources = (
             _discuss_experiment_watcher_resource_section(experiment_watcher_resources)
             if turn_mode == "discuss"
@@ -1579,7 +1533,6 @@ Resume authority:
 {selected_skill_section(skill_pointers)}
 {_invoked_package_section(invoked_skill_pointers)}
 {invoked_provider_skill_section(invoked_provider_skills)}
-{result_view_rules}
 {experiment_resources}
 {input_rules}
 {continuation_rules}

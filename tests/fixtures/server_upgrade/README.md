@@ -56,3 +56,7 @@ completion and validation moved under one ordered migration plan.
 compute jobs, external watcher actions, child Work watcher routes, and compute
 job labels added their tables and columns. It is the boundary an installed
 v0.3.5 server upgrades from.
+
+`pre-artifacts-v15-ff090e1` retains the final inline report and legacy result-view
+storage shape before artifact bytes move into the data directory. It is built
+by the exact boundary source from the preceding immutable fixture.

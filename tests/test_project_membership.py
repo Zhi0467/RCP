@@ -26,6 +26,7 @@ from rcp.sources import project_cache_roots
 from rcp.storage import AppStore
 
 from .helpers import seed_patch
+from .test_episode_storage import _downgrade_artifacts
 
 
 def _setup_payload(repository_path: Path, name: str = "membership-paper") -> dict[str, object]:
@@ -135,7 +136,6 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "identity_access",
         "attachment_store",
         "watcher_poller",
-        "result_view_keep_locks",
         "artifact_mutation_locks",
         "project_display_cache",
         "watcher_delivery",
@@ -160,7 +160,6 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
     assert services.identity_access is not None
     assert services.attachment_store is not None
     assert services.watcher_poller is app.state.watcher_poller
-    assert services.result_view_keep_locks is not None
     assert services.artifact_mutation_locks is not None
     assert services.project_display_cache is not None
     assert services.watcher_delivery is not None
@@ -256,6 +255,7 @@ def _register_legacy_project(path: Path, locator: str, project_id: str) -> None:
 
     connection = sqlite3.connect(path)
     connection.execute("DROP TABLE IF EXISTS project_members")
+    _downgrade_artifacts(connection)
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)")
     connection.execute(
         """

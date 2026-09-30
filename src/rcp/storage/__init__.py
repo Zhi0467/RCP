@@ -9,7 +9,14 @@ Record models and exceptions live in `models` and are re-exported here.
 from __future__ import annotations
 
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
+from rcp.storage.artifact_models import (
+    Artifact,
+    ArtifactFile,
+    ArtifactVersion,
+    ArtifactVersionConflict,
+)
 from rcp.storage.artifact_revisions import ArtifactRevisionStoreMixin
+from rcp.storage.artifacts import ArtifactStoreMixin
 from rcp.storage.auto_research import AutoResearchStoreMixin
 from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
 from rcp.storage.base import AppStoreBase
@@ -25,7 +32,6 @@ from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
-from rcp.storage.result_views import ResultViewStoreMixin
 from rcp.storage.rows import RowMappingMixin
 from rcp.storage.space_machines import SpaceMachineStoreMixin
 from rcp.storage.spaces import SpaceStoreMixin
@@ -46,7 +52,7 @@ class AppStore(
     SpaceStoreMixin,
     ProjectProvisioningStoreMixin,
     ProjectStoreMixin,
-    ResultViewStoreMixin,
+    ArtifactStoreMixin,
     EpisodeStoreMixin,
     AutoResearchStoreMixin,
     AutoResearchChildrenStoreMixin,
@@ -63,4 +69,11 @@ class AppStore(
     """
 
 
-__all__ = [*_model_names, "AppStore"]
+__all__ = [
+    *_model_names,
+    "AppStore",
+    "Artifact",
+    "ArtifactFile",
+    "ArtifactVersion",
+    "ArtifactVersionConflict",
+]

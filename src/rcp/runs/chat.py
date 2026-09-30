@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
@@ -53,6 +53,7 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
+    RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.providers import AgentCapability
 from rcp.rcp_home import rcp_temp_dir
@@ -79,6 +80,7 @@ from rcp.storage import (
     AgentTaskReceiptRecord,
     AgentTaskRecord,
     AppStore,
+    Artifact,
     ArtifactRevisionCandidateRecord,
 )
 from rcp.transport import (
@@ -847,10 +849,20 @@ def _discover_chat_artifacts(
         )
         return []
 
+    task = execution.store.agent_task(execution.operation_id) if execution is not None else None
+    context = task.request.get("artifact_context") if task is not None else None
+    preferred_name = None
+    if isinstance(context, dict) and context.get("source", "task") == "task":
+        source = execution.store.artifact(context.get("artifact_id", ""))
+        if source is not None and source.project_id == task.project_id:
+            preferred_name = source.source_name
+
     attached: list[AgentArtifactDescriptor] = []
     total_bytes = 0
     allowed_candidates = 0
-    for name, advertised_size in sorted(candidates):
+    for name, advertised_size in sorted(
+        candidates, key=lambda item: (item[0] != preferred_name, item[0])
+    ):
         if advertised_size < 0 or advertised_size > CHAT_ARTIFACT_MAX_FILE_BYTES:
             ignore("file_size_limit")
             continue
@@ -882,6 +894,28 @@ def _discover_chat_artifacts(
                 continue
             media_type = classify_artifact_bytes(name, data)
             descriptor = descriptor_for(scope_id, name, media_type=media_type, size_bytes=len(data))
+            if execution is not None:
+                if task is None:
+                    raise ValueError("The artifact supplier task is unavailable.")
+                now = execution.store.now()
+                execution.store.create_artifact(
+                    Artifact(
+                        artifact_id=descriptor.artifact_id,
+                        project_id=task.project_id,
+                        supplier="turn",
+                        supplier_id=scope_id,
+                        source_name=name,
+                        media_type=media_type,
+                        created_at=now,
+                        expires_at=(
+                            datetime.fromisoformat(now) + timedelta(days=RUN_STAGE_RETENTION_DAYS)
+                        ).isoformat(),
+                        origin_operation_id=task.operation_id,
+                        episode_id=task.episode_id,
+                        chat_id=task.request.get("chat_id"),
+                    ),
+                    data=data,
+                )
         except (FileNotFoundError, OSError, StateUnavailable, ValueError):
             ignore("invalid_or_unavailable")
             continue
@@ -921,13 +955,13 @@ def stage_artifact_context(
         report = execution.store.episode_report(context.episode_id or "")
         if report is None:
             raise ValueError("The episode report context is unavailable.")
+        data = execution.store.read_artifact_bytes(report.artifact_id, report.artifact_version_id)
         descriptor = AgentArtifactDescriptor(
-            artifact_id=hashlib.sha256(report.report_id.encode("utf-8")).hexdigest()[:24],
+            artifact_id=report.artifact_id,
             name="episode-report.html",
             media_type="text/html",
-            size_bytes=len(report.html.encode("utf-8")),
+            size_bytes=len(data),
         )
-        data = report.html.encode("utf-8")
     else:
         raw_artifacts = origin.result.get("artifacts") if origin.result else None
         if isinstance(raw_artifacts, list):
@@ -941,36 +975,17 @@ def stage_artifact_context(
                     break
         if descriptor is None:
             raise ValueError("The artifact context is unavailable.")
-        scope_id = _logical_chat_turn_operation_id(execution.store, origin.operation_id)
     assert descriptor is not None
     if not supports_comments(descriptor.media_type):
         raise ValueError("The artifact type does not support comments or revisions.")
-    if context.source == "episode_report":
-        pass
-    elif descriptor.kept_filename is not None:
-        data = service.history.workspace.read_kept_artifact(
-            descriptor.kept_filename,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    elif origin.stage_host:
-        source = RemoteRunStage(origin.stage_host).attach_artifact_source(origin.stage_root or "")
-        data = source.read_artifact_bytes(
-            scope_id,
-            descriptor.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    elif origin.stage_root:
-        data = read_local_regular_file(
-            _local_chat_artifact_directory(execution.store, origin, scope_id),
-            descriptor.name,
-            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-        )
-    else:
-        raise ValueError("The artifact's source stage is unavailable.")
+    if context.source == "task":
+        data = execution.store.read_artifact_bytes(descriptor.artifact_id)
     if classify_artifact_bytes(descriptor.name, data) != descriptor.media_type:
         raise ValueError("The current artifact no longer matches its declared type.")
     base_sha256 = hashlib.sha256(data).hexdigest()
-    protected_write_paths: tuple[str, ...] = ()
+    protected_write_paths = (
+        (str(execution.store.path.parent / "artifacts"),) if not current.stage_host else ()
+    )
     if context.source == "task" and request.mode == "work":
         execution.store.record_agent_task_receipt(
             execution.operation_id,
@@ -982,21 +997,6 @@ def stage_artifact_context(
             },
             tier="summary",
         )
-        if descriptor.kept_filename is not None:
-            state_repository = service.manifest.repository_map[service.manifest.state.repository]
-            if state_repository.machine == request.run_on:
-                protected_write_paths = (str(PurePosixPath(state_repository.path) / "artifacts"),)
-        elif (origin.stage_host or "") == (current.stage_host or ""):
-            if origin.stage_host:
-                source_workspace = PurePosixPath(origin.stage_root or "") / "workspace"
-                source_directory = source_workspace / "turns" / scope_id / "artifacts"
-            else:
-                source_directory = _local_chat_artifact_directory(
-                    execution.store,
-                    origin,
-                    scope_id,
-                )
-            protected_write_paths = (str(source_directory),)
 
     # Each box the current viewer drew on a raster image is cropped from the exact bytes
     # staged beside it, so a recovery restages the same crops.
@@ -1141,22 +1141,10 @@ def finalize_artifact_revision(
     if not supports_comments(source.media_type):
         raise ValueError("The artifact type does not support revisions.")
     other_artifacts = [artifact for artifact in artifacts if artifact.name != source.name]
-    try:
-        data = (
-            remote_stage.read_artifact_bytes(
-                artifact_scope_id,
-                source.name,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-            if remote_stage is not None
-            else read_local_regular_file(
-                artifact_directory,
-                source.name,
-                max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
-            )
-        )
-    except FileNotFoundError:
+    replacement = next((artifact for artifact in artifacts if artifact.name == source.name), None)
+    if replacement is None:
         return other_artifacts
+    data = execution.store.read_artifact_bytes(replacement.artifact_id)
     if classify_artifact_bytes(source.name, data) != source.media_type:
         raise ValueError("The artifact revision changed its file type.")
     base_receipt = next(

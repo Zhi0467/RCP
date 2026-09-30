@@ -588,17 +588,8 @@ class BackgroundAgentTasks:
                 "Seed and refresh sessions can only be resumed from an RCP background "
                 "task checkpoint."
             )
-        result_view_revision = (
-            isinstance(request, RunRequest)
-            and request.result_view is not None
-            and request.result_view.action == "revise"
-        )
-        if result_view_revision and (not request.session_id or not stage_root):
-            raise ValueError(
-                "A result-view revision requires its saved native session and exact stage."
-            )
-        if not result_view_revision and (stage_host is not None or stage_root is not None):
-            raise ValueError("Only a result-view revision may inherit a saved stage on start.")
+        if stage_host is not None or stage_root is not None:
+            raise ValueError("A new task cannot inherit a saved stage.")
         self._validate_request_type(kind, request)
         request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
@@ -731,8 +722,6 @@ class BackgroundAgentTasks:
             }
         )
         same_provider = request.provider == original.provider
-        same_model = request.model == original.model
-        same_reasoning = request.reasoning == original.reasoning
         same_execution_host = request.run_on == original.run_on
         session_limit = self._failure_is_session_limit(previous)
         # Resuming a session the provider has dropped fails the same way every
@@ -744,13 +733,7 @@ class BackgroundAgentTasks:
             and bool(previous.stage_root)
             and self._session_is_rcp_owned(previous)
         )
-        result_view_revision = bool(
-            isinstance(original, RunRequest)
-            and original.result_view is not None
-            and original.result_view.action == "revise"
-        )
-        must_reuse_saved_session = graph_repair or result_view_revision
-        if must_reuse_saved_session:
+        if graph_repair:
             problem = None
             stage_available: bool | None = True
             if owned_checkpoint and previous.stage_host:
@@ -766,10 +749,6 @@ class BackgroundAgentTasks:
                 problem = "the provider no longer has the saved session"
             elif continuation_context_unavailable:
                 problem = "the saved continuation context is unavailable"
-            elif result_view_revision and (
-                not same_provider or not same_model or not same_reasoning or not same_execution_host
-            ):
-                problem = "the pinned provider, model, reasoning, or execution machine changed"
             elif not same_provider or not same_execution_host:
                 problem = "the pinned provider or execution machine changed"
             elif not owned_checkpoint:
@@ -778,11 +757,7 @@ class BackgroundAgentTasks:
                 problem = "the saved provider workspace is unavailable"
             if problem is not None:
                 detail = (
-                    "This result-view revision cannot start a fresh provider session because "
-                    f"{problem}. The existing view was not redrawn; start a new result view "
-                    "instead."
-                    if result_view_revision
-                    else "This patch-only graph repair cannot start a full Work turn because "
+                    "This patch-only graph repair cannot start a full Work turn because "
                     f"{problem}. Start a new Work turn instead."
                 )
                 raise ValueError(detail)

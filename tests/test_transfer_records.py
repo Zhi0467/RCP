@@ -807,8 +807,8 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
             """
             INSERT INTO episode_reports (
                 report_id, episode_id, attempt_id, allocation_operation_id,
-                ending, sha256, html, created_at
-            ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)
+                ending, sha256, artifact_id, artifact_version_id, created_at
+            ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?)
             """,
             (
                 report_id,
@@ -816,7 +816,8 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
                 attempt_id,
                 report_task_id,
                 hashlib.sha256(report_html.encode()).hexdigest(),
-                report_html,
+                report_id,
+                hashlib.sha256(report_html.encode()).hexdigest(),
                 now,
             ),
         )
@@ -854,7 +855,7 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
         "summary": "Complete.",
     }
     assert episode.report is not None
-    assert episode.report.html == report_html
+    assert episode.report.artifact_id == report_id
     report_task = next(item for item in bundle.tasks if item.operation_id == report_task_id)
     assert report_task.visible is False
     assert report_task.request.shape == "episode_report"

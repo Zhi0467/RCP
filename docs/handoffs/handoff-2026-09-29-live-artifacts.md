@@ -3,7 +3,15 @@
 Date: 2026-09-29
 Status: design settled with the human on 2026-09-29, then revised the same day
 after an xhigh design review and the human's answers to its two open
-questions. Implementation has not started. Docs and code land in one PR.
+questions. Slice 1 is implemented in this worktree: version storage, report and
+legacy-view migration, turn discovery including child Work recovery, and typed
+backup/transfer inventories. The candidate flow remains. Slices 2–5 remain open.
+Docs and code land in one PR.
+
+Slice 1 verification still needs the installed Linux coordinator transition and
+a rehearsal on a copy of real team data. Local storage, route, recovery, and
+archive tests cover the implemented paths. Browser automation is blocked by
+macOS Chromium launch permissions in this environment.
 
 Close this handoff when all of these hold on a served app with disposable data:
 
@@ -244,6 +252,11 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
   Undo, a control that brings the chat up, dock, and close. All of it is RCP
   chrome outside the agent's HTML.
 - Selection, the comment box, and Send sit in the viewer.
+- **A run's card lists every artifact from that run.** Today the Runs card
+  shows only the final report, and artifacts from the episode's turns are
+  found only in chat. The card lists the report and every artifact its
+  Experiment turns and Auto-research worker turns produced, each opening in the
+  viewer.
 
 ## Implementation slices
 
@@ -259,7 +272,8 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
 4. **Live data.** Per-version need resolution, the key-to-job receipt binding,
    the snapshot endpoint, the shell relay, server-side final snapshots.
 5. **Viewer.** The docked panel, removal of native preview windows, repository
-   preview framing, commenting and Send in the viewer, the title-bar controls.
+   preview framing, commenting and Send in the viewer, the title-bar controls,
+   every run artifact on its Runs card.
 
 Current behavior docs change with their slice: `docs/design.md`,
 `paper-artifacts-and-result-views.md`, `conversations-episodes-and-watchers.md`,

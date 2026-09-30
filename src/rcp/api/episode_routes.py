@@ -637,12 +637,12 @@ def content_episode_report(
         raise HTTPException(status_code=404, detail="Episode report not found")
     try:
         document, csp = html_preview_document(
-            report.html.encode("utf-8"),
+            store.read_artifact_bytes(report.artifact_id, report.artifact_version_id),
             frame_addon=selection_frame_addon()
             if _report_discussable_origin(store, episode_id)
             else None,
         )
-    except (UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError, KeyError, OSError) as exc:
         raise HTTPException(status_code=410, detail="Episode report unavailable") from exc
     encoded = document.encode("utf-8")
     return Response(
@@ -682,7 +682,7 @@ def save_episode_report(
         filename = service.history.workspace.keep_artifact(
             source_name="episode-report.html",
             project_name=project_name,
-            data=report.html.encode("utf-8"),
+            data=store.read_artifact_bytes(report.artifact_id, report.artifact_version_id),
         )
     except (OSError, StateUnavailable, ValueError) as exc:
         raise HTTPException(status_code=503, detail="Episode report save unavailable") from exc
@@ -764,7 +764,7 @@ def _episode_report_viewer_response(
         artifact_id=artifact_id,
         name="episode-report.html",
         media_type="text/html",
-        size_bytes=len(report.html.encode("utf-8")),
+        size_bytes=len(store.read_artifact_bytes(report.artifact_id, report.artifact_version_id)),
     )
     content_url = (
         f"/api/projects/{quote(project_id, safe='')}/episodes/"

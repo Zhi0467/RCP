@@ -7,7 +7,14 @@ from pathlib import PurePosixPath
 
 from markdown_it import MarkdownIt
 
-from rcp.artifacts import AgentArtifactDescriptor, artifact_view
+from rcp.artifacts import (
+    AgentArtifactDescriptor,
+    ArtifactMediaType,
+    FrameAddon,
+    artifact_view,
+    classify_artifact_bytes,
+    html_preview_document,
+)
 from rcp.escaped_lines import escaped_lines
 from rcp.limits import ARTIFACT_PREVIEW_MAX_BYTES, ARTIFACT_PREVIEW_MAX_LINES
 
@@ -38,7 +45,7 @@ _KEEP_SAVE_HANDLERS_JS = (
     # The shell defines `config` with keepUrl/saveUrl and its status element.
     "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,"
     + _VIEWER_MUTATION_INIT_JS
-    + ");if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept as a live repository artifact.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
+    + ");if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
     "const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{save.disabled=true;notice.textContent='';try{const response=await fetch(config.saveUrl,"
     + _VIEWER_MUTATION_INIT_JS
     + ");if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${result.path}`;}catch(error){notice.textContent=error instanceof Error?error.message:String(error);}finally{save.disabled=false;}});\n"
@@ -67,7 +74,7 @@ def artifact_viewer_document(
     )
     keep = (
         '<button id="keep" type="button">Keep</button>'
-        if keep_url and not descriptor.kept_filename
+        if keep_url and not descriptor.is_kept()
         else ""
     )
     save = '<button id="save" type="button">Save copy</button>' if save_url else ""
@@ -168,3 +175,23 @@ def text_document(name: str, data: bytes) -> tuple[str, str]:
             ):
                 text = pretty
     return _text_page("<pre><code>" + escaped_lines(text) + "</code></pre>", truncated=truncated)
+
+
+def artifact_content(
+    name: str, media_type: ArtifactMediaType, data: bytes, *, frame_addon: FrameAddon | None = None
+) -> tuple[str | bytes, str, str]:
+    """Render stored bytes through the single sandboxed artifact boundary."""
+    if classify_artifact_bytes(name, data) != media_type:
+        raise ValueError("Artifact media type changed")
+    view = artifact_view(media_type)
+    if view == "html":
+        document, csp = html_preview_document(data, frame_addon=frame_addon)
+    elif view == "markdown":
+        document, csp = markdown_document(data)
+    elif view == "text":
+        document, csp = text_document(name, data)
+    elif view == "image":
+        return data, media_type, "default-src 'none'; sandbox"
+    else:
+        raise ValueError("Artifact has no viewer")
+    return document, "text/html", csp

@@ -8,13 +8,18 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.artifacts import descriptor_for
+from rcp.artifacts import descriptor_for, html_document_title
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import AGENT_TASK_LIST_MAX_LIMIT
+from rcp.limits import AGENT_TASK_LIST_MAX_LIMIT, RUN_STAGE_RETENTION_DAYS
 from rcp.runs.chat import _append_chat_exchange
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord, AutoResearchChildExperimentRecord, EpisodeReportRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    Artifact,
+    AutoResearchChildExperimentRecord,
+    EpisodeReportRecord,
+)
 from rcp.transport import StateUnavailable
 
 from .helpers import authorized_human, create_named_app
@@ -40,15 +45,27 @@ def create_saved_artifact(
     artifact = descriptor_for(
         operation_id, "comparison.html", media_type="text/html", size_bytes=len(data)
     )
-    if kept:
-        workspace = app.state.catalog.open(project_id).history.workspace
-        filename = workspace.keep_artifact(
+    store.create_artifact(
+        Artifact(
+            artifact_id=artifact.artifact_id,
+            project_id=project_id,
+            supplier="turn",
+            supplier_id=operation_id,
             source_name=artifact.name,
-            project_name="Research",
-            data=data,
-            today=datetime.now(UTC).date(),
-        )
-        artifact = artifact.model_copy(update={"kept_filename": filename, "kept_at": now})
+            media_type=artifact.media_type,
+            created_at=now,
+            kept_at=now if kept else None,
+            expires_at=None
+            if kept
+            else (
+                datetime.fromisoformat(now) + timedelta(days=RUN_STAGE_RETENTION_DAYS)
+            ).isoformat(),
+            origin_operation_id=operation_id,
+        ),
+        data=data,
+    )
+    if kept:
+        artifact = artifact.model_copy(update={"kept_at": now})
     task = store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
@@ -107,14 +124,22 @@ def _keep_task_artifact(app, task):
     artifact = descriptor_for(
         task.operation_id, "comparison.html", media_type="text/html", size_bytes=len(data)
     )
-    workspace = app.state.catalog.open(task.project_id).history.workspace
-    filename = workspace.keep_artifact(
-        source_name=artifact.name,
-        project_name="Research",
+    store.create_artifact(
+        Artifact(
+            artifact_id=artifact.artifact_id,
+            project_id=task.project_id,
+            supplier="turn",
+            supplier_id=task.operation_id,
+            source_name=artifact.name,
+            media_type=artifact.media_type,
+            created_at=store.now(),
+            kept_at=store.now(),
+            origin_operation_id=task.operation_id,
+            episode_id=task.episode_id,
+        ),
         data=data,
-        today=datetime.now(UTC).date(),
     )
-    artifact = artifact.model_copy(update={"kept_filename": filename, "kept_at": store.now()})
+    artifact = artifact.model_copy(update={"kept_at": store.now()})
     return {"artifacts": [artifact.model_dump(mode="json")]}
 
 
@@ -193,14 +218,31 @@ def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None, with_ar
         "<!doctype html><title>Reset versus stream · Partial episode report</title>"
         "<h1>Saved episode comparison</h1><svg><title>Timeline</title></svg>"
     )
+    report_id = str(uuid.uuid4())
+    stored = store.create_artifact(
+        Artifact(
+            artifact_id=hashlib.sha256(report_id.encode()).hexdigest()[:24],
+            project_id=project_id,
+            supplier="episode_ending",
+            supplier_id=episode_id,
+            source_name="episode-report.html",
+            media_type="text/html",
+            created_at=store.now(),
+            episode_id=episode_id,
+            display_title=html_document_title(html),
+            origin_operation_id=admission.task.operation_id,
+        ),
+        data=html.encode(),
+    )
     report = EpisodeReportRecord(
-        report_id=str(uuid.uuid4()),
+        report_id=report_id,
         episode_id=episode_id,
         attempt_id=attempt.attempt_id,
         allocation_operation_id=admission.task.operation_id,
         ending="completed",
         sha256=hashlib.sha256(html.encode()).hexdigest(),
-        html=html,
+        artifact_id=stored.artifact_id,
+        artifact_version_id=stored.current_version,
         created_at=store.now(),
     )
     store.finish_episode_report_ready(attempt.attempt_id, report)
@@ -259,7 +301,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         saved = next(entry for entry in entries if entry["kind"] == "artifact")
         assert saved["operation_id"] == task.operation_id
         assert saved["artifact_id"] == artifact.artifact_id
-        assert saved["path"] == f"artifacts/{artifact.kept_filename}"
+        assert saved["path"] is None
         assert saved["can_open"] is True
         assert saved["episode_mode"] is None
         chat_url, chat_params = _source_chat_url(project_id, saved["source_chat_href"])
@@ -377,7 +419,9 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
     client = TestClient(app)
     # Inventory uses summaries and the concluding operation, never report HTML.
     with monkeypatch.context() as patch:
-        patch.setattr(store, "episode_report", lambda _: pytest.fail("inventory read report bytes"))
+        patch.setattr(
+            store, "read_artifact_bytes", lambda *args: pytest.fail("inventory read report bytes")
+        )
         response = client.get(f"/api/projects/{project_id}/artifacts")
     assert response.status_code == 200, response.text
     entry = next(entry for entry in response.json() if entry["id"] == f"report:{report.report_id}")

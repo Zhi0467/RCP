@@ -10,7 +10,7 @@ from rcp.artifact_comments import supports_comments
 from rcp.artifacts import artifact_view, classify_artifact_bytes, descriptor_for
 from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, Artifact
 
 from .helpers import create_named_app
 
@@ -47,14 +47,21 @@ def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=
         size_bytes=len(data),
     )
     if not chat:
-        filename = app.state.service.history.workspace.keep_artifact(
+        descriptor = descriptor.model_copy(update={"kept_at": store.now()})
+    stored = store.create_artifact(
+        Artifact(
+            artifact_id=descriptor.artifact_id,
+            project_id=app.state.default_project_id,
+            supplier="turn",
+            supplier_id=operation_id,
+            origin_operation_id=operation_id,
             source_name=name,
-            project_name="Test",
-            data=data,
-        )
-        descriptor = descriptor.model_copy(
-            update={"kept_filename": filename, "kept_at": store.now()}
-        )
+            media_type=descriptor.media_type,
+            created_at=store.now(),
+            kept_at=descriptor.kept_at,
+        ),
+        data=data,
+    )
     request = RunRequest(
         provider="codex",
         model="",
@@ -96,7 +103,8 @@ def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=
     base = (
         f"/api/projects/{task.project_id}/tasks/{operation_id}/artifacts/{descriptor.artifact_id}"
     )
-    return task, descriptor, path, base
+    version = store.artifact_versions(stored.artifact_id)[0]
+    return task, descriptor, store.artifact_file_path(version), base
 
 
 @pytest.mark.parametrize(

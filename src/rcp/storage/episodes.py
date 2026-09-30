@@ -5,7 +5,6 @@ import json
 import sqlite3
 import uuid
 
-from rcp.artifacts import html_document_title
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.models import (
@@ -1886,6 +1885,21 @@ class EpisodeStoreMixin:
         attempt_id: str,
         report: EpisodeReportRecord,
     ) -> tuple[EpisodeRecord, EpisodeReportRecord]:
+        artifact = self.artifact(report.artifact_id)
+        versions = self.artifact_versions(report.artifact_id)
+        if (
+            artifact is None
+            or not versions
+            or versions[0].sequence != 0
+            or versions[0].version_id != report.artifact_version_id
+            or versions[0].sha256 != report.sha256
+            or artifact.episode_id != report.episode_id
+            or artifact.origin_operation_id != report.allocation_operation_id
+            or artifact.expires_at is not None
+        ):
+            raise EpisodeReportConflict(
+                "the report must bind its permanent original artifact version"
+            )
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1929,8 +1943,8 @@ class EpisodeStoreMixin:
                 """
                 INSERT INTO episode_reports (
                     report_id, episode_id, attempt_id, allocation_operation_id, ending,
-                    sha256, html, created_at, display_title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sha256, artifact_id, artifact_version_id, created_at, display_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report.report_id,
@@ -1939,9 +1953,10 @@ class EpisodeStoreMixin:
                     report.allocation_operation_id,
                     report.ending,
                     report.sha256,
-                    report.html,
+                    report.artifact_id,
+                    report.artifact_version_id,
                     report.created_at,
-                    html_document_title(report.html),
+                    artifact.display_title,
                 ),
             )
             connection.execute(

@@ -231,6 +231,9 @@ def _archive_fixture(
     include_local_commits: bool = False,
     include_episode_archive: bool = False,
 ):
+    from rcp.rcp_home import rcp_temp_dir
+
+    monkeypatch.setattr("rcp.transport.remote_transfer_git._rcp_temp_dir", rcp_temp_dir)
     service, records, artifact, artifact_name, view, view_name = _finished_project(
         manifest,
         tmp_path / "source",
@@ -583,7 +586,7 @@ def test_target_import_publishes_exact_history_but_does_not_activate(
     assert (target_state_root.parent / "artifacts" / fixture["artifact_name"]).read_bytes() == (
         fixture["artifact"]
     )
-    assert (target_state_root.parent / "views" / fixture["view_name"]).read_bytes() == (
+    assert (target.path.parent / "artifacts" / fixture["view_name"]).read_bytes() == (
         fixture["view"]
     )
     stored = target.project_transfer_import(archive.target_request_id)

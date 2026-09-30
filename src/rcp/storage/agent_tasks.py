@@ -79,7 +79,7 @@ from rcp.storage.models import (
     RunStageLifecycleRecord,
     _canonical_uuid4,
     _required_timestamp,
-    _result_view_reference_time,
+    _retention_reference_time,
 )
 
 # Ordered Apply history is a contiguous latest tail. The singular projection
@@ -1181,10 +1181,10 @@ class AgentTaskStoreMixin:
         operation_id: str,
         artifact_id: str,
         *,
-        kept_filename: str,
+        kept_filename: str | None = None,
         kept_at: str,
     ) -> AgentArtifactDescriptor:
-        """Bind one task artifact to its live repository file without a digest guard."""
+        """Refresh the task projection after the stored artifact is kept."""
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1202,7 +1202,7 @@ class AgentTaskStoreMixin:
             for raw in result["artifacts"]:
                 descriptor = AgentArtifactDescriptor.model_validate(raw)
                 if descriptor.artifact_id == artifact_id:
-                    if descriptor.kept_filename is not None:
+                    if descriptor.is_kept():
                         updated = descriptor
                     else:
                         updated = descriptor.model_copy(
@@ -1488,7 +1488,8 @@ class AgentTaskStoreMixin:
                   AND EXISTS (
                       SELECT 1 FROM json_each(graph_runs.result_json, '$.artifacts') AS artifact
                       WHERE artifact.type = 'object'
-                        AND json_extract(artifact.value, '$.kept_filename') IS NOT NULL
+                        AND (json_extract(artifact.value, '$.kept_at') IS NOT NULL
+                             OR json_extract(artifact.value, '$.kept_filename') IS NOT NULL)
                   )
                 ORDER BY created_at DESC, operation_id
                 """,
@@ -3642,7 +3643,6 @@ class AgentTaskStoreMixin:
     ) -> tuple[RunStageLifecycleRecord, ...]:
         """Project every durable owner onto its exact run-stage lifecycle."""
 
-        current = _result_view_reference_time(as_of)
         aggregates: dict[tuple[str, str], _RunStageLifecycleAggregate] = {}
 
         def add(
@@ -3713,13 +3713,6 @@ class AgentTaskStoreMixin:
                 WHERE wrapup.stage_root IS NOT NULL AND wrapup.stage_root != ''
                 """
             ).fetchall()
-            view_rows = connection.execute(
-                """
-                SELECT view_id, stage_host, stage_root, expires_at, kept_filename
-                FROM result_views
-                WHERE stage_root IS NOT NULL AND stage_root != ''
-                """
-            ).fetchall()
             chat_rows = connection.execute(
                 """
                 SELECT context.native_session_id,
@@ -3741,7 +3734,8 @@ class AgentTaskStoreMixin:
                            FROM json_each(source.result_json, '$.artifacts') AS artifact
                            WHERE json_extract(artifact.value, '$.artifact_id') =
                                  candidate.source_artifact_id
-                             AND json_extract(artifact.value, '$.kept_filename') IS NOT NULL
+                             AND (json_extract(artifact.value, '$.kept_at') IS NOT NULL
+                             OR json_extract(artifact.value, '$.kept_filename') IS NOT NULL)
                        ) AS source_stage_required
                 FROM artifact_revision_candidates AS candidate
                 JOIN graph_runs AS source
@@ -3783,15 +3777,6 @@ class AgentTaskStoreMixin:
                 stage_root=row["stage_root"],
                 owner_ref=f"episode_wrapups:{row['episode_id']}",
                 must_exist=live,
-                protect_from_cleanup=live,
-            )
-        for row in view_rows:
-            live = row["kept_filename"] is None and _required_timestamp(row["expires_at"]) > current
-            add(
-                stage_host=row["stage_host"],
-                stage_root=row["stage_root"],
-                owner_ref=f"result_views:{row['view_id']}",
-                must_exist=False,
                 protect_from_cleanup=live,
             )
         for row in chat_rows:
@@ -4461,7 +4446,7 @@ class AgentTaskStoreMixin:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so
         resume ancestry (invariant 10b) stays walkable for the life of a project."""
 
-        current = _result_view_reference_time(now)
+        current = _retention_reference_time(now)
         inactive = """
             operation_id NOT IN (
                 SELECT operation_id FROM graph_runs
@@ -4471,10 +4456,6 @@ class AgentTaskStoreMixin:
         patch_cutoff = (current - timedelta(days=PATCH_OUTPUT_RETENTION_DAYS)).isoformat()
         trace_cutoff = (current - timedelta(days=RUN_TRACE_RETENTION_DAYS)).isoformat()
         with self.connection() as connection:
-            expired_result_views = self._delete_expired_result_views_from_connection(
-                connection,
-                current,
-            )
             outputs = connection.execute(
                 f"DELETE FROM graph_run_outputs WHERE created_at < ? AND {inactive}",
                 (patch_cutoff,),
@@ -4523,11 +4504,13 @@ class AgentTaskStoreMixin:
                 )
 
         return {
+            "artifacts": self.expire_artifacts(
+                as_of=current, protected_artifact_ids=self.protected_revision_artifact_ids()
+            ),
             "outputs": outputs,
             "events": events,
             "receipts": receipts,
             "writing_sessions": len(delete_writing),
-            "result_views": expired_result_views,
         }
 
     @staticmethod

@@ -801,6 +801,11 @@ viewer inside the page after confirming current availability. A listed file with
 no viewer reports `can_open` false with its `view` and `can_download`; visual
 opening refuses it rather than navigating to a download.
 
+Newly discovered task artifacts read from RCP version storage. `kept_at` marks
+Keep even when `kept_filename` is null; that filename remains legacy metadata.
+Legacy result-view URLs redirect to artifact routes. An artifact's availability
+is independent of its native session and stage; those still gate commenting.
+
 Task artifacts project a `view` (`html`, `image`, `markdown`, `text`, `pdf`, or
 `file`) alongside the independent `can_open`, `can_download`, `can_keep`, and
 `can_discuss` capabilities. `result.artifact_omissions` carries known reason

@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import stat
+import tempfile
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 from rcp.artifacts import html_document_title
 from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
+from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.models import (
@@ -65,6 +67,7 @@ class AppStoreBase:
         (27, "space_machines_v1"),
         (28, "notifications_v1"),
         (29, "episode_isolation_v1"),
+        (30, "artifact_storage_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -99,6 +102,7 @@ class AppStoreBase:
             ("graph_runs", "campaign_worker_handoffs_cleared_at"),
         }
     )
+    _legacy_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
     _baseline_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
 
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
@@ -276,6 +280,7 @@ class AppStoreBase:
 
         probe = sqlite3.connect(":memory:", timeout=30.0)
         probe.row_factory = sqlite3.Row
+        temporary_root = tempfile.TemporaryDirectory(prefix="rcp-migration-")
         try:
             connection.backup(probe)
             probe.execute("PRAGMA foreign_keys = OFF")
@@ -290,10 +295,12 @@ class AppStoreBase:
                 require_new=False,
                 schema_template=False,
                 schema_capture=None,
+                file_root=Path(temporary_root.name),
             )
             self._validate_storage_schema(probe)
         finally:
             probe.close()
+            temporary_root.cleanup()
 
     @staticmethod
     def _storage_schema_has_rcp_core(tables: set[str]) -> bool:
@@ -428,6 +435,7 @@ class AppStoreBase:
                 require_new=require_new,
                 schema_template=_schema_template,
                 schema_capture=_schema_capture,
+                file_root=self.path.parent,
             )
 
     def _run_storage_schema_migrations(
@@ -441,6 +449,7 @@ class AppStoreBase:
         require_new: bool,
         schema_template: bool,
         schema_capture: list[tuple[str, str, str, str]] | None,
+        file_root: Path,
     ) -> str | None:
         """Create the migration ledger and dispatch its one ordered plan."""
 
@@ -623,6 +632,14 @@ class AppStoreBase:
             version=29,
             name="episode_isolation_v1",
             migration=self._migrate_episode_isolation,
+        )
+        if schema_template:
+            self.__class__._legacy_storage_schema_cache = self._storage_schema(connection)
+        self._run_storage_schema_migration(
+            connection,
+            version=30,
+            name="artifact_storage_v1",
+            migration=lambda conn: migrate_artifacts(conn, file_root),
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2738,7 +2755,10 @@ class AppStoreBase:
     ) -> tuple[dict[tuple[str, str], tuple[str, str, str, str]], tuple[str, ...]]:
         """Return the table changes owned by migration 5 or refuse an unowned shape."""
 
-        expected = {(row[0], row[1]): row for row in self._baseline_storage_schema()}
+        self._baseline_storage_schema()
+        expected = {
+            (row[0], row[1]): row for row in self.__class__._legacy_storage_schema_cache or ()
+        }
         actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
         changed_tables = tuple(
             name

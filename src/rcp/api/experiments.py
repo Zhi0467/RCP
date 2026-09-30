@@ -110,8 +110,6 @@ def run_experiment(
             node.invocation_ceiling if requested_ceiling is None else requested_ceiling
         )
         supplied = RunRequest.model_validate(client_request)
-        if supplied.result_view is not None:
-            raise ValueError("Result views require an ordinary node Work turn.")
         if not supplied.chat_id:
             raise ValueError("Run requires a chat_id")
         uuid.UUID(supplied.chat_id)
@@ -375,7 +373,6 @@ def continue_experiment_episode(
             "watcher_ids": [item.watcher_id for item in pending_group or []],
             "invoked_workflow_ids": [],
             "invoked_skill_ids": [],
-            "result_view": None,
         }
     )
     request = target_service.resolve_compute_request(request)

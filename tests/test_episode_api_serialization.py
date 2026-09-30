@@ -23,11 +23,12 @@ from rcp.storage import (
     AppStore,
     AutoResearchStateRecord,
     EpisodeRecord,
-    EpisodeReportRecord,
     EpisodeWrapupRecord,
     ProjectRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
+
+from .episode_report_helpers import stored_report
 
 
 def _project(store: AppStore, project_id: str = "project") -> None:
@@ -515,7 +516,8 @@ def test_ready_report_is_singular_and_hidden_report_work_is_not_public(tmp_path)
     episode, root = _auto_episode(store, "ready")
     allocation_id, attempt_id = _begin_report(store, episode, root, ending="exhausted")
     html = "<html><body><figure>Result</figure></body></html>"
-    report = EpisodeReportRecord(
+    report = stored_report(
+        store,
         report_id="report",
         episode_id=episode.episode_id,
         attempt_id=attempt_id,

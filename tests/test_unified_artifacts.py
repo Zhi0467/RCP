@@ -7,7 +7,7 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from datetime import date
+from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 
@@ -29,14 +29,16 @@ from rcp.artifacts import (
     replace_local_regular_file,
 )
 from rcp.background import AgentTaskExecution
+from rcp.limits import CHAT_ARTIFACT_MAX_COUNT
 from rcp.runs.chat import (
+    _discover_chat_artifacts,
     _local_chat_artifact_directory,
     _project_write_scope,
     finalize_artifact_revision,
     stage_artifact_context,
 )
 from rcp.service import RunRequest, resolve_dispatch_authority
-from rcp.storage import AgentTaskRecord, ArtifactRevisionCandidateRecord
+from rcp.storage import AgentTaskRecord, Artifact, ArtifactRevisionCandidateRecord
 from rcp.transport import LocalStateWorkspace, RemoteRunStage, StateUnavailable
 from rcp.transport.remote_lock_holder import replace_staged_artifact
 
@@ -79,6 +81,37 @@ def _simulate_remounted_device(monkeypatch) -> None:
     monkeypatch.setattr(os, "stat", remounted_stat)
 
 
+def _stored_artifact(app, scope_id, name, data, *, kept=False):
+    store = app.state.background_tasks.store
+    descriptor = descriptor_for(
+        scope_id, name, media_type=classify_artifact_bytes(name, data), size_bytes=len(data)
+    )
+    store.create_artifact(
+        Artifact(
+            artifact_id=descriptor.artifact_id,
+            project_id=app.state.default_project_id,
+            supplier="turn",
+            supplier_id=scope_id,
+            source_name=name,
+            media_type=descriptor.media_type,
+            created_at=store.now(),
+            kept_at=store.now() if kept else None,
+            origin_operation_id=scope_id,
+        ),
+        data=data,
+    )
+    return descriptor.model_copy(update={"kept_at": store.now() if kept else None})
+
+
+def _publish_artifact(store, artifact_id, data, operation_id="other-edit"):
+    return store.publish_artifact_version(
+        artifact_id,
+        base_version=store.artifact(artifact_id).current_version,
+        operation_id=operation_id,
+        data=data,
+    )
+
+
 def _seed_pending_local_candidate(
     app,
     tmp_path: Path,
@@ -86,7 +119,6 @@ def _seed_pending_local_candidate(
     kept: bool,
     revision_status: str = "succeeded",
 ) -> tuple[AgentArtifactDescriptor, ArtifactRevisionCandidateRecord, str | None, bytes, bytes]:
-    service = app.state.service
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     origin_id = "aa97f8cc-031a-4ddd-8834-04832012a0d1"
@@ -94,24 +126,8 @@ def _seed_pending_local_candidate(
     name = "comparison.html"
     first = b"<!doctype html><p>base</p>"
     second = b"<!doctype html><p>candidate</p>"
-    kept_filename = (
-        service.history.workspace.keep_artifact(
-            source_name=name,
-            project_name="Pilot",
-            data=first,
-            today=date(2026, 9, 2),
-        )
-        if kept
-        else None
-    )
-    source = descriptor_for(
-        origin_id, name, media_type="text/html", size_bytes=len(first)
-    ).model_copy(
-        update={
-            "kept_filename": kept_filename,
-            "kept_at": store.now() if kept_filename else None,
-        }
-    )
+    kept_filename = name if kept else None
+    source = _stored_artifact(app, origin_id, name, first, kept=kept)
     request = RunRequest(
         provider="codex",
         model="",
@@ -185,6 +201,7 @@ def _seed_pending_local_candidate(
     candidate_directory = _local_chat_artifact_directory(store, revision, revision_id)
     candidate_directory.mkdir(parents=True)
     (candidate_directory / name).write_bytes(second)
+    _stored_artifact(app, revision_id, name, second)
     candidate = store.create_artifact_revision_candidate(
         ArtifactRevisionCandidateRecord(
             candidate_id="c" * 24,
@@ -255,17 +272,12 @@ def test_artifact_revision_source_is_in_the_provider_enforced_deny_scope(
     )
     source_task = store.agent_task(candidate.source_operation_id)
     assert source_task is not None
-    expected = (
-        service.history.workspace.root.parent / "artifacts"
-        if kept_filename is not None
-        else _local_chat_artifact_directory(store, source_task, candidate.source_operation_id)
-    )
-
     assert source.artifact_id == candidate.source_artifact_id
-    assert str(expected.resolve()) in scope.protected_write_paths
+    assert str((tmp_path / "data").resolve()) in scope.protected_write_paths
+    assert str((tmp_path / "data" / "artifacts").resolve()) in scope.protected_write_paths
 
 
-def test_remote_temporary_revision_protects_the_exact_source_output_directory(
+def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
     manifest,
     tmp_path: Path,
     monkeypatch,
@@ -280,6 +292,7 @@ def test_remote_temporary_revision_protects_the_exact_source_output_directory(
     source = descriptor_for(
         origin_id, "remote.html", media_type="text/html", size_bytes=len(source_bytes)
     )
+    _stored_artifact(app, origin_id, source.name, source_bytes)
     base_request = RunRequest(
         provider="codex",
         model="",
@@ -386,9 +399,7 @@ def test_remote_temporary_revision_protects_the_exact_source_output_directory(
     )
 
     assert staged is not None
-    assert staged.protected_write_paths == (
-        f"/remote/source-stage/workspace/turns/{origin_id}/artifacts",
-    )
+    assert staged.protected_write_paths == ()
 
 
 def test_svg_is_an_ordinary_bounded_artifact() -> None:
@@ -1351,7 +1362,6 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
     tmp_path: Path,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
     store = app.state.background_tasks.store
     project_id = app.state.default_project_id
     chat_id = "3a979535-17c3-4fd2-85fc-219de0ee7a75"
@@ -1360,15 +1370,7 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
     name = "curves.html"
     first = b"<!doctype html><p>first</p>"
     second = b"<!doctype html><p>second</p>"
-    kept_filename = service.history.workspace.keep_artifact(
-        source_name=name,
-        project_name="Pilot",
-        data=first,
-        today=date(2026, 8, 27),
-    )
-    source = descriptor_for(
-        origin_id, name, media_type="text/html", size_bytes=len(first)
-    ).model_copy(update={"kept_filename": kept_filename, "kept_at": store.now()})
+    source = _stored_artifact(app, origin_id, name, first, kept=True)
     origin_request = RunRequest(
         provider="codex",
         model="",
@@ -1466,11 +1468,11 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
         artifact_scope_id=revision_id,
         artifact_directory=artifact_directory,
         remote_stage=None,
-        artifacts=extras,
+        artifacts=_discover_chat_artifacts(execution, revision_id, artifact_directory, None),
     )
 
-    assert remaining == extras
-    assert service.history.workspace.read_kept_artifact(kept_filename) == first
+    assert remaining == extras[: CHAT_ARTIFACT_MAX_COUNT - 1]
+    assert store.read_artifact_bytes(source.artifact_id) == first
     pending = store.unresolved_artifact_revision_candidate(origin_id, source.artifact_id)
     assert pending is not None and pending.status == "pending"
     updated = store.agent_task(origin_id)
@@ -1519,7 +1521,7 @@ def test_work_revision_waits_for_human_accept_without_a_second_card(
     )
     assert accepted.status_code == 200
     assert accepted.json()["status"] == "accepted"
-    assert service.history.workspace.read_kept_artifact(kept_filename) == second
+    assert store.read_artifact_bytes(source.artifact_id) == second
     updated = store.agent_task(origin_id)
     assert updated is not None
     assert updated.result["artifacts"] == [
@@ -1549,11 +1551,11 @@ def test_revision_conflict_preserves_external_edit_until_human_rejects(
         kept=True,
     )
     assert kept_filename is not None
-    workspace = app.state.service.history.workspace
+    workspace = app.state.background_tasks.store
     source_task_before = app.state.background_tasks.store.agent_task(candidate.source_operation_id)
     assert source_task_before is not None
     external = b"<!doctype html><p>external edit</p>"
-    workspace.replace_kept_artifact(kept_filename, external)
+    _publish_artifact(workspace, candidate.source_artifact_id, external)
     client = TestClient(app)
     base = (
         f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
@@ -1563,7 +1565,7 @@ def test_revision_conflict_preserves_external_edit_until_human_rejects(
 
     assert response.status_code == 409, response.text
     assert "changed after this candidate" in response.json()["detail"]
-    assert workspace.read_kept_artifact(kept_filename) == external
+    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == external
     conflicted = app.state.background_tasks.store.artifact_revision_candidate(
         candidate.candidate_id
     )
@@ -1582,7 +1584,7 @@ def test_revision_conflict_preserves_external_edit_until_human_rejects(
 
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "rejected"
-    assert workspace.read_kept_artifact(kept_filename) == external
+    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == external
     assert (
         "revision_candidate"
         not in client.get(
@@ -1602,9 +1604,9 @@ def test_revision_accept_conflicts_when_external_edit_has_invalid_media_bytes(
         kept=True,
     )
     assert kept_filename is not None
-    workspace = app.state.service.history.workspace
+    workspace = app.state.background_tasks.store
     invalid_html = b"\x00not HTML"
-    workspace.replace_kept_artifact(kept_filename, invalid_html)
+    _publish_artifact(workspace, candidate.source_artifact_id, invalid_html)
 
     response = TestClient(app).post(
         f"/api/projects/{app.state.default_project_id}"
@@ -1613,7 +1615,7 @@ def test_revision_accept_conflicts_when_external_edit_has_invalid_media_bytes(
 
     assert response.status_code == 409, response.text
     assert "changed after this candidate" in response.json()["detail"]
-    assert workspace.read_kept_artifact(kept_filename) == invalid_html
+    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == invalid_html
     conflicted = app.state.background_tasks.store.artifact_revision_candidate(
         candidate.candidate_id
     )
@@ -1632,7 +1634,8 @@ def test_revision_accept_conflicts_when_current_artifact_was_deleted(
         kept=True,
     )
     assert kept_filename is not None
-    (app.state.service.history.workspace.root.parent / "artifacts" / kept_filename).unlink()
+    store = app.state.background_tasks.store
+    store.artifact_file_path(store.artifact_versions(candidate.source_artifact_id)[0]).unlink()
     client = TestClient(app)
     base = (
         f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
@@ -1663,13 +1666,13 @@ def test_revision_accept_keeps_transiently_unavailable_source_pending(
         kept=True,
     )
     assert kept_filename is not None
-    workspace = app.state.service.history.workspace
-    original_read = workspace.read_kept_artifact
+    workspace = app.state.background_tasks.store
+    original_read = workspace.read_artifact_bytes
 
     def unavailable(*_args, **_kwargs) -> bytes:
         raise StateUnavailable("temporary read failure")
 
-    monkeypatch.setattr(workspace, "read_kept_artifact", unavailable)
+    monkeypatch.setattr(workspace, "read_artifact_bytes", unavailable)
 
     response = TestClient(app).post(
         f"/api/projects/{app.state.default_project_id}"
@@ -1680,7 +1683,7 @@ def test_revision_accept_keeps_transiently_unavailable_source_pending(
     pending = app.state.background_tasks.store.artifact_revision_candidate(candidate.candidate_id)
     assert pending is not None and pending.status == "pending"
     assert pending.diagnostic is None
-    assert original_read(kept_filename) == first
+    assert original_read(candidate.source_artifact_id) == first
 
 
 @pytest.mark.parametrize(
@@ -1701,14 +1704,14 @@ def test_revision_accept_retries_ambiguous_publication_without_allowing_reject(
         kept=True,
     )
     assert kept_filename is not None
-    workspace = app.state.service.history.workspace
-    original_replace = workspace.replace_kept_artifact
+    workspace = app.state.background_tasks.store
+    original_replace = workspace.publish_artifact_version
 
     def publish_then_fail(*args, **kwargs) -> bool:
-        assert original_replace(*args, **kwargs) is True
+        original_replace(*args, **kwargs)
         raise failure
 
-    monkeypatch.setattr(workspace, "replace_kept_artifact", publish_then_fail)
+    monkeypatch.setattr(workspace, "publish_artifact_version", publish_then_fail)
     client = TestClient(app)
     base = (
         f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
@@ -1719,10 +1722,10 @@ def test_revision_accept_retries_ambiguous_publication_without_allowing_reject(
     assert response.status_code == 503, response.text
     accepting = app.state.background_tasks.store.artifact_revision_candidate(candidate.candidate_id)
     assert accepting is not None and accepting.status == "accepting"
-    assert workspace.read_kept_artifact(kept_filename) == second
+    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == second
     assert client.post(f"{base}/reject").status_code == 409
 
-    monkeypatch.setattr(workspace, "replace_kept_artifact", original_replace)
+    monkeypatch.setattr(workspace, "publish_artifact_version", original_replace)
     retry = client.post(f"{base}/accept")
     assert retry.status_code == 200, retry.text
     assert retry.json()["status"] == "accepted"
@@ -1740,20 +1743,19 @@ def test_revision_accept_detects_an_edit_during_publication(
         kept=True,
     )
     assert kept_filename is not None
-    workspace = app.state.service.history.workspace
-    original_replace = workspace.replace_kept_artifact
+    workspace = app.state.background_tasks.store
+    original_replace = workspace.publish_artifact_version
     external = b"<!doctype html><p>racing external edit</p>"
 
-    def race_then_replace(
-        name: str,
-        data: bytes,
-        *,
-        expected_sha256: str | None = None,
-    ) -> bool:
-        original_replace(name, external)
-        return original_replace(name, data, expected_sha256=expected_sha256)
+    def race_then_replace(artifact_id, *, data, base_version, operation_id):
+        original_replace(
+            artifact_id, data=external, base_version=base_version, operation_id="racing-edit"
+        )
+        return original_replace(
+            artifact_id, data=data, base_version=base_version, operation_id=operation_id
+        )
 
-    monkeypatch.setattr(workspace, "replace_kept_artifact", race_then_replace)
+    monkeypatch.setattr(workspace, "publish_artifact_version", race_then_replace)
 
     response = TestClient(app).post(
         f"/api/projects/{app.state.default_project_id}"
@@ -1762,7 +1764,7 @@ def test_revision_accept_detects_an_edit_during_publication(
 
     assert response.status_code == 409, response.text
     assert "changed while this candidate was being accepted" in response.json()["detail"]
-    assert workspace.read_kept_artifact(kept_filename) == external
+    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == external
 
 
 def test_retry_rechecks_unresolved_artifact_revision_admission(
@@ -1814,14 +1816,17 @@ def test_keep_during_pending_revision_moves_accept_to_the_kept_artifact(
     assert source_lifecycle.must_exist is False
     assert source_lifecycle.protect_from_cleanup is False
     assert kept.status_code == 200, kept.text
-    kept_filename = kept.json()["kept_filename"]
-    assert isinstance(kept_filename, str)
-    assert app.state.service.history.workspace.read_kept_artifact(kept_filename) == first
+    assert kept.json()["kept_filename"] is None
+    assert (
+        app.state.background_tasks.store.read_artifact_bytes(candidate.source_artifact_id) == first
+    )
     accepted = client.post(
         f"/api/projects/{project_id}/artifact-revisions/{candidate.candidate_id}/accept"
     )
     assert accepted.status_code == 200
-    assert app.state.service.history.workspace.read_kept_artifact(kept_filename) == second
+    assert (
+        app.state.background_tasks.store.read_artifact_bytes(candidate.source_artifact_id) == second
+    )
 
 
 def test_pending_revision_protects_temporary_source_and_blocks_history_detachment(
@@ -1870,12 +1875,14 @@ def test_interrupted_accept_recovers_from_the_already_published_digest(
     )
     assert kept_filename is not None
     store = app.state.background_tasks.store
-    workspace = app.state.service.history.workspace
+    workspace = app.state.background_tasks.store
     store.begin_artifact_revision_acceptance(
         candidate.candidate_id,
         decided_by=authorized_human(app),
     )
-    workspace.replace_kept_artifact(kept_filename, second)
+    _publish_artifact(
+        workspace, candidate.source_artifact_id, second, candidate.revision_operation_id
+    )
 
     client = TestClient(app)
     recovered = client.post(
@@ -1905,14 +1912,14 @@ def test_offline_restore_abandons_pending_candidate_and_preserves_source(
     )
     abandoned = store.artifact_revision_candidate(unrestored.candidate_id)
     assert abandoned is not None and abandoned.status == "abandoned"
-    assert app.state.service.history.workspace.read_kept_artifact(kept_filename) == first
+    assert store.read_artifact_bytes(unrestored.source_artifact_id) == first
     lifecycle = next(
         item for item in store.run_stage_lifecycles() if item.stage_root == unrestored.stage_root
     )
     assert lifecycle.protect_from_cleanup is False
 
 
-def test_remote_temporary_candidate_accept_uses_its_exact_source_and_candidate_stages(
+def test_remote_candidate_accept_uses_storage_without_contacting_stages(
     manifest,
     tmp_path: Path,
     monkeypatch,
@@ -1987,50 +1994,14 @@ def test_remote_temporary_candidate_accept_uses_its_exact_source_and_candidate_s
             updated_at=now,
         )
     )
-    remote_files = {
-        ("/remote/source-stage", origin_id, name): first,
-        ("/remote/candidate-stage", revision_id, name): second,
-    }
-
-    class FakeRemoteRunStage:
-        def __init__(self, host: str) -> None:
-            assert host == "research-gpu"
-            self.root = ""
-
-        def attach_artifact_source(self, root: str):
-            self.root = root
-            return self
-
-        def read_artifact_bytes(self, scope_id: str, filename: str, *, max_bytes: int) -> bytes:
-            data = remote_files[(self.root, scope_id, filename)]
-            assert len(data) <= max_bytes
-            return data
-
-        def replace_artifact_bytes(
-            self,
-            scope_id: str,
-            filename: str,
-            data: bytes,
-            *,
-            expected_sha256: str | None = None,
-        ) -> bool:
-            if (
-                expected_sha256 is not None
-                and hashlib.sha256(remote_files[(self.root, scope_id, filename)]).hexdigest()
-                != expected_sha256
-            ):
-                return False
-            remote_files[(self.root, scope_id, filename)] = data
-            return True
-
-    monkeypatch.setattr("rcp.api.tasks.RemoteRunStage", FakeRemoteRunStage)
-
+    _stored_artifact(app, origin_id, name, first)
+    _stored_artifact(app, revision_id, name, second)
     response = TestClient(app).post(
         f"/api/projects/{project_id}/artifact-revisions/{candidate.candidate_id}/accept"
     )
 
     assert response.status_code == 200, response.text
-    assert remote_files[("/remote/source-stage", origin_id, name)] == second
+    assert store.read_artifact_bytes(source.artifact_id) == second
 
 
 # A box from the viewer before elements were named measured the viewer area, not the
@@ -2050,12 +2021,7 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
     image.save(encoded, format="PNG")
     data = encoded.getvalue()
     origin_id = "5b6f0c8e-3c1f-4d1a-9a67-7a3f2d0c9e11"
-    kept = service.history.workspace.keep_artifact(
-        source_name="plot.png", project_name="Pilot", data=data, today=date(2026, 9, 27)
-    )
-    source = descriptor_for(
-        origin_id, "plot.png", media_type="image/png", size_bytes=len(data)
-    ).model_copy(update={"kept_filename": kept, "kept_at": store.now()})
+    source = _stored_artifact(app, origin_id, "plot.png", data, kept=True)
     request = RunRequest(
         provider="codex",
         model="",
@@ -2148,3 +2114,87 @@ def test_packaged_backend_ships_the_artifact_replacement_source() -> None:
     # The lock holder is composed from this file's source text, so the frozen
     # backend must carry it as data and check it at startup.
     assert_frozen_backend_ships("artifact_replace.py")
+
+
+def test_expired_pending_revision_survives_pruning_and_can_be_accepted(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    source, candidate, _, first, second = _seed_pending_local_candidate(app, tmp_path, kept=False)
+    store = app.state.background_tasks.store
+    replacement_id = descriptor_for(
+        candidate.artifact_scope_id,
+        source.name,
+        media_type=source.media_type,
+        size_bytes=len(second),
+    ).artifact_id
+    expired = (datetime.fromisoformat(store.now()) - timedelta(days=1)).isoformat()
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE artifacts SET metadata = json_set(metadata, '$.expires_at', ?)", (expired,)
+        )
+    assert store.prune_operational_storage()["artifacts"] == 0
+    assert store.read_artifact_bytes(source.artifact_id) == first
+    assert store.read_artifact_bytes(replacement_id) == second
+    response = TestClient(app).post(
+        f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}/accept"
+    )
+    assert response.status_code == 200, response.text
+    assert store.read_artifact_bytes(source.artifact_id) == second
+
+
+def test_report_context_stages_its_immutable_first_version(manifest, tmp_path):
+    from .test_saved_artifacts_api import _create_chat_report
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    task, report = _create_chat_report(app, tmp_path)
+    store = app.state.background_tasks.store
+    first = store.read_artifact_bytes(report.artifact_id, report.artifact_version_id)
+    _publish_artifact(store, report.artifact_id, b"<h1>Later version</h1>")
+    request = RunRequest(
+        chat_scope="node",
+        node_id=task.request["node_id"],
+        chat_id=task.request["chat_id"],
+        artifact_context={
+            "source": "episode_report",
+            "operation_id": task.operation_id,
+            "episode_id": report.episode_id,
+            "artifact_id": report.artifact_id,
+            "selections": [{"kind": "text", "text": "comparison", "comment": "Explain"}],
+        },
+    )
+    execution = AgentTaskExecution(
+        operation_id=task.operation_id, store=store, control=AgentProcessControl()
+    )
+    staged = stage_artifact_context(
+        app.state.service,
+        request,
+        execution,
+        local_stage=tmp_path / "comment-stage",
+        remote_stage=None,
+        artifact_path="unused",
+    )
+    assert staged is not None
+    assert Path(staged.pointer["path"]).read_bytes() == first
+    assert staged.pointer["source_artifact_id"] == report.artifact_id
+
+
+def test_active_revision_protects_source_before_candidate_capture(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    source, candidate, _, first, _ = _seed_pending_local_candidate(
+        app, tmp_path, kept=False, revision_status="running"
+    )
+    store = app.state.background_tasks.store
+    expired = (datetime.fromisoformat(store.now()) - timedelta(days=1)).isoformat()
+    with store.connection() as connection:
+        connection.execute("DELETE FROM artifact_revision_candidates")
+        connection.execute(
+            "UPDATE artifacts SET metadata = json_set(metadata, '$.expires_at', ?) "
+            "WHERE artifact_id = ?",
+            (expired, source.artifact_id),
+        )
+    assert store.prune_operational_storage()["artifacts"] == 0
+    assert store.read_artifact_bytes(source.artifact_id) == first
+    response = TestClient(app).get(
+        f"/api/projects/{candidate.project_id}/artifacts/{source.artifact_id}/download"
+    )
+    assert response.status_code == 200
+    assert response.content == first
