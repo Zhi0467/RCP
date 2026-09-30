@@ -167,8 +167,9 @@ directory through the existing artifact publication path, requires project write
 admission, and shows the repository-relative saved path. Each explicit save
 creates a collision-free copy and preserves existing files. A failed save is
 visible and retryable. The stored report, its preview, and the episode lifecycle
-remain unchanged; saving does not create a graph Patch. The viewer labels these
-durably stored reports as **report**, rather than **temporary**.
+remain unchanged; saving does not create a graph Patch. The legacy report viewer retains this action. The in-app panel opens the report
+through its stored-artifact viewer and shows its current version; the lifecycle
+record remains bound to the immutable first version.
 
 ## Artifacts panel
 
@@ -218,20 +219,21 @@ URLs redirect to artifact routes for compatibility. The current web client expos
 type, selector, card, or authoring request, and the task API rejects new legacy
 create or revise intents.
 
-Every viewable task artifact opens through one viewer shell. The shell owns
-the preview and **Keep**. Selection-to-prompt is a separate layer that the
-shell hosts only for a type that supports it, and only when the originating
-chat can receive it. The artifact remains the dominant visual object. That
-layer adds only a narrow selection rail and the controls needed to add the
-selections to the originating chat. A missing chat removes the rail; it never
-prevents viewing. Episode reports
-use the same shell and selection vocabulary while retaining their immutable
-episode-report lifecycle.
+Every viewable artifact, including a report, opens in the RCP window's viewer
+panel. Its RCP chrome owns the title, version, Live or Finished status, Undo,
+reply-thread control, dock, and close. The embedded shell keeps Keep and notices,
+selection gestures, a comment box, and Send. The shell allows framing only by
+the same RCP origin. Agent HTML remains inside its unchanged opaque sandbox.
+Small raster images and SVGs may also render inline in chat; HTML has no thumbnail.
+PDFs use the system viewer on desktop, and unsupported files remain download-only.
+Repository-file previews use the same panel with their script-free content route.
 
-Small raster images and SVGs render inline in the chat and may also open in the
-viewer. HTML keeps its current link behavior and opens directly into the full
-viewer; it has no chat thumbnail. Repository-file previews are explicitly out
-of this contract.
+The run artifact endpoint lists the run's report and its turn artifacts, including
+Auto-research child Work and child Experiment episodes. It excludes expired,
+unkept outputs, places the queried episode's report first, and orders the remaining entries by
+creation time.
+Worker names come from their child Work route's instruction heading, or Worker
+when that heading is absent.
 
 The viewer entrance is backend-owned. `/viewer` is the current explicit shell
 URL, while the former `/preview` URL remains a compatibility alias to that same
@@ -242,40 +244,28 @@ artifacts and episode reports. A retained client that still embeds a small PNG
 or SVG from `/preview` continues to receive image bytes for an explicit browser
 image request; ordinary navigation to that URL receives the shell.
 
-### Selection-to-prompt, not artifact annotation
+### Selection and comments
 
 HTML, raster images, and SVG support selection gestures. Every type the viewer
 shows accepts an edit comment, including Markdown, text, data, and code; these
 other types accept comments without selections. PDF and download-only files
 refuse editing.
 
-HTML selection gestures activate only when the surrounding confirmation shell
-opts in through the private preview bridge. A viewer without an originating chat,
-whether a task artifact or an episode report whose concluding task is not a chat
-turn, keeps ordinary browser gestures and never draws a selection rail; it keeps
-Keep or Save copy.
+HTML selection gestures activate when the surrounding confirmation shell opts
+in through the private preview bridge. Text and area selections remain pending
+until the human chooses Comment; Cancel or Escape discards the pending selection.
+Dragging from a figure or blank space selects an area, while starting on text
+preserves ordinary highlighting. Each confirmed selection can carry a comment
+and can be removed. These are prompt inputs, never graph annotations.
 
-Selections and comments are saved per artifact in the current browser or desktop
-profile. Closing and reopening the viewer restores them, including comments
-already added to a chat draft. **Remove** deletes an individual saved selection.
-They remain prompt inputs, separate from the artifact and graph. Highlighting
-text remains an ordinary browser selection. Dragging from a figure or blank
-space draws an area immediately, without a separate Box mode; starting on text
-preserves native highlighting, and ordinary controls keep their own gestures.
-Both text and area selections are pending until the human chooses **Comment**;
-**Cancel** or Escape discards the pending selection. Clicking or dragging alone
-never adds prompt context. The human may add one comment or question per
-confirmed selection and add them to the chat. Each selection becomes a composer
-annotation, the same object as a comment on answer text, with the artifact
-selection as what it is about; the comment stays editable there and the
-annotation is removable. Nothing is sent until the human sends that composer
-turn. Re-adding selections replaces the staged artifact annotations and leaves
-typed text and answer comments alone. Artifact annotations need a new turn, like
-files; they block steering a running turn.
-After adding selections, **Open chat** opens that exact conversation and graph
-target with the annotations ready to review. In the desktop it brings the existing RCP
-window forward; in a browser it follows the chat link in the current tab.
-An expired desktop navigation cannot later select the chat or focus the window.
+The shell saves the comment and selections per artifact in the current browser
+profile. Send posts them directly to the stored artifact's comments endpoint.
+A 409 displays the server's reason and preserves the draft. Success clears it
+and notifies the containing RCP panel of the admitted edit operation. No chat
+draft, BroadcastChannel handoff, or Open chat action participates in sending.
+When admission requires an explicit fresh session, the action reads Edit in a
+new session and supplies the fresh-session flag. An unavailable origin never
+prevents viewing; its reason appears beside the disabled action.
 
 RCP carries selected text with limited surrounding text. A box on HTML names
 up to eight elements it covers the way a reader of the source finds them: a CSS
@@ -334,8 +324,8 @@ reason. The explicit fresh-session flag authorizes a new provider session and
 scratch while retaining the same reply thread; it never restores the old
 execution authority. Candidate creation, comparison, Accept, and Reject are
 removed. Legacy rows are read only for background import and archive capture.
-The docked viewer and its direct comment controls remain the later viewer slice;
-existing selection-to-composer controls remain until then.
+The read-only viewer state check reuses this admission code and the session
+reservation check. Its offers never replace enforcement by the comments POST.
 
 ### Shape boundary
 
@@ -374,7 +364,8 @@ Proposal, and grant no graph authority.
 A repository-file Markdown link in an answer never navigates the main RCP
 WebView. RCP resolves the absolute execution-host path against configured
 project repository roots. Exactly one match opens a bounded escaped read-only
-source page through the secondary preview window.
+source page in the in-app viewer panel. Its script-free response allows only
+same-origin framing.
 
 A remote match is read on demand through that repository's configured SSH host
 and is not retained locally. No match, several matching/nested roots, unavailable

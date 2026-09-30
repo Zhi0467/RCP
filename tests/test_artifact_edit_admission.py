@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import uuid
 
 import pytest
+from PIL import Image
 
-from rcp.runs.artifact_edit_admission import admit_artifact_edit
+from rcp.runs.artifact_edit_admission import admit_artifact_edit, artifact_edit_availability
 from rcp.runs.session_master import record_session_master
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, EpisodeRecord
@@ -201,3 +203,78 @@ def test_text_edits_refuse_selection_gestures(edit_origin):
     )
     with pytest.raises(ValueError):
         admit_artifact_edit(store, app.state.service, task.project_id, request)
+
+
+@pytest.mark.parametrize("suffix", ["html", "png", "svg", "md", "txt", "json", "py"])
+def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffix):
+    app, store, task = edit_origin
+    data = b"Original"
+    if suffix == "png":
+        output = io.BytesIO()
+        Image.new("RGB", (1, 1)).save(output, format="PNG")
+        data = output.getvalue()
+    elif suffix == "svg":
+        data = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+    artifact = _stored_artifact(app, task.operation_id, f"artifact.{suffix}", data)
+    record_session_master(store, task.operation_id, "master bytes")
+    with store.connection() as connection:
+        before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
+    result = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert result.can_comment
+    assert result.comment_unavailable_reason is None
+    assert not result.fresh_session_required
+    with store.connection() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
+
+
+def test_viewer_session_collision_uses_reservation_reason(edit_origin):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
+    record_session_master(store, task.operation_id, "master bytes")
+    active = task.model_copy(update={"operation_id": str(uuid.uuid4()), "status": "running"})
+    store.create_agent_task(active)
+    result = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert not result.can_comment
+    probe = task.model_copy(update={"operation_id": str(uuid.uuid4()), "status": "queued"})
+    assert result.comment_unavailable_reason == store.session_launch_unavailable_reason(probe)
+    assert not result.fresh_session_required
+
+
+def test_viewer_missing_master_offers_explicit_fresh_session(edit_origin):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
+    result = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert result.can_comment
+    assert result.fresh_session_required
+    assert result.comment_unavailable_reason is None
+
+
+def test_viewer_corrupt_master_does_not_offer_fresh_session(edit_origin, monkeypatch):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
+    record_session_master(store, task.operation_id, "master bytes")
+    monkeypatch.setattr(store, "agent_task_contract", lambda *_: "corrupt bytes")
+    result = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert not result.can_comment
+    assert result.comment_unavailable_reason
+    assert not result.fresh_session_required
+
+
+@pytest.mark.parametrize("suffix", ["pdf", "bin"])
+def test_viewer_does_not_offer_edits_for_unsupported_types(edit_origin, suffix):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, f"artifact.{suffix}", b"Original")
+    result = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert not result.can_comment
+    assert result.comment_unavailable_reason
+    assert not result.fresh_session_required

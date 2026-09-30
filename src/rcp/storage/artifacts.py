@@ -23,6 +23,7 @@ from rcp.storage.artifact_models import (
     ArtifactVersionConflict,
     artifact_version_files,
 )
+from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -265,6 +266,19 @@ class ArtifactStoreMixin:
                     (artifact.model_dump_json(), artifact_id),
                 )
             return artifact
+
+    def artifact_edit_operation_id(self, project_id: str, artifact_id: str) -> str | None:
+        """The latest admitted, nonterminal edit, without loading task history."""
+        statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT operation_id FROM graph_runs WHERE project_id = ? "
+                f"AND status IN ({','.join('?' for _ in statuses)}) "
+                "AND json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
+                "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+                (project_id, *statuses, artifact_id),
+            ).fetchone()
+        return row[0] if row else None
 
     def protected_edit_artifact_ids(self) -> frozenset[str]:
         with self.connection() as connection:

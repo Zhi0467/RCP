@@ -123,7 +123,6 @@ class AgentArtifactResponse(AgentArtifactDescriptor):
     can_download: bool
     can_keep: bool
     can_discuss: bool
-    can_revise: bool
 
 
 def _agent_artifact_response(
@@ -170,7 +169,6 @@ def _agent_artifact_response(
         can_download=available,
         can_keep=available and not kept and not record.history_only,
         can_discuss=can_discuss,
-        can_revise=can_discuss,
     )
 
 
@@ -469,7 +467,7 @@ async def content_agent_artifact(
             descriptor.name,
             descriptor.media_type,
             data,
-            frame_addon=selection_frame_addon() if descriptor.can_discuss else None,
+            frame_addon=selection_frame_addon() if descriptor.media_type == "text/html" else None,
         )
     except (OSError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Preview unavailable") from exc
@@ -599,8 +597,6 @@ async def _artifact_viewer_response(
         artifact_id,
         "open",
     )
-    record = store.agent_task(operation_id)
-    chat_id = record.request.get("chat_id") if record is not None else None
     content_url = (
         f"/api/projects/{quote(project_id, safe='')}/tasks/{quote(operation_id, safe='')}"
         f"/artifacts/{quote(artifact_id, safe='')}/content"
@@ -613,19 +609,9 @@ async def _artifact_viewer_response(
     )
     panel = (
         comment_panel(
-            {
-                "projectId": project_id,
-                "chatId": chat_id,
-                "operationId": operation_id,
-                "artifactId": descriptor.artifact_id,
-                "artifactName": descriptor.name,
-                "mediaType": descriptor.media_type,
-                "source": "task",
-                "episodeId": None,
-                "branchId": record.graph_target.branch_id if record else None,
-            }
+            {"projectId": project_id, "artifactId": artifact_id, "mediaType": descriptor.media_type}
         )
-        if descriptor.can_discuss
+        if supports_comments(descriptor.media_type)
         else None
     )
     stored = store.artifact(artifact_id)

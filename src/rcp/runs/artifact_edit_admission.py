@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from rcp.artifact_comments import supports_comments
@@ -11,6 +12,70 @@ from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
 from rcp.service import ArtifactEditAdmission, ProjectService, RunRequest
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, Artifact
 from rcp.transport import RemoteRunStage
+
+
+class ArtifactFreshSessionRequired(AgentTaskAdmissionConflict):
+    """The origin can only be edited with an explicitly requested new session."""
+
+
+@dataclass(frozen=True)
+class ArtifactEditAvailability:
+    can_comment: bool
+    comment_unavailable_reason: str | None = None
+    fresh_session_required: bool = False
+
+
+def artifact_edit_availability(
+    store: AppStore, service: ProjectService, artifact: Artifact
+) -> ArtifactEditAvailability:
+    """Offer admission without creating a task or reserving its session.
+
+    The POST still admits and reserves atomically. A fresh session is offered
+    only for the explicit resumability failures admission identifies.
+    """
+
+    fresh = False
+    try:
+        request = RunRequest(
+            message="Edit artifact.",
+            artifact_context={
+                "operation_id": artifact.origin_operation_id or "",
+                "artifact_id": artifact.artifact_id,
+            },
+        )
+        try:
+            admitted = admit_artifact_edit(store, service, artifact.project_id, request)
+        except ArtifactFreshSessionRequired:
+            fresh = True
+            request = request.model_copy(
+                update={
+                    "artifact_context": request.artifact_context.model_copy(
+                        update={"fresh_session": True}
+                    )
+                }
+            )
+            admitted = admit_artifact_edit(store, service, artifact.project_id, request)
+        edit = admitted.artifact_edit
+        assert edit is not None
+        now = store.now()
+        reason = store.session_launch_unavailable_reason(
+            AgentTaskRecord(
+                operation_id=edit.operation_id,
+                project_id=artifact.project_id,
+                kind="artifact_edit",
+                status="queued",
+                status_message="Checking artifact edit availability.",
+                created_at=now,
+                updated_at=now,
+                request=admitted.model_dump(mode="json"),
+                native_session_id=admitted.session_id,
+                stage_host=edit.stage_host,
+                stage_root=edit.stage_root,
+            )
+        )
+    except (KeyError, OSError, ValueError) as exc:
+        return ArtifactEditAvailability(False, str(exc), fresh)
+    return ArtifactEditAvailability(reason is None, reason, fresh)
 
 
 def _launch_kind_for_master_owner(owner: AgentTaskRecord | None) -> str:
@@ -26,7 +91,7 @@ def _launch_kind_for_master_owner(owner: AgentTaskRecord | None) -> str:
         if owner.request.get("patch_kind") == "experiment_loop":
             return "revoking"
         return "discuss"
-    raise AgentTaskAdmissionConflict(
+    raise ArtifactFreshSessionRequired(
         "The artifact's session holds no master that can admit an edit. "
         "Edit in a new session explicitly."
     )
@@ -100,7 +165,7 @@ def admit_artifact_edit(
             stage = Path(origin.stage_root or "")
             available = stage.is_absolute() and stage.is_dir() and not stage.is_symlink()
     if not available and not fresh:
-        raise AgentTaskAdmissionConflict(
+        raise ArtifactFreshSessionRequired(
             "The artifact's native session or stage is unavailable. Edit in a new session explicitly."
         )
     found = (
@@ -108,7 +173,7 @@ def admit_artifact_edit(
     )
     content = None if found is None else store.agent_task_contract(found[0], SESSION_MASTER_ROLE)
     if not fresh and (found is None or content is None):
-        raise AgentTaskAdmissionConflict(
+        raise ArtifactFreshSessionRequired(
             "The artifact's recorded master is unavailable. Edit in a new session explicitly."
         )
     launch_kind = "revoking" if reply_episode_id else "discuss"

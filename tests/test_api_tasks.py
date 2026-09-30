@@ -57,7 +57,6 @@ def test_remote_artifact_read_does_not_stall_health(
         can_download=True,
         can_keep=True,
         can_discuss=False,
-        can_revise=False,
     )
     data = b"\x89PNG\r\n\x1a\npreview"
     entered = threading.Event()

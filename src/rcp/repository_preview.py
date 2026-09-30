@@ -23,7 +23,7 @@ from rcp.transport.state import StateUnavailable
 
 REPOSITORY_PREVIEW_CSP = (
     "sandbox; default-src 'none'; style-src 'unsafe-inline'; "
-    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 )
 
 

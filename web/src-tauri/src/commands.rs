@@ -36,9 +36,6 @@ use crate::{
     updates, windows,
 };
 
-const ARTIFACT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(5);
-const REPOSITORY_PREVIEW_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(35);
-
 #[derive(Serialize)]
 pub struct ShowResult {
     shown: bool,
@@ -139,45 +136,6 @@ impl<'a> ResourceAccess<'a> {
                 )
                 .await
                 .map_err(|error| format!("{description} is unavailable: {error}")),
-        }
-    }
-
-    async fn ensure_available(
-        &self,
-        method: Method,
-        url: &Url,
-        description: &str,
-        timeout: Duration,
-    ) -> Result<(), String> {
-        self.response(method, url.clone(), description, timeout)
-            .await?
-            .error_for_status()
-            .map_err(|error| format!("{description} is unavailable: {error}"))?;
-        Ok(())
-    }
-
-    async fn verify(&self) -> Result<(), String> {
-        match self.target {
-            ResourceTarget::Personal(status) => backend::reverify_identity(self.personal, status)
-                .await
-                .map(|_| ()),
-            ResourceTarget::Team(_) => {
-                let mut url = Url::parse(self.target.base_url())
-                    .map_err(|_| "the displayed team origin is invalid".to_string())?;
-                url.set_path("/api/health");
-                url.set_query(None);
-                url.set_fragment(None);
-                self.response(
-                    Method::GET,
-                    url,
-                    "team server",
-                    ARTIFACT_AVAILABILITY_TIMEOUT,
-                )
-                .await?
-                .error_for_status()
-                .map_err(|error| format!("team server is unavailable: {error}"))?;
-                Ok(())
-            }
         }
     }
 }
@@ -1026,34 +984,6 @@ fn folder_selection_result(path: Option<PathBuf>) -> Result<FolderSelectionResul
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub async fn open_artifact_preview(
-    app: AppHandle,
-    window: WebviewWindow,
-    state: State<'_, BackendState>,
-    connections: State<'_, TeamConnectionState>,
-    sessions: State<'_, TeamSessionState>,
-    project_id: String,
-    task_id: String,
-    artifact_id: String,
-) -> Result<OpenResult, String> {
-    let target = current_resource_target(&window, &state, &sessions)?;
-    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
-    let url = artifact_url(
-        target.base_url(),
-        &project_id,
-        &task_id,
-        &artifact_id,
-        "viewer",
-    )?;
-    access
-        .ensure_available(Method::GET, &url, "artifact", ARTIFACT_AVAILABILITY_TIMEOUT)
-        .await?;
-    windows::open_preview(&app, url, target.base_url().to_string())?;
-    Ok(OpenResult { opened: true })
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn open_artifact_pdf(
     app: AppHandle,
     window: WebviewWindow,
@@ -1102,54 +1032,6 @@ pub async fn open_artifact_pdf(
         .map_err(|error| format!("could not open system PDF viewer: {error}"))?;
     // Keep successful previews until retention pruning; TempDir removes failures.
     let _ = directory.keep();
-    Ok(OpenResult { opened: true })
-}
-
-#[tauri::command]
-pub async fn open_episode_report_preview(
-    app: AppHandle,
-    window: WebviewWindow,
-    state: State<'_, BackendState>,
-    connections: State<'_, TeamConnectionState>,
-    sessions: State<'_, TeamSessionState>,
-    project_id: String,
-    episode_id: String,
-) -> Result<OpenResult, String> {
-    let target = current_resource_target(&window, &state, &sessions)?;
-    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
-    let url = episode_report_preview_url(target.base_url(), &project_id, &episode_id)?;
-    if !Url::parse(target.base_url()).is_ok_and(|base| navigation::same_origin(&url, &base)) {
-        return Err("episode report preview URL is outside the RCP backend".into());
-    }
-    access.verify().await?;
-    windows::open_preview(&app, url, target.base_url().to_string())?;
-    Ok(OpenResult { opened: true })
-}
-
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn open_repository_file_preview(
-    app: AppHandle,
-    window: WebviewWindow,
-    state: State<'_, BackendState>,
-    connections: State<'_, TeamConnectionState>,
-    sessions: State<'_, TeamSessionState>,
-    project_id: String,
-    path: String,
-    line: Option<u64>,
-) -> Result<OpenResult, String> {
-    let target = current_resource_target(&window, &state, &sessions)?;
-    let access = ResourceAccess::new(&target, &state, &connections, &sessions);
-    let url = repository_file_preview_url(target.base_url(), &project_id, &path, line)?;
-    access
-        .ensure_available(
-            Method::HEAD,
-            &url,
-            "repository file",
-            REPOSITORY_PREVIEW_AVAILABILITY_TIMEOUT,
-        )
-        .await?;
-    windows::open_preview(&app, url, target.base_url().to_string())?;
     Ok(OpenResult { opened: true })
 }
 
@@ -1283,69 +1165,6 @@ fn artifact_url(
             action,
         ]);
     Ok(url)
-}
-
-fn episode_report_preview_url(
-    base_url: &str,
-    project_id: &str,
-    episode_id: &str,
-) -> Result<Url, String> {
-    let mut url = Url::parse(base_url).map_err(|error| format!("invalid backend URL: {error}"))?;
-    url.path_segments_mut()
-        .map_err(|_| "backend URL cannot contain path segments".to_string())?
-        .extend([
-            "api", "projects", project_id, "episodes", episode_id, "report", "viewer",
-        ]);
-    Ok(url)
-}
-
-fn repository_file_preview_url(
-    base_url: &str,
-    project_id: &str,
-    path: &str,
-    line: Option<u64>,
-) -> Result<Url, String> {
-    validate_repository_path(path)?;
-    if line == Some(0) {
-        return Err("repository file line must be a positive integer".into());
-    }
-
-    let mut url = Url::parse(base_url).map_err(|error| format!("invalid backend URL: {error}"))?;
-    url.path_segments_mut()
-        .map_err(|_| "backend URL cannot contain path segments".to_string())?
-        .extend([
-            "api",
-            "projects",
-            project_id,
-            "repositories",
-            "files",
-            "preview",
-        ]);
-    {
-        let mut query = url.query_pairs_mut();
-        query.append_pair("path", path);
-        if let Some(line) = line {
-            query.append_pair("line", &line.to_string());
-        }
-    }
-    Ok(url)
-}
-
-fn validate_repository_path(path: &str) -> Result<(), String> {
-    if !path.starts_with('/')
-        || path.contains('\\')
-        || path.contains('\0')
-        || path
-            .split('/')
-            .skip(1)
-            .any(|segment| segment.is_empty() || matches!(segment, "." | ".."))
-    {
-        return Err(
-            "repository file path must be an absolute POSIX path without empty or dot segments"
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 fn safe_filename(suggested: &str) -> &str {
@@ -1564,77 +1383,5 @@ mod tests {
             }
         );
         assert!(folder_selection_result(Some(PathBuf::from("relative/repository"))).is_err());
-    }
-
-    #[test]
-    fn repository_preview_url_encodes_identifiers_path_and_optional_line() {
-        let url = repository_file_preview_url(
-            "http://127.0.0.1:8421",
-            "project id",
-            "/Users/example/origin repo/src/a file.rs",
-            Some(27),
-        )
-        .unwrap();
-
-        assert_eq!(
-            url.as_str(),
-            "http://127.0.0.1:8421/api/projects/project%20id/repositories/files/preview?path=%2FUsers%2Fexample%2Forigin+repo%2Fsrc%2Fa+file.rs&line=27"
-        );
-    }
-
-    #[test]
-    fn episode_report_preview_url_is_same_origin_and_encodes_identifiers() {
-        let base = "http://127.0.0.1:8421";
-        let url = episode_report_preview_url(base, "project id", "episode/id").unwrap();
-
-        assert_eq!(
-            url.as_str(),
-            "http://127.0.0.1:8421/api/projects/project%20id/episodes/episode%2Fid/report/viewer"
-        );
-        assert!(navigation::is_loopback_rcp_url(&url, base, false));
-    }
-
-    #[test]
-    fn repository_preview_url_omits_absent_line() {
-        let url = repository_file_preview_url(
-            "http://127.0.0.1:8421",
-            "project",
-            "/Users/example/repo/README.md",
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(
-            url.query(),
-            Some("path=%2FUsers%2Fexample%2Frepo%2FREADME.md")
-        );
-    }
-
-    #[test]
-    fn repository_preview_rejects_unsafe_paths_and_zero_line() {
-        for path in [
-            "",
-            "relative/path",
-            "src\\main.rs",
-            "/Users/example/repo/bad\0name",
-            "/",
-            "/Users/example/repo/./main.rs",
-            "/Users/example/repo/../main.rs",
-            "/Users/example/repo//main.rs",
-            "/Users/example/repo/",
-        ] {
-            assert!(
-                repository_file_preview_url("http://127.0.0.1:8421", "project", path, None,)
-                    .is_err(),
-                "accepted unsafe path {path:?}"
-            );
-        }
-        assert!(repository_file_preview_url(
-            "http://127.0.0.1:8421",
-            "project",
-            "/Users/example/repo/src/main.rs",
-            Some(0),
-        )
-        .is_err());
     }
 }

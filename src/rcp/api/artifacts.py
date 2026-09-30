@@ -19,15 +19,22 @@ from rcp.api.dependencies import (
     require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.episode_timeline import worker_label
 from rcp.api.episodes import episode_on_branch
 from rcp.api.identity import IdentityAccess
 from rcp.api.tasks import _agent_artifact_response
+from rcp.artifact_comments import comment_panel, selection_frame_addon, supports_comments
 from rcp.artifact_views import artifact_content, artifact_viewer_document
-from rcp.artifacts import AgentArtifactDescriptor, ArtifactView, artifact_view
+from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
 from rcp.background import BackgroundAgentTasks
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
-from rcp.runs.artifact_edit_admission import admit_artifact_edit, start_artifact_edit
+from rcp.runs.artifact_edit_admission import (
+    admit_artifact_edit,
+    artifact_edit_availability,
+    artifact_reply_origin,
+    start_artifact_edit,
+)
 from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, EpisodeMode
 from rcp.transport import StateUnavailable
@@ -223,6 +230,10 @@ def saved_artifacts(
     # satisfy _episode_report_viewer_response's availability prerequisites.
     for report in reports:
         origin = report_origins.get(report.episode_id)
+        stored_report = store.episode_report(report.episode_id)
+        if stored_report is None:
+            continue
+        artifact_url = f"{base}/artifacts/{quote(stored_report.artifact_id, safe='')}"
         entries.append(
             SavedArtifactResponse(
                 id=f"report:{report.report_id}",
@@ -231,13 +242,14 @@ def saved_artifacts(
                 view="html",
                 available=True,
                 can_open=True,
-                can_download=False,
-                download_url=None,
+                can_download=True,
+                download_url=f"{artifact_url}/download",
                 created_at=report.created_at,
+                artifact_id=stored_report.artifact_id,
                 episode_id=report.episode_id,
                 episode_mode=report.mode,
                 source_chat_href=chat_origins.get(origin.operation_id) if origin else None,
-                viewer_url=f"{base}/episodes/{quote(report.episode_id, safe='')}/report/viewer",
+                viewer_url=f"{artifact_url}/viewer",
             )
         )
     represented = {entry.artifact_id for entry in entries if entry.artifact_id}
@@ -291,6 +303,170 @@ def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
     return artifact
 
 
+class ArtifactViewerState(BaseModel):
+    artifact_id: str
+    name: str
+    media_type: ArtifactMediaType
+    view: ArtifactView
+    supplier: Literal["turn", "episode_ending"]
+    current_version: str
+    version_number: int
+    can_undo: bool
+    live: Literal["live", "finished"] | None
+    editing_operation_id: str | None
+    can_comment: bool
+    comment_unavailable_reason: str | None
+    fresh_session_required: bool
+    thread_href: str | None
+    viewer_url: str | None
+    download_url: str
+    can_keep: bool
+    expires_at: str | None
+
+
+class RunArtifactEntry(BaseModel):
+    artifact_id: str
+    name: str
+    media_type: ArtifactMediaType
+    view: ArtifactView
+    supplier: Literal["turn", "episode_ending"]
+    origin_operation_id: str | None
+    worker_label: str | None
+    created_at: str
+
+
+def _artifact_thread_href(store: AppStore, artifact) -> str | None:
+    try:
+        origin, reply_episode_id = artifact_reply_origin(store, artifact)
+    except AgentTaskAdmissionConflict:
+        return None
+    if reply_episode_id:
+        query = {"view": "runs", "mode": "auto_research", "episode": reply_episode_id}
+    else:
+        query = {"view": "chats", "chat": origin.request["chat_id"]}
+        branch_id = origin.graph_target.branch_id
+        episode = store.episode(artifact.episode_id or origin.episode_id or "")
+        if branch_id:
+            query["branch_id"] = branch_id
+            if episode and episode.mode == "experiment_loop":
+                query = _episode_runs_query(store, artifact.project_id, origin, branch_id)
+                if query is None:
+                    return None
+    return f"#/projects/{quote(artifact.project_id, safe='')}?{urlencode(query)}"
+
+
+@router.get(
+    "/api/projects/{project_id}/artifacts/{artifact_id}/state",
+    response_model=ArtifactViewerState,
+)
+def stored_artifact_state(
+    project_id: str,
+    artifact_id: str,
+    *,
+    catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
+    store: Annotated[AppStore, Depends(get_store)],
+) -> ArtifactViewerState:
+    with store.artifact_lock(artifact_id):
+        artifact = _stored_artifact(store, project_id, artifact_id)
+        versions = store.artifact_versions(artifact_id)
+        current = next(v for v in versions if v.version_id == artifact.current_version)
+        can_undo = bool(store._artifact_ancestors(current, versions))
+    can_comment, reason, fresh = False, None, False
+    origin = store.agent_task(artifact.origin_operation_id or "")
+    if origin is None:
+        reason = "The artifact's origin is unavailable."
+    else:
+        try:
+            service = get_graph_service(
+                catalog, project_id, origin.graph_target.branch_id, initialize=False
+            )
+            availability = artifact_edit_availability(store, service, artifact)
+            can_comment = availability.can_comment
+            reason = availability.comment_unavailable_reason
+            fresh = availability.fresh_session_required
+        except (HTTPException, OSError, StateUnavailable, ValueError) as exc:
+            reason = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+    editing = store.artifact_edit_operation_id(project_id, artifact_id)
+    base = f"/api/projects/{quote(project_id, safe='')}/artifacts/{quote(artifact_id, safe='')}"
+    live = None
+    if artifact.live_data_allowed and current.live is not None and not current.live.invalid_reason:
+        live = "finished" if current.live_snapshot else "live"
+    return ArtifactViewerState(
+        artifact_id=artifact_id,
+        name=artifact.display_title or artifact.source_name,
+        media_type=artifact.media_type,
+        view=artifact_view(artifact.media_type),
+        supplier=artifact.supplier,
+        current_version=current.version_id,
+        version_number=versions.index(current) + 1,
+        can_undo=can_undo,
+        live=live,
+        editing_operation_id=editing,
+        can_comment=can_comment,
+        comment_unavailable_reason=reason,
+        fresh_session_required=fresh,
+        thread_href=_artifact_thread_href(store, artifact),
+        viewer_url=f"{base}/viewer"
+        if artifact_view(artifact.media_type) not in {"pdf", "file"}
+        else None,
+        download_url=f"{base}/download",
+        can_keep=artifact.expires_at is not None,
+        expires_at=artifact.expires_at,
+    )
+
+
+@router.get(
+    "/api/projects/{project_id}/episodes/{episode_id}/artifacts",
+    response_model=list[RunArtifactEntry],
+)
+def run_artifacts(
+    project_id: str,
+    episode_id: str,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+) -> list[RunArtifactEntry]:
+    episode = store.episode(episode_id)
+    if episode is None or episode.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Episode not found")
+    episode_ids = {episode_id}
+    if episode.mode == "auto_research":
+        episode_ids.update(
+            child.child_episode_id
+            for child in store.auto_research_child_experiments(episode_id)
+            if child.project_id == project_id
+        )
+    now = store.now()
+    artifacts = [
+        artifact
+        for artifact in store.artifacts(project_id)
+        if artifact.episode_id in episode_ids
+        and (artifact.kept_at or artifact.expires_at is None or artifact.expires_at > now)
+    ]
+    artifacts.sort(
+        key=lambda artifact: (
+            not (artifact.supplier == "episode_ending" and artifact.episode_id == episode_id),
+            artifact.created_at,
+            artifact.artifact_id,
+        )
+    )
+    entries = []
+    for artifact in artifacts:
+        work = store.auto_research_child_work_for_operation(artifact.origin_operation_id or "")
+        entries.append(
+            RunArtifactEntry(
+                artifact_id=artifact.artifact_id,
+                name=artifact.display_title or artifact.source_name,
+                media_type=artifact.media_type,
+                view=artifact_view(artifact.media_type),
+                supplier=artifact.supplier,
+                origin_operation_id=artifact.origin_operation_id,
+                worker_label=worker_label(work.instruction) if work else None,
+                created_at=artifact.created_at,
+            )
+        )
+    return entries
+
+
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/content")
 @router.head("/api/projects/{project_id}/artifacts/{artifact_id}/content")
 def stored_artifact_content(
@@ -305,7 +481,10 @@ def stored_artifact_content(
     try:
         data = store.read_artifact_bytes(artifact_id, version_id)
         document, media_type, csp = artifact_content(
-            artifact.source_name, artifact.media_type, data
+            artifact.source_name,
+            artifact.media_type,
+            data,
+            frame_addon=selection_frame_addon() if artifact.media_type == "text/html" else None,
         )
     except (OSError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Artifact unavailable") from exc
@@ -344,6 +523,15 @@ def stored_artifact_viewer(
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
             keep_url=f"{base}/keep" if artifact.expires_at else None,
             state="temporary" if artifact.expires_at else "kept",
+            panel=comment_panel(
+                {
+                    "projectId": project_id,
+                    "artifactId": artifact_id,
+                    "mediaType": artifact.media_type,
+                }
+            )
+            if supports_comments(artifact.media_type)
+            else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Artifact has no viewer") from exc
