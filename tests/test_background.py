@@ -3625,3 +3625,66 @@ def test_state_transfer_fallback_records_one_task_warning(tmp_path, monkeypatch)
         event for event in store.agent_task_events(task.operation_id) if event.level == "warning"
     ]
     assert len(warnings) == 1
+
+
+def test_turn_that_detached_then_failed_settles_its_mailbox_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dataclasses
+
+    from rcp.runs.patch_validator import (
+        PatchValidationBudget,
+        PatchValidationResult,
+        stage_patch_validation_mailbox,
+    )
+    from rcp.runs.tasks import work_turn_runtime as runtime
+    from rcp.storage.command_mailbox import CommandMailboxStore
+    from rcp.transport import RunStageMailbox
+
+    from .test_work_agent_io import _FilesystemRemoteMailboxStage
+
+    store = _store(tmp_path)
+    secrets = CommandMailboxStore.for_data_dir(tmp_path)
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(parents=True)
+    owners = []
+
+    async def stream(_project_id, _kind, _request, execution):
+        staged = stage_patch_validation_mailbox(
+            local_stage=workspace,
+            remote_stage=None,
+            task_id=execution.operation_id,
+            turn_id="turn",
+            timeout_seconds=2,
+        )
+        remote = _FilesystemRemoteMailboxStage("test-host", workspace)
+        staged = dataclasses.replace(staged, mailbox=RunStageMailbox(workspace, remote))
+        owner = runtime.start_work_validator_mailbox(
+            staged,
+            execution=execution,
+            budget=PatchValidationBudget(1),
+            validate=lambda _text: PatchValidationResult(status="valid"),
+        )
+        owner.detach()
+        owners.append(owner)
+        assert secrets.load(execution.operation_id) is not None
+        raise RuntimeError("provider failed after detaching")
+        yield _sse(AgentEvent(event="done"))
+
+    closed_at_failure = []
+    original_fail = store.fail_agent_task
+
+    def fail(*args, **kwargs):
+        closed_at_failure.append(owners[0].closed)
+        return original_fail(*args, **kwargs)
+
+    monkeypatch.setattr(store, "fail_agent_task", fail)
+    tasks = BackgroundAgentTasks(store, stream)
+    task = _admitted_launch_task(store, operation_id="detached-then-failed")
+    try:
+        tasks.launch_admitted(task.operation_id)
+        wait_for_task(store, task.operation_id, expect="failed")
+    finally:
+        tasks.shutdown()
+    assert closed_at_failure == [True]
+    assert secrets.load(task.operation_id) is None

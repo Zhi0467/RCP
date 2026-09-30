@@ -151,7 +151,8 @@ class WorkValidatorMailboxLifecycle:
         )
         if self.execution is not None and self.thread is not None and not self.suspension.is_set():
             CommandMailboxStore.for_data_dir(self.execution.store.path.parent).delete(
-                self.execution.operation_id
+                self.execution.operation_id,
+                mailbox_id=self.staged.credential.mailbox_id,
             )
 
 
@@ -680,23 +681,27 @@ def discard_work_mailbox_checkpoint(data_dir: Path, operation_id: str) -> dict[s
     return saved
 
 
-def clear_saved_remote_mailbox(saved: dict[str, object]) -> None:
-    """Best effort: remove a discarded turn's command files from its stage.
+def clear_saved_remote_mailbox(saved: dict[str, object]) -> bool:
+    """Remove a discarded turn's command files from its stage; report success.
 
     Only names carrying this mailbox's random id go, so a newer turn on the
-    same stage keeps its own requests and credential.
+    same stage keeps its own requests and credential. A malformed document has
+    nothing to clean and counts as done.
     """
 
-    with suppress(Exception):
-        mailbox_id = str(saved["mailbox_id"])
-        if len(mailbox_id) != 32:
-            return
-        remote = RemoteRunStage(str(saved["host"]))
-        remote.root = PurePosixPath(str(saved["root"]))
+    mailbox_id, host, root = (str(saved.get(key) or "") for key in ("mailbox_id", "host", "root"))
+    if len(mailbox_id) != 32 or not host or not root:
+        return True
+    try:
+        remote = RemoteRunStage(host)
+        remote.root = PurePosixPath(root)
         mailbox = RunStageMailbox.for_stage(local_stage=None, remote_stage=remote)
         for name in mailbox.entry_names():
             if mailbox_id in name:
                 mailbox.remove(name, missing_ok=True)
+    except Exception:
+        return False
+    return True
 
 
 async def _wait_for_work_validator_task(

@@ -1544,6 +1544,25 @@ class _FilesystemRemoteMailboxStage:
         self._mailbox().remove(name)
 
 
+def test_discarded_mailbox_cleanup_removes_only_its_own_stage_files(tmp_path, monkeypatch):
+    from rcp.runs.tasks import work_turn_runtime as runtime
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(parents=True)
+    old, new = "a" * 32, "b" * 32
+    for mailbox_id in (old, new):
+        (workspace / f"rcp-command-{mailbox_id}-{'c' * 32}.request.json").write_text("{}")
+        (workspace / f"rcp-command-{mailbox_id}.credential.json").write_text("{}")
+    monkeypatch.setattr(runtime, "RemoteRunStage", _FilesystemRemoteMailboxStage)
+
+    assert runtime.clear_saved_remote_mailbox(
+        {"mailbox_id": old, "host": "test-host", "root": str(workspace.parent)}
+    )
+    assert sorted(path.name for path in workspace.iterdir()) == sorted(
+        [f"rcp-command-{new}-{'c' * 32}.request.json", f"rcp-command-{new}.credential.json"]
+    )
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, monkeypatch, restart):
     from rcp.agents import AgentEvent, AgentProcessControl
