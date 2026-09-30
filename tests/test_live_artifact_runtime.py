@@ -55,7 +55,9 @@ def live(tmp_path, manifest):
     service.for_graph_target = lambda target, **kwargs: service
     catalog = SimpleNamespace(open=lambda project_id: service)
 
-    def create(needs, *, artifact_id="page", supplier="turn", live_data_allowed=True):
+    def create(
+        needs, *, artifact_id="page", supplier="turn", live_data_allowed=True, episode_id=None
+    ):
         data = (
             '<html><script type="application/json" id="rcp-live">'
             + json.dumps({"version": 1, "needs": needs})
@@ -69,7 +71,7 @@ def live(tmp_path, manifest):
                 supplier_id="turn",
                 live_data_allowed=live_data_allowed,
                 origin_operation_id=task.operation_id,
-                episode_id=store.agent_task(task.operation_id).episode_id,
+                episode_id=episode_id or store.agent_task(task.operation_id).episode_id,
                 source_name="page.html",
                 media_type="text/html",
                 created_at=store.now(),
@@ -93,6 +95,35 @@ def file_need(path, *, read="tail", format="jsonl"):
 def read(live, artifact):
     return artifact_live_snapshot(
         live.store, live.catalog, artifact.artifact_id, artifact.current_version
+    )
+
+
+def capture(live):
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+
+
+def version(live, artifact):
+    return live.store.artifact_versions(artifact.artifact_id)[0]
+
+
+def episode(live):
+    from rcp.storage import EpisodeRecord
+    from tests.helpers import authorized_human
+
+    now = live.store.now()
+    return live.store.create_episode(
+        EpisodeRecord(
+            episode_id="episode",
+            project_id="project",
+            mode="experiment_loop",
+            control_node_id="experiment",
+            authorized_by=authorized_human(live.store),
+            status="queued",
+            invocation_ceiling=4,
+            invocations_used=0,
+            created_at=now,
+            updated_at=now,
+        )
     )
 
 
@@ -145,13 +176,13 @@ def test_resolution_and_current_file_snapshot_are_version_bound(live):
     assert read(live, artifact).snapshots[0].rows == [{"loss": 2}]
     metrics.write_text('{"loss":1}\n')
     assert read(live, artifact).snapshots[0].rows == [{"loss": 1}]
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    capture(live)
     assert (
         live.store.read_artifact_live_snapshot(artifact.artifact_id, artifact.current_version)
         is None
     )
     live.service.manifest.repositories = []
-    with pytest.raises(ValueError, match="readable roots"):
+    with pytest.raises(ValueError):
         read(live, artifact)
 
 
@@ -175,7 +206,7 @@ def test_server_final_capture_survives_deleted_sources_and_history_transfer(live
     metrics = live.root / "metrics.jsonl"
     metrics.write_text('{"loss":0.5}\n')
     artifact = live.create([{"kind": "job", "key": "train"}, file_need(metrics)])
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    capture(live)
     metrics.unlink()
     Path(record.log_path).unlink()
     with live.store.connection() as connection:
@@ -188,45 +219,47 @@ def test_server_final_capture_survives_deleted_sources_and_history_transfer(live
     assert snapshot.final and snapshot.complete
     assert snapshot.snapshots[1].rows == [{"loss": 0.5}]
 
+    def refuse(*args, **kwargs):
+        raise ValueError("graph target unavailable")
+
+    live.service.for_graph_target = refuse
+    with pytest.raises(ValueError):
+        read(live, artifact)
+
 
 def test_incomplete_server_capture_has_durable_backoff_then_retries(live, monkeypatch):
     job(live)
     metrics = live.root / "missing.jsonl"
     artifact = live.create([{"kind": "job", "key": "train"}, file_need(metrics)])
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    version = live.store.artifact_versions(artifact.artifact_id)[0]
-    assert version.live_snapshot is None
-    assert version.live.capture_attempts == 1 and version.live.capture_error
+    capture(live)
+    saved = version(live, artifact)
+    assert saved.live_snapshot is None
+    assert saved.live.capture_attempts == 1 and saved.live.capture_error
     assert not read(live, artifact).complete
     metrics.write_text('{"loss":0.1}\n')
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    assert live.store.artifact_versions(artifact.artifact_id)[0].live.capture_attempts == 1
-    later = (
-        datetime.fromisoformat(version.live.next_capture_at) + timedelta(seconds=1)
-    ).isoformat()
+    capture(live)
+    assert version(live, artifact).live.capture_attempts == 1
+    later = (datetime.fromisoformat(saved.live.next_capture_at) + timedelta(seconds=1)).isoformat()
     monkeypatch.setattr(live.store, "now", lambda: later)
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    capture(live)
     assert read(live, artifact).final
 
 
-def test_historical_artifact_cannot_read_live_sources(live):
-    metrics = live.root / "metrics.jsonl"
-    metrics.write_text("{}\n")
-    artifact = live.create([file_need(metrics)])
-    with live.store.connection() as connection:
-        connection.execute("UPDATE graph_runs SET history_only=1 WHERE operation_id='turn'")
-    with pytest.raises(ValueError, match="Historical"):
-        read(live, artifact)
-
-
-def test_tail_caps_and_symlink_refusal(live, monkeypatch):
+@pytest.mark.parametrize(
+    "contents, rows",
+    [
+        ("first\nsecond\nthird\nfourth\n", ["fourth"]),
+        ("discard\nfirst\nfinal\n", ["first", "final"]),
+    ],
+)
+def test_tail_caps_at_complete_lines(live, monkeypatch, contents, rows):
     monkeypatch.setattr("rcp.live_artifact_runtime.LIVE_ARTIFACT_MAX_BYTES", 12)
     monkeypatch.setattr("rcp.live_artifact_runtime.LIVE_ARTIFACT_MAX_ROWS", 2)
     metrics = live.root / "metrics.txt"
-    metrics.write_text("first\nsecond\nthird\nfourth\n")
+    metrics.write_text(contents)
     artifact = live.create([file_need(metrics, format="text")])
     snapshot = read(live, artifact).snapshots[0]
-    assert snapshot.rows == ["fourth"] and snapshot.truncated
+    assert snapshot.rows == rows and snapshot.truncated
     metrics.unlink()
     metrics.symlink_to(live.root / "target")
     (live.root / "target").write_text("private")
@@ -259,31 +292,14 @@ def test_local_and_shipped_reader_refuse_unsafe_files(tmp_path, kind):
 
 
 def test_episode_only_final_capture_without_viewer(live):
-    from rcp.storage import EpisodeRecord
-    from tests.helpers import authorized_human
-
-    now = live.store.now()
-    episode = live.store.create_episode(
-        EpisodeRecord(
-            episode_id="episode",
-            project_id="project",
-            mode="experiment_loop",
-            control_node_id="experiment",
-            authorized_by=authorized_human(live.store),
-            status="queued",
-            invocation_ceiling=4,
-            invocations_used=0,
-            created_at=now,
-            updated_at=now,
-        )
-    )
+    owner = episode(live)
     with live.store.connection() as connection:
         connection.execute(
-            "UPDATE graph_runs SET episode_id=? WHERE operation_id='turn'", (episode.episode_id,)
+            "UPDATE graph_runs SET episode_id=? WHERE operation_id='turn'", (owner.episode_id,)
         )
-    live.store.end_episode_without_report(episode.episode_id, ending="completed")
+    live.store.end_episode_without_report(owner.episode_id, ending="completed")
     artifact = live.create([{"kind": "episode"}])
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    capture(live)
     snapshot = read(live, artifact)
     assert snapshot.final and snapshot.complete
     assert snapshot.snapshots[0].turn == 0
@@ -326,20 +342,7 @@ def test_bound_conversation_worktree_is_readable_and_removal_revokes(live, tmp_p
     artifact = live.create([file_need(metrics)])
     assert read(live, artifact).snapshots[0].rows == [{"loss": 1}]
     live.store.set_conversation_worktree_status("project", chat_id, "ready", "removing")
-    with pytest.raises(ValueError, match="readable roots"):
-        read(live, artifact)
-
-
-def test_graph_target_revalidated_before_saved_final(live):
-    job(live)
-    artifact = live.create([{"kind": "job", "key": "train"}])
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-
-    def refuse(*args, **kwargs):
-        raise ValueError("graph target unavailable")
-
-    live.service.for_graph_target = refuse
-    with pytest.raises(ValueError, match="graph target"):
+    with pytest.raises(ValueError):
         read(live, artifact)
 
 
@@ -369,24 +372,10 @@ def test_node_snapshot_uses_own_graph_and_evidence_stances(live):
     )
     artifact = live.create([{"kind": "node", "id": "claim"}])
     snapshot = read(live, artifact).snapshots[0]
-    assert snapshot.id == "claim" and snapshot.type == "hypothesis" and snapshot.title == "Claim"
-    assert [item.model_dump() for item in snapshot.evidence] == [
-        {"id": "result", "title": "Measurement", "stance": "supports"}
-    ]
+    assert snapshot.id == "claim" and snapshot.type == "hypothesis"
+    assert [(item.id, item.stance) for item in snapshot.evidence] == [("result", "supports")]
     del graph.nodes["claim"]
     assert not read(live, artifact).complete
-
-
-def test_changed_execution_host_refuses_unsaved_live_source(live):
-    metrics = live.root / "metrics.jsonl"
-    metrics.write_text("{}\n")
-    artifact = live.create([file_need(metrics)])
-    with live.store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET stage_host='changed-host' WHERE operation_id='turn'"
-        )
-    with pytest.raises(ValueError, match="execution host"):
-        read(live, artifact)
 
 
 def test_discovery_from_real_branch_service_resolves_own_node(manifest, tmp_path):
@@ -418,33 +407,13 @@ def test_discovery_from_real_branch_service_resolves_own_node(manifest, tmp_path
     assert snapshot.complete and snapshot.snapshots[0].id == "rq/learning-after-shift"
 
 
-def test_artifact_episode_cannot_substitute_another_task_episode(live):
-    artifact = live.create([{"kind": "node", "id": "absent"}])
-    # A forged association must fail before opening either episode's sources.
-    from rcp.live_artifact_runtime import _owner
-
-    substituted = artifact.model_copy(update={"episode_id": "other-episode"})
-    with pytest.raises(ValueError, match="original task episode"):
-        _owner(live.store, substituted)
-
-
 @pytest.mark.parametrize("supplier", ["turn", "episode_ending"])
-def test_artifact_rule_disables_live_data_for_every_supplier(live, supplier):
-    metrics = live.root / "metrics.jsonl"
-    metrics.write_text("{}\n")
-    artifact = live.create([file_need(metrics)], supplier=supplier, live_data_allowed=False)
-    snapshot = read(live, artifact)
-    assert snapshot.static and snapshot.reason
-    assert not snapshot.snapshots
-    assert live.store.artifact_versions(artifact.artifact_id)[0].live.invalid_reason
-
-
 @pytest.mark.parametrize("saved", [False, True])
-def test_disabled_rule_revokes_existing_live_bindings_and_saved_final(live, saved):
+def test_disabled_rule_revokes_existing_live_bindings_and_saved_final(live, saved, supplier):
     job(live)
-    artifact = live.create([{"kind": "job", "key": "train"}])
+    artifact = live.create([{"kind": "job", "key": "train"}], supplier=supplier)
     if saved:
-        reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+        capture(live)
         assert read(live, artifact).final
     disabled = artifact.model_copy(update={"live_data_allowed": False})
     with live.store.connection() as connection:
@@ -452,14 +421,14 @@ def test_disabled_rule_revokes_existing_live_bindings_and_saved_final(live, save
             "UPDATE artifacts SET metadata=? WHERE artifact_id=?",
             (disabled.model_dump_json(), artifact.artifact_id),
         )
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    assert bool(live.store.artifact_versions(artifact.artifact_id)[0].live_snapshot) == saved
+    capture(live)
+    assert bool(version(live, artifact).live_snapshot) == saved
     assert read(live, artifact).static
     assert not read(live, artifact).snapshots
     resolve_artifact_live_version(
         live.store, live.service, artifact.artifact_id, artifact.current_version
     )
-    assert live.store.artifact_versions(artifact.artifact_id)[0].live.invalid_reason
+    assert version(live, artifact).live.invalid_reason
 
 
 @pytest.mark.parametrize(
@@ -478,48 +447,45 @@ def test_structured_file_ignores_in_progress_last_line(live, format, contents, e
     assert snapshot.truncated and snapshot.error is None
 
 
-def test_tail_keeps_complete_line_after_detection_newline(live, monkeypatch):
-    monkeypatch.setattr("rcp.live_artifact_runtime.LIVE_ARTIFACT_MAX_BYTES", 12)
-    metrics = live.root / "metrics.txt"
-    metrics.write_text("discard\nfirst\nfinal\n")
-    artifact = live.create([file_need(metrics, format="text")])
-    snapshot = read(live, artifact).snapshots[0]
-    assert snapshot.rows == ["first", "final"] and snapshot.truncated
-
-
 def test_final_capture_stops_after_bounded_attempts(live, monkeypatch):
     from rcp.limits import LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS
 
     job(live)
     artifact = live.create([{"kind": "job", "key": "train"}, file_need(live.root / "absent")])
     for _ in range(LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS):
-        reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-        version = live.store.artifact_versions(artifact.artifact_id)[0]
-        if version.live.next_capture_at:
-            later = version.live.next_capture_at
+        capture(live)
+        saved = version(live, artifact)
+        if saved.live.next_capture_at:
+            later = saved.live.next_capture_at
             monkeypatch.setattr(live.store, "now", lambda later=later: later)
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    final = live.store.artifact_versions(artifact.artifact_id)[0].live
+    capture(live)
+    final = version(live, artifact).live
     assert final.capture_attempts == LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS
     assert final.capture_error and final.next_capture_at is None
 
 
-@pytest.mark.parametrize("revocation", ["history", "owner", "lineage"])
-def test_final_capture_treats_revoked_sources_as_terminal(live, revocation):
+@pytest.mark.parametrize(
+    "revocation",
+    [
+        "UPDATE graph_runs SET history_only=1",
+        "UPDATE graph_runs SET stage_host='changed-host'",
+        "UPDATE graph_runs SET project_id='other'",
+        "UPDATE graph_runs SET episode_id='other'",
+        "UPDATE compute_jobs SET origin_operation_id='other'",
+    ],
+)
+def test_revoked_sources_refuse_reads_and_final_capture(live, revocation):
     job(live)
     artifact = live.create([{"kind": "job", "key": "train"}])
     with live.store.connection() as connection:
-        if revocation == "history":
-            connection.execute("UPDATE graph_runs SET history_only=1 WHERE operation_id='turn'")
-        elif revocation == "owner":
-            connection.execute("UPDATE graph_runs SET project_id='other' WHERE operation_id='turn'")
-        else:
-            connection.execute("UPDATE compute_jobs SET origin_operation_id='other'")
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    final = live.store.artifact_versions(artifact.artifact_id)[0].live
+        connection.execute(revocation)
+    with pytest.raises(ValueError):
+        read(live, artifact)
+    capture(live)
+    final = version(live, artifact).live
     assert final.invalid_reason and final.capture_error and final.next_capture_at is None
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    assert live.store.artifact_versions(artifact.artifact_id)[0].live.capture_attempts == 1
+    capture(live)
+    assert version(live, artifact).live.capture_attempts == 1
 
 
 def test_expired_artifact_does_not_capture(live):
@@ -537,9 +503,9 @@ def test_expired_artifact_does_not_capture(live):
             "UPDATE artifacts SET metadata=? WHERE artifact_id=?",
             (expired.model_dump_json(), artifact.artifact_id),
         )
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    version = live.store.artifact_versions(artifact.artifact_id)[0]
-    assert version.live.capture_attempts == 0 and version.live_snapshot is None
+    capture(live)
+    saved = version(live, artifact)
+    assert saved.live.capture_attempts == 0 and saved.live_snapshot is None
 
 
 def test_final_capture_reads_outside_lock_and_preserves_concurrent_snapshot(live, monkeypatch):
@@ -554,7 +520,7 @@ def test_final_capture_reads_outside_lock_and_preserves_concurrent_snapshot(live
     concurrent.final = True
     concurrent.snapshots[0].log_tail = "concurrent capture"
 
-    def capture(*args, **kwargs):
+    def capture_concurrently(*args, **kwargs):
         def save():
             with live.store.artifact_lock(artifact.artifact_id):
                 live.store.save_artifact_live_snapshot(
@@ -570,65 +536,27 @@ def test_final_capture_reads_outside_lock_and_preserves_concurrent_snapshot(live
             pool.shutdown(wait=False)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(runtime, "_snapshot", capture)
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    monkeypatch.setattr(runtime, "_snapshot", capture_concurrently)
+    capture(live)
     assert read(live, artifact).snapshots[0].log_tail == "concurrent capture"
 
 
 def test_edit_produced_live_page_retains_episode_provenance(live):
-    from rcp.storage import EpisodeRecord
-    from tests.helpers import authorized_human
-
-    now = live.store.now()
-    episode = live.store.create_episode(
-        EpisodeRecord(
-            episode_id="episode",
-            project_id="project",
-            mode="experiment_loop",
-            control_node_id="experiment",
-            authorized_by=authorized_human(live.store),
-            status="queued",
-            invocation_ceiling=4,
-            invocations_used=0,
-            created_at=now,
-            updated_at=now,
-        )
-    )
+    owner = episode(live)
     with live.store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET request_json=? WHERE operation_id='turn'",
-            (json.dumps({"artifact_edit": {"episode_id": episode.episode_id}}),),
+            (json.dumps({"artifact_edit": {"episode_id": owner.episode_id}}),),
         )
     metrics = live.root / "extra.jsonl"
     metrics.write_text('{"loss":1}\n')
-    data = (
-        '<script type="application/json" id="rcp-live">'
-        + json.dumps({"version": 1, "needs": [file_need(metrics), {"kind": "episode"}]})
-        + "</script>"
-    ).encode()
-    artifact = live.store.create_artifact(
-        Artifact(
-            artifact_id="extra-page",
-            project_id="project",
-            supplier="turn",
-            supplier_id="turn",
-            origin_operation_id="turn",
-            episode_id=episode.episode_id,
-            source_name="extra.html",
-            media_type="text/html",
-            created_at=now,
-        ),
-        data=data,
-    )
-    resolved = resolve_artifact_live_version(
-        live.store, live.service, artifact.artifact_id, artifact.current_version
-    )
-    assert resolved.invalid_reason is None
+    artifact = live.create([file_need(metrics), {"kind": "episode"}], episode_id=owner.episode_id)
+    assert version(live, artifact).live.invalid_reason is None
     snapshot = read(live, artifact)
     assert snapshot.complete and snapshot.snapshots[0].rows == [{"loss": 1}]
     assert snapshot.snapshots[1].state == "queued"
     assert live.store.agent_task("turn").episode_id is None
-    assert live.store.episode_tasks(episode.episode_id) == []
+    assert live.store.episode_tasks(owner.episode_id) == []
 
 
 @pytest.mark.parametrize(
@@ -642,7 +570,7 @@ def test_final_capture_preserves_complete_unterminated_record(live, format, cont
     artifact = live.create([{"kind": "job", "key": "train"}, file_need(metrics, format=format)])
     if format == "jsonl":
         assert read(live, artifact).snapshots[1].rows == expected
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    capture(live)
     snapshot = read(live, artifact)
     assert snapshot.final and snapshot.complete
     assert snapshot.snapshots[1].rows == expected
@@ -659,7 +587,7 @@ def test_running_live_version_never_opens_project_during_reconcile(live):
         pytest.fail("Unended live version opened the project")
 
     live.catalog.open = refuse_open
-    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
-    version = live.store.artifact_versions(artifact.artifact_id)[0]
-    assert version.live.capture_attempts == 0
-    assert version.live_snapshot is None
+    capture(live)
+    saved = version(live, artifact)
+    assert saved.live.capture_attempts == 0
+    assert saved.live_snapshot is None

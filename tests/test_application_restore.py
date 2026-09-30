@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import tarfile
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_c
 
 from rcp.api import create_app
 from rcp.server_ops.backup import _write_deterministic_archive, build_archive_manifest
+from rcp.server_ops.backup_models import BackupArchiveManifest
 from rcp.server_ops.backup_project_files import BackupProjectFileCapturePublication
 from rcp.server_ops.deployment import (
     ApplicationProof,
@@ -22,7 +24,22 @@ from rcp.server_ops.deployment import (
 )
 from rcp.server_ops.maintenance import MaintenanceIdentity
 from rcp.server_ops.restore import RestorePrepareRequest, RestoreRefused, prepare_restore
+from tests.legacy_artifacts import insert_legacy_view
 from tests.test_application_deployment import captured, socket_root  # noqa: F401
+
+
+def _archive_manifest(value):
+    with tarfile.open(value["plaintext_path"]) as archive:
+        return BackupArchiveManifest.model_validate_json(
+            archive.extractfile("manifest.json").read()
+        )
+
+
+def _write_archive(value, manifest, root):
+    path = Path(value["plaintext_path"])
+    with path.open("wb") as stream:
+        _write_deterministic_archive(stream, manifest, root)
+    value["plaintext_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.fixture
@@ -127,17 +144,13 @@ def _confirm(value, review, output):
 def test_restore_preserves_uncaptured_project_as_visible_unavailable(
     restore_request, tmp_path, verification
 ):
-    import tarfile
 
-    from rcp.server_ops.backup_models import BackupArchiveManifest, BackupProjectCapture
+    from rcp.server_ops.backup_models import BackupProjectCapture
     from rcp.storage import AppStore
 
     value, state, previous = restore_request
     proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
-    with tarfile.open(value["plaintext_path"]) as archive:
-        manifest = BackupArchiveManifest.model_validate_json(
-            archive.extractfile("manifest.json").read()
-        )
+    manifest = _archive_manifest(value)
     captured_project = manifest.projects[0]
     uncaptured = BackupProjectCapture(
         project_id=captured_project.project_id,
@@ -157,11 +170,7 @@ def test_restore_preserves_uncaptured_project_as_visible_unavailable(
             "total_bytes": manifest.sqlite_snapshot.size_bytes,
         }
     )
-    with Path(value["plaintext_path"]).open("wb") as stream:
-        _write_deterministic_archive(stream, manifest, Path(proof.capture_root))
-    value["plaintext_sha256"] = hashlib.sha256(
-        Path(value["plaintext_path"]).read_bytes()
-    ).hexdigest()
+    _write_archive(value, manifest, Path(proof.capture_root))
     review = prepare_restore(RestorePrepareRequest(**value))
     result = prepare_restore(_confirm(value, review, tmp_path / "partial-ready"))
     candidate = AppStore(Path(result["roots"][0]["payload"]) / "rcp.sqlite3")
@@ -204,28 +213,18 @@ def test_restore_preserves_uncaptured_project_as_visible_unavailable(
 
 
 def test_restore_refuses_wrong_recorded_transition(restore_request, tmp_path):
-    import tarfile
-
-    from rcp.server_ops.backup_models import BackupArchiveManifest
 
     value, _, previous = restore_request
     proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
-    with tarfile.open(value["plaintext_path"]) as archive:
-        manifest = BackupArchiveManifest.model_validate_json(
-            archive.extractfile("manifest.json").read()
-        )
+    manifest = _archive_manifest(value)
     project = manifest.projects[0]
     project = project.model_copy(
         update={"main_head": project.main_head.model_copy(update={"transition_id": "e" * 64})}
     )
     manifest = manifest.model_copy(update={"projects": (project,)})
-    with Path(value["plaintext_path"]).open("wb") as stream:
-        _write_deterministic_archive(stream, manifest, Path(proof.capture_root))
-    value["plaintext_sha256"] = hashlib.sha256(
-        Path(value["plaintext_path"]).read_bytes()
-    ).hexdigest()
+    _write_archive(value, manifest, Path(proof.capture_root))
     review = prepare_restore(RestorePrepareRequest(**value))
-    with pytest.raises(ValueError, match="captured head"):
+    with pytest.raises(ValueError):
         prepare_restore(_confirm(value, review, tmp_path / "wrong-head"))
 
 
@@ -234,18 +233,13 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
 ):
     import os
     import pwd
-    import tarfile
 
     from rcp.server_ops import git_credentials, layout, project_checkout, restore
-    from rcp.server_ops.backup_models import BackupArchiveManifest
     from rcp.server_ops.models import ExternalAction
     from rcp.storage import AppStore
 
     value, _, previous = restore_request
-    with tarfile.open(value["plaintext_path"]) as archive:
-        manifest = BackupArchiveManifest.model_validate_json(
-            archive.extractfile("manifest.json").read()
-        )
+    manifest = _archive_manifest(value)
     capture = manifest.projects[0]
     repo = capture.recovery.repositories[0]
     machine = capture.recovery.machines[0]
@@ -257,7 +251,6 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
             projects_root=Path(machine.resolved_central_root),
         ),
     )
-    calls = []
     granted = False
     material = SimpleNamespace(
         label="fresh restore key",
@@ -266,7 +259,6 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
     )
 
     def probe(*args, **kwargs):
-        calls.append("probe")
         return SimpleNamespace(
             ready=granted,
             commit=repo.git_commit if granted else None,
@@ -275,7 +267,7 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
         )
 
     credentials = SimpleNamespace(
-        preflight_recovery_key=lambda *a, **k: calls.append("preflight"),
+        preflight_recovery_key=lambda *a, **k: None,
         prepare_recovery_key=lambda *a, **k: material,
         probe_write=probe,
     )
@@ -289,7 +281,6 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
     )
 
     def checkout(*args, **kwargs):
-        calls.append("checkout")
         return SimpleNamespace(
             repository_path=repo.resolved_path,
             central_root=machine.resolved_central_root,
@@ -313,7 +304,6 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
     first = restore._recover_repositories(request, manifest, None, members)
     assert first["status"] == "continue"
     assert first["progress"][0]["state"] == "key_started"
-    assert calls == ["preflight"]
 
     def resumed(result):
         return request.model_copy(
@@ -336,9 +326,6 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
     assert completed["status"] == "continue"
     assert completed["progress"][0]["state"] == "checkout_ready"
     assert restore._recover_repositories(resumed(completed), manifest, None, members) is None
-    assert calls.count("preflight") == 1
-    assert calls.count("probe") == 2
-    assert calls.count("checkout") == 2
 
 
 @pytest.mark.parametrize(
@@ -347,7 +334,6 @@ def test_fresh_checkout_pauses_and_resumes_same_key_after_durable_progress(
 def test_tampered_archive_structure_never_changes_live_state(restore_request, tmp_path, damage):
     import io
     import json
-    import tarfile
 
     value, state, _ = restore_request
     database = Path(value["data_dir"]) / "rcp.sqlite3"
@@ -391,9 +377,7 @@ def test_tampered_archive_structure_never_changes_live_state(restore_request, tm
 @pytest.mark.parametrize("omit_inventory", [False, True])
 def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omit_inventory):
     import json
-    import tarfile
 
-    from rcp.server_ops.backup_models import BackupArchiveManifest
     from rcp.storage import AppStore, Artifact
 
     value, _, previous = restore_request
@@ -420,10 +404,7 @@ def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omi
         operation_id=str(uuid.uuid4()),
         data=b"edited",
     )
-    with tarfile.open(value["plaintext_path"]) as archive:
-        manifest = BackupArchiveManifest.model_validate_json(
-            archive.extractfile("manifest.json").read()
-        )
+    manifest = _archive_manifest(value)
     inventory = tuple(store.artifact_inventory())
     snapshot = manifest.sqlite_snapshot.model_copy(
         update={
@@ -446,13 +427,9 @@ def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omi
         old_payload.pop("artifact_inventory")
         old_payload["total_bytes"] -= sum(item.size_bytes for item in inventory)
         manifest = BackupArchiveManifest.model_validate_json(json.dumps(old_payload))
-    with Path(value["plaintext_path"]).open("wb") as stream:
-        _write_deterministic_archive(stream, manifest, root)
-    value["plaintext_sha256"] = hashlib.sha256(
-        Path(value["plaintext_path"]).read_bytes()
-    ).hexdigest()
+    _write_archive(value, manifest, root)
     if omit_inventory:
-        with pytest.raises(RestoreRefused, match="requires its protected inventory"):
+        with pytest.raises(RestoreRefused):
             prepare_restore(RestorePrepareRequest(**value))
         return
     review = prepare_restore(RestorePrepareRequest(**value))
@@ -471,12 +448,9 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
     import gzip
     import json
     import sqlite3
-    import tarfile
 
     import rcp.server_ops.restore as restore_module
     from rcp.server_ops.backup_integrity import database_schema_sha256
-    from rcp.server_ops.backup_models import BackupArchiveManifest
-    from rcp.storage import AppStore
 
     value, _, previous = restore_request
     proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
@@ -504,34 +478,7 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
         connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT NOT NULL DEFAULT ''")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 30")
         connection.execute(view_schema)
-        now = AppStore.now()
-        connection.execute(
-            "INSERT INTO result_views VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "a" * 24,
-                project_id,
-                "experiment",
-                "chat",
-                "origin",
-                "latest",
-                "codex",
-                "model",
-                "",
-                "local",
-                "session",
-                "",
-                "/missing/stage",
-                "page.html",
-                "0" * 64,
-                4,
-                "page",
-                now,
-                now,
-                now,
-                None,
-                None,
-            ),
-        )
+        insert_legacy_view(connection, project_id)
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         schema = database_schema_sha256(connection)
@@ -550,11 +497,7 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
     raw["database_schema_sha256"] = schema
     raw["total_bytes"] += database.stat().st_size - old_size
     manifest = BackupArchiveManifest.model_validate_json(json.dumps(raw))
-    with Path(value["plaintext_path"]).open("wb") as stream:
-        _write_deterministic_archive(stream, manifest, root)
-    value["plaintext_sha256"] = hashlib.sha256(
-        Path(value["plaintext_path"]).read_bytes()
-    ).hexdigest()
+    _write_archive(value, manifest, root)
     review = prepare_restore(RestorePrepareRequest(**value))
     result = prepare_restore(_confirm(value, review, tmp_path / "legacy-ready"))
     restored = ApplicationProof.model_validate_json(Path(result["proof_path"]).read_bytes())

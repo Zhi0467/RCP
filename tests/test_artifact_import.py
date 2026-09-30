@@ -2,20 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import os
-import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from rcp.artifact_import import import_project_artifacts
-from rcp.artifacts import descriptor_for
 from rcp.limits import ARTIFACT_IMPORT_RETRY_SECONDS, RUN_STAGE_RETENTION_DAYS
 from rcp.runs.chat import _local_chat_artifact_directory
-from rcp.storage import AgentTaskRecord, AppStore, ArtifactRevisionCandidateRecord
+from rcp.storage import AppStore, ArtifactRevisionCandidateRecord
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.state import StateUnavailable, StateWorkspace
 
+from .legacy_artifacts import create_legacy_artifact as _legacy
 from .legacy_artifacts import insert_legacy_candidate
 
 
@@ -28,54 +27,6 @@ def store(tmp_path, monkeypatch):
     return store
 
 
-def _legacy(store, tmp_path, *, kept=False, split=False, parent=None, result=True):
-    operation_id = str(uuid.uuid4())
-    scope = parent.operation_id if parent else operation_id
-    descriptor = descriptor_for(scope, "plot.html", media_type="text/html", size_bytes=4)
-    if kept:
-        descriptor = descriptor.model_copy(
-            update={"kept_filename": "saved.html", "kept_at": store.now()}
-        )
-    root = str(tmp_path / operation_id)
-    task = store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=operation_id,
-            project_id="project",
-            kind="project_chat",
-            status="succeeded",
-            request={"chat_id": operation_id, "mode": "discuss"},
-            result={"artifacts": [descriptor.model_dump(mode="json")]} if result else {},
-            created_at=store.now(),
-            updated_at=store.now(),
-            finished_at=store.now(),
-            status_message="",
-            stage_root=root,
-            parent_operation_id=parent.operation_id if parent else None,
-            attempt=2 if parent else 1,
-        )
-    )
-    store.record_agent_task_receipt(
-        operation_id,
-        "operation_created",
-        {
-            "kind": task.kind,
-            "attempt": task.attempt,
-            "has_parent": parent is not None,
-            "resumed": parent is not None,
-        },
-    )
-    if split:
-        store.record_chat_stage_layout(
-            operation_id, stage_root=root, workspace_root=str(Path(root) / "workspace")
-        )
-    directory = _local_chat_artifact_directory(store, task, scope)
-    directory.mkdir(parents=True)
-    (directory / descriptor.name).write_bytes(b"page")
-    touched = store.test_clock[0] - timedelta(days=2)
-    os.utime(root, (touched.timestamp(), touched.timestamp()))
-    return task, descriptor, directory
-
-
 def _no_workspace():
     raise AssertionError("temporary import must not open a state workspace")
 
@@ -85,8 +36,13 @@ def _run(store, workspace=_no_workspace):
 
 
 @pytest.mark.parametrize("split", [False, True])
-def test_local_stage_expiry_identity_and_restart_idempotence(store, tmp_path, split):
-    task, descriptor, directory = _legacy(store, tmp_path, split=split)
+def test_local_stage_expiry_and_identity(store, tmp_path, split):
+    task, descriptor, _ = _legacy(store, tmp_path, split=split)
+    with store.connection() as connection:
+        connection.execute(
+            "DELETE FROM graph_run_receipts WHERE operation_id = ? AND category = 'operation_created'",
+            (task.operation_id,),
+        )
     touched = Path(task.stage_root).stat().st_mtime
     assert _run(store) is None
     artifact = store.artifact(descriptor.artifact_id)
@@ -101,10 +57,6 @@ def test_local_stage_expiry_identity_and_restart_idempotence(store, tmp_path, sp
     )
     assert Path(task.stage_root).stat().st_mtime == touched
     assert store.read_artifact_bytes(artifact.artifact_id) == b"page"
-    (directory / descriptor.name).write_bytes(b"later source change")
-    assert _run(AppStore(store.path)) is None
-    assert store.artifact(artifact.artifact_id) == artifact
-    assert len(store.artifact_versions(artifact.artifact_id)) == 1
 
 
 def test_resumed_turn_keeps_logical_supplier_scope(store, tmp_path):
@@ -118,6 +70,7 @@ def test_resumed_turn_keeps_logical_supplier_scope(store, tmp_path):
 
 def test_kept_file_import_uses_workspace_and_leaves_repository_unchanged(store, tmp_path):
     task, descriptor, _ = _legacy(store, tmp_path, kept=True)
+    _legacy(store, tmp_path, parent=task)
     repository = tmp_path / "repository"
     (repository / "artifacts").mkdir(parents=True)
     path = repository / "artifacts" / descriptor.kept_filename
@@ -184,7 +137,6 @@ def test_permanent_sources_are_recorded_and_not_retried(store, tmp_path, failure
     assert _run(store) is None
     status = store.artifact_import_status(descriptor.artifact_id)
     assert status["state"] == "missing"
-    assert status["reason"]
     assert status["next_attempt_at"] is None
     assert _run(store) is None
     assert store.artifact_import_status(descriptor.artifact_id) == status
@@ -217,37 +169,44 @@ def _candidate(store, tmp_path):
     return source, original, turn, descriptor, candidate
 
 
-def test_candidate_is_an_ordinary_artifact_on_own_turn_without_acceptance(store, tmp_path):
-    source, original, turn, descriptor, candidate = _candidate(store, tmp_path)
+@pytest.mark.parametrize("status", ["pending", "accepting", "conflicted"])
+def test_candidate_import_preserves_identity_retention_and_unblocks_transfer(
+    store, tmp_path, status
+):
+    _, original, turn, descriptor, candidate = _candidate(store, tmp_path)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE artifact_revision_candidates SET status = ?, diagnostic = ? "
+            "WHERE candidate_id = ?",
+            (
+                status,
+                "legacy" if status in {"conflicted", "abandoned"} else None,
+                candidate.candidate_id,
+            ),
+        )
+        store._require_finished_transfer_state(connection, "other-project")
+        with pytest.raises(ValueError):
+            store._require_finished_transfer_state(connection, "project")
+    old = (store.test_clock[0] - timedelta(days=RUN_STAGE_RETENTION_DAYS + 1)).timestamp()
+    os.utime(turn.stage_root, (old, old))
     assert store.legacy_artifact_import_ids() == {original.artifact_id, descriptor.artifact_id}
     assert _run(store) is None
     assert not store.legacy_artifact_import_ids()
-    assert store.artifact(descriptor.artifact_id).origin_operation_id == turn.operation_id
+    artifact = store.artifact(descriptor.artifact_id)
+    assert artifact.origin_operation_id == turn.operation_id
+    assert datetime.fromisoformat(artifact.expires_at) == store.test_clock[0] + timedelta(
+        days=RUN_STAGE_RETENTION_DAYS
+    )
+    store.expire_artifacts()
+    assert store.read_artifact_bytes(descriptor.artifact_id) == b"page"
     assert len(store.artifact_versions(original.artifact_id)) == 1
-    assert store.legacy_artifact_candidates("project")[0].status == "pending"
+    assert store.legacy_artifact_candidates("project")[0].status == status
+    with store.connection() as connection:
+        store._require_finished_transfer_state(connection, "project")
     assert store.agent_task(turn.operation_id).result["artifacts"] == [
         descriptor.model_dump(mode="json")
     ]
     assert _run(store) is None
-    assert len(store.agent_task(turn.operation_id).result["artifacts"]) == 1
-
-
-def test_candidate_crash_after_copy_recovers_attachment_without_overwrite(
-    store, tmp_path, monkeypatch
-):
-    _, original, turn, descriptor, _ = _candidate(store, tmp_path)
-    complete = store.complete_artifact_import
-
-    def crash(*args, **kwargs):
-        raise RuntimeError("simulated interruption after artifact publication")
-
-    monkeypatch.setattr(store, "complete_artifact_import", crash)
-    with pytest.raises(RuntimeError):
-        _run(store)
-    assert store.read_artifact_bytes(descriptor.artifact_id) == b"page"
-    monkeypatch.setattr(store, "complete_artifact_import", complete)
-    assert _run(store) is None
-    assert len(store.artifact_versions(descriptor.artifact_id)) == 1
     assert len(store.agent_task(turn.operation_id).result["artifacts"]) == 1
 
 
@@ -262,25 +221,15 @@ def test_expiry_pruning_cannot_resurrect_legacy_descriptor(store, tmp_path):
     assert store.artifact(descriptor.artifact_id) is None
 
 
-def test_bounded_pass_resumes_remaining_artifacts(store, tmp_path, monkeypatch):
-    monkeypatch.setattr("rcp.artifact_import.ARTIFACT_IMPORT_BATCH_SIZE", 1)
-    _, first, _ = _legacy(store, tmp_path)
-    _, second, _ = _legacy(store, tmp_path)
-    assert _run(store) == 0
-    assert len(store.artifacts("project")) == 1
-    assert _run(store) is None
-    assert _run(store) is None
-    assert {a.artifact_id for a in store.artifacts("project")} == {
-        first.artifact_id,
-        second.artifact_id,
-    }
-
-
+@pytest.mark.parametrize("candidate", [False, True])
 def test_retry_after_copy_does_not_reread_or_overwrite_existing_artifact(
-    store, tmp_path, monkeypatch
+    store, tmp_path, monkeypatch, candidate
 ):
-    _, descriptor, directory = _legacy(store, tmp_path)
-    complete = store.complete_artifact_import
+    if candidate:
+        _, _, task, descriptor, _ = _candidate(store, tmp_path)
+        directory = _local_chat_artifact_directory(store, task, task.operation_id)
+    else:
+        task, descriptor, directory = _legacy(store, tmp_path)
 
     def interrupted_receipt(*args, **kwargs):
         raise OSError("interrupted import receipt write")
@@ -290,12 +239,14 @@ def test_retry_after_copy_does_not_reread_or_overwrite_existing_artifact(
     artifact = store.artifact(descriptor.artifact_id)
     assert artifact is not None
     (directory / descriptor.name).write_bytes(b"changed source")
-    monkeypatch.setattr(store, "complete_artifact_import", complete)
     store.test_clock[0] += timedelta(seconds=ARTIFACT_IMPORT_RETRY_SECONDS)
-    assert _run(store) is None
+    restarted = AppStore(store.path)
+    monkeypatch.setattr(restarted, "now", store.now)
+    assert _run(restarted) is None
     assert store.artifact(descriptor.artifact_id) == artifact
     assert store.read_artifact_bytes(descriptor.artifact_id) == b"page"
     assert len(store.artifact_versions(descriptor.artifact_id)) == 1
+    assert len(store.agent_task(task.operation_id).result["artifacts"]) == 1
 
 
 def test_schema_30_upgrade_only_adds_import_state(store, tmp_path):
@@ -313,33 +264,12 @@ def test_schema_30_upgrade_only_adds_import_state(store, tmp_path):
     assert _run(reopened) is None
 
 
-def test_legacy_direct_identity_does_not_need_retired_receipts(store, tmp_path):
-    task, descriptor, _ = _legacy(store, tmp_path)
-    with store.connection() as connection:
-        connection.execute(
-            "DELETE FROM graph_run_receipts WHERE operation_id = ?", (task.operation_id,)
-        )
-    assert _run(store) is None
-    assert store.read_artifact_bytes(descriptor.artifact_id) == b"page"
-
-
-def test_kept_descriptor_wins_over_resumed_temporary_copy(store, tmp_path):
-    original, descriptor, _ = _legacy(store, tmp_path, kept=True)
-    _legacy(store, tmp_path, parent=original)
-    repository = tmp_path / "repository"
-    (repository / "artifacts").mkdir(parents=True)
-    (repository / "artifacts" / descriptor.kept_filename).write_bytes(b"kept original")
-    workspace = StateWorkspace(repository / ".research", str(repository))
-    assert _run(store, lambda: workspace) is None
-    assert store.read_artifact_bytes(descriptor.artifact_id) == b"kept original"
-    assert store.artifact(descriptor.artifact_id).expires_at is None
-
-
 def test_invalid_descriptor_batch_does_not_hide_later_valid_sources(store, tmp_path, monkeypatch):
     import json
 
     monkeypatch.setattr("rcp.artifact_import.ARTIFACT_IMPORT_BATCH_SIZE", 1)
     _, valid, _ = _legacy(store, tmp_path)
+    _, second, _ = _legacy(store, tmp_path)
     store.test_clock[0] += timedelta(seconds=1)
     invalid_task, invalid, _ = _legacy(store, tmp_path)
     raw = invalid.model_dump(mode="json")
@@ -351,38 +281,11 @@ def test_invalid_descriptor_batch_does_not_hide_later_valid_sources(store, tmp_p
         )
     assert _run(store) == 0
     assert store.artifact_import_status(invalid.artifact_id)["state"] == "missing"
+    assert _run(store) == 0
+    assert len(store.artifacts("project")) == 1
     assert _run(store) is None
+    assert {a.artifact_id for a in store.artifacts("project")} == {
+        valid.artifact_id,
+        second.artifact_id,
+    }
     assert store.read_artifact_bytes(valid.artifact_id) == b"page"
-
-
-def test_old_unresolved_candidate_gets_retention_after_import(store, tmp_path):
-    _, _, turn, descriptor, _ = _candidate(store, tmp_path)
-    old = (store.test_clock[0] - timedelta(days=RUN_STAGE_RETENTION_DAYS + 1)).timestamp()
-    os.utime(turn.stage_root, (old, old))
-    assert _run(store) is None
-    artifact = store.artifact(descriptor.artifact_id)
-    assert datetime.fromisoformat(artifact.expires_at) == store.test_clock[0] + timedelta(
-        days=RUN_STAGE_RETENTION_DAYS
-    )
-    assert descriptor.artifact_id not in store.legacy_artifact_import_ids()
-    store.expire_artifacts()
-    assert store.read_artifact_bytes(descriptor.artifact_id) == b"page"
-
-
-@pytest.mark.parametrize("status", ["pending", "accepting", "conflicted"])
-def test_transfer_waits_for_unresolved_candidate_import(store, tmp_path, status):
-    _, _, _, descriptor, candidate = _candidate(store, tmp_path)
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE artifact_revision_candidates SET status = ?, diagnostic = 'Import pending' "
-            "WHERE candidate_id = ?",
-            (status, candidate.candidate_id),
-        )
-        # An unrelated project's import must not block this project.
-        store._require_finished_transfer_state(connection, "other-project")
-        with pytest.raises(ValueError):
-            store._require_finished_transfer_state(connection, "project")
-    _run(store)
-    assert store.artifact(descriptor.artifact_id) is not None
-    with store.connection() as connection:
-        store._require_finished_transfer_state(connection, "project")

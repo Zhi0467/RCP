@@ -7,14 +7,21 @@ import { chromium } from "playwright";
 
 const script = readFileSync(new URL("../../src/rcp/artifact_live.js", import.meta.url), "utf8");
 
-test("shell fetches only while visible, rejects foreign readiness, and stops after final data", async () => {
-  const listeners = {};
-  const messages = [];
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+function liveShell() {
+  const listeners = {},
+    messages = [];
   const frame = { contentWindow: { postMessage: (value) => messages.push(value) } };
-  let fetches = 0;
-  let scheduled;
-  let final = false;
-  let complete = true;
+  let fetches = 0,
+    scheduled;
+  const payload = {
+    kind: "rcp-live-data",
+    version: 1,
+    complete: true,
+    final: false,
+    refresh_seconds: 2,
+    snapshots: [],
+  };
   const document = {
     hidden: false,
     getElementById: (id) => (id === "preview" ? frame : { textContent: "" }),
@@ -41,48 +48,58 @@ test("shell fetches only while visible, rejects foreign readiness, and stops aft
     fetch: async (url) => {
       assert.equal(url, "/pinned-version/live");
       fetches++;
-      return {
-        ok: true,
-        json: async () => ({
-          kind: "rcp-live-data",
-          version: 1,
-          complete,
-          final,
-          refresh_seconds: 2,
-          snapshots: [],
-        }),
-      };
+      return { ok: true, json: async () => ({ ...payload }) };
     },
   });
-  const settle = () => new Promise((resolve) => setImmediate(resolve));
-  listeners.message({ source: {}, data: { type: "rcp-live-ready", version: 1 } });
+  return {
+    document,
+    payload,
+    listeners,
+    messages,
+    get fetches() {
+      return fetches;
+    },
+    get scheduled() {
+      return scheduled;
+    },
+    ready: (source = frame.contentWindow) =>
+      listeners.message({
+        source,
+        data: { type: "rcp-live-ready", version: 1 },
+      }),
+  };
+}
+
+test("shell fetches only while visible, rejects foreign readiness, and stops after final data", async () => {
+  const app = liveShell();
+  app.ready({});
   await settle();
-  assert.equal(fetches, 0);
-  listeners.message({ source: frame.contentWindow, data: { type: "rcp-live-ready", version: 1 } });
+  assert.equal(app.fetches, 0);
+  app.ready();
   await settle();
-  assert.equal(fetches, 1);
-  assert.equal(messages.length, 1);
-  assert.equal(typeof scheduled, "function");
-  document.hidden = true;
-  listeners.visibilitychange();
+  assert.equal(app.fetches, 1);
+  assert.equal(app.messages.length, 1);
+  assert.equal(typeof app.scheduled, "function");
+  app.document.hidden = true;
+  app.listeners.visibilitychange();
   await settle();
-  assert.equal(scheduled, null);
-  assert.equal(fetches, 1);
-  final = true;
-  complete = false;
-  document.hidden = false;
-  listeners.visibilitychange();
+  assert.equal(app.scheduled, null);
+  assert.equal(app.fetches, 1);
+  app.payload.final = true;
+  app.payload.complete = false;
+  app.document.hidden = false;
+  app.listeners.visibilitychange();
   await settle();
-  assert.equal(fetches, 2);
-  assert.equal(typeof scheduled, "function");
-  complete = true;
-  await scheduled();
-  assert.equal(fetches, 3);
-  assert.equal(messages.at(-1).final, true);
-  assert.equal(scheduled, null);
-  listeners.visibilitychange();
+  assert.equal(app.fetches, 2);
+  assert.equal(typeof app.scheduled, "function");
+  app.payload.complete = true;
+  await app.scheduled();
+  assert.equal(app.fetches, 3);
+  assert.equal(app.messages.at(-1).final, true);
+  assert.equal(app.scheduled, null);
+  app.listeners.visibilitychange();
   await settle();
-  assert.equal(fetches, 3);
+  assert.equal(app.fetches, 3);
 });
 
 test("opaque HTML receives live data through the private channel without network authority", async () => {
@@ -162,46 +179,14 @@ print(json.dumps(dict(content=content,csp=csp,shell=shell,scsp=scsp)))
   }
 });
 
-test("invalid declarations stay static with their reason in the shell", async () => {
-  const listeners = {};
-  const notice = { textContent: "" };
-  const messages = [];
-  const frame = { contentWindow: { postMessage: (value) => messages.push(value) } };
-  let timers = 0;
-  vm.runInNewContext(script, {
-    document: {
-      hidden: false,
-      getElementById: (id) => (id === "preview" ? frame : notice),
-      addEventListener() {},
-    },
-    window: {
-      addEventListener: (name, fn) => {
-        listeners[name] = fn;
-      },
-    },
-    defaultLiveDelay: 2000,
-    liveUrl: "/invalid/live",
-    setTimeout: () => {
-      timers++;
-    },
-    clearTimeout() {},
-    fetch: async () => ({
-      ok: true,
-      json: async () => ({
-        kind: "rcp-live-data",
-        version: 1,
-        static: true,
-        final: false,
-        complete: true,
-        snapshots: [],
-        reason: "Unknown launch key",
-        refresh_seconds: 2,
-      }),
-    }),
-  });
-  listeners.message({ source: frame.contentWindow, data: { type: "rcp-live-ready", version: 1 } });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(notice.textContent, "Unknown launch key");
-  assert.equal(timers, 0);
-  assert.deepEqual(messages, []);
+test("invalid declarations stay static without forwarding data or polling", async () => {
+  const app = liveShell();
+  Object.assign(app.payload, { static: true, reason: "Unknown launch key" });
+  app.ready();
+  await settle();
+  assert.equal(app.scheduled, null);
+  assert.deepEqual(app.messages, []);
+  app.listeners.visibilitychange();
+  await settle();
+  assert.equal(app.fetches, 1);
 });

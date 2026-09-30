@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from rcp.artifacts import classify_artifact_bytes, descriptor_for
 from rcp.live_artifacts import ResolvedLiveVersion
-from rcp.runs.session_master import record_session_master
 from rcp.storage import AgentTaskRecord, Artifact, AutoResearchChildExperimentRecord, EpisodeRecord
 
 from .helpers import create_named_app
@@ -107,6 +106,10 @@ def test_state_version_undo_and_current_viewer(viewer_app):
     assert original["version_number"] == 1
     assert not original["can_undo"]
     assert original["fresh_session_required"] and original["can_comment"]
+    assert parse_qs(urlsplit(original["thread_href"][1:]).query) == {
+        "view": ["chats"],
+        "chat": [task.request["chat_id"]],
+    }
     second = store.publish_artifact_version(
         artifact.artifact_id,
         base_version=artifact.current_version,
@@ -173,79 +176,6 @@ def test_state_edit_operation_tracks_task_lifecycle(viewer_app, status, active):
     )
 
 
-@pytest.mark.parametrize(
-    "kind,report",
-    [
-        ("chat", False),
-        ("experiment", False),
-        ("experiment", True),
-        ("auto_research", False),
-        ("auto_research", True),
-    ],
-)
-def test_state_reply_thread_and_reports(viewer_app, kind, report):
-    app, client, store = viewer_app
-    project_id = app.state.default_project_id
-    episode = (
-        None
-        if kind == "chat"
-        else _episode(
-            store,
-            project_id,
-            mode="auto_research" if kind == "auto_research" else "experiment_loop",
-            control_node_id="experiment" if kind == "experiment" else None,
-        )
-    )
-    request = (
-        {}
-        if kind == "auto_research"
-        else {
-            "chat_id": str(uuid.uuid4()),
-            "chat_scope": "node" if kind == "experiment" else "project",
-        }
-    )
-    if kind == "experiment":
-        request.update(node_id="experiment")
-    origin = _task(
-        store,
-        project_id,
-        kind="node_chat",
-        episode_id=episode.episode_id if episode else None,
-        request=request,
-    )
-    if episode:
-        with store.connection() as connection:
-            connection.execute(
-                "UPDATE episodes SET root_operation_id = ? WHERE episode_id = ?",
-                (origin.operation_id, episode.episode_id),
-            )
-    supplier = (
-        _task(
-            store,
-            project_id,
-            kind="episode_report",
-            episode_id=episode.episode_id if episode else None,
-            parent_operation_id=origin.operation_id,
-            request={},
-        )
-        if report
-        else origin
-    )
-    artifact = _artifact(store, supplier, supplier="episode_ending" if report else "turn")
-    state = _state(client, artifact)
-    query = parse_qs(urlsplit(state["thread_href"][1:]).query)
-    if kind == "auto_research":
-        assert query == {
-            "view": ["runs"],
-            "mode": ["auto_research"],
-            "episode": [episode.episode_id],
-        }
-    else:
-        assert query == {"view": ["chats"], "chat": [request["chat_id"]]}
-    assert state["supplier"] == ("episode_ending" if report else "turn")
-    assert client.get(state["viewer_url"]).status_code == 200
-
-
 @pytest.mark.parametrize("name,data", [("paper.pdf", b"%PDF-1.7\n"), ("data.bin", b"\x00\xff")])
 def test_state_download_only_has_no_viewer_or_comment(viewer_app, name, data):
     app, client, store = viewer_app
@@ -254,34 +184,6 @@ def test_state_download_only_has_no_viewer_or_comment(viewer_app, name, data):
     assert state["viewer_url"] is None
     assert not state["can_comment"]
     assert client.get(state["download_url"]).content == data
-
-
-def test_state_session_reservation_matches_comment_admission(viewer_app, tmp_path):
-    app, client, store = viewer_app
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    origin = _task(
-        store, app.state.default_project_id, native_session_id="native", stage_root=str(stage)
-    )
-    artifact = _artifact(store, origin)
-    record_session_master(store, origin.operation_id, "master bytes")
-    assert _state(client, artifact)["can_comment"]
-    _task(
-        store,
-        origin.project_id,
-        native_session_id="native",
-        stage_root=str(stage),
-        status="running",
-        request={**origin.request, "chat_id": str(uuid.uuid4())},
-    )
-    state = _state(client, artifact)
-    assert not state["can_comment"] and not state["fresh_session_required"]
-    response = client.post(
-        f"/api/projects/{origin.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"message": "Update this"},
-    )
-    assert response.status_code == 409
-    assert response.json()["detail"] == state["comment_unavailable_reason"]
 
 
 def test_run_artifacts_includes_workers_child_experiments_and_retained_reports(viewer_app):

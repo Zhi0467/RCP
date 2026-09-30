@@ -138,8 +138,8 @@ retries with bounded backoff and a bounded attempt count, retaining its error
 after exhaustion. Expired unkept artifacts are skipped; invalid ownership,
 lineage, and history-only sources are terminal. Source reads happen outside the
 artifact lock; saving rechecks the version under the lock. Only a complete
-capture becomes the immutable final snapshot, served after source files disappear. Node/file-only pages have no final
-snapshot. Snapshot bytes live beside version bytes and share their typed backup,
+capture becomes the immutable final snapshot, served after source files
+disappear. Node/file-only pages have no final snapshot. Snapshot bytes live beside version bytes and share their typed backup,
 transfer, retention, and integrity inventory.
 
 ## Episode reports
@@ -177,7 +177,8 @@ chat artifacts and durable episode reports across project history, including
 archived episodes, without depending on the recent task or episode window.
 Temporary outputs remain in their originating chats until kept.
 
-Reports appear as soon as their immutable bytes are captured. Cards show the artifact title and a **Source chat** link
+Reports appear as soon as their immutable bytes are captured. Cards show the
+artifact title and a **Source chat** link
 when its originating conversation is available. Outputs originating in an
 episode also carry one compact **Experiment** or **Auto-research** tag. Ordinary
 chat artifacts have no episode tag. The listing retains episode
@@ -200,8 +201,8 @@ Missing or non-chat origins have no source link; their
 artifact preview remains available. The source link is independent of the
 card's preview click target. Opening an entry uses the existing bounded artifact
 viewer in both browser and desktop; an entry with no viewer offers Download,
-and a PDF also opens in the system viewer from the desktop app. Listing grants no new filesystem or graph
-authority.
+and a PDF also opens in the system viewer from the desktop app. Listing grants
+no new filesystem or graph authority.
 
 ## Unified artifact viewer
 
@@ -212,10 +213,8 @@ The artifact is available in its originating Node or Project chat, on its
 run's Runs card when an episode produced it, and after Keep in the project's
 Artifacts panel. It is not shown in unrelated chats.
 
-Previously stored result-view rows migrate into Artifact records. Their legacy
-URLs redirect to artifact routes for compatibility. The current web client exposes no result-view
-type, selector, card, or authoring request, and the task API rejects new legacy
-create or revise intents.
+Previously stored result-view rows migrate into Artifact records, and their
+legacy URLs redirect to artifact routes.
 
 Every viewable artifact, including a report, opens in the RCP window's viewer
 panel. Its RCP chrome owns the title, version, Live or Finished status, Undo,
@@ -226,12 +225,8 @@ Small raster images and SVGs may also render inline in chat; HTML has no thumbna
 PDFs use the system viewer on desktop, and unsupported files remain download-only.
 Repository-file previews use the same panel with their script-free content route.
 
-The run artifact endpoint lists the run's report and its turn artifacts, including
-Auto-research child Work and child Experiment episodes. It excludes expired,
-unkept outputs, places the queried episode's report first, and orders the remaining entries by
-creation time.
-Worker names come from their child Work route's instruction heading, or Worker
-when that heading is absent.
+The Runs card's list comes from the run artifact endpoint described in
+[the API spec](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory).
 
 The viewer entrance is backend-owned. `/viewer` is the current explicit shell
 URL, while the former `/preview` URL remains a compatibility alias to that same
@@ -260,7 +255,7 @@ The shell saves the comment and selections per artifact in the current browser
 profile. Send posts them directly to the stored artifact's comments endpoint.
 A 409 displays the server's reason and preserves the draft. Success clears it
 and notifies the containing RCP panel of the admitted edit operation. No chat
-draft, BroadcastChannel handoff, or Open chat action participates in sending.
+draft participates in sending.
 When admission requires an explicit fresh session, the action reads Edit in a
 new session and supplies the fresh-session flag. An unavailable origin never
 prevents viewing; its reason appears beside the disabled action.
@@ -282,6 +277,7 @@ carries at most 50 annotations. On send, each artifact annotation adds
 order, and the prompt lists the same numbers with what each selection covers; no
 markup is added. The selection payload, comments, and final
 question are bounded and treated as untrusted input.
+
 ### Editing and versions
 
 Comment admission records the current artifact version and the origin session's
@@ -296,7 +292,8 @@ owner. A busy session returns 409 with its unavailable reason; comments are
 neither queued nor steered. Edits spend no episode invocation and do not change
 Stop or episode health. Edit tasks have no operational episode membership; their
 admission snapshot retains episode provenance for replies and display. The next
-operational launch reopens its master after a revoking edit; an edit finishing does not clear that requirement.
+operational launch reopens its master after a revoking edit; an edit finishing
+does not clear that requirement.
 
 The reply destination comes from durable origin and episode records. Chat and
 child Work artifacts use their own chat. Experiment artifacts and reports use
@@ -324,9 +321,8 @@ A history-only origin or missing native session or stage returns an unavailable
 reason. Only after exact-session admission identifies a resumability failure
 does the explicit fresh-session flag authorize a new provider session and
 scratch while retaining the same reply thread; it never restores the old
-execution authority. Candidate creation, comparison, Accept, and Reject are
-removed. Legacy rows are read only for background import and archive capture.
-The read-only viewer state checks durable origin, master presence, and session
+execution authority. Legacy candidate rows are read only for background import
+and archive capture. The read-only viewer state checks durable origin, master presence, and session
 reservations without SSH or content hashing. Its offers never replace full
 admission and integrity enforcement by the comments POST.
 

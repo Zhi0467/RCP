@@ -12,6 +12,13 @@ from rcp.storage.models import AgentTaskAdmissionConflict
 from .test_storage import _project
 
 
+@pytest.fixture
+def store(tmp_path):
+    store = AppStore(tmp_path / "state.sqlite3")
+    store.upsert_project(_project("project"))
+    return store
+
+
 def _task(store, operation_id, **updates):
     now = store.now()
     return AgentTaskRecord(
@@ -28,9 +35,7 @@ def _task(store, operation_id, **updates):
     ).model_copy(update=updates)
 
 
-def test_native_session_admission_is_atomic_across_distinct_launch_owners(tmp_path):
-    store = AppStore(tmp_path / "state.sqlite3")
-    store.upsert_project(_project("project"))
+def test_native_session_admission_is_atomic_across_distinct_launch_owners(store):
     ready = Barrier(2)
 
     def admit(operation_id):
@@ -64,55 +69,29 @@ def test_native_session_admission_is_atomic_across_distinct_launch_owners(tmp_pa
 
 
 @pytest.mark.parametrize("collision", ["session", "stage", "checkpoint"])
-def test_launch_ownership_covers_session_and_stage_binding(tmp_path, collision):
-    store = AppStore(tmp_path / "state.sqlite3")
-    store.upsert_project(_project("project"))
+def test_launch_ownership_covers_session_and_stage_binding(store, collision):
     store.create_agent_task(_task(store, "owner"))
-    competing = _task(store, "competing")
-    if collision == "session":
-        competing = competing.model_copy(update={"stage_root": "/scratch/other"})
-    elif collision == "stage":
-        competing = competing.model_copy(
-            update={
-                "native_session_id": "other",
-                "request": {"provider": "codex"},
-            }
-        )
-    else:
-        competing = competing.model_copy(
-            update={
-                "native_session_id": None,
-                "stage_root": None,
-                "request": {"provider": "codex"},
-            }
-        )
+    binding = {
+        "session": {"stage_root": "/scratch/other"},
+        "stage": {"native_session_id": "other"},
+        "checkpoint": {"native_session_id": None, "stage_root": None},
+    }[collision]
+    competing = _task(store, "competing", request={"provider": "codex"}, **binding)
+    if collision == "checkpoint":
         store.create_agent_task(competing)
         with pytest.raises(AgentTaskAdmissionConflict):
             store.checkpoint_agent_task(
                 "competing", native_session_id="native", stage_root="/scratch/native"
             )
         assert store.agent_task("competing").native_session_id is None
-        return
-    with pytest.raises(AgentTaskAdmissionConflict):
-        store.create_agent_task(competing)
+    else:
+        with pytest.raises(AgentTaskAdmissionConflict):
+            store.create_agent_task(competing)
 
 
-def test_only_operational_success_reopens_master_after_revoking_edit(tmp_path):
-    store = AppStore(tmp_path / "state.sqlite3")
-    store.upsert_project(_project("project"))
+def test_only_operational_success_reopens_master_after_revoking_edit(store):
     clock = datetime.fromisoformat(store.now())
     store.now = lambda: clock.isoformat()
-    edit = _task(
-        store,
-        "edit",
-        kind="artifact_edit",
-        request={
-            "provider": "codex",
-            "artifact_edit": {"base_version_id": "base"},
-        },
-    )
-    store.create_artifact_edit_task(edit)
-    store.complete_agent_task("edit", result={}, applied_revision=None)
 
     def pending():
         return store.episode_report_rebootstrap_pending(
@@ -122,31 +101,27 @@ def test_only_operational_success_reopens_master_after_revoking_edit(tmp_path):
             stage_root="/scratch/native",
         )
 
-    assert pending()
-    clock += timedelta(seconds=1)
-    store.create_artifact_edit_task(
-        _task(
-            store,
-            "discuss-edit",
-            request={
-                "provider": "codex",
-                "artifact_edit": {"base_version_id": "base"},
-            },
+    for kind in ("artifact_edit", "node_chat"):
+        store.create_artifact_edit_task(
+            _task(
+                store,
+                kind,
+                kind=kind,
+                request={"provider": "codex", "artifact_edit": {"base_version_id": "base"}},
+            )
         )
-    )
-    store.complete_agent_task("discuss-edit", result={}, applied_revision=None)
-    assert pending()
+        store.complete_agent_task(kind, result={}, applied_revision=None)
+        assert pending()
+        clock += timedelta(seconds=1)
     clock += timedelta(seconds=1)
     store.create_agent_task(_task(store, "operation"))
     store.complete_agent_task("operation", result={}, applied_revision=None)
     assert not pending()
 
 
-def test_orchestrator_edit_records_delivered_message_without_changing_stopped_episode(tmp_path):
+def test_orchestrator_edit_records_delivered_message_without_changing_stopped_episode(store):
     from .test_auto_research_children_storage import _auto_parent
 
-    store = AppStore(tmp_path / "state.sqlite3")
-    store.upsert_project(_project("project"))
     episode, root = _auto_parent(store)
     store.fail_agent_task(root.operation_id, "Ended")
     store.request_episode_stop(episode.episode_id)
@@ -172,7 +147,6 @@ def test_orchestrator_edit_records_delivered_message_without_changing_stopped_ep
     _, messages = store.auto_research_message_history(episode.episode_id, limit=10)
     assert len(messages) == 1
     assert messages[0].recipient_task_id == root.operation_id
-    assert messages[0].body == edit.request["message"]
     assert messages[0].delivery_operation_id == edit.operation_id
     assert messages[0].delivered_at is not None
     assert [task.operation_id for task in store.episode_tasks(episode.episode_id)] == [

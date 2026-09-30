@@ -1247,8 +1247,9 @@ truthfully. Singleton replacement and frontend build ownership stay in the
 launcher, not manual PID cleanup.
 
 Artifact, report, and repository-file previews open in one panel inside the main
-RCP window. The desktop has no native preview-window commands; same-origin
-popups do not create a window. Native downloads resolve
+RCP window. The desktop has no native preview-window commands, and same-origin
+popups create no window: a recognised artifact or report URL opens in the main
+panel, and any other popup is dropped and logged. Native downloads resolve
 through shell-controlled destinations. A PDF artifact opens in the system PDF
 viewer through one main-window command that takes only project, task, and
 artifact ids, fetches the artifact's Download route itself, checks that the
@@ -1361,11 +1362,10 @@ the session reservation check without launching. The reply link follows the
 artifact's own chat, Experiment node chat, or Runs orchestrator thread. Viewer
 URLs target stored artifacts, including reports; PDF and download-only artifacts
 have no viewer URL. Download and retention information are independent offers.
-`can_revise` is removed from task artifact descriptors.
 
 `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts` returns
 `RunArtifactEntry[]` for the episode, including its Auto-research workers and
 child Experiment episodes. It includes unexpired or kept artifacts and permanent
-reports, with the queried episode's report first, then creation order. Worker labels use the child
-Work route's instruction heading, or Worker. Both routes enforce project
+reports, with the queried episode's report first, then creation order. Worker
+labels use the child Work route's instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.

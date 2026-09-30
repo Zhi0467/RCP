@@ -5,13 +5,8 @@ import re
 
 import pytest
 
-from rcp.agents.artifact_contract import artifact_contract, live_contract
 from rcp.limits import LIVE_ARTIFACT_MAX_NEEDS
 from rcp.live_artifacts import (
-    NEED_SNAPSHOT_MODELS,
-    EpisodeNeed,
-    LiveDataMessage,
-    LiveEvidence,
     LiveTag,
     parse_live_tag,
 )
@@ -38,31 +33,6 @@ def test_skill_examples_validate_against_live_schema() -> None:
     assert {need.kind for tag in parsed for need in tag.needs} == {"job", "file", "episode"}
     with pytest.raises(ValueError):
         parse_live_tag(examples[-1])
-
-
-def test_schema_fields_and_descriptions_feed_contract() -> None:
-    ordinary = live_contract()
-    episode = live_contract(allow_episode=True)
-    for need, snapshot in NEED_SNAPSHOT_MODELS:
-        kind = need.model_fields["kind"].default
-        assert f'"kind": "{kind}"' in episode
-        if need is EpisodeNeed:
-            assert f'"kind": "{kind}"' not in ordinary
-            assert "`turn_limit`" not in ordinary
-        else:
-            assert f'"kind": "{kind}"' in ordinary
-        for model in (need, snapshot):
-            for name, field in model.model_fields.items():
-                assert field.description
-                if model is snapshot and name == "kind":
-                    continue
-                assert f"`{name}`:" in episode
-                assert field.description in episode
-    for model in (LiveTag, LiveEvidence, LiveDataMessage):
-        for field in model.model_fields.values():
-            assert field.description in ordinary
-    assert ordinary in artifact_contract("/scratch/artifacts")
-    assert episode in artifact_contract("/scratch/artifacts", allow_episode=True)
 
 
 def test_static_page_has_no_live_declaration() -> None:

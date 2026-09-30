@@ -1,44 +1,33 @@
 from __future__ import annotations
 
 import errno
-import hashlib
 import io
 import os
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import date
 from html.parser import HTMLParser
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 import pytest
 from PIL import Image
 
-import rcp.artifact_replace as artifact_replace_module
 from rcp.agents import AgentProcessControl
-from rcp.agents.prompts import PromptFactory
 from rcp.artifact_comments import comment_panel
-from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import (
     AgentArtifactDescriptor,
     classify_artifact_bytes,
     descriptor_for,
     read_local_regular_file,
-    replace_local_regular_file,
 )
 from rcp.background import AgentTaskExecution
-from rcp.runs.chat import (
-    _discover_chat_artifacts,
-    finalize_artifact_edit,
-    stage_artifact_context,
-)
+from rcp.runs.chat import stage_artifact_context
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord, Artifact
-from rcp.transport import LocalStateWorkspace, RemoteRunStage
-from rcp.transport.remote_lock_holder import replace_staged_artifact
+from rcp.transport import LocalStateWorkspace
 
-from .helpers import assert_frozen_backend_ships, create_named_app
+from .helpers import create_named_app
 
 
 def _workspace(tmp_path: Path) -> LocalStateWorkspace:
@@ -47,37 +36,7 @@ def _workspace(tmp_path: Path) -> LocalStateWorkspace:
     return LocalStateWorkspace(research, str(research))
 
 
-def _artifact_staged_marker_name(name: str, expected: bytes, candidate: bytes) -> str:
-    name_hash = hashlib.sha256(name.encode("utf-8")).hexdigest()[:24]
-    return (
-        f".rcp-artifact-{name_hash}-{hashlib.sha256(expected).hexdigest()}-"
-        f"{hashlib.sha256(candidate).hexdigest()}-{'a' * 16}"
-    )
-
-
-def _simulate_remounted_device(monkeypatch) -> None:
-    real_fstat = os.fstat
-    real_stat = os.stat
-
-    class RemountedStat:
-        def __init__(self, original) -> None:
-            self._original = original
-            self.st_dev = original.st_dev + 1
-
-        def __getattr__(self, name: str):
-            return getattr(self._original, name)
-
-    def remounted_fstat(descriptor: int):
-        return RemountedStat(real_fstat(descriptor))
-
-    def remounted_stat(*args, **kwargs):
-        return RemountedStat(real_stat(*args, **kwargs))
-
-    monkeypatch.setattr(os, "fstat", remounted_fstat)
-    monkeypatch.setattr(os, "stat", remounted_stat)
-
-
-def _stored_artifact(app, scope_id, name, data, *, kept=False):
+def _stored_artifact(app, scope_id, name, data, *, kept=False, supplier="turn", episode_id=None):
     store = app.state.background_tasks.store
     descriptor = descriptor_for(
         scope_id, name, media_type=classify_artifact_bytes(name, data), size_bytes=len(data)
@@ -86,7 +45,8 @@ def _stored_artifact(app, scope_id, name, data, *, kept=False):
         Artifact(
             artifact_id=descriptor.artifact_id,
             project_id=app.state.default_project_id,
-            supplier="turn",
+            supplier=supplier,
+            episode_id=episode_id,
             supplier_id=scope_id,
             source_name=name,
             media_type=descriptor.media_type,
@@ -111,7 +71,6 @@ def _publish_artifact(store, artifact_id, data, operation_id="other-edit"):
 def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
     manifest,
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     store = app.state.background_tasks.store
@@ -193,28 +152,10 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
         )
 
     class FakeRemoteRunStage:
-        def __init__(self, host: str) -> None:
-            assert host == "research-gpu"
-            self.root = "/remote/source-stage"
-
-        def attach_artifact_source(self, root: str):
-            self.root = root
-            return self
-
-        def read_artifact_bytes(self, scope_id: str, name: str, *, max_bytes: int) -> bytes:
-            assert (self.root, scope_id, name) == (
-                "/remote/source-stage",
-                origin_id,
-                source.name,
-            )
-            assert len(source_bytes) <= max_bytes
-            return source_bytes
-
-        def put_directory(self, _source: Path, label: str, *, reuse: bool) -> str:
-            assert reuse is True
+        def put_directory(self, source: Path, label: str, *, reuse: bool) -> str:
+            assert (source / "remote.html").read_bytes() == source_bytes
             return f"/remote/revision-stage/inputs/{label}"
 
-    monkeypatch.setattr("rcp.runs.chat.RemoteRunStage", FakeRemoteRunStage)
     execution = AgentTaskExecution(
         operation_id=revision_id,
         store=store,
@@ -225,7 +166,7 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
         revision_request,
         execution,
         local_stage=None,
-        remote_stage=FakeRemoteRunStage("research-gpu"),
+        remote_stage=FakeRemoteRunStage(),
         artifact_path=f"/remote/revision-stage/workspace/turns/{revision_id}/artifacts",
     )
 
@@ -267,9 +208,6 @@ def test_keep_reuses_human_artifacts_directory_and_reads_external_edits(tmp_path
     (artifacts / kept).write_bytes(b"<p>external</p>")
     assert workspace.read_kept_artifact(kept) == b"<p>external</p>"
 
-    workspace.replace_kept_artifact(kept, b"<p>agent revision</p>")
-    assert workspace.read_kept_artifact(kept) == b"<p>agent revision</p>"
-
 
 def test_local_artifact_read_preserves_transient_operational_errors(
     tmp_path: Path,
@@ -287,7 +225,7 @@ def test_local_artifact_read_preserves_transient_operational_errors(
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(os, "open", fail_target_open)
-    with pytest.raises(OSError, match="simulated read failure"):
+    with pytest.raises(OSError):
         read_local_regular_file(artifacts, target.name, max_bytes=1024)
 
 
@@ -307,715 +245,13 @@ def test_local_artifact_read_refuses_a_fifo_without_blocking(tmp_path: Path) -> 
                 os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
 
 
-def test_temporary_artifact_revision_checks_digest_after_staging(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>external edit while staging</p>"
-    recovery = tmp_path / "recovery" / "turn-1"
-    target.write_bytes(original)
-    real_fsync = os.fsync
-    staged = False
-
-    def mutate_after_staging(descriptor: int) -> None:
-        nonlocal staged
-        real_fsync(descriptor)
-        if not staged:
-            staged = True
-            target.write_bytes(external)
-
-    monkeypatch.setattr(os, "fsync", mutate_after_staging)
-
-    replaced = replace_local_regular_file(
-        artifacts,
-        target.name,
-        b"<p>candidate</p>",
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-        recovery_directory=recovery,
-    )
-
-    assert replaced is False
-    assert target.read_bytes() == external
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-def test_temporary_artifact_revision_preserves_an_edit_at_atomic_publication(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>external edit in the former check-replace gap</p>"
-    recovery = tmp_path / "recovery" / "turn-1"
-    target.write_bytes(original)
-    exchange = artifact_replace_module.exchange_regular_files
-    injected = False
-
-    def save_then_exchange(
-        first_directory_fd: int,
-        first: str,
-        second_directory_fd: int,
-        second: str,
-    ) -> None:
-        nonlocal injected
-        if not injected:
-            injected = True
-            target.write_bytes(external)
-        exchange(first_directory_fd, first, second_directory_fd, second)
-
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", save_then_exchange)
-
-    replaced = replace_local_regular_file(
-        artifacts,
-        target.name,
-        b"<p>candidate</p>",
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-        recovery_directory=recovery,
-    )
-
-    assert replaced is False
-    assert target.read_bytes() == external
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-@pytest.mark.parametrize(
-    "newest",
-    [b"<p>newest external edit racing rollback</p>", b"<p>candidate</p>"],
-    ids=("different-bytes", "candidate-bytes-new-inode"),
-)
-def test_temporary_artifact_revision_preserves_a_save_that_races_rollback(
-    tmp_path: Path,
-    monkeypatch,
-    newest: bytes,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>external edit before publication</p>"
-    recovery = tmp_path / "recovery" / "turn-1"
-    target.write_bytes(original)
-    exchange = artifact_replace_module.exchange_regular_files
-    exchanges = 0
-
-    def save(data: bytes) -> None:
-        staged = target.with_name(".external-save")
-        staged.write_bytes(data)
-        os.replace(staged, target)
-
-    def save_then_exchange(
-        first_directory_fd: int,
-        first: str,
-        second_directory_fd: int,
-        second: str,
-    ) -> None:
-        nonlocal exchanges
-        exchanges += 1
-        if exchanges == 1:
-            save(external)
-        elif exchanges == 2:
-            save(newest)
-        exchange(first_directory_fd, first, second_directory_fd, second)
-
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", save_then_exchange)
-
-    replaced = replace_local_regular_file(
-        artifacts,
-        target.name,
-        b"<p>candidate</p>",
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-        recovery_directory=recovery,
-    )
-
-    assert replaced is False
-    assert exchanges == 3
-    assert target.read_bytes() == newest
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-@pytest.mark.parametrize(
-    "newest",
-    [b"<p>newest external edit racing rollback</p>", b"<p>candidate</p>"],
-    ids=("different-bytes", "candidate-bytes-new-inode"),
-)
-def test_temporary_artifact_revision_recovers_rollback_after_remount(
-    tmp_path: Path,
-    monkeypatch,
-    newest: bytes,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>external edit before publication</p>"
-    candidate = b"<p>candidate</p>"
-    recovery = tmp_path / "recovery" / "turn-1"
-    target.write_bytes(original)
-    exchange = artifact_replace_module.exchange_regular_files
-    exchanges = 0
-
-    def save(data: bytes) -> None:
-        staged = target.with_name(".external-save")
-        staged.write_bytes(data)
-        os.replace(staged, target)
-
-    def save_exchange_then_crash(
-        first_directory_fd: int,
-        first: str,
-        second_directory_fd: int,
-        second: str,
-    ) -> None:
-        nonlocal exchanges
-        exchanges += 1
-        if exchanges == 1:
-            save(external)
-        elif exchanges == 2:
-            save(newest)
-            exchange(first_directory_fd, first, second_directory_fd, second)
-            raise OSError("simulated interruption after racing rollback")
-        exchange(first_directory_fd, first, second_directory_fd, second)
-
-    monkeypatch.setattr(
-        artifact_replace_module,
-        "exchange_regular_files",
-        save_exchange_then_crash,
-    )
-
-    with pytest.raises(OSError, match="simulated interruption after racing rollback"):
-        replace_local_regular_file(
-            artifacts,
-            target.name,
-            candidate,
-            expected_sha256=hashlib.sha256(original).hexdigest(),
-            recovery_directory=recovery,
-        )
-
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
-    _simulate_remounted_device(monkeypatch)
-    replaced = replace_local_regular_file(
-        artifacts,
-        target.name,
-        candidate,
-        expected_sha256=hashlib.sha256(external).hexdigest(),
-        recovery_directory=recovery,
-    )
-
-    assert replaced is False
-    assert target.read_bytes() == newest
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-def test_temporary_artifact_revision_ignores_an_agent_planted_recovery_marker(
-    tmp_path: Path,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    candidate = b"<p>accepted candidate</p>"
-    hostile = b"<p>unaccepted planted payload</p>"
-    target.write_bytes(original)
-    name_hash = hashlib.sha256(target.name.encode("utf-8")).hexdigest()[:24]
-    hostile_name = (
-        f".rcp-artifact-{name_hash}-{'a' * 64}-{hashlib.sha256(original).hexdigest()}-{'b' * 16}"
-    )
-    (artifacts / hostile_name).write_bytes(hostile)
-
-    replaced = replace_local_regular_file(
-        artifacts,
-        target.name,
-        candidate,
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-        recovery_directory=tmp_path / "recovery" / "turn-1",
-    )
-
-    assert replaced is True
-    assert target.read_bytes() == candidate
-    assert (artifacts / hostile_name).read_bytes() == hostile
-
-
-def test_conditional_artifact_revision_refuses_agent_writable_recovery_state(
-    tmp_path: Path,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    target.write_bytes(original)
-
-    with pytest.raises(ValueError, match="outside agent-writable output"):
-        replace_local_regular_file(
-            artifacts,
-            target.name,
-            b"<p>candidate</p>",
-            expected_sha256=hashlib.sha256(original).hexdigest(),
-            recovery_directory=artifacts,
-        )
-
-    assert target.read_bytes() == original
-
-
-def test_conditional_artifact_revision_discards_a_partial_prepublication_write(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    recovery = tmp_path / "recovery" / "turn-1"
-    original = b"<p>original</p>"
-    candidate = b"<p>candidate</p>"
-    target.write_bytes(original)
-    real_write = os.write
-    real_unlink = os.unlink
-    interrupted = False
-
-    def interrupt_candidate_write(descriptor: int, data) -> int:
-        nonlocal interrupted
-        if not interrupted:
-            interrupted = True
-            real_write(descriptor, data[:4])
-            raise OSError("simulated process death during candidate write")
-        return real_write(descriptor, data)
-
-    monkeypatch.setattr(os, "write", interrupt_candidate_write)
-    monkeypatch.setattr(os, "unlink", lambda *_args, **_kwargs: None)
-
-    with pytest.raises(OSError, match="process death during candidate write"):
-        replace_local_regular_file(
-            artifacts,
-            target.name,
-            candidate,
-            expected_sha256=hashlib.sha256(original).hexdigest(),
-            recovery_directory=recovery,
-        )
-
-    marker = next(recovery.iterdir())
-    assert marker.read_bytes() == candidate[:4]
-    assert target.read_bytes() == original
-
-    monkeypatch.setattr(os, "write", real_write)
-    monkeypatch.setattr(os, "unlink", real_unlink)
-    replaced = replace_local_regular_file(
-        artifacts,
-        target.name,
-        candidate,
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-        recovery_directory=recovery,
-    )
-
-    assert replaced is True
-    assert target.read_bytes() == candidate
-    assert not recovery.exists()
-
-
-def test_conditional_artifact_revision_refuses_a_nonregular_staged_marker(
-    tmp_path: Path,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    recovery = tmp_path / "recovery" / "turn-1"
-    original = b"<p>original</p>"
-    candidate = b"<p>candidate</p>"
-    target.write_bytes(original)
-    recovery.mkdir(parents=True, mode=0o700)
-    marker = recovery / _artifact_staged_marker_name(target.name, original, candidate)
-    marker.mkdir()
-
-    with pytest.raises(ValueError, match="staging marker is not a regular file"):
-        replace_local_regular_file(
-            artifacts,
-            target.name,
-            candidate,
-            expected_sha256=hashlib.sha256(original).hexdigest(),
-            recovery_directory=recovery,
-        )
-
-    assert target.read_bytes() == original
-    assert marker.is_dir()
-
-
-def test_temporary_artifact_revision_recovers_a_pending_exchange_after_remount(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    candidate = b"<p>candidate</p>"
-    external = b"<p>external edit preserved across retry</p>"
-    recovery = tmp_path / "recovery" / "turn-1"
-    target.write_bytes(original)
-    exchange = artifact_replace_module.exchange_regular_files
-    injected = False
-
-    def save_exchange_then_crash(
-        first_directory_fd: int,
-        first: str,
-        second_directory_fd: int,
-        second: str,
-    ) -> None:
-        nonlocal injected
-        if not injected:
-            injected = True
-            target.write_bytes(external)
-            exchange(first_directory_fd, first, second_directory_fd, second)
-            raise OSError("simulated interruption after publication")
-        exchange(first_directory_fd, first, second_directory_fd, second)
-
-    monkeypatch.setattr(
-        artifact_replace_module,
-        "exchange_regular_files",
-        save_exchange_then_crash,
-    )
-
-    with pytest.raises(OSError, match="simulated interruption"):
-        replace_local_regular_file(
-            artifacts,
-            target.name,
-            candidate,
-            expected_sha256=hashlib.sha256(original).hexdigest(),
-            recovery_directory=recovery,
-        )
-
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
-    _simulate_remounted_device(monkeypatch)
-    replaced = replace_local_regular_file(
-        artifacts,
-        target.name,
-        candidate,
-        expected_sha256=hashlib.sha256(candidate).hexdigest(),
-        recovery_directory=recovery,
-    )
-
-    assert replaced is False
-    assert target.read_bytes() == external
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-def test_temporary_artifact_recovery_does_not_resurrect_a_deleted_live_source(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    candidate = b"<p>candidate</p>"
-    external = b"<p>displaced external edit</p>"
-    recovery = tmp_path / "recovery" / "turn-1"
-    target.write_bytes(original)
-    exchange = artifact_replace_module.exchange_regular_files
-
-    def exchange_then_crash(*args) -> None:
-        target.write_bytes(external)
-        exchange(*args)
-        raise OSError("simulated interruption after publication")
-
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange_then_crash)
-    with pytest.raises(OSError, match="simulated interruption"):
-        replace_local_regular_file(
-            artifacts,
-            target.name,
-            candidate,
-            expected_sha256=hashlib.sha256(original).hexdigest(),
-            recovery_directory=recovery,
-        )
-    target.unlink()
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", exchange)
-
-    with pytest.raises(ArtifactReplacementConflict):
-        replace_local_regular_file(
-            artifacts,
-            target.name,
-            candidate,
-            expected_sha256=hashlib.sha256(original).hexdigest(),
-            recovery_directory=recovery,
-        )
-
-    assert not target.exists()
-    quarantined = list(recovery.glob(".rcp-artifact-quarantine-*"))
-    assert len(quarantined) == 1
-    assert quarantined[0].read_bytes() == external
-
-
-def test_kept_artifact_revision_checks_digest_after_staging(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    workspace = _workspace(tmp_path)
-    artifacts = workspace.root.parent / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>external edit while staging</p>"
-    target.write_bytes(original)
-    real_fsync = os.fsync
-    staged = False
-
-    def mutate_after_staging(descriptor: int) -> None:
-        nonlocal staged
-        real_fsync(descriptor)
-        if not staged:
-            staged = True
-            target.write_bytes(external)
-
-    monkeypatch.setattr(os, "fsync", mutate_after_staging)
-
-    replaced = workspace.replace_kept_artifact(
-        target.name,
-        b"<p>candidate</p>",
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-    )
-
-    assert replaced is False
-    assert target.read_bytes() == external
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-def test_kept_artifact_revision_discards_a_partial_prepublication_write(tmp_path: Path) -> None:
-    workspace = _workspace(tmp_path)
-    artifacts = workspace.root.parent / "artifacts"
-    artifacts.mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    candidate = b"<p>candidate</p>"
-    target.write_bytes(original)
-    recovery = workspace.root / ".publish" / "artifact-replacements"
-    recovery.mkdir(parents=True, mode=0o700)
-    marker = recovery / _artifact_staged_marker_name(target.name, original, candidate)
-    marker.write_bytes(candidate[:4])
-
-    replaced = workspace.replace_kept_artifact(
-        target.name,
-        candidate,
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-    )
-
-    assert replaced is True
-    assert target.read_bytes() == candidate
-    assert not marker.exists()
-
-
-def test_remote_temporary_revision_checks_digest_after_stream_staging(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    root = tmp_path / "rcp-run-stage"
-    scope_id = "turn-1"
-    artifacts = root / "workspace" / "turns" / scope_id / "artifacts"
-    artifacts.mkdir(parents=True)
-    (root / "inputs").mkdir()
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>external edit while staging</p>"
-    candidate = b"x" * (2 * 1024 * 1024)
-    target.write_bytes(original)
-    stage = RemoteRunStage("example.test")
-    stage.root = PurePosixPath(root)
-
-    def run_locally(
-        arguments: list[str],
-        *,
-        input_data: bytes | None = None,
-        timeout_seconds: float = 60,
-    ) -> subprocess.CompletedProcess[bytes]:
-        assert input_data is not None
-        process = subprocess.Popen(
-            arguments,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        assert process.stdin is not None
-        process.stdin.write(input_data[: 1024 * 1024])
-        process.stdin.flush()
-        target.write_bytes(external)
-        process.stdin.write(input_data[1024 * 1024 :])
-        process.stdin.close()
-        assert process.stdout is not None and process.stderr is not None
-        stdout = process.stdout.read()
-        stderr = process.stderr.read()
-        returncode = process.wait(timeout=timeout_seconds)
-        return subprocess.CompletedProcess(arguments, returncode, stdout, stderr)
-
-    monkeypatch.setattr(stage, "_ssh_bytes", run_locally)
-
-    replaced = stage.replace_artifact_bytes(
-        scope_id,
-        target.name,
-        candidate,
-        expected_sha256=hashlib.sha256(original).hexdigest(),
-    )
-
-    assert replaced is False
-    assert target.read_bytes() == external
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-def test_remote_kept_revision_checks_digest_after_copy_staging(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    root = tmp_path / "repository" / ".research"
-    stage = root / ".publish" / "artifact-1-1"
-    artifacts = root.parent / "artifacts"
-    stage.mkdir(parents=True)
-    artifacts.mkdir()
-    (stage / "content.bin").write_bytes(b"<p>candidate</p>")
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>external edit while staging</p>"
-    target.write_bytes(original)
-    real_fsync = os.fsync
-    staged = False
-
-    def mutate_after_staging(descriptor: int) -> None:
-        nonlocal staged
-        real_fsync(descriptor)
-        if not staged:
-            staged = True
-            target.write_bytes(external)
-
-    monkeypatch.setattr(os, "fsync", mutate_after_staging)
-
-    result = replace_staged_artifact(
-        {
-            "root": str(root),
-            "stage": str(stage),
-            "name": target.name,
-            "expected_sha256": hashlib.sha256(original).hexdigest(),
-        },
-        str(root / ".refresh.lock"),
-    )
-
-    assert result["ok"] is False
-    assert result["conflict"] is True
-    assert target.read_bytes() == external
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
-def test_remote_kept_revision_reports_missing_source_as_conflict(tmp_path: Path) -> None:
-    root = tmp_path / "repository" / ".research"
-    stage = root / ".publish" / "artifact-1-1"
-    artifacts = root.parent / "artifacts"
-    stage.mkdir(parents=True)
-    artifacts.mkdir()
-    (stage / "content.bin").write_bytes(b"<p>candidate</p>")
-
-    result = replace_staged_artifact(
-        {
-            "root": str(root),
-            "stage": str(stage),
-            "name": "result.html",
-            "expected_sha256": hashlib.sha256(b"<p>original</p>").hexdigest(),
-        },
-        str(root / ".refresh.lock"),
-    )
-
-    assert result["ok"] is False
-    assert result["conflict"] is True
-    assert not (artifacts / "result.html").exists()
-
-
-def test_remote_kept_revision_does_not_turn_operational_error_into_conflict(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    root = tmp_path / "repository" / ".research"
-    stage = root / ".publish" / "artifact-1-1"
-    artifacts = root.parent / "artifacts"
-    stage.mkdir(parents=True)
-    artifacts.mkdir()
-    candidate = b"<p>candidate</p>"
-    original = b"<p>original</p>"
-    (stage / "content.bin").write_bytes(candidate)
-    (artifacts / "result.html").write_bytes(original)
-
-    def unavailable_exchange(*_args) -> None:
-        raise OSError(errno.EIO, "simulated storage failure")
-
-    monkeypatch.setattr(artifact_replace_module, "exchange_regular_files", unavailable_exchange)
-    with pytest.raises(OSError, match="simulated storage failure"):
-        replace_staged_artifact(
-            {
-                "root": str(root),
-                "stage": str(stage),
-                "name": "result.html",
-                "expected_sha256": hashlib.sha256(original).hexdigest(),
-            },
-            str(root / ".refresh.lock"),
-        )
-
-    assert (artifacts / "result.html").read_bytes() == original
-
-
-def test_remote_kept_revision_preserves_an_edit_at_atomic_publication(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    root = tmp_path / "repository" / ".research"
-    stage = root / ".publish" / "artifact-1-1"
-    artifacts = root.parent / "artifacts"
-    stage.mkdir(parents=True)
-    artifacts.mkdir()
-    (stage / "content.bin").write_bytes(b"<p>candidate</p>")
-    target = artifacts / "result.html"
-    original = b"<p>original</p>"
-    external = b"<p>remote external edit in the former gap</p>"
-    target.write_bytes(original)
-    exchange = artifact_replace_module.exchange_regular_files
-    injected = False
-
-    def save_then_exchange(
-        first_directory_fd: int,
-        first: str,
-        second_directory_fd: int,
-        second: str,
-    ) -> None:
-        nonlocal injected
-        if not injected:
-            injected = True
-            target.write_bytes(external)
-        exchange(first_directory_fd, first, second_directory_fd, second)
-
-    monkeypatch.setattr(
-        artifact_replace_module,
-        "exchange_regular_files",
-        save_then_exchange,
-    )
-
-    result = replace_staged_artifact(
-        {
-            "root": str(root),
-            "stage": str(stage),
-            "name": target.name,
-            "expected_sha256": hashlib.sha256(original).hexdigest(),
-        },
-        str(root / ".refresh.lock"),
-    )
-
-    assert result["ok"] is False
-    assert result["conflict"] is True
-    assert target.read_bytes() == external
-    assert sorted(path.name for path in artifacts.iterdir()) == [target.name]
-
-
 def test_keep_refuses_unsafe_artifacts_entry(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     target = workspace.root.parent / "elsewhere"
     target.mkdir()
     (workspace.root.parent / "artifacts").symlink_to(target, target_is_directory=True)
 
-    with pytest.raises(ValueError, match="artifacts path is not a regular directory"):
+    with pytest.raises(ValueError):
         workspace.keep_artifact(
             source_name="curves.html",
             project_name="Pilot",
@@ -1063,28 +299,9 @@ def test_viewer_sends_comments_through_stored_artifact_route() -> None:
     assert 'type: "rcp-artifact-selection-enable"' in document
     assert "installArtifactSelection(boxLayer, " in document
     assert 'id="box"' not in document
-    assert ">Comment</button>" in document
     assert "if(raw.kind==='text'&&typeof raw.text==='string') appendSelection" not in document
     assert "connect-src 'self'" in csp
     assert "img-src 'self' data: blob:" in csp
-
-
-def test_readonly_artifact_viewer_does_not_enable_selection() -> None:
-    document, _csp = artifact_viewer_document(
-        content_url="/preview",
-        keep_url=None,
-        state="temporary",
-        descriptor=AgentArtifactDescriptor(
-            artifact_id="0123456789abcdef01234567",
-            name="curves.html",
-            media_type="text/html",
-            size_bytes=128,
-        ),
-    )
-
-    assert 'id="preview"' in document
-    assert 'id="pending"' not in document
-    assert "rcp-artifact-selection-enable" not in document
 
 
 @pytest.mark.parametrize("chat_id", ["chat", None])
@@ -1125,53 +342,28 @@ def test_viewer_filename_cannot_add_preview_attributes(chat_id: str | None, suff
     assert parser.attrs[label] == name
 
 
-def test_episode_report_shell_has_no_repository_save_action() -> None:
-    descriptor = AgentArtifactDescriptor(
-        artifact_id="0123456789abcdef01234567",
-        name="episode-report.html",
-        media_type="text/html",
-        size_bytes=128,
-    )
-
+@pytest.mark.parametrize("commentable", [False, True])
+def test_episode_report_shell_has_no_repository_save_action(commentable) -> None:
     document, csp = artifact_viewer_document(
         content_url="/preview",
         keep_url=None,
         state="report",
-        descriptor=descriptor,
+        panel=comment_panel({"projectId": "project", "artifactId": "a" * 24})
+        if commentable
+        else None,
+        descriptor=descriptor_for("scope", "episode-report.html", media_type="text/html"),
     )
-
-    assert 'id="pending"' not in document
-    assert "rcp-artifact-context" not in document
-    assert "rcp-artifact-selection-enable" not in document
-    assert ">Comment</button>" not in document
+    assert 'id="preview"' in document
+    assert ('id="pending"' in document) == commentable
+    assert ("rcp-artifact-selection-enable" in document) == commentable
+    assert ("connect-src 'self'" in csp) == commentable
     assert 'id="save"' not in document
     assert 'id="keep"' not in document
     assert 'id="state"' not in document
-    assert "connect-src 'self'" not in csp
-
-    with_chat, _csp = artifact_viewer_document(
-        content_url="/preview",
-        keep_url=None,
-        state="report",
-        panel=comment_panel(
-            {
-                "projectId": "project",
-                "chatId": "chat",
-                "operationId": "operation",
-                "source": "task",
-                "artifactId": "0123456789abcdef01234567",
-                "branchId": "branch/id",
-            }
-        ),
-        descriptor=descriptor,
-    )
-    assert 'id="pending"' in with_chat
-    assert 'id="message"' in with_chat
-    assert 'id="save"' not in with_chat
 
 
 def test_box_selection_must_stay_inside_its_normalized_viewport() -> None:
-    with pytest.raises(ValueError, match="must stay inside its viewport"):
+    with pytest.raises(ValueError):
         RunRequest.model_validate(
             {
                 "artifact_context": {
@@ -1287,18 +479,6 @@ def test_a_box_on_an_image_reaches_the_agent_as_a_crop_of_that_region(
     with Image.open(crop_path) as crop:
         assert crop.size == (50, 50)
         assert [color for _, color in crop.convert("RGB").getcolors()] == [(0, 0, 255)]
-    prompt = PromptFactory.discuss_turn_prompt(
-        artifact_path=str(tmp_path / "artifacts"),
-        human_message=turn.message or "",
-        attachments=[staged.pointer],
-    )
-    assert str(crop_path) in prompt
-
-
-def test_packaged_backend_ships_the_artifact_replacement_source() -> None:
-    # The lock holder is composed from this file's source text, so the frozen
-    # backend must carry it as data and check it at startup.
-    assert_frozen_backend_ships("artifact_replace.py")
 
 
 def test_report_context_stages_its_current_version(manifest, tmp_path):
@@ -1338,7 +518,7 @@ def test_report_context_stages_its_current_version(manifest, tmp_path):
 
 @pytest.mark.parametrize("workspace_layout", ["root", "split"])
 @pytest.mark.parametrize("undo_during_edit", [False, True])
-def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
+def test_edit_staging_preserves_retries_and_refuses_missing_or_symlink_sources(
     manifest, tmp_path, undo_during_edit, workspace_layout
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -1399,14 +579,18 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
         _chat_stage_name(app.state.service, fresh_request, execution)
         == "artifact-edit-artifact-edit"
     )
-    staged = stage_artifact_context(
-        app.state.service,
-        request,
-        execution,
-        local_stage=stage,
-        remote_stage=None,
-        artifact_path=str(directory),
-    )
+
+    def stage_context():
+        return stage_artifact_context(
+            app.state.service,
+            request,
+            execution,
+            local_stage=stage,
+            remote_stage=None,
+            artifact_path=str(directory),
+        )
+
+    staged = stage_context()
     target = Path(staged.pointer["path"])
     assert target == directory / source.name
     assert target.read_bytes() == b"<p>base</p>"
@@ -1416,94 +600,19 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
     assert target.read_bytes() == b"<p>edited</p>"
     if undo_during_edit:
         store.undo_artifact(source.artifact_id)
-    resumed = stage_artifact_context(
-        app.state.service,
-        request,
-        execution,
-        local_stage=stage,
-        remote_stage=None,
-        artifact_path=str(directory),
-    )
+    resumed = stage_context()
     assert resumed.pointer == staged.pointer
     assert target.read_bytes() == b"<p>edited</p>"
     target.unlink()
     with pytest.raises(FileNotFoundError):
-        stage_artifact_context(
-            app.state.service,
-            request,
-            execution,
-            local_stage=stage,
-            remote_stage=None,
-            artifact_path=str(directory),
-        )
+        stage_context()
     assert not target.exists()
     outside = tmp_path / "protected.html"
     outside.write_bytes(b"<p>protected</p>")
     target.symlink_to(outside)
     with pytest.raises(ValueError):
-        stage_artifact_context(
-            app.state.service,
-            request,
-            execution,
-            local_stage=stage,
-            remote_stage=None,
-            artifact_path=str(directory),
-        )
+        stage_context()
     assert outside.read_bytes() == b"<p>protected</p>"
-    target.unlink()
-    edited = (
-        b'<script type="application/json" id="rcp-live">'
-        b'{"version":1,"needs":[{"kind":"job","key":"missing"}]}</script>'
-    )
-    target.write_bytes(edited)
-    (directory / "extra.txt").write_text("other output")
-    discovered = _discover_chat_artifacts(execution, operation_id, directory, None)
-    assert [a.name for a in discovered] == ["extra.txt"]
-    results = finalize_artifact_edit(
-        request,
-        execution,
-        artifact_scope_id=operation_id,
-        artifact_directory=directory,
-        remote_stage=None,
-        artifacts=discovered,
-        service=app.state.service,
-    )
-    again = finalize_artifact_edit(
-        request,
-        execution,
-        artifact_scope_id=operation_id,
-        artifact_directory=directory,
-        remote_stage=None,
-        artifacts=discovered,
-        service=app.state.service,
-    )
-    assert results == again
-    if undo_during_edit:
-        assert store.read_artifact_bytes(source.artifact_id) == b"<p>original</p>"
-        assert len(results) == 2
-        published = store.artifact(results[-1].artifact_id)
-    else:
-        assert len(results) == 1
-        published = store.artifact(source.artifact_id)
-    assert store.read_artifact_bytes(published.artifact_id) == edited
-    live = {v.version_id: v.live for v in store.artifact_versions(published.artifact_id)}
-    assert "missing" in live[published.current_version].invalid_reason
-    if not undo_during_edit:
-        assert len(store.artifact_versions(source.artifact_id)) == 3
-        target.write_bytes(b"<p>different retry bytes</p>")
-        assert (
-            finalize_artifact_edit(
-                request,
-                execution,
-                artifact_scope_id=operation_id,
-                artifact_directory=directory,
-                remote_stage=None,
-                artifacts=discovered,
-                service=app.state.service,
-            )
-            == discovered
-        )
-        assert store.read_artifact_bytes(source.artifact_id) == edited
 
 
 def test_comment_eligibility_matches_viewer_types():

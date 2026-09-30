@@ -1,7 +1,7 @@
-"""Remote canonical lock holder and task-artifact replacement entry point.
+"""Remote canonical lock holder.
 
-RCP ships this module with the shared artifact-replacement helper prepended and
-runs the result with ``python -c``. Keeping the executable source in real modules
+RCP ships this module with its polling limit and runs it with ``python -c``.
+Keeping the executable source in real modules
 lets ruff, the formatter, and ``tests/test_remote_scripts.py`` see it.
 
 Lock protocol. ``argv[1]`` is the lock path; ``argv[2]`` is the heartbeat timeout.
@@ -10,8 +10,6 @@ stdout — ``legacy-directory``, ``unsafe-entry``, or ``error`` and exits, or
 ``contended`` followed by ``acquired`` once the wait finishes. It then reads one
 JSON command per line from stdin and prints one JSON response per line, holding
 the lock while its client remains live. Heartbeats produce no response.
-``replace-run-artifact`` is instead a
-one-shot command for task scratch, which has its own per-artifact mutation owner.
 """
 
 import contextlib
@@ -31,12 +29,6 @@ from pathlib import Path
 
 if "STATE_LOCK_POLL_INTERVAL_SECONDS" not in globals():
     from rcp.limits import STATE_LOCK_POLL_INTERVAL_SECONDS
-
-if "replace_regular_file_in_open_directory" not in globals():
-    from rcp.artifact_replace import (
-        ArtifactReplacementConflict,
-        replace_regular_file_in_open_directory,
-    )
 
 
 def relative_path(value: str) -> Path:
@@ -175,16 +167,6 @@ def _fd_digest(descriptor: int) -> tuple[str, int]:
         size += len(chunk)
     os.lseek(descriptor, 0, os.SEEK_SET)
     return digest.hexdigest(), size
-
-
-def _open_owned_recovery_directory(parent_fd: int, name: str) -> int:
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    try:
-        os.mkdir(name, 0o700, dir_fd=parent_fd)
-        os.fsync(parent_fd)
-    except FileExistsError:
-        pass
-    return os.open(name, flags, dir_fd=parent_fd)
 
 
 def restore_exact(command: dict, lock_path: str) -> dict:
@@ -454,154 +436,6 @@ def keep_staged_view(command: dict, lock_path: str) -> dict:
             os.rmdir(stage)
 
 
-def replace_staged_artifact(command: dict, lock_path: str) -> dict:
-    root = Path(command["root"])
-    stage = Path(command["stage"])
-    name = command["name"]
-    expected_sha256 = command.get("expected_sha256")
-    if (
-        Path(lock_path).name != ".refresh.lock"
-        or root != Path(lock_path).parent
-        or not root.is_absolute()
-        or root.name != ".research"
-        or stage.parent != root / ".publish"
-        or not re.fullmatch(r"artifact-[0-9]+-[0-9]+", stage.name)
-        or not isinstance(name, str)
-        or (
-            expected_sha256 is not None
-            and (
-                not isinstance(expected_sha256, str)
-                or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
-            )
-        )
-        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,220}(?:\.[a-z0-9]{1,16})?", name)
-    ):
-        raise ValueError("invalid artifact replacement root, stage, or name")
-    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    stage_fd = os.open(stage, directory_flags)
-    try:
-        if os.listdir(stage_fd) != ["content.bin"]:
-            raise ValueError("artifact stage does not contain exactly content.bin")
-        source_fd = os.open("content.bin", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=stage_fd)
-        try:
-            source_info = os.fstat(source_fd)
-            if not stat.S_ISREG(source_info.st_mode) or source_info.st_size > 16 * 1024 * 1024:
-                raise ValueError("staged artifact is invalid or too large")
-            chunks: list[bytes] = []
-            remaining = 16 * 1024 * 1024 + 1
-            while remaining > 0:
-                chunk = os.read(source_fd, min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            data = b"".join(chunks)
-            if len(data) != source_info.st_size:
-                raise ValueError("staged artifact changed while being read")
-            repository_fd = os.open(root.parent, directory_flags)
-            try:
-                artifacts_fd = os.open("artifacts", directory_flags, dir_fd=repository_fd)
-                try:
-                    research_fd = os.open(root, directory_flags)
-                    try:
-                        publish_fd = os.open(".publish", directory_flags, dir_fd=research_fd)
-                        try:
-                            recovery_fd = _open_owned_recovery_directory(
-                                publish_fd, "artifact-replacements"
-                            )
-                            try:
-                                try:
-                                    replaced = replace_regular_file_in_open_directory(
-                                        artifacts_fd,
-                                        recovery_fd,
-                                        name,
-                                        data,
-                                        expected_sha256=expected_sha256,
-                                        mode=0o644,
-                                    )
-                                except ArtifactReplacementConflict as exc:
-                                    return {"ok": False, "conflict": True, "error": str(exc)}
-                            finally:
-                                os.close(recovery_fd)
-                        finally:
-                            os.close(publish_fd)
-                    finally:
-                        os.close(research_fd)
-                    if not replaced:
-                        return {
-                            "ok": False,
-                            "conflict": True,
-                            "error": "kept artifact digest changed",
-                        }
-                    os.fsync(repository_fd)
-                    return {"ok": True, "name": name}
-                finally:
-                    os.close(artifacts_fd)
-            finally:
-                os.close(repository_fd)
-        finally:
-            os.close(source_fd)
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink("content.bin", dir_fd=stage_fd)
-        os.close(stage_fd)
-        with contextlib.suppress(OSError):
-            os.rmdir(stage)
-
-
-def replace_run_artifact() -> None:
-    if len(sys.argv) != 6:
-        raise ValueError("invalid run artifact replacement arguments")
-    root = Path(sys.argv[2])
-    scope, name, expected_sha256 = sys.argv[3:6]
-    expected = expected_sha256 or None
-    if (
-        not root.is_absolute()
-        or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9_-])?", scope) is None
-        or Path(name).name != name
-        or name in {"", ".", ".."}
-        or (expected is not None and re.fullmatch(r"[0-9a-f]{64}", expected) is None)
-    ):
-        raise ValueError("invalid run artifact replacement path or digest")
-    data = sys.stdin.buffer.read(16 * 1024 * 1024 + 1)
-    if not 1 <= len(data) <= 16 * 1024 * 1024:
-        raise ValueError("run artifact replacement bytes are invalid or too large")
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    descriptors: list[int] = []
-    try:
-        descriptor = os.open(root, flags)
-        descriptors.append(descriptor)
-        inputs_fd = os.open("inputs", flags, dir_fd=descriptor)
-        descriptors.append(inputs_fd)
-        recovery_root_fd = _open_owned_recovery_directory(inputs_fd, ".artifact-replacements")
-        descriptors.append(recovery_root_fd)
-        recovery_fd = _open_owned_recovery_directory(recovery_root_fd, scope)
-        descriptors.append(recovery_fd)
-        for part in ("workspace", "turns", scope, "artifacts"):
-            descriptor = os.open(part, flags, dir_fd=descriptor)
-            descriptors.append(descriptor)
-        if not replace_regular_file_in_open_directory(
-            descriptor,
-            recovery_fd,
-            name,
-            data,
-            expected_sha256=expected,
-            mode=0o600,
-        ):
-            raise SystemExit(46)
-    except SystemExit:
-        raise
-    except ArtifactReplacementConflict as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(47) from exc
-    except (FileNotFoundError, NotADirectoryError, OSError, ValueError) as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(44) from exc
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
-
-
 class Liveness:
     """The client's heartbeat deadline, shared by the input loop and the watchdog."""
 
@@ -698,8 +532,6 @@ def hold_lock(handle, lock_path: str, heartbeat_timeout: float) -> None:
                 response = restore_exact(command, lock_path)
             elif command.get("op") in {"keep-view", "keep-artifact"}:
                 response = keep_staged_view(command, lock_path)
-            elif command.get("op") == "replace-artifact":
-                response = replace_staged_artifact(command, lock_path)
             else:
                 raise ValueError("unsupported lock-holder command")
         except Exception as exc:
@@ -709,13 +541,6 @@ def hold_lock(handle, lock_path: str, heartbeat_timeout: float) -> None:
 
 
 def main() -> None:
-    if sys.argv[1:2] == ["replace-run-artifact"]:
-        try:
-            replace_run_artifact()
-        except ValueError as exc:
-            print(str(exc), file=sys.stderr)
-            raise SystemExit(44) from exc
-        return
     lock_path = sys.argv[1]
     heartbeat_timeout = float(sys.argv[2])
     try:

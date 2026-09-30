@@ -24,9 +24,8 @@ focus indicators remain distinct. Clickable Overview rows, Runs card headers,
 space Runs rows, and available artifact rows also rise from the surface and
 press inward while held. Expanded run detail and unavailable artifacts do not
 use the same action cue. An available artifact's preview link spans its entire
-row and opens the shared in-app viewer panel. Its **Source
-chat** link remains a separate click target. Artifact comments edit the existing
-artifact; the chat has no candidate comparison dialog or Accept/Reject controls.
+row and opens the shared in-app viewer panel. Its **Source chat** link remains
+a separate click target.
 
 The space landing page's **Display** control places **Mode** above **Theme**.
 Mode offers **System**, **Light**, and **Dark** independently of **Classic** or
@@ -409,8 +408,8 @@ History reports, Runs, repository-file links, and WebMCP all open it. Its defaul
 right-docked and full height. Dragging its left edge resizes it; dragging the
 title bar floats it. Double-clicking the title bar enters full screen and
 repeats to restore the prior placement. Enter or Space on the focused title bar
-does the same. The dock control collapses it to a slim tab on the right edge, just below the project header;
-the tab restores it in docked mode. There is no mode button row.
+does the same. The dock control collapses it to a slim tab on the right edge,
+just below the project header; the tab restores it in docked mode. There is no mode button row.
 Size and placement persist on this browser origin and remain reachable after
 viewport changes.
 
@@ -430,11 +429,7 @@ never dispatches an edit or stages a chat draft. Repository files use their
 script-free preview. PDFs open in the desktop system viewer; in the browser
 they offer Download only, with no Open action.
 
-Desktop downloads use the native save dialog and the stored-artifact route,
-including reports without a producing task. Recognised same-origin artifact and
-report popups open the main viewer; other dropped popups are logged.
-
 Each Runs card preserves the server order: its report first, followed by every
-turn and worker artifact, with name, kind, time, and the worker label when present. Worker and
-turn timeline popovers show artifacts from their exact producing operation,
+turn and worker artifact, with name, kind, time, and the worker label when
+present. Worker and turn timeline popovers show artifacts from their exact producing operation,
 using the same fetched run list. Every preview opens the shared panel.

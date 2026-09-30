@@ -3,10 +3,8 @@ from __future__ import annotations
 import hashlib
 import html
 import os
-import re
 import stat
 import xml.etree.ElementTree as ET
-from contextlib import suppress
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -15,10 +13,6 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.artifact_replace import (
-    recover_regular_file_replacement_in_open_directory,
-    replace_regular_file_in_open_directory,
-)
 from rcp.limits import ARTIFACT_DISPLAY_TITLE_MAX_CHARS
 from rcp.regular_file_reader import _open_local_directory
 from rcp.regular_file_reader import read_local_regular_file as read_local_regular_file
@@ -232,68 +226,6 @@ def list_local_regular_files(directory: Path) -> list[tuple[str, int]]:
                 values.append((name, metadata.st_size))
         return sorted(values)
     finally:
-        os.close(directory_fd)
-
-
-def replace_local_regular_file(
-    directory: Path,
-    name: str,
-    data: bytes,
-    *,
-    expected_sha256: str | None = None,
-    recovery_directory: Path | None = None,
-) -> bool:
-    """Atomically replace one direct regular child if its digest is still expected."""
-
-    if Path(name).name != name or name in {"", ".", ".."}:
-        raise ValueError("artifact name must be a plain base name")
-    if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-        raise ValueError("expected artifact digest is invalid")
-    if expected_sha256 is not None and recovery_directory is None:
-        raise ValueError("conditional artifact replacement requires an RCP recovery directory")
-    recovery_directory = recovery_directory or directory
-    recovery_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    directory_fd = _open_local_directory(directory)
-    recovery_directory_fd = _open_local_directory(recovery_directory)
-    try:
-        return replace_regular_file_in_open_directory(
-            directory_fd,
-            recovery_directory_fd,
-            name,
-            data,
-            expected_sha256=expected_sha256,
-            mode=0o600,
-        )
-    finally:
-        os.close(recovery_directory_fd)
-        os.close(directory_fd)
-        if recovery_directory != directory:
-            with suppress(OSError):
-                recovery_directory.rmdir()
-            with suppress(OSError):
-                recovery_directory.parent.rmdir()
-
-
-def recover_local_regular_file_replacement(
-    directory: Path,
-    name: str,
-    *,
-    recovery_directory: Path,
-) -> None:
-    """Settle any RCP-owned conditional replacement journal for one local artifact."""
-
-    if Path(name).name != name or name in {"", ".", ".."}:
-        raise ValueError("artifact name must be a plain base name")
-    if not recovery_directory.exists():
-        return
-    directory_fd = _open_local_directory(directory)
-    recovery_directory_fd = _open_local_directory(recovery_directory)
-    try:
-        recover_regular_file_replacement_in_open_directory(
-            directory_fd, recovery_directory_fd, name
-        )
-    finally:
-        os.close(recovery_directory_fd)
         os.close(directory_fd)
 
 

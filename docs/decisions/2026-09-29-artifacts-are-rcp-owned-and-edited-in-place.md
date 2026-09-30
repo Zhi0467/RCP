@@ -1,6 +1,6 @@
 # Artifacts are RCP-owned and edited in place
 
-**Status:** accepted on 2026-09-29. Work in progress is tracked in the
+**Status:** accepted on 2026-09-29. Remaining verification is tracked in the
 [live artifacts handoff](../handoffs/handoff-2026-09-29-live-artifacts.md).
 
 ## Decision
@@ -66,3 +66,7 @@ launch. The agent shapes the data in the code that produces it instead.
   whole file.
 - **Queueing comments during an edit.** RCP has no queue, and an edit turn is
   short.
+- **RCP-collected metrics or tracker integrations.** A run that writes its
+  metrics to a file is already covered by a `file` need.
+- **A glob `file` need for sweeps**, and **a server push channel** in place of
+  polling. Neither is built; the snapshot shape would not change if one were.

@@ -24,9 +24,6 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rcp.artifact_replace import (
-    replace_regular_file_in_open_directory,
-)
 from rcp.config import Manifest, load_manifest
 from rcp.core.models import GraphBranchMetadata
 from rcp.limits import (
@@ -114,13 +111,9 @@ def _remote_script(name: str) -> str:
 
 @lru_cache(maxsize=1)
 def _remote_lock_holder_script() -> str:
-    """Compose the shared replacement protocol into the shipped lock-holder source."""
-
-    helper = (
-        importlib.resources.files("rcp").joinpath("artifact_replace.py").read_text(encoding="utf-8")
-    )
+    """Load the lock-holder source with its runtime polling limit."""
     return (
-        f"{helper}\nSTATE_LOCK_POLL_INTERVAL_SECONDS = {STATE_LOCK_POLL_INTERVAL_SECONDS!r}\n"
+        f"STATE_LOCK_POLL_INTERVAL_SECONDS = {STATE_LOCK_POLL_INTERVAL_SECONDS!r}\n"
         f"{_remote_script('remote_lock_holder.py')}"
     )
 
@@ -276,29 +269,6 @@ def _open_artifacts_directory(repository_fd: int, *, create: bool) -> int:
         raise
     except OSError as exc:
         raise ValueError("repository artifacts path is not a regular directory") from exc
-
-
-def _open_artifact_recovery_directory(research_root: Path) -> int:
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    research_fd = _repository_directory_fd(research_root)
-    try:
-        try:
-            os.mkdir(".publish", 0o700, dir_fd=research_fd)
-            os.fsync(research_fd)
-        except FileExistsError:
-            pass
-        publish_fd = os.open(".publish", flags, dir_fd=research_fd)
-        try:
-            try:
-                os.mkdir("artifact-replacements", 0o700, dir_fd=publish_fd)
-                os.fsync(publish_fd)
-            except FileExistsError:
-                pass
-            return os.open("artifact-replacements", flags, dir_fd=publish_fd)
-        finally:
-            os.close(publish_fd)
-    finally:
-        os.close(research_fd)
 
 
 def _collision_view_name(base_name: str, index: int) -> str:
@@ -1327,42 +1297,6 @@ class StateWorkspace:
                         return data
                     finally:
                         os.close(descriptor)
-                finally:
-                    os.close(artifacts_fd)
-            finally:
-                os.close(repository_fd)
-
-    def replace_kept_artifact(
-        self,
-        name: str,
-        data: bytes,
-        *,
-        expected_sha256: str | None = None,
-    ) -> bool:
-        """Atomically update one live kept artifact if its digest is still expected."""
-
-        safe_name = _validated_kept_artifact_name(name)
-        if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
-            raise ValueError("artifact bytes are outside the supported size range")
-        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-            raise ValueError("expected artifact digest is invalid")
-        with self.transaction():
-            repository_fd = _repository_directory_fd(self.root.parent)
-            try:
-                artifacts_fd = _open_artifacts_directory(repository_fd, create=False)
-                try:
-                    recovery_fd = _open_artifact_recovery_directory(self.root)
-                    try:
-                        return replace_regular_file_in_open_directory(
-                            artifacts_fd,
-                            recovery_fd,
-                            safe_name,
-                            data,
-                            expected_sha256=expected_sha256,
-                            mode=0o644,
-                        )
-                    finally:
-                        os.close(recovery_fd)
                 finally:
                     os.close(artifacts_fd)
             finally:
@@ -2627,63 +2561,6 @@ class SSHStateWorkspace(StateWorkspace):
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         self._mark_unreachable(detail or "canonical state is unreachable")
         raise StateUnavailable(self.error or "canonical state is unreachable")
-
-    def replace_kept_artifact(
-        self,
-        name: str,
-        data: bytes,
-        *,
-        expected_sha256: str | None = None,
-    ) -> bool:
-        safe_name = _validated_kept_artifact_name(name)
-        if not isinstance(data, bytes) or not 1 <= len(data) <= CHAT_ARTIFACT_MAX_FILE_BYTES:
-            raise ValueError("artifact bytes are outside the supported size range")
-        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-            raise ValueError("expected artifact digest is invalid")
-        stage = self.remote_root / ".publish" / f"artifact-{os.getpid()}-{time.time_ns()}"
-        with self.snapshot_lock, self._publication_lock() as lease:
-            prepared = self._ssh(["mkdir", "-p", str(stage)])
-            if prepared.returncode:
-                self._mark_unreachable(prepared.stderr)
-                raise StateUnavailable(self.error or "canonical state is unreachable")
-            with tempfile.TemporaryDirectory(
-                prefix="rcp-artifact-revision-", dir=rcp_temp_dir()
-            ) as temporary:
-                source = Path(temporary) / "content.bin"
-                source.write_bytes(data)
-                destination = f"{self.host}:{shlex.quote(str(stage))}/"
-                try:
-                    result = subprocess.run(
-                        ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    self._mark_unreachable(str(exc))
-                    raise StateUnavailable(
-                        self.error or "repository artifact staging failed"
-                    ) from exc
-            if result.returncode:
-                self._mark_unreachable(result.stderr)
-                raise StateUnavailable(self.error or "repository artifact staging failed")
-            response = lease._run_owned_command(
-                {
-                    "op": "replace-artifact",
-                    "root": str(self.remote_root),
-                    "stage": str(stage),
-                    "name": safe_name,
-                    "expected_sha256": expected_sha256,
-                }
-            )
-            if not response["ok"]:
-                self._mark_reachable()
-                if response.get("conflict") is True:
-                    return False
-                raise StateUnavailable(str(response.get("error") or "artifact update failed"))
-            self._mark_reachable(synced=True)
-            return True
 
     def _push_state_files(
         self, stage: PurePosixPath, sources: list[str]

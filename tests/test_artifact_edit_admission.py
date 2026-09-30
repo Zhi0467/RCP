@@ -3,16 +3,20 @@ from __future__ import annotations
 import io
 import json
 import uuid
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from fastapi.testclient import TestClient
 from PIL import Image
 
 from rcp.runs.artifact_edit_admission import admit_artifact_edit, artifact_edit_availability
 from rcp.runs.session_master import record_session_master
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, EpisodeRecord
+from rcp.storage import AgentTaskAdmissionConflict, EpisodeRecord
 
 from .helpers import create_named_app
+from .test_artifact_viewer_state import _task
 from .test_unified_artifacts import _stored_artifact
 
 
@@ -22,26 +26,13 @@ def edit_origin(manifest, tmp_path):
     store = app.state.background_tasks.store
     stage = tmp_path / "stage"
     stage.mkdir()
-    task = AgentTaskRecord(
-        operation_id=str(uuid.uuid4()),
-        project_id=app.state.default_project_id,
-        kind="project_chat",
-        status="succeeded",
-        created_at=store.now(),
-        updated_at=store.now(),
-        status_message="Completed",
+    task = _task(
+        store,
+        app.state.default_project_id,
         native_session_id="native-session",
         stage_root=str(stage),
-        request={
-            "chat_scope": "project",
-            "chat_id": str(uuid.uuid4()),
-            "provider": "codex",
-            "model": "",
-            "reasoning": "medium",
-            "run_on": "laptop",
-        },
     )
-    store.create_agent_task(task)
+    record_session_master(store, task.operation_id, "master bytes")
     return app, store, task
 
 
@@ -75,12 +66,12 @@ def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
             "UPDATE graph_runs SET kind = ?, request_json = ? WHERE operation_id = ?",
             (kind, json.dumps(request), task.operation_id),
         )
-    record_session_master(store, task.operation_id, "master bytes")
     admitted = admit_artifact_edit(
-        store, app.state.service, task.project_id, _request(task, artifact)
+        store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
     )
     assert admitted.artifact_edit.launch_kind == shape
     assert admitted.mode == "discuss"
+    assert not admitted.artifact_edit.fresh_session
     assert admitted.session_id == task.native_session_id
     assert admitted.chat_id == task.request["chat_id"]
     assert (
@@ -88,20 +79,33 @@ def test_master_owner_decides_edit_shape(edit_origin, kind, patch_kind, shape):
     )
 
 
-@pytest.mark.parametrize("missing", ["stage", "session", "history"])
+@pytest.mark.parametrize("missing", ["stage", "session", "history", "contract"])
 def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "explanation.txt", b"Original")
-    column = {"stage": "stage_root", "session": "native_session_id", "history": "history_only"}[
-        missing
-    ]
     with store.connection() as connection:
-        connection.execute(
-            f"UPDATE graph_runs SET {column} = ? WHERE operation_id = ?",
-            (1 if missing == "history" else None, task.operation_id),
-        )
-    with pytest.raises(AgentTaskAdmissionConflict):
-        admit_artifact_edit(store, app.state.service, task.project_id, _request(task, artifact))
+        if missing == "stage":
+            Path(task.stage_root).rmdir()
+        elif missing == "contract":
+            connection.execute(
+                "DELETE FROM graph_run_contracts WHERE operation_id = ?", (task.operation_id,)
+            )
+        else:
+            column = "native_session_id" if missing == "session" else "history_only"
+            connection.execute(
+                f"UPDATE graph_runs SET {column} = ? WHERE operation_id = ?",
+                (None if missing == "session" else 1, task.operation_id),
+            )
+    availability = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert availability.can_comment and availability.fresh_session_required
+    response = TestClient(app).post(
+        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"message": "Update"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "fresh_session_required"
     admitted = admit_artifact_edit(
         store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
     )
@@ -109,15 +113,6 @@ def test_unresumable_origin_requires_explicit_fresh_session(edit_origin, missing
     assert admitted.artifact_edit.stage_root is None
     assert admitted.artifact_edit.fresh_session
     assert admitted.chat_id == task.request["chat_id"]
-
-
-def test_pdf_is_refused_even_with_fresh_session(edit_origin):
-    app, store, task = edit_origin
-    artifact = _stored_artifact(app, task.operation_id, "paper.pdf", b"%PDF-1.7\n")
-    with pytest.raises(ValueError):
-        admit_artifact_edit(
-            store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
-        )
 
 
 @pytest.mark.parametrize("mode", ["experiment_loop", "auto_research"])
@@ -155,7 +150,6 @@ def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report)
                 updated_at=store.now(),
             ),
         )
-    record_session_master(store, task.operation_id, "master bytes")
     supplier = task
     if report:
         supplier = task.model_copy(
@@ -175,7 +169,14 @@ def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report)
         )
         with store.connection() as connection:
             store._insert_agent_task(connection, supplier, continuation_cause="fresh")
-    artifact = _stored_artifact(app, supplier.operation_id, "report.html", b"<h1>Original</h1>")
+    artifact = _stored_artifact(
+        app,
+        supplier.operation_id,
+        "report.html",
+        b"<h1>Original</h1>",
+        supplier="episode_ending" if report else "turn",
+        episode_id=episode_id,
+    )
     admitted = admit_artifact_edit(
         store, app.state.service, task.project_id, _request(supplier, artifact)
     )
@@ -186,11 +187,23 @@ def test_episode_reply_thread_is_resolved_from_origin(edit_origin, mode, report)
         episode_id if mode == "auto_research" else None
     )
 
+    client = TestClient(app)
+    response = client.get(f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/state")
+    assert response.status_code == 200
+    state = response.json()
+    expected = (
+        {"view": ["runs"], "mode": ["auto_research"], "episode": [episode_id]}
+        if mode == "auto_research"
+        else {"view": ["chats"], "chat": [request["chat_id"]]}
+    )
+    assert parse_qs(urlsplit(state["thread_href"][1:]).query) == expected
+    assert state["supplier"] == ("episode_ending" if report else "turn")
+    assert client.get(state["viewer_url"]).status_code == 200
+
 
 def test_text_edits_refuse_selection_gestures(edit_origin):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "data.json", b'{"value": 1}')
-    record_session_master(store, task.operation_id, "master bytes")
     request = _request(task, artifact)
     request = RunRequest.model_validate(
         {
@@ -216,7 +229,6 @@ def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffi
     elif suffix == "svg":
         data = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
     artifact = _stored_artifact(app, task.operation_id, f"artifact.{suffix}", data)
-    record_session_master(store, task.operation_id, "master bytes")
     with store.connection() as connection:
         before = connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0]
     result = artifact_edit_availability(
@@ -229,36 +241,31 @@ def test_viewer_offers_supported_edits_without_creating_tasks(edit_origin, suffi
         assert connection.execute("SELECT COUNT(*) FROM graph_runs").fetchone()[0] == before
 
 
-def test_viewer_session_collision_uses_reservation_reason(edit_origin):
+def test_viewer_session_collision_matches_comment_admission(edit_origin):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
-    record_session_master(store, task.operation_id, "master bytes")
-    active = task.model_copy(update={"operation_id": str(uuid.uuid4()), "status": "running"})
+    client = TestClient(app)
+    url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}"
+    assert client.get(url + "/state").json()["can_comment"]
+    active = task.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "status": "running",
+            "request": {**task.request, "chat_id": str(uuid.uuid4())},
+        }
+    )
     store.create_agent_task(active)
-    result = artifact_edit_availability(
-        store, app.state.service, store.artifact(artifact.artifact_id)
-    )
-    assert not result.can_comment
-    probe = task.model_copy(update={"operation_id": str(uuid.uuid4()), "status": "queued"})
-    assert result.comment_unavailable_reason == store.session_launch_unavailable_reason(probe)
-    assert not result.fresh_session_required
-
-
-def test_viewer_missing_master_offers_explicit_fresh_session(edit_origin):
-    app, store, task = edit_origin
-    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
-    result = artifact_edit_availability(
-        store, app.state.service, store.artifact(artifact.artifact_id)
-    )
-    assert result.can_comment
-    assert result.fresh_session_required
-    assert result.comment_unavailable_reason is None
+    response = client.get(url + "/state")
+    assert response.status_code == 200
+    state = response.json()
+    assert not state["can_comment"] and not state["fresh_session_required"]
+    response = client.post(url + "/comments", json={"message": "Update this"})
+    assert response.status_code == 409
 
 
 def test_viewer_defers_master_integrity_check_to_admission(edit_origin, monkeypatch):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
-    record_session_master(store, task.operation_id, "master bytes")
     monkeypatch.setattr(store, "agent_task_contract", lambda *_: "corrupt bytes")
     result = artifact_edit_availability(
         store, app.state.service, store.artifact(artifact.artifact_id)
@@ -281,17 +288,10 @@ def test_viewer_does_not_offer_edits_for_unsupported_types(edit_origin, suffix):
     assert not result.can_comment
     assert result.comment_unavailable_reason
     assert not result.fresh_session_required
-
-
-def test_fresh_session_request_keeps_resumable_exact_session(edit_origin):
-    app, store, task = edit_origin
-    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
-    record_session_master(store, task.operation_id, "master bytes")
-    admitted = admit_artifact_edit(
-        store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
-    )
-    assert admitted.session_id == task.native_session_id
-    assert not admitted.artifact_edit.fresh_session
+    with pytest.raises(ValueError):
+        admit_artifact_edit(
+            store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
+        )
 
 
 def test_availability_uses_no_remote_or_content_reads(edit_origin, monkeypatch):
@@ -299,7 +299,6 @@ def test_availability_uses_no_remote_or_content_reads(edit_origin, monkeypatch):
 
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
-    record_session_master(store, task.operation_id, "master bytes")
     with store.connection() as connection:
         connection.execute(
             "UPDATE graph_runs SET stage_host = 'remote' WHERE operation_id = ?",
@@ -316,41 +315,10 @@ def test_availability_uses_no_remote_or_content_reads(edit_origin, monkeypatch):
     ).can_comment
 
 
-@pytest.mark.parametrize("missing", ["stage", "contract"])
-def test_availability_detects_missing_local_resume_material(edit_origin, missing):
-    from pathlib import Path
-
-    from fastapi.testclient import TestClient
-
-    app, store, task = edit_origin
-    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
-    record_session_master(store, task.operation_id, "master bytes")
-    if missing == "stage":
-        Path(task.stage_root).rmdir()
-    else:
-        with store.connection() as connection:
-            connection.execute(
-                "DELETE FROM graph_run_contracts WHERE operation_id = ?", (task.operation_id,)
-            )
-    availability = artifact_edit_availability(
-        store, app.state.service, store.artifact(artifact.artifact_id)
-    )
-    assert availability.can_comment
-    assert availability.fresh_session_required
-    response = TestClient(app).post(
-        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"message": "Update"},
-    )
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "fresh_session_required"
-
-
 @pytest.mark.parametrize(
     ("state", "expected"), [("pending", 409), ("unavailable", 409), ("missing", 410)]
 )
 def test_pending_import_is_transient(edit_origin, monkeypatch, state, expected):
-    from fastapi.testclient import TestClient
-
     app, store, task = edit_origin
     monkeypatch.setattr(
         store,

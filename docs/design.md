@@ -34,8 +34,8 @@ continuations. External effects are never rolled back by the graph workflow.
 The paper introduction is human-authored and non-authoritative. Agent-created
 artifacts and reports help a researcher read work; they do not become graph
 truth. Every artifact, reports and Experiment or Auto-research outputs included,
-may be viewed, commented on, versioned, and kept through one viewer. A comment edits its staged file under Discuss authority or a revoking
-scratch-only launch. RCP publishes an immutable version, and Undo moves the
+may be viewed, commented on, versioned, and kept through one viewer. A comment
+edits its staged file under Discuss authority or a revoking scratch-only launch. RCP publishes an immutable version, and Undo moves the
 current pointer back; these interactions grant no graph authority. The backend
 owns the viewer entrance, so ordinary server-served UI changes do not require a
 matching native rebuild. The thinner native team entrance is a separate
@@ -151,10 +151,8 @@ number here.
 - An **artifact** is an RCP-owned file supplied by a turn or episode ending.
   Its metadata lives in SQLite and immutable versions live in the data directory.
   Turn outputs expire unless kept; reports are permanent. It is never a graph
-  object or a second answer channel.
-  A live HTML version declares bounded read-only sources resolved by RCP; its
-  authenticated viewer relays data into the opaque sandbox. Server-captured final
-  data travels with its version even after the original sources disappear.
+  object or a second answer channel. A live HTML version reads declared sources
+  only through data RCP's viewer relays into the opaque sandbox.
 - An **episode** is the persisted parent for bounded Experiment control or
   Auto-research, with one operational budget, one native-session binding, and
   one graceful Stop boundary.

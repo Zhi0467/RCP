@@ -36,20 +36,10 @@ def artifact_edit_availability(
         origin, _ = artifact_reply_origin(store, artifact)
         if origin.graph_target != service.history.graph_target:
             raise ValueError("The artifact belongs to another graph target.")
-        master = store.latest_session_master(artifact.project_id, origin.native_session_id or "")
-        fresh = origin.history_only or not (
-            origin.native_session_id and origin.stage_root and master
-        )
-        if not fresh and not origin.stage_host:
-            stage = Path(origin.stage_root or "")
-            fresh = not (stage.is_absolute() and stage.is_dir() and not stage.is_symlink())
-        if master and not fresh:
-            fresh = store.agent_task_contract(master[0], SESSION_MASTER_ROLE) is None
-        if master and not fresh:
-            try:
-                _launch_kind_for_master_owner(store.agent_task(master[0]))
-            except ArtifactFreshSessionRequired:
-                fresh = True
+        try:
+            _origin_master(store, artifact.project_id, origin, verify=False)
+        except ArtifactFreshSessionRequired:
+            fresh = True
         now = store.now()
         reason = store.session_launch_unavailable_reason(
             AgentTaskRecord(
@@ -88,6 +78,33 @@ def _launch_kind_for_master_owner(owner: AgentTaskRecord | None) -> str:
         "The artifact's session holds no master that can admit an edit. "
         "Edit in a new session explicitly."
     )
+
+
+def _origin_master(store: AppStore, project_id: str, origin: AgentTaskRecord, *, verify: bool):
+    """Require resumable origin facts; availability skips SSH and content hashing."""
+    available = not origin.history_only and bool(origin.native_session_id and origin.stage_root)
+    if available:
+        if origin.stage_host:
+            if verify:
+                available = (
+                    RemoteRunStage(origin.stage_host).directory_exists(origin.stage_root) is True
+                )
+        else:
+            stage = Path(origin.stage_root)
+            available = stage.is_absolute() and stage.is_dir() and not stage.is_symlink()
+    if not available:
+        raise ArtifactFreshSessionRequired(
+            "The artifact's native session or stage is unavailable. Edit in a new session explicitly."
+        )
+    found = store.latest_session_master(project_id, origin.native_session_id)
+    content = None if found is None else store.agent_task_contract(found[0], SESSION_MASTER_ROLE)
+    if found is None or content is None:
+        raise ArtifactFreshSessionRequired(
+            "The artifact's recorded master is unavailable. Edit in a new session explicitly."
+        )
+    if verify and hashlib.sha256(content.encode()).hexdigest() != found[1]:
+        raise AgentTaskAdmissionConflict("The artifact's recorded master is corrupt.")
+    return found, content, _launch_kind_for_master_owner(store.agent_task(found[0]))
 
 
 def artifact_reply_origin(
@@ -156,32 +173,10 @@ def admit_artifact_edit(
     }:
         raise ValueError("This artifact supports a comment without selections.")
     fresh = context.fresh_session
-    available = not origin.history_only and bool(origin.native_session_id and origin.stage_root)
-    if available:
-        if origin.stage_host:
-            available = (
-                RemoteRunStage(origin.stage_host).directory_exists(origin.stage_root or "") is True
-            )
-        else:
-            stage = Path(origin.stage_root or "")
-            available = stage.is_absolute() and stage.is_dir() and not stage.is_symlink()
-    if not available and not fresh:
-        raise ArtifactFreshSessionRequired(
-            "The artifact's native session or stage is unavailable. Edit in a new session explicitly."
-        )
-    found = (
-        None if fresh else store.latest_session_master(project_id, origin.native_session_id or "")
-    )
-    content = None if found is None else store.agent_task_contract(found[0], SESSION_MASTER_ROLE)
-    if not fresh and (found is None or content is None):
-        raise ArtifactFreshSessionRequired(
-            "The artifact's recorded master is unavailable. Edit in a new session explicitly."
-        )
+    found, content = None, None
     launch_kind = "revoking" if reply_episode_id else "discuss"
-    if found is not None and content is not None:
-        if hashlib.sha256(content.encode()).hexdigest() != found[1]:
-            raise AgentTaskAdmissionConflict("The artifact's recorded master is corrupt.")
-        launch_kind = _launch_kind_for_master_owner(store.agent_task(found[0]))
+    if not fresh:
+        found, content, launch_kind = _origin_master(store, project_id, origin, verify=True)
     operation_id = str(uuid.uuid4())
     with store.artifact_lock(artifact.artifact_id):
         artifact = store.artifact(artifact.artifact_id)

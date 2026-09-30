@@ -34,7 +34,7 @@ def run_script(name: str, *args: str, stdin: str | None = None) -> subprocess.Co
     source = (
         _remote_lock_holder_script() if name == "remote_lock_holder.py" else _remote_script(name)
     )
-    if name == "remote_lock_holder.py" and args[:1] != ("replace-run-artifact",):
+    if name == "remote_lock_holder.py":
         args = (*args, str(STATE_LOCK_HOLDER_HEARTBEAT_TIMEOUT_SECONDS))
     return subprocess.run(
         [sys.executable, "-c", source, *args],
@@ -292,43 +292,6 @@ class TestLockHolder:
         assert (root / "graph.json").read_text() == '{"revision": 4}'
         assert not stage.exists()
 
-    def test_replacement_discards_a_partial_prepublication_write(self, tmp_path: Path) -> None:
-        root = tmp_path / "repository" / ".research"
-        stage = root / ".publish" / "artifact-1-1"
-        recovery = root / ".publish" / "artifact-replacements"
-        artifacts = root.parent / "artifacts"
-        stage.mkdir(parents=True)
-        recovery.mkdir(mode=0o700)
-        artifacts.mkdir()
-        name = "result.html"
-        original = b"<p>original</p>"
-        candidate = b"<p>candidate</p>"
-        (stage / "content.bin").write_bytes(candidate)
-        (artifacts / name).write_bytes(original)
-        name_hash = hashlib.sha256(name.encode()).hexdigest()[:24]
-        marker = recovery / (
-            f".rcp-artifact-{name_hash}-{hashlib.sha256(original).hexdigest()}-"
-            f"{hashlib.sha256(candidate).hexdigest()}-{'a' * 16}"
-        )
-        marker.write_bytes(candidate[:4])
-        lock_path = root / ".refresh.lock"
-        command = {
-            "op": "replace-artifact",
-            "root": str(root),
-            "stage": str(stage),
-            "name": name,
-            "expected_sha256": hashlib.sha256(original).hexdigest(),
-        }
-
-        result = run_script(
-            "remote_lock_holder.py", str(lock_path), stdin=json.dumps(command) + "\n"
-        )
-
-        assert result.returncode == 0, result.stderr
-        assert json.loads(result.stdout.splitlines()[1]) == {"ok": True, "name": name}
-        assert (artifacts / name).read_bytes() == candidate
-        assert not marker.exists()
-
     def test_refuses_a_stage_outside_the_publish_directory(self, tmp_path: Path) -> None:
         root = tmp_path / ".research"
         elsewhere = tmp_path / "elsewhere"
@@ -460,7 +423,7 @@ class TestLockHolder:
 
 
 @pytest.mark.parametrize("source_name", ["result.csv", "result", "result.abcdefghijklmnopq"])
-def test_remote_general_artifact_keep_read_replace_and_restore(tmp_path: Path, source_name: str):
+def test_remote_general_artifact_keep_read_and_restore(tmp_path: Path, source_name: str):
     from rcp.transport.state import _artifact_base_name
 
     root = tmp_path / ".research"
@@ -487,31 +450,25 @@ def test_remote_general_artifact_keep_read_replace_and_restore(tmp_path: Path, s
     read = run_script("remote_read_kept_view.py", str(tmp_path), "artifacts", names[0], "1024")
     assert read.returncode == 0
     assert read.stdout.encode() == content
-    for operation in ("replace-artifact", "restore-exact"):
-        stage = (
-            root
-            / ".publish"
-            / ("artifact-2-1" if operation == "replace-artifact" else "restore-2-1")
-        )
-        stage.mkdir(parents=True)
-        (stage / "content.bin").write_bytes(content)
-        target = tmp_path / "artifacts" / names[0]
-        if operation == "restore-exact":
-            target.unlink()
-        command = {
-            "op": operation,
-            "root": str(root),
-            "stage": str(stage),
-            "name": names[0],
-            "path": f"artifacts/{names[0]}",
-            "external": True,
-            "sha256": hashlib.sha256(content).hexdigest(),
-            "size": len(content),
-        }
-        result = run_script(
-            "remote_lock_holder.py", str(root / ".refresh.lock"), stdin=json.dumps(command) + "\n"
-        )
-        assert json.loads(result.stdout.splitlines()[1])["ok"] is True
-        assert target.read_bytes() == content
+    stage = root / ".publish" / "restore-2-1"
+    stage.mkdir(parents=True)
+    (stage / "content.bin").write_bytes(content)
+    target = tmp_path / "artifacts" / names[0]
+    target.unlink()
+    command = {
+        "op": "restore-exact",
+        "root": str(root),
+        "stage": str(stage),
+        "name": names[0],
+        "path": f"artifacts/{names[0]}",
+        "external": True,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "size": len(content),
+    }
+    result = run_script(
+        "remote_lock_holder.py", str(root / ".refresh.lock"), stdin=json.dumps(command) + "\n"
+    )
+    assert json.loads(result.stdout.splitlines()[1])["ok"] is True
+    assert target.read_bytes() == content
     legacy = run_script("remote_read_kept_view.py", str(tmp_path), "views", names[0], "1024")
     assert legacy.returncode == UNSAFE

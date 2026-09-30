@@ -15,7 +15,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.limits import (
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
@@ -31,7 +30,6 @@ from rcp.transport.state import (
     StateMissing,
     StateUnavailable,
     StateUnreachable,
-    _remote_lock_holder_script,
     _remote_script,
 )
 
@@ -1043,48 +1041,6 @@ finally:
         if result.returncode:
             raise _ssh_failure(result, "could not read remote artifact")
         return result.stdout
-
-    def replace_artifact_bytes(
-        self,
-        scope_id: str,
-        name: str,
-        data: bytes,
-        *,
-        expected_sha256: str | None = None,
-    ) -> bool:
-        """Atomically replace one remote task artifact if its digest is still expected."""
-
-        if self.root is None:
-            raise RuntimeError("remote run stage is not open")
-        if _safe_label(scope_id) != scope_id:
-            raise ValueError("artifact scope contains unsupported characters")
-        if PurePosixPath(name).name != name or name in {"", ".", ".."}:
-            raise ValueError("artifact name must be a plain base name")
-        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-            raise ValueError("expected artifact digest is invalid")
-        result = self._ssh_bytes(
-            [
-                "python3",
-                "-c",
-                _remote_lock_holder_script(),
-                "replace-run-artifact",
-                str(self.root),
-                scope_id,
-                name,
-                expected_sha256 or "",
-            ],
-            input_data=data,
-        )
-        if result.returncode == 46:
-            return False
-        if result.returncode == 47:
-            raise ArtifactReplacementConflict(
-                result.stderr.decode("utf-8", errors="replace").strip()
-                or "remote artifact source is missing or unsafe"
-            )
-        if result.returncode:
-            raise _ssh_failure(result, "could not replace remote artifact")
-        return True
 
     def touch(self) -> None:
         """Refresh this conversation stage's rolling retention timestamp."""

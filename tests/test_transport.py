@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import shlex
@@ -17,7 +16,6 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.config import MachineConfig, RepositoryConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
@@ -2524,20 +2522,6 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(
     )
     with pytest.raises(StateUnavailable, match="EIO"):
         stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
-    monkeypatch.setattr(
-        stage,
-        "_ssh_bytes",
-        lambda _arguments, **_kwargs: subprocess.CompletedProcess(
-            [], 47, b"", b"artifact source is missing"
-        ),
-    )
-    with pytest.raises(ArtifactReplacementConflict):
-        stage.replace_artifact_bytes(
-            "logical-turn",
-            "plot.png",
-            payload,
-            expected_sha256=hashlib.sha256(payload).hexdigest(),
-        )
 
 
 def test_remote_stage_resume_rejects_symlinked_artifact_scope(local_remote_stage) -> None:

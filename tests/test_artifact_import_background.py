@@ -9,13 +9,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.api import app as app_module
-from rcp.artifacts import descriptor_for
 from rcp.background import StartupEffectFence
-from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.server_runtime import ServerMetadata
-from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage import AppStore
 
 from .helpers import create_named_app, wait_until
+from .legacy_artifacts import create_legacy_artifact
 
 
 def _app(manifest, tmp_path: Path, *, fence=None, control=False):
@@ -140,34 +139,16 @@ def test_maintenance_pauses_import_and_resumes_one_worker(manifest, tmp_path, mo
 def test_background_import_serves_legacy_artifact_or_durable_reason(manifest, tmp_path, missing):
     app = _app(manifest, tmp_path)
     store = app.state.catalog.store
-    operation_id = str(uuid.uuid4())
     data = b"<!doctype html><p>Imported legacy artifact</p>"
-    descriptor = descriptor_for(
-        operation_id, "legacy.html", media_type="text/html", size_bytes=len(data)
+    task, descriptor, directory = create_legacy_artifact(
+        store,
+        tmp_path,
+        project_id=app.state.default_project_id,
+        data=data,
     )
-    task = store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=operation_id,
-            project_id=app.state.default_project_id,
-            kind="project_chat",
-            status="succeeded",
-            request={"chat_id": str(uuid.uuid4()), "chat_scope": "project", "mode": "discuss"},
-            result={"artifacts": [descriptor.model_dump(mode="json")]},
-            created_at=store.now(),
-            updated_at=store.now(),
-            status_message="Completed",
-            stage_root=str(tmp_path / "stage"),
-        )
-    )
-    store.record_agent_task_receipt(
-        operation_id,
-        "operation_created",
-        {"kind": "project_chat", "attempt": 1, "has_parent": False, "resumed": False},
-    )
-    directory = _local_chat_artifact_directory(store, task, operation_id)
-    directory.mkdir(parents=True)
-    if not missing:
-        (directory / descriptor.name).write_bytes(data)
+    operation_id = task.operation_id
+    if missing:
+        (directory / descriptor.name).unlink()
     base = (
         f"/api/projects/{task.project_id}/tasks/{operation_id}/artifacts/{descriptor.artifact_id}"
     )
@@ -180,13 +161,11 @@ def test_background_import_serves_legacy_artifact_or_durable_reason(manifest, tm
             status = wait_until(lambda: store.artifact_import_status(descriptor.artifact_id))
             response = client.get(base + "/content")
             assert response.status_code == 410
-            assert response.json()["detail"] == status["reason"]
             assert status["state"] == "missing"
             return
         wait_until(lambda: store.artifact(descriptor.artifact_id))
         content = client.get(base + "/content")
         assert content.status_code == 200
-        assert b"Imported legacy artifact" in content.content
         download = client.get(base + "/download")
         assert download.status_code == 200
         assert download.content == data

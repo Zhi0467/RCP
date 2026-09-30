@@ -28,6 +28,9 @@ function shell() {
   const listeners = {};
   const timers = new Map();
   const requests = [];
+  const messages = [];
+  const saved = new Map();
+  let canComment = true;
   let status = 200;
   let sendStatus = 409;
   let timerId = 0;
@@ -52,10 +55,13 @@ function shell() {
       addEventListener: (name, handler) => {
         listeners[name] = handler;
       },
-      parent: { postMessage() {} },
+      parent: { postMessage: (...args) => messages.push(args) },
     },
     location: { origin: "https://rcp.example" },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: {
+      getItem: (key) => saved.get(key),
+      setItem: (key, value) => saved.set(key, value),
+    },
     installSelectionConfirmation: () => () => {},
     setTimeout(handler) {
       timers.set(++timerId, handler);
@@ -73,7 +79,7 @@ function shell() {
         status: code,
         json: async () =>
           url === "/state"
-            ? { can_comment: true, fresh_session_required: false }
+            ? { can_comment: canComment, fresh_session_required: false }
             : {
                 detail: { code: "fresh_session_required", message: "Start a fresh session" },
                 operation_id: "edit",
@@ -84,6 +90,11 @@ function shell() {
   vm.runInNewContext(script, context);
   return {
     elements,
+    messages,
+    saved,
+    setCanComment: (value) => {
+      canComment = value;
+    },
     listeners,
     requests,
     timers,
@@ -104,17 +115,42 @@ function shell() {
 test("shell preserves a conflicted draft and resubmits only with explicit fresh-session consent", async () => {
   const app = shell();
   await settle();
+  assert.equal(app.elements.add.disabled, true);
   app.elements.message.value = "Update the plot";
   app.elements.message.listeners.input();
+  assert.equal(app.elements.add.disabled, false);
   await app.elements.add.listeners.click();
   assert.equal(JSON.parse(app.requests.at(-1).options.body).fresh_session, false);
   assert.equal(app.elements.message.value, "Update the plot");
+  assert.equal(app.messages.length, 0);
+  app.setCanComment(false);
+  await app.tick();
+  assert.equal(app.elements.add.disabled, true);
+  app.setCanComment(true);
   await app.tick(); // A stale availability projection must not undo the explicit offer.
+  assert.equal(app.elements.add.disabled, false);
   app.setSendStatus(200);
   await app.elements.add.listeners.click();
   const posts = app.requests.filter((request) => request.url === "/comments");
   assert.equal(JSON.parse(posts[1].options.body).fresh_session, true);
   assert.equal(app.elements.message.value, "");
+  assert.equal(app.elements.add.disabled, true);
+  for (const { options } of posts) {
+    assert.equal(options.method, "POST");
+    assert.equal(options.credentials, "same-origin");
+  }
+  assert.equal(JSON.parse([...app.saved.values()][0]).message, "");
+  assert.deepEqual(JSON.parse(JSON.stringify(app.messages)), [
+    [
+      {
+        type: "rcp-artifact-edit-started",
+        version: 1,
+        artifact_id: "a",
+        operation_id: "edit",
+      },
+      "https://rcp.example",
+    ],
+  ]);
 });
 
 test("shell stops permanent state failures until Retry and keeps polling transient failures", async () => {
