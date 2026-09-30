@@ -2051,6 +2051,7 @@ class SSHStateWorkspace(StateWorkspace):
                     remote,
                     f"{self.root}/",
                 ],
+                phase="pull",
             )
         else:
             result = state_transfer.pull_tar(self.host, self.remote_root, self.root, excludes)
@@ -2694,6 +2695,7 @@ class SSHStateWorkspace(StateWorkspace):
         return state_transfer.run_rsync(
             self.host,
             [engine.local_path, "-aR", *rsync_ssh_arguments(), *sources, destination],
+            phase="push",
             cwd=self.root,
         )
 

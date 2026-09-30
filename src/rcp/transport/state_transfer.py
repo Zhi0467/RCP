@@ -15,12 +15,20 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from rcp.limits import STATE_TRANSFER_PROBE_TIMEOUT_SECONDS, STATE_TRANSFER_TIMEOUT_SECONDS
+from rcp.limits import (
+    STATE_TRANSFER_ATTEMPTS,
+    STATE_TRANSFER_PROBE_TIMEOUT_SECONDS,
+    STATE_TRANSFER_RETRY_INITIAL_SECONDS,
+    STATE_TRANSFER_RETRY_MAX_SECONDS,
+    STATE_TRANSFER_STDERR_BYTES,
+    STATE_TRANSFER_TIMEOUT_SECONDS,
+)
 from rcp.transport.ssh import ssh_arguments
 
 _LOG = logging.getLogger(__name__)
@@ -278,6 +286,12 @@ def _apply_tree(staged: Path, target: Path, excludes: set[str]) -> None:
 def pull_tar(
     host: str, remote_root: str | Path, local_root: Path, excludes: Sequence[str]
 ) -> subprocess.CompletedProcess[str]:
+    return _retrying(host, "pull", lambda: _pull_tar_once(host, remote_root, local_root, excludes))
+
+
+def _pull_tar_once(
+    host: str, remote_root: str | Path, local_root: Path, excludes: Sequence[str]
+) -> subprocess.CompletedProcess[str]:
     argv = _remote_arguments(host, "pull", remote_root, excludes)
     local_root.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -321,6 +335,14 @@ def pull_tar(
 def push_tar(
     host: str, remote_stage: str | Path, local_root: Path, relative_paths: Sequence[str | Path]
 ) -> subprocess.CompletedProcess[str]:
+    return _retrying(
+        host, "push", lambda: _push_tar_once(host, remote_stage, local_root, relative_paths)
+    )
+
+
+def _push_tar_once(
+    host: str, remote_stage: str | Path, local_root: Path, relative_paths: Sequence[str | Path]
+) -> subprocess.CompletedProcess[str]:
     argv = _remote_arguments(host, "push", remote_stage)
     try:
         with tempfile.TemporaryFile() as stream:
@@ -352,7 +374,13 @@ def push_tar(
 
 
 def run_rsync(
-    host: str, arguments: list[str], *, cwd: Path | None = None
+    host: str, arguments: list[str], *, phase: str, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    return _retrying(host, phase, lambda: _run_rsync_once(host, arguments, cwd))
+
+
+def _run_rsync_once(
+    host: str, arguments: list[str], cwd: Path | None
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
@@ -366,6 +394,70 @@ def run_rsync(
     except (OSError, subprocess.TimeoutExpired) as exc:
         result = _failure(arguments, exc)
     transfer_result(host, result)
+    return result
+
+
+# rsync exit codes for a stream or connection that died, not a refused transfer:
+# 10 socket I/O, 12 protocol data stream, 20 signal, 30 data timeout,
+# 35 daemon connection timeout; 255 is ssh losing the connection.
+_TRANSIENT_EXIT_CODES = frozenset({10, 12, 20, 30, 35, 255})
+_TRANSIENT_STDERR = re.compile(
+    "|".join(
+        (
+            "unexpected end of file",
+            "connection reset",
+            "connection closed",
+            "broken pipe",
+            "message authentication code incorrect",
+            "kex_exchange_identification",
+            "timed out",
+        )
+    ),
+    re.IGNORECASE,
+)
+
+
+def _transient(result: subprocess.CompletedProcess[str]) -> bool:
+    if result.returncode == 0 or result.returncode == 127:
+        return False
+    return result.returncode in _TRANSIENT_EXIT_CODES or bool(
+        _TRANSIENT_STDERR.search(result.stderr or "")
+    )
+
+
+def _retrying(
+    host: str, phase: str, attempt: Callable[[], subprocess.CompletedProcess[str]]
+) -> subprocess.CompletedProcess[str]:
+    """Rerun one whole transfer after a dropped stream; every attempt is idempotent."""
+    delay = STATE_TRANSFER_RETRY_INITIAL_SECONDS
+    failures: list[str] = []
+    for number in range(1, STATE_TRANSFER_ATTEMPTS + 1):
+        result = attempt()
+        stderr = (result.stderr or "").strip()[-STATE_TRANSFER_STDERR_BYTES:]
+        if result.returncode:
+            failures.append(f"attempt {number} exit {result.returncode}: {stderr}")
+        if not _transient(result):
+            break
+        if number == STATE_TRANSFER_ATTEMPTS:
+            break
+        _LOG.warning(
+            "State %s with %s failed (exit %s), retrying in %.1fs: %s",
+            phase,
+            host,
+            result.returncode,
+            delay,
+            stderr,
+        )
+        time.sleep(delay)
+        delay = min(delay * 2, STATE_TRANSFER_RETRY_MAX_SECONDS)
+    if len(failures) > 1:
+        result = subprocess.CompletedProcess(
+            result.args,
+            result.returncode,
+            result.stdout,
+            f"state {phase} with {host} failed after {len(failures)} attempts\n"
+            + "\n".join(failures),
+        )
     return result
 
 

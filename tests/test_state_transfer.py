@@ -265,3 +265,34 @@ def test_probe_transport_failure_is_not_cached_or_warned(monkeypatch, caplog, fa
     assert len(attempts) == 2
     assert events == []
     assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    "failures, code, stderr, attempts, final",
+    [
+        (1, 255, "Connection reset by peer", 2, 0),
+        (1, 12, "rsync: unexpected end of file", 2, 0),
+        (9, 255, "Corrupted MAC on input", 3, 255),
+        (9, 23, "some files could not be transferred", 1, 23),
+        (9, 127, "rsync: command not found", 1, 127),
+    ],
+)
+def test_dropped_transfer_retries_boundedly(monkeypatch, failures, code, stderr, attempts, final):
+    monkeypatch.setattr(state_transfer, "_CACHE", {"fixture": object()})
+    monkeypatch.setattr(state_transfer.time, "sleep", lambda _seconds: None)
+    calls = []
+
+    def run(argv, **_kwargs):
+        if argv[0] != "rsync":
+            return subprocess.CompletedProcess(argv, 127, "", "not found")
+        calls.append(argv)
+        if len(calls) <= failures:
+            return subprocess.CompletedProcess(argv, code, "", stderr)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(state_transfer.subprocess, "run", run)
+    result = state_transfer.run_rsync("fixture", ["rsync", "a", "b"], phase="push")
+    assert len(calls) == attempts
+    assert result.returncode == final
+    if final and attempts > 1:
+        assert result.stderr.count(stderr) == attempts

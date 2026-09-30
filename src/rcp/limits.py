@@ -453,3 +453,9 @@ PHONE_LISTENER_POLL_SECONDS = 2.0
 # State transfer capability negotiation and one complete snapshot transfer.
 STATE_TRANSFER_PROBE_TIMEOUT_SECONDS = 15
 STATE_TRANSFER_TIMEOUT_SECONDS = 120
+# A transfer that dies mid-stream is retried this many times in all, with capped
+# backoff; each retry re-sends the same bytes to the same destination.
+STATE_TRANSFER_ATTEMPTS = 3
+STATE_TRANSFER_RETRY_INITIAL_SECONDS = 1.0
+STATE_TRANSFER_RETRY_MAX_SECONDS = 8.0
+STATE_TRANSFER_STDERR_BYTES = 4096
