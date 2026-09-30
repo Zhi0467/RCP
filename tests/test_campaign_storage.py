@@ -26,6 +26,8 @@ from rcp.storage import (
 )
 from rcp.storage.episodes import compact_episode_receipt
 
+from .storage_helpers import downgrade_artifacts
+
 
 def _authorizer() -> AuthorizedHuman:
     return AuthorizedHuman(
@@ -836,6 +838,7 @@ def test_legacy_campaign_tables_migrate_once_then_move_to_private_archives(tmp_p
             );
             """
         )
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 2, 5, 6)"
         )

@@ -184,14 +184,17 @@ def artifact_content(
     if classify_artifact_bytes(name, data) != media_type:
         raise ValueError("Artifact media type changed")
     view = artifact_view(media_type)
-    if view == "html":
-        document, csp = html_preview_document(data, frame_addon=frame_addon)
-    elif view == "markdown":
-        document, csp = markdown_document(data)
-    elif view == "text":
-        document, csp = text_document(name, data)
-    elif view == "image":
-        return data, media_type, "default-src 'none'; sandbox"
-    else:
-        raise ValueError("Artifact has no viewer")
+    try:
+        if view == "html":
+            document, csp = html_preview_document(data, frame_addon=frame_addon)
+        elif view == "markdown":
+            document, csp = markdown_document(data)
+        elif view == "text":
+            document, csp = text_document(name, data)
+        elif view == "image":
+            return data, media_type, "default-src 'none'; sandbox"
+        else:
+            raise ValueError("Artifact has no viewer")
+    except Exception as exc:
+        raise ValueError("Preview unavailable") from exc
     return document, "text/html", csp

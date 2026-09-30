@@ -25,6 +25,8 @@ from rcp.storage import (
 )
 from rcp.storage.episodes import _legacy_experiment_lifecycle, compact_episode_receipt
 
+from .storage_helpers import downgrade_artifacts
+
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
     owner = store.local_owner
@@ -38,25 +40,8 @@ def _authorizer(store: AppStore) -> AuthorizedHuman:
     )
 
 
-def _downgrade_artifacts(connection: sqlite3.Connection) -> None:
-    if not any(
-        row[1] == "artifact_id" for row in connection.execute("PRAGMA table_info(episode_reports)")
-    ):
-        return
-    assert connection.execute("SELECT COUNT(*) FROM episode_reports").fetchone()[0] == 0
-    connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT NOT NULL DEFAULT ''")
-    connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
-    connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
-    for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
-        connection.execute(f"DROP TABLE IF EXISTS {table}")
-    for row in AppStore._legacy_storage_schema_cache:
-        if row[0] == "table" and row[1] == "result_views":
-            connection.execute(row[3])
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (30, 31)")
-
-
 def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
-    _downgrade_artifacts(connection)
+    downgrade_artifacts(connection)
     connection.executescript(
         """
         DROP TABLE IF EXISTS _legacy_campaign_invocations_archive;
@@ -105,7 +90,7 @@ def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
 
 
 def _create_legacy_experiment_episode_table(connection: sqlite3.Connection) -> None:
-    _downgrade_artifacts(connection)
+    downgrade_artifacts(connection)
     connection.executescript(
         """
         CREATE TABLE experiment_episodes (
@@ -770,20 +755,13 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
 
     # Restore the immediately preceding schema, retaining its original report bytes.
     with sqlite3.connect(path) as connection:
-        connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT")
-        for report in reports:
-            connection.execute(
-                "UPDATE episode_reports SET html = ? WHERE report_id = ?",
-                (store.read_artifact_bytes(report.artifact_id).decode(), report.report_id),
-            )
-        connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
-        connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
-        for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
-            connection.execute(f"DROP TABLE IF EXISTS {table}")
-        connection.execute(
-            "DELETE FROM storage_schema_migrations WHERE migration_version IN (30, 31)"
+        downgrade_artifacts(
+            connection,
+            report_html={
+                report.report_id: store.read_artifact_bytes(report.artifact_id).decode()
+                for report in reports
+            },
         )
-        connection.execute("CREATE TABLE result_views (view_id TEXT, html TEXT)")
         connection.execute("ALTER TABLE episode_reports DROP COLUMN display_title")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 17")
     upgraded = AppStore(path)
@@ -1458,7 +1436,7 @@ def test_experiment_migration_removes_its_impossible_modern_wrapup(tmp_path) -> 
         "modern-operation",
     )
     with store.connection() as connection:
-        _downgrade_artifacts(connection)
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 5, 6)"
         )
@@ -1676,7 +1654,7 @@ def _downgrade_wrapups_to_not_null(path, *, episode_id: str) -> None:
     """
 
     connection = sqlite3.connect(path)
-    _downgrade_artifacts(connection)
+    downgrade_artifacts(connection)
     connection.execute(
         """
         INSERT OR IGNORE INTO episodes (
@@ -1891,7 +1869,7 @@ def test_stop_provenance_migration_upgrades_version_18(tmp_path, monkeypatch) ->
     store = AppStore(path)
     original = store.create_episode(_episode(store, "legacy"))
     with sqlite3.connect(path) as connection:
-        _downgrade_artifacts(connection)
+        downgrade_artifacts(connection)
         connection.execute("ALTER TABLE episodes DROP COLUMN stop_initiated_by")
         connection.execute(
             "ALTER TABLE auto_research_lifecycle_notices DROP COLUMN wake_suppressed"

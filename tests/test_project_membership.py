@@ -26,7 +26,7 @@ from rcp.sources import project_cache_roots
 from rcp.storage import AppStore
 
 from .helpers import seed_patch
-from .test_episode_storage import _downgrade_artifacts
+from .storage_helpers import downgrade_artifacts
 
 
 def _setup_payload(repository_path: Path, name: str = "membership-paper") -> dict[str, object]:
@@ -255,7 +255,7 @@ def _register_legacy_project(path: Path, locator: str, project_id: str) -> None:
 
     connection = sqlite3.connect(path)
     connection.execute("DROP TABLE IF EXISTS project_members")
-    _downgrade_artifacts(connection)
+    downgrade_artifacts(connection)
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)")
     connection.execute(
         """

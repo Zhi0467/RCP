@@ -36,8 +36,8 @@ from rcp.storage import (
 )
 
 from .helpers import NON_UUID4
+from .storage_helpers import downgrade_artifacts
 from .test_compute_jobs_storage import job_record
-from .test_episode_storage import _downgrade_artifacts
 
 
 def _project(project_id: str) -> ProjectRecord:
@@ -173,7 +173,7 @@ def test_read_only_storage_openers_refuse_writes(tmp_path, opener: str) -> None:
         store.connection() as connection,
         pytest.raises(sqlite3.OperationalError, match="readonly"),
     ):
-        _downgrade_artifacts(connection)
+        downgrade_artifacts(connection)
         connection.execute("DELETE FROM storage_schema_migrations")
 
 
@@ -250,7 +250,7 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
                 "2026-08-31T00:00:00+00:00",
             ),
         )
-        _downgrade_artifacts(connection)
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
         )
@@ -294,7 +294,7 @@ def test_failed_storage_migration_rolls_back_without_marker_and_retries(
             """,
             (now, now),
         )
-        _downgrade_artifacts(connection)
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
@@ -2432,7 +2432,7 @@ def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once
     first = store.record_agent_usage("refresh-operation", usage)
     with store.connection() as connection:
         connection.execute("DROP INDEX agent_usage_counted_dedupe")
-        _downgrade_artifacts(connection)
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5, 6)"
         )

@@ -7,6 +7,7 @@ import pytest
 
 from rcp.storage import AppStore, EpisodeArchiveState, EpisodeRecord
 
+from .storage_helpers import downgrade_artifacts
 from .test_auto_research_children_storage import (
     _admission,
     _auto_parent,
@@ -264,6 +265,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
     before = store.episode("episode")
     with store.connection() as connection:
         connection.execute("DROP TABLE episode_archives")
+        downgrade_artifacts(connection)
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 13")
     snapshot = AppStore.open_read_only(store.path)
     assert snapshot.check_storage_schema_migrations()[2] == (
@@ -284,6 +286,8 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "space_machines_v1",
         "notifications_v1",
         "episode_isolation_v1",
+        "artifact_storage_v1",
+        "artifact_imports_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

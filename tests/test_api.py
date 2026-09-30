@@ -3673,18 +3673,36 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
 
     kept = client.post(f"{base}/{by_name['preview.html']['artifact_id']}/keep")
     assert kept.status_code == 200
-    kept_filename = kept.json()["kept_filename"]
-    kept_path = service.history.workspace.root.parent / "artifacts" / kept_filename
-    assert kept_path.read_bytes() == html_source
-
-    externally_edited = b"<!doctype html><p>external edit</p>"
-    kept_path.write_bytes(externally_edited)
-    edited_preview = client.get(html_url)
-    assert edited_preview.status_code == 200
-    assert "external edit" in edited_preview.text
-    assert client.get(download_url).content == externally_edited
-
     store = app.state.background_tasks.store
+    artifact_id = by_name["preview.html"]["artifact_id"]
+    stored = store.artifact(artifact_id)
+    assert stored is not None and stored.kept_at
+    assert stored.expires_at is None
+    assert kept.json()["kept_filename"] is None
+    assert not (service.history.workspace.root.parent / "artifacts").exists()
+    assert store.read_artifact_bytes(artifact_id) == html_source
+
+    origin = store.agent_task(completed["operation_id"])
+    artifact_file = (
+        _local_chat_artifact_directory(store, origin, completed["operation_id"]) / "preview.html"
+    )
+    artifact_file.write_bytes(b"<!doctype html><p>external edit</p>")
+    assert client.get(download_url).content == html_source
+    artifact_file.unlink()
+    assert client.get(html_url).status_code == 200
+    assert client.get(download_url).content == html_source
+
+    revised = b"<!doctype html><p>revised version</p>"
+    version = store.publish_artifact_version(
+        artifact_id,
+        base_version=stored.current_version,
+        operation_id="artifact-edit",
+        data=revised,
+    )
+    assert "revised version" in client.get(html_url).text
+    assert client.get(download_url).content == revised
+    assert store.read_artifact_bytes(artifact_id, stored.current_version) == html_source
+
     store.checkpoint_agent_task(completed["operation_id"], native_session_id="artifact-session")
     origin = store.agent_task(completed["operation_id"])
     assert origin is not None and origin.native_session_id
@@ -3734,7 +3752,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
                 "source": "task",
                 "operation_id": origin.operation_id,
                 "artifact_id": by_name["preview.html"]["artifact_id"],
-                "selections": [{"kind": "text", "text": "external edit", "comment": "Why?"}],
+                "selections": [{"kind": "text", "text": "revised version", "comment": "Why?"}],
             },
         },
     )
@@ -3745,25 +3763,20 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert admitted.artifact_context is not None
     assert admitted.artifact_context.operation_id == origin.operation_id
 
-    monkeypatch.setattr(
-        "rcp.api.tasks.html_preview_document",
-        lambda _data: (_ for _ in ()).throw(RuntimeError("preview renderer failed")),
-    )
-    assert client.head(html_url).status_code == 410
-    assert client.get(html_url).status_code == 410
+    with monkeypatch.context() as renderer_patch:
+        renderer_patch.setattr(
+            "rcp.artifact_views.html_preview_document",
+            lambda _data, **_kwargs: (_ for _ in ()).throw(RuntimeError("preview renderer failed")),
+        )
+        assert client.head(html_url).status_code == 410
+        assert client.get(html_url).status_code == 410
+        assert client.get(download_url).content == revised
 
     persisted_before = app.state.background_tasks.store.agent_task(completed["operation_id"])
     assert persisted_before is not None and persisted_before.stage_root
-    artifact_file = (
-        _local_chat_artifact_directory(
-            app.state.background_tasks.store,
-            persisted_before,
-            completed["operation_id"],
-        )
-        / "preview.html"
-    )
-    artifact_file.unlink()
+    store.artifact_file_path(version).unlink()
     assert client.get(html_url).status_code == 410
+    assert client.get(download_url).status_code == 410
     persisted_after = app.state.background_tasks.store.agent_task(completed["operation_id"])
     assert persisted_after is not None
     assert persisted_after.result == persisted_before.result

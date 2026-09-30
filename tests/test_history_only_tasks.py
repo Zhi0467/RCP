@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from rcp.artifact_import import import_project_artifacts
 from rcp.artifacts import descriptor_for
 from rcp.service import CoachRequest, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
@@ -76,10 +77,12 @@ def _insert_session_indexes(
         )
 
 
+@pytest.mark.parametrize("retained_temporary", [False, True])
 def test_history_only_fence_preserves_history_and_removes_every_continuation(
     manifest,
     tmp_path: Path,
     monkeypatch,
+    retained_temporary: bool,
 ) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
@@ -245,11 +248,19 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         == chat_session_id
     )
 
+    if not retained_temporary:
+        (artifact_directory / "temporary.html").unlink()
+    import_project_artifacts(store, project_id, workspace=lambda: service.history.workspace)
+    if retained_temporary:
+        (artifact_directory / "temporary.html").unlink()
+    artifact_history = store.artifact_inventory(project_id)
+
     changed = store.mark_agent_tasks_history_only(
         [chat_operation_id, interrupted_operation_id, coach_operation_id]
     )
 
     assert changed == 3
+    assert store.artifact_inventory(project_id) == artifact_history
     assert (
         store.mark_agent_tasks_history_only(
             [chat_operation_id, interrupted_operation_id, coach_operation_id]
@@ -338,13 +349,14 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_discuss": False,
         "can_revise": False,
     }
-    artifacts["temporary.html"].pop("unavailable_reason")
+    reason = artifacts["temporary.html"].pop("unavailable_reason")
+    assert (reason is None) == retained_temporary
     assert artifacts["temporary.html"] == {
         **temporary.model_dump(mode="json"),
-        "available": False,
+        "available": retained_temporary,
         "view": "html",
-        "can_open": False,
-        "can_download": False,
+        "can_open": retained_temporary,
+        "can_download": retained_temporary,
         "can_keep": False,
         "can_discuss": False,
         "can_revise": False,
@@ -360,15 +372,19 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     assert client.post(f"{kept_base}/keep").status_code == 409
 
     monkeypatch.setattr(
-        "rcp.api.tasks.read_local_regular_file",
+        "rcp.artifact_import.read_local_regular_file",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("an unavailable history-only stage must not be read")
         ),
     )
     temporary_base = f"{base}/{temporary.artifact_id}"
-    assert client.get(f"{temporary_base}/content").status_code == 410
-    assert client.get(f"{temporary_base}/download").status_code == 410
-    assert client.get(f"{temporary_base}/viewer").status_code == 410
+    expected_status = 200 if retained_temporary else 410
+    assert client.get(f"{temporary_base}/content").status_code == expected_status
+    download = client.get(f"{temporary_base}/download")
+    assert download.status_code == expected_status
+    if retained_temporary:
+        assert download.content == b"<p>temporary</p>"
+    assert client.get(f"{temporary_base}/viewer").status_code == expected_status
     assert client.post(f"{temporary_base}/keep").status_code == 409
     context_response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",

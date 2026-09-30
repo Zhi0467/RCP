@@ -25,6 +25,8 @@ from rcp.storage import (
 )
 from rcp.watchers import evaluate_graph_watchers
 
+from .storage_helpers import downgrade_artifacts
+
 _CREATED_AT = "2026-08-18T00:00:00+00:00"
 
 
@@ -501,6 +503,7 @@ def test_legacy_database_adds_graph_watcher_reconciliation_table(tmp_path) -> No
     store = AppStore(path)
     with store.connection() as connection:
         connection.execute("DROP TABLE graph_watcher_reconciliation")
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
         )

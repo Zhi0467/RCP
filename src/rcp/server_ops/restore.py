@@ -48,6 +48,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         # RCP-owned artifact files and immutable report bindings, fresh and upgraded.
         "9289984bd08b23f8d5d9f487dff067848d951f10900e053f720613f10d1da044",
         "cf65fb3b1697cefe435320c947a6b49d2788935e96d25b494df7eabe1d1eb2b6",
+        # Background artifact import receipts, fresh and upgraded in place.
+        "d5deb791b41d8fb39944b5f65140037884279ce55f13313d35372044014a9a30",
+        "a376cef6dbb644656c6bbb53f37c1e7aa5626c4f98fc5de3268a7e7bcd1b2fbf",
         # Notifications, fresh and historical graph_runs rebuild shapes.
         "9081439143959433cd437c8aab3fb7b7e559a64a675b75a4d21bf9c2442d4cf7",
         "5d43614c384c503556d2ae941b52098ef6c110d54abe2b9c5eb53b3dc34c4f70",

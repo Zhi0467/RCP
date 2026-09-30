@@ -20,6 +20,8 @@ from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import AgentTaskAdmissionConflict
 from rcp.watchers import WatcherBinding
 
+from .storage_helpers import downgrade_artifacts
+
 
 def _identity(store: AppStore) -> AuthorizedHuman:
     owner = store.local_owner
@@ -766,6 +768,7 @@ def test_legacy_combined_rows_and_missing_state_roots_migrate_one_way(
             );
             """
         )
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (2, 3, 5, 6)"
         )

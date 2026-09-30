@@ -13,6 +13,8 @@ from rcp.server_ops.application_validation import (
 )
 from rcp.storage import AppStore
 
+from .storage_helpers import downgrade_artifacts
+
 
 def job_record(job_id: str = "job-1", **updates) -> ComputeJobRecord:
     return ComputeJobRecord.model_validate(
@@ -63,6 +65,7 @@ def test_compute_jobs_migration_upgrades_version_eight_without_changing_records(
     identity = previous.space_id
     with previous.connection() as connection:
         connection.execute("DROP TABLE compute_jobs")
+        downgrade_artifacts(connection)
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 9")
     upgraded = AppStore(path)
     assert upgraded.space_id == identity

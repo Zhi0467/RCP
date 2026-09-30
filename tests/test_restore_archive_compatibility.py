@@ -230,3 +230,33 @@ def test_restore_accepts_historical_in_place_provider_readiness_schema(tmp_path:
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
     upgraded = AppStore(database)
     assert _database_schema_sha256(upgraded) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+
+
+@pytest.mark.parametrize("upgraded_in_place", [False, True])
+def test_restore_accepts_artifact_storage_before_and_after_import_migration(
+    tmp_path: Path, upgraded_in_place: bool
+) -> None:
+    database = tmp_path / "artifacts.sqlite3"
+    if upgraded_in_place:
+        fixture = Path(
+            "tests/fixtures/restore_schema/provider-readiness-upgraded-v21-16248cea.sqlite3.gz"
+        )
+        database.write_bytes(gzip.decompress(fixture.read_bytes()))
+    store = AppStore(database)
+    # Migration 31 only adds this table and its index. Reconstruct its preceding
+    # artifact-storage boundary without changing either historical table shape.
+    with store.connection() as connection:
+        connection.execute("DROP TABLE artifact_imports")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 31")
+    assert _database_schema_sha256(store) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+
+    reopened = AppStore(database)
+    assert _database_schema_sha256(reopened) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
+    with reopened.connection() as connection:
+        assert connection.execute("SELECT * FROM artifact_imports").fetchall() == []
+        assert (
+            connection.execute(
+                "SELECT migration_name FROM storage_schema_migrations WHERE migration_version = 31"
+            ).fetchone()[0]
+            == "artifact_imports_v1"
+        )
