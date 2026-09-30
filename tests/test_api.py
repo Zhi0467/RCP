@@ -6199,19 +6199,27 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
 
 
 def _work_turn_whose_apply_loses_canonical_state(
-    manifest, tmp_path, monkeypatch, failure: Exception
+    manifest,
+    tmp_path,
+    monkeypatch,
+    failure: Exception,
+    *,
+    lands_before_failure: bool = False,
+    later_turns: tuple[dict[str, str], ...] = (),
 ):
     app, service = _seeded_project(manifest, tmp_path)
     patch_text = agent_patch_json(
         refresh_patch("rq/applied-again").model_copy(update={"kind": "work"})
     )
     launcher = ScriptedLauncher(
-        [{"patch.json": patch_text}], message="The operational work completed."
+        [{"patch.json": patch_text}, *later_turns], message="The operational work completed."
     )
     real_append = service.history.append
 
-    def fail_once(*_args, **_kwargs):
+    def fail_once(*args, **kwargs):
         monkeypatch.setattr(service.history, "append", real_append)
+        if lands_before_failure:
+            real_append(*args, **kwargs)
         raise failure
 
     monkeypatch.setattr(service.history, "append", fail_once)
@@ -6275,7 +6283,7 @@ def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     assert service.history.state().revision == revision + 1
 
 
-def test_apply_again_is_refused_while_the_commit_is_unknown(
+def test_apply_again_records_an_unknown_commit_that_landed_without_appending_twice(
     manifest, tmp_path, monkeypatch
 ) -> None:
     app, service, client, task, patch_text = _work_turn_whose_apply_loses_canonical_state(
@@ -6283,21 +6291,99 @@ def test_apply_again_is_refused_while_the_commit_is_unknown(
         tmp_path,
         monkeypatch,
         BatchPublishFailed("commit probe failed", commit_status="unknown"),
+        lands_before_failure=True,
     )
     project_id = app.state.default_project_id
     operation_id = task["operation_id"]
-    assert task["result"]["graph_update"]["status"] == "unavailable"
     assert task["result"]["graph_update"]["commit_status"] == "unknown"
-    assert task["can_apply_again"] is False
-    assert app.state.background_tasks.store.agent_task_patch_output(operation_id) == patch_text
+    assert task["can_apply_again"] is True
+    landed_revision = service.history.state().revision
+    assert "rq/applied-again" in service.history.state().nodes
+
+    # The binding check finds the landed commit; replaying it then fails, and the
+    # outcome must keep what was observed: the commit is present.
+    real_load_patches = service.history.load_patches
+    real_materialization = service.history.current_materialization
+
+    def fail_materialization_once():
+        monkeypatch.setattr(service.history, "current_materialization", real_materialization)
+        raise StateUnreachable("ssh exited 255")
+
+    def arm_materialization_failure():
+        monkeypatch.setattr(service.history, "load_patches", real_load_patches)
+        monkeypatch.setattr(service.history, "current_materialization", fail_materialization_once)
+        return real_load_patches()
+
+    monkeypatch.setattr(service.history, "load_patches", arm_materialization_failure)
+    unconfirmed = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert unconfirmed.status_code == 200, unconfirmed.text
+    update = unconfirmed.json()["result"]["graph_update"]
+    assert (update["status"], update["commit_status"]) == ("unavailable", "present")
+    assert unconfirmed.json()["can_apply_again"] is True
+
+    recorded = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+    )
+    assert recorded.status_code == 200, recorded.text
+    update = recorded.json()["result"]["graph_update"]
+    assert (update["status"], update["applied_revision"]) == ("applied", landed_revision)
+    assert service.history.state().revision == landed_revision
+    receipts = [
+        message.graph_update.status
+        for message in service.chat_transcript(task["request"]["chat_id"]).messages
+        if message.operation_id == operation_id and message.graph_update is not None
+    ]
+    assert receipts == ["unavailable", "unavailable", "applied"]
+
+
+def test_apply_again_rechecks_for_a_later_applied_turn_under_the_run_lock(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    later_patch = agent_patch_json(
+        refresh_patch("rq/later-turn").model_copy(update={"kind": "work"})
+    )
+    app, service, client, task, _patch_text = _work_turn_whose_apply_loses_canonical_state(
+        manifest,
+        tmp_path,
+        monkeypatch,
+        StateUnreachable("ssh exited 255"),
+        later_turns=({"patch.json": later_patch},),
+    )
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    operation_id = task["operation_id"]
+    later = client.post(
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={
+            "chat_id": task["request"]["chat_id"],
+            "message": "Run the next operation.",
+            "run_truth_scope": ["repo-a"],
+            "mode": "work",
+        },
+    )
+    assert later.status_code == 202, later.text
+    later_task = _wait_for_run(client, project_id, later.json()["operation_id"])
+    assert later_task["result"]["graph_update"]["status"] == "applied"
     revision = service.history.state().revision
 
+    # The eligibility check ran before the later turn committed; only the
+    # recheck under the run lock can see it.
+    real_later_applied = store.later_chat_turn_applied_graph_update
+
+    def not_yet(record):
+        monkeypatch.setattr(store, "later_chat_turn_applied_graph_update", real_later_applied)
+        return False
+
+    monkeypatch.setattr(store, "later_chat_turn_applied_graph_update", not_yet)
     refused = client.post(
         f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
     )
     assert refused.status_code == 409
     assert service.history.state().revision == revision
     assert "rq/applied-again" not in service.history.state().nodes
+    assert store.agent_task(operation_id).result["graph_update"]["status"] == "unavailable"
 
 
 def _experiment_fixture_patch(

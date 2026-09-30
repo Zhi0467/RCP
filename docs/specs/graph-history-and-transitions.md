@@ -333,16 +333,27 @@ keeps its Patch text (invariant 9).
 An ordinary conversation Work turn in that state offers **Apply again**
 (`POST …/tasks/{operation_id}/apply-graph-update-again`, patch-capable identity,
 merge fence). It re-applies the retained Patch text without running the agent,
-through the same Apply path, source binding and current-graph validation. If
-the earlier commit did land, the canonical-binding check records it rather than
-appending again. The outcome replaces the task's graph update: applied, which
-drops the retained text and appends a chat receipt; rejected, which may then
-offer Repair; or unavailable again. The task projects `can_apply_again`. Apply
-again is refused when the commit status is `unknown` (invariants 6 and 6b). It
-is also refused when the retained text is gone, when a turn in the same chat is
-active, when a later turn in that chat has applied a graph update, and for
-Experiment-loop and Auto-research child turns, whose control bookkeeping a bare
-re-apply would skip. Nothing reaches the graph unless a human clicks it.
+through the same Apply path, source binding and current-graph validation. Under
+the canonical run lock, Apply refreshes canonical state before its
+canonical-binding check, so a commit that did land, on any device, is recorded
+rather than appended again (invariants 6 and 6b). That is why Apply again is
+offered for every commit status: `absent`, `present`, and `unknown`. Once the
+binding check finds the matching commit, the outcome is `present` even if the
+following materialization fails. The outcome replaces the task's graph update:
+applied, which drops the retained text; rejected, which may then offer Repair;
+or unavailable again. Every outcome appends a chat receipt, so the chat's
+latest receipt offers the matching action; earlier receipts stay as history.
+The task projects `can_apply_again`.
+
+Apply again is refused when the retained text is gone, when a turn in the same
+chat is active, and for Experiment-loop and Auto-research child turns, whose
+control bookkeeping a bare re-apply would skip. For `absent` and `unknown` it is
+also refused when a later turn in that chat has applied a graph update, since
+the older update would land after it; a `present` commit is already in history
+and is only recorded. The chat checks run before the lock is taken and again
+under it, before anything is read or appended, so a later turn admitted while
+Apply again waits still refuses it with no commit. Nothing reaches the graph
+unless a human clicks it.
 
 ## Coherent projections and operational events
 

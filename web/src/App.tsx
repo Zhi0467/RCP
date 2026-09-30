@@ -3672,6 +3672,14 @@ export default function App() {
         );
         upsertTask(updated);
         setNotice(null);
+        // The task stays succeeded, so completion-driven refresh never fires:
+        // reload the graph and chats to show the new receipt and its actions.
+        await reload(false).catch((error) =>
+          setNotice({
+            kind: "error",
+            text: `Apply again finished, but the project could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+          }),
+        );
         return;
       }
       const next = await api<AgentTask>(

@@ -45,24 +45,41 @@ def apply_again_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
         or store.auto_research_child_work_for_operation(record.operation_id) is not None
     ):
         return "Only an ordinary Work turn can apply its graph update again."
-    if graph_update.get("commit_status") == "unknown":
-        # Invariants 6 and 6b: a commit whose acknowledgement was lost is never rerun.
-        return (
-            "RCP could not confirm whether this graph update was committed, so it cannot "
-            "be applied again. Start a new Work turn instead."
-        )
-    chat_id = request.get("chat_id")
+    refusal = _chat_order_refusal(store, record)
+    if refusal is not None:
+        return refusal
+    if store.agent_task_patch_output(record.operation_id) is None:
+        return "The retained patch is no longer available. Start a new Work turn instead."
+    return None
+
+
+def _chat_order_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
+    """Refuse an older update that would land after a newer turn in the same chat.
+
+    Apply again reuses the turn's source binding, so an `unknown` commit that did
+    land is recorded, not appended twice (invariants 6 and 6b). A `present`
+    commit is already in history, so a later turn cannot be overtaken by it.
+    """
+
+    chat_id = record.request.get("chat_id")
     if isinstance(chat_id, str) and store.has_active_chat_task(
         record.project_id,
         cast(Literal["node_chat", "project_chat"], record.kind),
         chat_id,
     ):
         return "Wait for the running turn in this chat to finish."
-    if store.later_chat_turn_applied_graph_update(record):
-        return "A later turn in this chat already applied a graph update."
-    if store.agent_task_patch_output(record.operation_id) is None:
-        return "The retained patch is no longer available. Start a new Work turn instead."
+    graph_update = record.result.get("graph_update") if record.result else None
+    commit_status = graph_update.get("commit_status") if isinstance(graph_update, dict) else None
+    if commit_status != "present" and store.later_chat_turn_applied_graph_update(record):
+        return (
+            "A later turn in this chat already applied a graph update, so this older one "
+            "cannot be applied after it. Start a new Work turn instead."
+        )
     return None
+
+
+class _ApplyAgainRefused(Exception):
+    """Raised under the run lock; deliberately not a ValueError, which Apply rejects."""
 
 
 def apply_work_graph_update_again(
@@ -91,6 +108,17 @@ def apply_work_graph_update_again(
         request = load_stored_request(RunRequest, record.request, operation_id=operation_id)
         assert isinstance(request, RunRequest)
         deadline = time.monotonic() + APPLY_AGAIN_RUN_LOCK_WAIT_SECONDS
+
+        def recheck_chat_order() -> None:
+            # A later turn can be admitted, and can commit, while this waits for
+            # the lock. Under the lock no other commit can land until it is released.
+            refusal = _chat_order_refusal(store, record)
+            if refusal is not None:
+                raise _ApplyAgainRefused(refusal)
+            # The source-binding check must see a commit that landed while the link
+            # was down, including through another device on a remote host.
+            service.history.workspace.refresh()
+
         try:
             # The same source binding as the turn: if the earlier commit did land,
             # the canonical-binding check records it instead of appending twice.
@@ -103,7 +131,10 @@ def apply_work_graph_update_again(
                 ),
                 source_operation_id=operation_id,
                 cancelled=lambda: time.monotonic() > deadline,
+                under_lock=recheck_chat_order,
             )
+        except _ApplyAgainRefused as exc:
+            raise ValueError(str(exc)) from exc
         except RunLockCancelled as exc:
             raise ValueError(
                 "Another graph-writing run holds canonical state. Try again when it finishes."
@@ -143,21 +174,22 @@ def apply_work_graph_update_again(
             expected=expected,
             graph_update=graph_update.model_dump(mode="json"),
         )
-        if graph_update.status == "applied":
-            try:
-                _append_chat_graph_receipt(
-                    service,
-                    request,
-                    record.native_session_id,
-                    graph_update,
-                    operation_id,
-                )
-            except (OSError, StateUnavailable, ValueError) as exc:
-                store.record_agent_task_event(
-                    operation_id,
-                    f"Apply again completed but its chat receipt could not be written: {exc}",
-                    level="warning",
-                )
+        # Every outcome gets a receipt, so the chat's latest one offers the right
+        # recovery (Repair after a rejection); earlier receipts stay as history.
+        try:
+            _append_chat_graph_receipt(
+                service,
+                request,
+                record.native_session_id,
+                graph_update,
+                operation_id,
+            )
+        except (OSError, StateUnavailable, ValueError) as exc:
+            store.record_agent_task_event(
+                operation_id,
+                f"Apply again completed but its chat receipt could not be written: {exc}",
+                level="warning",
+            )
         updated = store.agent_task(operation_id)
         assert updated is not None
         return updated
