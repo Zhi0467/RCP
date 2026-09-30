@@ -2134,7 +2134,7 @@ class AutoResearchStoreMixin:
             LEFT JOIN auto_research_child_experiments AS route
               ON route.child_episode_id = run.episode_id
             LEFT JOIN episodes AS experiment ON experiment.episode_id = route.child_episode_id
-            WHERE invocation.episode_id = ? OR route.auto_research_episode_id = ?
+            WHERE (invocation.episode_id = ? OR route.auto_research_episode_id = ?)
             """,
             (episode_id, episode_id),
         ).fetchall()

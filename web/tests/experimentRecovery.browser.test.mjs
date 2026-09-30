@@ -3,6 +3,7 @@ import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 import { timelineFixture } from "./fixtures/timeline.mjs";
+import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { withTaskAnswers } from "./taskAnswers.mjs";
 
 let server;
@@ -38,10 +39,13 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       const submissions = [];
       page.on("requestfailed", (request) => {
         // The Terminals tab's projections are abandoned when the view unmounts
-        // mid-flight. A deliberate abort is cleanup, not a failure.
+        // mid-flight, and a Runs refresh supersedes an in-flight artifact list.
+        // A deliberate abort is cleanup, not a failure.
         const aborted = new URL(request.url()).pathname;
         if (
-          (aborted.endsWith("/terminals") || aborted.endsWith("/terminals/repositories")) &&
+          (aborted.endsWith("/terminals") ||
+            aborted.endsWith("/terminals/repositories") ||
+            aborted.endsWith("/artifacts")) &&
           request.failure()?.errorText === "net::ERR_ABORTED"
         )
           return;
@@ -313,6 +317,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           unexpectedRequests.push(path);
         await route.fulfill({ json });
       });
+      await mockEpisodeArtifacts(page);
       await page.goto(`${origin}/#/projects/demo?view=runs`);
       const recovery = page.locator(".experiment-run-actions").getByRole("button", {
         name: action === "retry" ? "Retry Claude" : "Resume Claude",

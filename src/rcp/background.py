@@ -676,6 +676,10 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "Use start_episode_report so the existing hidden allocation is preserved."
             )
+        if isinstance(request, RunRequest) and request.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+            return start_artifact_edit(self, project_id, request, authorized_by=authorized_by)
         experiment_root = (
             isinstance(request, RunRequest)
             and request.patch_kind == "experiment_loop"
@@ -694,17 +698,8 @@ class BackgroundAgentTasks:
                 "Seed and refresh sessions can only be resumed from an RCP background "
                 "task checkpoint."
             )
-        result_view_revision = (
-            isinstance(request, RunRequest)
-            and request.result_view is not None
-            and request.result_view.action == "revise"
-        )
-        if result_view_revision and (not request.session_id or not stage_root):
-            raise ValueError(
-                "A result-view revision requires its saved native session and exact stage."
-            )
-        if not result_view_revision and (stage_host is not None or stage_root is not None):
-            raise ValueError("Only a result-view revision may inherit a saved stage on start.")
+        if stage_host is not None or stage_root is not None:
+            raise ValueError("A new task cannot inherit a saved stage.")
         self._validate_request_type(kind, request)
         request_data = request.model_dump(mode="json")
         estimate, samples = self.store.agent_task_estimate(project_id, kind, request_data)
@@ -744,6 +739,17 @@ class BackgroundAgentTasks:
                 "Retry it instead."
             )
         original = self._request_from_record(previous)
+        if isinstance(original, RunRequest) and original.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+            return start_artifact_edit(
+                self,
+                previous.project_id,
+                original.model_copy(update={"session_id": previous.native_session_id}),
+                authorized_by=authorized_by or previous.authorized_by,
+                parent=previous,
+                continuation="resume",
+            )
         if isinstance(original, AutoResearchRunRequest):
             preflight_auto_research_task_resume(self, previous)
         preflight_experiment_episode_recovery(self, previous, request=original)
@@ -786,6 +792,27 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
+        if isinstance(original, RunRequest) and original.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+            if any(
+                value is not None and value != getattr(original, key)
+                for key, value in (
+                    ("provider", provider),
+                    ("model", model),
+                    ("reasoning", reasoning),
+                    ("run_on", run_on),
+                )
+            ):
+                raise ValueError("An edit retry must retain its admitted execution profile.")
+            return start_artifact_edit(
+                self,
+                previous.project_id,
+                original.model_copy(update={"session_id": previous.native_session_id}),
+                authorized_by=authorized_by or previous.authorized_by,
+                parent=previous,
+                continuation="retry",
+            )
         _require_recoverable_machine(previous, original, run_on)
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(
@@ -837,8 +864,6 @@ class BackgroundAgentTasks:
             }
         )
         same_provider = request.provider == original.provider
-        same_model = request.model == original.model
-        same_reasoning = request.reasoning == original.reasoning
         same_execution_host = request.run_on == original.run_on
         session_limit = self._failure_is_session_limit(previous)
         # Resuming a session the provider has dropped fails the same way every
@@ -850,13 +875,7 @@ class BackgroundAgentTasks:
             and bool(previous.stage_root)
             and self._session_is_rcp_owned(previous)
         )
-        result_view_revision = bool(
-            isinstance(original, RunRequest)
-            and original.result_view is not None
-            and original.result_view.action == "revise"
-        )
-        must_reuse_saved_session = graph_repair or result_view_revision
-        if must_reuse_saved_session:
+        if graph_repair:
             problem = None
             stage_available: bool | None = True
             if owned_checkpoint and previous.stage_host:
@@ -872,10 +891,6 @@ class BackgroundAgentTasks:
                 problem = "the provider no longer has the saved session"
             elif continuation_context_unavailable:
                 problem = "the saved continuation context is unavailable"
-            elif result_view_revision and (
-                not same_provider or not same_model or not same_reasoning or not same_execution_host
-            ):
-                problem = "the pinned provider, model, reasoning, or execution machine changed"
             elif not same_provider or not same_execution_host:
                 problem = "the pinned provider or execution machine changed"
             elif not owned_checkpoint:
@@ -884,11 +899,7 @@ class BackgroundAgentTasks:
                 problem = "the saved provider workspace is unavailable"
             if problem is not None:
                 detail = (
-                    "This result-view revision cannot start a fresh provider session because "
-                    f"{problem}. The existing view was not redrawn; start a new result view "
-                    "instead."
-                    if result_view_revision
-                    else "This patch-only graph repair cannot start a full Work turn because "
+                    "This patch-only graph repair cannot start a full Work turn because "
                     f"{problem}. Start a new Work turn instead."
                 )
                 raise ValueError(detail)
@@ -1681,6 +1692,12 @@ class BackgroundAgentTasks:
             raise ValueError("The admitted task has an empty execution stage root.")
         if record.write_scope_fingerprint is not None:
             raise ValueError("A queued admitted task cannot already carry a write-scope binding.")
+
+        if isinstance(request, RunRequest) and request.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import validate_artifact_edit_launch
+
+            validate_artifact_edit_launch(record, request, parent=parent)
+            return
 
         if record.kind == "episode_report":
             if record.dispatch_authority is not None:

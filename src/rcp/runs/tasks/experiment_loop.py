@@ -548,7 +548,6 @@ async def _stage_work_turn(
             token=token,
             artifact_scope_id=artifact_scope_id,
             artifact_directory=artifact_directory,
-            prepared_result_view=None,
             experiment_resources=experiment_resources,
             experiment_resource_pointers=experiment_resource_pointers,
             skill_selection=skill_selection,
@@ -2275,6 +2274,7 @@ def _settle_experiment_loop_outcome(
             turn.artifact_scope_id,
             Path(str(turn.artifact_directory)),
             turn.remote_stage,
+            service=turn.service,
         )
     except Exception as exc:
         with suppress(Exception):

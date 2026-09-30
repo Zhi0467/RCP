@@ -83,7 +83,6 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
 from rcp.runs.tasks.experiment_watcher_maintenance import _process_experiment_watcher_maintenance
-from rcp.runs.tasks.result_views import _prepare_result_view_turn, _roll_result_view_retention
 from rcp.runs.tasks.work import (
     PATCH_CORRECTION_MAX_ROUNDS,
     WorkFinalizationContext,
@@ -92,6 +91,7 @@ from rcp.runs.tasks.work import (
     _close_work_validator_mailbox,
     _compose_work_recovery_prompt,
     _ComposedWorkPrompt,
+    _finalize_work_artifacts,
     _finalize_work_turn,
     _launch_and_stream_work_turn,
     _maintenance_continuation,
@@ -477,6 +477,7 @@ async def _stage_auto_research_child_work_turn(
                     ),
                 )
             assert remote_stage.root is not None
+            remote_stage.touch()
             execution.checkpoint_stage(resolved.execution_host, str(remote_stage.root))
             context = context.model_copy(
                 update=_stage_context_paths(
@@ -502,7 +503,6 @@ async def _stage_auto_research_child_work_turn(
             )
             execution.checkpoint_stage("", str(local_stage))
         token = _task_token(execution)
-        _roll_result_view_retention(request, execution, local_stage, remote_stage)
         patch_inputs = _stage_chat_patch_inputs(
             local_stage,
             remote_stage,
@@ -549,15 +549,6 @@ async def _stage_auto_research_child_work_turn(
             _logical_chat_turn_operation_id(execution.store, execution.operation_id)
             if resuming
             else execution.operation_id
-        )
-        prepared_result_view = _prepare_result_view_turn(
-            request,
-            execution,
-            workspace if remote_stage is None else None,
-            remote_stage,
-            focused_node=context.node,
-            logical_operation_id=artifact_scope_id,
-            revision_preflight=resolved.revision_preflight,
         )
         if remote_stage is not None:
             artifact_directory: Path | PurePosixPath = remote_stage.prepare_artifact_directory(
@@ -658,7 +649,6 @@ async def _stage_auto_research_child_work_turn(
                 token=token,
                 artifact_scope_id=artifact_scope_id,
                 artifact_directory=artifact_directory,
-                prepared_result_view=prepared_result_view,
                 experiment_resources=[],
                 experiment_resource_pointers=[],
                 skill_selection=skill_selection,
@@ -725,7 +715,6 @@ def _compose_child_fresh_prompt(
         stable_values=values,
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
-        result_view=staged.prepared_result_view,
         ontology_extensions=turn.context.ontology_extensions,
     )
     return _ComposedWorkPrompt(contract_path, prompt, contract_path, render, values)
@@ -763,15 +752,8 @@ def _compose_child_retry_prompt(
         contract=render(),
         values=values,
     )
-    result_view_handoff = bool(
-        turn.continuation == "handoff" and staged.prepared_result_view is not None
-    )
-    original_contract_path = (
-        current_contract_path
-        if result_view_handoff
-        else retry_original_contract_path(
-            turn.execution, turn.local_stage, turn.remote_stage, current_contract_path
-        )
+    original_contract_path = retry_original_contract_path(
+        turn.execution, turn.local_stage, turn.remote_stage, current_contract_path
     )
     retry_contract = PromptFactory.continuation_task_contract(
         original_contract_path=original_contract_path,
@@ -791,14 +773,6 @@ def _compose_child_retry_prompt(
             skill_ids=turn.request.invoked_skill_ids,
         ),
         invoked_provider_skills=turn.request.resolved_provider_skills,
-        result_view_action=(
-            staged.prepared_result_view.action if staged.prepared_result_view is not None else None
-        ),
-        result_view_path=(
-            staged.prepared_result_view.prompt_path
-            if staged.prepared_result_view is not None
-            else None
-        ),
     )
     if mail_path is not None:
         retry_contract += (
@@ -969,8 +943,8 @@ async def settle_child_work_deliverables(
 
     The one door a child Work result goes through, whether its provider
     streamed to this process or finished on a host that outlived the link.
-    A child answers its parent episode, so it publishes no result view and
-    discovers no artifacts; what it owes is a graph update and its watchers.
+    Graph updates, watchers, and copied artifacts settle through the same
+    durable output path for streamed, retried, and recovered turns.
     """
 
     settled = _SettledWorkDeliverables(native_session_id=finalization.outcome.session_id)
@@ -1038,6 +1012,9 @@ async def settle_child_work_deliverables(
             yield frame
     if settled.stop:
         return
+    for artifact in _finalize_work_artifacts(finalization):
+        yield _sse(AgentEvent(event="artifact", artifact=artifact))
+
     final_turn = finalization
     if finalization.continuation == "message_wake" and finalization.request.message is None:
         final_turn = replace(

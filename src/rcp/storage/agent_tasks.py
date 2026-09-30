@@ -18,6 +18,7 @@ from pydantic import (
 )
 
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.artifacts import artifact_id as scoped_artifact_id
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -79,7 +80,7 @@ from rcp.storage.models import (
     RunStageLifecycleRecord,
     _canonical_uuid4,
     _required_timestamp,
-    _result_view_reference_time,
+    _retention_reference_time,
 )
 
 # Ordered Apply history is a contiguous latest tail. The singular projection
@@ -238,6 +239,124 @@ class AgentTaskStoreMixin:
         assert stored is not None
         return stored
 
+    def create_artifact_edit_task(
+        self, record: AgentTaskRecord, *, continuation_cause: str = "fresh"
+    ) -> AgentTaskRecord:
+        """Admit a file edit without spending or changing its episode."""
+
+        if (
+            record.kind not in {"artifact_edit", "node_chat", "project_chat"}
+            or not isinstance(record.request.get("artifact_edit"), dict)
+            or record.dispatch_authority is not None
+            or record.episode_id is not None
+        ):
+            raise ValueError("An artifact edit requires its snapshot and no graph authority.")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_project_accepts_new_work(connection, record.project_id)
+            if self._has_active_chat_overlap(connection, record):
+                raise AgentTaskAdmissionConflict(
+                    "Another task is already active in this conversation."
+                )
+            self._insert_agent_task(connection, record, continuation_cause=continuation_cause)
+            edit = record.request.get("artifact_edit")
+            reply_episode_id = edit.get("reply_episode_id") if isinstance(edit, dict) else None
+            if reply_episode_id is not None:
+                episode = connection.execute(
+                    "SELECT root_operation_id FROM episodes WHERE episode_id = ? "
+                    "AND project_id = ? AND mode = 'auto_research'",
+                    (reply_episode_id, record.project_id),
+                ).fetchone()
+                if episode is None or reply_episode_id != edit.get("episode_id"):
+                    raise ValueError("The artifact edit reply thread does not match its episode.")
+                author = record.authorized_by
+                connection.execute(
+                    """
+                    INSERT INTO auto_research_messages (
+                        message_id, episode_id, sender_role, sender_task_id,
+                        authorized_space_id, authorized_user_id, authorized_display_name,
+                        recipient_task_id, control_node_id, body, created_at,
+                        delivered_at, delivery_operation_id
+                    ) VALUES (?, ?, 'human', NULL, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    ON CONFLICT(message_id) DO UPDATE SET
+                        delivery_operation_id = excluded.delivery_operation_id,
+                        delivered_at = excluded.delivered_at
+                    """,
+                    (
+                        str(
+                            uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                "artifact-edit:"
+                                + str(edit.get("operation_id", record.operation_id)),
+                            )
+                        ),
+                        reply_episode_id,
+                        author.space_id if author else None,
+                        author.user_id if author else None,
+                        author.display_name if author else None,
+                        episode["root_operation_id"],
+                        record.request.get("message", ""),
+                        record.created_at,
+                        record.created_at,
+                        record.operation_id,
+                    ),
+                )
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def session_launch_unavailable_reason(self, record: AgentTaskRecord) -> str | None:
+        """Explain a current collision; admission still checks atomically."""
+
+        with self.connection() as connection:
+            try:
+                self._require_session_launch_available(connection, record)
+            except AgentTaskAdmissionConflict as exc:
+                return str(exc)
+        return None
+
+    @staticmethod
+    def _require_session_launch_available(
+        connection: sqlite3.Connection, record: AgentTaskRecord
+    ) -> None:
+        """Reserve the native session and scratch in the admission transaction."""
+
+        if record.status not in ACTIVE_AGENT_TASK_STATUSES:
+            return
+        session_id = record.native_session_id or record.request.get("session_id")
+        if not session_id and not record.stage_root:
+            return
+        held = connection.execute(
+            """
+            SELECT operation_id FROM graph_runs
+            WHERE operation_id != ? AND status IN ('queued', 'running', 'pausing')
+              AND COALESCE(stage_host, '') = ?
+              AND (
+                (? IS NOT NULL AND ? != '' AND stage_root = ?)
+                OR (? IS NOT NULL AND ? != ''
+                    AND json_extract(request_json, '$.provider') IS ?
+                    AND COALESCE(native_session_id,
+                                 json_extract(request_json, '$.session_id')) = ?)
+              )
+            LIMIT 1
+            """,
+            (
+                record.operation_id,
+                record.stage_host or "",
+                record.stage_root,
+                record.stage_root,
+                record.stage_root,
+                session_id,
+                session_id,
+                record.request.get("provider"),
+                session_id,
+            ),
+        ).fetchone()
+        if held is not None:
+            raise AgentTaskAdmissionConflict(
+                "Another task is already using this native session or workspace."
+            )
+
     def create_branch_merge_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
         """Admit one human-dispatched, graph-only merge without spending episode budget."""
 
@@ -325,6 +444,7 @@ class AgentTaskStoreMixin:
             raise ValueError("agent task requests must use episode_id, not campaign_id")
         self._validate_dispatch_authority_insert(connection, record)
         record, session_resolution = self._bind_chat_stage(connection, record, continuation_cause)
+        self._require_session_launch_available(connection, record)
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
         self._require_graph_branch_admission_open(connection, record)
@@ -340,7 +460,7 @@ class AgentTaskStoreMixin:
                 held != record.operation_id
             ):
                 raise ValueError("episode_merge_reservation_changed")
-        else:
+        elif not isinstance(record.request.get("artifact_edit"), dict):
             self.require_episode_binding_admission_open(
                 connection,
                 record.project_id,
@@ -443,7 +563,7 @@ class AgentTaskStoreMixin:
         if record.episode_id is None:
             if record.graph_target.kind == "branch":
                 if (
-                    record.kind not in {"node_chat", "project_chat"}
+                    record.kind not in {"node_chat", "project_chat", "artifact_edit"}
                     or record.request.get("patch_kind", "work") != "work"
                     or record.request.get("control_episode_id") is not None
                 ):
@@ -533,6 +653,11 @@ class AgentTaskStoreMixin:
         record: AgentTaskRecord,
     ) -> None:
         """Keep a recovery or continuation on its parent's admitted authority."""
+
+        if record.kind == "artifact_edit":
+            if record.dispatch_authority is not None:
+                raise ValueError("An artifact edit cannot carry graph authority.")
+            return
 
         if record.kind == "episode_report":
             if record.episode_id is None or record.parent_operation_id is None:
@@ -742,8 +867,8 @@ class AgentTaskStoreMixin:
             WHERE project_id = ? AND kind = ?
               AND json_extract(request_json, '$.chat_id') = ?
               AND native_session_id IS NOT NULL AND native_session_id != ''
-              -- A result-view revision runs on the view's own saved session.
-              AND json_extract(request_json, '$.result_view.action') IS NOT 'revise'
+              -- An artifact edit runs on the artifact's own origin session.
+              AND json_extract(request_json, '$.artifact_edit') IS NULL
             ORDER BY created_at DESC, run.rowid DESC LIMIT 1
             """,
             (project_id, kind, chat_id),
@@ -796,6 +921,31 @@ class AgentTaskStoreMixin:
         session in the wrong directory.
         """
 
+        edit = record.request.get("artifact_edit")
+        if isinstance(edit, dict) and edit.get("stage_root"):
+            origin = connection.execute(
+                "SELECT project_id, native_session_id, stage_host, stage_root "
+                "FROM graph_runs WHERE operation_id = ? AND history_only = 0",
+                (edit.get("origin_operation_id"),),
+            ).fetchone()
+            if (
+                origin is None
+                or origin["project_id"] != record.project_id
+                or origin["stage_root"] != edit["stage_root"]
+                or (origin["stage_host"] or "") != (edit.get("stage_host") or "")
+                or origin["native_session_id"] != record.request.get("session_id")
+            ):
+                raise ValueError("The artifact edit no longer has its exact origin session.")
+            return (
+                record.model_copy(
+                    update={
+                        "native_session_id": origin["native_session_id"],
+                        "stage_host": origin["stage_host"],
+                        "stage_root": origin["stage_root"],
+                    }
+                ),
+                None,
+            )
         resolution: dict[str, object] | None = None
         if record.kind not in {"node_chat", "project_chat"}:
             return record, resolution
@@ -825,8 +975,6 @@ class AgentTaskStoreMixin:
             and record.request.get("control_episode_id") is None
             and record.request.get("trigger", "human") in {"human", "watcher"}
             and continuation_cause in {"fresh", "watcher_wake"}
-            # A result-view revision continues the view's own saved session and stage.
-            and (record.request.get("result_view") or {}).get("action") != "revise"
         ):
             if self._has_resumable_paused_chat_task(
                 connection, record.project_id, record.kind, chat_id
@@ -1272,24 +1420,6 @@ class AgentTaskStoreMixin:
                 "Only terminal tasks can become history-only: " + ", ".join(nonterminal)
             )
 
-        unresolved_revision = connection.execute(
-            """
-            SELECT candidate_id
-            FROM artifact_revision_candidates
-            WHERE status IN ('pending', 'accepting', 'conflicted')
-              AND (
-                source_operation_id IN (SELECT value FROM json_each(?))
-                OR revision_operation_id IN (SELECT value FROM json_each(?))
-              )
-            LIMIT 1
-            """,
-            (selected_json, selected_json),
-        ).fetchone()
-        if unresolved_revision is not None:
-            raise ValueError(
-                "A task with an unresolved artifact revision cannot become history-only."
-            )
-
         shared = connection.execute(
             """
             SELECT operation_id
@@ -1403,10 +1533,10 @@ class AgentTaskStoreMixin:
         operation_id: str,
         artifact_id: str,
         *,
-        kept_filename: str,
+        kept_filename: str | None = None,
         kept_at: str,
     ) -> AgentArtifactDescriptor:
-        """Bind one task artifact to its live repository file without a digest guard."""
+        """Refresh the task projection after the stored artifact is kept."""
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1424,7 +1554,7 @@ class AgentTaskStoreMixin:
             for raw in result["artifacts"]:
                 descriptor = AgentArtifactDescriptor.model_validate(raw)
                 if descriptor.artifact_id == artifact_id:
-                    if descriptor.kept_filename is not None:
+                    if descriptor.is_kept():
                         updated = descriptor
                     else:
                         updated = descriptor.model_copy(
@@ -1793,11 +1923,12 @@ class AgentTaskStoreMixin:
             rows = connection.execute(
                 """
                 SELECT graph_runs.* FROM graph_runs
-                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat')
+                WHERE project_id = ? AND kind IN ('node_chat', 'project_chat', 'artifact_edit')
                   AND EXISTS (
                       SELECT 1 FROM json_each(graph_runs.result_json, '$.artifacts') AS artifact
                       WHERE artifact.type = 'object'
-                        AND json_extract(artifact.value, '$.kept_filename') IS NOT NULL
+                        AND (json_extract(artifact.value, '$.kept_at') IS NOT NULL
+                             OR json_extract(artifact.value, '$.kept_filename') IS NOT NULL)
                   )
                 ORDER BY created_at DESC, operation_id
                 """,
@@ -1943,7 +2074,8 @@ class AgentTaskStoreMixin:
                                  )
                            ) AS recovery_abandoned
                     FROM graph_runs
-                    WHERE episode_id = ? AND (? OR visible = 1)
+                    WHERE episode_id = ?
+                      AND (? OR visible = 1)
                     ORDER BY created_at DESC, operation_id DESC
                 """
                 + ("    LIMIT ?" if newest is not None else "")
@@ -1951,6 +2083,21 @@ class AgentTaskStoreMixin:
                 ) ORDER BY created_at, operation_id
                 """,
                 (episode_id, int(include_hidden)) + (() if newest is None else (newest,)),
+            ).fetchall()
+        return [self._agent_task_record(row) for row in rows]
+
+    def episode_artifact_edit_tasks(self, episode_id: str) -> list[AgentTaskRecord]:
+        """Read edits for display without granting episode operational membership."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM graph_runs
+                WHERE json_extract(request_json, '$.artifact_edit.episode_id') = ?
+                  AND visible = 1
+                ORDER BY created_at, operation_id
+                """,
+                (episode_id,),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 
@@ -3598,6 +3745,23 @@ class AgentTaskStoreMixin:
     ) -> None:
         now = self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            record = self._agent_task_record(row)
+            self._require_session_launch_available(
+                connection,
+                record.model_copy(
+                    update={
+                        "native_session_id": native_session_id or record.native_session_id,
+                        "stage_host": stage_host or record.stage_host,
+                        "stage_root": stage_root or record.stage_root,
+                    }
+                ),
+            )
             updated = connection.execute(
                 """
                 UPDATE graph_runs
@@ -3964,7 +4128,6 @@ class AgentTaskStoreMixin:
     ) -> tuple[RunStageLifecycleRecord, ...]:
         """Project every durable owner onto its exact run-stage lifecycle."""
 
-        current = _result_view_reference_time(as_of)
         aggregates: dict[tuple[str, str], _RunStageLifecycleAggregate] = {}
 
         def add(
@@ -4035,13 +4198,6 @@ class AgentTaskStoreMixin:
                 WHERE wrapup.stage_root IS NOT NULL AND wrapup.stage_root != ''
                 """
             ).fetchall()
-            view_rows = connection.execute(
-                """
-                SELECT view_id, stage_host, stage_root, expires_at, kept_filename
-                FROM result_views
-                WHERE stage_root IS NOT NULL AND stage_root != ''
-                """
-            ).fetchall()
             chat_rows = connection.execute(
                 """
                 SELECT context.native_session_id,
@@ -4054,7 +4210,8 @@ class AgentTaskStoreMixin:
             ).fetchall()
             artifact_revision_rows = connection.execute(
                 """
-                SELECT candidate.candidate_id,
+                SELECT candidate.candidate_id, candidate.source_artifact_id,
+                       candidate.artifact_scope_id, candidate.source_name,
                        candidate.stage_host, candidate.stage_root, candidate.status,
                        COALESCE(source.stage_host, '') AS source_stage_host,
                        source.stage_root AS source_stage_root,
@@ -4063,7 +4220,8 @@ class AgentTaskStoreMixin:
                            FROM json_each(source.result_json, '$.artifacts') AS artifact
                            WHERE json_extract(artifact.value, '$.artifact_id') =
                                  candidate.source_artifact_id
-                             AND json_extract(artifact.value, '$.kept_filename') IS NOT NULL
+                             AND (json_extract(artifact.value, '$.kept_at') IS NOT NULL
+                             OR json_extract(artifact.value, '$.kept_filename') IS NOT NULL)
                        ) AS source_stage_required
                 FROM artifact_revision_candidates AS candidate
                 JOIN graph_runs AS source
@@ -4107,15 +4265,6 @@ class AgentTaskStoreMixin:
                 must_exist=live,
                 protect_from_cleanup=live,
             )
-        for row in view_rows:
-            live = row["kept_filename"] is None and _required_timestamp(row["expires_at"]) > current
-            add(
-                stage_host=row["stage_host"],
-                stage_root=row["stage_root"],
-                owner_ref=f"result_views:{row['view_id']}",
-                must_exist=False,
-                protect_from_cleanup=live,
-            )
         for row in chat_rows:
             add(
                 stage_host=row["stage_host"],
@@ -4124,20 +4273,25 @@ class AgentTaskStoreMixin:
                 must_exist=False,
                 protect_from_cleanup=True,
             )
+        legacy_imports = self.legacy_artifact_import_ids()
         for row in artifact_revision_rows:
-            unresolved = row["status"] in {"pending", "accepting", "conflicted"}
+            unresolved = (
+                scoped_artifact_id(row["artifact_scope_id"], row["source_name"]) in legacy_imports
+            )
             add(
                 stage_host=row["stage_host"],
                 stage_root=row["stage_root"],
-                owner_ref=f"artifact_revision_candidates:{row['candidate_id']}",
+                owner_ref=f"artifact_import_candidates:{row['candidate_id']}",
                 must_exist=unresolved,
                 protect_from_cleanup=unresolved,
             )
-            source_required = unresolved and bool(row["source_stage_required"])
+            source_required = row["source_artifact_id"] in legacy_imports and bool(
+                row["source_stage_required"]
+            )
             add(
                 stage_host=row["source_stage_host"],
                 stage_root=row["source_stage_root"],
-                owner_ref=f"artifact_revision_sources:{row['candidate_id']}",
+                owner_ref=f"artifact_import_sources:{row['candidate_id']}",
                 must_exist=source_required,
                 protect_from_cleanup=source_required,
             )
@@ -4787,7 +4941,7 @@ class AgentTaskStoreMixin:
         """Age out bulky run payloads. `graph_runs` rows are never deleted, so
         resume ancestry (invariant 10b) stays walkable for the life of a project."""
 
-        current = _result_view_reference_time(now)
+        current = _retention_reference_time(now)
         inactive = """
             operation_id NOT IN (
                 SELECT operation_id FROM graph_runs
@@ -4797,10 +4951,6 @@ class AgentTaskStoreMixin:
         patch_cutoff = (current - timedelta(days=PATCH_OUTPUT_RETENTION_DAYS)).isoformat()
         trace_cutoff = (current - timedelta(days=RUN_TRACE_RETENTION_DAYS)).isoformat()
         with self.connection() as connection:
-            expired_result_views = self._delete_expired_result_views_from_connection(
-                connection,
-                current,
-            )
             outputs = connection.execute(
                 f"DELETE FROM graph_run_outputs WHERE created_at < ? AND {inactive}",
                 (patch_cutoff,),
@@ -4849,11 +4999,16 @@ class AgentTaskStoreMixin:
                 )
 
         return {
+            "artifacts": self.expire_artifacts(
+                as_of=current,
+                protected_artifact_ids=(
+                    self.protected_edit_artifact_ids() | self.legacy_artifact_import_ids()
+                ),
+            ),
             "outputs": outputs,
             "events": events,
             "receipts": receipts,
             "writing_sessions": len(delete_writing),
-            "result_views": expired_result_views,
         }
 
     @staticmethod

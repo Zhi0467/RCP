@@ -20,6 +20,7 @@ from rcp.watchers import (
     run_watcher_cancel,
 )
 
+from .storage_helpers import downgrade_artifacts
 from .test_watchers import _binding, _record
 
 
@@ -250,6 +251,7 @@ def test_watcher_actions_upgrade_preserves_old_shell_rows_and_indexes(tmp_path):
             "worker_id",
         ):
             connection.execute(f"ALTER TABLE watchers DROP COLUMN {field}")
+        downgrade_artifacts(connection)
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 10")
     upgraded = AppStore(store.path)
     assert upgraded.watcher(shell.watcher_id) == expected

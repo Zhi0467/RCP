@@ -17,7 +17,7 @@ from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.provider_accounts import account_login_refusal, record_provider_failure
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.agents.write_scope import resolve_project_write_scope
-from rcp.artifacts import classify_artifact_bytes
+from rcp.artifacts import classify_artifact_bytes, html_document_title
 from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.runs.shared import (
@@ -33,6 +33,7 @@ from rcp.skill_registry import SkillSelection, official_registry
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AgentTaskRecord,
+    Artifact,
     EpisodeRecord,
     EpisodeReportAttemptRecord,
     EpisodeReportRecord,
@@ -683,14 +684,32 @@ def _finish_report(
 ) -> EpisodeReportRecord:
     ending = turn.wrapup.ending
     assert ending is not None
+    report_id = str(uuid.uuid5(uuid.NAMESPACE_URL, "rcp-report:" + attempt.attempt_id))
+    artifact = execution.store.create_artifact(
+        Artifact(
+            artifact_id=hashlib.sha256(report_id.encode()).hexdigest()[:24],
+            project_id=turn.task.project_id,
+            supplier="episode_ending",
+            live_data_allowed=False,
+            supplier_id=turn.episode.episode_id,
+            source_name="episode-report.html",
+            media_type="text/html",
+            created_at=execution.store.now(),
+            origin_operation_id=turn.task.operation_id,
+            episode_id=turn.episode.episode_id,
+            display_title=html_document_title(html),
+        ),
+        data=html.encode("utf-8"),
+    )
     report = EpisodeReportRecord(
-        report_id=str(uuid.uuid4()),
+        report_id=report_id,
         episode_id=turn.episode.episode_id,
         attempt_id=attempt.attempt_id,
         allocation_operation_id=turn.task.operation_id,
         ending=ending,
         sha256=hashlib.sha256(html.encode("utf-8")).hexdigest(),
-        html=html,
+        artifact_id=artifact.artifact_id,
+        artifact_version_id=artifact.current_version,
         created_at=execution.store.now(),
     )
     _episode, stored = execution.store.finish_episode_report_ready(attempt.attempt_id, report)

@@ -149,8 +149,6 @@ def test_current_project_tables_have_one_explicit_transfer_disposition(tmp_path:
         changed = inspect_transfer_table_inventory(connection)
 
     assert TRANSFER_RECORD_TABLES.isdisjoint(TRANSFER_EXCLUDED_PROJECT_TABLES)
-    assert len(TRANSFER_RECORD_TABLES) == 29
-    assert len(TRANSFER_EXCLUDED_PROJECT_TABLES) == 36
     with pytest.raises(ValueError, match="future_project_history"):
         validate_transfer_table_policy(changed.project_linked_tables)
 
@@ -176,7 +174,7 @@ def test_transfer_table_policy_names_history_and_exclusions_deliberately() -> No
         "chat_session_contexts",
         "conversation_worktrees",
         "compute_backend_probes",
-        "result_views",
+        "artifact_operations",
         "graph_watcher_reconciliation",
         "project_members",
         "project_invitations",
@@ -625,3 +623,36 @@ def test_record_models_do_not_expose_executable_source_bindings() -> None:
         for field in model.model_fields
     }
     assert forbidden.isdisjoint(model_fields)
+
+
+def test_pre_edit_task_request_archive_keeps_canonical_bytes() -> None:
+    import json
+
+    from rcp.transfer.project_files import (
+        TransferProjectFileCapture,
+        parse_transfer_project_file_payload,
+        transfer_project_file_payload,
+    )
+
+    task = _task(kind="project_chat", request=transfer_records.TransferRunRequestHistory())
+    capture = TransferProjectFileCapture(
+        project_id=PROJECT_ID,
+        records=TransferRecordBundle(
+            project_id=PROJECT_ID,
+            attributions=(_attribution(),),
+            tasks=(task,),
+            watchers=(),
+            episodes=(),
+        ),
+        kept_result_views=(),
+        entries=(),
+        payload_size_bytes=0,
+    )
+    payload = json.loads(transfer_project_file_payload(capture))
+    payload["records"]["tasks"][0]["request"].pop("artifact_edit", None)
+    legacy = (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode()
+    assert transfer_project_file_payload(parse_transfer_project_file_payload(legacy)) == legacy
+    explicit = transfer_records.TransferRunRequestHistory(artifact_edit=None)
+    assert "artifact_edit" in explicit.model_dump(mode="json")

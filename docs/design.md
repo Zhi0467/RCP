@@ -33,9 +33,10 @@ continuations. External effects are never rolled back by the graph workflow.
 
 The paper introduction is human-authored and non-authoritative. Agent-created
 artifacts and reports help a researcher read work; they do not become graph
-truth. A chat artifact may be viewed, selected, questioned, and kept through one
-shell. A Work revision remains a candidate until a human accepts or rejects it;
-those interactions grant no graph authority. The backend
+truth. Every artifact, reports and Experiment or Auto-research outputs included,
+may be viewed, commented on, versioned, and kept through one viewer. A comment
+edits its staged file under Discuss authority or a revoking scratch-only launch. RCP publishes an immutable version, and Undo moves the
+current pointer back; these interactions grant no graph authority. The backend
 owns the viewer entrance, so ordinary server-served UI changes do not require a
 matching native rebuild. The thinner native team entrance is a separate
 boundary: before enrollment, token exchange, project-card read, or browser-cookie
@@ -147,11 +148,11 @@ number here.
 - A **task** is one durable provider invocation or recovery attempt.
 - A **conversation** is one reusable native-session scratch workspace containing
   explicitly labelled Discuss and Work turns.
-- An **artifact** is a supported file produced by a task and owned by its
-  conversation. It may remain temporary or be kept as a live file at the state
-  repository root; it is never a graph object or a second answer channel.
-- An **artifact revision candidate** is a validated Work output held beside its
-  unchanged source until one human Accept or Reject disposition.
+- An **artifact** is an RCP-owned file supplied by a turn or episode ending.
+  Its metadata lives in SQLite and immutable versions live in the data directory.
+  Turn outputs expire unless kept; reports are permanent. It is never a graph
+  object or a second answer channel. A live HTML version reads declared sources
+  only through data RCP's viewer relays into the opaque sandbox.
 - An **episode** is the persisted parent for bounded Experiment control or
   Auto-research, with one operational budget, one native-session binding, and
   one graceful Stop boundary.

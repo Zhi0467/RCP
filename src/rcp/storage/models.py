@@ -22,7 +22,6 @@ from pydantic import (
     model_validator,
 )
 
-from rcp.artifacts import classify_artifact_bytes
 from rcp.config import (
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
     AgentExecutionProfile,
@@ -1924,6 +1923,7 @@ AgentTaskKind = Literal[
     "auto_research",
     "branch_merge",
     "episode_report",
+    "artifact_edit",
 ]
 AgentTaskStatus = Literal[
     "queued",
@@ -2088,12 +2088,8 @@ ArtifactRevisionCandidateStatus = Literal[
 ]
 
 
-class ArtifactRevisionConflict(ValueError):
-    """One artifact already has an unresolved candidate or changed underneath it."""
-
-
 class ArtifactRevisionCandidateRecord(BaseModel):
-    """Durable candidate bytes awaiting one explicit human disposition."""
+    """Archived candidate provenance retained for legacy byte import."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -2239,68 +2235,6 @@ AGENT_TASK_PROJECTION_FIELDS: frozenset[str] = frozenset(
         "status_label",
     }
 )
-
-
-class ResultViewRecord(BaseModel):
-    """Private binding and lifecycle metadata for one conversation result view."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    view_id: str = Field(pattern=r"^[0-9a-f]{24}$")
-    project_id: str = Field(min_length=1)
-    experiment_id: str = Field(min_length=1)
-    chat_id: str = Field(min_length=1)
-    origin_operation_id: str = Field(min_length=1)
-    latest_operation_id: str = Field(min_length=1)
-    provider: str = Field(min_length=1)
-    model: str
-    reasoning: str
-    run_on: str = Field(min_length=1)
-    native_session_id: str = Field(min_length=1)
-    stage_host: str
-    stage_root: str = Field(min_length=1)
-    source_name: str = Field(min_length=1, max_length=255)
-    content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    size_bytes: int = Field(gt=0, le=CHAT_ARTIFACT_MAX_FILE_BYTES)
-    created_at: str = Field(min_length=1)
-    updated_at: str = Field(min_length=1)
-    expires_at: str = Field(min_length=1)
-    kept_filename: str | None = Field(default=None, min_length=1, max_length=255)
-    kept_at: str | None = Field(default=None, min_length=1)
-
-    @field_validator("source_name")
-    @classmethod
-    def source_name_is_plain_html(cls, value: str) -> str:
-        return _plain_html_name(value, label="result view source name")
-
-    @field_validator("kept_filename")
-    @classmethod
-    def kept_filename_is_plain_html(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        return _plain_html_name(value, label="kept result view filename")
-
-    @field_validator("created_at", "updated_at", "expires_at", "kept_at")
-    @classmethod
-    def timestamps_are_parseable(cls, value: str | None) -> str | None:
-        if value is not None:
-            _required_timestamp(value)
-        return value
-
-    @model_validator(mode="after")
-    def lifecycle_is_coherent(self) -> ResultViewRecord:
-        if (self.kept_filename is None) != (self.kept_at is None):
-            raise ValueError("a kept result view requires both its filename and kept_at")
-        created_at = _required_timestamp(self.created_at)
-        updated_at = _required_timestamp(self.updated_at)
-        expires_at = _required_timestamp(self.expires_at)
-        if updated_at < created_at:
-            raise ValueError("result view updated_at precedes created_at")
-        if expires_at < created_at:
-            raise ValueError("result view expires_at precedes created_at")
-        if self.kept_at is not None and _required_timestamp(self.kept_at) < created_at:
-            raise ValueError("result view kept_at precedes created_at")
-        return self
 
 
 AutoResearchRole = Literal["orchestrator", "worker"]
@@ -2534,23 +2468,9 @@ class EpisodeReportRecord(BaseModel):
     allocation_operation_id: str
     ending: EpisodeEnding
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    html: str
+    artifact_id: str
+    artifact_version_id: str
     created_at: str
-
-    @field_validator("html")
-    @classmethod
-    def html_is_a_bounded_utf8_artifact(cls, value: str) -> str:
-        if "\x00" in value:
-            raise ValueError("episode report HTML contains NUL bytes")
-        if len(value.encode("utf-8")) > CHAT_ARTIFACT_MAX_FILE_BYTES:
-            raise ValueError("episode report HTML exceeds the artifact size limit")
-        return value
-
-    @model_validator(mode="after")
-    def digest_matches_html(self) -> EpisodeReportRecord:
-        if hashlib.sha256(self.html.encode("utf-8")).hexdigest() != self.sha256:
-            raise ValueError("episode report HTML does not match its digest")
-        return self
 
 
 class EpisodeWrapupRecord(BaseModel):
@@ -3164,10 +3084,6 @@ class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
 
 
-class ResultViewConflict(ValueError):
-    """A result-view revision was based on bytes that are no longer current."""
-
-
 class WatcherStopRequest(BaseModel):
     """An Experiment agent's narrow request to retire one staged observer."""
 
@@ -3635,7 +3551,7 @@ _PROJECT_ID_TABLES = (
     "conversation_worktrees",
     "episode_isolations",
     "episode_isolation_states",
-    "result_views",
+    "artifacts",
     "artifact_revision_candidates",
     "graph_runs",
     "episodes",
@@ -3677,43 +3593,11 @@ def _required_timestamp(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _result_view_is_visible(
-    record: ResultViewRecord,
-    *,
-    as_of: datetime | None,
-) -> bool:
-    if record.kept_filename is not None:
-        return True
-    return _required_timestamp(record.expires_at) > _result_view_reference_time(as_of)
-
-
-def _result_view_reference_time(as_of: datetime | None) -> datetime:
+def _retention_reference_time(as_of: datetime | None) -> datetime:
     current = as_of or datetime.now(UTC)
     if current.tzinfo is None or current.utcoffset() is None:
-        raise ValueError("result view visibility time must include a timezone")
+        raise ValueError("retention reference time must include a timezone")
     return current.astimezone(UTC)
-
-
-def _validated_result_view_html(record: ResultViewRecord, data: bytes) -> str:
-    if not isinstance(data, bytes):
-        raise TypeError("result view HTML must be bytes")
-    if len(data) > CHAT_ARTIFACT_MAX_FILE_BYTES:
-        raise ValueError("result view HTML exceeds its byte limit")
-    if len(data) != record.size_bytes:
-        raise ValueError("result view HTML size does not match its metadata")
-    if hashlib.sha256(data).hexdigest() != record.content_sha256:
-        raise ValueError("result view HTML digest does not match its metadata")
-    if classify_artifact_bytes(record.source_name, data) != "text/html":
-        raise ValueError("result view must be HTML")
-    return data.decode("utf-8")
-
-
-def _result_view_html_bytes(record: ResultViewRecord, html: object) -> bytes:
-    if not isinstance(html, str):
-        raise ValueError("stored result view HTML is invalid")
-    data = html.encode("utf-8")
-    _validated_result_view_html(record, data)
-    return data
 
 
 class ProviderLoginStateRecord(BaseModel):
@@ -3768,7 +3652,6 @@ __all__ = [
     "ProviderReadinessSnapshotRecord",
     "ArtifactRevisionCandidateRecord",
     "ArtifactRevisionCandidateStatus",
-    "ArtifactRevisionConflict",
     "AgentTaskAdmissionConflict",
     "AgentTaskAlreadyContinued",
     "ACTIVE_AGENT_TASK_STATUSES",
@@ -3886,8 +3769,6 @@ __all__ = [
     "ProjectStageRecord",
     "ProposalResolvedGraphCondition",
     "ProviderSkillInventoryRecord",
-    "ResultViewConflict",
-    "ResultViewRecord",
     "RunStageLifecycleRecord",
     "SPACE_ACCESS_URL_MAX_LENGTH",
     "SPACE_NAME_MAX_LENGTH",

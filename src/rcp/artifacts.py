@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import errno
 import hashlib
 import html
 import os
-import re
 import stat
 import xml.etree.ElementTree as ET
-from contextlib import suppress
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -16,11 +13,9 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from rcp.artifact_replace import (
-    recover_regular_file_replacement_in_open_directory,
-    replace_regular_file_in_open_directory,
-)
 from rcp.limits import ARTIFACT_DISPLAY_TITLE_MAX_CHARS
+from rcp.regular_file_reader import _open_local_directory
+from rcp.regular_file_reader import read_local_regular_file as read_local_regular_file
 
 ArtifactMediaType = Literal[
     "text/html",
@@ -127,26 +122,7 @@ class AgentArtifactDescriptor(BaseModel):
     kept_at: str | None = None
 
     def is_kept(self) -> bool:
-        return self.kept_filename is not None
-
-
-class ResultViewDescriptor(BaseModel):
-    """Public metadata for one stable, conversation-scoped result view."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    view_id: str = Field(pattern=r"^[0-9a-f]{24}$")
-    chat_id: str = Field(min_length=1)
-    experiment_id: str = Field(min_length=1)
-    name: str = Field(min_length=1, max_length=255)
-    media_type: Literal["text/html"]
-    state: Literal["temporary", "kept"]
-    created_at: str = Field(min_length=1)
-    updated_at: str = Field(min_length=1)
-    expires_at: str = Field(min_length=1)
-    kept_filename: str | None = None
-    kept_at: str | None = None
-    can_revise: bool
+        return self.kept_at is not None or self.kept_filename is not None
 
 
 class _HTMLDocumentTitleParser(HTMLParser):
@@ -184,12 +160,6 @@ def html_document_title(document: str) -> str | None:
     if len(title) > ARTIFACT_DISPLAY_TITLE_MAX_CHARS:
         title = title[: ARTIFACT_DISPLAY_TITLE_MAX_CHARS - 1].rstrip() + "…"
     return title or None
-
-
-def validate_result_view_id(value: str) -> str:
-    if re.fullmatch(r"[0-9a-f]{24}", value) is None:
-        raise ValueError("result view id must be exactly 24 lowercase hexadecimal characters")
-    return value
 
 
 def artifact_id(scope_id: str, name: str) -> str:
@@ -245,53 +215,6 @@ def classify_artifact_bytes(name: str, data: bytes) -> ArtifactMediaType:
     return media_type if valid.get(media_type, False) else "application/octet-stream"
 
 
-def read_local_regular_file(directory: Path, name: str, *, max_bytes: int) -> bytes:
-    """Read one direct regular child without following a symlink."""
-    if Path(name).name != name or name in {"", ".", ".."}:
-        raise ValueError("artifact name must be a plain base name")
-    # O_NONBLOCK keeps a FIFO swapped in after listing from blocking the open;
-    # the regular-file check below then refuses it, and regular reads ignore it.
-    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
-    directory_fd = _open_local_directory(directory)
-    try:
-        try:
-            file_fd = os.open(name, flags, dir_fd=directory_fd)
-        except FileNotFoundError:
-            raise
-        except OSError as exc:
-            try:
-                metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                raise
-            except OSError:
-                raise exc from None
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError("artifact is not a readable regular file") from exc
-            raise
-        try:
-            metadata = os.fstat(file_fd)
-            if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError("artifact is not a regular file")
-            if metadata.st_size > max_bytes:
-                raise ValueError("artifact exceeds the per-file limit")
-            chunks: list[bytes] = []
-            remaining = max_bytes + 1
-            while remaining > 0:
-                chunk = os.read(file_fd, min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            data = b"".join(chunks)
-            if len(data) > max_bytes:
-                raise ValueError("artifact exceeds the per-file limit")
-            return data
-        finally:
-            os.close(file_fd)
-    finally:
-        os.close(directory_fd)
-
-
 def list_local_regular_files(directory: Path) -> list[tuple[str, int]]:
     """List direct regular children without following any directory symlink."""
     directory_fd = _open_local_directory(directory)
@@ -304,89 +227,6 @@ def list_local_regular_files(directory: Path) -> list[tuple[str, int]]:
         return sorted(values)
     finally:
         os.close(directory_fd)
-
-
-def replace_local_regular_file(
-    directory: Path,
-    name: str,
-    data: bytes,
-    *,
-    expected_sha256: str | None = None,
-    recovery_directory: Path | None = None,
-) -> bool:
-    """Atomically replace one direct regular child if its digest is still expected."""
-
-    if Path(name).name != name or name in {"", ".", ".."}:
-        raise ValueError("artifact name must be a plain base name")
-    if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-        raise ValueError("expected artifact digest is invalid")
-    if expected_sha256 is not None and recovery_directory is None:
-        raise ValueError("conditional artifact replacement requires an RCP recovery directory")
-    recovery_directory = recovery_directory or directory
-    recovery_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    directory_fd = _open_local_directory(directory)
-    recovery_directory_fd = _open_local_directory(recovery_directory)
-    try:
-        return replace_regular_file_in_open_directory(
-            directory_fd,
-            recovery_directory_fd,
-            name,
-            data,
-            expected_sha256=expected_sha256,
-            mode=0o600,
-        )
-    finally:
-        os.close(recovery_directory_fd)
-        os.close(directory_fd)
-        if recovery_directory != directory:
-            with suppress(OSError):
-                recovery_directory.rmdir()
-            with suppress(OSError):
-                recovery_directory.parent.rmdir()
-
-
-def recover_local_regular_file_replacement(
-    directory: Path,
-    name: str,
-    *,
-    recovery_directory: Path,
-) -> None:
-    """Settle any RCP-owned conditional replacement journal for one local artifact."""
-
-    if Path(name).name != name or name in {"", ".", ".."}:
-        raise ValueError("artifact name must be a plain base name")
-    if not recovery_directory.exists():
-        return
-    directory_fd = _open_local_directory(directory)
-    recovery_directory_fd = _open_local_directory(recovery_directory)
-    try:
-        recover_regular_file_replacement_in_open_directory(
-            directory_fd, recovery_directory_fd, name
-        )
-    finally:
-        os.close(recovery_directory_fd)
-        os.close(directory_fd)
-
-
-def _open_local_directory(directory: Path) -> int:
-    if not directory.is_absolute():
-        raise ValueError("artifact directory must be absolute")
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    current = os.open("/", flags)
-    try:
-        for part in directory.parts[1:]:
-            following = os.open(part, flags, dir_fd=current)
-            os.close(current)
-            current = following
-        return current
-    except FileNotFoundError:
-        os.close(current)
-        raise
-    except OSError as exc:
-        os.close(current)
-        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise ValueError("artifact directory is not a regular directory") from exc
-        raise
 
 
 class _ArtifactHTMLSanitizer(HTMLParser):

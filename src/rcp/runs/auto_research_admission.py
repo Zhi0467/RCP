@@ -865,7 +865,6 @@ def start_auto_research_child_work(
         or request.message != instruction
         or request.chat_id != worker_id
         or request.session_id is not None
-        or request.result_view is not None
         or request.watcher_ids
     ):
         raise ValueError(
@@ -1093,7 +1092,6 @@ def _start_auto_research_child_work_wake(
             "session_id": current.native_session_id,
             "message": watcher_request.message if watcher_request is not None else None,
             "watcher_ids": input_ids if continuation == "watcher_wake" else [],
-            "result_view": None,
         }
     )
     operation_id = operation_id or str(uuid.uuid4())
@@ -2390,7 +2388,6 @@ def _validate_existing_child_work_wake(
         or request.patch_kind != "work"
         or (not watcher_wake and (request.message is not None or request.watcher_ids))
         or (watcher_wake and (not request.message or not watchers))
-        or request.result_view is not None
         or any(
             existing.request.get(field) != parent.request.get(field)
             for field in pinned_request_fields

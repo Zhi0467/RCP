@@ -2047,7 +2047,7 @@ def validate_auto_research_worker_request(
         raise AutoResearchCommandUnavailable(
             "The Auto-research worker profile did not resolve a provider and execution machine."
         )
-    if request.session_id is not None or request.watcher_ids or request.result_view is not None:
+    if request.session_id is not None or request.watcher_ids:
         raise AutoResearchCommandInvalid(
             "A newly seated Auto-research worker must start with a fresh session and no wake state."
         )

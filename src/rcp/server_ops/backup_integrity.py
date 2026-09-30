@@ -12,7 +12,10 @@ from rcp.server_ops.backup_models import BackupArchiveManifest
 def canonical_backup_manifest_bytes(manifest: BackupArchiveManifest) -> bytes:
     """Return the one byte representation stored in protected archives."""
 
-    return canonical_json_line(manifest.model_dump(mode="json"))
+    payload = manifest.model_dump(mode="json")
+    if "artifact_inventory" not in manifest.model_fields_set:
+        payload.pop("artifact_inventory", None)
+    return canonical_json_line(payload)
 
 
 def database_schema_sha256(connection: sqlite3.Connection) -> str:

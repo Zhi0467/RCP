@@ -48,12 +48,12 @@ from rcp.storage import (
     AutoResearchMessageRecord,
     EpisodeInvocationCeilingReached,
     EpisodeRecord,
-    EpisodeReportRecord,
     ProjectRecord,
     WatcherContinuation,
     WatcherRecord,
 )
 
+from .episode_report_helpers import stored_report
 from .helpers import (
     async_wait_until,
     fabricated_authorizer,
@@ -2156,7 +2156,8 @@ def test_shutdown_defers_a_settlement_report_until_startup(tmp_path: Path) -> No
         html = "<html><body><figure>Evidence map</figure></body></html>"
         store.finish_episode_report_ready(
             attempt.attempt_id,
-            EpisodeReportRecord(
+            stored_report(
+                store,
                 report_id="shutdown-report",
                 episode_id=request.episode_id,
                 attempt_id=attempt.attempt_id,
@@ -2250,7 +2251,8 @@ def test_interrupted_hidden_report_restarts_once_and_runner_owns_success(
         html = "<html><body><figure>Evidence map</figure></body></html>"
         store.finish_episode_report_ready(
             attempt.attempt_id,
-            EpisodeReportRecord(
+            stored_report(
+                store,
                 report_id="report",
                 episode_id=request.episode_id,
                 attempt_id=attempt.attempt_id,

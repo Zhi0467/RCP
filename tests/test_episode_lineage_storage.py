@@ -8,6 +8,8 @@ import pytest
 from rcp.core.models import AuthorizedHuman
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ProjectRecord
 
+from .storage_helpers import downgrade_artifacts
+
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
     owner = store.local_owner
@@ -191,6 +193,7 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
         connection.execute("ALTER TABLE graph_runs RENAME COLUMN episode_id TO campaign_id")
         connection.execute("ALTER TABLE graph_run_events RENAME COLUMN episode_id TO campaign_id")
         connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
@@ -251,6 +254,7 @@ def test_lineage_json_migration_rejects_both_parent_keys(tmp_path, request_paylo
             """,
             (json.dumps(request_payload), now, now),
         )
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )

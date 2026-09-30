@@ -1,13 +1,9 @@
 import { useEffect, useState, type MouseEvent } from "react";
 import { Download, ExternalLink, MessageSquare, RefreshCw } from "lucide-react";
+import { openArtifact } from "../artifactViewer";
 import { api } from "../api";
-import {
-  downloadDesktopArtifact,
-  isDesktopRuntime,
-  openDesktopArtifactPdf,
-  openDesktopArtifactPreview,
-  openDesktopEpisodeReportPreview,
-} from "../desktopRuntime";
+import { isDesktopRuntime, openDesktopArtifactPdf } from "../desktopRuntime";
+import { StoredArtifactDownload } from "../components/StoredArtifactDownload";
 import type { ProjectArtifact } from "../types";
 
 export function Artifacts({ projectId }: { projectId: string }) {
@@ -46,37 +42,22 @@ export function Artifacts({ projectId }: { projectId: string }) {
     event: MouseEvent<HTMLAnchorElement | HTMLButtonElement>,
     entry: ProjectArtifact,
   ) => {
-    if (!isDesktopRuntime()) return;
+    if (entry.view === "pdf" && !isDesktopRuntime()) {
+      event.preventDefault();
+      return;
+    }
     event.preventDefault();
     setError(null);
     try {
-      if (entry.episode_id) {
-        await openDesktopEpisodeReportPreview({ projectId, episodeId: entry.episode_id });
-      } else if (entry.operation_id && entry.artifact_id) {
-        await (entry.view === "pdf" ? openDesktopArtifactPdf : openDesktopArtifactPreview)({
+      if (!entry.artifact_id) throw new Error("This artifact has no stored viewer.");
+      if (entry.view === "pdf") {
+        await openDesktopArtifactPdf({
           projectId,
-          taskId: entry.operation_id,
           artifactId: entry.artifact_id,
         });
       } else {
-        throw new Error("This artifact cannot be opened in the desktop app.");
+        openArtifact({ projectId, artifactId: entry.artifact_id });
       }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-
-  const download = async (event: MouseEvent<HTMLAnchorElement>, entry: ProjectArtifact) => {
-    if (!isDesktopRuntime() || !entry.operation_id || !entry.artifact_id) return;
-    event.preventDefault();
-    setError(null);
-    try {
-      await downloadDesktopArtifact({
-        projectId,
-        taskId: entry.operation_id,
-        artifactId: entry.artifact_id,
-        suggestedName: entry.name,
-      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -137,17 +118,18 @@ export function Artifacts({ projectId }: { projectId: string }) {
                     <ExternalLink size={14} /> Open
                   </button>
                 )}
-              {entry.can_download && entry.download_url && (
-                <a
+              {entry.can_download && entry.download_url && entry.artifact_id && (
+                <StoredArtifactDownload
+                  projectId={projectId}
+                  artifactId={entry.artifact_id}
+                  name={entry.name}
                   className="button compact secondary artifact-entry-download"
                   href={entry.download_url}
-                  download={entry.name}
-                  onClick={(event) => void download(event, entry)}
                 >
                   <Download size={14} /> Download
-                </a>
+                </StoredArtifactDownload>
               )}
-              {entry.can_open && (
+              {entry.can_open && entry.view !== "pdf" && (
                 <a
                   className="button compact secondary artifact-entry-open"
                   href={entry.viewer_url ?? undefined}

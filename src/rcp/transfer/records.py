@@ -34,6 +34,8 @@ TRANSFER_RECORD_SCHEMA_VERSION = 3
 TRANSFER_RECORD_TABLES = frozenset(
     {
         "agent_usage",
+        "artifacts",
+        "artifact_versions",
         "auto_research_apply_results",
         "auto_research_child_admissions",
         "auto_research_child_experiments",
@@ -105,7 +107,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "project_transfer_restore_reentries",
         "project_transfer_uploads",
         "projects",
-        "result_views",
+        "artifact_operations",
+        "artifact_imports",
         "writing_sessions",
     }
 )
@@ -300,7 +303,7 @@ class TransferArtifactReference(_StrictTransferRecord):
 
     @model_validator(mode="after")
     def validate_kept_reference(self) -> TransferArtifactReference:
-        if (self.kept_filename is None) != (self.kept_at is None):
+        if self.kept_filename is not None and self.kept_at is None:
             raise ValueError("kept artifact history requires both its filename and kept time")
         return self
 
@@ -380,8 +383,20 @@ class TransferTaskOutput(_StrictTransferRecord):
     patch: TransferJsonDocument
 
 
+class TransferArtifactEditHistory(_StrictTransferRecord):
+    """Edit provenance without the session, stage, or master authority."""
+
+    artifact_id: str
+    base_version: str
+    operation_id: str
+    origin_operation_id: str
+    reply_episode_id: str | None = None
+    episode_id: str | None = None
+
+
 class TransferRunRequestHistory(_StrictTransferRecord):
     shape: Literal["run"] = "run"
+    artifact_edit: TransferArtifactEditHistory | None = None
     provider: str | None = None
     model: str | None = None
     reasoning: str | None = None
@@ -406,6 +421,13 @@ class TransferRunRequestHistory(_StrictTransferRecord):
     invoked_workflow_ids: tuple[str, ...] = ()
     invoked_skill_ids: tuple[str, ...] = ()
     invoked_provider_skill_names: tuple[str, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def serialize_request(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue]:
+        data = handler(self)
+        if "artifact_edit" not in self.model_fields_set:
+            data.pop("artifact_edit", None)
+        return data
 
 
 class TransferPaperCoachRequestHistory(_StrictTransferRecord):
@@ -494,6 +516,7 @@ def capture_task_request_history(
         "auto_research",
         "branch_merge",
         "episode_report",
+        "artifact_edit",
     ],
     request: Mapping[str, object],
 ) -> TransferTaskRequestHistory:
@@ -527,8 +550,14 @@ def capture_task_request_history(
     decision_bundle = request.get("control_decision_bundle")
     if not isinstance(decision_bundle, list):
         decision_bundle = []
+    edit = request.get("artifact_edit")
     return TransferRunRequestHistory(
         **common,
+        artifact_edit=TransferArtifactEditHistory.model_validate(
+            {key: edit[key] for key in TransferArtifactEditHistory.model_fields if key in edit}
+        )
+        if isinstance(edit, dict)
+        else None,
         run_truth_scope=_string_tuple(request.get("run_truth_scope")) or None,
         chat_scope=request.get("chat_scope", "node"),
         node_id=_optional_string(request.get("node_id")),
@@ -569,6 +598,7 @@ class TransferTaskRecord(_StrictTransferRecord):
         "auto_research",
         "branch_merge",
         "episode_report",
+        "artifact_edit",
     ]
     status: Literal["succeeded", "failed", "interrupted"]
     request: TransferTaskRequestHistory
@@ -683,13 +713,26 @@ class TransferEpisodeReport(_StrictTransferRecord):
     attempt_id: str = Field(min_length=1)
     allocation_operation_id: str = Field(min_length=1)
     ending: Literal["completed", "exhausted", "stopped", "failed", "human_pause"]
-    sha256: str
-    html: str
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    html: str | None = None
+    artifact_id: str | None = None
+    artifact_version_id: str | None = None
+    display_title: str | None = None
     created_at: AwareTimestamp
+
+    @model_serializer(mode="wrap")
+    def serialize_report(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue]:
+        data = handler(self)
+        for name in ("artifact_id", "artifact_version_id", "display_title"):
+            if name not in self.model_fields_set:
+                data.pop(name, None)
+        return data
 
     @model_validator(mode="after")
     def validate_report(self) -> TransferEpisodeReport:
-        if hashlib.sha256(self.html.encode()).hexdigest() != self.sha256:
+        if self.html is None and not (self.artifact_id and self.artifact_version_id):
+            raise ValueError("episode report requires content or an artifact binding")
+        if self.html is not None and hashlib.sha256(self.html.encode()).hexdigest() != self.sha256:
             raise ValueError("episode report content does not match its digest")
         return self
 

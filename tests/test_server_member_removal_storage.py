@@ -15,6 +15,8 @@ from rcp.storage import (
     TeamAuthenticationError,
 )
 
+from .storage_helpers import downgrade_artifacts
+
 
 def _claimed_team(tmp_path):
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
@@ -279,6 +281,7 @@ def test_old_project_invitation_table_is_migrated_to_accept_revocation(tmp_path)
             "INSERT INTO project_invitations SELECT * FROM current_project_invitations"
         )
         connection.execute("DROP TABLE current_project_invitations")
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
         )

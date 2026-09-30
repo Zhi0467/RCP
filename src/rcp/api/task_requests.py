@@ -87,6 +87,14 @@ def resolved_agent_surface(
         if not isinstance(request, RunRequest):
             raise TypeError("A chat task requires its pinned run request.")
         return "project_chat" if request.chat_scope == "project" else "node_chat"
+    if kind == "artifact_edit":
+        if not isinstance(request, RunRequest) or request.artifact_edit is None:
+            raise TypeError("An artifact edit requires its admitted request.")
+        return (
+            "orchestrator"
+            if request.artifact_edit.reply_episode_id
+            else ("project_chat" if request.chat_scope == "project" else "node_chat")
+        )
     if kind == "branch_merge":
         return "orchestrator"
     if kind == "auto_research":

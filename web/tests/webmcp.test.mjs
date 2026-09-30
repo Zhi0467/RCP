@@ -964,8 +964,8 @@ test("an exact episode outside the recent window is fetched once from the backen
     tasks,
     episodes,
     { viewer_id: "report:episode-old" },
-    (viewerUrl) => {
-      opened.push(viewerUrl);
+    (record) => {
+      opened.push(record.viewer_url);
       return true;
     },
     { loadEpisode, loadTask: noTaskFetch },
@@ -1028,8 +1028,8 @@ test("an exact task outside the recent window is fetched once for listing and op
     tasks,
     episodes,
     { viewer_id: "task:task-old:artifact-1" },
-    (viewerUrl) => {
-      opened.push(viewerUrl);
+    (record) => {
+      opened.push(record.viewer_url);
       return true;
     },
     source,
@@ -1067,8 +1067,8 @@ test("artifact opening revalidates availability and opens only the existing view
       tasks,
       episodes,
       { viewer_id: "task:task-1:artifact-1" },
-      (viewerUrl, contentUrl) => {
-        opened.push([viewerUrl, contentUrl]);
+      (record) => {
+        opened.push([record.viewer_url, record.content_url]);
         return true;
       },
       noArtifactFetch,

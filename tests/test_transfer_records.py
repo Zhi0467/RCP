@@ -807,8 +807,8 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
             """
             INSERT INTO episode_reports (
                 report_id, episode_id, attempt_id, allocation_operation_id,
-                ending, sha256, html, created_at
-            ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?)
+                ending, sha256, artifact_id, artifact_version_id, created_at
+            ) VALUES (?, ?, ?, ?, 'completed', ?, ?, ?, ?)
             """,
             (
                 report_id,
@@ -816,7 +816,8 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
                 attempt_id,
                 report_task_id,
                 hashlib.sha256(report_html.encode()).hexdigest(),
-                report_html,
+                report_id,
+                hashlib.sha256(report_html.encode()).hexdigest(),
                 now,
             ),
         )
@@ -854,7 +855,7 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
         "summary": "Complete.",
     }
     assert episode.report is not None
-    assert episode.report.html == report_html
+    assert episode.report.artifact_id == report_id
     report_task = next(item for item in bundle.tasks if item.operation_id == report_task_id)
     assert report_task.visible is False
     assert report_task.request.shape == "episode_report"
@@ -898,3 +899,53 @@ def test_finished_experiment_exports_sanitized_state_wrapup_and_report(
         )
     with pytest.raises(ValueError, match="Experiment episode state is missing"):
         store.export_project_transfer_records(project_id, attributions=attributions)
+
+
+def test_artifact_edit_exports_and_imports_as_inert_provenance(manifest, tmp_path):
+    store, project_id, attributions = _store(manifest, tmp_path)
+    now = store.now()
+    edit = {
+        "artifact_id": "artifact",
+        "base_version": "base",
+        "operation_id": "edit",
+        "origin_operation_id": "origin",
+        "reply_episode_id": "episode",
+        "episode_id": "episode",
+        "stage_root": "/old/stage",
+        "stage_host": "old-host",
+        "master_path": "/old/master",
+    }
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="edit",
+            project_id=project_id,
+            kind="artifact_edit",
+            status="succeeded",
+            request={"message": "Revise this"},
+            created_at=now,
+            updated_at=now,
+            finished_at=now,
+            status_message="Finished",
+        )
+    )
+    # Insert historical request directly: admission is intentionally not exercised by transfer.
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json = ? WHERE operation_id = 'edit'",
+            (json.dumps({"artifact_edit": edit, "session_id": "old-session"}),),
+        )
+    records = store.export_project_transfer_records(project_id, attributions=attributions)
+    exported = records.tasks[0]
+    assert exported.kind == "artifact_edit"
+    target = AppStore(tmp_path / "target.sqlite3")
+    with target.connection() as connection:
+        target._insert_transfer_tasks(connection, records, {})
+    imported = target.agent_task("edit")
+    assert imported.history_only
+    assert imported.native_session_id is None and imported.stage_root is None
+    assert imported.request["artifact_edit"] == {
+        key: value
+        for key, value in edit.items()
+        if key not in {"stage_root", "stage_host", "master_path"}
+    }
+    assert "session_id" not in imported.request

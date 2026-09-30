@@ -25,10 +25,9 @@ from rcp.agents.command_mailbox import (
     stage_command_mailbox,
 )
 from rcp.agents.command_protocol import CommandResponse
-from rcp.agents.continuation_prompt import SECTIONS, MasterRef
+from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.episode_report_prompt import episode_report_task_contract
 from rcp.agents.launcher import AgentProcessControl
-from rcp.agents.prompts import PromptFactory
 from rcp.agents.schema import parse_agent_patch_json
 from rcp.runs.auto_research_recovery import AutoResearchOrchestratorTerminalFailure
 from tests.helpers import create_named_app as create_app
@@ -80,30 +79,6 @@ def _inline_campaign_continuation(
         _campaign_contract(role, continuation=True)
         + "\n"
         + SECTIONS["master_pointer"].format(path=master)
-    )
-
-
-def _result_view_contract(
-    tmp_path: Path,
-    *,
-    action: Literal["create", "revise"],
-    path: Path,
-    master_context_path: Path | None = None,
-) -> str:
-    return PromptFactory.work_turn_prompt(
-        artifact_path=str(tmp_path / "turns" / action / "artifacts"),
-        human_message=(
-            "Show the loss curves by seed."
-            if action == "create"
-            else "Boxed selection in loss-curves-by-seed.html: late spike. Why?"
-        ),
-        master=(
-            MasterRef(path=str(master_context_path), bootstrap=True)
-            if master_context_path
-            else None
-        ),
-        result_view_action=action,
-        result_view_path=str(path),
     )
 
 
@@ -645,158 +620,6 @@ def test_acceptance_episode_report_requires_one_same_session_correction(tmp_path
         "report",
         "report_correction",
     ]
-
-
-def test_acceptance_result_view_create_and_revise_keep_one_stage_session_and_path(
-    tmp_path: Path,
-) -> None:
-    stage = tmp_path / "conversation-stage"
-    slot = stage / "views" / ("a" * 24)
-    slot.mkdir(parents=True)
-    state_path = stage / ".rcp-acceptance-agent.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "scenario": "experiment_loop",
-                "focused_experiment_id": "exp/acceptance-control",
-                "jobs_started": True,
-                "watch_corrected": True,
-            }
-        ),
-        encoding="utf-8",
-    )
-    launcher = AcceptanceAgentLauncher()
-    master_context_path = stage / "inputs" / "chat-master.md"
-    master_context_path.parent.mkdir()
-    master_context_path.write_text(
-        _experiment_contract(stage / "graph.json"),
-        encoding="utf-8",
-    )
-
-    created_events = asyncio.run(
-        _events(
-            launcher,
-            _result_view_contract(
-                stage,
-                action="create",
-                path=slot,
-                master_context_path=master_context_path,
-            ),
-            stage,
-        )
-    )
-
-    target = slot / "loss-curves-by-seed.html"
-    created_html = target.read_text(encoding="utf-8")
-    fixed_gesture = (
-        "window.parent.postMessage({type:'rcp-result-view-gesture',version:1,"
-        "gesture:'box',description:'late spike across steps 8,000–9,000 for seed 3'}, '*');"
-    )
-    assert [event.event for event in created_events] == [
-        "session",
-        "answer",
-        "provider_exit",
-        "done",
-    ]
-    assert launcher.launch_records[0].scenario == "result_view"
-    assert launcher.launch_records[0].action == "create"
-    assert all(
-        f"addEventListener('{event}'" in created_html
-        for event in ("pointerdown", "pointermove", "pointerup")
-    )
-    assert created_html.count("postMessage") == 1
-    assert fixed_gesture in created_html
-    assert all(token not in created_html for token in ("fetch(", "XMLHttpRequest", "<form"))
-    assert list(slot.iterdir()) == [target]
-    assert list((stage / "views").iterdir()) == [slot]
-    persisted = json.loads(state_path.read_text(encoding="utf-8"))
-    assert persisted["scenario"] == "experiment_loop"
-    assert persisted["focused_experiment_id"] == "exp/acceptance-control"
-    assert persisted["result_view"] == {
-        "cwd": str(stage.resolve()),
-        "path": str(target.resolve()),
-        "revision": 1,
-        "session_id": created_events[0].session_id,
-    }
-
-    revise_contract = _result_view_contract(stage, action="revise", path=target)
-    with pytest.raises(ValueError, match="changed the native session"):
-        asyncio.run(
-            _events(
-                launcher,
-                _prompt(stage, revise_contract),
-                stage,
-                session_id="different-acceptance-session",
-            )
-        )
-    assert target.read_text(encoding="utf-8") == created_html
-
-    revised_events = asyncio.run(
-        _events(
-            launcher,
-            revise_contract,
-            stage,
-            session_id=created_events[0].session_id,
-        )
-    )
-
-    revised_html = target.read_text(encoding="utf-8")
-    assert [event.event for event in revised_events] == [
-        "session",
-        "answer",
-        "provider_exit",
-        "done",
-    ]
-    assert [record.action for record in launcher.launch_records] == ["create", "revise"]
-    assert {record.cwd for record in launcher.launch_records} == {str(stage.resolve())}
-    assert {record.session_id for record in launcher.launch_records} == {
-        created_events[0].session_id
-    }
-    assert revised_html != created_html
-    assert revised_html.count("postMessage") == 1
-    assert fixed_gesture in revised_html
-    assert list(slot.iterdir()) == [target]
-    assert list((stage / "views").iterdir()) == [slot]
-    persisted = json.loads(state_path.read_text(encoding="utf-8"))
-    assert persisted["scenario"] == "experiment_loop"
-    assert persisted["result_view"]["path"] == str(target.resolve())
-    assert persisted["result_view"]["revision"] == 2
-
-
-def test_acceptance_result_view_revision_requires_an_existing_path_in_the_same_stage(
-    tmp_path: Path,
-) -> None:
-    stage = tmp_path / "conversation-stage"
-    stage.mkdir()
-    outside = tmp_path / "outside" / "loss-curves-by-seed.html"
-    outside.parent.mkdir()
-    outside.write_text("<html>outside</html>", encoding="utf-8")
-    launcher = AcceptanceAgentLauncher()
-
-    with pytest.raises(ValueError, match="left the conversation cwd"):
-        asyncio.run(
-            _events(
-                launcher,
-                _prompt(
-                    stage,
-                    _result_view_contract(stage, action="revise", path=outside),
-                ),
-                stage,
-            )
-        )
-
-    missing = stage / "views" / ("b" * 24) / "loss-curves-by-seed.html"
-    with pytest.raises(ValueError, match="revision target is unavailable"):
-        asyncio.run(
-            _events(
-                launcher,
-                _prompt(
-                    stage,
-                    _result_view_contract(stage, action="revise", path=missing),
-                ),
-                stage,
-            )
-        )
 
 
 def test_acceptance_experiment_corrects_watchers_then_completes_with_authority_item(

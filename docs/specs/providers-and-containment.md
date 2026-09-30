@@ -30,6 +30,10 @@ Capabilities are fixed in code:
 - **generic graph correction** rewrites only retained scratch output; Work-like
   correction retains the same native session and the same exact Work write
   scope so it can repair reflection without repeating operational effects.
+- **Artifact edit** revokes the retained operational contract and uses Discuss
+  capability with writable scratch only. Its admitted request fixes the exact
+  session, stage, version base, and reply destination; it carries no master or
+  operational commands. A chat-master artifact instead uses ordinary Discuss.
 - **Paper coach** is read-only and has no graph, draft-write, or Apply channel.
 
 The manifest and selected skills may choose execution details or add guidance;
@@ -553,6 +557,15 @@ policy version, and whether the project has ontology extensions. A key change bo
 replaces the earlier master. A branch-merge continuation re-sends the graph
 rules inline once main's ontology extensions differ from its master's.
 
+Discuss, Work, and Experiment render one artifact contract from the Artifact
+media model and enforced caps. An empty artifact directory is normal. A turn
+naming a commented artifact's writable path instructs editing that file in
+place. Figures are useful when clearer than prose; a short result needs none.
+The live-page section renders declaration and snapshot fields from the enforced
+live-data model. Only episode contracts offer the episode need. The packaged
+`live-pages` skill supplies validated worked examples. Master and policy versions
+are unchanged; existing native sessions retain their recorded master.
+
 The episode report is its own node type, `report`. It reuses the operational
 session but gets no master pointer, and says the operational instructions no
 longer apply; `compose` adds both, and refuses a report with a master or any
@@ -718,7 +731,8 @@ standalone turn owns nothing there and may move to any reachable one. A failed r
 same-session repair and normal retention; RCP does not delete evidence merely
 because validation or transport failed. Age-based cleanup first excludes exact
 stages owned by active tasks, committed native chat sessions, live episodes,
-pending or running report wrap-ups, and unexpired temporary result views. One
+pending or running report wrap-ups, and legacy candidate and source stages
+awaiting background import. One
 storage projection supplies the same ownership and required-stage decisions to
 cleanup and update checkpointing; terminal debris follows normal retention.
 

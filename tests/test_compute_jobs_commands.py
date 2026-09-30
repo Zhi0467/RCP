@@ -177,6 +177,7 @@ def test_helper_launch_replays_its_shell_handoff_after_store_reopen(commands):
     assert first.status == "ok", first.message
     job = commands.job_for(first)
     assert first.result == {
+        "job_id": job.job_id,
         "watcher": jobs.helper_watch_spec(job),
         "startup": {"status": "running"},
     }

@@ -1,5 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { RunArtifacts } from "./RunArtifacts";
+import { artifactsForOperations } from "../runArtifacts";
 import { fetchTimelineText } from "../api";
 import {
   timelineRows,
@@ -15,6 +17,7 @@ import {
   messageDisposition as disposition,
 } from "../timeline";
 import type {
+  RunArtifactEntry,
   EpisodeTimelineResponse,
   EpisodeTimelineSpan,
   ExperimentLoopIndexEntry,
@@ -51,6 +54,8 @@ const tone = (s: string | null) =>
 
 export function EpisodeTimeline({
   response: data,
+  projectId,
+  artifacts = [],
   apiBase,
   episodeId,
   onInspectTask,
@@ -58,6 +63,8 @@ export function EpisodeTimeline({
   onOpenExperimentEntry,
 }: {
   response: EpisodeTimelineResponse;
+  projectId?: string;
+  artifacts?: readonly RunArtifactEntry[];
   apiBase: string;
   episodeId: string;
   graphTarget?: GraphTargetRef;
@@ -924,6 +931,12 @@ export function EpisodeTimeline({
                           {s.invocation_number !== null && <> · inv {s.invocation_number}</>}
                           {s.headline && <p>{s.headline}</p>}
                           {s.error && <p className="roster-error">{s.error}</p>}
+                          {projectId && selectedActor.kind === "worker" && (
+                            <RunArtifacts
+                              projectId={projectId}
+                              artifacts={artifactsForOperations(artifacts, [s.task_id])}
+                            />
+                          )}
                         </div>
                       ))}
                   </>
@@ -992,6 +1005,12 @@ export function EpisodeTimeline({
                     {selectedSpan.error && <p className="roster-error">{selectedSpan.error}</p>}
                     {child && onOpenExperimentEntry && (
                       <button onClick={() => onOpenExperimentEntry(child)}>Open Experiment</button>
+                    )}
+                    {projectId && selectedSpan.kind !== "report" && (
+                      <RunArtifacts
+                        projectId={projectId}
+                        artifacts={artifactsForOperations(artifacts, [selectedSpan.task_id])}
+                      />
                     )}
                     {selectedSpan.kind !== "report" && (
                       <button onClick={() => onInspectTask(selectedSpan.task_id)}>

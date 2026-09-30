@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from rcp.agents.artifact_contract import artifact_contract
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import (
     _EXTERNAL_WATCHER_FORMS,
@@ -419,20 +420,8 @@ Graph reflection and authority:
 {_EXPERIMENT_HANDOFF_CORRECTIONS}
 {REPLY_STYLE}
 
-Reply and artifacts:
-- The final assistant message is the complete independent Markdown reply the human reads. Say
-  whether the episode pauses or finishes, and never present a submission or watcher completion as
-  a scientific result.
-- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
-  suffix to point at one line of a repository file. Only an authorized repository file or a file
-  you wrote in the artifact directory resolves in RCP; a relative path, a line suffix on an
-  artifact, or any other location does not.
-- A preview is optional. RCP shows each bounded direct regular file of any type in
-  `{artifact_path}` as a card with Download and Keep. HTML, images, Markdown, and text
-  also open in a viewer; other files are download-only. Do not use nested directories,
-  symlinks, provider directives, or other paths.
-  HTML must be self-contained; ordinary HTTP(S) links are allowed, but external resource loads do
-  not work in the preview.
+{artifact_contract(artifact_path, allow_episode=True)}
+- Say whether the episode pauses or finishes; a submission or watcher completion is not a scientific result.
 
 {_EXPERIMENT_GRAPH_AUTHORITY}
 

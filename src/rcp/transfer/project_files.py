@@ -28,6 +28,12 @@ from rcp.service import (
     canonical_chat_backup_sources,
     iter_canonical_chat_transfer,
 )
+from rcp.storage.artifact_models import (
+    Artifact,
+    ArtifactFile,
+    ArtifactVersion,
+    artifact_version_files,
+)
 from rcp.transfer.archive import TransferArchiveEntry
 from rcp.transfer.records import (
     TransferArtifactReference,
@@ -42,6 +48,7 @@ _PROJECT_FILE_GROUPS = frozenset(
         "paper_introduction",
         "fact",
         "kept_artifact",
+        "artifact_version",
         "legacy_kept_result_view",
     }
 )
@@ -137,6 +144,9 @@ class TransferProjectFileCapture(BaseModel):
     kept_result_views: tuple[TransferLegacyKeptResultView, ...]
     entries: tuple[TransferArchiveEntry, ...]
     payload_size_bytes: int = Field(ge=0)
+    artifact_inventory: tuple[ArtifactFile, ...] = ()
+    artifacts: tuple[Artifact, ...] = ()
+    artifact_versions: tuple[ArtifactVersion, ...] = ()
 
     @model_validator(mode="after")
     def validate_capture(self) -> TransferProjectFileCapture:
@@ -188,6 +198,65 @@ class TransferProjectFileCapture(BaseModel):
             entry = view_entries[view.kept_filename]
             if (entry.sha256, entry.size_bytes) != (view.content_sha256, view.size_bytes):
                 raise ValueError("kept result-view record does not match its captured bytes")
+        actual = {
+            (entry.archive_path, entry.sha256, entry.size_bytes)
+            for entry in self.entries
+            if entry.group == "artifact_version"
+        }
+        expected = {
+            (f"artifacts/{item.artifact_id}/{item.file_id}", item.sha256, item.size_bytes)
+            for item in self.artifact_inventory
+        }
+        if actual != expected:
+            raise ValueError("artifact inventory differs from captured files")
+        if {item.artifact_id for item in self.artifact_versions} != {
+            item.artifact_id for item in self.artifacts
+        }:
+            raise ValueError("artifact versions differ from captured records")
+        version_files = {
+            (v.artifact_id, v.file_id, v.sha256, v.size_bytes)
+            for v in artifact_version_files(self.artifact_versions)
+        }
+        inventory_files = {
+            (v.artifact_id, v.file_id, v.sha256, v.size_bytes) for v in self.artifact_inventory
+        }
+        if version_files != inventory_files or len(inventory_files) != len(self.artifact_inventory):
+            raise ValueError("artifact inventory differs from version metadata")
+        if len({a.artifact_id for a in self.artifacts}) != len(self.artifacts):
+            raise ValueError("artifact records repeat an identity")
+        for artifact in self.artifacts:
+            versions = [v for v in self.artifact_versions if v.artifact_id == artifact.artifact_id]
+            if not any(v.sequence == 0 for v in versions) or not any(
+                v.version_id == artifact.current_version for v in versions
+            ):
+                raise ValueError("artifact original or current version is missing")
+        by_id = {item.artifact_id: item for item in self.artifacts}
+        for episode in self.records.episodes:
+            report = episode.report
+            if report is None or report.html is not None:
+                continue
+            owner = by_id.get(report.artifact_id)
+            original = next(
+                (
+                    v
+                    for v in self.artifact_versions
+                    if v.artifact_id == report.artifact_id
+                    and v.version_id == report.artifact_version_id
+                    and v.sequence == 0
+                ),
+                None,
+            )
+            if (
+                owner is None
+                or original is None
+                or original.sha256 != report.sha256
+                or owner.episode_id != episode.episode_id
+                or owner.expires_at is not None
+                or owner.origin_operation_id != report.allocation_operation_id
+            ):
+                raise ValueError("report binding differs from its original artifact version")
+        if any(item.project_id != self.project_id for item in self.artifacts):
+            raise ValueError("artifact belongs to another project")
         return self
 
 
@@ -195,9 +264,13 @@ def transfer_project_file_payload(capture: TransferProjectFileCapture) -> bytes:
     """Encode the one typed operational payload bound by the archive manifest."""
 
     normalized = TransferProjectFileCapture.model_validate(capture)
+    payload = normalized.model_dump(mode="json")
+    for name in ("artifact_inventory", "artifacts", "artifact_versions"):
+        if name not in normalized.model_fields_set:
+            payload.pop(name, None)
     return (
         json.dumps(
-            normalized.model_dump(mode="json"),
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
@@ -233,7 +306,43 @@ def capture_project_transfer_files(
     except OSError as exc:
         raise ValueError("project transfer capture root must be one new private directory") from exc
     captured: list[TransferArchiveEntry] = []
+    store = service.paper.store
+    with store.artifact_capture():
+        return _capture_project_files_locked(service, records, capture_root, captured)
+
+
+def _capture_project_files_locked(
+    service: ProjectService,
+    records: TransferRecordBundle,
+    capture_root: Path,
+    captured: list[TransferArchiveEntry],
+) -> TransferProjectFileCapture:
+    store = service.paper.store
     try:
+        with store.connection() as connection:
+            connection.execute("BEGIN")
+            artifact_rows = connection.execute(
+                "SELECT metadata FROM artifacts WHERE project_id = ? ORDER BY artifact_id",
+                (records.project_id,),
+            ).fetchall()
+            artifacts = tuple(Artifact.model_validate_json(row[0]) for row in artifact_rows)
+            version_rows = connection.execute(
+                "SELECT v.metadata FROM artifact_versions v JOIN artifacts a USING(artifact_id) "
+                "WHERE a.project_id = ? ORDER BY v.artifact_id, v.sequence",
+                (records.project_id,),
+            ).fetchall()
+        versions = tuple(ArtifactVersion.model_validate_json(row[0]) for row in version_rows)
+        inventory = tuple(artifact_version_files(versions))
+        for item in inventory:
+            entry = _capture_regular_file(
+                capture_root,
+                store.artifact_file_path(item),
+                PurePosixPath("artifacts") / item.artifact_id / item.file_id,
+                "artifact_version",
+            )
+            if (entry.sha256, entry.size_bytes) != (item.sha256, item.size_bytes):
+                raise ValueError("artifact bytes differ from inventory")
+            captured.append(entry)
         operation_id_map = {task.operation_id: task.operation_id for task in records.tasks}
         workspace = service.history.workspace
         with tempfile.TemporaryDirectory(
@@ -297,59 +406,16 @@ def capture_project_transfer_files(
             )
             artifact_digests[filename] = (digest, len(data))
 
-        task_ids = {task.operation_id for task in records.tasks}
-        transferred_views: list[TransferLegacyKeptResultView] = []
-        for view in service.paper.store.kept_result_views(records.project_id):
-            if (
-                view.origin_operation_id not in task_ids
-                or view.latest_operation_id not in task_ids
-                or view.kept_filename is None
-                or view.kept_at is None
-            ):
-                raise ValueError("a kept result view is not bound to transferred task history")
-            transferred = TransferLegacyKeptResultView(
-                view_id=view.view_id,
-                experiment_id=view.experiment_id,
-                chat_id=view.chat_id,
-                origin_operation_id=view.origin_operation_id,
-                latest_operation_id=view.latest_operation_id,
-                provider=view.provider,
-                model=view.model,
-                reasoning=view.reasoning,
-                source_name=view.source_name,
-                content_sha256=view.content_sha256,
-                size_bytes=view.size_bytes,
-                created_at=view.created_at,
-                updated_at=view.updated_at,
-                expires_at=view.expires_at,
-                kept_filename=view.kept_filename,
-                kept_at=view.kept_at,
-            )
-            data = _stable_workspace_bytes(
-                lambda name=view.kept_filename: workspace.read_kept_result_view(name)
-            )
-            if (
-                len(data) != view.size_bytes
-                or hashlib.sha256(data).hexdigest() != view.content_sha256
-            ):
-                raise ValueError("a kept result view differs from its stored record")
-            captured.append(
-                _capture_chunks(
-                    capture_root,
-                    PurePosixPath("result-views") / view.kept_filename,
-                    "legacy_kept_result_view",
-                    (data,),
-                )
-            )
-            transferred_views.append(transferred)
-
         bound_records = _bind_kept_artifact_digests(records, artifact_digests)
         ordered = tuple(sorted(captured, key=lambda entry: entry.archive_path))
         _fsync_tree(capture_root)
         return TransferProjectFileCapture(
             project_id=records.project_id,
             records=bound_records,
-            kept_result_views=tuple(transferred_views),
+            kept_result_views=(),
+            artifact_inventory=inventory,
+            artifacts=artifacts,
+            artifact_versions=versions,
             entries=ordered,
             payload_size_bytes=sum(entry.size_bytes for entry in ordered),
         )

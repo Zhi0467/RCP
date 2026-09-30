@@ -8,13 +8,18 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi.testclient import TestClient
 
-from rcp.artifacts import descriptor_for
+from rcp.artifacts import descriptor_for, html_document_title
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import AGENT_TASK_LIST_MAX_LIMIT
+from rcp.limits import AGENT_TASK_LIST_MAX_LIMIT, RUN_STAGE_RETENTION_DAYS
 from rcp.runs.chat import _append_chat_exchange
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord, AutoResearchChildExperimentRecord, EpisodeReportRecord
+from rcp.storage import (
+    AgentTaskRecord,
+    Artifact,
+    AutoResearchChildExperimentRecord,
+    EpisodeReportRecord,
+)
 from rcp.transport import StateUnavailable
 
 from .helpers import authorized_human, create_named_app
@@ -40,15 +45,27 @@ def create_saved_artifact(
     artifact = descriptor_for(
         operation_id, "comparison.html", media_type="text/html", size_bytes=len(data)
     )
-    if kept:
-        workspace = app.state.catalog.open(project_id).history.workspace
-        filename = workspace.keep_artifact(
+    store.create_artifact(
+        Artifact(
+            artifact_id=artifact.artifact_id,
+            project_id=project_id,
+            supplier="turn",
+            supplier_id=operation_id,
             source_name=artifact.name,
-            project_name="Research",
-            data=data,
-            today=datetime.now(UTC).date(),
-        )
-        artifact = artifact.model_copy(update={"kept_filename": filename, "kept_at": now})
+            media_type=artifact.media_type,
+            created_at=now,
+            kept_at=now if kept else None,
+            expires_at=None
+            if kept
+            else (
+                datetime.fromisoformat(now) + timedelta(days=RUN_STAGE_RETENTION_DAYS)
+            ).isoformat(),
+            origin_operation_id=operation_id,
+        ),
+        data=data,
+    )
+    if kept:
+        artifact = artifact.model_copy(update={"kept_at": now})
     task = store.create_agent_task(
         AgentTaskRecord(
             operation_id=operation_id,
@@ -107,14 +124,22 @@ def _keep_task_artifact(app, task):
     artifact = descriptor_for(
         task.operation_id, "comparison.html", media_type="text/html", size_bytes=len(data)
     )
-    workspace = app.state.catalog.open(task.project_id).history.workspace
-    filename = workspace.keep_artifact(
-        source_name=artifact.name,
-        project_name="Research",
+    store.create_artifact(
+        Artifact(
+            artifact_id=artifact.artifact_id,
+            project_id=task.project_id,
+            supplier="turn",
+            supplier_id=task.operation_id,
+            source_name=artifact.name,
+            media_type=artifact.media_type,
+            created_at=store.now(),
+            kept_at=store.now(),
+            origin_operation_id=task.operation_id,
+            episode_id=task.episode_id,
+        ),
         data=data,
-        today=datetime.now(UTC).date(),
     )
-    artifact = artifact.model_copy(update={"kept_filename": filename, "kept_at": store.now()})
+    artifact = artifact.model_copy(update={"kept_at": store.now()})
     return {"artifacts": [artifact.model_dump(mode="json")]}
 
 
@@ -193,14 +218,31 @@ def _create_chat_report(app, tmp_path, *, parent=None, parent_root=None, with_ar
         "<!doctype html><title>Reset versus stream · Partial episode report</title>"
         "<h1>Saved episode comparison</h1><svg><title>Timeline</title></svg>"
     )
+    report_id = str(uuid.uuid4())
+    stored = store.create_artifact(
+        Artifact(
+            artifact_id=hashlib.sha256(report_id.encode()).hexdigest()[:24],
+            project_id=project_id,
+            supplier="episode_ending",
+            supplier_id=episode_id,
+            source_name="episode-report.html",
+            media_type="text/html",
+            created_at=store.now(),
+            episode_id=episode_id,
+            display_title=html_document_title(html),
+            origin_operation_id=admission.task.operation_id,
+        ),
+        data=html.encode(),
+    )
     report = EpisodeReportRecord(
-        report_id=str(uuid.uuid4()),
+        report_id=report_id,
         episode_id=episode_id,
         attempt_id=attempt.attempt_id,
         allocation_operation_id=admission.task.operation_id,
         ending="completed",
         sha256=hashlib.sha256(html.encode()).hexdigest(),
-        html=html,
+        artifact_id=stored.artifact_id,
+        artifact_version_id=stored.current_version,
         created_at=store.now(),
     )
     store.finish_episode_report_ready(attempt.attempt_id, report)
@@ -259,7 +301,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         saved = next(entry for entry in entries if entry["kind"] == "artifact")
         assert saved["operation_id"] == task.operation_id
         assert saved["artifact_id"] == artifact.artifact_id
-        assert saved["path"] == f"artifacts/{artifact.kept_filename}"
+        assert saved["path"] is None
         assert saved["can_open"] is True
         assert saved["episode_mode"] is None
         chat_url, chat_params = _source_chat_url(project_id, saved["source_chat_href"])
@@ -270,6 +312,11 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert "Saved comparison" in content.text
         retained_report = next(entry for entry in entries if entry["kind"] == "report")
         assert retained_report["id"] == f"report:{report.report_id}"
+        assert retained_report["artifact_id"] == report.artifact_id
+        assert retained_report["viewer_url"] == (
+            f"/api/projects/{project_id}/artifacts/{report.artifact_id}/viewer"
+        )
+        assert client.get(retained_report["download_url"]).status_code == 200
         assert retained_report["episode_id"] == episode.episode_id
         assert retained_report["created_at"] == report.created_at
         assert retained_report["source_chat_href"] is None
@@ -281,7 +328,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
             client.post(
                 f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
             ).status_code
-            == 200
+            == 405
         )
         assert client.get(f"/api/projects/{project_id}/artifacts").json() == entries
 
@@ -377,7 +424,9 @@ def test_report_links_to_its_concluding_chat_without_reopening_branch_episode_co
     client = TestClient(app)
     # Inventory uses summaries and the concluding operation, never report HTML.
     with monkeypatch.context() as patch:
-        patch.setattr(store, "episode_report", lambda _: pytest.fail("inventory read report bytes"))
+        patch.setattr(
+            store, "read_artifact_bytes", lambda *args: pytest.fail("inventory read report bytes")
+        )
         response = client.get(f"/api/projects/{project_id}/artifacts")
     assert response.status_code == 200, response.text
     entry = next(entry for entry in response.json() if entry["id"] == f"report:{report.report_id}")
@@ -539,3 +588,63 @@ def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tm
     assert entry["episode_id"] is None
     assert "/tasks/" in entry["viewer_url"]
     assert client.get(entry["viewer_url"]).status_code == 200
+
+
+@pytest.mark.parametrize("owner", ["experiment", "worker"])
+@pytest.mark.parametrize("valid_origin", [True, False])
+def test_edit_outputs_keep_bounded_runs_links(manifest, tmp_path, owner, valid_origin):
+    app, _, parent, parent_root = _app_branch(manifest, tmp_path, include_experiment=True)
+    store = app.state.background_tasks.store
+    if owner == "experiment":
+        origin, _ = _create_chat_report(app, tmp_path, parent=parent, parent_root=parent_root)
+    else:
+        origin = _routed_worker(
+            store,
+            parent,
+            admitted_by=parent_root,
+            worker_id=str(uuid.uuid4()),
+            seat_node_id="rq/learning-after-shift",
+            instruction="Measure recall.",
+        )
+        store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+        _save_source_chat(app, origin)
+    edit = origin.model_copy(
+        update={
+            "operation_id": str(uuid.uuid4()),
+            "episode_id": None,
+            "kind": "artifact_edit" if owner == "experiment" else "node_chat",
+            "status": "queued",
+            "dispatch_authority": None,
+            "request": {
+                **origin.request,
+                "patch_kind": "work",
+                "mode": "discuss",
+                "control_episode_id": None,
+                "artifact_edit": {
+                    "episode_id": origin.episode_id,
+                    "origin_operation_id": origin.operation_id if valid_origin else "missing",
+                },
+            },
+        }
+    )
+    store.create_artifact_edit_task(edit)
+    result = _keep_task_artifact(app, edit.model_copy(update={"episode_id": origin.episode_id}))
+    store.complete_agent_task(edit.operation_id, applied_revision=None, result=result)
+    artifact_id = result["artifacts"][0]["artifact_id"]
+    client = TestClient(app)
+    response = client.get(f"/api/projects/{edit.project_id}/artifacts")
+    assert response.status_code == 200, response.text
+    saved = next(item for item in response.json() if item["operation_id"] == edit.operation_id)
+    state = client.get(f"/api/projects/{edit.project_id}/artifacts/{artifact_id}/state")
+    assert state.status_code == 200, state.text
+    if not valid_origin:
+        assert saved["source_chat_href"] is None
+        assert state.json()["thread_href"] is None
+        return
+    assert saved["episode_mode"] == (
+        "experiment_loop" if owner == "experiment" else "auto_research"
+    )
+    assert state.json()["thread_href"] == saved["source_chat_href"]
+    query = parse_qs(urlsplit(saved["source_chat_href"].removeprefix("#")).query)
+    assert query["view"] == ["runs"]
+    assert query["episode"] == [origin.episode_id]

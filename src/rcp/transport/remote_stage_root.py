@@ -114,7 +114,7 @@ def sweep_stages(retain_days: int, protected: set[str]) -> None:
                     remove_tree(target)
 
 
-def check_stage(root: str) -> None:
+def check_stage(root: str, *, missing_exit: int = 1) -> os.stat_result:
     """Exit 0 when `root` is this account's own private stage; 1 when it is not, 2 when unknown.
 
     The saved root itself is checked, never followed through a replacement.
@@ -130,7 +130,7 @@ def check_stage(root: str) -> None:
     try:
         info = os.lstat(root)
     except (FileNotFoundError, NotADirectoryError):
-        raise SystemExit(1) from None
+        raise SystemExit(missing_exit) from None
     except OSError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from None
@@ -142,6 +142,7 @@ def check_stage(root: str) -> None:
         if unsafe:
             print(message, file=sys.stderr)
             raise SystemExit(1)
+    return info
 
 
 def remove_stage(root: str) -> None:
@@ -172,6 +173,52 @@ def prepare_artifacts(workspace: str, scope: str, reuse: bool) -> None:
     else:
         remove_tree(scope_path)
         os.makedirs(target, mode=0o700, exist_ok=False)
+
+
+def prepare_edit_artifacts(workspace: str, scope: str, staged: bool) -> None:
+    """Preserve an existing edit directory, including a pre-receipt interrupted attempt."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", scope) or scope in {".", ".."}:
+        raise ValueError("artifact scope is unsafe")
+    scope_path = os.path.join(workspace, "turns", scope)
+    prepare_artifacts(workspace, scope, reuse=staged or os.path.lexists(scope_path))
+
+
+def stage_artifact(workspace: str, scope: str, name: str, data: bytes) -> None:
+    """Create a writable edit once; retries preserve the agent's exact existing file."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", scope) or scope in {".", ".."}:
+        raise ValueError("artifact scope is unsafe")
+    if os.path.basename(name) != name or name in {"", ".", ".."}:
+        raise ValueError("artifact name is unsafe")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors = []
+    temporary = ""
+    try:
+        folder = os.open(workspace, flags)
+        descriptors.append(folder)
+        for part in ("turns", scope, "artifacts"):
+            folder = os.open(part, flags, dir_fd=folder)
+            descriptors.append(folder)
+        try:
+            info = os.stat(name, dir_fd=folder, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("staged edit is not a regular file")
+            return
+        temporary = ".edit-" + os.urandom(16).hex()
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=folder)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+        os.fsync(folder)
+    finally:
+        if temporary:
+            os.unlink(temporary, dir_fd=folder)
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _fingerprint(path: str, immutable: bool = False) -> tuple[str, object]:
@@ -271,10 +318,16 @@ def main(argv: list[str]) -> int:
             sweep_stages(int(argv[2]), set(json.loads(argv[3])))
         elif len(argv) == 3 and argv[1] == "check":
             check_stage(argv[2])
+        elif len(argv) == 3 and argv[1] == "last-touch":
+            print(check_stage(argv[2], missing_exit=44).st_mtime)
         elif len(argv) == 3 and argv[1] == "remove":
             remove_stage(argv[2])
         elif len(argv) == 5 and argv[1] == "prepare-artifacts":
             prepare_artifacts(argv[2], argv[3], argv[4] == "1")
+        elif len(argv) == 5 and argv[1] == "prepare-edit-artifacts":
+            prepare_edit_artifacts(argv[2], argv[3], argv[4] == "1")
+        elif len(argv) == 5 and argv[1] == "stage-artifact":
+            stage_artifact(argv[2], argv[3], argv[4], sys.stdin.buffer.read())
         elif len(argv) == 7 and argv[1] == "commit-inputs":
             commit_inputs(
                 argv[2], argv[3], json.loads(argv[4]), argv[5] == "1", set(json.loads(argv[6]))

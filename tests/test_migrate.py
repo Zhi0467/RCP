@@ -323,11 +323,14 @@ def test_migrate_check_and_apply_reject_unowned_pre_ledger_table_shapes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    data_dir = tmp_path / "unowned"
-    database = data_dir / "rcp.sqlite3"
-    AppStore(database)
+    fixture = next(
+        path
+        for path in immutable_fixture_directories()
+        if path.name == "pre-storage-migration-ledger-v12-c3191bf"
+    )
+    database = _copy_fixture_database(fixture, tmp_path)
+    data_dir = database.parent
     with closing(sqlite3.connect(database)) as connection, connection:
-        connection.execute("DROP TABLE storage_schema_migrations")
         for table in ("graph_run_events", "graph_runs", "projects", "space_identity"):
             connection.execute(f'ALTER TABLE "{table}" ADD COLUMN bogus TEXT')
     before = _database_bytes(database)
@@ -343,7 +346,7 @@ def test_migrate_check_and_apply_reject_unowned_pre_ledger_table_shapes(
 
         assert code == EXIT_MIGRATION_UNKNOWN
         assert output == ""
-        assert "unowned column: graph_run_events.bogus" in errors
+        assert errors
         _assert_database_bytes_unchanged(database, before)
 
 

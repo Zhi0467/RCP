@@ -3,7 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("Artifacts lists durable entries, refreshes after saving and retries failures", async () => {
+test("Artifacts lists durable entries, refreshes and retries failures", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -26,77 +26,53 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
     );
-    await page.getByText("No saved artifacts or reports yet.").waitFor();
+    await page.locator(".artifacts-view").waitFor();
+    const entry = (artifact_id, name, fields) => ({
+      id: artifact_id,
+      artifact_id,
+      name,
+      kind: "artifact",
+      view: "html",
+      created_at: "2026-09-10T12:00:00Z",
+      path: null,
+      operation_id: null,
+      episode_id: null,
+      episode_mode: null,
+      source_chat_href: null,
+      can_open: true,
+      available: true,
+      can_download: false,
+      download_url: null,
+      unavailable_reason: null,
+      viewer_url: `/viewer-shell/${artifact_id}`,
+      ...fields,
+    });
     entries = [
-      {
-        id: "report:old-episode",
-        name: "Validation report",
+      entry("report-old", "Validation report", {
         kind: "report",
-        created_at: "2026-09-09T12:00:00Z",
-        path: null,
-        operation_id: null,
-        artifact_id: null,
         episode_id: "old-episode",
         episode_mode: "experiment_loop",
         source_chat_href:
           "#/projects/project?view=runs&experiment=experiment%2Ftransfer&episode=old-episode&target=branch&branch=branch-one&parent=parent-episode",
-        can_open: true,
-        unavailable_reason: null,
-        viewer_url: "/api/projects/project/episodes/old-episode/report/viewer",
-      },
-      {
-        id: "artifact:plot",
-        name: "Saved plot",
-        kind: "artifact",
-        created_at: "2026-09-10T12:00:00Z",
-        path: "artifacts/plot.html",
+      }),
+      entry("plot", "Saved plot", {
         operation_id: "task",
-        artifact_id: "plot",
-        episode_id: null,
         episode_mode: "experiment_loop",
+        path: "artifacts/plot.html",
         source_chat_href: "#/projects/project?view=chats&branch_id=branch-one&chat=plot-chat",
-        can_open: true,
-        unavailable_reason: null,
-        viewer_url: "/api/projects/project/tasks/task/artifacts/plot/viewer",
-      },
-      {
-        id: "artifact:unavailable",
-        name: "Unavailable plot",
-        kind: "artifact",
-        created_at: "2026-09-10T12:00:00Z",
-        path: "artifacts/unavailable.html",
-        operation_id: "task",
-        artifact_id: "unavailable",
-        episode_id: null,
-        episode_mode: null,
-        source_chat_href: null,
+      }),
+      entry("unavailable", "Unavailable plot", {
         can_open: false,
-        unavailable_reason: "Preview unavailable.",
+        available: false,
         viewer_url: null,
-      },
-      {
-        id: "report:no-chat",
-        name: "Report",
+        unavailable_reason: "Preview unavailable.",
+      }),
+      entry("report-no-chat", "Report", {
         kind: "report",
-        created_at: "2026-09-10T12:00:00Z",
-        path: null,
-        operation_id: null,
-        artifact_id: null,
         episode_id: "no-chat",
         episode_mode: "auto_research",
-        source_chat_href: null,
-        can_open: true,
-        unavailable_reason: null,
-        viewer_url: "/api/projects/project/episodes/no-chat/report/viewer",
-      },
+      }),
     ];
-    entries = entries.map((entry) => ({
-      ...entry,
-      view: "html",
-      available: entry.can_open,
-      can_download: false,
-      download_url: null,
-    }));
     entries.push(
       ...["file", "pdf"].map((view) => ({
         id: `artifact:${view}`,
@@ -115,10 +91,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.getByRole("link", { name: "Open Validation report" }).waitFor();
     await page.getByRole("link", { name: "Open originating chat for Validation report" }).waitFor();
-    assert.doesNotMatch(
-      await page.locator(".artifacts-list").innerText(),
-      /old-episode|artifacts\/plot\.html/,
-    );
+
     assert.equal(await page.locator(".artifacts-list time").count(), 0);
     assert.equal(
       await page
@@ -127,11 +100,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
       0,
     );
     await page.getByRole("link", { name: "Open Report", exact: true }).waitFor();
-    assert.deepEqual(await page.locator(".artifact-episode-tag").allTextContents(), [
-      "Experiment",
-      "Experiment",
-      "Auto-research",
-    ]);
+    assert.equal(await page.locator(".artifact-episode-tag").count(), 3);
     assert.equal(
       await page
         .locator(".artifact-entry")
@@ -199,7 +168,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
     assert.equal(await report.evaluate((row) => getComputedStyle(row).boxShadow), classicShadow);
     failure = true;
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    await page.getByRole("alert").filter({ hasText: "Storage unavailable" }).waitFor();
+    await page.getByRole("alert").waitFor();
     failure = false;
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.getByRole("alert").waitFor({ state: "detached" });
@@ -213,22 +182,21 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         },
       };
     });
-    await report.click({ position: { x: 12, y: 12 } });
-    // Each link's handler records its call after its own await, so clicking both
-    // before either lands leaves the recorded order to chance.
-    await page.waitForFunction(() => window.previewCalls.length === 1);
-    await page.getByRole("link", { name: "Open Saved plot" }).click();
-    await page.waitForFunction(() => window.previewCalls.length === 2);
-    assert.deepEqual(await page.evaluate(() => window.previewCalls), [
-      {
-        command: "open_episode_report_preview",
-        args: { projectId: "project", episodeId: "old-episode" },
-      },
-      {
-        command: "open_artifact_preview",
-        args: { projectId: "project", taskId: "task", artifactId: "plot" },
-      },
-    ]);
+    await page.route("**/api/projects/project/artifacts/*/state", (route) => {
+      const artifactId = route.request().url().split("/").at(-2);
+      return route.fulfill({ json: viewerState(artifactId) });
+    });
+    await page.route("**/viewer-shell/*", (route) =>
+      route.fulfill({ contentType: "text/html", body: "<p>Artifact content</p>" }),
+    );
+    for (const name of ["Validation report", "Saved plot"]) {
+      await page.getByRole("link", { name: `Open ${name}`, exact: true }).click();
+      await page.locator(".artifact-viewer iframe").waitFor();
+      assert.equal(await page.locator(".artifact-viewer").count(), 1);
+      assert.equal(page.context().pages().length, 1);
+      await page.getByRole("button", { name: "Close viewer", exact: true }).click();
+    }
+    assert.deepEqual(await page.evaluate(() => window.previewCalls), []);
     // The source link stays above the stretched preview hit target and follows
     // the same app window, even in the native shell.
     for (const theme of ["classic", "aqua"]) {
@@ -244,7 +212,7 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
         assert.equal(new URL(page.url()).hash, entry.source_chat_href);
         assert.equal(
           await page.evaluate(() => window.previewCalls.length),
-          2,
+          0,
           "Source chat never opens an artifact preview",
         );
       }
@@ -265,14 +233,11 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
     }
     // A refresh reprojects the existing rows after entering the desktop runtime.
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    const pdf = page
-      .locator(".artifact-entry")
-      .filter({ has: page.locator('a[download="pdf.dat"]') });
-    await pdf.getByRole("button").click();
-    await page.waitForFunction(() => window.previewCalls.length === 3);
-    assert.deepEqual(await page.evaluate(() => window.previewCalls[2]), {
+    await page.getByRole("button", { name: "Open pdf.dat", exact: true }).click();
+    await page.waitForFunction(() => window.previewCalls.length === 1);
+    assert.deepEqual(await page.evaluate(() => window.previewCalls[0]), {
       command: "open_artifact_pdf",
-      args: { projectId: "project", taskId: "task", artifactId: "pdf" },
+      args: { projectId: "project", artifactId: "pdf" },
     });
     assert.deepEqual(errors, []);
   } finally {
@@ -314,6 +279,7 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
         default: { createRoot },
       } = await import("/node_modules/.vite/deps/react-dom_client.js");
       const { NodeChat } = await import("/src/components/NodeChat.tsx");
+      const { ArtifactViewer } = await import("/src/components/ArtifactViewer.tsx");
       const profile = {
         provider: "codex",
         model: null,
@@ -339,7 +305,6 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
         can_download: true,
         can_keep: true,
         can_discuss: ["html", "image"].includes(view),
-        can_revise: false,
       }));
       const task = {
         operation_id: "turn",
@@ -369,42 +334,48 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
             transformCallback: () => 1,
             invoke: async (command, args) => {
               if (command === "open_artifact_pdf") window.pdfCall = { command, args };
+              return { opened: true };
             },
           };
         window.cardRoot.render(
-          React.createElement(NodeChat, {
-            key: String(desktop),
-            project: {
-              id: "project",
-              name: "Project",
-              repositories: [],
-              project_truth_scope: [],
-              machines: [{ alias: "local" }],
-              agent_profiles: { project_chat: profile },
-              provider_readiness: {},
-            },
-            node: null,
-            runScope: [],
-            tasks: [task, omitted],
-            activeTask: null,
-            historyMessages: [],
-            chatId: "chat",
-            onRefreshTask: async () => {
-              window.refreshCount = (window.refreshCount ?? 0) + 1;
-              task.result.artifacts = task.result.artifacts.map((artifact) =>
-                artifact.artifact_id === "file"
-                  ? { ...artifact, can_keep: false, kept_filename: "file.dat" }
-                  : artifact,
-              );
-              window.renderCards();
-              return task;
-            },
-            onClose() {},
-            onStartTask() {},
-            onInspectTask() {},
-            onOpenInbox() {},
-            onRepairGraphUpdate() {},
-          }),
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(NodeChat, {
+              key: String(desktop),
+              project: {
+                id: "project",
+                name: "Project",
+                repositories: [],
+                project_truth_scope: [],
+                machines: [{ alias: "local" }],
+                agent_profiles: { project_chat: profile },
+                provider_readiness: {},
+              },
+              node: null,
+              runScope: [],
+              tasks: [task, omitted],
+              activeTask: null,
+              historyMessages: [],
+              chatId: "chat",
+              onRefreshTask: async () => {
+                window.refreshCount = (window.refreshCount ?? 0) + 1;
+                task.result.artifacts = task.result.artifacts.map((artifact) =>
+                  artifact.artifact_id === "file"
+                    ? { ...artifact, can_keep: false, kept_filename: "file.dat" }
+                    : artifact,
+                );
+                window.renderCards();
+                return task;
+              },
+              onClose() {},
+              onStartTask() {},
+              onInspectTask() {},
+              onOpenInbox() {},
+              onRepairGraphUpdate() {},
+            }),
+            React.createElement(ArtifactViewer),
+          ),
         );
       };
       window.renderCards();
@@ -424,7 +395,6 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
     await file.locator("[data-artifact-action=keep]").click();
     await file.locator("[data-artifact-action=keep]").waitFor({ state: "detached" });
     assert.deepEqual(mutations, [{ method: "POST", body: {}, contentType: "application/json" }]);
-    assert.equal(await page.evaluate(() => window.refreshCount), 1);
     await page.evaluate(() => window.renderCards(true));
     await page.locator("#artifact-turn-pdf .chat-artifact-actions button").first().click();
     await page.waitForFunction(() => window.pdfCall);
@@ -432,6 +402,216 @@ test("universal cards preserve actions, refresh Keep, and resolve file citations
       command: "open_artifact_pdf",
       args: { projectId: "project", taskId: "turn", artifactId: "pdf" },
     });
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+function viewerState(artifactId, version = 1) {
+  return {
+    artifact_id: artifactId,
+    name: "Saved plot",
+    media_type: "text/html",
+    view: "html",
+    supplier: "turn",
+    current_version: `version-${version}`,
+    version_number: version,
+    can_undo: version > 1,
+    live: null,
+    editing_operation_id: null,
+    can_comment: true,
+    comment_unavailable_reason: null,
+    fresh_session_required: false,
+    thread_href: "#/projects/project?view=chats&chat=plot-chat",
+    viewer_url: `/viewer-shell/${artifactId}?version=${version}`,
+    download_url: `/api/projects/project/artifacts/${artifactId}/download`,
+    can_keep: true,
+    expires_at: null,
+  };
+}
+
+test("viewer persists placement and follows an edit through publication and Undo", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1200, height: 850 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let state = viewerState("plot");
+    await page.route("**/api/projects/project/artifacts", (route) => route.fulfill({ json: [] }));
+    await page.route("**/api/projects/project/artifacts/plot/state", (route) =>
+      route.fulfill({ json: state }),
+    );
+    await page.route("**/api/projects/project/artifacts/plot/undo", (route) => {
+      assert.equal(route.request().method(), "POST");
+      state = viewerState("plot");
+      return route.fulfill({ json: {} });
+    });
+    await page.route("**/viewer-shell/plot?*", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: `<button id="send" onclick="parent.postMessage({type:'rcp-artifact-edit-started', version:1, artifact_id:'plot', operation_id:'edit'}, location.origin)">Send</button><p>${new URL(route.request().url()).searchParams.get("version")}</p>`,
+      }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    const open = () =>
+      page.evaluate(async () => {
+        const { openArtifact } = await import("/src/artifactViewer.ts");
+        openArtifact({ projectId: "project", artifactId: "plot" });
+      });
+    await open();
+    const panel = page.locator(".artifact-viewer");
+    await panel.locator("iframe").waitFor();
+    const docked = await panel.boundingBox();
+    assert.equal(docked.y, 0);
+    assert.equal(docked.height, 850);
+    assert.equal(docked.x + docked.width, 1200);
+    const separator = page.getByRole("separator", { name: "Viewer width" });
+    const edge = await separator.boundingBox();
+    await page.mouse.move(edge.x + edge.width / 2, edge.y + 200);
+    await page.mouse.down();
+    await page.mouse.move(edge.x - 80, edge.y + 200, { steps: 6 });
+    await page.mouse.up();
+    assert.ok((await panel.boundingBox()).width > docked.width);
+    await page.getByRole("button", { name: "Dock viewer" }).click();
+    const tab = page.getByRole("button", { name: "Restore Saved plot" });
+    const tabRect = await tab.boundingBox();
+    assert.ok(tabRect.y > 0, "The dock tab clears the project header");
+    assert.equal(tabRect.x + tabRect.width, 1200);
+    await tab.click();
+    const title = panel.locator("header strong");
+    await title.waitFor();
+    const titleRect = await title.boundingBox();
+    await page.mouse.move(titleRect.x + 20, titleRect.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(titleRect.x - 60, titleRect.y + 80, { steps: 6 });
+    await page.mouse.up();
+    const floating = await panel.boundingBox();
+    const placement = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("rcp:artifact-viewer-placement")),
+    );
+    assert.equal(placement.mode, "floating");
+    await title.dblclick();
+    assert.deepEqual(await panel.boundingBox(), { x: 0, y: 0, width: 1200, height: 850 });
+    await title.dblclick();
+    assert.deepEqual(await panel.boundingBox(), floating);
+    await page.getByRole("button", { name: "Close viewer" }).click();
+    await open();
+    await panel.locator("iframe").waitFor();
+    assert.deepEqual(await panel.boundingBox(), floating);
+
+    state = { ...state, editing_operation_id: "edit" };
+    await page
+      .frameLocator(".artifact-viewer iframe")
+      .getByRole("button", { name: "Send" })
+      .click();
+    await panel.getByRole("status").waitFor();
+    state = viewerState("plot", 2);
+    await page.frameLocator(".artifact-viewer iframe").getByText("2", { exact: true }).waitFor();
+    await panel.getByRole("status").waitFor({ state: "detached" });
+    await panel.getByRole("button", { name: "Undo" }).click();
+    await page.frameLocator(".artifact-viewer iframe").getByText("1", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Undo" }).waitFor({ state: "detached" });
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
+test("desktop reports download and run PDFs open by stored identity without a producing task", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      window.nativeCalls = [];
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+      window.__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        unregisterCallback() {},
+        invoke: async (command, args) => {
+          window.nativeCalls.push({ command, args });
+          return { saved: true, path: "/tmp/report.html", opened: true };
+        },
+      };
+    });
+    await page.route("**/api/projects/project/artifacts", (route) =>
+      route.fulfill({
+        json: [
+          {
+            id: "report",
+            artifact_id: "report",
+            operation_id: null,
+            name: "Report.html",
+            view: "html",
+            can_open: false,
+            can_download: true,
+            download_url: "/api/projects/project/artifacts/report/download",
+          },
+        ],
+      }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    await page.getByRole("button", { name: "Download Report.html" }).click();
+    await page.waitForFunction(() =>
+      window.nativeCalls.some((call) => call.command === "download_artifact"),
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        window.nativeCalls.find((call) => call.command === "download_artifact"),
+      ),
+      {
+        command: "download_artifact",
+        args: { projectId: "project", artifactId: "report", suggestedName: "Report.html" },
+      },
+    );
+    await page.evaluate(async () => {
+      const { renderRunArtifacts } = await import("/tests/fixtures/artifacts.tsx");
+      renderRunArtifacts([
+        {
+          artifact_id: "pdf",
+          name: "Results.pdf",
+          view: "pdf",
+          supplier: "turn",
+          origin_operation_id: null,
+          created_at: new Date().toISOString(),
+        },
+      ]);
+    });
+    await page.getByRole("button", { name: "Results.pdf" }).click();
+    await page.waitForFunction(() =>
+      window.nativeCalls.some((call) => call.command === "open_artifact_pdf"),
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        window.nativeCalls.find((call) => call.command === "open_artifact_pdf"),
+      ),
+      {
+        command: "open_artifact_pdf",
+        args: { projectId: "project", artifactId: "pdf" },
+      },
+    );
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

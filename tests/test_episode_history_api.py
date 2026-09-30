@@ -59,7 +59,8 @@ def _report(episode_id: str) -> EpisodeReportRecord:
         allocation_operation_id=f"{episode_id}-report-task",
         ending="exhausted",
         sha256=hashlib.sha256(html.encode("utf-8")).hexdigest(),
-        html=html,
+        artifact_id=f"{episode_id}-report",
+        artifact_version_id=hashlib.sha256(html.encode("utf-8")).hexdigest(),
         created_at="2026-08-12T01:00:00+00:00",
     )
 

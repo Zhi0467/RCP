@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -14,8 +15,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from rcp.artifact_replace import ArtifactReplacementConflict
-from rcp.artifacts import validate_result_view_id
 from rcp.limits import (
     PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
@@ -31,7 +30,6 @@ from rcp.transport.state import (
     StateMissing,
     StateUnavailable,
     StateUnreachable,
-    _remote_lock_holder_script,
     _remote_script,
 )
 
@@ -298,6 +296,27 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
             raise ValueError("remote run stage is outside the RCP staging boundary")
         self.root = PurePosixPath(root)
         return self
+
+    def stage_last_touch(self) -> float:
+        """Read the retained stage's mtime without refreshing its retention clock."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        result = self._ssh(
+            ["python3", "-c", _remote_script("remote_stage_root.py"), "last-touch", str(self.root)]
+        )
+        if result.returncode == 44:
+            raise FileNotFoundError("remote run stage is missing")
+        if result.returncode == 1:
+            raise ValueError(result.stderr.strip() or "remote run stage is unsafe")
+        if result.returncode:
+            raise _ssh_failure(result, "could not inspect remote run stage retention")
+        try:
+            modified = float(result.stdout)
+            if not math.isfinite(modified):
+                raise ValueError("non-finite stage timestamp")
+        except ValueError as exc:
+            raise StateUnavailable("remote run stage returned an invalid timestamp") from exc
+        return modified
 
     def close(self) -> bool:
         self._clear_pending_inputs()
@@ -889,6 +908,43 @@ finally:
             raise _ssh_failure(result, "could not prepare remote artifact directory")
         return target
 
+    def prepare_artifact_edit_directory(self, scope_id: str, *, staged: bool) -> PurePosixPath:
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "prepare-edit-artifacts",
+                str(self.workspace),
+                scope_id,
+                "1" if staged else "0",
+            ]
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not prepare the retained artifact edit directory")
+        return self.workspace / "turns" / scope_id / "artifacts"
+
+    def stage_artifact_bytes(self, scope_id: str, name: str, data: bytes) -> None:
+        """Stage editable bytes once; a recovered edit keeps its retained file."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        result = self._ssh_bytes(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "stage-artifact",
+                str(self.workspace),
+                scope_id,
+                name,
+            ],
+            input_data=data,
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not stage remote artifact edit")
+
     def list_artifact_files(self, scope_id: str) -> list[tuple[str, int]]:
         """List direct, non-symlink regular artifact candidates and their sizes."""
         if self.root is None:
@@ -924,6 +980,20 @@ finally:
             return [(str(name), int(size)) for name, size in values]
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise StateUnavailable("remote artifact listing was invalid") from exc
+
+    def read_live_file(self, path: str, *, max_bytes: int, tail: bool = False) -> bytes:
+        """Use the same bounded, symlink-refusing reader as local artifact reads."""
+        script = (Path(__file__).parent.parent / "regular_file_reader.py").read_text(
+            encoding="utf-8"
+        )
+        result = self._ssh_bytes(
+            ["python3", "-c", script, path, str(max_bytes), "tail" if tail else "whole"]
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not read live artifact source")
+        if len(result.stdout) > max_bytes:
+            raise ValueError("live artifact source exceeds byte limit")
+        return result.stdout
 
     def read_artifact_bytes(self, scope_id: str, name: str, *, max_bytes: int) -> bytes:
         """Read one bounded direct regular child over SSH without making a local copy."""
@@ -972,48 +1042,6 @@ finally:
             raise _ssh_failure(result, "could not read remote artifact")
         return result.stdout
 
-    def replace_artifact_bytes(
-        self,
-        scope_id: str,
-        name: str,
-        data: bytes,
-        *,
-        expected_sha256: str | None = None,
-    ) -> bool:
-        """Atomically replace one remote task artifact if its digest is still expected."""
-
-        if self.root is None:
-            raise RuntimeError("remote run stage is not open")
-        if _safe_label(scope_id) != scope_id:
-            raise ValueError("artifact scope contains unsupported characters")
-        if PurePosixPath(name).name != name or name in {"", ".", ".."}:
-            raise ValueError("artifact name must be a plain base name")
-        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
-            raise ValueError("expected artifact digest is invalid")
-        result = self._ssh_bytes(
-            [
-                "python3",
-                "-c",
-                _remote_lock_holder_script(),
-                "replace-run-artifact",
-                str(self.root),
-                scope_id,
-                name,
-                expected_sha256 or "",
-            ],
-            input_data=data,
-        )
-        if result.returncode == 46:
-            return False
-        if result.returncode == 47:
-            raise ArtifactReplacementConflict(
-                result.stderr.decode("utf-8", errors="replace").strip()
-                or "remote artifact source is missing or unsafe"
-            )
-        if result.returncode:
-            raise _ssh_failure(result, "could not replace remote artifact")
-        return True
-
     def touch(self) -> None:
         """Refresh this conversation stage's rolling retention timestamp."""
         if self.root is None:
@@ -1034,192 +1062,6 @@ finally:
         result = self._ssh(["python3", "-c", script, str(self.root)])
         if result.returncode:
             raise _ssh_failure(result, f"could not touch remote run stage {self.root}")
-
-    def prepare_result_view_slot(
-        self,
-        view_id: str,
-        *,
-        reuse: bool,
-    ) -> PurePosixPath:
-        """Create or reopen one stable result-view slot in this conversation stage."""
-        if self.root is None:
-            raise RuntimeError("remote run stage is not open")
-        view_id = validate_result_view_id(view_id)
-        target = self.workspace / "views" / view_id
-        script = """
-import os,sys
-root,view_id,reuse=sys.argv[1],sys.argv[2],sys.argv[3]=='1'
-flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
-fds=[]
-try:
-    try:
-        root_fd=os.open(root,flags); fds.append(root_fd)
-        workspace_fd=os.open('workspace',flags,dir_fd=root_fd); fds.append(workspace_fd)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(44)
-    try:
-        try:
-            views_fd=os.open('views',flags,dir_fd=workspace_fd)
-        except FileNotFoundError:
-            os.mkdir('views',0o700,dir_fd=workspace_fd)
-            views_fd=os.open('views',flags,dir_fd=workspace_fd)
-        fds.append(views_fd)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(46)
-    if reuse:
-        try:
-            slot_fd=os.open(view_id,flags,dir_fd=views_fd); fds.append(slot_fd)
-        except FileNotFoundError:
-            raise SystemExit(45)
-        except OSError as exc:
-            print(str(exc),file=sys.stderr); raise SystemExit(46)
-    else:
-        try:
-            os.mkdir(view_id,0o700,dir_fd=views_fd)
-            slot_fd=os.open(view_id,flags,dir_fd=views_fd); fds.append(slot_fd)
-        except FileExistsError:
-            raise SystemExit(47)
-        except OSError as exc:
-            print(str(exc),file=sys.stderr); raise SystemExit(46)
-    os.utime(root_fd,None)
-finally:
-    for item in reversed(fds): os.close(item)
-"""
-        result = self._ssh(
-            ["python3", "-c", script, str(self.root), view_id, "1" if reuse else "0"]
-        )
-        if result.returncode == 44:
-            raise _ssh_failure(result, f"remote run workspace {self.workspace} is unavailable")
-        if result.returncode == 45:
-            raise FileNotFoundError(f"remote result view slot is absent: {view_id}")
-        if result.returncode == 46:
-            raise ValueError(f"remote result view slot is unsafe: {view_id}")
-        if result.returncode == 47:
-            raise FileExistsError(f"remote result view slot already exists: {view_id}")
-        if result.returncode:
-            raise _ssh_failure(result, f"could not prepare remote result view slot {view_id}")
-        return target
-
-    def list_result_view_files(self, view_id: str) -> list[tuple[str, int]]:
-        """Inspect at most two entries, enough to prove the one-file contract."""
-        if self.root is None:
-            raise RuntimeError("remote run stage is not open")
-        view_id = validate_result_view_id(view_id)
-        script = """
-import json,os,stat,sys
-root,view_id=sys.argv[1:3]
-flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
-fds=[]
-try:
-    try:
-        root_fd=os.open(root,flags); fds.append(root_fd)
-        workspace_fd=os.open('workspace',flags,dir_fd=root_fd); fds.append(workspace_fd)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(44)
-    try:
-        views_fd=os.open('views',flags,dir_fd=workspace_fd); fds.append(views_fd)
-        slot_fd=os.open(view_id,flags,dir_fd=views_fd); fds.append(slot_fd)
-    except FileNotFoundError:
-        raise SystemExit(45)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(46)
-    result=[]
-    try:
-        with os.scandir(slot_fd) as entries:
-            for entry in entries:
-                name=entry.name
-                info=os.stat(name,dir_fd=slot_fd,follow_symlinks=False)
-                if not stat.S_ISREG(info.st_mode): raise SystemExit(46)
-                result.append([name,info.st_size])
-                if len(result)==2: break
-    except FileNotFoundError:
-        raise SystemExit(46)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(46)
-    print(json.dumps(sorted(result)))
-finally:
-    for item in reversed(fds): os.close(item)
-"""
-        result = self._ssh(["python3", "-c", script, str(self.root), view_id])
-        if result.returncode == 44:
-            raise _ssh_failure(result, f"remote run workspace {self.workspace} is unavailable")
-        if result.returncode == 45:
-            raise FileNotFoundError(f"remote result view slot is absent: {view_id}")
-        if result.returncode == 46:
-            raise ValueError(f"remote result view slot contains an unsafe entry: {view_id}")
-        if result.returncode:
-            raise _ssh_failure(result, f"could not list remote result view slot {view_id}")
-        try:
-            values = json.loads(result.stdout)
-            files = [(str(name), int(size)) for name, size in values]
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise StateUnavailable("remote result view listing was invalid") from exc
-        if any(PurePosixPath(name).name != name or name in {"", ".", ".."} for name, _ in files):
-            raise StateUnavailable("remote result view listing returned invalid names")
-        return sorted(files)
-
-    def read_result_view_bytes(self, view_id: str, name: str, *, max_bytes: int) -> bytes:
-        """Read one bounded direct regular result-view file without following links."""
-        if self.root is None:
-            raise RuntimeError("remote run stage is not open")
-        view_id = validate_result_view_id(view_id)
-        name = _plain_workspace_file_name(name)
-        if max_bytes < 0:
-            raise ValueError("result view byte limit must be non-negative")
-        script = """
-import os,stat,sys
-root,view_id,name,limit=sys.argv[1],sys.argv[2],sys.argv[3],int(sys.argv[4])
-directory_flags=os.O_RDONLY|getattr(os,'O_DIRECTORY',0)|getattr(os,'O_NOFOLLOW',0)
-fds=[]
-try:
-    try:
-        root_fd=os.open(root,directory_flags); fds.append(root_fd)
-        workspace_fd=os.open('workspace',directory_flags,dir_fd=root_fd); fds.append(workspace_fd)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(44)
-    try:
-        views_fd=os.open('views',directory_flags,dir_fd=workspace_fd); fds.append(views_fd)
-        slot_fd=os.open(view_id,directory_flags,dir_fd=views_fd); fds.append(slot_fd)
-    except FileNotFoundError:
-        raise SystemExit(45)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(46)
-    try:
-        file_flags=os.O_RDONLY|getattr(os,'O_NOFOLLOW',0)|getattr(os,'O_NONBLOCK',0)
-        file_fd=os.open(name,file_flags,dir_fd=slot_fd); fds.append(file_fd)
-    except FileNotFoundError:
-        raise SystemExit(45)
-    except OSError as exc:
-        print(str(exc),file=sys.stderr); raise SystemExit(46)
-    info=os.fstat(file_fd)
-    if not stat.S_ISREG(info.st_mode): raise SystemExit(46)
-    if info.st_size>limit: raise SystemExit(47)
-    remaining=limit+1
-    while remaining:
-        chunk=os.read(file_fd,min(1024*1024,remaining))
-        if not chunk: break
-        sys.stdout.buffer.write(chunk); remaining-=len(chunk)
-    if remaining==0: raise SystemExit(47)
-finally:
-    for item in reversed(fds): os.close(item)
-"""
-        result = self._ssh_bytes(
-            ["python3", "-c", script, str(self.root), view_id, name, str(max_bytes)]
-        )
-        detail = result.stderr.decode("utf-8", errors="replace").strip()
-        if result.returncode == 44:
-            raise StateUnavailable(
-                detail or f"remote run workspace {self.workspace} is unavailable"
-            )
-        if result.returncode == 45:
-            raise FileNotFoundError(f"remote result view file is absent: {view_id}/{name}")
-        if result.returncode == 46:
-            raise ValueError(f"remote result view file is unsafe: {view_id}/{name}")
-        if result.returncode == 47:
-            raise ValueError(f"remote result view file exceeds its byte limit: {view_id}/{name}")
-        if result.returncode:
-            raise _ssh_failure(result, f"could not read remote result view {view_id}/{name}")
-        return result.stdout
 
     def _ssh(self, arguments: list[str]) -> subprocess.CompletedProcess[str]:
         command = " ".join(shlex.quote(argument) for argument in arguments)

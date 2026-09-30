@@ -10,7 +10,6 @@ const server = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { parseArtifactContextPayload } = await server.ssrLoadModule("/src/components/NodeChat.tsx");
 const {
   handleAutoResearchDialogKeyDown,
   makeAutoResearchDialogBackgroundInert,
@@ -18,72 +17,6 @@ const {
 } = await server.ssrLoadModule("/src/components/AutoResearchDialog.tsx");
 
 after(() => server.close());
-
-const payload = {
-  type: "rcp-artifact-context",
-  version: 1,
-  project_id: "project",
-  chat_id: "chat",
-  operation_id: "operation",
-  artifact_id: "0123456789abcdef01234567",
-  artifact_name: "curves.html",
-  media_type: "text/html",
-  source: "task",
-  episode_id: null,
-  selections: [
-    {
-      kind: "text",
-      text: "the final spike",
-      surrounding_text: "loss rises around the final spike",
-      comment: "Why does this happen?",
-    },
-    {
-      kind: "box",
-      rect: { x: 0.5, y: 0.2, width: 0.25, height: 0.3 },
-      viewport: { width: 1200, height: 800 },
-      elements: [{ path: "figure#seed-3 > svg", label: "seed three", text: "" }],
-      comment: "Compare this with seed one.",
-    },
-  ],
-};
-
-test("artifact selections decode as bounded context for exactly one originating chat", () => {
-  assert.deepEqual(parseArtifactContextPayload(payload), payload);
-  // A selection saved by a viewer from before elements were named still decodes.
-  const { elements: _elements, ...legacyBox } = payload.selections[1];
-  assert.deepEqual(
-    parseArtifactContextPayload({
-      ...payload,
-      selections: [{ ...legacyBox, labels: "seed three" }],
-    }).selections,
-    [{ ...legacyBox, labels: "seed three" }],
-  );
-  assert.equal(parseArtifactContextPayload({ ...payload, artifact_id: "bad" }), null);
-  assert.equal(parseArtifactContextPayload({ ...payload, selections: [] }), null);
-  assert.equal(
-    parseArtifactContextPayload({
-      ...payload,
-      selections: [{ ...payload.selections[0], comment: "x".repeat(2049) }],
-    }),
-    null,
-  );
-  assert.equal(
-    parseArtifactContextPayload({
-      ...payload,
-      selections: [
-        {
-          ...payload.selections[1],
-          rect: { x: 0.9, y: 0.2, width: 0.25, height: 0.3 },
-        },
-      ],
-    }),
-    null,
-  );
-  assert.equal(
-    parseArtifactContextPayload({ ...payload, source: "episode_report", episode_id: null }),
-    null,
-  );
-});
 
 test("no web frame is granted same-origin access", async () => {
   // Agent HTML previews stay opaque (AGENTS.md invariant 10e): an artifact frame may

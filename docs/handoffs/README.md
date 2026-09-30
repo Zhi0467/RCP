@@ -1,5 +1,7 @@
 # Active implementation handoffs
 
+- [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
+  — implemented 2026-09-30 on the same PR; served-app, desktop, and real-data checks remain.
 - [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
   — implemented 2026-09-28 on the same PR; real Mac and iPhone journeys remain.
 - [Agent link robustness](handoff-2026-09-29-agent-link-robustness.md)

@@ -69,6 +69,12 @@ def test_discovery_mixed_types_spends_reads_after_size_checks(app, tmp_path, mon
         ("b.md", "text/markdown"),
         ("c.csv", "text/csv"),
     ]
+    for item in artifacts:
+        (directory / item.name).unlink()
+        stored = execution.store.artifact(item.artifact_id)
+        assert stored.supplier == "turn"
+        assert stored.expires_at is not None
+        assert execution.store.read_artifact_bytes(item.artifact_id) == files[item.name]
     receipt = execution.store.agent_task_artifact_discoveries([execution.operation_id])[
         execution.operation_id
     ]
@@ -163,3 +169,22 @@ def test_omission_only_turn_is_projected_without_cards(app, tmp_path):
         "discovery_failed": False,
     }
     assert not response.json()["result"].get("artifacts")
+
+
+def test_remote_discovery_copies_bytes_without_retaining_stage_access(app, tmp_path):
+    execution = _execution(app)
+
+    class RemoteArtifacts:
+        def list_artifact_files(self, scope_id):
+            assert scope_id == execution.operation_id
+            return [("remote.txt", 6)]
+
+        def read_artifact_bytes(self, scope_id, name, *, max_bytes):
+            assert (scope_id, name) == (execution.operation_id, "remote.txt")
+            return b"remote"
+
+    artifacts = _discover_chat_artifacts(
+        execution, execution.operation_id, tmp_path / "absent", RemoteArtifacts()
+    )
+    assert len(artifacts) == 1
+    assert execution.store.read_artifact_bytes(artifacts[0].artifact_id) == b"remote"

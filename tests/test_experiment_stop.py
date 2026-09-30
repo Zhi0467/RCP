@@ -25,7 +25,6 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeRecord,
-    EpisodeReportRecord,
     EpisodeWrapupRecord,
     GraphWatcherRecord,
     WatcherContinuation,
@@ -35,6 +34,7 @@ from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import NodeStatusGraphCondition
 from rcp.watchers import WatcherBinding
 
+from .episode_report_helpers import stored_report
 from .helpers import (
     append_fixture_patch,
     authorized_human,
@@ -409,7 +409,8 @@ class _Loop:
         html = "<html><body><figure>Result</figure></body></html>"
         self.store.finish_episode_report_ready(
             attempt.attempt_id,
-            EpisodeReportRecord(
+            stored_report(
+                self.store,
                 report_id=f"{self.episode_id}-report",
                 episode_id=self.episode_id,
                 attempt_id=attempt.attempt_id,
@@ -3004,3 +3005,57 @@ def test_run_pins_experiment_graph_isolation(loop, isolated) -> None:
     assert binding.graph_branch_id == (episode.episode_id if isolated else None)
     assert loop.service.history.head_ref() == main_head
     assert episode.graph_base_head == (main_head if isolated else None)
+
+
+def test_artifact_edit_does_not_replace_episode_control_or_block_watcher_wake(loop, tmp_path):
+    from rcp.api.episode_timeline import build_episode_timeline
+    from rcp.api.episodes import serialize_episode
+    from rcp.providers import ProviderUsage
+
+    loop.start_episode()
+    loop.bind_session(tmp_path / "stage")
+    loop.arm_watcher("after-edit", status="completed")
+    loop.record_answers()
+    before = loop.store.episode_budget_meter(loop.episode_id)
+    now = loop.store.now()
+    edit = AgentTaskRecord(
+        operation_id="episode-artifact-edit",
+        project_id=loop.project_id,
+        kind="artifact_edit",
+        status="succeeded",
+        request={
+            "artifact_edit": {"episode_id": loop.episode_id, "origin_operation_id": "loop-root"}
+        },
+        created_at=now,
+        updated_at=now,
+        status_message="Edited",
+    )
+    loop.store.create_artifact_edit_task(edit)
+    loop.store.record_agent_usage(
+        edit.operation_id,
+        ProviderUsage(
+            provider_profile="codex.turn.v1",
+            provider_event_type="turn.completed",
+            dedupe_key="edit-usage",
+            processed_input_tokens=100,
+            generated_tokens=10,
+        ),
+    )
+    snapshot = loop.store.experiment_control_projection_snapshots(loop.project_id, [EXPERIMENT_ID])[
+        EXPERIMENT_ID
+    ].episode
+    episode = loop.store.episode(loop.episode_id)
+    projection = serialize_episode(
+        loop.store, loop.project_id, episode, projection_snapshot=snapshot
+    )
+    assert projection.current_control_task_id == "loop-root"
+    assert [task.operation_id for task in projection.tasks].count(edit.operation_id) == 1
+    assert projection.budget == before
+    assert all(task.operation_id != edit.operation_id for task in snapshot.tasks)
+    timeline = build_episode_timeline(loop.store, episode)
+    span = next(span for span in timeline.spans if span.task_id == edit.operation_id)
+    assert span.owner_episode_id == loop.episode_id
+    loop.deliver("after-edit")
+    watcher = loop.store.watcher("after-edit")
+    assert watcher.notified
+    assert watcher.notification_operation_id is not None

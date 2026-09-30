@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createServer } from "vite";
 import { timelineFixture } from "./fixtures/timeline.mjs";
+import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { chromium } from "playwright";
 import { rootTask, episode, withGraphBranch } from "./fixtures/campaigns.mjs";
 
@@ -37,6 +38,7 @@ test("a stopped ineligible branch submits a deliberate merge and shows the serve
     };
     const reason = "Branch writers must settle before merging: auto_research paused-turn (paused).";
     let polledEpisode = stopped;
+    await mockEpisodeArtifacts(page);
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({
         json: timelineFixture(episode.episode_id, episode.mode),
@@ -146,6 +148,7 @@ test("a served exhausted card settles from wrapping up to a visible report failu
       tasks: [{ ...rootTask, status: "succeeded", can_pause: false }],
     };
     let polls = 0;
+    await mockEpisodeArtifacts(page);
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({
         json: timelineFixture(episode.episode_id, episode.mode),
@@ -336,6 +339,7 @@ test("an envelope loads full text, reports fetch failure, and closes accessibly"
       started_by_span_id: null,
       links: {},
     });
+    await mockEpisodeArtifacts(page);
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({
         json: timelineFixture(episode.episode_id, episode.mode, {

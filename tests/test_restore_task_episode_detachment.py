@@ -15,6 +15,8 @@ from rcp.storage import (
 )
 from rcp.storage.episodes import compact_episode_receipt
 
+from .episode_report_helpers import stored_report
+
 RESTORE_DIAGNOSTIC = "This work was interrupted because RCP restored an older snapshot."
 
 
@@ -175,7 +177,8 @@ def _finish_report(
     attempt_id: str,
 ) -> EpisodeReportRecord:
     html = f"<article><h1>{episode_id}</h1></article>"
-    report = EpisodeReportRecord(
+    report = stored_report(
+        store,
         report_id=f"{episode_id}-report-id",
         episode_id=episode_id,
         attempt_id=attempt_id,

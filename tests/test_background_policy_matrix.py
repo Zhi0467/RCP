@@ -55,12 +55,6 @@ POLICY_MATRIX = [
         "dedicated admission required",
         id="episode-report-start",
     ),
-    pytest.param(
-        "result-view revision",
-        "start",
-        "saved session and stage required",
-        id="result-view-start",
-    ),
     pytest.param("chat Work", "resume", "owned checkpoint reused", id="work-resume"),
     pytest.param("ingestion", "resume", "owned checkpoint reused", id="ingestion-resume"),
     pytest.param("paper coach", "resume", "owned checkpoint reused", id="paper-resume"),
@@ -127,12 +121,6 @@ POLICY_MATRIX = [
         id="episode-report-retry",
     ),
     pytest.param(
-        "result-view revision",
-        "retry",
-        "provider profile remains pinned",
-        id="result-view-retry",
-    ),
-    pytest.param(
         "graph repair",
         "retry",
         "patch-only continuation preserved",
@@ -197,12 +185,6 @@ POLICY_MATRIX = [
         "recover_at_startup",
         "active task interrupted",
         id="paper-startup",
-    ),
-    pytest.param(
-        "result-view revision",
-        "recover_at_startup",
-        "active task interrupted",
-        id="result-view-startup",
     ),
     pytest.param(
         "Auto-research",
@@ -297,23 +279,6 @@ def _experiment_request(
         control_completion_criteria=["The comparison is analyzed."],
         watcher_ids=["watcher-one"] if trigger == "watcher" else [],
         session_id=session_id,
-    )
-
-
-def _result_view_request() -> RunRequest:
-    return RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        run_truth_scope=["repo"],
-        chat_scope="node",
-        chat_id="result-view-chat",
-        node_id="exp/result-view",
-        message="Revise the result view.",
-        mode="work",
-        session_id="result-view-session",
-        result_view={"action": "revise", "view_id": "a" * 24},
     )
 
 
@@ -481,15 +446,6 @@ def _start_case(family: str, store: AppStore, tmp_path: Path) -> str:
         with pytest.raises(ValueError, match="start_episode_report"):
             tasks.start("project", "episode_report", _report_request(), authorized_by=authorizer)
         return "dedicated admission required"
-    elif family == "result-view revision":
-        with pytest.raises(ValueError, match="saved native session and exact stage"):
-            tasks.start(
-                "project",
-                "node_chat",
-                _result_view_request(),
-                authorized_by=authorizer,
-            )
-        return "saved session and stage required"
     else:  # pragma: no cover - the table is the closed caller set
         raise AssertionError(family)
 
@@ -714,23 +670,6 @@ def _retry_case(
         with pytest.raises(TypeError, match="requires start_branch_merge"):
             tasks.retry(previous.operation_id, authorized_by=fabricated_authorizer("Researcher"))
         return "fresh merge dispatch required"
-    if family == "result-view revision":
-        previous = _record(
-            store,
-            operation_id="result-view-parent",
-            kind="node_chat",
-            request=_result_view_request(),
-            status="failed",
-            native_session_id="result-view-session",
-            stage_root=str(stage),
-        )
-        with pytest.raises(ValueError, match="cannot start a fresh provider session"):
-            tasks.retry(
-                previous.operation_id,
-                provider="claude",
-                authorized_by=previous.authorized_by,
-            )
-        return "provider profile remains pinned"
     if family == "graph repair":
         previous = _repair_child(store, tasks, stage, terminal_event="error")
         tasks.stream = stream
@@ -930,8 +869,6 @@ def _recovery_case(
             "paper_coach",
             CoachRequest(provider="codex", message="Review the introduction."),
         )
-    elif family == "result-view revision":
-        kind, request = "node_chat", _result_view_request()
     else:  # pragma: no cover - the table is the closed caller set
         raise AssertionError(family)
     task = _record(

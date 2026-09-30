@@ -39,7 +39,6 @@ from rcp.server_ops.backup_checkout import (
 from rcp.server_ops.backup_models import (
     BackupFileEntry,
     BackupImportedProviderSourceCapture,
-    BackupManifestConfiguration,
     BackupProjectCapture,
 )
 from rcp.server_ops.backup_project_io import (
@@ -527,7 +526,7 @@ class BackupProjectFileCaptureCoordinator:
         if recovery is None or locator is None or inventory.home_space_id is None:
             raise BackupProjectFileUnavailable("The project capture proof is incomplete.")
         manifest = load_manifest(locator)
-        if BackupManifestConfiguration.from_manifest(manifest) != recovery.configuration:
+        if not recovery.configuration.matches_manifest(manifest):
             raise BackupProjectFileUnavailable("The project manifest changed after SQLite capture.")
         verify_checkout_identities(recovery)
         workspace = state_workspace_for_probe(manifest, self.data_dir)

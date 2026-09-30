@@ -449,8 +449,21 @@ class ProjectStoreMixin:
                     "conversation_worktrees": connection.execute(
                         "DELETE FROM conversation_worktrees WHERE project_id = ?", (project_id,)
                     ).rowcount,
-                    "result_views": connection.execute(
-                        "DELETE FROM result_views WHERE project_id = ?", (project_id,)
+                    "artifact_imports": connection.execute(
+                        "DELETE FROM artifact_imports WHERE project_id = ?", (project_id,)
+                    ).rowcount,
+                    "artifact_operations": connection.execute(
+                        "DELETE FROM artifact_operations WHERE artifact_id IN "
+                        "(SELECT artifact_id FROM artifacts WHERE project_id = ?)",
+                        (project_id,),
+                    ).rowcount,
+                    "artifact_versions": connection.execute(
+                        "DELETE FROM artifact_versions WHERE artifact_id IN "
+                        "(SELECT artifact_id FROM artifacts WHERE project_id = ?)",
+                        (project_id,),
+                    ).rowcount,
+                    "artifacts": connection.execute(
+                        "DELETE FROM artifacts WHERE project_id = ?", (project_id,)
                     ).rowcount,
                     "artifact_revision_candidates": connection.execute(
                         "DELETE FROM artifact_revision_candidates WHERE project_id = ?",
@@ -1067,8 +1080,8 @@ class ProjectStoreMixin:
                 (project_id, project_id, legacy_id),
             )
             connection.execute(
-                "UPDATE result_views SET project_id = ? WHERE project_id = ?",
-                (project_id, legacy_id),
+                "UPDATE artifacts SET project_id = ?, metadata = json_set(metadata, '$.project_id', ?) WHERE project_id = ?",
+                (project_id, project_id, legacy_id),
             )
             connection.execute(
                 "UPDATE artifact_revision_candidates SET project_id = ? WHERE project_id = ?",

@@ -427,7 +427,7 @@ def restored_project_owners(
             "The archived canonical manifest is unavailable or invalid."
         ) from exc
     if (
-        BackupManifestConfiguration.from_manifest(manifest) != recovery.configuration
+        not recovery.configuration.matches_manifest(manifest)
         or record.home_space_id != capture.home_space_id
         or record.home_space_id != store.space_id
         or not (
@@ -580,10 +580,11 @@ def _render_restored_manifest(
         "default_auto_research_invocation_ceiling",
         configuration.default_auto_research_invocation_ceiling,
     )
-    defaults = tomlkit.table()
-    defaults.add("workflow_ids", list(configuration.skill_defaults.workflow_ids))
-    defaults.add("skill_ids", list(configuration.skill_defaults.skill_ids))
-    agent.add("skill_defaults", defaults)
+    if configuration.skill_defaults_configuration:
+        defaults = tomlkit.table()
+        for name, value in configuration.skill_defaults_configuration.items():
+            defaults.add(name, value)
+        agent.add("skill_defaults", defaults)
     profiles = {item.profile: item for item in configuration.agent_profiles}
     for surface in AGENT_EXECUTION_PROFILES:
         item = profiles[surface]
@@ -610,7 +611,7 @@ def _render_restored_manifest(
     document.add("sources", sources)
     content = tomlkit.dumps(document)
     manifest = Manifest.model_validate(tomlkit.parse(content).unwrap())
-    if BackupManifestConfiguration.from_manifest(manifest) != configuration:
+    if not configuration.matches_manifest(manifest):
         raise RestoredProjectRebindRefused(
             "The recovery descriptor did not reproduce its exact project manifest."
         )

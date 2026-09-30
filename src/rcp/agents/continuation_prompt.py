@@ -46,10 +46,10 @@ SECTIONS = {
     "context_delta": "Changed since the master contract, and current now:",
     "report_revocation": (
         "The operational instructions this session held no longer apply. Follow only the "
-        "report instructions in this message."
+        "instructions in this message."
     ),
     "report_rebootstrap": (
-        "The episode report instructions have ended. Open the operational master contract "
+        "The file-only instructions have ended. Open the operational master contract "
         "again at:\n{path}\nand follow it together with the current instructions in this message."
     ),
 }

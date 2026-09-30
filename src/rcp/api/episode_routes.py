@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from functools import partial
 from typing import Annotated, Literal, cast
@@ -637,12 +636,10 @@ def content_episode_report(
         raise HTTPException(status_code=404, detail="Episode report not found")
     try:
         document, csp = html_preview_document(
-            report.html.encode("utf-8"),
-            frame_addon=selection_frame_addon()
-            if _report_discussable_origin(store, episode_id)
-            else None,
+            store.read_artifact_bytes(report.artifact_id),
+            frame_addon=selection_frame_addon(),
         )
-    except (UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError, KeyError, OSError) as exc:
         raise HTTPException(status_code=410, detail="Episode report unavailable") from exc
     encoded = document.encode("utf-8")
     return Response(
@@ -655,38 +652,6 @@ def content_episode_report(
             "X-Content-Type-Options": "nosniff",
         },
     )
-
-
-@router.post(
-    "/api/projects/{project_id}/episodes/{episode_id}/report/save",
-    dependencies=[Depends(require_project_write_admission)],
-)
-def save_episode_report(
-    project_id: str,
-    episode_id: str,
-    *,
-    catalog: CatalogDependency,
-    store: StoreDependency,
-) -> dict[str, str]:
-    """Save a repository copy without changing the captured episode report."""
-
-    episode = _episode_for_http(store, catalog, project_id, episode_id)
-    report = None if episode.ending == "stopped" else store.episode_report(episode.episode_id)
-    if report is None:
-        raise HTTPException(status_code=404, detail="Episode report not found")
-    service = get_project_service(catalog, project_id)
-    project_name = catalog.card(project_id)["name"]
-    if not isinstance(project_name, str):
-        raise HTTPException(status_code=503, detail="Episode report save unavailable")
-    try:
-        filename = service.history.workspace.keep_artifact(
-            source_name="episode-report.html",
-            project_name=project_name,
-            data=report.html.encode("utf-8"),
-        )
-    except (OSError, StateUnavailable, ValueError) as exc:
-        raise HTTPException(status_code=503, detail="Episode report save unavailable") from exc
-    return {"path": f"artifacts/{filename}"}
 
 
 @router.get("/api/projects/{project_id}/episodes/{episode_id}/report/preview")
@@ -726,22 +691,6 @@ def view_episode_report(
     )
 
 
-def _report_discussable_origin(store: AppStore, episode_id: str) -> bool:
-    wrapup = store.episode_wrapup(episode_id)
-    origin = (
-        store.agent_task(wrapup.concluding_operation_id)
-        if wrapup and wrapup.concluding_operation_id
-        else None
-    )
-    return bool(
-        origin
-        and isinstance(origin.request.get("chat_id"), str)
-        and not origin.history_only
-        and origin.native_session_id
-        and origin.stage_root
-    )
-
-
 def _episode_report_viewer_response(
     project_id: str,
     episode_id: str,
@@ -755,47 +704,28 @@ def _episode_report_viewer_response(
     wrapup = store.episode_wrapup(episode.episode_id)
     if report is None or wrapup is None or wrapup.concluding_operation_id is None:
         raise HTTPException(status_code=404, detail="Episode report not found")
-    origin = store.agent_task(wrapup.concluding_operation_id)
-    chat_id = origin.request.get("chat_id") if origin is not None else None
-    if not isinstance(chat_id, str):
-        chat_id = None
-    artifact_id = hashlib.sha256(report.report_id.encode("utf-8")).hexdigest()[:24]
     descriptor = AgentArtifactDescriptor(
-        artifact_id=artifact_id,
+        artifact_id=report.artifact_id,
         name="episode-report.html",
         media_type="text/html",
-        size_bytes=len(report.html.encode("utf-8")),
+        size_bytes=len(store.read_artifact_bytes(report.artifact_id)),
     )
     content_url = (
         f"/api/projects/{quote(project_id, safe='')}/episodes/"
         f"{quote(episode_id, safe='')}/report/content"
     )
-    panel = (
-        comment_panel(
-            {
-                "projectId": project_id,
-                "chatId": chat_id,
-                "operationId": wrapup.concluding_operation_id,
-                "artifactId": descriptor.artifact_id,
-                "artifactName": descriptor.name,
-                "mediaType": descriptor.media_type,
-                "source": "episode_report",
-                "episodeId": episode_id,
-                "branchId": origin.graph_target.branch_id if origin else None,
-            }
-        )
-        if _report_discussable_origin(store, episode_id)
-        else None
+    panel = comment_panel(
+        {
+            "projectId": project_id,
+            "artifactId": report.artifact_id,
+            "mediaType": descriptor.media_type,
+        }
     )
     document, csp = artifact_viewer_document(
         descriptor,
         content_url=content_url,
         state="report",
         panel=panel,
-        save_url=(
-            f"/api/projects/{quote(project_id, safe='')}/episodes/"
-            f"{quote(episode_id, safe='')}/report/save"
-        ),
     )
     return Response(
         b"" if head else document,

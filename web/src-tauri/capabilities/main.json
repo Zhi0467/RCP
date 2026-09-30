@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The RCP application window. Artifact preview windows intentionally do not match this capability.",
+  "description": "The RCP application window.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*", "https://*.rcp.localhost:*/*"]
@@ -43,10 +43,7 @@
     "allow-desktop-notifications-enabled",
     "allow-desktop-set-notifications",
     "allow-desktop-test-notification",
-    "allow-open-artifact-preview",
     "allow-open-artifact-pdf",
-    "allow-open-episode-report-preview",
-    "allow-open-repository-file-preview",
     "allow-download-artifact",
     "allow-open-external",
     "allow-request-quit",

@@ -1,7 +1,7 @@
 # Paper, artifacts, and viewing
 
 This specification owns the human paper draft, read-only coaching, temporary
-artifacts, immutable episode reports, the unified artifact viewer, kept
+artifacts, versioned episode reports, the unified artifact viewer, kept
 artifacts, and repository-file previews.
 
 ## Human paper authorship
@@ -45,14 +45,29 @@ verdict, Patch verdict, or graph.
 For an ordinary turn, RCP discovers bounded direct regular children of the
 exact RCP-created artifact directory, of any type. It ignores provider
 directives, provider-owned paths, URLs in prose, nested files, and symlinks.
-Discovery reads at most eight files in filename order, each at most 16 MiB, and
-attaches at most 32 MiB per turn; a size is checked before a read is spent.
+Discovery reads at most eight files, each at most 16 MiB, and attaches at most
+32 MiB per turn; a size is checked before a read is spent. Files are considered
+in filename order. An admitted edit reads its exact staged file separately;
+discovery attaches only the other outputs as new artifacts.
 Empty files and files past a bound get no card, but the turn reports how many
 were left out and why, and says so when discovery itself failed. The report
 comes from the durable discovery receipt; it carries counts, never paths.
-Bytes remain in temporary local or remote scratch and are proxied on demand
-until the human keeps them. Descriptors are durable with the task but do not
-copy bytes into chat or canonical graph storage.
+Discovery copies bytes into RCP's data directory and attaches their identifiers
+with the task. Chat, Experiment, and Auto-research child Work use this path,
+including retries and recovered turns. Viewing and Download read only storage;
+stage availability no longer decides whether newly captured outputs are viewable.
+Existing stage-only and repository-kept outputs import in bounded background
+passes per project, after startup effects are admitted. Local and SSH sources
+retain their identities and supplier bindings. Temporary imports expire at the
+stage's last-touch time plus its existing retention period; kept imports have no
+expiry and leave the repository file in place. Unresolved candidates import as
+ordinary artifacts on their own producing turns, without accepting a version of
+the source, and receive at least a full retention period from import time. Import
+failures retain a durable reason shown by artifact routes;
+transient failures retry with capped exponential backoff, while missing files,
+expired stages, and invalid sources are terminal. Repeated or interrupted import
+never replaces an existing artifact. Maintenance and shutdown drain active
+passes before releasing the background owner.
 
 HTML previews run in an opaque sandbox. Agent scripts cannot access or navigate
 the RCP parent, open popups, submit forms, initiate downloads, or use ordinary
@@ -84,6 +99,49 @@ A broken preview never hides Download or Keep, and never erases the reply.
 Keep refreshes the authoritative task projection after the mutation succeeds.
 Omission counts remain visible even when the turn has no artifact cards.
 
+## Live HTML pages
+
+A live page is an HTML artifact for a source still changing after its producing
+turn: a job, sweep, episode, or node gathering Evidence. Final results remain
+ordinary pages. Episode reports are never live. Their creation owner records
+`live_data_allowed: false` on the Artifact; shared live-data code enforces this
+stored rule. Migration and legacy report import preserve it.
+
+One `application/json` script with id `rcp-live` declares protocol `version: 1`
+and a `needs` array. The code model in `rcp.live_artifacts` owns the declaration,
+snapshot fields, and `rcp-live-data` message. Needs name a helper job's launch
+key, a node id in the artifact's graph target, the artifact's own episode, or
+an absolute file path on its execution host. Files select `tail` or `whole`
+and `jsonl`, `csv`, or `text`. Registered project repository roots and the
+artifact's bound worktree constrain file access; a path alone grants no access.
+
+Discovery resolves needs once per version. Edited-version publishers call the
+same resolver. Job keys bind to stable ids through helper-command receipts and
+their existing recovery lineage. An invalid declaration remains static with a
+stored reason. Live resolution and final-capture diagnostics belong to the
+version, so Undo or a later edit cannot silently retarget an earlier page.
+
+The authenticated viewer requests a snapshot for an artifact and version only.
+Every read rechecks project membership and the graph target. The server reads
+only stored bindings, through readers that refuse symlinks and nonregular
+files. Local and SSH reads, rows, needs, and log tails are bounded by `limits.py`.
+Episode budget fields measure invocations, matching the existing episode meter.
+
+The shell polls while visible, more slowly for SSH file needs, and relays
+`rcp-live-data` over the existing private artifact channel. HTML remains opaque
+and receives no new RCP request capability. Data received by the page can leave
+through scripts navigating their own frame; this is not a zero-network promise.
+
+Server reconciliation captures final data after every watched job and episode
+has ended, without requiring an open viewer. A failed read stays incomplete and
+retries with bounded backoff and a bounded attempt count, retaining its error
+after exhaustion. Expired unkept artifacts are skipped; invalid ownership,
+lineage, and history-only sources are terminal. Source reads happen outside the
+artifact lock; saving rechecks the version under the lock. Only a complete
+capture becomes the immutable final snapshot, served after source files
+disappear. Node/file-only pages have no final snapshot. Snapshot bytes live beside version bytes and share their typed backup,
+transfer, retention, and integrity inventory.
+
 ## Episode reports
 
 Every non-Stop Experiment or Auto-research ending receives one hidden visual
@@ -91,7 +149,9 @@ report lifecycle described in
 [Conversations, episodes, and watchers](conversations-episodes-and-watchers.md#visual-wrap-up).
 
 The provider writes one exact `episode-report.html`. RCP validates and captures
-immutable bounded bytes before serving them through the opaque sandbox. The
+immutable bounded bytes into an Artifact before serving them through the opaque
+sandbox. The lifecycle record binds the first version permanently; it stores no
+HTML. Viewing that report does not resettle the episode. The
 versioned official report skill requires a visual retrospective; runtime safety
 validation does not mechanically score visual quality.
 
@@ -105,14 +165,10 @@ The report is retrospective only. It has no Patch, watcher, command, Proposal,
 or graph channel and never determines the episode verdict. A final generation
 error remains visible and nonblocking.
 
-The report viewer offers **Save copy**, including when its originating chat is
-unavailable. It writes the captured HTML into the state repository's `artifacts/`
-directory through the existing artifact publication path, requires project write
-admission, and shows the repository-relative saved path. Each explicit save
-creates a collision-free copy and preserves existing files. A failed save is
-visible and retryable. The stored report, its preview, and the episode lifecycle
-remain unchanged; saving does not create a graph Patch. The viewer labels these
-durably stored reports as **report**, rather than **temporary**.
+A report opens in the in-app panel through its stored-artifact viewer, which
+shows its current version and offers **Download**. The lifecycle record stays
+bound to the immutable first version. RCP never writes a report copy into the
+state repository.
 
 ## Artifacts panel
 
@@ -121,9 +177,8 @@ chat artifacts and durable episode reports across project history, including
 archived episodes, without depending on the recent task or episode window.
 Temporary outputs remain in their originating chats until kept.
 
-Reports appear as soon as their immutable bytes are captured; **Save copy** is
-not required to make them discoverable. Saving a repository copy does not add a
-duplicate report entry. Cards show the artifact title and a **Source chat** link
+Reports appear as soon as their immutable bytes are captured. Cards show the
+artifact title and a **Source chat** link
 when its originating conversation is available. Outputs originating in an
 episode also carry one compact **Experiment** or **Auto-research** tag. Ordinary
 chat artifacts have no episode tag. The listing retains episode
@@ -146,36 +201,32 @@ Missing or non-chat origins have no source link; their
 artifact preview remains available. The source link is independent of the
 card's preview click target. Opening an entry uses the existing bounded artifact
 viewer in both browser and desktop; an entry with no viewer offers Download,
-and a PDF also opens in the system viewer from the desktop app. Listing grants no new filesystem or graph
-authority.
+and a PDF also opens in the system viewer from the desktop app. Listing grants
+no new filesystem or graph authority.
 
 ## Unified artifact viewer
 
 There is no separate result-view kind. A task that draws a custom HTML result
 produces an ordinary task artifact, through the same artifact directory,
 descriptor, chat card, viewer route, and lifecycle as any other HTML artifact.
-The artifact is available in its originating Node or Project chat, and after
-Keep in the project's Artifacts panel. It is not shown in unrelated chats.
+The artifact is available in its originating Node or Project chat, on its
+run's Runs card when an episode produced it, and after Keep in the project's
+Artifacts panel. It is not shown in unrelated chats.
 
-Previously stored result-view rows remain readable through their legacy backend
-routes only for compatibility. The current web client exposes no result-view
-type, selector, card, or authoring request, and the task API rejects new legacy
-create or revise intents.
+Previously stored result-view rows migrate into Artifact records, and their
+legacy URLs redirect to artifact routes.
 
-Every viewable task artifact opens through one viewer shell. The shell owns
-the preview and **Keep**. Selection-to-prompt is a separate layer that the
-shell hosts only for a type that supports it, and only when the originating
-chat can receive it. The artifact remains the dominant visual object. That
-layer adds only a narrow selection rail and the controls needed to add the
-selections to the originating chat. A missing chat removes the rail; it never
-prevents viewing. Episode reports
-use the same shell and selection vocabulary while retaining their immutable
-episode-report lifecycle.
+Every viewable artifact, including a report, opens in the RCP window's viewer
+panel. Its RCP chrome owns the title, version, Live or Finished status, Undo,
+reply-thread control, dock, and close. The embedded shell keeps Keep and notices,
+selection gestures, a comment box, and Send. The shell allows framing only by
+the same RCP origin. Agent HTML remains inside its unchanged opaque sandbox.
+Small raster images and SVGs may also render inline in chat; HTML has no thumbnail.
+PDFs use the system viewer on desktop, and unsupported files remain download-only.
+Repository-file previews use the same panel with their script-free content route.
 
-Small raster images and SVGs render inline in the chat and may also open in the
-viewer. HTML keeps its current link behavior and opens directly into the full
-viewer; it has no chat thumbnail. Repository-file previews are explicitly out
-of this contract.
+The Runs card's list comes from the run artifact endpoint described in
+[the API spec](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory).
 
 The viewer entrance is backend-owned. `/viewer` is the current explicit shell
 URL, while the former `/preview` URL remains a compatibility alias to that same
@@ -186,39 +237,28 @@ artifacts and episode reports. A retained client that still embeds a small PNG
 or SVG from `/preview` continues to receive image bytes for an explicit browser
 image request; ordinary navigation to that URL receives the shell.
 
-### Selection-to-prompt, not artifact annotation
+### Selection and comments
 
-Only HTML, raster images, and SVG support selection, comment, and revision.
-Other types never show the rail, and the server refuses artifact context or a
-revision for them whatever the client sends.
+HTML, raster images, and SVG support selection gestures. Every type the viewer
+shows accepts an edit comment, including Markdown, text, data, and code; these
+other types accept comments without selections. PDF and download-only files
+refuse editing.
 
-HTML selection gestures activate only when the surrounding confirmation shell
-opts in through the private preview bridge. A viewer without an originating chat,
-whether a task artifact or an episode report whose concluding task is not a chat
-turn, keeps ordinary browser gestures and never draws a selection rail; it keeps
-Keep or Save copy.
+HTML selection gestures activate when the surrounding confirmation shell opts
+in through the private preview bridge. Text and area selections remain pending
+until the human chooses Comment; Cancel or Escape discards the pending selection.
+Dragging from a figure or blank space selects an area, while starting on text
+preserves ordinary highlighting. Each confirmed selection can carry a comment
+and can be removed. These are prompt inputs, never graph annotations.
 
-Selections and comments are saved per artifact in the current browser or desktop
-profile. Closing and reopening the viewer restores them, including comments
-already added to a chat draft. **Remove** deletes an individual saved selection.
-They remain prompt inputs, separate from the artifact and graph. Highlighting
-text remains an ordinary browser selection. Dragging from a figure or blank
-space draws an area immediately, without a separate Box mode; starting on text
-preserves native highlighting, and ordinary controls keep their own gestures.
-Both text and area selections are pending until the human chooses **Comment**;
-**Cancel** or Escape discards the pending selection. Clicking or dragging alone
-never adds prompt context. The human may add one comment or question per
-confirmed selection and add them to the chat. Each selection becomes a composer
-annotation, the same object as a comment on answer text, with the artifact
-selection as what it is about; the comment stays editable there and the
-annotation is removable. Nothing is sent until the human sends that composer
-turn. Re-adding selections replaces the staged artifact annotations and leaves
-typed text and answer comments alone. Artifact annotations need a new turn, like
-files; they block steering a running turn.
-After adding selections, **Open chat** opens that exact conversation and graph
-target with the annotations ready to review. In the desktop it brings the existing RCP
-window forward; in a browser it follows the chat link in the current tab.
-An expired desktop navigation cannot later select the chat or focus the window.
+The shell saves the comment and selections per artifact in the current browser
+profile. Send posts them directly to the stored artifact's comments endpoint.
+A 409 displays the server's reason and preserves the draft. Success clears it
+and notifies the containing RCP panel of the admitted edit operation. No chat
+draft participates in sending.
+When admission requires an explicit fresh session, the action reads Edit in a
+new session and supplies the fresh-session flag. An unavailable origin never
+prevents viewing; its reason appears beside the disabled action.
 
 RCP carries selected text with limited surrounding text. A box on HTML names
 up to eight elements it covers the way a reader of the source finds them: a CSS
@@ -237,64 +277,54 @@ carries at most 50 annotations. On send, each artifact annotation adds
 order, and the prompt lists the same numbers with what each selection covers; no
 markup is added. The selection payload, comments, and final
 question are bounded and treated as untrusted input.
-The current artifact bytes are staged as a read-only turn input so the resumed
-agent can inspect what the human saw.
 
-The turn stays in the artifact's owning chat and follows that chat's current
-server-resolved native session, rather than reviving the artifact's historical
-session. Admission records why a fresh session is needed when the current
-binding cannot be continued. The default mode is Discuss. The prompt asks the
-agent to address every comment and question, not to edit the artifact. An
-artifact edit is allowed only when the human explicitly requests one and sends
-the turn as Work.
+### Editing and versions
 
-### Candidate revision and explicit disposition
+Comment admission records the current artifact version and the origin session's
+recorded master. A chat master, including a child Work boundary, receives an
+ordinary Discuss turn. An Experiment or orchestrator master receives a separate
+revoking artifact-edit task with no master, graph contract, watcher commands,
+or repository write authority. Admission decides this once; prompt construction
+uses the frozen decision. Comments never become Work turns.
 
-A Work turn never overwrites its source artifact. RCP validates the changed file
-in the Work task's exact artifact scope, records the digest of the bytes supplied
-to that turn, and exposes one pending candidate on the original artifact card.
-The source artifact directory is part of the provider-enforced write deny set
-for that launch, whether the source is temporary or kept. RCP discovers the
-candidate only after all patch and watcher correction turns have settled, so the
-candidate digest describes the final bytes left by the native session. Only
-the exact replacement becomes the candidate; any other file the revision turn
-leaves becomes an ordinary card of that turn.
-The human compares **Current** and **Candidate**, then explicitly chooses
-**Accept revision** or **Reject**. There can be only one unresolved candidate for
-one source artifact; another Work revision is refused until that disposition,
-while Discuss remains available.
+Admission atomically reserves the native session and stage against every launch
+owner. A busy session returns 409 with its unavailable reason; comments are
+neither queued nor steered. Edits spend no episode invocation and do not change
+Stop or episode health. Edit tasks have no operational episode membership; their
+admission snapshot retains episode provenance for replies and display. The next
+operational launch reopens its master after a revoking edit; an edit finishing
+does not clear that requirement.
 
-Accept preserves the same artifact identity and card. Under one per-artifact
-mutation lock, RCP reads the current source again and publishes only when its
-digest still matches the Work turn's base. If the source already matches the
-candidate, Accept completes the durable decision as recovery from an interrupted
-post-publication write. Any other current digest changes the candidate to
-**Conflict**; the source remains untouched and the human may Reject and request
-a fresh revision. A permanently missing source is the same conflict, while a
-transient storage failure leaves the candidate pending for retry. Review and
-Reject remain available when a current or candidate preview cannot render.
-Reject never changes the source. Repeated Accept or Reject of the same completed
-disposition is idempotent.
+The reply destination comes from durable origin and episode records. Chat and
+child Work artifacts use their own chat. Experiment artifacts and reports use
+the episode's Experiment node chat. Orchestrator artifacts and reports use the
+Runs orchestrator thread: the human comment is recorded as already-delivered
+mail, and the edit task's labelled answer is its reply. No new chat is created,
+and the open view has no routing authority.
 
-The rule is identical for temporary or kept artifacts and local or remote
-stages. Keep and disposition share the same mutation lock, so Keep may move a
-source while a candidate is pending without making Accept target stale storage.
-An unresolved candidate protects its producing task stage and any temporary
-source stage from cleanup, prevents either task from becoming history-only, and
-prevents project transfer. Once accepted or rejected, normal stage retention may
-remove those bytes. Candidate creation, comparison, and disposition append no
-Patch and grant no graph authority.
+RCP stages the admitted base bytes at a writable file in turn scratch, preserving
+its filename. Recovery and Retry reuse that exact staged file and operation key.
+Unchanged bytes do not publish or fork. Once publication is recorded, retries
+retain that result; publication failures retain the answer and an error receipt.
+RCP reads it after settlement and publishes under the artifact lock only if the
+base is still current. If Undo moved the pointer, the edited bytes become an
+ordinary new artifact on that turn. Other files in the artifact directory are
+ordinary outputs. Artifact storage remains outside the provider's writable
+scratch. A failed turn retains its stage and does not publish a version.
 
-Candidate rows are local operational state rather than portable project history.
-An unresolved row blocks project transfer; settled disposition rows are excluded
-from the transfer archive, while the accepted source artifact follows its normal
-temporary-or-kept transfer policy.
+Undo moves back one retained version under the same lock as publication, Keep,
+expiry, and pruning. The original remains; there is no redo. Undo is permitted
+while an edit is admitted. Version bases awaiting staging are retained so
+concurrent publication cannot remove the admitted bytes.
 
-A server update checkpoint carries recovery-critical local candidate stages and
-remote candidates remain on their named host, so an interrupted update can
-resume disposition. Offline backups intentionally exclude task staging. Restore
-therefore marks every unresolved candidate **Abandoned** before detaching native
-sessions and preserves the unchanged source; a new Work turn is required.
+A history-only origin or missing native session or stage returns an unavailable
+reason. Only after exact-session admission identifies a resumability failure
+does the explicit fresh-session flag authorize a new provider session and
+scratch while retaining the same reply thread; it never restores the old
+execution authority. Legacy candidate rows are read only for background import
+and archive capture. The read-only viewer state checks durable origin, master presence, and session
+reservations without SSH or content hashing. Its offers never replace full
+admission and integrity enforcement by the comments POST.
 
 ### Shape boundary
 
@@ -306,31 +336,34 @@ meshes, performance traces, and other specialist formats.
 
 ## Keeping an artifact
 
-**Keep** writes the current artifact into an `artifacts/` directory at the
-canonical state repository root, outside `.research/`, through the normal state
-workspace lock and explicit publication. If `artifacts/` already exists as a
-real directory, RCP reuses it and preserves every existing file. A file or
-symlink at that path makes Keep fail visibly. Initial Keep chooses a safe,
-collision-free filename and never overwrites an existing entry. The filename
-keeps a short, safe suffix from the original name; otherwise it has none. Any
-type can be kept, and the kept file is viewed by its original name's type.
+**Keep** stops the artifact's expiry and refreshes its task projection. It does
+not write to the state repository.
 
-Keep records the artifact's stable repository filename. It does not freeze the
-file: humans and tools may still edit it normally. A later Work revision is
-published only after explicit human Accept and only if the current bytes still
-match the bytes that Work received; an intervening external edit produces a
-visible candidate conflict instead of being overwritten.
+Artifact metadata is in SQLite. Version files live in one folder per artifact
+under the data directory, referenced by relative digest identifiers. Writes use
+temporary files and atomic replacement. Original bytes are retained with the
+last bounded number of versions, subject to the byte cap in `limits.py`.
+Publishing checks the base version under the same artifact lock used by Keep,
+expiry, and pruning, and records an operation idempotency key. Captures share an
+in-process guard that delays file deletion until all captures finish. Reads,
+creation, Keep, and version publication do not take that guard; only publication
+that prunes files waits for captures before unlinking. Backup copies exactly the
+typed inventory from its SQLite snapshot. Project transfer reads artifact
+metadata and versions in one SQLite read transaction and derives the file
+inventory from those same versions. The report migration writes digest
+files before committing bindings and removing inline HTML; migration checks use
+a throwaway file root.
 
-A kept artifact appends no Patch, spends no revision, creates no Proposal,
-changes no attention count, and grants no graph authority. It is a live
-repository artifact beside the research record, not part of graph truth.
+Publication, Undo, and Keep append no Patch, spend no graph revision, create no
+Proposal, and grant no graph authority.
 
 ## Repository-file previews
 
 A repository-file Markdown link in an answer never navigates the main RCP
 WebView. RCP resolves the absolute execution-host path against configured
 project repository roots. Exactly one match opens a bounded escaped read-only
-source page through the secondary preview window.
+source page in the in-app viewer panel. Its script-free response allows only
+same-origin framing.
 
 A remote match is read on demand through that repository's configured SSH host
 and is not retained locally. No match, several matching/nested roots, unavailable

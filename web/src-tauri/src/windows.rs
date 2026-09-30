@@ -22,7 +22,6 @@ use crate::{
     team_session::TeamSessionState,
 };
 
-static PREVIEW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static SHOW_REQUEST_GENERATION: AtomicU64 = AtomicU64::new(0);
 static INITIAL_URL: OnceLock<Url> = OnceLock::new();
 /// Whether the main window has started loading a real document. A WKWebView
@@ -137,6 +136,18 @@ pub fn create_main(
 }
 
 fn open_main_popup(app: &AppHandle, url: Url) {
+    // Only the displayed space can consume a popup target. Other saved spaces
+    // must not be interpreted using the current window's credentials.
+    if app
+        .get_webview_window("main")
+        .and_then(|window| window.url().ok())
+        .is_some_and(|current| navigation::same_origin(&url, &current))
+    {
+        if let Err(error) = app.emit_to("main", "rcp://open-artifact", url.as_str()) {
+            eprintln!("[rcp] could not route artifact popup: {error}");
+        }
+        return;
+    }
     let current_base = app
         .state::<BackendState>()
         .status()
@@ -144,23 +155,35 @@ fn open_main_popup(app: &AppHandle, url: Url) {
         .map(|status| status.base_url);
     if let Some(base_url) = current_base {
         if is_same_origin_popup(&url, &base_url) {
-            if let Err(error) = open_preview(app, url, base_url) {
-                eprintln!("[rcp] the preview window could not open: {error}");
-            }
+            eprintln!("[rcp] dropped popup outside the active space: {url}");
             return;
         }
     }
+    if app
+        .state::<TeamConnectionState>()
+        .list()
+        .is_ok_and(|connections| {
+            connections
+                .iter()
+                .any(|connection| is_same_origin_popup(&url, &connection.local_origin))
+        })
+    {
+        eprintln!("[rcp] dropped popup outside the active space: {url}");
+        return;
+    }
     if navigation::is_external_reference(&url) {
-        let _ = app.opener().open_url(url.as_str(), None::<&str>);
+        if let Err(error) = app.opener().open_url(url.as_str(), None::<&str>) {
+            eprintln!("[rcp] could not open reference popup: {error}");
+        }
+    } else {
+        eprintln!("[rcp] dropped unsupported popup: {url}");
     }
 }
 
-/// Whether a popup targets RCP's own backend origin. The episode report is what
-/// prompted this, but the rule is deliberately about origin rather than that one
-/// path: any same-origin popup belongs in a preview window instead of being
-/// silently dropped. `open_preview` re-checks the origin before it builds.
+/// Same-origin content belongs in the main window's artifact panel.
 fn is_same_origin_popup(url: &Url, base_url: &str) -> bool {
-    url.scheme() != "about" && navigation::is_loopback_rcp_url(url, base_url, false)
+    url.scheme() != "about"
+        && Url::parse(base_url).is_ok_and(|base| navigation::same_origin(url, &base))
 }
 
 pub fn prepare_show(app: &AppHandle, status: &DesktopStatus, reason: &str) -> Result<(), String> {
@@ -332,59 +355,6 @@ pub fn cancel_pending_show() {
     }
 }
 
-pub fn open_preview(app: &AppHandle, url: Url, base_url: String) -> Result<(), String> {
-    if !is_preview_entry_url(&url, &base_url) {
-        return Err("artifact preview URL is outside the RCP backend".into());
-    }
-    let label = format!(
-        "artifact-preview-{}",
-        PREVIEW_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
-    let app_for_navigation = app.clone();
-    let app_for_popup = app.clone();
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
-        .title("RCP artifact preview")
-        .inner_size(1040.0, 760.0)
-        .min_inner_size(520.0, 400.0)
-        .on_navigation(move |candidate| {
-            if is_preview_navigation(candidate, &base_url) {
-                true
-            } else {
-                if navigation::is_external_reference(candidate) {
-                    let _ = app_for_navigation
-                        .opener()
-                        .open_url(candidate.as_str(), None::<&str>);
-                }
-                false
-            }
-        })
-        .on_new_window(move |candidate, _features| {
-            if navigation::is_external_reference(&candidate) {
-                let _ = app_for_popup
-                    .opener()
-                    .open_url(candidate.as_str(), None::<&str>);
-            }
-            NewWindowResponse::Deny
-        })
-        .build()
-        .map_err(|error| format!("could not open artifact preview: {error}"))?;
-    // Main-window creation installs the certificate pin on Wry's shared
-    // navigation-delegate class before any preview can open. Reinstalling it
-    // here is both unnecessary and racy: `with_webview` schedules its callback
-    // when this function runs from an async command, so the command can observe
-    // the untouched sentinel and report failure after the window already opens.
-    Ok(())
-}
-
-fn is_preview_entry_url(url: &Url, base_url: &str) -> bool {
-    url.scheme() != "about"
-        && Url::parse(base_url).is_ok_and(|base| navigation::same_origin(url, &base))
-}
-
-fn is_preview_navigation(url: &Url, base_url: &str) -> bool {
-    matches!(url.as_str(), "about:srcdoc" | "about:blank") || is_preview_entry_url(url, base_url)
-}
-
 pub fn uses_vite_dev_server() -> bool {
     cfg!(debug_assertions) && !crate::backend::is_bundled_dev_app()
 }
@@ -542,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn main_window_routes_same_origin_report_popups_to_a_preview_window() {
+    fn main_window_recognizes_same_origin_popups_to_suppress() {
         let base = "http://127.0.0.1:18421";
         let report =
             url("http://127.0.0.1:18421/api/projects/project/episodes/episode/report/preview");
@@ -557,43 +527,12 @@ mod tests {
             base
         ));
         assert!(!is_same_origin_popup(&url("about:blank"), base));
-    }
-
-    #[test]
-    fn preview_accepts_only_the_exact_personal_or_team_origin() {
-        for base in [
-            "http://127.0.0.1:18421",
-            "https://rcp-11111111111141118111111111111111.rcp.localhost:18421",
-        ] {
-            assert!(is_preview_entry_url(
-                &url(&format!("{base}/api/projects/preview")),
-                base,
-            ));
-        }
-        assert!(!is_preview_entry_url(
-            &url("https://rcp-11111111111141118111111111111111.rcp.localhost:19421/api/preview"),
-            "https://rcp-11111111111141118111111111111111.rcp.localhost:18421",
+        let team = "https://rcp-11111111111141118111111111111111.rcp.localhost:18421";
+        assert!(is_same_origin_popup(
+            &url(&format!("{team}/api/artifacts/viewer")),
+            team
         ));
-        assert!(!is_preview_entry_url(
-            &url("https://example.com/api/preview"),
-            "http://127.0.0.1:18421",
-        ));
-        assert!(!is_preview_entry_url(
-            &url("about:srcdoc"),
-            "http://127.0.0.1:18421",
-        ));
-        assert!(is_preview_navigation(
-            &url("about:srcdoc"),
-            "http://127.0.0.1:18421",
-        ));
-        assert!(is_preview_navigation(
-            &url("about:blank"),
-            "http://127.0.0.1:18421",
-        ));
-        assert!(!is_preview_navigation(
-            &url("about:config"),
-            "http://127.0.0.1:18421",
-        ));
+        assert!(!is_same_origin_popup(&report, team));
     }
 
     #[test]

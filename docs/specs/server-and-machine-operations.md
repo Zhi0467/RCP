@@ -515,8 +515,9 @@ runs in two stages: before the release commits it touches only local state, whic
 rollback restores; the live check compares a remote project's local display cache
 when current and otherwise leaves it unopened, since validation already replayed
 its captured history on copies. A remote project is opened only after the release
-is chosen, where no rollback applies. Kept artifacts
-and result views outside replacement roots retain their typed checks.
+is chosen, where no rollback applies. Artifact versions live inside the data
+directory's replacement root; legacy repository-kept files keep their typed
+checks until background import brings them in.
 An intact startup-effect fence prevents probation from changing external state.
 
 Offline validation exercises real API projections, main and branch replay,
@@ -910,7 +911,9 @@ id. For personal-to-team transfer, one desktop review action records two
 independent confirmations through the already-authenticated spaces: a team
 member first admits the prepared incoming project, then the personal owner
 releases the source project. Each backend records its own actor and binds its
-receipt to the linked request; no cross-space user-id equality is assumed. A
+receipt to the linked request; no cross-space user-id equality is assumed.
+Source release waits until every unresolved legacy artifact candidate has been
+imported into artifact storage, so the archive never drops one. A
 crash after only the target confirmation leaves the source writable and the
 same request resumable. The machine import command must revalidate both human
 receipts and cannot supply either one itself.
@@ -991,7 +994,9 @@ archive. It contains the durable project identity, accepted main and graph-branc
 canonical history and exact heads; typed canonical RCP chat transcripts; the
 current Paper draft and canonical introduction; opaque `.research/facts/`
 files; all finished human-visible operational history; and the exact bytes of
-referenced kept artifacts and legacy kept result views. Immutable branch
+all database-referenced artifact versions and saved live snapshots, using one
+typed inventory. Legacy archives with inline report HTML and repository-kept
+files remain importable. Immutable branch
 metadata, Patches, and merge receipts travel; main and branch materialized
 outputs do not. Finished database history includes terminal task attempts and
 their events/receipts/usage, the current Paper draft, and stopped
@@ -1001,7 +1006,7 @@ needed to render the stopped episode also travels; a pending child, delivery,
 recovery, report, or watcher must settle or be terminalized before export and
 never crosses as runnable state. Native-session/stage bindings, pending wake
 fields, wrap-up output paths, space membership/authentication, project
-invitations, provider-skill inventories, disposable result views,
+invitations, provider-skill inventories, unkept expired artifacts,
 reconciliation watermarks, and source machine-operation leases do not travel. A
 schema-inventory test requires every later project-linked table to be
 classified explicitly. Temporary human-input attachment bytes remain excluded.
@@ -1040,17 +1045,17 @@ origin proof and chat responses therefore expose no source continuation. A later
 target task is a new ordinary task under target configuration; imported failure
 is not relabeled as success or as an abandoned target recovery.
 
-Safe artifact metadata remains part of that terminal history even when its
-disposable stage bytes do not. A referenced kept artifact remains openable
-and downloadable through its repository owner, but cannot Keep again or revise
-through the detached native session. An unkept artifact whose stage is excluded
-from transfer or restore is projected explicitly unavailable. Every task-artifact
+Artifact metadata remains part of terminal history. Captured artifacts remain
+viewable and downloadable after transfer or restore from their version inventory,
+but a comment on one needs Edit in a new session. A legacy artifact not yet
+imported from its excluded stage is projected explicitly unavailable. Every task-artifact
 response publishes `available`, `unavailable_reason`, `view`, `can_open`,
-`can_download`, `can_keep`, `can_discuss`, and `can_revise`; the unavailable case
-makes every `can_*` false and has no stage URL. `view` names the backend's
-viewer for the stored type; `can_open` is false for a type with no RCP viewer,
-and `can_discuss` and `can_revise` are false for a type that does not support
-selection. Content, download, Keep, and artifact-context admission recheck
+`can_download`, `can_keep`, and `can_discuss`; the unavailable case makes every
+`can_*` false and has no stage URL. `view` names the backend's viewer for the
+stored type; `can_open` is false for a type with no RCP viewer, and
+`can_discuss` is false for a type that cannot be commented on. A history-only
+origin is offered Edit in a new session instead. Content, download, Keep, and
+artifact-context admission recheck
 those durable facts. The Web renders the backend answers, never infers
 availability from `history_only`, `kept_filename`, or a remembered stage path,
 and never constructs or probes a route for an unavailable action.
@@ -1158,8 +1163,9 @@ source-to-target id maps, an import receipt, and the exact pre-publication targe
 configuration receipt, including retained-history evidence. It then publishes the reviewed
 target manifest, canonical history, transformed RCP chats, Paper, facts, kept
 files, and imported provider histories through their concrete atomic owners.
-Imported task rows are history-only; imported kept result views are already
-kept and non-revisable; no project row or writing session is created. Each
+Imported task rows are history-only; legacy kept files restore to their old
+location and background-import as kept artifacts; no project row or writing
+session is created. Each
 publication call verifies the declared bytes, canonical replay verifies the
 observed head, and one deterministic completion digest binds those readbacks.
 The publication sequence is repairable rather than one cross-filesystem
@@ -1309,8 +1315,12 @@ canonical heads, and the append-only main/branch history needed to replay or
 validate those heads. Immutable branch metadata, Patches, and merge receipts are
 included; derived main and branch materializations are not. It separately
 captures canonical RCP chat JSONL, the optional canonical Paper introduction,
-safe regular `.research/facts/` files, and only the kept artifacts and legacy
-kept result views referenced by the SQLite snapshot. It also contains
+safe regular `.research/facts/` files, and the artifact version and saved live
+snapshot files referenced by the SQLite snapshot. One typed artifact inventory
+binds every relative file identifier, digest, and size. SQLite snapshot and file capture hold the artifact
+pruning lock; only inventoried files are copied. Restore relocates these files
+under the replacement data directory. Old repository-kept files remain
+capturable while their background import is pending. It also contains
 project-owned provider histories imported by personal-to-team transfer because
 those files may be the team's only durable Seed/Refresh source. It excludes Git and provider
 authentication/configuration stores, live provider homes and logs, SSH keys,
@@ -1318,17 +1328,11 @@ source repositories, other materialized outputs, temporary input attachments,
 run/transfer staging, scratch, and caches. Backup does not pause dispatch or
 Apply and never marks an unreachable project protected.
 
-Pending artifact revision candidates are task-stage state and are likewise not
-copied into an offline backup. Restore atomically marks them Abandoned before
-task-session detachment; it never publishes candidate bytes, and the original
-temporary or kept artifact remains unchanged. Server update checkpoints preserve
-whole stopped roots, including unresolved local candidates, before old preparation
-settles any accepting local temporary or kept-artifact replacement journal.
-Semantic preparation separately validates the recovery-stage inventory and
-refuses if replacement state remains unresolved.
-When the SQLite snapshot contains an unresolved kept-artifact revision, its
-kept-file inventory is bound to the candidate's base digest. A later mismatch
-makes that project uncaptured instead of archiving unaccepted candidate bytes.
+Artifact versions and imported legacy candidates are included in the typed
+artifact inventory. Legacy stage-only candidates await background import and
+are excluded from offline backup; restoring bytes never accepts a candidate.
+Server update checkpoints preserve whole
+stopped roots, including local legacy import sources.
 A project inventory accepts every canonical task identity RCP mints: UUID4 for
 ordinary tasks and deterministic UUID5 for Auto-research child Experiments, so a
 project that has run one such episode stays capturable and updatable.
@@ -1376,6 +1380,14 @@ checkout's resolved central path and deploy key. A resolved central root is
 required only for a machine that owns a repository and keeps its provisioned
 host and account. A missing, credential-bearing, or inconsistent descriptor
 makes that project uncaptured.
+
+Skill configuration comparisons use the fields declared in the manifest, not
+release-resolved defaults. New recovery descriptors retain that declaration,
+including omitted fields; restore and validation overlays preserve it. Older
+descriptors lack this metadata, so compatibility checks compare their recorded
+values only for fields the current manifest declares. Their recorded payloads
+and integrity hashes remain unchanged. All other configuration and checkout
+authority still compare exactly.
 
 The first archive contract accepts only a native X25519 `age1...` recipient and
 uses the upstream `age` CLI from `1.0.0` through the 1.x line. Plugin, SSH,
@@ -1591,7 +1603,9 @@ Protected restore uses the same supervisor operation and filesystem publication
 protocol as release update. Before replacement, it validates the exact archive,
 matching protected age identity, canonical manifest, every declared byte,
 accepted schema boundary and full source identity. The app produces detached
-candidate data, local canonical trees and typed kept-artifact/view payloads.
+candidate data, local canonical trees and typed artifact payloads: the
+artifact-version inventory, or the legacy kept-file and view payloads of older
+archives.
 Rollback captures every existing destination and records absent destinations
 without creating them. Additional local project, artifact and view roots are
 fully copied before activation. Candidate artifact and view trees preserve

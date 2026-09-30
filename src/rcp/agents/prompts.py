@@ -7,6 +7,7 @@ import textwrap
 from datetime import datetime
 from typing import Literal
 
+from rcp.agents.artifact_contract import artifact_contract
 from rcp.agents.continuation_prompt import (
     MASTER_OVERLAY_RULE,
     SECTIONS,
@@ -51,9 +52,8 @@ REPLY_STYLE = """Writing the reply:
 - Leave out operational detail the reader does not need to understand the result, such as
   commands, job ids, retries, and file lists. When the human needs some of it to act or to check,
   put it in a short final section.
-- Show results rather than list them. When a result has numbers, comparisons, a trend, or
-  structure, and the turn names an artifact directory, draw it as a figure there and link it.
-  Prefer one clear figure to a table of numbers."""
+- Use a figure when it makes the result clearer than prose, and link it from the reply.
+  A short result needs no figure."""
 
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
@@ -544,12 +544,7 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
             lines.append(f"- {described}: `{item['path']}`")
             continue
         lines.append(f"- Artifact {described}, the copy the human viewed: `{item['path']}`")
-        revision_path = item.get("revision_output_path")
-        lines.append(
-            f"  To revise it, write the whole file to: `{revision_path}`"
-            if isinstance(revision_path, str)
-            else "  This is an episode report; it cannot be revised."
-        )
+        lines.append(f"  Edit this file in place, keeping its name: `{item['path']}`")
         selections = item.get("selections")
         for index, selection in enumerate(selections if isinstance(selections, list) else [], 1):
             if selection.get("kind") == "text":
@@ -560,30 +555,6 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
             else:
                 lines.extend(_box_lines(index, selection, html=item["media_type"] == "text/html"))
     return "\n".join(lines)
-
-
-def _result_view_authoring_section(
-    action: Literal["create", "revise"] | None,
-    path: str | None,
-) -> str:
-    if action is None and path is None:
-        return ""
-    if action is None or path is None:
-        raise ValueError("result view authoring requires both an action and exact path")
-    instruction = (
-        f"Create exactly one bounded, self-contained, descriptively named HTML file directly "
-        f"inside `{path}`."
-        if action == "create"
-        else f"Edit the existing HTML file `{path}` in place. Keep its exact path and name; "
-        "atomic replacement at that path is allowed."
-    )
-    return f"""RCP result-view authoring contract:
-- {instruction}
-- Keep this stable view independent of the turn artifact directory and do not create another view
-  file.
-- The page may omit gestures. If it emits one, it may postMessage only
-  `{{type:'rcp-result-view-gesture',version:1,gesture:'box'|'underscore',description}}`, where
-  `description` is short selection text. No other outbound message shape is supported."""
 
 
 def _ingestion_watermark(value: datetime | str | None) -> str:
@@ -710,8 +681,6 @@ class PromptFactory:
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
         attachments: list[dict[str, object]] | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
         launch_instructions: str | None = None,
     ) -> str:
         return PromptFactory._chat_turn_prompt(
@@ -724,8 +693,6 @@ class PromptFactory:
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
             attachments=attachments,
-            result_view_action=result_view_action,
-            result_view_path=result_view_path,
             launch_instructions=launch_instructions,
         )
 
@@ -741,8 +708,6 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
         launch_instructions: str | None = None,
     ) -> str:
         """Render one chat turn: its marker, what is new for it, and the human's bytes.
@@ -759,11 +724,6 @@ class PromptFactory:
             parts.append(
                 f"Launch instructions for this session's Work turns:\n{launch_instructions}"
             )
-        result_view = _result_view_authoring_section(result_view_action, result_view_path).strip()
-        if result_view:
-            if marker != "Work":
-                raise ValueError("result view authoring is available only on Work turns")
-            parts.append(result_view)
         invocation = _invoked_package_section(invoked_skill_pointers).strip()
         if invocation:
             parts.append(invocation)
@@ -1096,18 +1056,7 @@ Boundary:
 
 {REPLY_STYLE}
 
-Reply contract:
-- The final assistant message is the complete independent Markdown reply the human reads.
-- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
-  suffix to point at one line of a repository file. Only an authorized repository file or a file
-  you wrote in the artifact directory resolves in RCP; a relative path, a line suffix on an
-  artifact, or any other location does not.
-- A preview is optional. RCP shows each bounded direct regular file of any type in
-  the turn's artifact directory as a card with Download and Keep. HTML, images, Markdown, and text
-  also open in a viewer; other files are download-only. Do not use nested directories,
-  symlinks, provider directives, or other paths.
-- HTML must be self-contained; ordinary HTTP(S) reference links are allowed, but external scripts,
-  images, fonts, fetches, and other resource loads do not work in the preview.
+{artifact_contract(artifact_path)}
 """)
 
     @staticmethod
@@ -1258,18 +1207,7 @@ Operational authority:
 
 {REPLY_STYLE}
 
-Reply and artifact contract:
-- The final assistant message is the complete independent Markdown reply the human reads.
-- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
-  suffix to point at one line of a repository file. Only an authorized repository file or a file
-  you wrote in the artifact directory resolves in RCP; a relative path, a line suffix on an
-  artifact, or any other location does not.
-- A preview is optional. RCP shows each bounded direct regular file of any type in
-  `{artifact_path}` as a card with Download and Keep. HTML, images, Markdown, and text
-  also open in a viewer; other files are download-only. Do not use nested directories,
-  symlinks, provider directives, or other paths.
-- HTML must be self-contained; ordinary HTTP(S) reference links are allowed, but external scripts,
-  images, fonts, fetches, and other resource loads do not work in the preview.
+{artifact_contract(artifact_path)}
 
 Graph Patch (optional):
 - Write one only when the work changes research state; no Patch is a normal result.
@@ -1351,8 +1289,6 @@ Authorship contract:
         diagnostics_path: str | None = None,
         watcher_diagnostic: str | None = None,
         artifact_path: str | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
     ) -> str:
         """The part a continuation adds beside its session's master pointer.
 
@@ -1380,9 +1316,6 @@ Authorship contract:
             sections.append(facts.strip())
         if mode in _INLINE_CONTINUATION_RULES:
             sections.append(_INLINE_CONTINUATION_RULES[mode])
-        result_view = _result_view_authoring_section(result_view_action, result_view_path)
-        if result_view:
-            sections.append(result_view)
         return "\n\n".join(sections)
 
     @staticmethod
@@ -1403,8 +1336,6 @@ Authorship contract:
         skill_pointers: list[dict[str, object]] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
-        result_view_action: Literal["create", "revise"] | None = None,
-        result_view_path: str | None = None,
         artifact_path: str | None = None,
         experiment_watcher_resources: list[dict[str, str]] | None = None,
         execution_host: str = "",
@@ -1540,10 +1471,6 @@ Resume authority:
             if validator_command and mode in {"resume", "retry"}
             else ""
         )
-        result_view_rules = _result_view_authoring_section(
-            result_view_action,
-            result_view_path,
-        )
         experiment_resources = (
             _discuss_experiment_watcher_resource_section(experiment_watcher_resources)
             if turn_mode == "discuss"
@@ -1579,7 +1506,6 @@ Resume authority:
 {selected_skill_section(skill_pointers)}
 {_invoked_package_section(invoked_skill_pointers)}
 {invoked_provider_skill_section(invoked_provider_skills)}
-{result_view_rules}
 {experiment_resources}
 {input_rules}
 {continuation_rules}

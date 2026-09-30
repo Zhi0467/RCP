@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import stat
+import tempfile
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
@@ -15,6 +16,8 @@ from typing import TYPE_CHECKING, ClassVar
 from rcp.artifacts import html_document_title
 from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
+from rcp.storage.artifact_imports import migrate_artifact_imports
+from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
 from rcp.storage.models import (
@@ -65,6 +68,9 @@ class AppStoreBase:
         (27, "space_machines_v1"),
         (28, "notifications_v1"),
         (29, "episode_isolation_v1"),
+        (30, "artifact_storage_v1"),
+        (31, "artifact_imports_v1"),
+        (32, "artifact_live_policy_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -99,6 +105,7 @@ class AppStoreBase:
             ("graph_runs", "campaign_worker_handoffs_cleared_at"),
         }
     )
+    _legacy_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
     _baseline_storage_schema_cache: ClassVar[tuple[tuple[str, str, str, str], ...] | None] = None
 
     def __init__(self, path: Path, *, space_kind: SpaceKind | None = None) -> None:
@@ -276,6 +283,7 @@ class AppStoreBase:
 
         probe = sqlite3.connect(":memory:", timeout=30.0)
         probe.row_factory = sqlite3.Row
+        temporary_root = tempfile.TemporaryDirectory(prefix="rcp-migration-")
         try:
             connection.backup(probe)
             probe.execute("PRAGMA foreign_keys = OFF")
@@ -290,10 +298,12 @@ class AppStoreBase:
                 require_new=False,
                 schema_template=False,
                 schema_capture=None,
+                file_root=Path(temporary_root.name),
             )
             self._validate_storage_schema(probe)
         finally:
             probe.close()
+            temporary_root.cleanup()
 
     @staticmethod
     def _storage_schema_has_rcp_core(tables: set[str]) -> bool:
@@ -428,6 +438,7 @@ class AppStoreBase:
                 require_new=require_new,
                 schema_template=_schema_template,
                 schema_capture=_schema_capture,
+                file_root=self.path.parent,
             )
 
     def _run_storage_schema_migrations(
@@ -441,6 +452,7 @@ class AppStoreBase:
         require_new: bool,
         schema_template: bool,
         schema_capture: list[tuple[str, str, str, str]] | None,
+        file_root: Path,
     ) -> str | None:
         """Create the migration ledger and dispatch its one ordered plan."""
 
@@ -623,6 +635,26 @@ class AppStoreBase:
             version=29,
             name="episode_isolation_v1",
             migration=self._migrate_episode_isolation,
+        )
+        if schema_template:
+            self.__class__._legacy_storage_schema_cache = self._storage_schema(connection)
+        self._run_storage_schema_migration(
+            connection,
+            version=30,
+            name="artifact_storage_v1",
+            migration=lambda conn: migrate_artifacts(conn, file_root),
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=31,
+            name="artifact_imports_v1",
+            migration=migrate_artifact_imports,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=32,
+            name="artifact_live_policy_v1",
+            migration=self._migrate_artifact_live_policy,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2521,6 +2553,21 @@ class AppStoreBase:
             "ON auto_research_recoveries(episode_id, updated_at DESC, recovery_id DESC)"
         )
 
+    @staticmethod
+    def _migrate_artifact_live_policy(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_artifact_edit_episode ON graph_runs "
+            "(json_extract(request_json, '$.artifact_edit.episode_id'), created_at, operation_id) "
+            "WHERE visible = 1"
+        )
+        # Before the rule was stored, the supplier was the creation-owner proof.
+        # Include bytes committed just before a crash prevented the report binding.
+        connection.execute(
+            "UPDATE artifacts SET metadata = json_set(metadata, '$.live_data_allowed', json('false')) "
+            "WHERE artifact_id IN (SELECT artifact_id FROM episode_reports WHERE artifact_id IS NOT NULL) "
+            "OR json_extract(metadata, '$.supplier') = 'episode_ending'"
+        )
+
     def _run_storage_schema_migration(
         self,
         connection: sqlite3.Connection,
@@ -2738,7 +2785,10 @@ class AppStoreBase:
     ) -> tuple[dict[tuple[str, str], tuple[str, str, str, str]], tuple[str, ...]]:
         """Return the table changes owned by migration 5 or refuse an unowned shape."""
 
-        expected = {(row[0], row[1]): row for row in self._baseline_storage_schema()}
+        self._baseline_storage_schema()
+        expected = {
+            (row[0], row[1]): row for row in self.__class__._legacy_storage_schema_cache or ()
+        }
         actual = {(row[0], row[1]): row for row in self._storage_schema(connection)}
         changed_tables = tuple(
             name

@@ -41,10 +41,8 @@ from rcp.runs.shared import (
     _stream_agent_events,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
-from rcp.runs.tasks.result_views import ResultViewSnapshot, _PreparedResultView
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
-from rcp.storage import ResultViewRecord
 from rcp.storage.command_mailbox import CommandMailboxStore
 from rcp.transport import (
     BatchPublishFailed,
@@ -227,7 +225,6 @@ class ResolvedWorkExecution:
     execution_machine_alias: str
     execution_host: str
     provider_binary: str | None
-    revision_preflight: tuple[ResultViewRecord, ResultViewSnapshot] | None
 
 
 @dataclass(frozen=True)
@@ -235,7 +232,6 @@ class StagedWorkInputs:
     token: str
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
-    prepared_result_view: _PreparedResultView | None
     experiment_resources: list[StagedExperimentWatcherResource]
     experiment_resource_pointers: list[dict[str, object]]
     skill_selection: SkillSelection
@@ -266,7 +262,6 @@ class WorkFinalizationContext:
     outcome: _ProviderOutcome
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
-    prepared_result_view: _PreparedResultView | None
     experiment_resources: list[StagedExperimentWatcherResource]
     skill_selection: SkillSelection
     compute_commands: WorkComputeCommands | None

@@ -32,6 +32,7 @@ from rcp.setup import render_prepared_team_manifest
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    Artifact,
     ArtifactRevisionCandidateRecord,
     ProjectProvisioningGitCheckRecord,
     ProjectProvisioningMachineRecord,
@@ -39,9 +40,10 @@ from rcp.storage import (
     ProjectProvisioningRepositoryRecord,
     ProjectProvisioningRequestRecord,
     ProjectRecord,
-    ResultViewRecord,
 )
 from rcp.storage.provisioning import project_provisioning_review_digest
+
+from .legacy_artifacts import insert_legacy_candidate
 
 SOURCE_COMMIT = "a" * 40
 WEB_BUILD_ID = "sha256:" + ("b" * 64)
@@ -201,31 +203,20 @@ def _create_kept_view(
     html = b"<html><body>captured</body></html>"
     now = store.now()
     expires_at = (datetime.fromisoformat(now) + timedelta(days=365)).isoformat()
-    store.create_result_view(
-        ResultViewRecord(
-            view_id=uuid.uuid4().hex[:24],
+    store.create_artifact(
+        Artifact(
+            artifact_id=uuid.uuid4().hex[:24],
             project_id=project_id,
-            experiment_id="exp/capture",
-            chat_id=str(uuid.uuid4()),
+            supplier="turn",
+            supplier_id=origin_operation_id,
             origin_operation_id=origin_operation_id,
-            latest_operation_id=latest_operation_id or origin_operation_id,
-            provider="codex",
-            model="gpt-test",
-            reasoning="medium",
-            run_on="worker",
-            native_session_id="session-test",
-            stage_host="",
-            stage_root="/tmp/rcp-stage",
             source_name="result.html",
-            content_sha256=hashlib.sha256(html).hexdigest(),
-            size_bytes=len(html),
+            media_type="text/html",
             created_at=now,
-            updated_at=now,
             expires_at=expires_at,
-            kept_filename="kept-result.html",
             kept_at=now,
         ),
-        html=html,
+        data=html,
     )
 
 
@@ -253,7 +244,8 @@ def _create_unresolved_kept_artifact_revision(
         )
     )
     base_sha256 = hashlib.sha256(b"original kept bytes").hexdigest()
-    candidate = store.create_artifact_revision_candidate(
+    candidate = insert_legacy_candidate(
+        store,
         ArtifactRevisionCandidateRecord(
             candidate_id=uuid.uuid4().hex[:24],
             project_id=project_id,
@@ -271,17 +263,15 @@ def _create_unresolved_kept_artifact_revision(
             status="pending",
             created_at=now,
             updated_at=now,
-        )
+        ),
     )
     if status == "accepting":
-        store.begin_artifact_revision_acceptance(
-            candidate.candidate_id,
-            decided_by=AuthorizedHuman(
-                space_id=store.space_id,
-                user_id=str(uuid.uuid4()),
-                display_name="Backup test",
-            ),
-        )
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE artifact_revision_candidates SET status = 'accepting' "
+                "WHERE candidate_id = ?",
+                (candidate.candidate_id,),
+            )
     return base_sha256
 
 
@@ -412,7 +402,8 @@ def test_capture_inventory_is_bound_to_the_copied_database(
     assert project.status == "capturable"
     assert project.task_operation_ids == (operation_id,)
     assert [item.kept_filename for item in project.kept_artifacts] == ["kept-figure.png"]
-    assert [item.kept_filename for item in project.kept_result_views] == ["kept-result.html"]
+    assert not project.kept_result_views
+    assert len(publication.receipt.artifact_inventory) == 1
     assert receipt.status == "complete"
     assert receipt.sqlite_snapshot.size_bytes == Path(receipt.snapshot_path).stat().st_size
     assert stat.S_IMODE(publication.receipt_path.stat().st_mode) == 0o400
@@ -473,7 +464,7 @@ def test_malformed_and_cross_project_references_make_only_their_projects_uncaptu
     status = {project.project_id: project.status for project in receipt.projects}
     assert status == {
         malformed.project_id: "uncaptured",
-        cross_reference.project_id: "uncaptured",
+        cross_reference.project_id: "capturable",
         wrong_home.project_id: "uncaptured",
         healthy.project_id: "capturable",
     }
@@ -602,3 +593,40 @@ def test_installed_control_socket_publishes_only_the_small_capture_receipt(
     assert result.project_count == 0
     assert result.uncaptured_project_count == 0
     assert result.status == "complete"
+
+
+def test_capture_copies_all_referenced_versions_and_excludes_orphan_files(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    store, _ = AppStore.initialize_team_space(data_dir / "rcp.sqlite3", "Artifacts")
+    project = _register_completed_project(store, data_dir, name="Artifact project")
+    artifact = store.create_artifact(
+        Artifact(
+            artifact_id="versioned",
+            project_id=project.project_id,
+            supplier="turn",
+            supplier_id=str(uuid.uuid4()),
+            source_name="page.html",
+            media_type="text/html",
+            created_at=store.now(),
+        ),
+        data=b"original",
+    )
+    store.publish_artifact_version(
+        artifact.artifact_id,
+        base_version=artifact.current_version,
+        operation_id=str(uuid.uuid4()),
+        data=b"edited",
+    )
+    store.save_artifact_live_snapshot(artifact.artifact_id, artifact.current_version, b"final data")
+    (data_dir / "artifacts" / artifact.artifact_id / ("f" * 64)).write_bytes(b"orphan")
+    publication = BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite()
+    inventory = publication.receipt.artifact_inventory
+    assert len(inventory) == 3
+    root = Path(publication.receipt.snapshot_path).parent
+    assert {p.name for p in (root / "artifacts" / artifact.artifact_id).iterdir()} == {
+        i.file_id for i in inventory
+    }
+    for entry in inventory:
+        assert (
+            root / "artifacts" / entry.artifact_id / entry.file_id
+        ).read_bytes() == store.artifact_file_path(entry).read_bytes()

@@ -1,0 +1,85 @@
+.artifact-viewer {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+  min-width: 0;
+}
+.artifact-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-cool);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  font-size: var(--type-sm);
+  flex-wrap: wrap;
+}
+.artifact-viewer-header strong {
+  flex: 1;
+  min-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-viewer-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  color: inherit;
+}
+.artifact-viewer-status.live {
+  color: var(--green);
+}
+.artifact-viewer > iframe {
+  border: 0;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  background: var(--surface);
+}
+.artifact-viewer-resize {
+  position: absolute;
+  left: -4px;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.artifact-viewer-resize:focus-visible {
+  outline: 2px solid var(--cobalt);
+}
+.artifact-viewer-tab {
+  position: fixed;
+  /* Below the project header, so the tab never covers its controls. */
+  top: 72px;
+  right: 0;
+  z-index: 200;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 5px 12px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+}
+.artifact-viewer-error {
+  padding: 12px;
+  color: var(--red);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.artifact-viewer-loading,
+.artifact-viewer-file {
+  padding: 20px;
+}

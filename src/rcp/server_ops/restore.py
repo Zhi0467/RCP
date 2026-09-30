@@ -34,8 +34,9 @@ from rcp.server_ops.backup_integrity import (
     canonical_backup_manifest_bytes,
     database_schema_sha256,
 )
-from rcp.server_ops.backup_models import BackupArchiveManifest
+from rcp.server_ops.backup_models import BackupArchiveManifest, artifact_backup_entries
 from rcp.storage import AppStore
+from rcp.storage.artifacts import write_artifact_file
 
 RESTORE_DIRECTORY_MODE = 0o700
 
@@ -44,6 +45,16 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        "0d63563c127ccab2b1291464009400108912026d8323a204e5c3b33607c6dbf6",
+        # Artifact edit lookup by origin episode, fresh and upgraded in place.
+        "bafbf526e9d45c235c6402a4c1b55ef3c8336f5ca009608d57251fd0476548d8",
+        "528fbfe96fbbe84bd778bd75c7714f976a9dff62526a5c94485e59c3b0decdb9",
+        # RCP-owned artifact files and immutable report bindings, fresh and upgraded.
+        "9289984bd08b23f8d5d9f487dff067848d951f10900e053f720613f10d1da044",
+        "cf65fb3b1697cefe435320c947a6b49d2788935e96d25b494df7eabe1d1eb2b6",
+        # Background artifact import receipts, fresh and upgraded in place.
+        "d5deb791b41d8fb39944b5f65140037884279ce55f13313d35372044014a9a30",
+        "a376cef6dbb644656c6bbb53f37c1e7aa5626c4f98fc5de3268a7e7bcd1b2fbf",
         # Notifications, fresh and historical graph_runs rebuild shapes.
         "9081439143959433cd437c8aab3fb7b7e559a64a675b75a4d21bf9c2442d4cf7",
         "5d43614c384c503556d2ae941b52098ef6c110d54abe2b9c5eb53b3dc34c4f70",
@@ -388,6 +399,7 @@ def _extract_verified_archive(
                 entry.archive_path: entry
                 for entry in (
                     manifest.sqlite_snapshot,
+                    *artifact_backup_entries(manifest.artifact_inventory),
                     *(item for project in manifest.projects for item in project.files),
                     *(item for capture in manifest.imported_sources for item in capture.files),
                 )
@@ -709,7 +721,13 @@ def _recover_repositories(request, manifest, previous_store, members):
                     capture.project_id
                 ),
             )
-            if registration.recovery != recovery:
+            if registration.recovery.model_dump(
+                exclude={"configuration", "configuration_sha256"}
+            ) != recovery.model_dump(
+                exclude={"configuration", "configuration_sha256"}
+            ) or not recovery.configuration.matches_configuration(
+                registration.recovery.configuration
+            ):
                 raise RestoreRefused(
                     "Existing project checkout authority differs from the protected archive."
                 )
@@ -1009,10 +1027,35 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     database = app / "rcp.sqlite3"
     shutil.copyfile(archived_database, database)
     database.chmod(0o600)
+    with sqlite3.connect(database) as archived_connection:
+        has_artifact_storage = (
+            archived_connection.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'artifacts'"
+            ).fetchone()
+            is not None
+        )
+    if has_artifact_storage and "artifact_inventory" not in manifest.model_fields_set:
+        raise RestoreRefused("An artifact-storage database requires its protected inventory.")
     detach_restore_database(
         database, confirmed_by=request.confirmed_by, detached_at=request.detached_at
     )
+    for item in manifest.artifact_inventory:
+        source = payload / "artifacts" / item.artifact_id / item.file_id
+        target = app / "artifacts" / item.artifact_id / item.file_id
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = target.with_suffix(".partial")
+        shutil.copyfile(source, temporary)
+        os.replace(temporary, target)
     store = AppStore(database)
+    if "artifact_inventory" in manifest.model_fields_set:
+        recorded = {
+            (i.artifact_id, i.file_id, i.sha256, i.size_bytes) for i in store.artifact_inventory()
+        }
+        archived = {
+            (i.artifact_id, i.file_id, i.sha256, i.size_bytes) for i in manifest.artifact_inventory
+        }
+        if recorded != archived:
+            raise RestoreRefused("Artifact inventory differs from the protected database.")
     if (
         store.space_kind != "team"
         or store.space_id != manifest.space_id
@@ -1161,6 +1204,9 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         copy_proof_tree(payload, capture_root)
         snapshot = capture_root / "rcp.sqlite3"
         store.online_snapshot(snapshot)
+        inventory = tuple(store.artifact_inventory())
+        for entry in inventory:
+            write_artifact_file(capture_root, entry, store.artifact_file_path(entry).read_bytes())
         digest, size = _hash_regular_file(snapshot)
         inventories = tuple(
             BackupSnapshotProjectInventory(
@@ -1199,6 +1245,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             ),
             app_data_plan=plan,
             projects=inventories,
+            artifact_inventory=inventory,
             status="partial"
             if any(p.status == "uncaptured" for p in manifest.projects)
             else "complete",

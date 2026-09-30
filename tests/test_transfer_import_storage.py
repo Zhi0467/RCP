@@ -268,7 +268,7 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
     archive = fixture["archive"]
     target = fixture["target"]
     configuration = fixture["configuration"]
-    assert capture.kept_result_views
+    assert capture.artifacts
     html = {
         view.kept_filename: (
             fixture["archive_root"] / "result-views" / view.kept_filename
@@ -296,7 +296,13 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
         assert episode.report is not None
         stored_report = target.episode_report(episode.episode_id)
         assert stored_report is not None
-        assert stored_report.html == episode.report.html
+        assert target.artifact(stored_report.artifact_id).live_data_allowed is False
+        assert (
+            target.read_artifact_bytes(
+                stored_report.artifact_id, stored_report.artifact_version_id
+            ).decode()
+            == episode.report.html
+        )
         assert stored_report.sha256 == episode.report.sha256
         assert target.project_episode_report_summaries(capture.project_id)[0].display_title == (
             "Retrieval remains stable"
@@ -305,7 +311,7 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
             row = connection.execute(
                 "SELECT * FROM episode_reports WHERE episode_id = ?", (episode.episode_id,)
             ).fetchone()
-        assert target._transfer_episode_report(row) == episode.report
+        assert target._transfer_episode_report(row).artifact_id == stored_report.artifact_id
     assert target.episode_archive_states(capture.project_id)[episode.episode_id].archived == (
         record_schema_version == 2
     )
@@ -369,16 +375,9 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
         ).fetchone()
         assert wrapup_row["native_session_id"] is None
         assert wrapup_row["execution_host"] == "history-only"
-        view_row = connection.execute(
-            "SELECT * FROM result_views WHERE view_id = ?",
-            (capture.kept_result_views[0].view_id,),
-        ).fetchone()
-        assert view_row["html"] == next(iter(html.values()))
-    imported_view = target.result_view_for_diagnostics(capture.kept_result_views[0].view_id)
+    imported_view = target.artifact(capture.artifacts[0].artifact_id)
     assert imported_view is not None
-    descriptor = target.result_view_descriptor(imported_view)
-    assert descriptor.state == "kept"
-    assert descriptor.can_revise is False
+    assert imported_view.kept_at is not None
 
     repeated = target.begin_project_transfer_import(
         archive.target_request_id,
@@ -444,3 +443,102 @@ def test_storage_import_rejects_record_schema_not_negotiated_before_release(
     assert target.project_transfer_import(archive.target_request_id) is None
     assert target.episodes(archive.project_id) == []
     assert target.agent_tasks(archive.project_id) == []
+
+
+@pytest.mark.parametrize("damage", [None, "expiry", "allocation"])
+def test_transfer_report_requires_permanent_artifact_and_exact_allocation(
+    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str | None
+) -> None:
+    from rcp.storage import Artifact, ArtifactFile, ArtifactVersion
+    from rcp.transfer.archive import TransferArchiveEntry
+    from rcp.transfer.project_files import TransferProjectFileCapture
+
+    fixture = _archive_fixture(manifest, tmp_path, monkeypatch, include_episode_archive=True)
+    capture = _rich_capture(fixture, with_report=True)
+    episode = capture.records.episodes[0]
+    report = episode.report
+    data = report.html.encode()
+    artifact_id = hashlib.sha256(report.report_id.encode()).hexdigest()[:24]
+    artifact = Artifact(
+        artifact_id=artifact_id,
+        project_id=capture.project_id,
+        supplier="episode_ending",
+        supplier_id=episode.episode_id,
+        episode_id=episode.episode_id,
+        origin_operation_id=report.allocation_operation_id,
+        source_name="report.html",
+        media_type="text/html",
+        created_at=report.created_at,
+        current_version=report.sha256,
+    )
+    version = ArtifactVersion(
+        artifact_id=artifact_id,
+        file_id=report.sha256,
+        version_id=report.sha256,
+        sha256=report.sha256,
+        size_bytes=len(data),
+        sequence=0,
+        operation_id=episode.episode_id,
+        created_at=report.created_at,
+    )
+    item = ArtifactFile.model_validate(version.model_dump(include=set(ArtifactFile.model_fields)))
+    entry = TransferArchiveEntry(
+        archive_path=f"artifacts/{artifact_id}/{report.sha256}",
+        group="artifact_version",
+        sha256=report.sha256,
+        size_bytes=len(data),
+    )
+    bound_report = report.model_copy(
+        update={"html": None, "artifact_id": artifact_id, "artifact_version_id": report.sha256}
+    )
+    bound_episode = episode.model_copy(update={"report": bound_report})
+    capture = capture.model_copy(
+        update={
+            "records": capture.records.model_copy(update={"episodes": (bound_episode,)}),
+            "artifacts": (*capture.artifacts, artifact),
+            "artifact_versions": (*capture.artifact_versions, version),
+            "artifact_inventory": (*capture.artifact_inventory, item),
+            "entries": tuple(sorted((*capture.entries, entry), key=lambda e: e.archive_path)),
+            "payload_size_bytes": capture.payload_size_bytes + len(data),
+        }
+    )
+    TransferProjectFileCapture.model_validate(capture)
+    # Old artifact-backed archives omit the new rule without changing their
+    # canonical encoding; the report import owner establishes it at destination.
+    assert "live_data_allowed" not in artifact.model_dump()
+    payload = transfer_project_file_payload(capture)
+    assert transfer_project_file_payload(parse_transfer_project_file_payload(payload)) == payload
+    if damage is None:
+        from rcp.storage import AppStore
+
+        target = fixture["target"]
+        archive = fixture["archive"]
+        configuration = fixture["configuration"]
+        target.begin_project_transfer_import(
+            archive.target_request_id,
+            archive_manifest_sha256=archive.sha256(),
+            target_manifest_sha256=configuration.receipt.target_manifest_sha256,
+            operational_payload_sha256=hashlib.sha256(payload).hexdigest(),
+            target_configuration_receipt=configuration.receipt.model_dump(mode="json"),
+            capture=capture,
+            kept_result_view_html={},
+        )
+        assert target.artifact(artifact_id).live_data_allowed is False
+        # Reconstruct version 31 metadata, then exercise the real migration
+        # registry rather than calling its SQL helper directly.
+        with target.connection() as connection:
+            connection.execute(
+                "UPDATE artifacts SET metadata = json_remove(metadata, '$.live_data_allowed') WHERE artifact_id = ?",
+                (artifact_id,),
+            )
+            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 32")
+        assert AppStore(target.path).artifact(artifact_id).live_data_allowed is False
+        return
+    changed = artifact.model_copy(
+        update={"expires_at": report.created_at}
+        if damage == "expiry"
+        else {"origin_operation_id": str(uuid.uuid4())}
+    )
+    invalid = capture.model_copy(update={"artifacts": (*capture.artifacts[:-1], changed)})
+    with pytest.raises(ValueError, match="report binding differs"):
+        TransferProjectFileCapture.model_validate(invalid)

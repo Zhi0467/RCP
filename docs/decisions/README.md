@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Artifacts are RCP-owned and edited in place](2026-09-29-artifacts-are-rcp-owned-and-edited-in-place.md)
+  records why artifact bytes and versions live in RCP storage instead of the
+  repository, why an edit needs no Accept step, why a comment turn follows its
+  session's master, and why live data flows one way into the page.
+
 - [RCP merges clean episode worktrees](2026-09-28-rcp-merges-clean-episode-worktrees.md)
   records why a human Merge click lets RCP merge a clean episode worktree
   itself, why conflicts go to the merge agent beside the graph residue, and

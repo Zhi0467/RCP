@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import sqlite3
@@ -35,6 +37,7 @@ from rcp.storage import (
 from rcp.storage.command_mailbox import CommandMailboxStore
 
 from .helpers import NON_UUID4
+from .storage_helpers import downgrade_artifacts
 from .test_compute_jobs_storage import job_record
 
 
@@ -132,6 +135,9 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (27, "space_machines_v1"),
         (28, "notifications_v1"),
         (29, "episode_isolation_v1"),
+        (30, "artifact_storage_v1"),
+        (31, "artifact_imports_v1"),
+        (32, "artifact_live_policy_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -210,6 +216,7 @@ def test_read_only_storage_openers_refuse_writes(tmp_path, opener: str) -> None:
         store.connection() as connection,
         pytest.raises(sqlite3.OperationalError, match="readonly"),
     ):
+        downgrade_artifacts(connection)
         connection.execute("DELETE FROM storage_schema_migrations")
 
 
@@ -286,6 +293,7 @@ def test_legacy_project_transfer_uploads_schema_converges(tmp_path) -> None:
                 "2026-08-31T00:00:00+00:00",
             ),
         )
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
         )
@@ -329,6 +337,7 @@ def test_failed_storage_migration_rolls_back_without_marker_and_retries(
             """,
             (now, now),
         )
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
@@ -2026,7 +2035,10 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "_legacy_campaign_reports_archive": 0,
         "_legacy_campaigns_archive": 0,
         "experiment_episode_state": 0,
-        "result_views": 0,
+        "artifact_operations": 0,
+        "artifact_imports": 0,
+        "artifact_versions": 0,
+        "artifacts": 0,
         "artifact_revision_candidates": 0,
         "auto_research_recoveries": 0,
         "auto_research_messages": 0,
@@ -2125,7 +2137,7 @@ _LEGACY_PROJECT_DATA_TABLES = (
     "project_members",
     "writing_sessions",
     "chat_session_contexts",
-    "result_views",
+    "artifacts",
     "graph_runs",
     "episodes",
     "agent_usage",
@@ -2169,28 +2181,21 @@ def _seed_legacy_project_data_rows(store: AppStore, project_id: str, *, label: s
             (project_id, f"transition-{label}", created_at),
         )
         connection.execute(
-            """
-            INSERT INTO result_views (
-                view_id, project_id, experiment_id, chat_id,
-                origin_operation_id, latest_operation_id,
-                provider, model, reasoning, run_on,
-                native_session_id, stage_host, stage_root, source_name,
-                content_sha256, size_bytes, html, created_at, updated_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'codex', 'gpt', 'high', 'laptop', ?, '', ?,
-                      'result.html', 'sha256', 7, 'result', ?, ?,
-                      '2026-08-13T01:02:03+00:00')
-            """,
+            "INSERT INTO artifacts VALUES (?, ?, ?)",
             (
                 f"legacy-view-{label}",
                 project_id,
-                f"legacy-experiment-{label}",
-                f"legacy-chat-{label}",
-                operation_id,
-                operation_id,
-                f"legacy-native-session-{label}",
-                f"/tmp/legacy-stage-{label}",
-                created_at,
-                created_at,
+                json.dumps(
+                    {
+                        "artifact_id": f"legacy-view-{label}",
+                        "project_id": project_id,
+                        "supplier": "turn",
+                        "supplier_id": operation_id,
+                        "source_name": "result.html",
+                        "media_type": "text/html",
+                        "created_at": created_at,
+                    }
+                ),
             ),
         )
         connection.execute(
@@ -2470,6 +2475,7 @@ def test_agent_usage_dedupe_migration_repairs_historical_counted_duplicates_once
     first = store.record_agent_usage("refresh-operation", usage)
     with store.connection() as connection:
         connection.execute("DROP INDEX agent_usage_counted_dedupe")
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (4, 5, 6)"
         )

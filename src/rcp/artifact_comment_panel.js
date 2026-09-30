@@ -1,7 +1,7 @@
 const selections = [];
 const frame = document.getElementById("preview");
 const image = document.getElementById("previewImage");
-const boxLayer = image ? document.createElement("div") : null;
+const boxLayer = image && config.selectionEnabled ? document.createElement("div") : null;
 if (boxLayer) {
   boxLayer.id = "boxLayer";
   boxLayer.setAttribute("aria-hidden", "true");
@@ -21,17 +21,35 @@ const items = document.getElementById("items"),
   empty = document.getElementById("empty"),
   add = document.getElementById("add"),
   notice = document.getElementById("notice");
-const openChat = document.getElementById("open-chat");
-const draftKey = `rcp:artifact-selections:${encodeURIComponent(config.projectId)}:${config.source}:${encodeURIComponent(config.operationId)}:${config.artifactId}`;
+const message = document.getElementById("message");
+let viewerState = null;
+let sending = false;
+let sendError = "";
+let stateLoading = false;
+let stateTimer = null;
+let stopped = false;
+let permanentStateError = false;
+let freshSessionRequired = false;
+const retryState = document.createElement("button");
+retryState.type = "button";
+retryState.textContent = "Retry";
+retryState.hidden = true;
+notice.after(retryState);
+retryState.addEventListener("click", () => {
+  permanentStateError = false;
+  retryState.hidden = true;
+  clearTimeout(stateTimer);
+  pollState();
+});
+const draftKey = `rcp:artifact-selections:${encodeURIComponent(config.projectId)}:${config.artifactId}`;
 const bounded = (value, limit) =>
   String(value || "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, limit);
-function saveSelections(added = false) {
-  openChat.hidden = !added;
+function saveSelections() {
   try {
-    localStorage.setItem(draftKey, JSON.stringify({ selections, added }));
+    localStorage.setItem(draftKey, JSON.stringify({ selections, message: message.value }));
   } catch {
     notice.textContent = "Comments could not be saved. Keep this preview open and try again.";
   }
@@ -39,7 +57,7 @@ function saveSelections(added = false) {
 function render() {
   items.replaceChildren();
   empty.hidden = selections.length > 0;
-  add.disabled = selections.length === 0 || !config.chatAvailable;
+  updateSend();
   selections.forEach((selection, index) => {
     const card = document.createElement("section");
     card.className = "selection";
@@ -75,7 +93,7 @@ try {
   if (saved && Array.isArray(saved.selections)) {
     selections.push(...saved.selections.slice(0, config.maxSelections));
     render();
-    openChat.hidden = !saved.added;
+    message.value = typeof saved.message === "string" ? saved.message : "";
   }
 } catch {
   selections.length = 0;
@@ -102,7 +120,7 @@ const offerSelection = installSelectionConfirmation(
   },
 );
 window.addEventListener("message", (event) => {
-  if (!frame || event.source !== frame.contentWindow) return;
+  if (!config.selectionEnabled || !frame || event.source !== frame.contentWindow) return;
   const value = event.data;
   if (
     !value ||
@@ -137,7 +155,7 @@ window.addEventListener("message", (event) => {
       comment: "",
     });
 });
-if (frame) {
+if (frame && config.selectionEnabled) {
   const enableSelection = () =>
     frame.contentWindow?.postMessage({ type: "rcp-artifact-selection-enable" }, "*");
   frame.addEventListener("load", enableSelection);
@@ -177,63 +195,74 @@ if (boxLayer)
     const mapped = selection && imageSelection(selection);
     offerSelection(mapped ? { ...mapped, comment: "" } : null);
   });
-add.addEventListener("click", () => {
-  if (!config.chatAvailable) {
-    notice.textContent = "The originating chat is unavailable.";
-    return;
+function updateSend() {
+  add.disabled = sending || !viewerState?.can_comment || !message.value.trim();
+  add.textContent = (freshSessionRequired || viewerState?.fresh_session_required) ? "Edit in a new session" : "Send";
+}
+async function refreshState() {
+  if (stateLoading || stopped || permanentStateError || document.hidden) return;
+  stateLoading = true;
+  try {
+    const response = await fetch(config.stateUrl, {credentials: "same-origin"});
+    if (!response.ok) {
+      permanentStateError = response.status >= 400 && response.status < 500 &&
+        ![408, 409, 425, 429].includes(response.status);
+      retryState.hidden = !permanentStateError;
+      throw new Error("Comment availability could not be loaded.");
+    }
+    viewerState = await response.json();
+    notice.textContent = sendError || viewerState.comment_unavailable_reason || "";
+  } catch (error) {
+    viewerState = null;
+    notice.textContent = sendError || error.message;
+  } finally {
+    stateLoading = false;
   }
-  const payload = {
-    type: "rcp-artifact-context",
-    version: 1,
-    project_id: config.projectId,
-    chat_id: config.chatId,
-    operation_id: config.operationId,
-    artifact_id: config.artifactId,
-    artifact_name: config.artifactName,
-    media_type: config.mediaType,
-    selections,
-  };
-  payload.source = config.source;
-  payload.episode_id = config.episodeId;
-  const key = `rcp:artifact-context:${encodeURIComponent(config.projectId)}:${encodeURIComponent(config.chatId)}`;
+  updateSend();
+}
+message.addEventListener("input", () => { sendError = ""; saveSelections(); updateSend(); });
+add.addEventListener("click", async () => {
+  if (add.disabled) return;
+  sendError = "";
+  sending = true;
+  updateSend();
   try {
-    localStorage.setItem(key, JSON.stringify(payload));
-  } catch {
-    notice.textContent = "Could not add comments to the chat draft. Try again.";
-    return;
-  }
-  try {
-    const channel = new BroadcastChannel("rcp-artifact-context");
-    channel.postMessage(payload);
-    channel.close();
-  } catch {}
-  notice.textContent = "Added to the originating chat draft.";
-  saveSelections(true);
-});
-openChat.addEventListener("click", (event) => {
-  if (!("__TAURI_INTERNALS__" in window)) return;
-  event.preventDefault();
-  notice.textContent = "Opening chat…";
-  try {
-    const channel = new BroadcastChannel("rcp-artifact-chat-navigation");
-    const requestId = crypto.randomUUID();
-    const expiresAt = Date.now() + config.chatOpenTimeoutMs;
-    const timeout = setTimeout(() => {
-      channel.close();
-      notice.textContent = "Open the originating RCP space, then try Open chat again.";
-    }, config.chatOpenTimeoutMs);
-    channel.onmessage = ({ data }) => {
-      if (data?.requestId !== requestId) return;
-      clearTimeout(timeout);
-      channel.close();
-      notice.textContent = data.error || "Opened the originating chat.";
-    };
-    channel.postMessage({
-      requestId,
-      hash: new URL(openChat.href).hash,
-      expiresAt,
+    const response = await fetch(config.commentsUrl, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({message: message.value, selections,
+        fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required}),
     });
-  } catch {
-    notice.textContent = "Could not reach the RCP window. Try Open chat again.";
+    const result = await response.json();
+    if (!response.ok) {
+      if (response.status === 409 && result.detail?.code === "fresh_session_required")
+        freshSessionRequired = true;
+      throw new Error(typeof result.detail === "string" ? result.detail :
+        result.detail?.message || "Comment could not be sent.");
+    }
+    freshSessionRequired = false;
+    selections.length = 0;
+    message.value = "";
+    saveSelections();
+    offerSelection(null);
+    render();
+    window.parent.postMessage({type: "rcp-artifact-edit-started", version: 1,
+      artifact_id: config.artifactId, operation_id: result.operation_id}, location.origin);
+    await refreshState();
+  } catch (error) {
+    sendError = error.message;
+    notice.textContent = sendError;
+  } finally {
+    sending = false;
+    updateSend();
   }
 });
+window.addEventListener("focus", refreshState);
+async function pollState() {
+  await refreshState();
+  if (!stopped && !permanentStateError) stateTimer = setTimeout(pollState, config.stateRefreshMs);
+}
+window.addEventListener("pagehide", () => { stopped = true; clearTimeout(stateTimer); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshState(); });
+pollState();

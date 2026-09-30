@@ -30,6 +30,12 @@ from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
 from rcp.storage.models import GraphWatcherRecord
 
 
+def worker_label(instruction: str) -> str:
+    """A worker's display name: its assignment's first Markdown heading."""
+    heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", instruction, re.MULTILINE)
+    return heading.group(1) if heading else "Worker"
+
+
 def _span(operation_id: str | None) -> str | None:
     return f"span:{operation_id}" if operation_id else None
 
@@ -234,7 +240,10 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         mark(actor_id, "stopped", child.ended_at if child.stop_requested_at else None, child_id)
     for owner in owners.values():
         # Report turns are hidden allocations; the roster shows them as report spans.
-        for task in store.episode_tasks(owner.episode_id, include_hidden=True):
+        for task in [
+            *store.episode_tasks(owner.episode_id, include_hidden=True),
+            *store.episode_artifact_edit_tasks(owner.episode_id),
+        ]:
             if task.project_id != episode.project_id or task.kind == "branch_merge":
                 continue
             if task.visible or task.kind == "episode_report":
@@ -247,11 +256,18 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         )
     roles = store.auto_research_invocations(list(tasks)) if auto else {}
     for task in tasks.values():
-        work = store.auto_research_child_work_for_operation(task.operation_id) if auto else None
+        edit = task.request.get("artifact_edit")
+        actor_operation_id = (
+            edit.get("origin_operation_id", task.operation_id)
+            if isinstance(edit, dict)
+            else task.operation_id
+        )
+        owner_episode_id = edit.get("episode_id") if isinstance(edit, dict) else task.episode_id
+        work = store.auto_research_child_work_for_operation(actor_operation_id) if auto else None
         if work and work.worker_id in works:
             task_actors[task.operation_id] = f"actor:worker:{work.worker_id}"
-        elif task.episode_id in children:
-            task_actors[task.operation_id] = f"actor:experiment:{task.episode_id}"
+        elif owner_episode_id in children:
+            task_actors[task.operation_id] = f"actor:experiment:{owner_episode_id}"
         elif (role := roles.get(task.operation_id)) and role.role == "worker":
             task_actors[task.operation_id] = f"actor:worker:{role.actor_operation_id}"
             if role.actor_operation_id not in works:
@@ -274,13 +290,12 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     }
     for work in works.values():
         actor_id = f"actor:worker:{work.worker_id}"
-        heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", work.instruction, re.MULTILINE)
         current = tasks.get(work.current_operation_id)
         handoff = handoff_by_actor.get(actor_id)
         add_actor(
             actor_id,
             "worker",
-            heading.group(1) if heading else "Worker",
+            worker_label(work.instruction),
             work.episode_id,
             subtitle=work.control_node_id,
             started_at=work.created_at,
@@ -331,7 +346,11 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
                 error=task.error[:EPISODE_TIMELINE_ERROR_MAX_LENGTH] if task.error else None,
                 cause=cause if isinstance(cause, str) else None,
                 task_id=task.operation_id,
-                owner_episode_id=task.episode_id,
+                owner_episode_id=(
+                    task.request["artifact_edit"].get("episode_id")
+                    if isinstance(task.request.get("artifact_edit"), dict)
+                    else task.episode_id
+                ),
             )
         )
     _communications(store, chain, actors, tasks, task_actors, human, messages, signals, auto)

@@ -74,6 +74,7 @@ from rcp.api.team import router as team_router
 from rcp.api.terminals import router as terminals_router
 from rcp.api.update_notice import router as update_notice_router
 from rcp.api.watchers import router as watchers_router
+from rcp.artifact_import import import_project_artifacts
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import (
     AgentTaskExecution,
@@ -90,10 +91,12 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
+    ARTIFACT_IMPORT_RETRY_SECONDS,
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
+from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
 from rcp.notifications import NotificationSender
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
@@ -738,7 +741,6 @@ def create_app(
     # FastAPI may enter and exit the synchronous admission dependency on
     # different worker threads, so this must remain a primitive Lock, not RLock.
     experiment_operation_lock = KeyedLocks()
-    result_view_keep_lock = KeyedLocks()
     artifact_mutation_locks = KeyedLocks()
     experiment_admission = ExperimentAdmission(
         experiment_operation_lock,
@@ -819,6 +821,16 @@ def create_app(
                     app_data,
                     execution=execution,
                 )
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+            return
+        if kind == "artifact_edit":
+            from rcp.runs.tasks.artifact_edit import stream_artifact_edit_run
+
+            assert isinstance(request, RunRequest)
+            async with aclosing(
+                stream_artifact_edit_run(service, launcher, request, app_data, execution)
             ) as stream:
                 async for frame in stream:
                     yield frame
@@ -1319,10 +1331,38 @@ def create_app(
         watcher_delivery=watcher_delivery,
     )
 
+    live_artifact_pass_lock = threading.Lock()
+    live_artifact_shutdown = threading.Event()
+
+    def reconcile_project_live_artifacts(project_id: str) -> None:
+        # Startup and watcher callbacks share one admitted owner. Shutdown must
+        # drain this lock even if the watcher's bounded stop join has expired.
+        with live_artifact_pass_lock:
+            if live_artifact_shutdown.is_set():
+                return
+            with background_admission_gate.mutation("live artifact reconciliation"):
+                reconcile_compute_jobs(store, None, project_id=project_id, data_dir=app_data)
+                reconcile_artifact_live_snapshots(store, catalog, project_id)
+
+    def drain_live_artifact_pass() -> None:
+        with live_artifact_pass_lock:
+            pass
+
     def after_watcher_poll() -> None:
         provider_sign_ins.reconcile_recovery()
         graph_watcher_retry_worker.signal()
         reconcile_episodes()
+        for project in store.projects():
+            if project.home_space_id != store.space_id:
+                continue
+            try:
+                reconcile_project_live_artifacts(project.project_id)
+            except MaintenanceAdmissionClosed:
+                return
+            except Exception:
+                logger.exception(
+                    "Could not reconcile live artifacts for project %s", project.project_id
+                )
 
     watcher_poller = WatcherPoller(
         store,
@@ -1406,7 +1446,6 @@ def create_app(
         setup=setup,
         attachment_store=attachment_store,
         watcher_poller=watcher_poller,
-        result_view_keep_locks=result_view_keep_lock,
         artifact_mutation_locks=artifact_mutation_locks,
         project_display_cache=project_display_cache,
         watcher_delivery=watcher_delivery,
@@ -1494,17 +1533,26 @@ def create_app(
             logger.warning("Could not sweep remote run stages: %s", exc)
 
     async def reconcile_running_compute_jobs() -> None:
-        for project_id in {job.project_id for job in store.running_compute_jobs()}:
+        for project in store.projects():
+            if project.home_space_id != store.space_id:
+                continue
+            work = asyncio.create_task(
+                asyncio.to_thread(reconcile_project_live_artifacts, project.project_id)
+            )
             try:
-                await asyncio.to_thread(
-                    reconcile_compute_jobs,
-                    store,
-                    None,
-                    project_id=project_id,
-                    data_dir=app_data,
-                )
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # A cancelled to_thread await leaves its writer alive. Retain
+                # process ownership until the admitted pass has settled.
+                with suppress(Exception):
+                    await work
+                raise
+            except MaintenanceAdmissionClosed:
+                return
             except Exception:
-                logger.exception("Could not reconcile compute jobs for project %s", project_id)
+                logger.exception(
+                    "Could not reconcile compute jobs for project %s", project.project_id
+                )
 
     async def probe_compute_routes() -> None:
         # Readiness is checked here rather than on request, so a route that
@@ -1529,6 +1577,48 @@ def create_app(
 
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
+    artifact_import_tasks: dict[str, asyncio.Task[None]] = {}
+
+    def import_artifact_pass(project_id: str) -> float | None:
+        with background_admission_gate.mutation("legacy artifact import"):
+            return import_project_artifacts(
+                store,
+                project_id,
+                workspace=lambda: catalog.open(project_id).history.workspace,
+            )
+
+    async def import_project_artifacts_in_background(project_id: str) -> None:
+        while not background_admission_gate.closed:
+            work = asyncio.create_task(asyncio.to_thread(import_artifact_pass, project_id))
+            try:
+                delay = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # Cancelling to_thread does not stop its thread. Keep ownership
+                # until its admitted mutation has reached a durable boundary.
+                with suppress(Exception):
+                    await work
+                raise
+            except MaintenanceAdmissionClosed:
+                return
+            except Exception:
+                logger.exception("Could not import artifacts for project %s", project_id)
+                delay = ARTIFACT_IMPORT_RETRY_SECONDS
+            if delay is None or background_admission_gate.closed:
+                return
+            await asyncio.sleep(delay)
+
+    def schedule_artifact_imports() -> None:
+        if background_admission_gate.closed:
+            return
+        for record in store.projects():
+            if record.home_space_id != store.space_id:
+                continue
+            previous = artifact_import_tasks.get(record.project_id)
+            if previous is not None and not previous.done():
+                continue
+            task = asyncio.create_task(import_project_artifacts_in_background(record.project_id))
+            artifact_import_tasks[record.project_id] = task
+            startup_maintenance.append(task)
 
     def pause_update_runtime_owners(timeout: float) -> None:
         """Stop process-owned pollers and wait for already-scheduled async reads."""
@@ -1550,6 +1640,8 @@ def create_app(
 
         async def wait_for_scheduled_reads() -> None:
             await terminals.end_all(reason="server_maintenance")
+            for task in artifact_import_tasks.values():
+                task.cancel()
             pending = {
                 task
                 for task in (
@@ -1575,6 +1667,9 @@ def create_app(
         notification_sender.start()
         if phone_listener is not None:
             phone_listener.resume()
+        loop = runtime_loop[0]
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(schedule_artifact_imports)
 
     if control_server is not None:
         assert target_transfer_upload_coordinator is not None
@@ -1595,7 +1690,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        live_artifact_shutdown.clear()
         startup_maintenance.clear()
+        artifact_import_tasks.clear()
         runtime_loop[0] = asyncio.get_running_loop()
         control_started = False
         runtime_started = False
@@ -1752,6 +1849,7 @@ def create_app(
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
+                schedule_artifact_imports()
                 # Episode health is local, so its notification baseline is taken
                 # before serving. Startup graph sweeps and graph notification
                 # reconciliation read remote graphs, so both run on their
@@ -1810,6 +1908,7 @@ def create_app(
                 app.state.startup_effect_release_task = release_task
             yield
         finally:
+            live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
             # the replacement window.
@@ -1830,6 +1929,7 @@ def create_app(
             for task in list(project_display_cache.reconciliation_tasks.values()):
                 with suppress(asyncio.CancelledError):
                     await task
+            await asyncio.to_thread(drain_live_artifact_pass)
             try:
                 await terminals.close()
             except Exception:

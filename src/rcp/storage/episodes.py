@@ -5,7 +5,6 @@ import json
 import sqlite3
 import uuid
 
-from rcp.artifacts import html_document_title
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.models import (
@@ -1485,6 +1484,10 @@ class EpisodeStoreMixin:
                     """,
                     (diagnostic, now, now, current["attempt_id"]),
                 )
+            self._require_session_launch_available(
+                connection,
+                self._agent_task_record(task_row).model_copy(update={"status": "queued"}),
+            )
             connection.execute(
                 """
                 UPDATE graph_runs
@@ -1694,9 +1697,9 @@ class EpisodeStoreMixin:
         stage_host: str | None,
         stage_root: str,
     ) -> bool:
-        """Whether an episode report's instructions are still the newest this session holds.
+        """Whether revoking instructions are still the newest this session holds.
 
-        A report attempt on the exact session sets it. It clears only once an operational
+        A report attempt or artifact edit sets it. It clears only once an operational
         task created after that attempt, on the same session and stage, has succeeded; a
         launch that failed or was interrupted proves nothing reached the provider.
         """
@@ -1705,11 +1708,19 @@ class EpisodeStoreMixin:
         with self.connection() as connection:
             reported = connection.execute(
                 """
-                SELECT MAX(attempt.created_at) AS reported_at
-                FROM episode_report_attempts AS attempt
-                JOIN graph_runs AS run ON run.operation_id = attempt.allocation_operation_id
-                WHERE run.project_id = ? AND run.native_session_id = ?
-                  AND COALESCE(run.stage_host, '') = ? AND run.stage_root = ?
+                SELECT MAX(revoked_at) AS reported_at FROM (
+                    SELECT run.project_id, run.native_session_id, run.stage_host,
+                           run.stage_root, attempt.created_at AS revoked_at
+                    FROM episode_report_attempts AS attempt
+                    JOIN graph_runs AS run
+                      ON run.operation_id = attempt.allocation_operation_id
+                    UNION ALL
+                    SELECT project_id, native_session_id, stage_host, stage_root,
+                           created_at AS revoked_at
+                    FROM graph_runs WHERE kind = 'artifact_edit'
+                )
+                WHERE project_id = ? AND native_session_id = ?
+                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
                 """,
                 session,
             ).fetchone()
@@ -1720,7 +1731,9 @@ class EpisodeStoreMixin:
                 SELECT 1 FROM graph_runs
                 WHERE project_id = ? AND native_session_id = ?
                   AND COALESCE(stage_host, '') = ? AND stage_root = ?
-                  AND kind != 'episode_report' AND status = 'succeeded' AND created_at > ?
+                  AND kind IN ('node_chat', 'project_chat', 'auto_research')
+                  AND json_extract(request_json, '$.artifact_edit') IS NULL
+                  AND status = 'succeeded' AND created_at > ?
                 LIMIT 1
                 """,
                 (*session, reported["reported_at"]),
@@ -1886,6 +1899,21 @@ class EpisodeStoreMixin:
         attempt_id: str,
         report: EpisodeReportRecord,
     ) -> tuple[EpisodeRecord, EpisodeReportRecord]:
+        artifact = self.artifact(report.artifact_id)
+        versions = self.artifact_versions(report.artifact_id)
+        if (
+            artifact is None
+            or not versions
+            or versions[0].sequence != 0
+            or versions[0].version_id != report.artifact_version_id
+            or versions[0].sha256 != report.sha256
+            or artifact.episode_id != report.episode_id
+            or artifact.origin_operation_id != report.allocation_operation_id
+            or artifact.expires_at is not None
+        ):
+            raise EpisodeReportConflict(
+                "the report must bind its permanent original artifact version"
+            )
         now = self.now()
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1929,8 +1957,8 @@ class EpisodeStoreMixin:
                 """
                 INSERT INTO episode_reports (
                     report_id, episode_id, attempt_id, allocation_operation_id, ending,
-                    sha256, html, created_at, display_title
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sha256, artifact_id, artifact_version_id, created_at, display_title
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     report.report_id,
@@ -1939,9 +1967,10 @@ class EpisodeStoreMixin:
                     report.allocation_operation_id,
                     report.ending,
                     report.sha256,
-                    report.html,
+                    report.artifact_id,
+                    report.artifact_version_id,
                     report.created_at,
-                    html_document_title(report.html),
+                    artifact.display_title,
                 ),
             )
             connection.execute(

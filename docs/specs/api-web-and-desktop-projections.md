@@ -801,6 +801,11 @@ viewer inside the page after confirming current availability. A listed file with
 no viewer reports `can_open` false with its `view` and `can_download`; visual
 opening refuses it rather than navigating to a download.
 
+Newly discovered task artifacts read from RCP version storage. `kept_at` marks
+Keep even when `kept_filename` is null; that filename remains legacy metadata.
+Legacy result-view URLs redirect to artifact routes. An artifact's availability
+is independent of its native session and stage; those still gate commenting.
+
 Task artifacts project a `view` (`html`, `image`, `markdown`, `text`, `pdf`, or
 `file`) alongside the independent `can_open`, `can_download`, `can_keep`, and
 `can_discuss` capabilities. `result.artifact_omissions` carries known reason
@@ -822,7 +827,7 @@ single-start, exact-episode, and graceful-Stop fences.
 WebMCP is not a second API or authority plane. Calls run in the current
 authenticated browser session and receive no capability that the corresponding
 RCP surface lacks. There is no WebMCP tool for Proposal judgment, Decision choice,
-graph editing or Sync, artifact retention or revision disposition, settings,
+graph editing or Sync, artifact retention or version undo, settings,
 membership, project creation/deletion, or Auto-research authorization. Provider
 answers, artifacts, and tool output still cannot become canonical graph truth;
 only the ordinary typed Patch and human-authority paths can do so.
@@ -1062,7 +1067,7 @@ beneath it. It links turn and attempt spans to the existing task inspector,
 excludes reports from that navigation, and resolves child Experiment navigation
 by episode id. Watcher controls remain with their existing owners. Layout,
 selection, and gesture behavior follow the
-[interface specification](interface-and-visual-design.md#auto-research-and-result-views).
+[interface specification](interface-and-visual-design.md#auto-research-and-episode-history).
 
 An active child card names its current Experiment turn and links that row to the
 ordinary task inspector. Until the turn finishes, the card labels the durable
@@ -1241,16 +1246,17 @@ process. If graceful timeout is exhausted, the shell reports the forced path
 truthfully. Singleton replacement and frontend build ownership stay in the
 launcher, not manual PID cleanup.
 
-Preview links open the shell's secondary bounded window rather than navigating
-the main project WebView. Desktop repository links and result/report artifacts
-therefore cannot strand the main project window. Native downloads resolve
+Artifact, report, and repository-file previews open in one panel inside the main
+RCP window. The desktop has no native preview-window commands, and same-origin
+popups create no window: a recognised artifact or report URL opens in the main
+panel, and any other popup is dropped and logged. Native downloads resolve
 through shell-controlled destinations. A PDF artifact opens in the system PDF
 viewer through one main-window command that takes only project, task, and
 artifact ids, fetches the artifact's Download route itself, checks that the
 bytes are a bounded PDF, and writes them to a private app-owned temporary
 directory; failed opens are removed at once and copies older than the named
 one-day `PDF_PREVIEW_RETENTION` are pruned on startup and each open. It
-never opens an arbitrary path or URL, and preview windows cannot call it.
+never opens an arbitrary path or URL and remains restricted to the main window.
 
 In personal project setup, every local repository path has a native folder
 action in the desktop shell. Selecting a folder fills its absolute path;
@@ -1324,3 +1330,42 @@ by the ordinary periodic reconciliation pass, plus queued tasks and completed
 watcher groups checked for the verified account. It is not a launch count:
 already-settled episodes and inputs still waiting on other conditions may be
 included. The web reports items rechecked for resumption.
+
+### Versioned live artifact data
+
+`GET /api/projects/{project_id}/artifacts/{artifact_id}/versions/{version_id}/live`
+accepts no source declaration or file path. Project membership and the stored
+graph target are checked for each read. The returned `rcp-live-data` envelope
+contains ordered snapshots, completeness, final/static state, a diagnostic when
+applicable, and the refresh interval. Saved final bytes are authoritative for
+that version. Invalid declarations expose their stored reason as static data.
+
+The authenticated artifact shell pins both HTML and live reads to one version,
+polls while visible, and relays through the existing private artifact channel.
+The agent frame remains opaque with its existing CSP and sandbox restrictions.
+The shell is frameable only by its own RCP origin. Its comment box posts message,
+selections, and an explicit fresh-session flag to the existing comments route.
+A conflict preserves the draft; success sends `rcp-artifact-edit-started` protocol
+version 1 to the same-origin parent with the artifact and operation ids.
+
+### Artifact viewer and run inventory
+
+`GET /api/projects/{project_id}/artifacts/{artifact_id}/state` returns
+`ArtifactViewerState` under project membership. It names the current version,
+its position among retained versions, and whether the storage Undo rule has a
+retained predecessor. Live is null for a static or invalid declaration, live
+for a valid declaration, and finished once its final snapshot is saved. An
+admitted nonterminal edit supplies `editing_operation_id`.
+
+The comment offer and fresh-session requirement reuse comments admission and
+the session reservation check without launching. The reply link follows the
+artifact's own chat, Experiment node chat, or Runs orchestrator thread. Viewer
+URLs target stored artifacts, including reports; PDF and download-only artifacts
+have no viewer URL. Download and retention information are independent offers.
+
+`GET /api/projects/{project_id}/episodes/{episode_id}/artifacts` returns
+`RunArtifactEntry[]` for the episode, including its Auto-research workers and
+child Experiment episodes. It includes unexpired or kept artifacts and permanent
+reports, with the queried episode's report first, then creation order. Worker
+labels use the child Work route's instruction heading, or Worker. Both routes enforce project
+membership, and the inventory rejects an episode from another project.

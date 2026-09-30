@@ -21,6 +21,7 @@ const taskLabels: Record<AgentTaskKind, string> = {
   paper_coach: "Paper coach",
   auto_research: "Auto-research",
   branch_merge: "Branch merge",
+  artifact_edit: "Artifact edit",
 };
 
 const taskOrder: AgentTaskKind[] = [
@@ -31,6 +32,7 @@ const taskOrder: AgentTaskKind[] = [
   "paper_coach",
   "auto_research",
   "branch_merge",
+  "artifact_edit",
 ];
 
 interface Props {

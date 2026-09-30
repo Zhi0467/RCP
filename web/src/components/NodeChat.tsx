@@ -33,15 +33,8 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { api, removeChatAttachment, steerChatTurn, uploadChatAttachment } from "../api";
 import {
-  api,
-  decideArtifactRevision,
-  removeChatAttachment,
-  steerChatTurn,
-  uploadChatAttachment,
-} from "../api";
-import {
-  artifactRevisionContentUrl,
   artifactUrl,
   chatTasksMissingFromHistory,
   isActiveTask,
@@ -64,13 +57,16 @@ import {
   startConversationTurn,
   toggleConversationMode,
 } from "../chatWorkspace";
+import {
+  openArtifact as openArtifactPanel,
+  openRepositoryFile as openRepositoryFilePanel,
+} from "../artifactViewer";
 import { MarkdownAnswer } from "../chatMarkdown";
 import {
   assembleChatTurn,
   chatAnnotationComposerPosition,
   chatAnnotationTextControlSelection,
   chatAnnotationViewportMetrics,
-  MAX_ARTIFACT_SELECTIONS,
   MAX_CHAT_ANNOTATIONS,
   MAX_CHAT_ANNOTATION_COMMENT_LENGTH,
   MAX_CHAT_ANNOTATION_TEXT_LENGTH,
@@ -103,20 +99,12 @@ import {
   isDesktopRuntime,
   listenDesktopEvent,
   openDesktopArtifactPdf,
-  openDesktopArtifactPreview,
-  openDesktopRepositoryFilePreview,
   startDesktopDictation,
   stopDesktopDictation,
 } from "../desktopRuntime";
-import {
-  repositoryFilePreviewUrl,
-  resolveRepositoryFileHref,
-  turnArtifactName,
-} from "../repositoryFileLinks";
+import { resolveRepositoryFileHref, turnArtifactName } from "../repositoryFileLinks";
 import type {
   AgentArtifactDescriptor,
-  ArtifactBoxElement,
-  ArtifactSelection,
   AgentTask,
   ChatMessage,
   ChatAttachmentDescriptor,
@@ -134,11 +122,6 @@ import {
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../uiConstants";
 import { profileRunConfig } from "./AgentConfigControls";
-import {
-  handleAutoResearchDialogKeyDown,
-  makeAutoResearchDialogBackgroundInert,
-  restoreAutoResearchDialogFocus,
-} from "./AutoResearchDialog";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { WorktreeControls, useConversationWorktree } from "./WorktreeControls";
@@ -199,11 +182,6 @@ interface DictationSpan {
   end: number;
 }
 
-interface ArtifactRevisionReview {
-  taskId: string;
-  artifactId: string;
-}
-
 interface SelectedChatAnnotationComposer {
   step: "comment";
   selectedText: string;
@@ -223,26 +201,7 @@ type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnot
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
 
-const ARTIFACT_ID_PATTERN = /^[0-9a-f]{24}$/;
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
-
-interface ArtifactContextPayload {
-  type: "rcp-artifact-context";
-  version: 1;
-  project_id: string;
-  chat_id: string;
-  operation_id: string;
-  source?: "task" | "episode_report";
-  episode_id?: string | null;
-  artifact_id: string;
-  artifact_name: string;
-  media_type: string;
-  selections: ArtifactSelection[];
-}
-
-function artifactContextStorageKey(projectId: string, chatId: string): string {
-  return `rcp:artifact-context:${encodeURIComponent(projectId)}:${encodeURIComponent(chatId)}`;
-}
 
 export function reconcileChatRunScope(
   current: string[],
@@ -255,155 +214,6 @@ export function reconcileChatRunScope(
   return candidate.filter(
     (repository, index) => allowed.has(repository) && candidate.indexOf(repository) === index,
   );
-}
-
-export function parseArtifactContextPayload(value: unknown): ArtifactContextPayload | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const candidate = value as Record<string, unknown>;
-  const allowedKeys = new Set([
-    "type",
-    "version",
-    "project_id",
-    "chat_id",
-    "operation_id",
-    "source",
-    "episode_id",
-    "artifact_id",
-    "artifact_name",
-    "media_type",
-    "selections",
-  ]);
-  if (
-    Object.keys(candidate).some((key) => !allowedKeys.has(key)) ||
-    candidate.type !== "rcp-artifact-context" ||
-    candidate.version !== 1 ||
-    !isBoundedArtifactText(candidate.project_id, 1, 512) ||
-    !isBoundedArtifactText(candidate.chat_id, 1, 512) ||
-    !isBoundedArtifactText(candidate.operation_id, 1, 512) ||
-    (candidate.source !== undefined &&
-      candidate.source !== "task" &&
-      candidate.source !== "episode_report") ||
-    (candidate.source === "episode_report" && typeof candidate.episode_id !== "string") ||
-    (candidate.source !== "episode_report" &&
-      candidate.episode_id !== undefined &&
-      candidate.episode_id !== null) ||
-    typeof candidate.artifact_id !== "string" ||
-    !ARTIFACT_ID_PATTERN.test(candidate.artifact_id) ||
-    !isBoundedArtifactText(candidate.artifact_name, 1, 255) ||
-    !isBoundedArtifactText(candidate.media_type, 1, 64) ||
-    !Array.isArray(candidate.selections) ||
-    candidate.selections.length < 1 ||
-    candidate.selections.length > MAX_ARTIFACT_SELECTIONS
-  )
-    return null;
-  const selections: ArtifactSelection[] = [];
-  for (const raw of candidate.selections) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-    const selection = raw as Record<string, unknown>;
-    if (
-      selection.kind === "text" &&
-      isBoundedArtifactText(selection.text, 1, 4096) &&
-      isBoundedArtifactText(selection.surrounding_text, 0, 6144) &&
-      isBoundedArtifactText(selection.comment, 0, 2048)
-    ) {
-      selections.push({
-        kind: "text",
-        text: selection.text,
-        surrounding_text: selection.surrounding_text,
-        comment: selection.comment,
-      });
-      continue;
-    }
-    if (
-      selection.kind === "box" &&
-      isArtifactSelectionRect(selection.rect) &&
-      isArtifactViewport(selection.viewport) &&
-      (selection.elements === undefined || isArtifactBoxElements(selection.elements)) &&
-      (selection.labels === undefined || isBoundedArtifactText(selection.labels, 0, 4096)) &&
-      isBoundedArtifactText(selection.comment, 0, 2048)
-    ) {
-      selections.push({
-        kind: "box",
-        rect: selection.rect,
-        viewport: selection.viewport,
-        // A box from the older viewer carries no elements; the server must see that.
-        ...(selection.elements !== undefined ? { elements: selection.elements } : {}),
-        ...(selection.labels ? { labels: selection.labels } : {}),
-        comment: selection.comment,
-      });
-      continue;
-    }
-    return null;
-  }
-  return { ...(candidate as unknown as ArtifactContextPayload), selections };
-}
-
-function isBoundedArtifactText(value: unknown, minimum: number, maximum: number): value is string {
-  return typeof value === "string" && value.length >= minimum && value.length <= maximum;
-}
-
-function isArtifactSelectionRect(
-  value: unknown,
-): value is { x: number; y: number; width: number; height: number } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const rect = value as Record<string, unknown>;
-  if (
-    Object.keys(rect).some((key) => !["x", "y", "width", "height"].includes(key)) ||
-    ![rect.x, rect.y, rect.width, rect.height].every(
-      (part) => typeof part === "number" && Number.isFinite(part),
-    )
-  )
-    return false;
-  const x = rect.x as number;
-  const y = rect.y as number;
-  const width = rect.width as number;
-  const height = rect.height as number;
-  return x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1 && y + height <= 1;
-}
-
-function isArtifactBoxElements(value: unknown): value is ArtifactBoxElement[] {
-  return (
-    Array.isArray(value) &&
-    value.length <= 8 &&
-    value.every(
-      (element) =>
-        element &&
-        typeof element === "object" &&
-        !Array.isArray(element) &&
-        Object.keys(element).every((key) => ["path", "label", "text", "region"].includes(key)) &&
-        isBoundedArtifactText(element.path, 1, 512) &&
-        isBoundedArtifactText(element.label, 0, 256) &&
-        isBoundedArtifactText(element.text, 0, 512) &&
-        (element.region === undefined || isArtifactSelectionRect(element.region)),
-    )
-  );
-}
-
-function isArtifactViewport(value: unknown): value is { width: number; height: number } {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const viewport = value as Record<string, unknown>;
-  return (
-    Object.keys(viewport).every((key) => key === "width" || key === "height") &&
-    [viewport.width, viewport.height].every(
-      (part) => typeof part === "number" && Number.isInteger(part) && part >= 1 && part <= 32768,
-    )
-  );
-}
-
-// How the composer names an artifact selection its comment is about.
-export function describeArtifactSelection(selection: ArtifactSelection): string {
-  if (selection.kind === "text") return `"${selection.text}"`;
-  if (!selection.elements) return `boxed ${selection.labels || "area"}`;
-  const [first, ...rest] = selection.elements;
-  if (!first) return `boxed area at ${describeArtifactRegion(selection.rect)}`;
-  const name = first.label || first.text.slice(0, 80) || first.path;
-  if (first.region) return `boxed ${name}, ${describeArtifactRegion(first.region)}`;
-  return `boxed ${rest.length ? `${name} and ${rest.length} more` : name}`;
-}
-
-function describeArtifactRegion(rect: { x: number; y: number; width: number; height: number }) {
-  const percent = (value: number) => `${Math.round(value * 100)}%`;
-  return `x ${percent(rect.x)}–${percent(rect.x + rect.width)}, y ${percent(rect.y)}–${percent(rect.y + rect.height)}`;
 }
 
 export function NodeChat({
@@ -512,7 +322,6 @@ export function NodeChat({
   const projectTruthScopeKey = project.project_truth_scope.join("\0");
   const draftKey = chatDraftStorageKey(project.id, chatId);
   const modeKey = chatModeStorageKey(project.id, chatId);
-  const artifactContextKey = artifactContextStorageKey(project.id, chatId);
   const annotationsKey = chatAnnotationsStorageKey(project.id, chatId);
   const annotationPanelId = useId();
   const derivedMode = useMemo(
@@ -527,8 +336,6 @@ export function NodeChat({
   const [annotations, setAnnotations] = useState<StagedChatAnnotation[]>(() =>
     readStagedChatAnnotations(annotationsKey),
   );
-  const annotationsRef = useRef(annotations);
-  annotationsRef.current = annotations;
   const artifactContext = useMemo(() => stagedArtifactContext(annotations), [annotations]);
   const [annotationComposer, setAnnotationComposer] = useState<ChatAnnotationComposer | null>(null);
   const [annotationComment, setAnnotationComment] = useState("");
@@ -565,8 +372,6 @@ export function NodeChat({
   const annotationComposerRef = useRef<HTMLFormElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const revisionDialogRef = useRef<HTMLElement | null>(null);
-  const revisionCloseRef = useRef<HTMLButtonElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
   const attachmentUploadBusyRef = useRef(false);
   const cancelledAttachmentIdsRef = useRef<Set<string>>(new Set());
@@ -584,9 +389,6 @@ export function NodeChat({
     () => new Map(),
   );
   const [keepingArtifacts, setKeepingArtifacts] = useState<Set<string>>(() => new Set());
-  const [revisionReview, setRevisionReview] = useState<ArtifactRevisionReview | null>(null);
-  const [revisionDecision, setRevisionDecision] = useState<"accept" | "reject" | null>(null);
-  const [revisionDecisionError, setRevisionDecisionError] = useState<string | null>(null);
   const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
@@ -622,115 +424,6 @@ export function NodeChat({
     ? steeringTask.steer_action_label
     : [...relatedTasks].reverse().find((task) => task.active)?.steer_unavailable_reason;
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
-  const revisionReviewTask = revisionReview
-    ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
-    : null;
-  const revisionReviewArtifact = revisionReviewTask?.result?.artifacts?.find(
-    (artifact) => artifact.artifact_id === revisionReview?.artifactId,
-  );
-  const revisionReviewCandidate = revisionReviewArtifact?.revision_candidate ?? null;
-
-  useEffect(() => {
-    if (!revisionReview || !revisionReviewCandidate) return;
-    const returnFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const restoreBackground = revisionDialogRef.current
-      ? makeAutoResearchDialogBackgroundInert(revisionDialogRef.current)
-      : () => undefined;
-    const frame = window.requestAnimationFrame(() => revisionCloseRef.current?.focus());
-    return () => {
-      window.cancelAnimationFrame(frame);
-      restoreBackground();
-      restoreAutoResearchDialogFocus(returnFocus);
-    };
-  }, [revisionReview, revisionReviewCandidate?.candidate_id]);
-
-  useEffect(() => {
-    if (!revisionReview || !revisionReviewCandidate) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!revisionDialogRef.current) return;
-      handleAutoResearchDialogKeyDown(
-        event,
-        revisionDialogRef.current,
-        document.activeElement,
-        Boolean(revisionDecision),
-        () => setRevisionReview(null),
-      );
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [revisionDecision, revisionReview, revisionReviewCandidate?.candidate_id]);
-
-  useEffect(() => {
-    const accept = (raw: unknown) => {
-      const payload = parseArtifactContextPayload(raw);
-      if (!payload || payload.project_id !== project.id || payload.chat_id !== chatId) return;
-      const source = relatedTasks.find((task) => task.operation_id === payload.operation_id);
-      const sourceKind = payload.source ?? "task";
-      const sourceArtifact = source?.result?.artifacts?.find(
-        (artifact) => artifact.artifact_id === payload.artifact_id,
-      );
-      if (!source || (sourceKind === "task" && (!sourceArtifact || !sourceArtifact.can_discuss)))
-        return;
-      // A viewer sends all of its selections each time, so they replace the staged
-      // artifact comments and leave comments on answer text alone.
-      removeStorage(artifactContextKey);
-      removeStorage(`${artifactContextKey}:applied`);
-      const answerComments = annotationsRef.current.filter((annotation) => !annotation.artifact);
-      if (answerComments.length + payload.selections.length > MAX_CHAT_ANNOTATIONS) {
-        setSubmitError(`A turn can include at most ${MAX_CHAT_ANNOTATIONS} annotations.`);
-        return;
-      }
-      const context = {
-        source: sourceKind,
-        operation_id: payload.operation_id,
-        artifact_id: payload.artifact_id,
-        ...(sourceKind === "episode_report" && payload.episode_id
-          ? { episode_id: payload.episode_id }
-          : {}),
-      };
-      setAnnotations([
-        ...answerComments,
-        ...payload.selections.map((selection) => ({
-          id: crypto.randomUUID(),
-          selectedText: describeArtifactSelection(selection),
-          comment: selection.comment,
-          artifact: { context, name: payload.artifact_name, selection },
-        })),
-      ]);
-      setAnnotationsOpen(true);
-      // The preview can bring a different window or chat surface forward.
-      window.requestAnimationFrame(() => textareaRef.current?.focus());
-    };
-    const stored = readStorage(artifactContextKey);
-    if (stored) {
-      try {
-        accept(JSON.parse(stored));
-      } catch {
-        removeStorage(artifactContextKey);
-      }
-    }
-    const storage = (event: StorageEvent) => {
-      if (event.key !== artifactContextKey || !event.newValue) return;
-      try {
-        accept(JSON.parse(event.newValue));
-      } catch {
-        removeStorage(artifactContextKey);
-      }
-    };
-    window.addEventListener("storage", storage);
-    let channel: BroadcastChannel | null = null;
-    try {
-      channel = new BroadcastChannel("rcp-artifact-context");
-      channel.addEventListener("message", (event) => accept(event.data));
-    } catch {
-      // Storage events remain the cross-window path where BroadcastChannel is unavailable.
-    }
-    return () => {
-      window.removeEventListener("storage", storage);
-      channel?.close();
-    };
-  }, [artifactContextKey, chatId, project.id, relatedTasks]);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
   const watcherVisibility = useHiddenWatchers(apiBase);
   const watcherRows = useMemo(
@@ -760,7 +453,7 @@ export function NodeChat({
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
   const sessionId = resolvedChatSessionId(relatedTasks);
-  const mode = modeState.value;
+  const mode = artifactContext ? "discuss" : modeState.value;
   modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
@@ -950,12 +643,12 @@ export function NodeChat({
     // A follow-up inherits the running turn's capability, so the toggle would
     // describe something it cannot change. While a turn merely runs unsteerable,
     // the choice still belongs to the next turn and stays available.
-    if (steeringTask) return;
+    if (steeringTask || artifactContext) return;
     selectMode(toggleConversationMode(modeRef.current));
-  }, [steeringTask, selectMode]);
+  }, [steeringTask, artifactContext, selectMode]);
 
   useEffect(() => {
-    if (presentation !== "workspace" || readOnly) return;
+    if (presentation !== "workspace" || readOnly || artifactContext) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
       if (!isConversationModeShortcut(event.key, event.shiftKey)) return;
@@ -964,11 +657,11 @@ export function NodeChat({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [presentation, readOnly, toggleMode]);
+  }, [presentation, readOnly, artifactContext, toggleMode]);
 
   const updateMessage = (next: string) => {
     if (readOnly) return;
-    if (next && !modeState.pinned) {
+    if (next && !modeState.pinned && !artifactContext) {
       writeStorage(modeKey, mode);
       setModeState({ value: mode, pinned: true });
     }
@@ -1003,8 +696,10 @@ export function NodeChat({
     const start = textarea?.selectionStart ?? message.length;
     const sessionId = crypto.randomUUID();
     dictationSpanRef.current = { sessionId, start, end: start };
-    writeStorage(modeKey, mode);
-    setModeState({ value: mode, pinned: true });
+    if (!artifactContext) {
+      writeStorage(modeKey, mode);
+      setModeState({ value: mode, pinned: true });
+    }
     setSubmitError(null);
     setDictationError(null);
     setDictationState("starting");
@@ -1409,7 +1104,7 @@ export function NodeChat({
       removeSessionStorage(annotationsKey);
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
-      selectMode(mode);
+      if (!artifactContext) selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       setMessage((current) => (current ? current : draftMessage));
@@ -1476,44 +1171,31 @@ export function NodeChat({
     });
   };
 
-  const openArtifact = async (
-    taskId: string,
-    artifact: AgentArtifactDescriptor,
-    reserved: Window | null = null,
-  ) => {
+  const openArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
     const systemPdf = desktop && artifact.view === "pdf" && artifact.can_download;
     if (!artifact.can_open && !systemPdf) return;
-    if (desktop) {
-      const key = `${taskId}:${artifact.artifact_id}`;
-      setArtifactShellErrors((current) => withoutMapKey(current, key));
-      try {
-        await (systemPdf ? openDesktopArtifactPdf : openDesktopArtifactPreview)({
+    if (artifact.view !== "pdf") {
+      openArtifactPanel({ projectId: project.id, artifactId: artifact.artifact_id });
+      return;
+    }
+    const key = `${taskId}:${artifact.artifact_id}`;
+    setArtifactShellErrors((current) => withoutMapKey(current, key));
+    try {
+      if (desktop) {
+        await openDesktopArtifactPdf({
           projectId: project.id,
           taskId,
           artifactId: artifact.artifact_id,
         });
-      } catch (error) {
-        setArtifactShellErrors((current) =>
-          withMapValue(
-            current,
-            key,
-            `Open failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
       }
-      return;
-    }
-    const target = reserved ?? window.open("about:blank", "_blank");
-    if (!target) {
-      markArtifactPreviewFailed(taskId, artifact.artifact_id);
-      return;
-    }
-    target.opener = null;
-    try {
-      target.location.replace(artifactUrl(project.id, taskId, artifact.artifact_id, "viewer"));
-    } catch {
-      target.close();
-      markArtifactPreviewFailed(taskId, artifact.artifact_id);
+    } catch (error) {
+      setArtifactShellErrors((current) =>
+        withMapValue(
+          current,
+          key,
+          `Open failed: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
     }
   };
 
@@ -1563,41 +1245,6 @@ export function NodeChat({
     }
   };
 
-  const decideRevision = async (decision: "accept" | "reject") => {
-    const review = revisionReview;
-    const candidate = revisionReviewCandidate;
-    if (!review || !candidate || revisionDecision) return;
-    setRevisionDecision(decision);
-    setRevisionDecisionError(null);
-    let decisionError: string | null = null;
-    try {
-      await decideArtifactRevision(project.id, candidate.candidate_id, decision);
-    } catch (error) {
-      decisionError = error instanceof Error ? error.message : String(error);
-    }
-    try {
-      const refreshed = await onRefreshTask(review.taskId);
-      const refreshedArtifact = refreshed.result?.artifacts?.find(
-        (artifact) => artifact.artifact_id === review.artifactId,
-      );
-      if (!refreshedArtifact?.revision_candidate) {
-        setRevisionReview(null);
-      } else if (refreshedArtifact.revision_candidate.diagnostic) {
-        decisionError = null;
-      }
-      setRevisionDecisionError(decisionError);
-    } catch (error) {
-      const refreshError = error instanceof Error ? error.message : String(error);
-      setRevisionDecisionError(
-        decisionError
-          ? `${decisionError} Refresh also failed: ${refreshError}`
-          : `The decision was saved, but the artifact could not refresh: ${refreshError}`,
-      );
-    } finally {
-      setRevisionDecision(null);
-    }
-  };
-
   const openRepositoryFile = async (messageId: string, taskId: string, href: string) => {
     const resolution = resolveRepositoryFileHref(href, project.repositories);
     if (resolution.kind === "error") {
@@ -1608,9 +1255,6 @@ export function NodeChat({
       const name = resolution.reason === "no-match" ? turnArtifactName(href, taskId) : null;
       if (name) {
         const known = relatedTasks.find((candidate) => candidate.operation_id === taskId);
-        // A popup is only granted during the click, so claim the window before any
-        // await; the desktop shell opens its own and needs no reservation.
-        const reserved = known || desktop ? null : window.open("about:blank", "_blank");
         // An older answer's task has aged out of the recent list, so fetch the exact
         // task rather than refusing a citation the transcript still displays.
         const task = known ?? (await onRefreshTask(taskId).catch(() => null));
@@ -1618,9 +1262,8 @@ export function NodeChat({
         if (artifact) {
           setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
           if (artifact.can_open || (desktop && artifact.view === "pdf" && artifact.can_download)) {
-            await openArtifact(taskId, artifact, reserved);
+            await openArtifact(taskId, artifact);
           } else {
-            reserved?.close();
             if (!known)
               await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
             const card = document.getElementById(`artifact-${taskId}-${artifact.artifact_id}`);
@@ -1629,53 +1272,17 @@ export function NodeChat({
           }
           return;
         }
-        reserved?.close();
       }
       setRepositoryFileErrors((current) => withMapValue(current, messageId, resolution.message));
       return;
     }
 
     setRepositoryFileErrors((current) => withoutMapKey(current, messageId));
-    const target = resolution.target;
-    if (desktop) {
-      try {
-        await openDesktopRepositoryFilePreview({ projectId: project.id, ...target });
-      } catch (error) {
-        setRepositoryFileErrors((current) =>
-          withMapValue(
-            current,
-            messageId,
-            `Open failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-      }
-      return;
-    }
-
-    const preview = window.open("about:blank", "_blank");
-    if (!preview) {
-      setRepositoryFileErrors((current) =>
-        withMapValue(current, messageId, "Repository file preview could not be opened."),
-      );
-      return;
-    }
-    preview.opener = null;
-    const url = repositoryFilePreviewUrl(project.id, target);
-    if (!(await resourceIsAvailable(url))) {
-      preview.close();
-      setRepositoryFileErrors((current) =>
-        withMapValue(current, messageId, "Repository file preview is unavailable."),
-      );
-      return;
-    }
-    try {
-      preview.location.replace(url);
-    } catch {
-      preview.close();
-      setRepositoryFileErrors((current) =>
-        withMapValue(current, messageId, "Repository file preview could not be opened."),
-      );
-    }
+    openRepositoryFilePanel({
+      projectId: project.id,
+      path: resolution.target.path,
+      line: resolution.target.line ?? undefined,
+    });
   };
 
   const watcherToggle = watcherRows.length > 0 && (
@@ -1941,7 +1548,6 @@ export function NodeChat({
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
-                const revisionCandidate = artifact.revision_candidate ?? null;
                 const taskUpdatedAt =
                   relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
                 const previewFailed = failedArtifactPreviews.has(
@@ -1991,7 +1597,7 @@ export function NodeChat({
                     <span>
                       {artifact.name}
                       {artifact.size_bytes != null && ` · ${formatBytes(artifact.size_bytes)}`}
-                      {artifact.kept_filename && <em>Kept</em>}
+                      {(artifact.kept_at || artifact.kept_filename) && <em>Kept</em>}
                     </span>
                     {unavailableReason && <strong>{unavailableReason}</strong>}
                     <div className="chat-artifact-actions">
@@ -2033,21 +1639,6 @@ export function NodeChat({
                           onClick={() => void keepArtifact(line.taskId, artifact)}
                         >
                           Keep
-                        </button>
-                      )}
-                      {revisionCandidate && (
-                        <button
-                          type="button"
-                          className="review-revision"
-                          onClick={() => {
-                            setRevisionDecisionError(null);
-                            setRevisionReview({
-                              taskId: line.taskId,
-                              artifactId: artifact.artifact_id,
-                            });
-                          }}
-                        >
-                          Review revision
                         </button>
                       )}
                     </div>
@@ -2240,7 +1831,7 @@ export function NodeChat({
             }}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
-              if (isConversationModeShortcut(event.key, event.shiftKey)) {
+              if (!artifactContext && isConversationModeShortcut(event.key, event.shiftKey)) {
                 if (presentation !== "workspace") {
                   event.preventDefault();
                   toggleMode();
@@ -2269,35 +1860,43 @@ export function NodeChat({
               >
                 <Plus size={16} />
               </button>
-              <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
-                {(["discuss", "work"] as const).map((option) => (
-                  <button
-                    type="button"
-                    className={option}
-                    aria-pressed={mode === option}
-                    title={MODE_HINTS[option]}
-                    disabled={Boolean(steeringTask)}
-                    onClick={() => selectMode(option)}
-                    key={option}
-                  >
-                    {modeLabel(option)}
-                  </button>
-                ))}
-              </div>
-              <WorktreeControls
-                key={`${project.id}:${chatId}`}
-                state={worktree.state}
-                error={worktree.error}
-                chosen={worktree.chosen}
-                disabled={Boolean(
-                  relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
-                )}
-                onChoose={worktree.choose}
-                onIntegrate={integrateWorktree}
-                onRemove={worktree.remove}
-                onPreviewRemove={worktree.previewRemoval}
-                onRefresh={worktree.refresh}
-              />
+              {!artifactContext && (
+                <>
+                  <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
+                    {(["discuss", "work"] as const).map((option) => (
+                      <button
+                        type="button"
+                        className={option}
+                        aria-pressed={mode === option}
+                        title={MODE_HINTS[option]}
+                        disabled={Boolean(steeringTask)}
+                        onClick={() => selectMode(option)}
+                        key={option}
+                      >
+                        {modeLabel(option)}
+                      </button>
+                    ))}
+                  </div>
+                  <WorktreeControls
+                    key={`${project.id}:${chatId}`}
+                    state={worktree.state}
+                    error={worktree.error}
+                    chosen={worktree.chosen}
+                    disabled={Boolean(
+                      relatedActive ||
+                      pausedAttempt ||
+                      submitting ||
+                      reviewPending ||
+                      repairingTaskId,
+                    )}
+                    onChoose={worktree.choose}
+                    onIntegrate={integrateWorktree}
+                    onRemove={worktree.remove}
+                    onPreviewRemove={worktree.previewRemoval}
+                    onRefresh={worktree.refresh}
+                  />
+                </>
+              )}
               {computeConnections.length > 0 && (
                 <div className="chat-compute-picker">
                   <button
@@ -2394,100 +1993,6 @@ export function NodeChat({
           </div>
         </div>
       )}
-      {revisionReview &&
-        revisionReviewTask &&
-        revisionReviewArtifact &&
-        revisionReviewCandidate && (
-          <div
-            className="artifact-revision-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget && !revisionDecision) {
-                setRevisionReview(null);
-              }
-            }}
-          >
-            <section
-              ref={revisionDialogRef}
-              className="artifact-revision-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="artifact-revision-title"
-              tabIndex={-1}
-            >
-              <header>
-                <div>
-                  <span>Pending revision</span>
-                  <h2 id="artifact-revision-title">{revisionReviewArtifact.name}</h2>
-                </div>
-                <button
-                  ref={revisionCloseRef}
-                  type="button"
-                  className="icon-button"
-                  aria-label="Close revision review"
-                  disabled={Boolean(revisionDecision)}
-                  onClick={() => setRevisionReview(null)}
-                >
-                  <X size={16} />
-                </button>
-              </header>
-              <div className="artifact-revision-compare">
-                <figure>
-                  <figcaption>Current</figcaption>
-                  <iframe
-                    title={`Current ${revisionReviewArtifact.name}`}
-                    src={versionedArtifactContentUrl(
-                      project.id,
-                      revisionReview.taskId,
-                      revisionReviewArtifact.artifact_id,
-                      revisionReviewTask.updated_at,
-                    )}
-                    sandbox="allow-scripts"
-                  />
-                </figure>
-                <figure>
-                  <figcaption>Candidate</figcaption>
-                  <iframe
-                    title={`Candidate ${revisionReviewArtifact.name}`}
-                    src={artifactRevisionContentUrl(
-                      project.id,
-                      revisionReviewCandidate.candidate_id,
-                    )}
-                    sandbox="allow-scripts"
-                  />
-                </figure>
-              </div>
-              {revisionReviewCandidate.diagnostic && (
-                <strong className="artifact-revision-error" role="alert">
-                  {revisionReviewCandidate.diagnostic}
-                </strong>
-              )}
-              {revisionDecisionError && (
-                <strong className="artifact-revision-error" role="alert">
-                  {revisionDecisionError}
-                </strong>
-              )}
-              <footer>
-                <button
-                  type="button"
-                  className="button secondary"
-                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_reject}
-                  onClick={() => void decideRevision("reject")}
-                >
-                  {revisionDecision === "reject" ? "Rejecting…" : "Reject"}
-                </button>
-                <button
-                  type="button"
-                  className="button primary"
-                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_accept}
-                  onClick={() => void decideRevision("accept")}
-                >
-                  {revisionDecision === "accept" ? "Accepting…" : "Accept revision"}
-                </button>
-              </footer>
-            </section>
-          </div>
-        )}
       {annotationComposer && typeof document !== "undefined"
         ? createPortal(
             <form
@@ -2938,13 +2443,4 @@ function withoutMapKey(map: Map<string, string>, key: string): Map<string, strin
   const next = new Map(map);
   next.delete(key);
   return next;
-}
-
-async function resourceIsAvailable(url: string): Promise<boolean> {
-  try {
-    const response = await fetch(url, { method: "HEAD" });
-    return response.ok;
-  } catch {
-    return false;
-  }
 }

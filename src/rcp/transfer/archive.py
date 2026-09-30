@@ -32,7 +32,7 @@ TRANSFER_ARCHIVE_GIT_CODEC = "rcp-transfer-v2"
 # Their tests compare them with the concrete backup/root owners so a new durable
 # root cannot silently enter or disappear from transfer policy.
 TRANSFER_APP_DATA_TYPED_ROOTS = frozenset({"rcp.sqlite3"})
-TRANSFER_APP_DATA_PROJECT_SOURCE_ROOTS = frozenset({"project-sources"})
+TRANSFER_APP_DATA_PROJECT_SOURCE_ROOTS = frozenset({"project-sources", "artifacts"})
 TRANSFER_APP_DATA_CONTROL_ROOTS = frozenset({"transfer-exports", "transfer-inbox"})
 TRANSFER_APP_DATA_EXCLUDED_ROOTS = frozenset(
     {
@@ -113,6 +113,7 @@ TransferArchiveGroup = Literal[
     "paper_introduction",
     "fact",
     "kept_artifact",
+    "artifact_version",
     "legacy_kept_result_view",
     "provider_history",
     "source_release_proof",
@@ -121,7 +122,9 @@ TransferArchiveGroup = Literal[
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}")
 _DIAGNOSTIC_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
-_PROJECT_LINK_COLUMNS = frozenset({"project_id", "canonical_project_id", "proposed_project_id"})
+_PROJECT_LINK_COLUMNS = frozenset(
+    {"project_id", "canonical_project_id", "proposed_project_id", "artifact_id"}
+)
 
 
 def _canonical_uuid4(value: str, *, label: str) -> str:
@@ -271,6 +274,12 @@ class TransferArchiveEntry(_StrictTransferModel):
             valid = path == PurePosixPath("paper/introduction.md")
         elif self.group == "fact":
             valid = len(parts) >= 2 and parts[0] == "facts"
+        elif self.group == "artifact_version":
+            valid = (
+                len(parts) == 3
+                and parts[0] == "artifacts"
+                and _SHA256.fullmatch(parts[2]) is not None
+            )
         elif self.group == "kept_artifact":
             valid = len(parts) == 2 and parts[0] == "artifacts"
         elif self.group == "legacy_kept_result_view":

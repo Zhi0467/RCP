@@ -5,6 +5,8 @@ import { isMutationRequest } from "../src/api.ts";
 import {
   advanceDesktopProjectTransfer,
   desktopDownloadPath,
+  downloadDesktopArtifact,
+  openDesktopArtifactPdf,
   desktopFolderSelectionPath,
   desktopFolderAccessAcknowledgementValue,
   discardDesktopProjectTransferExport,
@@ -15,7 +17,6 @@ import {
   loadDesktopProjectTransfer,
   needsDesktopFolderAccessAcknowledgement,
   openDesktopProjectTransferTerminal,
-  openEpisodeReportFromLink,
   prepareDesktopProjectTransfer,
   recoverTeamTransport,
   readDesktopTargetProjectProvisioningOptions,
@@ -273,49 +274,6 @@ test("folder access acknowledgement gates only desktop and is versioned", () => 
     needsDesktopFolderAccessAcknowledgement(true, desktopFolderAccessAcknowledgementValue()),
     false,
   );
-});
-
-test("episode report links use the native preview only in the desktop shell", async () => {
-  const originalWindow = globalThis.window;
-  let prevented = 0;
-  const invocations = [];
-  const desktopWindow = new EventTarget();
-  desktopWindow.__TAURI_INTERNALS__ = {
-    invoke: async (command, args) => {
-      invocations.push({ command, args });
-      return { opened: true };
-    },
-  };
-  globalThis.window = desktopWindow;
-  try {
-    assert.equal(
-      await openEpisodeReportFromLink(
-        { preventDefault: () => (prevented += 1) },
-        { projectId: "project one", episodeId: "episode/one" },
-      ),
-      true,
-    );
-    assert.equal(prevented, 1);
-    assert.deepEqual(invocations, [
-      {
-        command: "open_episode_report_preview",
-        args: { projectId: "project one", episodeId: "episode/one" },
-      },
-    ]);
-
-    delete globalThis.window;
-    assert.equal(
-      await openEpisodeReportFromLink(
-        { preventDefault: () => (prevented += 1) },
-        { projectId: "project one", episodeId: "episode/one" },
-      ),
-      false,
-    );
-    assert.equal(prevented, 1);
-  } finally {
-    if (originalWindow === undefined) delete globalThis.window;
-    else globalThis.window = originalWindow;
-  }
 });
 
 test("project transfer bindings keep the relay native and pass only public metadata", async () => {
@@ -686,5 +644,52 @@ test("webview zoom is a no-op outside the desktop runtime", async () => {
     await setDesktopWebviewZoom(1.2);
   } finally {
     if (originalWindow !== undefined) globalThis.window = originalWindow;
+  }
+});
+
+test("native downloads accept stored artifacts without a task and retain task downloads", async () => {
+  const previous = globalThis.window;
+  const calls = [];
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        return { saved: false, path: null };
+      },
+    },
+  };
+  try {
+    const stored = { projectId: "p", artifactId: "report", suggestedName: "report.html" };
+    assert.equal(await downloadDesktopArtifact(stored), null);
+    assert.equal(await downloadDesktopArtifact({ ...stored, taskId: "task" }), null);
+    assert.deepEqual(calls, [
+      { command: "download_artifact", args: stored },
+      { command: "download_artifact", args: { ...stored, taskId: "task" } },
+    ]);
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
+});
+
+test("native PDFs accept stored artifacts without a producing task", async () => {
+  const previous = globalThis.window;
+  const calls = [];
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        return { opened: true };
+      },
+    },
+  };
+  try {
+    await openDesktopArtifactPdf({ projectId: "p", artifactId: "pdf" });
+    assert.deepEqual(calls, [
+      { command: "open_artifact_pdf", args: { projectId: "p", artifactId: "pdf" } },
+    ]);
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
   }
 });

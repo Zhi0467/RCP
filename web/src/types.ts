@@ -13,7 +13,7 @@ export type AppView =
   | "chats";
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
-export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
+export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge" | "artifact_edit";
 /**
  * Opaque on purpose, like `EpisodeStatus`. A task's lifecycle reaches the client
  * already answered, as `active`, `awaiting_human`, `settled`, `status_label`, and
@@ -2231,26 +2231,51 @@ export interface AgentArtifactDescriptor {
   can_download: boolean;
   can_keep: boolean;
   can_discuss: boolean;
-  can_revise: boolean;
-  revision_candidate?: ArtifactRevisionCandidate | null;
 }
 
-/**
- * Opaque because the backend publishes the diagnostic and both disposition
- * decisions; browser code must not derive either from lifecycle spelling.
- */
-declare const OPAQUE_ARTIFACT_REVISION_STATUS: unique symbol;
-export type ArtifactRevisionStatus = {
-  readonly [OPAQUE_ARTIFACT_REVISION_STATUS]: "ArtifactRevisionStatus";
-};
+/** `GET /api/projects/{project_id}/artifacts/{artifact_id}/state`: the in-app
+ *  viewer's RCP chrome. Every `can_*` is an offer; the endpoint still decides. */
+export interface ArtifactViewerState {
+  artifact_id: string;
+  name: string;
+  media_type: AgentArtifactMediaType;
+  view: ArtifactView;
+  /** "episode_ending" is a report. */
+  supplier: "turn" | "episode_ending";
+  current_version: string;
+  /** 1 for the original, counting retained versions in order. */
+  version_number: number;
+  can_undo: boolean;
+  /** Null for a static artifact; "finished" once a final snapshot is saved. */
+  live: "live" | "finished" | null;
+  /** The operation of an admitted edit that has not published yet. */
+  editing_operation_id: string | null;
+  can_comment: boolean;
+  /** Why Send is unavailable right now, such as a session held by another launch. */
+  comment_unavailable_reason: string | null;
+  /** The origin cannot resume; Send must be the explicit fresh-session action. */
+  fresh_session_required: boolean;
+  /** App hash of the thread the reply goes to, or null when it cannot be opened. */
+  thread_href: string | null;
+  /** Same-origin viewer shell for the current version; null for PDF and download-only. */
+  viewer_url: string | null;
+  download_url: string;
+  can_keep: boolean;
+  expires_at: string | null;
+}
 
-export interface ArtifactRevisionCandidate {
-  candidate_id: string;
-  status: ArtifactRevisionStatus;
+/** One entry of `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts`:
+ *  the report and every artifact its turns and worker turns produced. */
+export interface RunArtifactEntry {
+  artifact_id: string;
+  name: string;
+  media_type: AgentArtifactMediaType;
+  view: ArtifactView;
+  supplier: "turn" | "episode_ending";
+  origin_operation_id: string | null;
+  /** Set for an Auto-research worker's artifact. */
+  worker_label: string | null;
   created_at: string;
-  diagnostic: string | null;
-  can_accept: boolean;
-  can_reject: boolean;
 }
 
 export type ArtifactSelection =

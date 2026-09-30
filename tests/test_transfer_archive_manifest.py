@@ -66,6 +66,7 @@ PROJECT_LINKED_TABLES = {
     "_legacy_campaign_reports_archive",
     "_legacy_campaigns_archive",
     "agent_usage",
+    "artifact_imports",
     "artifact_revision_candidates",
     "auto_research_apply_results",
     "auto_research_child_admissions",
@@ -122,7 +123,9 @@ PROJECT_LINKED_TABLES = {
     "project_transfer_restore_reentries",
     "project_transfer_uploads",
     "projects",
-    "result_views",
+    "artifacts",
+    "artifact_versions",
+    "artifact_operations",
     "watchers",
     "writing_sessions",
 }

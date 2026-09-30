@@ -626,10 +626,11 @@ def _render_overlay_manifest(
         "default_auto_research_invocation_ceiling",
         configuration.default_auto_research_invocation_ceiling,
     )
-    defaults = tomlkit.table()
-    defaults.add("workflow_ids", list(configuration.skill_defaults.workflow_ids))
-    defaults.add("skill_ids", list(configuration.skill_defaults.skill_ids))
-    agent.add("skill_defaults", defaults)
+    if configuration.skill_defaults_configuration:
+        defaults = tomlkit.table()
+        for name, value in configuration.skill_defaults_configuration.items():
+            defaults.add(name, value)
+        agent.add("skill_defaults", defaults)
     profiles = {profile.profile: profile for profile in configuration.agent_profiles}
     for surface in AGENT_EXECUTION_PROFILES:
         item = profiles[surface]

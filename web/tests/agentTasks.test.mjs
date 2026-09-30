@@ -53,7 +53,6 @@ function artifact(overrides = {}) {
     can_download: true,
     can_keep: true,
     can_discuss: true,
-    can_revise: true,
     ...overrides,
   };
 }
@@ -396,7 +395,6 @@ test("historical artifact decisions survive transcript reconciliation without UI
     can_open: false,
     can_download: false,
     can_keep: false,
-    can_revise: false,
   });
   const completed = task({
     operation_id: "historical-artifact",
@@ -778,6 +776,38 @@ test("omission-only turns survive reconstruction and persisted history reconcili
     assert.equal(persisted.length, 2);
     assert.deepEqual(persisted[1].artifactOmissions, omissions);
   }
+});
+
+test("artifact edit tasks follow their resolved chat and exclude the orchestrator thread", () => {
+  const tasks = [
+    task({
+      operation_id: "node-edit",
+      kind: "artifact_edit",
+      request: { chat_scope: "node", chat_id: "node-chat", node_id: "experiment" },
+    }),
+    task({
+      operation_id: "project-edit",
+      kind: "artifact_edit",
+      request: { chat_scope: "project", chat_id: "project-chat" },
+    }),
+    task({
+      operation_id: "orchestrator-edit",
+      kind: "artifact_edit",
+      request: { chat_scope: "project", chat_id: null },
+    }),
+  ];
+  assert.deepEqual(
+    relatedChatTasks(tasks, "node_chat", "experiment", "node-chat").map(
+      (item) => item.operation_id,
+    ),
+    ["node-edit"],
+  );
+  assert.deepEqual(
+    relatedChatTasks(tasks, "project_chat", null, "project-chat").map((item) => item.operation_id),
+    ["project-edit"],
+  );
+  assert.deepEqual(relatedChatTasks(tasks, "node_chat", "other", "node-chat"), []);
+  assert.deepEqual(relatedChatTasks(tasks, "project_chat", null, "another-chat"), []);
 });
 
 test("chat session follows the server projection without reviving historical native sessions", () => {

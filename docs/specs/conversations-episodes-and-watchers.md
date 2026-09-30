@@ -109,8 +109,8 @@ of the current session: `session_stale` (the provider no longer has it) or
 `session_context_unavailable` (the saved continuation context failed and
 requires a retry), the classification Retry uses to refuse resuming a dropped
 session. A `session_limit` failure continues the session: its classification
-also matches account quota, after which the session can still resume. A
-result-view revision runs on the view's saved session and never becomes the
+also matches account quota, after which the session can still resume. An
+artifact edit runs on the artifact's saved session and never becomes the
 chat's current session. The exact provider, machine, chat, graph target,
 stage, and launch write scope remain enforced. **New session** creates a new
 chat id.
@@ -280,8 +280,8 @@ and the main composer shows their count. Several annotations may be staged. They
 remain a per-chat draft, including after a comment is edited blank, and block
 send until completed or removed. On send, each contributes only its copied
 selected text followed by `comment: <comment>` to the ordinary human message.
-A comment on an artifact selection is the same annotation; its artifact target
-is described in [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
+Artifact comments are not chat annotations. They are sent from the artifact
+viewer; see [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
 There are no message references, source identifiers, offsets, durable
 annotation records, or graph authority. Staging clears when the turn is accepted
 and otherwise remains a client-side draft for that chat.
@@ -475,6 +475,11 @@ that started the session (see
 Current inline instructions take precedence while the objective, attempt ledger,
 and completed native-session progress remain intact. The episode report gets no
 pointer, and the next operational turn on its session reopens the master.
+Revoking artifact edits use the same reopening rule. Only a successful
+operational launch clears it; edit completion does not. All owners reserve the
+exact native session and stage atomically, including human chats, episode
+invocations, wakes, recovery, reports, and artifact edits. Busy edit admission
+returns 409 without queueing, steering, spending budget, or changing Stop.
 
 The Experiment-loop Patch may update its own attempt/status and guidance, create
 Evidence and Blockers, assert legal epistemic and output edges, and create the
@@ -676,6 +681,15 @@ Maintenance uses its own Work task/session, spends no Experiment invocation,
 does not create an attempt, and never replaces the episode's native-session
 binding. Stop, watcher claim, and competing maintenance have one atomic winner.
 
+## Live artifact reconciliation
+
+The existing background reconciliation pass refreshes helper-job state and
+captures eligible final live-artifact snapshots, including versions whose
+watched episode ended without a job. Capture runs without a viewer. An
+incomplete read retains a diagnostic and a persisted retry deadline; an outage
+never becomes a complete final result. Capture changes no episode verdict,
+budget, Stop fence, or graph state.
+
 ## Visual wrap-up
 
 Completion, operational exhaustion, unrecoverable failure, and a human-authority
@@ -707,8 +721,10 @@ dispatch-reset fence newer than the old worker's attempt receipts. Only that
 durable fence makes the requeued operation launchable; public receipt writers
 cannot forge it, and the previous attempt remains inspectable history.
 
-A valid `episode-report.html` is captured as bounded immutable HTML and served
-in the opaque artifact sandbox. The report has no Patch, watcher, command,
+A valid `episode-report.html` is captured as an Artifact with permanent original
+bytes in RCP storage and served in the opaque artifact sandbox. Its report
+lifecycle record binds that first version rather than retaining inline HTML.
+The report has no Patch, watcher, command,
 Proposal, or graph channel and never determines the episode verdict. Final
 report failure is a durable visible nonblocking error with no manual report
 Retry; the episode still terminalizes. It is shown beside the ending it belongs

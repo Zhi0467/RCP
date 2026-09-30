@@ -83,6 +83,7 @@ export function projectActivityTask(
 }
 
 export function taskKindLabel(kind: AgentTaskKind): string {
+  if (kind === "artifact_edit") return "Artifact edit";
   switch (kind) {
     case "seed":
       return "Seed project graph";
@@ -109,7 +110,12 @@ export function relatedChatTasks(
 ): AgentTask[] {
   const candidates = tasks
     .filter(
-      (task) => task.kind === kind && (kind === "project_chat" || task.request.node_id === nodeId),
+      (task) =>
+        (task.kind === kind ||
+          (task.kind === "artifact_edit" &&
+            Boolean(task.request.chat_id) &&
+            task.request.chat_scope === (kind === "project_chat" ? "project" : "node"))) &&
+        (kind === "project_chat" || task.request.node_id === nodeId),
     )
     .sort(compareTaskTime);
   if (requestedChatId) return candidates.filter((task) => task.request.chat_id === requestedChatId);
@@ -334,10 +340,6 @@ export function versionedArtifactContentUrl(
   return `${artifactUrl(projectId, taskId, artifactId, "content")}?task_updated_at=${encodeURIComponent(taskUpdatedAt)}`;
 }
 
-export function artifactRevisionContentUrl(projectId: string, candidateId: string): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/artifact-revisions/${encodeURIComponent(candidateId)}/content`;
-}
-
 /** The server resolves the chat binding; task or transcript session ids are history. */
 export function resolvedChatSessionId(tasks: AgentTask[]): string | null {
   return [...tasks].sort(compareTaskTime).at(-1)?.current_chat_session_id ?? null;
@@ -397,8 +399,7 @@ export function taskArtifacts(task: AgentTask): AgentArtifactDescriptor[] {
       typeof item.can_open === "boolean" &&
       typeof item.can_download === "boolean" &&
       typeof item.can_keep === "boolean" &&
-      typeof item.can_discuss === "boolean" &&
-      typeof item.can_revise === "boolean",
+      typeof item.can_discuss === "boolean",
   );
 }
 

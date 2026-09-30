@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rcp.agents import AgentEvent, ProviderReadiness
+from rcp.artifacts import html_document_title
 from rcp.background import AgentTaskExecution
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
 from rcp.core.models import GraphBranchMetadata
@@ -26,6 +27,7 @@ from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    Artifact,
     AutoResearchStateRecord,
     EpisodeRecord,
     EpisodeReportRecord,
@@ -287,6 +289,21 @@ def create_terminal_auto_episode(
 
     report: EpisodeReportRecord | None = None
     if report_html is not None:
+        stored = store.create_artifact(
+            Artifact(
+                artifact_id=hashlib.sha256(f"{episode_id}-report".encode()).hexdigest()[:24],
+                project_id=project_id,
+                supplier="episode_ending",
+                supplier_id=episode_id,
+                source_name="episode-report.html",
+                media_type="text/html",
+                created_at=store.now(),
+                episode_id=episode_id,
+                display_title=html_document_title(report_html),
+                origin_operation_id=allocation_operation_id,
+            ),
+            data=report_html.encode(),
+        )
         report = EpisodeReportRecord(
             report_id=f"{episode_id}-report",
             episode_id=episode_id,
@@ -294,7 +311,8 @@ def create_terminal_auto_episode(
             allocation_operation_id=allocation_operation_id,
             ending="exhausted",
             sha256=hashlib.sha256(report_html.encode("utf-8")).hexdigest(),
-            html=report_html,
+            artifact_id=stored.artifact_id,
+            artifact_version_id=stored.current_version,
             created_at=store.now(),
         )
         store.finish_episode_report_ready(attempt.attempt_id, report)
@@ -1033,16 +1051,14 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert "rcp-result-view-gesture" not in preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in preview.text
     assert viewer.status_code == 200
-    # An Auto-research episode concludes with a non-chat task, so this report has no
-    # originating chat: the shell is read-only and draws no selection rail.
+    # Reports use the same comment shell and admission checks as other artifacts.
     assert "rcp-artifact-context" not in viewer.text
-    assert 'id="pending"' not in viewer.text
-    assert ">Comment</button>" not in viewer.text
-    assert "rcp-artifact-selection-enable" not in viewer.text
+    assert 'id="pending"' in viewer.text
+    assert 'id="message"' in viewer.text
+    assert "rcp-artifact-selection-enable" in viewer.text
     assert 'id="keep"' not in viewer.text
-    assert "fetch(config.saveUrl" in viewer.text
-    assert f"/episodes/{episode.episode_id}/report/save" in viewer.text
-    assert ">report</span>" in viewer.text
+    assert 'id="save"' not in viewer.text
+    assert 'id="state"' not in viewer.text
     assert 'id="notice"' in viewer.text
     assert legacy_preview.status_code == 200
     assert url in legacy_preview.text
@@ -1050,41 +1066,7 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
         assert client.head(legacy_preview_url).content == b""
 
 
-def test_save_episode_report_copies_immutable_bytes_without_overwriting(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
-    service = app.state.catalog.open(project_id)
-    episode, _, report = create_terminal_auto_episode(
-        store,
-        service.history,
-        project_id,
-        episode_id="save-report",
-        report_html="<h1>Retrospective — results</h1>",
-    )
-    assert report is not None
-    repository = manifest.path.parent.parent
-    graph_before = service.history.current_materialization().state
-    url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
-    with TestClient(app) as client:
-        saved = client.post(url)
-        assert saved.status_code == 200
-        first_path = repository / saved.json()["path"]
-        assert first_path.parent == repository / "artifacts"
-        assert first_path.read_bytes() == report.html.encode("utf-8")
-        first_path.write_text("Human edited copy", encoding="utf-8")
-        again = client.post(url)
-        assert again.status_code == 200
-        second_path = repository / again.json()["path"]
-        assert second_path != first_path
-        assert second_path.read_bytes() == report.html.encode("utf-8")
-        assert first_path.read_text() == "Human edited copy"
-        assert store.episode_report(episode.episode_id) == report
-        assert store.episode(episode.episode_id) == episode
-        assert service.history.current_materialization().state == graph_before
-
-
-def test_save_episode_report_failure_is_visible_and_retryable(manifest, tmp_path) -> None:
+def test_report_save_is_retired_without_repository_writes(manifest, tmp_path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
@@ -1092,36 +1074,17 @@ def test_save_episode_report_failure_is_visible_and_retryable(manifest, tmp_path
         store,
         app.state.catalog.open(project_id).history,
         project_id,
-        episode_id="save-report",
+        episode_id="retired-save",
         report_html="<h1>Retrospective</h1>",
     )
-    artifact_dir = manifest.path.parent.parent / "artifacts"
-    artifact_dir.write_text("Existing file", encoding="utf-8")
-    url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
     with TestClient(app) as client:
-        failed = client.post(url)
-        assert failed.status_code == 503
-        assert "save unavailable" in failed.json()["detail"]
-        assert artifact_dir.read_text() == "Existing file"
-        assert store.episode_report(episode.episode_id) == report
-        artifact_dir.unlink()
-        assert client.post(url).status_code == 200
-
-
-def test_save_episode_report_rejects_missing_report(manifest, tmp_path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
-    episode, _, _ = create_terminal_auto_episode(
-        store,
-        app.state.catalog.open(project_id).history,
-        project_id,
-        episode_id="no-report",
-        report_error="Report generation failed",
-    )
-    with TestClient(app) as client:
-        response = client.post(
-            f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
+        assert (
+            client.post(
+                f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
+            ).status_code
+            == 405
         )
-    assert response.status_code == 404
+        download = client.get(f"/api/projects/{project_id}/artifacts/{report.artifact_id}/download")
+    assert download.status_code == 200
+    assert download.content == store.read_artifact_bytes(report.artifact_id)
     assert not (manifest.path.parent.parent / "artifacts").exists()

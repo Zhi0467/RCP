@@ -10,7 +10,7 @@ from rcp.artifact_comments import supports_comments
 from rcp.artifacts import artifact_view, classify_artifact_bytes, descriptor_for
 from rcp.runs.chat import _local_chat_artifact_directory
 from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord
+from rcp.storage import AgentTaskRecord, Artifact
 
 from .helpers import create_named_app
 
@@ -34,7 +34,7 @@ from .helpers import create_named_app
 def test_soft_classification(name, data, media_type, view):
     assert classify_artifact_bytes(name, data) == media_type
     assert artifact_view(media_type) == view
-    assert not supports_comments(media_type)
+    assert supports_comments(media_type) == (view not in {"pdf", "file"})
 
 
 def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=True):
@@ -47,14 +47,21 @@ def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=
         size_bytes=len(data),
     )
     if not chat:
-        filename = app.state.service.history.workspace.keep_artifact(
+        descriptor = descriptor.model_copy(update={"kept_at": store.now()})
+    stored = store.create_artifact(
+        Artifact(
+            artifact_id=descriptor.artifact_id,
+            project_id=app.state.default_project_id,
+            supplier="turn",
+            supplier_id=operation_id,
+            origin_operation_id=operation_id,
             source_name=name,
-            project_name="Test",
-            data=data,
-        )
-        descriptor = descriptor.model_copy(
-            update={"kept_filename": filename, "kept_at": store.now()}
-        )
+            media_type=descriptor.media_type,
+            created_at=store.now(),
+            kept_at=descriptor.kept_at,
+        ),
+        data=data,
+    )
     request = RunRequest(
         provider="codex",
         model="",
@@ -96,7 +103,8 @@ def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=
     base = (
         f"/api/projects/{task.project_id}/tasks/{operation_id}/artifacts/{descriptor.artifact_id}"
     )
-    return task, descriptor, path, base
+    version = store.artifact_versions(stored.artifact_id)[0]
+    return task, descriptor, store.artifact_file_path(version), base
 
 
 @pytest.mark.parametrize(
@@ -127,7 +135,7 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
         projected = result["artifacts"][0]
         commentable = supports_comments(descriptor.media_type)
         assert projected["can_discuss"] is commentable
-        assert projected["can_revise"] is commentable
+        assert "can_revise" not in projected
         assert projected["can_download"] and projected["can_keep"]
         download = client.get(base + "/download")
         assert download.status_code == 200 and download.content == data
@@ -187,13 +195,13 @@ def test_stored_type_pinning_and_changed_typed_bytes(tmp_path, manifest):
         assert client.get(typed + "/download").status_code == 410
 
 
-def test_viewer_without_chat_has_no_comment_addon(tmp_path, manifest):
+def test_viewer_without_chat_uses_stored_artifact_admission(tmp_path, manifest):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     _, _, _, base = _seed(app, tmp_path, "view.html", b"<p>view</p>", chat=False)
     with TestClient(app) as client:
         viewer = client.get(base + "/viewer")
-        assert viewer.status_code == 200 and 'id="pending"' not in viewer.text
+        assert viewer.status_code == 200 and 'id="message"' in viewer.text
         content = client.get(base + "/content")
         assert content.status_code == 200
-        assert "installArtifactSelection" not in content.text
+        assert "installArtifactSelection" in content.text
         assert "rcp-reference" in content.text

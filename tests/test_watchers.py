@@ -43,6 +43,7 @@ from rcp.watchers import (
 )
 
 from .helpers import wait_until
+from .storage_helpers import downgrade_artifacts
 
 
 @pytest.fixture
@@ -566,6 +567,7 @@ def test_watcher_episode_owner_migrates_and_backfills_before_indexing(tmp_path) 
     with sqlite3.connect(path) as connection:
         connection.execute("DROP INDEX watchers_episode")
         connection.execute("ALTER TABLE watchers RENAME COLUMN episode_id TO experiment_episode_id")
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (1, 5, 6)"
         )
@@ -590,6 +592,7 @@ def test_graph_condition_column_migrates_before_its_index_is_created(tmp_path) -
         connection.execute("DROP INDEX watchers_graph_conditions")
         connection.execute("ALTER TABLE watchers DROP COLUMN graph_condition_json")
         connection.execute("ALTER TABLE watchers DROP COLUMN armed_revision")
+        downgrade_artifacts(connection)
         connection.execute(
             "DELETE FROM storage_schema_migrations WHERE migration_version IN (5, 6)"
         )
@@ -1704,13 +1707,25 @@ def test_chat_wake_starts_fresh_when_the_provider_dropped_the_current_session(
     assert resolution["source_operation_id"] == latest.operation_id
 
 
-def test_result_view_revision_does_not_become_the_chat_session(store) -> None:
+def test_artifact_edit_does_not_become_the_chat_session(store) -> None:
     chat = _completed_chat_turn(store, "human-before", "chat-native-session")
+    origin = _completed_chat_turn(
+        store, "artifact-origin", "artifact-session", request_updates={"chat_id": "origin-chat"}
+    )
     _completed_chat_turn(
         store,
-        "revision",
-        "view-session",
-        request_updates={"result_view": {"action": "revise", "view_id": "a" * 24}},
+        "artifact-edit",
+        "artifact-session",
+        request_updates={
+            "session_id": origin.native_session_id,
+            "artifact_edit": {
+                "artifact_id": "a" * 24,
+                "base_version": 1,
+                "origin_operation_id": origin.operation_id,
+                "stage_host": origin.stage_host,
+                "stage_root": origin.stage_root,
+            },
+        },
     )
     store.create_watchers([_record("done", origin=chat.operation_id, status="completed")])
 

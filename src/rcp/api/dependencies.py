@@ -61,7 +61,6 @@ class ApiServices:
     identity_access: IdentityAccess
     attachment_store: ChatAttachmentStore
     watcher_poller: WatcherPoller
-    result_view_keep_locks: KeyedLocks
     artifact_mutation_locks: KeyedLocks
     project_display_cache: ProjectDisplayCache
     watcher_delivery: WatcherDelivery
@@ -146,10 +145,6 @@ def get_attachment_store(request: Request) -> ChatAttachmentStore:
 
 def get_watcher_poller(request: Request) -> WatcherPoller:
     return _api_services(request).watcher_poller
-
-
-def get_result_view_keep_locks(request: Request) -> KeyedLocks:
-    return _api_services(request).result_view_keep_locks
 
 
 def get_artifact_mutation_locks(request: Request) -> KeyedLocks:
@@ -264,7 +259,6 @@ __all__ = [
     "get_project_service",
     "get_graph_service",
     "get_project_display_cache",
-    "get_result_view_keep_locks",
     "get_setup",
     "get_store",
     "get_watcher_delivery",

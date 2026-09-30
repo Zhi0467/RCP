@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-import html
 import importlib.resources
 import io
 import json
 import math
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 from PIL import Image, ImageOps
 
 from rcp.artifact_views import ViewerPanel
-from rcp.artifacts import FrameAddon
+from rcp.artifacts import ARTIFACT_MEDIA_TYPES, FrameAddon
 from rcp.limits import (
-    ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
     ARTIFACT_CROP_MAX_PIXELS,
     ARTIFACT_CROP_MAX_SIDE,
+    ARTIFACT_VIEWER_STATE_REFRESH_MS,
+    STEERING_MESSAGE_MAX_CHARS,
 )
 
 COMMENTABLE_MEDIA_TYPES = frozenset(
@@ -24,7 +24,10 @@ COMMENTABLE_MEDIA_TYPES = frozenset(
 
 
 def supports_comments(media_type: str) -> bool:
-    return media_type in COMMENTABLE_MEDIA_TYPES
+    return media_type in set(ARTIFACT_MEDIA_TYPES.values()) - {
+        "application/pdf",
+        "application/octet-stream",
+    }
 
 
 # Raster artifacts a boxed selection is cropped from; SVG and HTML are read as source.
@@ -111,19 +114,22 @@ listen(window,'message',(event)=>{
 
 
 def comment_panel(config: dict[str, object]) -> ViewerPanel:
+    base_url = (
+        f"/api/projects/{quote(str(config['projectId']), safe='')}/artifacts/"
+        f"{quote(str(config['artifactId']), safe='')}"
+    )
     config = {
-        "chatAvailable": True,
-        "chatOpenTimeoutMs": ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
-        "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
         **config,
+        "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
+        "stateRefreshMs": ARTIFACT_VIEWER_STATE_REFRESH_MS,
+        "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES,
+        "stateUrl": base_url + "/state",
+        "commentsUrl": base_url + "/comments",
     }
-    query = {"view": "chats", "chat": str(config["chatId"])}
-    if config.get("branchId") is not None:
-        query["branch_id"] = str(config["branchId"])
-    chat_href = f"/#/projects/{quote(str(config['projectId']), safe='')}?{urlencode(query)}"
+    selection_hidden = "" if config["selectionEnabled"] else " hidden"
     encoded = json.dumps(config, ensure_ascii=False).replace("<", "\\u003c")
     return ViewerPanel(
-        markup=f'<aside><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div><button id="add" class="add" type="button" disabled>Add to chat</button><a id="open-chat" class="open-chat" href="{html.escape(chat_href, quote=True)}" hidden>Open chat</a><div id="notice" class="notice" role="status"></div></aside>',
+        markup=f'<aside><div id="selection-controls"{selection_hidden}><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div></div><label for="message">Comment</label><textarea id="message" maxlength="{STEERING_MESSAGE_MAX_CHARS}"></textarea><button id="add" class="add" type="button" disabled>Send</button><div id="notice" class="notice" role="status"></div></aside>',
         style="""main{grid-template-columns:minmax(0,1fr) 300px}.canvas{border-right:1px solid var(--rule)}#boxLayer{position:absolute;cursor:crosshair}aside{padding:14px;overflow:auto;background:var(--panel)}
 aside h2{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}#pending{border:1px solid var(--accent);padding:12px;margin-bottom:12px}#pending button{margin-top:10px}#pending [data-confirm]{background:var(--accent);color:white;border-color:var(--accent)}
 .empty{color:var(--muted);font-family:Georgia,serif;font-style:italic}#pending:not([hidden]) + #empty{display:none}.selection{border-top:1px solid var(--rule);padding:12px 0}
@@ -132,7 +138,6 @@ aside h2{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,mon
 .excerpt{max-height:90px;overflow:auto;font-family:Georgia,serif;font-size:13px}
 textarea{width:100%;min-height:62px;margin-top:8px;resize:vertical;border:1px solid var(--rule);background:white;padding:8px;color:var(--ink);font:13px/1.4 Georgia,serif}
 .add{width:100%;margin-top:12px;background:var(--ink);color:var(--paper);border-color:var(--ink)}.add:hover{background:var(--accent);color:white}
-.open-chat{display:block;margin-top:10px;padding:8px;text-align:center;border:1px solid var(--accent);color:var(--accent);text-decoration:none}.open-chat[hidden]{display:none}
 .notice{margin-top:10px;color:var(--accent);font-size:12px}@media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:minmax(360px,1fr) auto}.canvas{border-right:0;border-bottom:1px solid var(--rule)}aside{max-height:42vh}}
 """,
         script=_selection_script() + "\nconst config=" + encoded + ";\n" + _comment_panel_script(),

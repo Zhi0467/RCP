@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import shlex
@@ -17,7 +16,6 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from rcp.artifact_replace import ArtifactReplacementConflict
 from rcp.config import MachineConfig, RepositoryConfig, load_manifest
 from rcp.core.models import Patch
 from rcp.history import HistoryManager, PatchRejected
@@ -2446,6 +2444,40 @@ def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:
         stage.sweep(protected_roots=["/tmp/not-an-rcp-stage"])
 
 
+def test_remote_stage_last_touch_preserves_retention(local_remote_stage) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
+    touched = time.time() - 3600
+    os.utime(root, (touched, touched))
+    before = root.stat().st_mtime
+    stage.attach_artifact_source(str(root))
+
+    assert stage.stage_last_touch() == before
+    assert root.stat().st_mtime == before
+
+
+def test_remote_stage_last_touch_distinguishes_missing_and_unsafe(local_remote_stage) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
+    root.chmod(0o755)
+    with pytest.raises(ValueError):
+        stage.stage_last_touch()
+    root.rmdir()
+    with pytest.raises(FileNotFoundError):
+        stage.stage_last_touch()
+
+
+def test_remote_stage_last_touch_offline_is_retryable(monkeypatch) -> None:
+    stage = RemoteRunStage("research.example").attach_artifact_source("/tmp/rcp-run.saved")
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda _arguments: subprocess.CompletedProcess([], 255, "", "ssh: connect timed out"),
+    )
+    with pytest.raises(StateUnavailable):
+        stage.stage_last_touch()
+
+
 def test_remote_stage_artifact_read_refuses_a_fifo_without_blocking(local_remote_stage) -> None:
     stage = local_remote_stage
     (Path(str(stage.root)) / "workspace").mkdir()
@@ -2490,20 +2522,6 @@ def test_remote_stage_artifact_operations_are_exact_and_binary(
     )
     with pytest.raises(StateUnavailable, match="EIO"):
         stage.read_artifact_bytes("logical-turn", "plot.png", max_bytes=1024)
-    monkeypatch.setattr(
-        stage,
-        "_ssh_bytes",
-        lambda _arguments, **_kwargs: subprocess.CompletedProcess(
-            [], 47, b"", b"artifact source is missing"
-        ),
-    )
-    with pytest.raises(ArtifactReplacementConflict):
-        stage.replace_artifact_bytes(
-            "logical-turn",
-            "plot.png",
-            payload,
-            expected_sha256=hashlib.sha256(payload).hexdigest(),
-        )
 
 
 def test_remote_stage_resume_rejects_symlinked_artifact_scope(local_remote_stage) -> None:
