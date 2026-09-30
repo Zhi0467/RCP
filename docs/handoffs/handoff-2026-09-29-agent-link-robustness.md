@@ -124,7 +124,7 @@ disposable data.
 
 ## B. Event and JSONL readers split on newlines only
 
-`str.splitlines()` also splits on `\x85`, ` `, and ` `, which JSON
+`str.splitlines()` also splits on `\x85`, `\u2028`, and `\u2029`, which JSON
 leaves unescaped inside strings. An agent that prints such text cuts a record's
 JSON in half.
 
