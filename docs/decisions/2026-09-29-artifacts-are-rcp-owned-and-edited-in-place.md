@@ -28,23 +28,30 @@ bytes held by RCP, nothing else edits them, and Undo reverses an unwanted edit
 in one step. Reviewing a candidate before it shows cost a round trip on every
 comment.
 
-## Why the comment turn follows the session
+## Why the comment turn follows the session's master
 
-A session's master contract decides what a turn may say. A chat master defines
-Discuss, so a comment in a chat session is a Discuss turn. An Experiment or
-Auto-research master does not. Rendering a Discuss turn there either names a
-mode that master never defines, or swaps in the chat master, whose stage paths
-belong to another stage and which nothing swaps back. A revoking launch, as the
-report already uses, grants nothing beyond the edit, and the check that re-opens
-the master afterwards already exists.
+A session's master contract decides what a turn may say. The chat master defines
+Discuss, so a comment in a session holding it is a Discuss turn. That includes
+Auto-research workers, whose master is the chat master plus a child boundary.
+An Experiment or Auto-research orchestrator master does not define Discuss.
+Rendering a Discuss turn there either names a mode that master never defines,
+or swaps in the chat master, whose stage paths belong to another stage and which
+nothing swaps back. A revoking launch, as the report already uses, grants
+nothing beyond the edit, and the check that re-opens the master afterwards
+already exists. RCP reads the recorded master, not the artifact's supplier or
+episode, so the rule has one input.
 
 ## Why live data flows one way
 
 Agent HTML cannot reach RCP (invariant 10e). Letting a page fetch would mean
-handing agent code a credential that reads project data. RCP's trusted viewer
-frame fetches the declared data and posts it into the page. Letting agent code
-run on each refresh to read a file would run it outside any launch; the agent
-shapes the data in the code that produces it instead.
+handing agent code a credential that reads project data. RCP's authenticated
+viewer shell fetches the declared data and posts it into the page. This keeps
+RCP out of the page's reach; it does not stop the page's own scripts from
+sending what they received elsewhere, since the sandbox still lets them
+navigate their own frame.
+
+Letting agent code run on each refresh to read a file would run it outside any
+launch. The agent shapes the data in the code that produces it instead.
 
 ## Rejected alternatives
 

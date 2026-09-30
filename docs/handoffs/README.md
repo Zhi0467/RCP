@@ -1,7 +1,7 @@
 # Active implementation handoffs
 
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
-  — design settled 2026-09-29; implementation not started.
+  — design settled and reviewed 2026-09-29; two review decisions open.
 - [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
   — implemented 2026-09-28 on the same PR; real Mac and iPhone journeys remain.
 
