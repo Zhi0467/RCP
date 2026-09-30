@@ -2,8 +2,8 @@
 
 Date: 2026-09-29
 Status: design settled with the human on 2026-09-29, then revised the same day
-after an xhigh design review. Two review questions are open; see **Open
-decisions**. Implementation has not started. Docs and code land in one PR.
+after an xhigh design review and the human's answers to its two open
+questions. Implementation has not started. Docs and code land in one PR.
 
 Close this handoff when all of these hold on a served app with disposable data:
 
@@ -191,6 +191,18 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
   10e is unchanged.
 - The shell refreshes while the page is visible. `file` needs on an SSH host
   refresh more slowly and reuse RCP's existing connection.
+- **The final snapshot is saved by the server.** When every `job` and
+  `episode` need of a live version has ended, RCP reads one final snapshot and
+  stores it with that version, whether or not anyone has the page open. It
+  retries across SSH outages and marks a capture it could not complete as
+  incomplete, never as final. After that the page renders from the saved
+  snapshot, even once the job's files are gone. A page that watches only nodes
+  and files keeps refreshing while open and has no final snapshot.
+- **What a page receives, it can send out.** The sandbox still lets the page's
+  scripts navigate their own frame, and Chromium does not enforce the CSP rule
+  that would block it. RCP accepts this for the sources a page declares, as it
+  already does for anything an agent writes into an artifact. The spec states
+  this plainly and never claims the page makes no network request.
 - An episode report is never live.
 - The allowed kinds, fields, and caps are one model in code. Caps live in
   `limits.py`.
@@ -230,23 +242,6 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
   chrome outside the agent's HTML.
 - Selection, the comment box, and Send sit in the viewer.
 
-## Open decisions
-
-Raised by the design review; the human decides.
-
-1. **What a live page may leak.** The sandboxed page cannot call RCP, but its
-   scripts can still navigate its own child frame, which can carry data to an
-   outside address. Chromium does not enforce the CSP rule that would stop it.
-   A live page therefore hands fresh project data to agent code that could send
-   it out. Options: accept this for the sources a page declares, or show the
-   resolved sources and ask the human to approve them once before the page goes
-   live.
-2. **When the final snapshot is saved.** If refresh runs only while the page
-   is open, a page closed before its job ends never captures final data.
-   Options: RCP finalizes on the server when watched jobs and episodes end,
-   whether or not anyone is viewing, retrying across SSH outages; or RCP
-   promises only the last snapshot a viewer received.
-
 ## Implementation slices
 
 1. **Storage and migration.** `Artifact` records and version folders, the
@@ -259,7 +254,7 @@ Raised by the design review; the human decides.
 3. **Prompts.** The rendered artifact contract and live section, the
    `live-pages` skill and its example test, attachment lines, the reply rule.
 4. **Live data.** Per-version need resolution, the key-to-job receipt binding,
-   the snapshot endpoint, the shell relay, final snapshots.
+   the snapshot endpoint, the shell relay, server-side final snapshots.
 5. **Viewer.** The docked panel, removal of native preview windows, repository
    preview framing, commenting and Send in the viewer, the title-bar controls.
 
