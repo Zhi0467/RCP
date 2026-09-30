@@ -76,6 +76,9 @@ export interface ServerStatusSummary {
 
 export interface ServerReleaseStatus {
   status: ServerStatusSummary;
+  running_version: string | null;
+  installed_version: string | null;
+  latest_version: string | null;
   managed_source_commit: string | null;
   current_release_commit: string | null;
   running_commit: string | null;
@@ -118,6 +121,7 @@ export interface ServerExecutionReadiness {
 
 export interface ServerStatus {
   overall: ServerStatusSummary;
+  release_check: UpdateNotice;
   releases: ServerReleaseStatus;
   backup: ServerBackupStatus;
   restore: ServerRestoreStatus;

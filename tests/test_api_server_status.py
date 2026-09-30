@@ -102,7 +102,7 @@ def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) 
     app = create_app(
         data_dir=tmp_path,
         trusted_principal_resolver=lambda _request, opened: opened.space_user(member.user_id),
-        server_doctor_reader=_report,
+        server_doctor_reader=lambda: _report(selected_release_tag="v0.4.9"),
         server_protected_backup_reader=lambda _report: _protected_backup(),
         server_restore_completed_at_reader=lambda: restored_at,
         server_status_clock=lambda: NOW,
@@ -119,6 +119,9 @@ def test_server_status_projects_concrete_read_models_without_mutation(tmp_path) 
     payload["releases"]["status"].pop("label")
     assert payload["releases"] == {
         "status": {"tone": "good"},
+        "running_version": None,
+        "installed_version": "0.4.9",
+        "latest_version": None,
         "managed_source_commit": COMMIT,
         "current_release_commit": COMMIT,
         "running_commit": COMMIT,

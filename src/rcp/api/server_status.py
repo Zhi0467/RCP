@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from rcp import limits
 from rcp.api.dependencies import (
     ServerStatusComposition,
     get_release_check,
@@ -39,6 +40,9 @@ class ServerStatusSummary(_StrictModel):
 
 class ServerReleaseStatus(_StrictModel):
     status: ServerStatusSummary
+    running_version: str | None
+    installed_version: str | None
+    latest_version: str | None
     managed_source_commit: str | None
     current_release_commit: str | None
     running_commit: str | None
@@ -95,6 +99,7 @@ def server_status(
     composition: ServerStatusCompositionDependency,
     store: StoreDependency,
     release_check: Annotated[ReleaseCheck, Depends(get_release_check)],
+    refresh: bool = False,
 ) -> ServerStatusResponse:
     if store.space_kind != "team":
         raise HTTPException(status_code=404, detail="Server status is available in a team space.")
@@ -108,7 +113,11 @@ def server_status(
             protected_backup=protected_backup,
             restored_at=restored_at,
             now=now,
-            release_check=release_check.snapshot(),
+            release_check=release_check.fresh(
+                limits.RELEASE_CHECK_REFRESH_SECONDS
+                if refresh
+                else limits.RELEASE_CHECK_FRESH_SECONDS
+            ),
         )
     except (OSError, RuntimeError, ValueError) as exc:
         raise HTTPException(
@@ -133,6 +142,10 @@ def project_server_status(
         release_check=release_check,
         releases=ServerReleaseStatus(
             status=_release_status(report, release_check),
+            # The process compares its own starting release, so that is what runs.
+            running_version=release_check.current_version,
+            installed_version=_tag_version(report.selected_release_tag),
+            latest_version=release_check.latest_version,
             managed_source_commit=report.managed_main_head,
             current_release_commit=report.current_commit,
             running_commit=report.running_commit,
@@ -223,6 +236,10 @@ def _release_status(report: ServerDoctorReport, release_check: UpdateNotice) -> 
     if release_check.status == "update_available":
         return ServerStatusSummary(label="Update is available", tone="attention")
     return ServerStatusSummary(label="Running selected release", tone="good")
+
+
+def _tag_version(tag: str | None) -> str | None:
+    return tag.removeprefix("v") if tag is not None else None
 
 
 def _backup_status(report: ServerDoctorReport) -> ServerStatusSummary:

@@ -178,36 +178,59 @@ class ReleaseCheck:
     def check(self, *, companion: bool = True) -> UpdateNotice:
         """One bounded cycle; called by the poller or the explicit CLI doctor."""
         with self._check_lock:
-            if os.environ.get("RCP_UPDATE_CHECK") == "off":
-                return self.snapshot()
-            checked = datetime.now(UTC)
-            try:
-                version, ready = asyncio.run(self._lookup(companion))
-            except (httpx.HTTPError, OSError, ValueError, TimeoutError, KeyError) as exc:
-                with self._lock:
-                    self._notice = self._notice.model_copy(
-                        update={
-                            "status": "unknown" if isinstance(exc, _UnknownVersion) else "failed",
-                            "checked_at": checked,
-                        }
-                    )
-            else:
-                with self._lock:
-                    current = self._notice.current_version
-                    newer = current is not None and _numbers(version) > _numbers(current)
-                    self._notice = self._notice.model_copy(
-                        update={
-                            "status": "update_available" if newer else "current",
-                            "latest_version": version,
-                            "checked_at": checked,
-                            "last_success_at": datetime.now(UTC),
-                            "companion_ready": ready,
-                            "download_url": f"https://github.com/{REPOSITORY}/releases/tag/desktop-v{version}"
-                            if ready
-                            else None,
-                        }
-                    )
+            return self._check(companion)
+
+    def fresh(self, max_age_seconds: float) -> UpdateNotice:
+        """The cache, first looked up again when its last check is older than the bound.
+
+        Routes call this so opening a space never shows a result hours old.
+        Concurrent readers wait for one lookup instead of starting their own.
+        """
+        if self._is_fresh(max_age_seconds):
             return self.snapshot()
+        with self._check_lock:
+            if self._is_fresh(max_age_seconds):
+                return self.snapshot()
+            return self._check(companion=True)
+
+    def _is_fresh(self, max_age_seconds: float) -> bool:
+        with self._lock:
+            checked = self._notice.checked_at
+        return checked is not None and (
+            (datetime.now(UTC) - checked).total_seconds() < max_age_seconds
+        )
+
+    def _check(self, companion: bool) -> UpdateNotice:
+        if os.environ.get("RCP_UPDATE_CHECK") == "off":
+            return self.snapshot()
+        checked = datetime.now(UTC)
+        try:
+            version, ready = asyncio.run(self._lookup(companion))
+        except (httpx.HTTPError, OSError, ValueError, TimeoutError, KeyError) as exc:
+            with self._lock:
+                self._notice = self._notice.model_copy(
+                    update={
+                        "status": "unknown" if isinstance(exc, _UnknownVersion) else "failed",
+                        "checked_at": checked,
+                    }
+                )
+        else:
+            with self._lock:
+                current = self._notice.current_version
+                newer = current is not None and _numbers(version) > _numbers(current)
+                self._notice = self._notice.model_copy(
+                    update={
+                        "status": "update_available" if newer else "current",
+                        "latest_version": version,
+                        "checked_at": checked,
+                        "last_success_at": datetime.now(UTC),
+                        "companion_ready": ready,
+                        "download_url": f"https://github.com/{REPOSITORY}/releases/tag/desktop-v{version}"
+                        if ready
+                        else None,
+                    }
+                )
+        return self.snapshot()
 
     async def _lookup(self, companion: bool) -> tuple[str, bool]:
         async with asyncio.timeout(limits.RELEASE_CHECK_DEADLINE_SECONDS):

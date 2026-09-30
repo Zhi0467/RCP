@@ -56,7 +56,7 @@ export function SpaceSettings({
       </header>
       <section className="settings-page" data-settings-level="space">
         {spaceKind === "team" ? (
-          <ServerSettings updateNotice={updateNotice} />
+          <ServerSettings />
         ) : (
           <section className="settings-section">
             <ReleaseCheckRow notice={updateNotice} />
