@@ -250,6 +250,9 @@ export function DraggableWindow({
           role="separator"
           aria-label="Viewer width"
           aria-orientation="vertical"
+          aria-valuenow={panelRect!.width}
+          aria-valuemin={Math.min(320, panelRect!.x + panelRect!.width)}
+          aria-valuemax={panelRect!.x + panelRect!.width}
           tabIndex={0}
           onKeyDown={(event) => {
             if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;

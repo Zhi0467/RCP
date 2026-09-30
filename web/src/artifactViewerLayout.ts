@@ -83,7 +83,9 @@ export function toggleViewerFullscreen(placement: ViewerPlacement): ViewerPlacem
 }
 
 export function collapseViewer(placement: ViewerPlacement, collapsed: boolean): ViewerPlacement {
-  return { ...placement, collapsed };
+  return collapsed || placement.collapsed
+    ? { ...placement, collapsed, mode: "docked", fullscreen: false }
+    : placement;
 }
 
 export function acceptsArtifactEditMessage(

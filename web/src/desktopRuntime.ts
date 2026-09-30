@@ -660,7 +660,7 @@ export async function openDesktopArtifactPdf(command: ArtifactCommand): Promise<
 }
 
 export async function downloadDesktopArtifact(
-  command: ArtifactCommand & { suggestedName: string },
+  command: Omit<ArtifactCommand, "taskId"> & { taskId?: string; suggestedName: string },
 ): Promise<string | null> {
   if (!isDesktopRuntime())
     throw new Error("Desktop artifact download is unavailable in this browser.");
@@ -726,6 +726,7 @@ export async function applyDesktopUpdate(confirmActiveWork: boolean): Promise<vo
 
 export async function listenDesktopEvent<T>(
   name:
+    | "rcp://open-artifact"
     | "rcp://prepare-show"
     | "rcp://backend-mismatch"
     | "rcp://update-ready"

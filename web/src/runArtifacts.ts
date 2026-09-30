@@ -1,12 +1,8 @@
 import type { RunArtifactEntry } from "./types";
 
-/** Reports lead the list; the remaining artifacts retain their creation order. */
+/** Preserve the server's run-report-first order, including child reports. */
 export function orderRunArtifacts(artifacts: readonly RunArtifactEntry[]): RunArtifactEntry[] {
-  return [...artifacts].sort((a, b) => {
-    const reportOrder =
-      Number(b.supplier === "episode_ending") - Number(a.supplier === "episode_ending");
-    return reportOrder || a.created_at.localeCompare(b.created_at);
-  });
+  return [...artifacts];
 }
 
 export function artifactsForOperations(

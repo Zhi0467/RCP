@@ -23,9 +23,9 @@ const artifact = {
   worker_label: "Worker 1",
   created_at: new Date().toISOString(),
 };
-function render() {
+function render(entry = artifact) {
   return renderToStaticMarkup(
-    React.createElement(RunArtifacts, { projectId: "project", artifacts: [artifact] }),
+    React.createElement(RunArtifacts, { projectId: "project", artifacts: [entry] }),
   );
 }
 test("browser run PDFs expose a download and no preview action", () => {
@@ -39,6 +39,19 @@ test("desktop run PDFs retain a system-viewer action", () => {
   globalThis.window = { __TAURI_INTERNALS__: {} };
   try {
     assert.match(render(), /<button[^>]+class="run-artifact-open"/);
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
+});
+
+test("desktop stored files with no producing task expose a native download button", () => {
+  const previous = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  try {
+    const markup = render({ ...artifact, view: "file", origin_operation_id: null });
+    assert.match(markup, /<button/);
+    assert.doesNotMatch(markup, /<a[ >]/);
   } finally {
     if (previous === undefined) delete globalThis.window;
     else globalThis.window = previous;

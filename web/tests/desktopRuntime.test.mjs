@@ -5,6 +5,7 @@ import { isMutationRequest } from "../src/api.ts";
 import {
   advanceDesktopProjectTransfer,
   desktopDownloadPath,
+  downloadDesktopArtifact,
   desktopFolderSelectionPath,
   desktopFolderAccessAcknowledgementValue,
   discardDesktopProjectTransferExport,
@@ -642,5 +643,30 @@ test("webview zoom is a no-op outside the desktop runtime", async () => {
     await setDesktopWebviewZoom(1.2);
   } finally {
     if (originalWindow !== undefined) globalThis.window = originalWindow;
+  }
+});
+
+test("native downloads accept stored artifacts without a task and retain task downloads", async () => {
+  const previous = globalThis.window;
+  const calls = [];
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        return { saved: false, path: null };
+      },
+    },
+  };
+  try {
+    const stored = { projectId: "p", artifactId: "report", suggestedName: "report.html" };
+    assert.equal(await downloadDesktopArtifact(stored), null);
+    assert.equal(await downloadDesktopArtifact({ ...stored, taskId: "task" }), null);
+    assert.deepEqual(calls, [
+      { command: "download_artifact", args: stored },
+      { command: "download_artifact", args: { ...stored, taskId: "task" } },
+    ]);
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
   }
 });
