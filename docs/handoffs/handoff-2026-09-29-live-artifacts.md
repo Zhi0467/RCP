@@ -14,6 +14,13 @@ the existing retention period; kept artifacts have no expiry. Import never
 accepts a candidate or removes repository-kept files. The candidate flow remains;
 slice 2b and slices 3–5 remain open. Docs and code land in one PR.
 
+Slice 2b preflight stopped before implementation: the editing reply destination
+assumes the artifact's origin task belongs to a chat. Report artifacts instead
+point to hidden report allocations with no chat id; Auto-research orchestrator
+tasks also have no chat id, including the report's parent. A destination rule
+for these edits must be settled before implementing admission. No runtime
+behavior changed in this preflight.
+
 Slice 1 verification still needs the installed Linux coordinator transition and
 a rehearsal on a copy of real team data. Local storage, route, recovery, and
 archive tests cover the implemented paths. Browser automation is blocked by
@@ -173,8 +180,17 @@ viewed, and able to show data that keeps changing after the agent's turn ends.
   Their artifacts stay viewable, and the viewer offers an explicit **Edit in a
   new session** action. RCP never restores old execution authority to reach
   the original session.
-- The agent's reply goes to the same chat. The viewer shows only an Editing
-  indicator and a control that brings the chat up.
+- The agent's reply goes to the thread the artifact already belongs to. RCP
+  resolves it through the artifact's episode, never from whichever view is
+  open:
+  - a chat artifact, or an Auto-research worker artifact: its own chat;
+  - an Experiment episode's artifact or report: the Experiment node chat the
+    episode runs in;
+  - an Auto-research orchestrator artifact or report: the episode's
+    orchestrator thread on its Runs card, where the human's comment appears as
+    a message to the orchestrator and the reply appears beside it.
+  The viewer shows only an Editing indicator and a control that brings that
+  thread up.
 
 ### Live pages
 
