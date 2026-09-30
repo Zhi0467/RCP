@@ -668,6 +668,37 @@ def restore_work_validator_mailbox(
     return owner
 
 
+def discard_work_mailbox_checkpoint(data_dir: Path, operation_id: str) -> dict[str, object] | None:
+    """Forget a turn's saved credential; return what it named, if readable."""
+
+    store = CommandMailboxStore.for_data_dir(data_dir)
+    try:
+        saved = store.load(operation_id)
+    except (OSError, ValueError):
+        saved = None
+    store.delete(operation_id)
+    return saved
+
+
+def clear_saved_remote_mailbox(saved: dict[str, object]) -> None:
+    """Best effort: remove a discarded turn's command files from its stage.
+
+    Only names carrying this mailbox's random id go, so a newer turn on the
+    same stage keeps its own requests and credential.
+    """
+
+    with suppress(Exception):
+        mailbox_id = str(saved["mailbox_id"])
+        if len(mailbox_id) != 32:
+            return
+        remote = RemoteRunStage(str(saved["host"]))
+        remote.root = PurePosixPath(str(saved["root"]))
+        mailbox = RunStageMailbox.for_stage(local_stage=None, remote_stage=remote)
+        for name in mailbox.entry_names():
+            if mailbox_id in name:
+                mailbox.remove(name, missing_ok=True)
+
+
 async def _wait_for_work_validator_task(
     task: asyncio.Task[None] | Future[None],
 ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
@@ -766,9 +797,9 @@ def validate_work_patch_live(
     try:
         candidate = prepare_candidate(patch_text)
         prepared, report, state = service.history.validate_candidate(candidate.patch)
-    except (StateUnreachable, RemoteStageTransportFailure, TimeoutError, subprocess.TimeoutExpired):
+    except (StateUnreachable, RemoteStageTransportFailure):
         raise
-    except (ReplayHalted, StateUnavailable, OSError) as exc:
+    except (ReplayHalted, StateUnavailable, OSError, subprocess.TimeoutExpired) as exc:
         return PatchValidationResult(status="unavailable", messages=[str(exc)])
     except ValueError as exc:
         return PatchValidationResult(status="invalid", messages=[str(exc)])

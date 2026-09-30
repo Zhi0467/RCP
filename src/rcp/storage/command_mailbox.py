@@ -62,3 +62,22 @@ class CommandMailboxStore:
             if self.root.exists():
                 private_directory(self.root, "command mailbox checkpoints")
                 path.unlink(missing_ok=True)
+
+    def operation_ids(self) -> list[str]:
+        """The turns whose checkpoints can still be read; unreadable ones are skipped."""
+
+        with _CHECKPOINT_LOCK:
+            if not self.root.exists():
+                return []
+            private_directory(self.root, "command mailbox checkpoints")
+            paths = sorted(self.root.glob("*.json"))
+        found: list[str] = []
+        for path in paths:
+            try:
+                identity = json.loads(path.read_text()).get("identity") or {}
+            except (OSError, ValueError, AttributeError):
+                continue
+            task_id = identity.get("task_id") if isinstance(identity, dict) else None
+            if isinstance(task_id, str) and task_id:
+                found.append(task_id)
+        return found
