@@ -1299,16 +1299,6 @@ async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
     )
     stop = asyncio.Event()
     async with staged.invocation_gate.serve_current_session():
-        server = asyncio.create_task(
-            serve_command_mailbox(
-                staged=staged,
-                handler=lambda request, _identity: handled.append(request),
-                stop=stop,
-                poll_seconds=0.01,
-                invocation_gate=staged.invocation_gate,
-                record_rejection=lambda status, message: recorded.append((status, message)),
-            )
-        )
         try:
             # A malformed message straight to the broker never becomes a request.
             path = staged_command_client._broker_socket_path(staged.invocation_gate.socket_path)
@@ -1317,10 +1307,17 @@ async def test_refusals_before_dispatch_are_recorded_and_forged_notices_are_not(
             await writer.drain()
             answer = json.loads(await reader.readline())
             writer.close()
-            for _ in range(200):
-                if len(recorded) == 2:
-                    break
-                await asyncio.sleep(0.01)
+            server = asyncio.create_task(
+                serve_command_mailbox(
+                    staged=staged,
+                    handler=lambda request, _identity: handled.append(request),
+                    stop=stop,
+                    poll_seconds=0.01,
+                    invocation_gate=staged.invocation_gate,
+                    record_rejection=lambda status, message: recorded.append((status, message)),
+                )
+            )
+            await async_wait_until(lambda: len(recorded) == 2)
             await asyncio.sleep(0.1)  # a few more polls, so a forged notice would show
         finally:
             stop.set()
@@ -1669,3 +1666,272 @@ def test_client_deadline_covers_the_whole_invocation(monkeypatch, capsys) -> Non
     sender.join()
     assert code == 2 and elapsed < 0.2
     assert json.loads(capsys.readouterr().out)["result"] == {"delivery": "unknown"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_step", ["listing", "reading", "handling", "writing"])
+async def test_mailbox_retries_transport_step_without_repeating_completed_handler(
+    tmp_path, monkeypatch, failure_step
+) -> None:
+    import threading
+
+    from rcp.transport import StateUnreachable
+
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id=None,
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=3,
+    )
+    monkeypatch.setattr(command_mailbox_module, "COMMAND_MAILBOX_RETRY_INITIAL_SECONDS", 0.001)
+    calls = {"listing": 0, "reading": 0, "handling": 0, "writing": 0}
+    effects = []
+    events = []
+    for step, method in (
+        ("listing", "entry_names"),
+        ("reading", "read_text"),
+        ("writing", "write_text"),
+    ):
+        original = getattr(RunStageMailbox, method)
+
+        def flaky(self, *args, step=step, original=original, **kwargs):
+            # Closure writes are separate from the response boundary under test.
+            if step != "writing" or args[0].endswith(".response.json"):
+                calls[step] += 1
+                if step == failure_step and calls[step] == 1:
+                    raise StateUnreachable("temporary transport outage")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(RunStageMailbox, method, flaky)
+
+    def handler(request, _identity):
+        calls["handling"] += 1
+        if failure_step == "handling" and calls["handling"] == 1:
+            raise StateUnreachable("temporary transport outage")
+        effects.append(request.request_id)
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    stop = threading.Event()
+    server = asyncio.create_task(
+        serve_command_mailbox(
+            staged=staged,
+            handler=handler,
+            stop=stop,
+            poll_seconds=0.001,
+            record_transport=lambda status, _message: events.append(status),
+        )
+    )
+    try:
+        code, output = await _run_client(staged, "status")
+        assert code == 0, output
+        assert len(effects) == 1
+        assert events == ["outage", "recovered"]
+        if failure_step == "writing":
+            assert calls["handling"] == 1
+            assert calls["writing"] == 2
+    finally:
+        stop.set()
+        await server
+
+
+@pytest.mark.asyncio
+async def test_permanent_mailbox_failure_answers_later_calls(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id=None,
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=1,
+    )
+    handled = []
+
+    def malformed(_self):
+        raise ValueError("mailbox listing malformed")
+
+    monkeypatch.setattr(RunStageMailbox, "entry_names", malformed)
+    terminal = {}
+    await serve_command_mailbox(
+        staged=staged,
+        handler=lambda *args: handled.append(args),
+        stop=asyncio.Event(),
+        terminal=terminal,
+    )
+    assert staged.credential.expired
+    assert "malformed" in terminal["reason"]
+    for _ in range(2):
+        code, output = await _run_client(staged, "status")
+        result = json.loads(output)
+        assert code == 2
+        assert result["result"] == {"permanent": True, "delivery": "not_sent"}
+        assert "malformed" in result["message"]
+    assert not handled
+
+
+@pytest.mark.asyncio
+async def test_suspended_mailbox_restores_completed_response_and_same_credential(
+    tmp_path, monkeypatch
+) -> None:
+    import threading
+    from dataclasses import replace
+
+    from rcp.agents.command_mailbox import CommandTurnCredential
+    from rcp.transport import StateUnreachable
+
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id=None,
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=3,
+    )
+    token = staged.credential.token
+    original_write = RunStageMailbox.write_text
+    suspended = threading.Event()
+    responses = {}
+    effects = []
+
+    def lose_response(self, name, content):
+        if name.endswith(".response.json"):
+            suspended.set()
+            raise StateUnreachable("backend stops during response delivery")
+        original_write(self, name, content)
+
+    monkeypatch.setattr(RunStageMailbox, "write_text", lose_response)
+
+    def handler(request, _identity):
+        effects.append(request.request_id)
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    first = asyncio.create_task(
+        serve_command_mailbox(
+            staged=staged,
+            handler=handler,
+            stop=threading.Event(),
+            suspend=suspended,
+            responses=responses,
+            poll_seconds=0.001,
+        )
+    )
+    caller = asyncio.create_task(_run_client(staged, "status"))
+    await async_wait_until(first.done)
+    await first
+    assert len(effects) == 1
+    assert staged.credential.token == token
+    assert not list(tmp_path.glob("*.closed.json"))
+    saved = {name: response.model_dump_json() for name, response in responses.items()}
+    restored = replace(
+        staged,
+        credential=CommandTurnCredential(
+            identity=staged.credential.identity,
+            mailbox_id=staged.credential.mailbox_id,
+            _token=token,
+        ),
+    )
+    monkeypatch.setattr(RunStageMailbox, "write_text", original_write)
+    stop = threading.Event()
+    second = asyncio.create_task(
+        serve_command_mailbox(
+            staged=restored,
+            handler=handler,
+            stop=stop,
+            poll_seconds=0.001,
+            responses={
+                name: CommandResponse.model_validate_json(value) for name, value in saved.items()
+            },
+        )
+    )
+    try:
+        code, output = await caller
+        assert code == 0, output
+        assert len(effects) == 1
+        # The previously staged client and its unchanged credential still work.
+        code, output = await _run_client(staged, "status")
+        assert code == 0, output
+        assert len(effects) == 2
+    finally:
+        stop.set()
+        await second
+
+
+@pytest.mark.asyncio
+async def test_stop_during_response_outage_finishes_with_saved_permanent_reason(
+    tmp_path, monkeypatch
+) -> None:
+    import threading
+
+    from rcp.transport import StateUnreachable
+
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id=None,
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=1,
+    )
+    token = staged.credential.token
+    request_id = "a" * 32
+    request_name = f"rcp-command-{staged.credential.mailbox_id}-{request_id}.request.json"
+    (tmp_path / request_name).write_text(
+        json.dumps(
+            {
+                **json.loads(_request_document("status", {"worker_id": None, "episode_id": None})),
+                "mailbox_id": staged.credential.mailbox_id,
+                "request_id": request_id,
+                "credential": token,
+            }
+        )
+    )
+    monkeypatch.setattr(command_mailbox_module, "COMMAND_MAILBOX_RETRY_INITIAL_SECONDS", 0.001)
+    stop = threading.Event()
+    effects = []
+    attempts = {"response": 0, "closed": 0}
+    responses = {}
+    terminal = {}
+    saved = {}
+
+    def unreachable(_self, name, _content):
+        step = "response" if name.endswith(".response.json") else "closed"
+        attempts[step] += 1
+        stop.set()
+        raise StateUnreachable("host unreachable")
+
+    def handler(request, _identity):
+        effects.append(request.request_id)
+        return CommandResponse(request_id=request.request_id, status="ok")
+
+    def checkpoint():
+        saved["terminal"] = dict(terminal)
+        saved["responses"] = {name: response.model_dump() for name, response in responses.items()}
+
+    monkeypatch.setattr(RunStageMailbox, "write_text", unreachable)
+    server = asyncio.create_task(
+        serve_command_mailbox(
+            staged=staged,
+            handler=handler,
+            stop=stop,
+            responses=responses,
+            terminal=terminal,
+            checkpoint=checkpoint,
+            poll_seconds=0.001,
+        )
+    )
+    await async_wait_until(server.done)
+    await server
+    assert effects == [request_id]
+    bound = command_mailbox_module.COMMAND_MAILBOX_STOP_MAX_FAILED_ATTEMPTS
+    assert attempts == {"response": bound, "closed": bound}
+    assert saved["responses"][request_name]["status"] == "ok"
+    assert "stopped" in saved["terminal"]["reason"]
+    assert "unavailable" in saved["terminal"]["reason"]
+    assert terminal == saved["terminal"]
+    assert staged.credential.expired
+    assert not list(tmp_path.glob("*.closed.json"))

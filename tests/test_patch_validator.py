@@ -218,6 +218,7 @@ async def test_patch_self_checks_are_bounded_and_each_one_is_a_task_event(tmp_pa
         )
     )
     results = [await _run_client(staged, patch_path) for _ in range(PATCH_SELF_CHECK_MAX_COUNT + 1)]
+    recorded_checks = len(execution.store.events)
     stop.set()
     await server
     staged.cleanup()
@@ -226,7 +227,7 @@ async def test_patch_self_checks_are_bounded_and_each_one_is_a_task_event(tmp_pa
     assert results[-1].returncode == 2
     assert calls == PATCH_SELF_CHECK_MAX_COUNT
     assert budget.count == PATCH_SELF_CHECK_MAX_COUNT + 1
-    assert len(execution.store.events) == PATCH_SELF_CHECK_MAX_COUNT + 1
+    assert recorded_checks == PATCH_SELF_CHECK_MAX_COUNT + 1
 
 
 def test_stable_validator_mailbox_is_cleaned_before_each_provider_pass(tmp_path: Path) -> None:
@@ -359,3 +360,50 @@ def test_graph_live_self_check_validates_current_state_without_appending(
     assert rechecked.candidate_revision == 2
     assert any("already exists" in message for message in rechecked.messages)
     assert history.state().revision == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_validation_retry_spends_one_budget_unit(tmp_path, monkeypatch):
+    from rcp.transport import StateUnreachable
+
+    monkeypatch.setattr("rcp.agents.command_mailbox.COMMAND_MAILBOX_RETRY_INITIAL_SECONDS", 0.01)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    patch_path = workspace / "patch.json"
+    patch_path.write_text("{}")
+    staged = stage_patch_validation_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=2,
+    )
+    calls = 0
+
+    def validate(_text):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise StateUnreachable("temporary graph transport failure")
+        return PatchValidationResult(status="valid")
+
+    stop = asyncio.Event()
+    budget = PatchValidationBudget()
+    server = asyncio.create_task(
+        serve_patch_validation_mailbox(
+            staged=staged,
+            execution=None,
+            validate=validate,
+            stop=stop,
+            budget=budget,
+        )
+    )
+    try:
+        result = await _run_client(staged, patch_path)
+        assert result.returncode == 0
+        assert calls == 2
+        assert budget.count == 1
+    finally:
+        stop.set()
+        await server
+        staged.cleanup()
