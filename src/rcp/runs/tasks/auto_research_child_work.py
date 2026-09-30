@@ -1462,10 +1462,10 @@ async def _serve_auto_research_child_work_mailbox(
                 message="This child Work command credential is bound to another turn.",
             )
         if isinstance(request, ValidateCommandRequest):
-            budget.reserve(request.request_id)
+            count = budget.reserve(request.request_id)
             if checkpoint is not None:
                 checkpoint()
-            if budget.count > PATCH_SELF_CHECK_MAX_COUNT:
+            if count > PATCH_SELF_CHECK_MAX_COUNT:
                 result = PatchValidationResult(
                     status="unavailable",
                     messages=["This task has reached its bounded RCP validator self-check limit."],
@@ -1474,14 +1474,14 @@ async def _serve_auto_research_child_work_mailbox(
                 result = await asyncio.to_thread(validate, request.arguments.patch)
             execution.store.record_agent_task_event(
                 execution.operation_id,
-                f"Patch self-check {budget.count}/{PATCH_SELF_CHECK_MAX_COUNT}: {result.status}.",
+                f"Patch self-check {count}/{PATCH_SELF_CHECK_MAX_COUNT}: {result.status}.",
                 level="info" if result.status == "valid" else "warning",
             )
             execution.store.record_agent_task_receipt(
                 execution.operation_id,
                 "patch_self_check",
                 {
-                    "count": budget.count,
+                    "count": count,
                     "limit": PATCH_SELF_CHECK_MAX_COUNT,
                     **result.model_dump(mode="json"),
                 },

@@ -1723,6 +1723,8 @@ async def test_mailbox_retries_transport_step_without_repeating_completed_handle
             stop=stop,
             poll_seconds=0.001,
             record_transport=lambda status, _message: events.append(status),
+            # Only a checkpointing turn may re-run a handler after a blip.
+            checkpoint=lambda: None,
         )
     )
     try:
@@ -1733,6 +1735,61 @@ async def test_mailbox_retries_transport_step_without_repeating_completed_handle
         if failure_step == "writing":
             assert calls["handling"] == 1
             assert calls["writing"] == 2
+    finally:
+        stop.set()
+        await server
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "checkpointed", "expected_calls"),
+    [
+        ("unreachable", True, 1 + command_mailbox_module.COMMAND_MAILBOX_HANDLER_MAX_RETRIES),
+        ("unreachable", False, 1),
+        ("timeout", True, 1),
+    ],
+)
+async def test_failing_handler_is_rerun_a_bounded_number_of_times(
+    tmp_path, monkeypatch, failure, checkpointed, expected_calls
+) -> None:
+    import threading
+
+    from rcp.transport import StateUnreachable
+
+    workspace = tmp_path / "stage"
+    workspace.mkdir()
+    staged = stage_command_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        episode_id=None,
+        task_id="task",
+        turn_id="turn",
+        timeout_seconds=3,
+    )
+    monkeypatch.setattr(command_mailbox_module, "COMMAND_MAILBOX_RETRY_INITIAL_SECONDS", 0.001)
+    calls = []
+
+    def handler(request, _identity):
+        calls.append(request.request_id)
+        raise StateUnreachable("link gone") if failure == "unreachable" else TimeoutError()
+
+    stop = threading.Event()
+    server = asyncio.create_task(
+        serve_command_mailbox(
+            staged=staged,
+            handler=handler,
+            stop=stop,
+            poll_seconds=0.001,
+            checkpoint=(lambda: None) if checkpointed else None,
+        )
+    )
+    try:
+        first, _ = await _run_client(staged, "status")
+        # The loop moved on: a later request is still answered.
+        second, output = await _run_client(staged, "status")
+        assert first == second == 2
+        assert json.loads(output)["status"] == "unavailable"
+        assert len(calls) == 2 * expected_calls
     finally:
         stop.set()
         await server

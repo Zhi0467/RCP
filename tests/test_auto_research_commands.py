@@ -1246,6 +1246,32 @@ def test_large_validation_records_patch_identity_instead_of_patch_bytes(tmp_path
     }
 
 
+def test_unreachable_validation_finishes_its_command_as_unavailable(tmp_path) -> None:
+    from rcp.transport import StateUnreachable
+
+    store, auto_research, root = _setup_auto_research(tmp_path)
+
+    def unreachable(_context, _arguments):
+        raise StateUnreachable("graph host did not answer")
+
+    bundle = replace(_Effects(store, auto_research, root).bundle(), validate=unreachable)
+    response = _dispatcher(store, bundle).dispatch(
+        root.operation_id,
+        _request(
+            ValidateCommandRequest,
+            request_id="8" * 32,
+            verb="validate",
+            arguments={"patch": '{"summary":"s","ops":[]}'},
+        ),
+    )
+
+    assert response.status == "unavailable"
+    invocation = store.agent_command("8" * 32)
+    assert invocation is not None
+    assert invocation.status == "unavailable"
+    assert invocation.exited_at is not None
+
+
 def test_command_result_must_fit_the_durable_event_ledger() -> None:
     with pytest.raises(ValueError, match="event ledger limit"):
         AutoResearchCommandEffectResult(result={"too_large": "x" * 40_000})

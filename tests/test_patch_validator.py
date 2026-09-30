@@ -396,6 +396,7 @@ async def test_transient_validation_retry_spends_one_budget_unit(tmp_path, monke
             validate=validate,
             stop=stop,
             budget=budget,
+            checkpoint=lambda: None,
         )
     )
     try:

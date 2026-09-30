@@ -105,6 +105,9 @@ COMMAND_MAILBOX_RETRY_JITTER = 0.25
 COMMAND_MAILBOX_STOP_POLL_SECONDS = 0.1
 # After Stop or settlement, each drain step gets only this many failed attempts.
 COMMAND_MAILBOX_STOP_MAX_FAILED_ATTEMPTS = 3
+# A handler whose own SSH call gave no verdict is re-run at most this many more
+# times, and only for a turn that checkpoints its responses; then "unavailable".
+COMMAND_MAILBOX_HANDLER_MAX_RETRIES = 2
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
 # How long one client invocation waits before it returns "not answered yet".
 # Provider shell tools kill long commands (Claude Code's Bash stops at 120 s,

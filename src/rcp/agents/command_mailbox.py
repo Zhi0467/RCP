@@ -37,6 +37,7 @@ from rcp.agents.staged_command_client import COMMAND_MAILBOX_MAX_REQUEST_BYTES
 from rcp.limits import (
     COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
     COMMAND_CLIENT_WAIT_SECONDS,
+    COMMAND_MAILBOX_HANDLER_MAX_RETRIES,
     COMMAND_MAILBOX_POLL_SECONDS,
     COMMAND_MAILBOX_REMOTE_POLL_SECONDS,
     COMMAND_MAILBOX_RETRY_INITIAL_SECONDS,
@@ -422,13 +423,7 @@ async def serve_command_mailbox(
                         raise _StoppedMailboxUnavailable(
                             f"turn stopped; response delivery remains unavailable: {exc}"
                         ) from exc
-                await pause(
-                    min(
-                        COMMAND_MAILBOX_RETRY_MAX_SECONDS,
-                        delay * random.uniform(1 - COMMAND_MAILBOX_RETRY_JITTER, 1),
-                    ),
-                    drain=drain,
-                )
+                await pause(_jittered(delay), drain=drain)
                 delay = min(COMMAND_MAILBOX_RETRY_MAX_SECONDS, delay * 2)
                 continue
             if outage:
@@ -436,11 +431,38 @@ async def serve_command_mailbox(
                 await transport("recovered", "Command mailbox transport recovered")
             return outcome
 
+    async def handle(request: CommandRequest) -> tuple[CommandResponse, bool]:
+        # Only the handler's own no-verdict SSH failure is a blip, and only a turn
+        # that checkpoints its answers may re-run a handler; the rest answer now.
+        nonlocal outage
+        retries = COMMAND_MAILBOX_HANDLER_MAX_RETRIES if checkpoint is not None else 0
+        delay = COMMAND_MAILBOX_RETRY_INITIAL_SECONDS
+        while True:
+            try:
+                outcome = await _handle_request(request, staged, handler)
+            except (StateUnreachable, RemoteStageTransportFailure) as exc:
+                if retries == 0:
+                    return _error_response(
+                        request.request_id, "unavailable", "Command handler unavailable", exc
+                    ), False
+                if not outage:
+                    outage = True
+                    await transport("outage", f"Command handler transport unavailable: {exc}")
+            else:
+                if outage:
+                    outage = False
+                    await transport("recovered", "Command mailbox transport recovered")
+                return outcome
+            retries -= 1
+            await pause(_jittered(delay), drain=True)
+            delay = min(COMMAND_MAILBOX_RETRY_MAX_SECONDS, delay * 2)
+
     reason = (terminal or {}).get(
         "reason", "Command mailbox permanently closed: turn stopped or entered settlement."
     )
-    # A turn that simply ends closes its mailbox quietly; only a failure warns.
-    failed = bool(terminal and terminal.get("reason"))
+    # A turn that simply ends closes its mailbox quietly; only a failure warns,
+    # and a restored closure already warned when it happened.
+    failed = False
     try:
         while not interrupted(drain=False) and not (terminal and terminal.get("reason")):
             names = await retry(lambda: asyncio.to_thread(staged.mailbox.entry_names))
@@ -488,10 +510,7 @@ async def serve_command_mailbox(
                         )
                         handled = False
                     else:
-                        response, handled = await retry(
-                            lambda request=request: _handle_request(request, staged, handler),
-                            drain=True,
-                        )
+                        response, handled = await handle(request)
                     answers[name] = response
                     if checkpoint is not None:
                         await asyncio.to_thread(checkpoint)
@@ -581,12 +600,19 @@ async def _handle_request(
         if response.request_id != request.request_id:
             raise ValueError("command handler returned a mismatched request identity")
         return response, True
-    except (StateUnreachable, RemoteStageTransportFailure, TimeoutError, subprocess.TimeoutExpired):
+    except (StateUnreachable, RemoteStageTransportFailure):
         raise
     except Exception as exc:
         return _error_response(
             request.request_id, "unavailable", "Command handler unavailable", exc
         ), False
+
+
+def _jittered(delay: float) -> float:
+    return min(
+        COMMAND_MAILBOX_RETRY_MAX_SECONDS,
+        delay * random.uniform(1 - COMMAND_MAILBOX_RETRY_JITTER, 1),
+    )
 
 
 def _error_response(
