@@ -35,6 +35,7 @@ _LOG = logging.getLogger(__name__)
 _CACHE: dict[str, TransferEngine] = {}
 _WARNED: set[str] = set()
 _LOCK = threading.RLock()
+_HOST_LOCKS: dict[str, threading.Lock] = {}
 _WARNING = contextvars.ContextVar[Callable[[str], None] | None](
     "state_transfer_warning", default=None
 )
@@ -122,33 +123,46 @@ def warning_context(callback: Callable[[str], None]) -> Iterator[None]:
 
 def get_engine(host: str) -> TransferEngine:
     with _LOCK:
-        if host not in _CACHE:
-            local_path, local_version = _local_candidate()
-            remote_ok, remote_version = _probe(
-                ssh_arguments(host, shlex.join(["rsync", *_RSYNC_PROBE_OPTIONS])), remote=True
-            )
-            _CACHE[host] = TransferEngine(
-                "rsync" if local_path and remote_ok else "tar",
-                local_path,
-                local_version,
-                remote_version,
-            )
-            if _CACHE[host].engine == "tar" and host not in _WARNED:
+        cached = _CACHE.get(host)
+        if cached is not None:
+            return cached
+        host_lock = _HOST_LOCKS.setdefault(host, threading.Lock())
+    # Probe under a per-host lock, so a hung host never stalls another host.
+    with host_lock:
+        with _LOCK:
+            cached = _CACHE.get(host)
+        if cached is not None:
+            return cached
+        local_path, local_version = _local_candidate()
+        remote_ok, remote_version = _probe(
+            ssh_arguments(host, shlex.join(["rsync", *_RSYNC_PROBE_OPTIONS])), remote=True
+        )
+        engine = TransferEngine(
+            "rsync" if local_path and remote_ok else "tar",
+            local_path,
+            local_version,
+            remote_version,
+        )
+        with _LOCK:
+            _CACHE[host] = engine
+            warn = engine.engine == "tar" and host not in _WARNED
+            if warn:
                 _WARNED.add(host)
-                failed = []
-                if not local_path:
-                    failed.append(f"backend ({local_version})")
-                if not remote_ok:
-                    failed.append(f"execution host ({remote_version})")
-                message = f"State transfers for {host} use tar over SSH: {'; '.join(failed)} failed the rsync contract. Install rsync with protocol >= 29 and support for -a, --delete, --exclude, -R and -e ssh on the failed end(s)."
-                _LOG.warning(message)
-                callback = _WARNING.get()
-                if callback:
-                    try:
-                        callback(message)
-                    except Exception:
-                        _LOG.exception("Could not record state transfer warning in task events")
-        return _CACHE[host]
+        if warn:
+            failed = []
+            if not local_path:
+                failed.append(f"backend ({local_version})")
+            if not remote_ok:
+                failed.append(f"execution host ({remote_version})")
+            message = f"State transfers for {host} use tar over SSH: {'; '.join(failed)} failed the rsync contract. Install rsync with protocol >= 29 and support for -a, --delete, --exclude, -R and -e ssh on the failed end(s)."
+            _LOG.warning(message)
+            callback = _WARNING.get()
+            if callback:
+                try:
+                    callback(message)
+                except Exception:
+                    _LOG.exception("Could not record state transfer warning in task events")
+        return engine
 
 
 def diagnostics(host: str) -> dict[str, str | None] | None:
@@ -168,9 +182,10 @@ def transfer_result(
             for word in ("mismatch", "incompatib", "not match")
         )
     ):
+        # Only forget the verdict: the next transfer probes again. Probing here
+        # could raise a transport error that hides this transfer's own result.
         with _LOCK:
             _CACHE.pop(host, None)
-            get_engine(host)
     return result
 
 

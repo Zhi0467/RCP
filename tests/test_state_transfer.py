@@ -200,6 +200,8 @@ def test_fallback_warning_once_per_host(monkeypatch, caplog, code, stderr):
         assert state_transfer.get_engine("fixture").engine == "tar"
         state_transfer.get_engine("fixture")
         state_transfer.transfer_result("fixture", subprocess.CompletedProcess([], code, "", stderr))
+        assert state_transfer.diagnostics("fixture") is None
+        state_transfer.get_engine("fixture")
     assert len(events) == 1
     assert len(caplog.records) == 1
     assert len(probes) == 2

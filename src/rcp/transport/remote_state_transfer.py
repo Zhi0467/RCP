@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 
 
 def main() -> int:
@@ -23,7 +25,21 @@ def main() -> int:
             archive.add(root, arcname=".", filter=include)
         return 0
     if operation == "push":
-        return subprocess.run(["tar", "-xf", "-"], cwd=root, check=False).returncode
+        # Extract into a private folder, then rename complete files into place:
+        # an abandoned earlier attempt can then never leave a truncated file.
+        incoming = tempfile.mkdtemp(prefix=".incoming-", dir=root)
+        try:
+            code = subprocess.run(["tar", "-xpf", "-"], cwd=incoming, check=False).returncode
+            if code:
+                return code
+            for folder, _directories, files in os.walk(incoming):
+                target = os.path.join(root, os.path.relpath(folder, incoming))
+                os.makedirs(target, exist_ok=True)
+                for name in files:
+                    os.replace(os.path.join(folder, name), os.path.join(target, name))
+            return 0
+        finally:
+            shutil.rmtree(incoming, ignore_errors=True)
     raise ValueError("unknown state transfer operation")
 
 
