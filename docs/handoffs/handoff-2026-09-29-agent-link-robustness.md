@@ -109,6 +109,15 @@ Implemented:
   context keeps exact artifact ownership but follows the current chat profile;
   insertion owns final session selection. Client session hints cannot select a
   different ordinary-chat session. **New session** still creates a new chat id.
+- Round-1 review fixes: a wake whose trigger is `watcher` now uses the compact
+  chat prompt protocol and advances the chat baseline. A current session the
+  provider dropped (`session_limit`, `stale_session`, or unavailable
+  continuation context, as Retry already classifies them) starts fresh with its
+  reason code. A refused wake is stored as failure kind `session_refused` and
+  cannot be retried. A deferred wake writes its reason to the watcher's
+  `last_error`; graph-condition watchers do not project it yet. Result-view
+  revisions keep their own saved session outside this binding. A human's
+  session continues across a model switch; only a wake must match the model.
 
 Verification covers same-session human/wake/human admission, paused and
 interrupted deferral, provider/model refusal reasons, fresh-start reasons,
@@ -176,8 +185,13 @@ Implemented:
   repeating the handler. Validation retries reserve one budget unit per request;
   keyed command replay retains its existing durable meaning, including #225's
   consumed-file case.
-- SSH exit 255, no-verdict transport failures, and timeouts retry with capped
-  exponential backoff and jitter. Each outage and recovery records one event.
+- SSH exit 255, no-verdict transport failures, and timeouts of the mailbox's
+  own steps retry with capped exponential backoff and jitter. A handler is
+  re-run only when its own SSH call gave no verdict, only for checkpointed
+  mailboxes, and at most `COMMAND_MAILBOX_HANDLER_MAX_RETRIES` times; any other
+  handler failure, including its own deadline, answers "unavailable" so later
+  requests are not blocked. Auto-research answers a transport failure as
+  "unavailable" and finishes its command row. Each outage and recovery records one event.
   A malformed mailbox or refused credential closes the mailbox with a permanent
   reason; the staged broker and client answer later calls with that reason.
   Stop fences new requests and bounds failed drain attempts. An unreachable host
@@ -189,6 +203,9 @@ Implemented:
   backup-excluded directory. No secret enters task projections. Startup restores
   the concrete owner before liveness reconciliation, without staging, clearing
   handoffs, reissuing a credential, or requiring a reachable graph host.
+  A checkpoint is deleted wherever its task leaves `awaiting_remote_result`
+  without a live mailbox, and one unreadable checkpoint refuses only its own
+  turn during reattachment.
 
 Settled decisions, 2026-09-29:
 
