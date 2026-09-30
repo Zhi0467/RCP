@@ -383,8 +383,20 @@ class TransferTaskOutput(_StrictTransferRecord):
     patch: TransferJsonDocument
 
 
+class TransferArtifactEditHistory(_StrictTransferRecord):
+    """Edit provenance without the session, stage, or master authority."""
+
+    artifact_id: str
+    base_version: str
+    operation_id: str
+    origin_operation_id: str
+    reply_episode_id: str | None = None
+    episode_id: str | None = None
+
+
 class TransferRunRequestHistory(_StrictTransferRecord):
     shape: Literal["run"] = "run"
+    artifact_edit: TransferArtifactEditHistory | None = None
     provider: str | None = None
     model: str | None = None
     reasoning: str | None = None
@@ -497,6 +509,7 @@ def capture_task_request_history(
         "auto_research",
         "branch_merge",
         "episode_report",
+        "artifact_edit",
     ],
     request: Mapping[str, object],
 ) -> TransferTaskRequestHistory:
@@ -530,8 +543,14 @@ def capture_task_request_history(
     decision_bundle = request.get("control_decision_bundle")
     if not isinstance(decision_bundle, list):
         decision_bundle = []
+    edit = request.get("artifact_edit")
     return TransferRunRequestHistory(
         **common,
+        artifact_edit=TransferArtifactEditHistory.model_validate(
+            {key: edit[key] for key in TransferArtifactEditHistory.model_fields if key in edit}
+        )
+        if isinstance(edit, dict)
+        else None,
         run_truth_scope=_string_tuple(request.get("run_truth_scope")) or None,
         chat_scope=request.get("chat_scope", "node"),
         node_id=_optional_string(request.get("node_id")),
@@ -572,6 +591,7 @@ class TransferTaskRecord(_StrictTransferRecord):
         "auto_research",
         "branch_merge",
         "episode_report",
+        "artifact_edit",
     ]
     status: Literal["succeeded", "failed", "interrupted"]
     request: TransferTaskRequestHistory

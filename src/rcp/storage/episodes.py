@@ -426,7 +426,6 @@ class EpisodeStoreMixin:
                     WHERE run.episode_id IN ({episode_placeholders})
                       AND run.visible = 1
                       AND run.kind != 'episode_report'
-                      AND json_extract(run.request_json, '$.artifact_edit') IS NULL
                     ORDER BY run.created_at, run.operation_id
                     """,
                     lifecycle_episode_ids,
@@ -702,7 +701,6 @@ class EpisodeStoreMixin:
                   ON graph_runs.operation_id = agent_usage.operation_id
                 WHERE graph_runs.episode_id = ?
                   AND graph_runs.kind != 'episode_report'
-                  AND json_extract(graph_runs.request_json, '$.artifact_edit') IS NULL
                   AND agent_usage.counted = 1
                 """,
                 (episode_id,),
@@ -981,7 +979,6 @@ class EpisodeStoreMixin:
                         SELECT 1 FROM graph_runs
                         WHERE episode_id = ? AND operation_id = ?
                           AND visible = 1 AND kind != 'episode_report'
-                          AND json_extract(request_json, '$.artifact_edit') IS NULL
                         """,
                         (episode_id, wrapup.concluding_operation_id),
                     ).fetchone()
@@ -1125,7 +1122,6 @@ class EpisodeStoreMixin:
                     SELECT 1 FROM graph_runs
                     WHERE episode_id = ? AND operation_id = ?
                       AND visible = 1 AND kind != 'episode_report'
-                          AND json_extract(request_json, '$.artifact_edit') IS NULL
                     """,
                     (episode_id, wrapup.concluding_operation_id),
                 ).fetchone()

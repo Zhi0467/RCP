@@ -460,3 +460,172 @@ def test_disabled_rule_revokes_existing_live_bindings_and_saved_final(live, save
         live.store, live.service, artifact.artifact_id, artifact.current_version
     )
     assert live.store.artifact_versions(artifact.artifact_id)[0].live.invalid_reason
+
+
+@pytest.mark.parametrize(
+    ("format", "contents", "expected"),
+    [
+        ("jsonl", '{"loss": 1}\n{"loss":', [{"loss": 1}]),
+        ("csv", 'step,loss\n1,"part', [["step", "loss"]]),
+    ],
+)
+def test_structured_file_ignores_in_progress_last_line(live, format, contents, expected):
+    metrics = live.root / f"metrics.{format}"
+    metrics.write_text(contents)
+    artifact = live.create([file_need(metrics, format=format)])
+    snapshot = read(live, artifact).snapshots[0]
+    assert snapshot.rows == expected
+    assert snapshot.truncated and snapshot.error is None
+
+
+def test_tail_keeps_complete_line_after_detection_newline(live, monkeypatch):
+    monkeypatch.setattr("rcp.live_artifact_runtime.LIVE_ARTIFACT_MAX_BYTES", 12)
+    metrics = live.root / "metrics.txt"
+    metrics.write_text("discard\nfirst\nfinal\n")
+    artifact = live.create([file_need(metrics, format="text")])
+    snapshot = read(live, artifact).snapshots[0]
+    assert snapshot.rows == ["first", "final"] and snapshot.truncated
+
+
+def test_final_capture_stops_after_bounded_attempts(live, monkeypatch):
+    from rcp.limits import LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS
+
+    job(live)
+    artifact = live.create([{"kind": "job", "key": "train"}, file_need(live.root / "absent")])
+    for _ in range(LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS):
+        reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+        version = live.store.artifact_versions(artifact.artifact_id)[0]
+        if version.live.next_capture_at:
+            later = version.live.next_capture_at
+            monkeypatch.setattr(live.store, "now", lambda later=later: later)
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    final = live.store.artifact_versions(artifact.artifact_id)[0].live
+    assert final.capture_attempts == LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS
+    assert final.capture_error and final.next_capture_at is None
+
+
+@pytest.mark.parametrize("revocation", ["history", "owner", "lineage"])
+def test_final_capture_treats_revoked_sources_as_terminal(live, revocation):
+    job(live)
+    artifact = live.create([{"kind": "job", "key": "train"}])
+    with live.store.connection() as connection:
+        if revocation == "history":
+            connection.execute("UPDATE graph_runs SET history_only=1 WHERE operation_id='turn'")
+        elif revocation == "owner":
+            connection.execute("UPDATE graph_runs SET project_id='other' WHERE operation_id='turn'")
+        else:
+            connection.execute("DELETE FROM compute_jobs")
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    final = live.store.artifact_versions(artifact.artifact_id)[0].live
+    assert final.invalid_reason and final.capture_error and final.next_capture_at is None
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    assert live.store.artifact_versions(artifact.artifact_id)[0].live.capture_attempts == 1
+
+
+def test_expired_artifact_does_not_capture(live):
+    job(live)
+    artifact = live.create([{"kind": "job", "key": "train"}])
+    expired = artifact.model_copy(
+        update={
+            "expires_at": (
+                datetime.fromisoformat(live.store.now()) - timedelta(seconds=1)
+            ).isoformat()
+        }
+    )
+    with live.store.connection() as connection:
+        connection.execute(
+            "UPDATE artifacts SET metadata=? WHERE artifact_id=?",
+            (expired.model_dump_json(), artifact.artifact_id),
+        )
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    version = live.store.artifact_versions(artifact.artifact_id)[0]
+    assert version.live.capture_attempts == 0 and version.live_snapshot is None
+
+
+def test_final_capture_reads_outside_lock_and_preserves_concurrent_snapshot(live, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import rcp.live_artifact_runtime as runtime
+
+    job(live)
+    artifact = live.create([{"kind": "job", "key": "train"}])
+    original = runtime._snapshot
+    concurrent = read(live, artifact)
+    concurrent.final = True
+    concurrent.snapshots[0].log_tail = "concurrent capture"
+
+    def capture(*args):
+        def save():
+            with live.store.artifact_lock(artifact.artifact_id):
+                live.store.save_artifact_live_snapshot(
+                    artifact.artifact_id,
+                    artifact.current_version,
+                    data=concurrent.model_dump_json().encode(),
+                )
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            pool.submit(save).result(timeout=5)
+        finally:
+            pool.shutdown(wait=False)
+        return original(*args)
+
+    monkeypatch.setattr(runtime, "_snapshot", capture)
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    assert read(live, artifact).snapshots[0].log_tail == "concurrent capture"
+
+
+def test_edit_produced_live_page_retains_episode_provenance(live):
+    from rcp.storage import EpisodeRecord
+    from tests.helpers import authorized_human
+
+    now = live.store.now()
+    episode = live.store.create_episode(
+        EpisodeRecord(
+            episode_id="episode",
+            project_id="project",
+            mode="experiment_loop",
+            control_node_id="experiment",
+            authorized_by=authorized_human(live.store),
+            status="queued",
+            invocation_ceiling=4,
+            invocations_used=0,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    with live.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id='turn'",
+            (json.dumps({"artifact_edit": {"episode_id": episode.episode_id}}),),
+        )
+    metrics = live.root / "extra.jsonl"
+    metrics.write_text('{"loss":1}\n')
+    data = (
+        '<script type="application/json" id="rcp-live">'
+        + json.dumps({"version": 1, "needs": [file_need(metrics), {"kind": "episode"}]})
+        + "</script>"
+    ).encode()
+    artifact = live.store.create_artifact(
+        Artifact(
+            artifact_id="extra-page",
+            project_id="project",
+            supplier="turn",
+            supplier_id="turn",
+            origin_operation_id="turn",
+            episode_id=episode.episode_id,
+            source_name="extra.html",
+            media_type="text/html",
+            created_at=now,
+        ),
+        data=data,
+    )
+    resolved = resolve_artifact_live_version(
+        live.store, live.service, artifact.artifact_id, artifact.current_version
+    )
+    assert resolved.invalid_reason is None
+    snapshot = read(live, artifact)
+    assert snapshot.complete and snapshot.snapshots[0].rows == [{"loss": 1}]
+    assert snapshot.snapshots[1].state == "queued"
+    assert live.store.agent_task("turn").episode_id is None
+    assert live.store.episode_tasks(episode.episode_id) == []

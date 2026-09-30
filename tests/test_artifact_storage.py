@@ -355,3 +355,109 @@ def test_live_policy_migration_covers_report_creation_before_lifecycle_commit(tm
     reopened = AppStore(store.path)
     assert reopened.artifact(report.artifact_id).live_data_allowed is False
     assert reopened.artifact(ordinary.artifact_id).live_data_allowed is True
+
+
+@pytest.mark.parametrize(
+    "status,staged_retry", [("failed", False), ("succeeded", False), ("queued", True)]
+)
+def test_inactive_or_staged_retry_edits_do_not_pin_base(
+    tmp_path, monkeypatch, status, staged_retry
+):
+    import rcp.storage.artifacts as module
+    from rcp.storage import AgentTaskRecord
+
+    monkeypatch.setattr(module, "ARTIFACT_MAX_VERSION_BYTES", 16)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    artifact = _artifact(store)
+    base = store.publish_artifact_version(
+        "one", base_version=artifact.current_version, operation_id="base", data=b"base"
+    )
+    task = AgentTaskRecord(
+        operation_id="edit",
+        project_id="project",
+        kind="artifact_edit",
+        status=status,
+        request={
+            "artifact_edit": {
+                "artifact_id": "one",
+                "base_version": base.version_id,
+                "operation_id": "edit",
+            }
+        },
+        created_at=store.now(),
+        updated_at=store.now(),
+        status_message="",
+    )
+    store.create_agent_task(task)
+    if staged_retry:
+        store.create_agent_task(
+            task.model_copy(
+                update={"operation_id": "retry", "parent_operation_id": "edit", "attempt": 2}
+            )
+        )
+        store.record_agent_task_receipt("retry", "artifact_edit_staged", {})
+    store.publish_artifact_version(
+        "one", base_version=base.version_id, operation_id="next", data=b"next-one"
+    )
+    assert base.version_id not in {v.version_id for v in store.artifact_versions("one")}
+
+
+def test_expiry_rechecks_edit_admitted_before_artifact_lock(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from rcp.storage import AgentTaskRecord
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _artifact(store)
+    lock = store.artifact_lock
+
+    @contextmanager
+    def admit_then_lock(artifact_id):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id="edit",
+                project_id="project",
+                kind="artifact_edit",
+                status="queued",
+                request={"artifact_edit": {"artifact_id": artifact_id}},
+                created_at=store.now(),
+                updated_at=store.now(),
+                status_message="",
+            )
+        )
+        with lock(artifact_id):
+            yield
+
+    monkeypatch.setattr(store, "artifact_lock", admit_then_lock)
+    assert store.expire_artifacts(protected_artifact_ids=frozenset()) == 0
+    assert store.read_artifact_bytes("one") == b"original"
+
+
+def test_artifact_write_syncs_parent_after_atomic_replace(tmp_path, monkeypatch):
+    import rcp.storage.artifacts as module
+
+    synced = []
+    real_sync = module.fsync_directory
+
+    def sync(path):
+        assert any(child.is_file() and not child.name.startswith(".") for child in path.iterdir())
+        real_sync(path)
+        synced.append(path)
+
+    monkeypatch.setattr(module, "fsync_directory", sync)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    _artifact(store)
+    assert synced == [tmp_path / "artifacts" / "one"]
+
+
+def test_orphan_report_migration_refuses_without_dropping_html(tmp_path):
+    from rcp.storage.artifacts import migrate_artifacts
+
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute("CREATE TABLE episodes (episode_id TEXT, project_id TEXT)")
+    connection.execute("CREATE TABLE episode_reports (episode_id TEXT, html TEXT)")
+    connection.execute("INSERT INTO episode_reports VALUES ('missing', '<p>retained</p>')")
+    with pytest.raises(ValueError, match="report has no owning episode"):
+        migrate_artifacts(connection, tmp_path)
+    assert connection.execute("SELECT html FROM episode_reports").fetchone()[0] == "<p>retained</p>"

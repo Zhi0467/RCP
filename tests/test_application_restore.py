@@ -463,3 +463,119 @@ def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omi
         candidate.read_artifact_bytes(artifact.artifact_id, artifact.current_version) == b"original"
     )
     assert candidate.read_artifact_bytes(artifact.artifact_id, edited.version_id) == b"edited"
+
+
+def test_restore_legacy_migrated_artifact_can_be_archived_again(
+    restore_request, tmp_path, monkeypatch
+):
+    import gzip
+    import json
+    import sqlite3
+    import tarfile
+
+    import rcp.server_ops.restore as restore_module
+    from rcp.server_ops.backup_integrity import database_schema_sha256
+    from rcp.server_ops.backup_models import BackupArchiveManifest
+    from rcp.storage import AppStore
+
+    value, _, previous = restore_request
+    proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
+    root = Path(proof.capture_root)
+    database = root / "rcp.sqlite3"
+    database.chmod(0o600)
+    legacy = tmp_path / "legacy.sqlite3"
+    legacy.write_bytes(
+        gzip.decompress(
+            Path(
+                "tests/fixtures/server_upgrade/pre-artifacts-v15-ff090e1/data/rcp.sqlite3.gz"
+            ).read_bytes()
+        )
+    )
+    with sqlite3.connect(legacy) as connection:
+        view_schema = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE name = 'result_views'"
+        ).fetchone()[0]
+    with sqlite3.connect(database) as connection:
+        project_id = connection.execute("SELECT project_id FROM projects LIMIT 1").fetchone()[0]
+        for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
+            connection.execute(f"DROP TABLE {table}")
+        connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
+        connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
+        connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT NOT NULL DEFAULT ''")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 30")
+        connection.execute(view_schema)
+        now = AppStore.now()
+        connection.execute(
+            "INSERT INTO result_views VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "a" * 24,
+                project_id,
+                "experiment",
+                "chat",
+                "origin",
+                "latest",
+                "codex",
+                "model",
+                "",
+                "local",
+                "session",
+                "",
+                "/missing/stage",
+                "page.html",
+                "0" * 64,
+                4,
+                "page",
+                now,
+                now,
+                now,
+                None,
+                None,
+            ),
+        )
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        schema = database_schema_sha256(connection)
+    monkeypatch.setattr(
+        restore_module,
+        "SUPPORTED_RESTORE_DATABASE_SCHEMAS",
+        {*restore_module.SUPPORTED_RESTORE_DATABASE_SCHEMAS, schema},
+    )
+    with tarfile.open(value["plaintext_path"]) as archive:
+        raw = json.loads(archive.extractfile("manifest.json").read())
+    raw.pop("artifact_inventory", None)
+    old_size = raw["sqlite_snapshot"]["size_bytes"]
+    raw["sqlite_snapshot"].update(
+        sha256=hashlib.sha256(database.read_bytes()).hexdigest(), size_bytes=database.stat().st_size
+    )
+    raw["database_schema_sha256"] = schema
+    raw["total_bytes"] += database.stat().st_size - old_size
+    manifest = BackupArchiveManifest.model_validate_json(json.dumps(raw))
+    with Path(value["plaintext_path"]).open("wb") as stream:
+        _write_deterministic_archive(stream, manifest, root)
+    value["plaintext_sha256"] = hashlib.sha256(
+        Path(value["plaintext_path"]).read_bytes()
+    ).hexdigest()
+    review = prepare_restore(RestorePrepareRequest(**value))
+    result = prepare_restore(_confirm(value, review, tmp_path / "legacy-ready"))
+    restored = ApplicationProof.model_validate_json(Path(result["proof_path"]).read_bytes())
+    publication = BackupProjectFileCapturePublication(
+        receipt=restored.project_receipt,
+        receipt_path=Path(restored.capture_root) / "project-files.json",
+        receipt_sha256=restored.project_receipt_sha256,
+    )
+    installed = SimpleNamespace(
+        installation_id=str(uuid.uuid4()), backup=SimpleNamespace(age_recipient="age1" + "q" * 58)
+    )
+    archived = build_archive_manifest(
+        installed=installed, sqlite_receipt=restored.sqlite_receipt, project_publication=publication
+    )
+    output = tmp_path / "restored.tar"
+    with output.open("wb") as stream:
+        _write_deterministic_archive(stream, archived, Path(restored.capture_root))
+    assert restored.sqlite_receipt.artifact_inventory
+    with tarfile.open(output) as archive:
+        for entry in restored.sqlite_receipt.artifact_inventory:
+            assert (
+                archive.extractfile(f"artifacts/{entry.artifact_id}/{entry.file_id}").read()
+                == b"page"
+            )

@@ -113,7 +113,11 @@ def _open_stage(service, request, data_dir, execution):
 
 
 def _settle(service, request, execution, workspace, remote, directory, outcome) -> Iterator[str]:
-    if not outcome.completed or outcome.failed or outcome.paused:
+    if outcome.failed or outcome.paused:
+        return
+    if not outcome.completed:
+        outcome.failed = True
+        yield _sse(AgentEvent(event="error", text=f"{request.provider} produced no result."))
         return
     answer = "\n\n".join(part.strip() for part in outcome.answers if part.strip())
     if not answer:

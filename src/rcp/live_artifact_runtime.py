@@ -17,6 +17,7 @@ from rcp.artifacts import read_local_regular_file
 from rcp.limits import (
     LIVE_ARTIFACT_LOG_TAIL_LINES,
     LIVE_ARTIFACT_MAX_BYTES,
+    LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS,
     LIVE_ARTIFACT_MAX_RETRY_SECONDS,
     LIVE_ARTIFACT_MAX_ROWS,
     LIVE_ARTIFACT_REFRESH_SECONDS,
@@ -52,11 +53,16 @@ def _version(store, artifact_id, version_id):
     return artifact, version
 
 
+def _task_episode_id(task):
+    edit = task.request.get("artifact_edit")
+    return edit.get("episode_id") if isinstance(edit, dict) else task.episode_id
+
+
 def _owner(store, artifact):
     task = store.agent_task(artifact.origin_operation_id) if artifact.origin_operation_id else None
     if task is None or task.project_id != artifact.project_id:
         raise ValueError("The artifact's original task is unavailable.")
-    if artifact.episode_id != task.episode_id:
+    if artifact.episode_id != _task_episode_id(task):
         raise ValueError("The artifact no longer belongs to its original task episode.")
     episode = store.episode(artifact.episode_id) if artifact.episode_id else None
     if artifact.episode_id and (
@@ -98,8 +104,9 @@ def _readable_roots(store, service, task, host):
         if (service.manifest.machine_map[repository.machine].host or None) == (host or None)
     ]
     binding = None
-    if task.episode_id:
-        episode = store.episode(task.episode_id)
+    episode_id = _task_episode_id(task)
+    if episode_id:
+        episode = store.episode(episode_id)
         owner_id = episode.isolation_owner_episode_id or episode.episode_id
         owner = store.episode(owner_id)
         if owner is None or owner.project_id != task.project_id:
@@ -226,20 +233,26 @@ def _read(host, path, *, tail):
     )
     truncated = len(data) > LIVE_ARTIFACT_MAX_BYTES
     if truncated:
+        boundary = data[:1] == b"\n"
         data = data[1:]
-        data = data.split(b"\n", 1)[1] if b"\n" in data else b""
+        if not boundary:
+            data = data.split(b"\n", 1)[1] if b"\n" in data else b""
     return data.decode("utf-8"), truncated
 
 
 def _file_snapshot(binding):
     need = binding.need
     text, truncated = _read(binding.host, need.path, tail=need.read == "tail")
+    byte_truncated = truncated
+    if need.format in {"jsonl", "csv"} and text and not text.endswith("\n"):
+        text = text.rpartition("\n")[0]
+        truncated = True
     if need.format == "jsonl":
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     elif need.format == "csv":
         # Arrays preserve the actual tail without inventing a header that may
         # have fallen outside the bounded read.
-        if truncated:
+        if byte_truncated:
             raise ValueError(
                 "CSV exceeds the byte cap; a clipped tail cannot establish CSV record boundaries."
             )
@@ -404,50 +417,86 @@ def _ended(store, live):
     return True
 
 
+def _capture_expired(artifact, now):
+    return (
+        not artifact.kept_at
+        and artifact.expires_at
+        and datetime.fromisoformat(artifact.expires_at) <= now
+    )
+
+
 def reconcile_artifact_live_snapshots(store, catalog, project_id: str) -> None:
-    """Capture without a viewer; durable backoff survives server restarts."""
+    """Capture without a viewer; durable, bounded retries survive restarts."""
     now = datetime.fromisoformat(store.now())
     for artifact in store.artifacts(project_id):
-        for candidate in store.artifact_versions(artifact.artifact_id):
-            with store.artifact_lock(artifact.artifact_id):
+        for version in store.artifact_versions(artifact.artifact_id):
+            live = version.live
+            if (
+                not artifact.live_data_allowed
+                or _capture_expired(artifact, now)
+                or live is None
+                or live.invalid_reason
+                or version.live_snapshot
+                or live.capture_attempts >= LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS
+                or not any(binding.need.kind in {"job", "episode"} for binding in live.needs)
+            ):
+                continue
+            if live.next_capture_at and datetime.fromisoformat(live.next_capture_at) > now:
+                continue
+            original_live = live.model_copy(deep=True)
+            snapshot = None
+            try:
+                service = catalog.open(project_id)
                 try:
-                    artifact, version = _version(store, artifact.artifact_id, candidate.version_id)
-                except KeyError:
-                    continue
-                live = version.live
-                if (
-                    not artifact.live_data_allowed
-                    or live is None
-                    or live.invalid_reason
-                    or version.live_snapshot
-                    or not _ended(store, live)
-                ):
-                    continue
-                if live.next_capture_at and datetime.fromisoformat(live.next_capture_at) > now:
+                    _validate_read(store, service, artifact, version)
+                except (ValueError, KeyError) as exc:
+                    live.invalid_reason = str(exc)
+                    raise
+                if not _ended(store, live):
                     continue
                 live.capture_attempts += 1
-                try:
-                    snapshot = _snapshot(store, catalog.open(project_id), artifact, version)
-                    if not snapshot.complete:
-                        raise ValueError(
-                            "; ".join(item.error for item in snapshot.snapshots if item.error)
-                        )
-                    snapshot.final = True
-                    store.save_artifact_live_snapshot(
-                        artifact.artifact_id,
-                        version.version_id,
-                        data=snapshot.model_dump_json().encode(),
+                # SSH and file reads never hold the lock used by viewer actions.
+                snapshot = _snapshot(store, service, artifact, version)
+                if not snapshot.complete:
+                    raise ValueError(
+                        "; ".join(item.error for item in snapshot.snapshots if item.error)
                     )
-                    live.capture_error = None
-                    live.next_capture_at = None
-                except Exception as exc:
-                    live.capture_error = str(exc)
+                snapshot.final = True
+                live.capture_error = None
+                live.next_capture_at = None
+            except Exception as exc:
+                live.capture_error = str(exc)
+                # Opening a source can fail before the actual snapshot attempt.
+                live.capture_attempts = original_live.capture_attempts + 1
+                live.next_capture_at = None
+                if (
+                    not live.invalid_reason
+                    and live.capture_attempts < LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS
+                ):
                     delay = min(
                         LIVE_ARTIFACT_MAX_RETRY_SECONDS,
                         LIVE_ARTIFACT_RETRY_SECONDS * 2 ** min(live.capture_attempts - 1, 16),
                     )
                     live.next_capture_at = (now + timedelta(seconds=delay)).isoformat()
-                    logger.warning(
-                        "Incomplete live artifact capture %s: %s", artifact.artifact_id, exc
+                logger.warning("Incomplete live artifact capture %s: %s", artifact.artifact_id, exc)
+            with store.artifact_lock(artifact.artifact_id):
+                try:
+                    current_artifact, current = _version(
+                        store, artifact.artifact_id, version.version_id
+                    )
+                except KeyError:
+                    continue
+                if (
+                    current.live_snapshot
+                    or current.live != original_live
+                    or not current_artifact.live_data_allowed
+                    or _capture_expired(current_artifact, datetime.fromisoformat(store.now()))
+                ):
+                    continue
+                if snapshot is not None and snapshot.complete:
+                    store.save_artifact_live_snapshot(
+                        artifact.artifact_id,
+                        version.version_id,
+                        data=snapshot.model_dump_json().encode(),
                     )
                 store.set_artifact_version_live(artifact.artifact_id, version.version_id, live)

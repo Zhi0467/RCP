@@ -28,49 +28,37 @@ class ArtifactEditAvailability:
 def artifact_edit_availability(
     store: AppStore, service: ProjectService, artifact: Artifact
 ) -> ArtifactEditAvailability:
-    """Offer admission without creating a task or reserving its session.
-
-    The POST still admits and reserves atomically. A fresh session is offered
-    only for the explicit resumability failures admission identifies.
-    """
-
+    """Read durable availability hints; POST proves stage, bytes, and master integrity."""
     fresh = False
     try:
-        request = RunRequest(
-            message="Edit artifact.",
-            artifact_context={
-                "operation_id": artifact.origin_operation_id or "",
-                "artifact_id": artifact.artifact_id,
-            },
+        if not supports_comments(artifact.media_type):
+            raise ValueError("The artifact type does not support editing.")
+        origin, _ = artifact_reply_origin(store, artifact)
+        if origin.graph_target != service.history.graph_target:
+            raise ValueError("The artifact belongs to another graph target.")
+        master = store.latest_session_master(artifact.project_id, origin.native_session_id or "")
+        fresh = origin.history_only or not (
+            origin.native_session_id and origin.stage_root and master
         )
-        try:
-            admitted = admit_artifact_edit(store, service, artifact.project_id, request)
-        except ArtifactFreshSessionRequired:
-            fresh = True
-            request = request.model_copy(
-                update={
-                    "artifact_context": request.artifact_context.model_copy(
-                        update={"fresh_session": True}
-                    )
-                }
-            )
-            admitted = admit_artifact_edit(store, service, artifact.project_id, request)
-        edit = admitted.artifact_edit
-        assert edit is not None
+        if master and not fresh:
+            try:
+                _launch_kind_for_master_owner(store.agent_task(master[0]))
+            except ArtifactFreshSessionRequired:
+                fresh = True
         now = store.now()
         reason = store.session_launch_unavailable_reason(
             AgentTaskRecord(
-                operation_id=edit.operation_id,
+                operation_id=str(uuid.uuid4()),
                 project_id=artifact.project_id,
                 kind="artifact_edit",
                 status="queued",
                 status_message="Checking artifact edit availability.",
                 created_at=now,
                 updated_at=now,
-                request=admitted.model_dump(mode="json"),
-                native_session_id=admitted.session_id,
-                stage_host=edit.stage_host,
-                stage_root=edit.stage_root,
+                request={"provider": origin.request.get("provider")},
+                native_session_id=None if fresh else origin.native_session_id,
+                stage_host=None if fresh else origin.stage_host,
+                stage_root=None if fresh else origin.stage_root,
             )
         )
     except (KeyError, OSError, ValueError) as exc:
@@ -127,6 +115,14 @@ def admit_artifact_edit(
 ) -> RunRequest:
     context = request.artifact_context
     assert context is not None
+    if context.fresh_session:
+        exact = request.model_copy(
+            update={"artifact_context": context.model_copy(update={"fresh_session": False})}
+        )
+        try:
+            return admit_artifact_edit(store, service, project_id, exact)
+        except ArtifactFreshSessionRequired:
+            pass
     artifact = store.artifact(context.artifact_id)
     if artifact is None or artifact.project_id != project_id:
         raise ValueError("The artifact is unavailable.")
@@ -267,7 +263,6 @@ def start_artifact_edit(
     record = AgentTaskRecord(
         operation_id=str(uuid.uuid4()) if parent else edit.operation_id,
         project_id=project_id,
-        episode_id=edit.episode_id,
         graph_target=origin.graph_target,
         kind=kind,
         status="queued",
@@ -306,7 +301,7 @@ def validate_artifact_edit_launch(record, request, *, parent):
         if edit.launch_kind == "revoking"
         else ("project_chat" if request.chat_scope == "project" else "node_chat")
     )
-    if record.kind != expected or record.episode_id != edit.episode_id:
+    if record.kind != expected or record.episode_id is not None:
         raise ValueError("The edit changed its admitted launch or episode binding.")
     if parent is not None and (
         parent.project_id != record.project_id

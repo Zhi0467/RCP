@@ -255,7 +255,7 @@ def test_viewer_missing_master_offers_explicit_fresh_session(edit_origin):
     assert result.comment_unavailable_reason is None
 
 
-def test_viewer_corrupt_master_does_not_offer_fresh_session(edit_origin, monkeypatch):
+def test_viewer_defers_master_integrity_check_to_admission(edit_origin, monkeypatch):
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
     record_session_master(store, task.operation_id, "master bytes")
@@ -263,9 +263,12 @@ def test_viewer_corrupt_master_does_not_offer_fresh_session(edit_origin, monkeyp
     result = artifact_edit_availability(
         store, app.state.service, store.artifact(artifact.artifact_id)
     )
-    assert not result.can_comment
-    assert result.comment_unavailable_reason
+    assert result.can_comment
     assert not result.fresh_session_required
+    with pytest.raises(AgentTaskAdmissionConflict):
+        admit_artifact_edit(
+            store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
+        )
 
 
 @pytest.mark.parametrize("suffix", ["pdf", "bin"])
@@ -278,3 +281,37 @@ def test_viewer_does_not_offer_edits_for_unsupported_types(edit_origin, suffix):
     assert not result.can_comment
     assert result.comment_unavailable_reason
     assert not result.fresh_session_required
+
+
+def test_fresh_session_request_keeps_resumable_exact_session(edit_origin):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
+    record_session_master(store, task.operation_id, "master bytes")
+    admitted = admit_artifact_edit(
+        store, app.state.service, task.project_id, _request(task, artifact, fresh=True)
+    )
+    assert admitted.session_id == task.native_session_id
+    assert not admitted.artifact_edit.fresh_session
+
+
+def test_availability_uses_no_remote_or_content_reads(edit_origin, monkeypatch):
+    from rcp.transport import RemoteRunStage
+
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
+    record_session_master(store, task.operation_id, "master bytes")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET stage_host = 'remote' WHERE operation_id = ?",
+            (task.operation_id,),
+        )
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Availability performed expensive verification")
+
+    monkeypatch.setattr(RemoteRunStage, "directory_exists", forbidden)
+    monkeypatch.setattr(store, "read_artifact_bytes", forbidden)
+    monkeypatch.setattr(store, "agent_task_contract", forbidden)
+    assert artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    ).can_comment
