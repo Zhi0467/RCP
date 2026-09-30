@@ -14,6 +14,7 @@ from rcp.core.models import (
 )
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
+    WATCHER_ERROR_MAX_CHARS,
     WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
 from rcp.storage.experiments import ExperimentStoreMixin
@@ -1342,7 +1343,9 @@ class WatcherStoreMixin:
                 cursor = connection.execute(
                     f"""
                     UPDATE watchers
-                    SET notified = 1, notification_operation_id = ?
+                    SET notified = 1, notification_operation_id = ?,
+                        last_error = CASE WHEN status = 'completed' THEN NULL
+                                          ELSE last_error END
                     WHERE watcher_id IN ({placeholders})
                         AND status IN ('completed', 'degraded') AND notified = 0
                     """,
@@ -1350,13 +1353,38 @@ class WatcherStoreMixin:
                 )
                 if cursor.rowcount != len(ids):
                     raise RuntimeError("watcher notification changed during its transaction")
-        except (AutoResearchActorBusy, AgentTaskAdmissionConflict):
+        except AutoResearchActorBusy:
+            return None
+        except AgentTaskAdmissionConflict as exc:
+            if record.kind in {"node_chat", "project_chat"} and record.episode_id is None:
+                self._record_deferred_watcher_wake(ids, f"Wake deferred: {exc}")
             return None
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not queue the watcher notification task.") from exc
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    def _record_deferred_watcher_wake(self, watcher_ids: list[str], reason: str) -> None:
+        """Show why a completed watcher has not woken its chat yet.
+
+        The reason replaces itself rather than accumulating, is written only when
+        it changed, and is cleared when the wake is admitted. A degraded watcher
+        keeps its own check error.
+        """
+
+        reason = reason[:WATCHER_ERROR_MAX_CHARS]
+        placeholders = ",".join("?" for _ in watcher_ids)
+        with self.connection() as connection:
+            connection.execute(
+                f"""
+                UPDATE watchers SET last_error = ?
+                WHERE watcher_id IN ({placeholders})
+                  AND status = 'completed' AND notified = 0
+                  AND last_error IS NOT ?
+                """,
+                [reason, *watcher_ids, reason],
+            )
 
     @staticmethod
     def _auto_research_wake_is_stopped(

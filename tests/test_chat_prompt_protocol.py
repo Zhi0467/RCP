@@ -311,10 +311,16 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
                 "message": "Continue.",
                 "session_id": session_id,
                 "mode": "work" if watcher_wake else "discuss",
+                "trigger": "watcher" if watcher_wake else "human",
             }
         ),
     )
     assert launcher.sessions == [None, session_id]
+    # The settled turn becomes the session's committed baseline.
+    assert (
+        store.chat_session_context("codex", "laptop", session_id).committed_operation_id
+        == "session-master-second"
+    )
     prompt_receipt = next(
         receipt
         for receipt in store.agent_task_receipts("session-master-second")

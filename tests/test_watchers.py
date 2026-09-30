@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
+from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
 from rcp.storage import (
     AgentTaskRecord,
@@ -1582,6 +1583,12 @@ def test_chat_wake_defers_behind_unresolved_turn_without_claiming_watchers(store
     assert store.agent_task("wake") is None
     assert store.watcher("done").notified is False
     assert store.watcher("done").notification_operation_id is None
+    # The deferral is visible on the watcher, and the later claim clears it.
+    assert store.watcher("done").last_error
+    if status == "interrupted":  # only a terminal turn can be set aside as history
+        store.mark_agent_tasks_history_only([task.operation_id])
+        assert store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+        assert store.watcher("done").last_error is None
 
 
 @pytest.mark.parametrize(
@@ -1603,6 +1610,10 @@ def test_chat_wake_refuses_policy_mismatch_with_durable_reason(store, changed_po
     assert resolution["reason_code"] == reason_code
     assert store.watcher("done").notification_operation_id == wake.operation_id
     assert store.watcher("done").notified is True
+    # Retry would replay the refused policy: no offer, and the engine refuses it.
+    assert store.agent_task(wake.operation_id).can_retry is False
+    with pytest.raises(ValueError):
+        BackgroundAgentTasks(store, None).retry(wake.operation_id)
 
 
 def test_human_turn_keeps_its_session_across_a_model_switch(store) -> None:
@@ -1652,6 +1663,35 @@ def test_chat_wake_never_searches_past_unusable_latest_session(store, reason_cod
 
     assert wake is not None and wake.status == "queued"
     assert wake.request.get("session_id") is None
+    assert wake.native_session_id is None
+    resolution = _session_resolution(store, wake.operation_id)
+    assert resolution["outcome"] == "fresh"
+    assert resolution["reason_code"] == reason_code
+    assert resolution["source_operation_id"] == latest.operation_id
+
+
+@pytest.mark.parametrize(
+    ("category", "payload", "reason_code"),
+    [
+        ("provider_terminal_error", {"classification": "session_limit"}, "session_limit"),
+        ("provider_terminal_error", {"classification": "stale_session"}, "session_stale"),
+        (
+            "continuation_context_unavailable",
+            {"retry_required": True},
+            "session_context_unavailable",
+        ),
+    ],
+)
+def test_chat_wake_starts_fresh_when_the_provider_dropped_the_current_session(
+    store, category, payload, reason_code
+) -> None:
+    latest = _completed_chat_turn(store, "latest", "dropped-session", status="failed")
+    store.record_agent_task_receipt(latest.operation_id, category, payload)
+    store.create_watchers([_record("done", origin=latest.operation_id, status="completed")])
+
+    wake = store.create_watcher_notification_task(_task(store, "wake", ["done"]), ["done"])
+
+    assert wake is not None and wake.status == "queued"
     assert wake.native_session_id is None
     resolution = _session_resolution(store, wake.operation_id)
     assert resolution["outcome"] == "fresh"

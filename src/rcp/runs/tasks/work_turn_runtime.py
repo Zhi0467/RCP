@@ -214,7 +214,7 @@ class WorkTurn:
     @property
     def uses_master_protocol(self) -> bool:
         return (
-            self.request.trigger in {"human", "orchestrator"}
+            _chat_trigger(self.request.trigger, self.continuation)
             and self.request.patch_kind == "work"
             and not self.retry_attempt
         )
@@ -295,10 +295,18 @@ class WorkFinalizationContext:
     @property
     def uses_master_protocol(self) -> bool:
         return (
-            self.request.trigger in {"human", "orchestrator"}
+            _chat_trigger(self.request.trigger, self.continuation)
             and self.request.patch_kind == "work"
             and self.continuation not in {"retry", "handoff"}
         )
+
+
+def _chat_trigger(trigger: str, continuation: AgentTaskContinuation) -> bool:
+    """A human or orchestrator turn, or an ordinary chat's watcher wake."""
+
+    return trigger in {"human", "orchestrator"} or (
+        trigger == "watcher" and continuation == "watcher_wake"
+    )
 
 
 @dataclass(frozen=True)
