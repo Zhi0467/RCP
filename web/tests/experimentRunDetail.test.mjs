@@ -355,7 +355,7 @@ test("Experiment wrap-up uses the shared parent state without report recovery co
   assert.match(html, /experiment-run-button" disabled=""/);
 });
 
-test("a ready Experiment report opens from the singular episode URL", () => {
+test("a ready Experiment report preserves the available next episode action", () => {
   const readyEpisode = episode({
     status: "needs_action",
     ending: "human_pause",
@@ -383,8 +383,6 @@ test("a ready Experiment report opens from the singular episode URL", () => {
       [],
     ),
   );
-
-  assert.match(html, /href="\/reports\/episode-1"/);
 
   assert.doesNotMatch(html, /report-hidden-from-url/);
   assert.doesNotMatch(html, /experiment-run-button" disabled=""/);

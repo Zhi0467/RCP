@@ -51,7 +51,8 @@ import {
 import { isActiveTask } from "./agentTasks";
 import { mergeProviderLogins } from "./providers";
 import { loadChatTranscript } from "./chatApi";
-import { listenForArtifactChatNavigation } from "./artifactChatNavigation";
+import { ArtifactViewer } from "./components/ArtifactViewer";
+import { openArtifact, openEpisodeReport } from "./artifactViewer";
 import {
   chatIndicator,
   unreadChatIdsFromReads,
@@ -206,7 +207,6 @@ import {
   type HumanSyncRequest,
 } from "./humanDraft";
 import type {
-  ArtifactView,
   AgentExecutionProfile,
   AgentRunConfig,
   AgentTask,
@@ -260,6 +260,7 @@ import { NOTICE_TIMEOUT_MS } from "./uiConstants";
 import {
   createWebMcpToolRegistry,
   projectArtifactToolDefinitions,
+  type ProjectArtifactRecord,
   projectConversationSendToolDefinitions,
   projectConversationToolDefinitions,
   projectExperimentStopToolDefinitions,
@@ -859,12 +860,6 @@ export default function App() {
     chatId: initialRoute.project.chatId,
     graphTarget: initialRoute.graphTarget,
   }));
-  const pendingArtifactChatNavigation = useRef<{
-    hash: string;
-    expiresAt: number;
-    resolve: () => void;
-    reject: (error: Error) => void;
-  } | null>(null);
   const activeGraphTargetRef = useRef(graphTarget);
   // One request id per logical continuation, kept until the server has answered
   // it, so a retry after a lost response replays the episode already created.
@@ -917,14 +912,13 @@ export default function App() {
     dismissUpdate,
   } = useDesktopShell(desktop);
   const [notice, setNotice] = useState<{ kind: "info" | "error"; text: string } | null>(null);
-  const [webMcpArtifactViewerUrl, setWebMcpArtifactViewerUrl] = useState<string | null>(null);
   const [webMcpExperimentStartProjectId, setWebMcpExperimentStartProjectId] = useState<
     string | null
   >(null);
   const showWebMcpArtifactViewer = useCallback(
-    async (viewerUrl: string, contentUrl: string, view: ArtifactView) => {
-      if (view === "pdf" || view === "file") return false;
-      const response = await fetch(contentUrl, {
+    async (record: ProjectArtifactRecord, projectId: string) => {
+      if (record.view === "pdf" || record.view === "file") return false;
+      const response = await fetch(record.content_url, {
         method: "HEAD",
         cache: "no-store",
         credentials: "same-origin",
@@ -932,7 +926,10 @@ export default function App() {
       if (!response.ok) {
         throw new Error(`Artifact content is unavailable (${response.status}).`);
       }
-      setWebMcpArtifactViewerUrl(viewerUrl);
+      if (record.artifact_id) openArtifact({ projectId, artifactId: record.artifact_id });
+      else if (record.episode_id)
+        await openEpisodeReport({ projectId, episodeId: record.episode_id });
+      else return false;
       return true;
     },
     [],
@@ -1010,7 +1007,6 @@ export default function App() {
     project: sessionProject,
     reportError: reportErrorNotice,
   });
-  useEffect(() => setWebMcpArtifactViewerUrl(null), [projectId]);
   const { project, humanDraft } = projectDraftPreviewEffectInputs(
     projectSession,
     projectId,
@@ -2049,11 +2045,6 @@ export default function App() {
 
   useEffect(() => {
     const handleHashChange = () => {
-      const pending = pendingArtifactChatNavigation.current;
-      if (pending && pending.hash !== window.location.hash) {
-        pending.reject(new Error("Chat navigation was cancelled."));
-        pendingArtifactChatNavigation.current = null;
-      }
       const route = parseProjectHash(window.location.hash);
       const activeId = getActiveProjectId();
       const nextTarget = graphTargetFromHash(window.location.hash);
@@ -2700,26 +2691,6 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (!desktop || !backendSessionReady) return;
-    const stopListening = listenForArtifactChatNavigation(async (hash, expiresAt) => {
-      if (Date.now() >= expiresAt) throw new Error("Chat navigation timed out.");
-      await new Promise<void>((resolve, reject) => {
-        pendingArtifactChatNavigation.current?.reject(new Error("Chat navigation was replaced."));
-        pendingArtifactChatNavigation.current = { hash, expiresAt, resolve, reject };
-        if (window.location.hash === hash) window.dispatchEvent(new HashChangeEvent("hashchange"));
-        else window.location.hash = hash;
-      });
-      if (Date.now() >= expiresAt) throw new Error("Chat navigation timed out.");
-      await desktopShowReady();
-    });
-    return () => {
-      stopListening();
-      pendingArtifactChatNavigation.current?.reject(new Error("RCP disconnected."));
-      pendingArtifactChatNavigation.current = null;
-    };
-  }, [desktop, backendSessionReady]);
-
-  useEffect(() => {
     if (
       !requestedChat.chatId ||
       loading ||
@@ -2730,27 +2701,19 @@ export default function App() {
     )
       return;
     let cancelled = false;
-    const pending = pendingArtifactChatNavigation.current;
-    const navigation = pending?.hash === requestedChat.hash ? pending : null;
     void loadChatTranscript(apiBase, requestedChat.chatId, api, graphTarget)
       .then((transcript) => {
         if (cancelled) return;
-        if (navigation && Date.now() >= navigation.expiresAt)
-          throw new Error("Chat navigation timed out.");
         selectCanonicalChat(transcript);
         clearNodeSelections();
-        navigation?.resolve();
       })
       .catch((error) => {
         if (cancelled) return;
         const message = `Conversation could not be opened: ${String(error)}`;
         reportErrorNotice(message);
-        navigation?.reject(new Error(message));
       })
       .finally(() => {
         if (cancelled) return;
-        if (pendingArtifactChatNavigation.current === navigation)
-          pendingArtifactChatNavigation.current = null;
         setRequestedChat((current) =>
           current === requestedChat ? { ...current, chatId: undefined } : current,
         );
@@ -4303,6 +4266,7 @@ export default function App() {
 
   return (
     <div className="app-shell overview-shell">
+      <ArtifactViewer />
       {acceptanceAgentSurface}
       {!projectHeaderCollapsed && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
@@ -5213,22 +5177,6 @@ export default function App() {
         <button className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>
           {notice.text}
         </button>
-      )}
-      {webMcpArtifactViewerUrl && (
-        <section className="webmcp-artifact-overlay" aria-label="RCP artifact viewer">
-          <header>
-            <strong>Artifact viewer</strong>
-            <button
-              className="icon-button"
-              type="button"
-              aria-label="Close artifact viewer"
-              onClick={() => setWebMcpArtifactViewerUrl(null)}
-            >
-              <X size={16} />
-            </button>
-          </header>
-          <iframe title="RCP artifact viewer" src={webMcpArtifactViewerUrl} />
-        </section>
       )}
       {desktopAccessSurface}
       {actorNameSurface}

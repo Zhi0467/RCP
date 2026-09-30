@@ -152,17 +152,6 @@ export interface ArtifactCommand {
   artifactId: string;
 }
 
-export interface EpisodeReportCommand {
-  projectId: string;
-  episodeId: string;
-}
-
-export interface RepositoryFileCommand {
-  projectId: string;
-  path: string;
-  line: number | null;
-}
-
 export interface DictationResultEvent {
   session_id: string;
   text: string;
@@ -661,17 +650,6 @@ export async function setDesktopWebviewZoom(scale: number): Promise<void> {
   await getCurrentWebview().setZoom(scale);
 }
 
-export async function openDesktopArtifactPreview(command: ArtifactCommand): Promise<void> {
-  if (!isDesktopRuntime())
-    throw new Error("Desktop artifact preview is unavailable in this browser.");
-  const result = await invokeDesktop<{ opened: boolean; error?: string }>(
-    "open_artifact_preview",
-    command,
-  );
-  if (!result.opened)
-    throw new Error(result.error || "The desktop host could not open this artifact.");
-}
-
 export async function openDesktopArtifactPdf(command: ArtifactCommand): Promise<void> {
   if (!isDesktopRuntime()) throw new Error("Desktop PDF preview is unavailable in this browser.");
   const result = await invokeDesktop<{ opened: boolean; error?: string }>(
@@ -679,46 +657,6 @@ export async function openDesktopArtifactPdf(command: ArtifactCommand): Promise<
     command,
   );
   if (!result.opened) throw new Error(result.error || "The desktop host could not open this PDF.");
-}
-
-export async function openDesktopEpisodeReportPreview(
-  command: EpisodeReportCommand,
-): Promise<void> {
-  if (!isDesktopRuntime())
-    throw new Error("Desktop episode report preview is unavailable in this browser.");
-  const result = await invokeDesktop<{ opened: boolean; error?: string }>(
-    "open_episode_report_preview",
-    command,
-  );
-  if (!result.opened)
-    throw new Error(result.error || "The desktop host could not open this episode report.");
-}
-
-/**
- * Claim a report link only in the desktop shell. In an ordinary browser the
- * caller's target=_blank link remains entirely native browser behavior.
- */
-export async function openEpisodeReportFromLink(
-  event: Pick<Event, "preventDefault">,
-  command: EpisodeReportCommand,
-): Promise<boolean> {
-  if (!isDesktopRuntime()) return false;
-  event.preventDefault();
-  await openDesktopEpisodeReportPreview(command);
-  return true;
-}
-
-export async function openDesktopRepositoryFilePreview(
-  command: RepositoryFileCommand,
-): Promise<void> {
-  if (!isDesktopRuntime())
-    throw new Error("Desktop repository file preview is unavailable in this browser.");
-  const result = await invokeDesktop<{ opened: boolean; error?: string }>(
-    "open_repository_file_preview",
-    command,
-  );
-  if (!result.opened)
-    throw new Error(result.error || "The desktop host could not open this repository file.");
 }
 
 export async function downloadDesktopArtifact(

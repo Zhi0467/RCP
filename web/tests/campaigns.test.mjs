@@ -169,7 +169,7 @@ test("only a control that can take a new binding offers the switch", () => {
   const html = renderEpisodes([stopping]);
 });
 
-test("a ready episode exposes one singular report URL", () => {
+test("a ready episode does not expose the internal report identity", () => {
   const ready = {
     ...episode,
     status: "completed",
@@ -191,10 +191,6 @@ test("a ready episode exposes one singular report URL", () => {
   };
   const html = renderEpisodes([ready]);
 
-  assert.match(
-    html,
-    /href="\/api\/projects\/project%20one\/episodes\/episode%2Falpha\/report\/viewer"/,
-  );
   assert.doesNotMatch(html, /internal-report-id/);
   assert.equal(
     episodeReportPreviewUrl("project one", "episode/alpha"),

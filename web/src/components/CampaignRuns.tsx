@@ -2,7 +2,6 @@ import { graphViewHash } from "../graphTarget";
 import {
   ChevronDown,
   CirclePause,
-  ExternalLink,
   LoaderCircle,
   Network,
   Play,
@@ -21,6 +20,8 @@ import {
 } from "../campaigns";
 import { MarkdownAnswer } from "../chatMarkdown";
 import { fetchEpisodeTimeline } from "../api";
+import { useRunArtifacts } from "../hooks/useRunArtifacts";
+import { RunArtifacts } from "./RunArtifacts";
 import { EpisodeTimeline } from "./EpisodeTimeline";
 import type {
   AgentTask,
@@ -87,6 +88,12 @@ export function AutoResearchEpisodeCard({
   const taskSignature = episode.tasks
     .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
     .join("|");
+  const runArtifacts = useRunArtifacts(
+    apiBase,
+    episode.episode_id,
+    expanded,
+    `${episode.updated_at}:${taskSignature}`,
+  );
   const projection = useMemo(
     () =>
       episodeProjection(
@@ -272,20 +279,6 @@ export function AutoResearchEpisodeCard({
                 <Network size={13} /> Open graph
               </a>
             )}
-            {episode.report && episode.wrapup_state === "ready" && (
-              <div className="campaign-report-actions">
-                <EpisodeReportLink
-                  className={`button compact ${recommendation.kind === "open_report" ? "primary" : "secondary"}`}
-                  href={episodeReportPreviewUrl(episode.project_id, episode.episode_id)}
-                  aria-label={`Open ${episodeEndingLabel(episode.report.ending)} report from ${formatTimestamp(episode.report.created_at, true)}`}
-                  projectId={episode.project_id}
-                  episodeId={episode.episode_id}
-                  onOpenError={setLocalError}
-                >
-                  <ExternalLink size={12} /> Open report
-                </EpisodeReportLink>
-              </div>
-            )}
             {taskControl && (
               <button
                 className={`button compact ${
@@ -369,6 +362,12 @@ export function AutoResearchEpisodeCard({
             )}
           </div>
 
+          <RunArtifacts
+            projectId={episode.project_id}
+            {...runArtifacts}
+            onRetry={runArtifacts.reload}
+          />
+
           <div className={`campaign-run-recommendation ${recommendation.kind}`}>
             <span className="eyebrow">Recommended next step</span>
             <strong>{recommendation.label}</strong>
@@ -440,6 +439,8 @@ export function AutoResearchEpisodeCard({
           {timeline?.episode_id === episode.episode_id && (
             <EpisodeTimeline
               response={timeline}
+              projectId={episode.project_id}
+              artifacts={runArtifacts.artifacts}
               apiBase={apiBase}
               episodeId={episode.episode_id}
               graphTarget={episode.graph_target}
