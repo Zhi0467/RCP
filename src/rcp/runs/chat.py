@@ -826,6 +826,8 @@ def _discover_chat_artifacts(
     scope_id: str,
     directory: Path,
     remote_stage: RemoteRunStage | None,
+    *,
+    service: ProjectService | None = None,
 ) -> list[AgentArtifactDescriptor]:
     """Discover bounded attachments without making their validity part of chat success."""
     ignored: dict[str, int] = {}
@@ -898,7 +900,7 @@ def _discover_chat_artifacts(
                 if task is None:
                     raise ValueError("The artifact supplier task is unavailable.")
                 now = execution.store.now()
-                execution.store.create_artifact(
+                stored_artifact = execution.store.create_artifact(
                     Artifact(
                         artifact_id=descriptor.artifact_id,
                         project_id=task.project_id,
@@ -916,6 +918,15 @@ def _discover_chat_artifacts(
                     ),
                     data=data,
                 )
+                if service is not None and media_type == "text/html":
+                    from rcp.live_artifact_runtime import resolve_artifact_live_version
+
+                    resolve_artifact_live_version(
+                        execution.store,
+                        service,
+                        stored_artifact.artifact_id,
+                        stored_artifact.current_version,
+                    )
         except (FileNotFoundError, OSError, StateUnavailable, ValueError):
             ignore("invalid_or_unavailable")
             continue

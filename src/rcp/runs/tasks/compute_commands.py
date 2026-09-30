@@ -268,6 +268,7 @@ class WorkComputeCommands:
             self.execution.store, self.manifest, job.job_id, data_dir=self.data_dir
         )
         result = {
+            "job_id": job.job_id,
             "watcher": helper_watch_spec(job),
             "startup": helper_startup_state(self.manifest, job),
         }
@@ -277,27 +278,11 @@ class WorkComputeCommands:
     def recovery_lineage(self) -> tuple[str, ...]:
         """This attempt and the earlier attempts of the same turn it recovers, newest first."""
 
-        store = self.execution.store
-        operation_ids = [self.execution.operation_id]
-        current = store.agent_task(self.execution.operation_id)
-        cause = self.execution.continuation
-        while current and cause in {"resume", "retry", "graph_repair", "handoff"}:
-            parent = (
-                store.agent_task(current.parent_operation_id)
-                if current.parent_operation_id
-                else None
-            )
-            if (
-                parent is None
-                or parent.operation_id in operation_ids
-                or parent.project_id != self.write_scope.project_id
-                or parent.kind != current.kind
-            ):
-                break
-            operation_ids.append(parent.operation_id)
-            current = parent
-            cause = store.agent_task_continuation_cause(current.operation_id)
-        return tuple(operation_ids)
+        return compute_recovery_lineage(
+            self.execution.store,
+            self.execution.operation_id,
+            continuation=self.execution.continuation,
+        )
 
     def _refused(self, request: CommandRequest, message: str) -> CommandResponse:
         self.execution.store.record_agent_task_event(
@@ -352,3 +337,27 @@ def _uncertain_launch(request: CommandRequest, started: dict[str, object]) -> Co
             "key": request.idempotency_key,
         },
     )
+
+
+def compute_recovery_lineage(
+    store, operation_id: str, *, continuation: str | None = None
+) -> tuple[str, ...]:
+    """The same stable launch-key namespace used by helper replay and live pages."""
+    operation_ids = [operation_id]
+    current = store.agent_task(operation_id)
+    cause = continuation or store.agent_task_continuation_cause(operation_id)
+    while current and cause in {"resume", "retry", "graph_repair", "handoff"}:
+        parent = (
+            store.agent_task(current.parent_operation_id) if current.parent_operation_id else None
+        )
+        if (
+            parent is None
+            or parent.operation_id in operation_ids
+            or parent.project_id != current.project_id
+            or parent.kind != current.kind
+        ):
+            break
+        operation_ids.append(parent.operation_id)
+        current = parent
+        cause = store.agent_task_continuation_cause(current.operation_id)
+    return tuple(operation_ids)

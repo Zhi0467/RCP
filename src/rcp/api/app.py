@@ -96,6 +96,7 @@ from rcp.limits import (
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
+from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
 from rcp.notifications import NotificationSender
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
@@ -1303,10 +1304,38 @@ def create_app(
         watcher_delivery=watcher_delivery,
     )
 
+    live_artifact_pass_lock = threading.Lock()
+    live_artifact_shutdown = threading.Event()
+
+    def reconcile_project_live_artifacts(project_id: str) -> None:
+        # Startup and watcher callbacks share one admitted owner. Shutdown must
+        # drain this lock even if the watcher's bounded stop join has expired.
+        with live_artifact_pass_lock:
+            if live_artifact_shutdown.is_set():
+                return
+            with background_admission_gate.mutation("live artifact reconciliation"):
+                reconcile_compute_jobs(store, None, project_id=project_id, data_dir=app_data)
+                reconcile_artifact_live_snapshots(store, catalog, project_id)
+
+    def drain_live_artifact_pass() -> None:
+        with live_artifact_pass_lock:
+            pass
+
     def after_watcher_poll() -> None:
         provider_sign_ins.reconcile_recovery()
         graph_watcher_retry_worker.signal()
         reconcile_episodes()
+        for project in store.projects():
+            if project.home_space_id != store.space_id:
+                continue
+            try:
+                reconcile_project_live_artifacts(project.project_id)
+            except MaintenanceAdmissionClosed:
+                return
+            except Exception:
+                logger.exception(
+                    "Could not reconcile live artifacts for project %s", project.project_id
+                )
 
     watcher_poller = WatcherPoller(
         store,
@@ -1477,17 +1506,26 @@ def create_app(
             logger.warning("Could not sweep remote run stages: %s", exc)
 
     async def reconcile_running_compute_jobs() -> None:
-        for project_id in {job.project_id for job in store.running_compute_jobs()}:
+        for project in store.projects():
+            if project.home_space_id != store.space_id:
+                continue
+            work = asyncio.create_task(
+                asyncio.to_thread(reconcile_project_live_artifacts, project.project_id)
+            )
             try:
-                await asyncio.to_thread(
-                    reconcile_compute_jobs,
-                    store,
-                    None,
-                    project_id=project_id,
-                    data_dir=app_data,
-                )
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # A cancelled to_thread await leaves its writer alive. Retain
+                # process ownership until the admitted pass has settled.
+                with suppress(Exception):
+                    await work
+                raise
+            except MaintenanceAdmissionClosed:
+                return
             except Exception:
-                logger.exception("Could not reconcile compute jobs for project %s", project_id)
+                logger.exception(
+                    "Could not reconcile compute jobs for project %s", project.project_id
+                )
 
     async def probe_compute_routes() -> None:
         # Readiness is checked here rather than on request, so a route that
@@ -1625,6 +1663,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        live_artifact_shutdown.clear()
         startup_maintenance.clear()
         artifact_import_tasks.clear()
         runtime_loop[0] = asyncio.get_running_loop()
@@ -1842,6 +1881,7 @@ def create_app(
                 app.state.startup_effect_release_task = release_task
             yield
         finally:
+            live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
             # the replacement window.
@@ -1862,6 +1902,7 @@ def create_app(
             for task in list(project_display_cache.reconciliation_tasks.values()):
                 with suppress(asyncio.CancelledError):
                     await task
+            await asyncio.to_thread(drain_live_artifact_pass)
             try:
                 await terminals.close()
             except Exception:

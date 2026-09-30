@@ -288,6 +288,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "episode_isolation_v1",
         "artifact_storage_v1",
         "artifact_imports_v1",
+        "artifact_live_policy_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

@@ -29,4 +29,6 @@ def downgrade_artifacts(
     for row in AppStore._legacy_storage_schema_cache:
         if row[0] == "table" and row[1] == "result_views":
             connection.execute(row[3])
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (30, 31)")
+    connection.execute(
+        "DELETE FROM storage_schema_migrations WHERE migration_version IN (30, 31, 32)"
+    )

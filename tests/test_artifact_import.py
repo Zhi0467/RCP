@@ -299,7 +299,7 @@ def test_schema_30_upgrade_only_adds_import_state(store, tmp_path):
     original = store.artifact(descriptor.artifact_id)
     with store.connection() as connection:
         connection.execute("DROP TABLE artifact_imports")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 31")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 31")
     reopened = AppStore(store.path)
     assert reopened.artifact(descriptor.artifact_id) == original
     assert reopened.read_artifact_bytes(descriptor.artifact_id) == b"page"

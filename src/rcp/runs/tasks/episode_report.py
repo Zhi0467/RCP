@@ -690,6 +690,7 @@ def _finish_report(
             artifact_id=hashlib.sha256(report_id.encode()).hexdigest()[:24],
             project_id=turn.task.project_id,
             supplier="episode_ending",
+            live_data_allowed=False,
             supplier_id=turn.episode.episode_id,
             source_name="episode-report.html",
             media_type="text/html",

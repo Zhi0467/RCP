@@ -151,6 +151,9 @@ number here.
   Its metadata lives in SQLite and immutable versions live in the data directory.
   Turn outputs expire unless kept; reports are permanent. It is never a graph
   object or a second answer channel.
+  A live HTML version declares bounded read-only sources resolved by RCP; its
+  authenticated viewer relays data into the opaque sandbox. Server-captured final
+  data travels with its version even after the original sources disappear.
 - An **artifact revision candidate** is a validated Work output held beside its
   unchanged source until one human Accept or Reject disposition.
 - An **episode** is the persisted parent for bounded Experiment control or

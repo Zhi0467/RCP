@@ -289,12 +289,13 @@ def stored_artifact_content(
     project_id: str,
     artifact_id: str,
     request: Request,
+    version_id: str | None = None,
     *,
     store: Annotated[AppStore, Depends(get_store)],
 ) -> Response:
     artifact = _stored_artifact(store, project_id, artifact_id)
     try:
-        data = store.read_artifact_bytes(artifact_id)
+        data = store.read_artifact_bytes(artifact_id, version_id)
         document, media_type, csp = artifact_content(
             artifact.source_name, artifact.media_type, data
         )
@@ -331,7 +332,8 @@ def stored_artifact_viewer(
     try:
         document, csp = artifact_viewer_document(
             descriptor,
-            content_url=f"{base}/content",
+            content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
+            live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
             keep_url=f"{base}/keep" if artifact.expires_at else None,
             state="temporary" if artifact.expires_at else "kept",
         )
@@ -345,6 +347,34 @@ def stored_artifact_viewer(
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": csp,
         },
+    )
+
+
+@router.get("/api/projects/{project_id}/artifacts/{artifact_id}/versions/{version_id}/live")
+def stored_artifact_live(
+    project_id: str,
+    artifact_id: str,
+    version_id: str,
+    *,
+    catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
+    store: Annotated[AppStore, Depends(get_store)],
+):
+    from rcp.live_artifact_runtime import artifact_live_snapshot
+
+    require_registered_project(catalog, project_id)
+    _stored_artifact(store, project_id, artifact_id)
+    try:
+        snapshot = artifact_live_snapshot(store, catalog, artifact_id, version_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact version not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail="Live data unavailable") from exc
+    return Response(
+        snapshot.model_dump_json(),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
     )
 
 

@@ -633,6 +633,15 @@ Maintenance uses its own Work task/session, spends no Experiment invocation,
 does not create an attempt, and never replaces the episode's native-session
 binding. Stop, watcher claim, and competing maintenance have one atomic winner.
 
+## Live artifact reconciliation
+
+The existing background reconciliation pass refreshes helper-job state and
+captures eligible final live-artifact snapshots, including versions whose
+watched episode ended without a job. Capture runs without a viewer. An
+incomplete read retains a diagnostic and a persisted retry deadline; an outage
+never becomes a complete final result. Capture changes no episode verdict,
+budget, Stop fence, or graph state.
+
 ## Visual wrap-up
 
 Completion, operational exhaustion, unrecoverable failure, and a human-authority

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import importlib.resources
 import json
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -16,7 +17,11 @@ from rcp.artifacts import (
     html_preview_document,
 )
 from rcp.escaped_lines import escaped_lines
-from rcp.limits import ARTIFACT_PREVIEW_MAX_BYTES, ARTIFACT_PREVIEW_MAX_LINES
+from rcp.limits import (
+    ARTIFACT_PREVIEW_MAX_BYTES,
+    ARTIFACT_PREVIEW_MAX_LINES,
+    LIVE_ARTIFACT_REFRESH_SECONDS,
+)
 
 ARTIFACT_TEXT_CSP = (
     "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; "
@@ -60,6 +65,7 @@ def artifact_viewer_document(
     keep_url: str | None = None,
     save_url: str | None = None,
     panel: ViewerPanel | None = None,
+    live_url: str | None = None,
 ) -> tuple[str, str]:
     kind = artifact_view(descriptor.media_type)
     if kind in {"pdf", "file"}:
@@ -87,6 +93,14 @@ def artifact_viewer_document(
         )
     if panel and panel.script:
         scripts.append(panel.script)
+    if live_url and kind == "html":
+        scripts.append(
+            "const liveUrl="
+            + json.dumps(live_url).replace("<", "\\u003c")
+            + ";\n"
+            + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
+            + importlib.resources.files("rcp").joinpath("artifact_live.js").read_text("utf-8")
+        )
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)
     document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title><style>
@@ -186,7 +200,16 @@ def artifact_content(
     view = artifact_view(media_type)
     try:
         if view == "html":
-            document, csp = html_preview_document(data, frame_addon=frame_addon)
+            live_addon = live_frame_addon()
+            document, csp = html_preview_document(
+                data,
+                frame_addon=FrameAddon(
+                    frame_script=live_addon.frame_script
+                    + (frame_addon.frame_script if frame_addon else ""),
+                    wrapper_script=live_addon.wrapper_script
+                    + (frame_addon.wrapper_script if frame_addon else ""),
+                ),
+            )
         elif view == "markdown":
             document, csp = markdown_document(data)
         elif view == "text":
@@ -198,3 +221,30 @@ def artifact_content(
     except Exception as exc:
         raise ValueError("Preview unavailable") from exc
     return document, "text/html", csp
+
+
+def live_frame_addon() -> FrameAddon:
+    """Relay only shell-provided data through the existing private preview channel."""
+    return FrameAddon(
+        frame_script="""
+const dispatchLive=Function.prototype.call.bind(EventTarget.prototype.dispatchEvent);
+const LiveMessage=MessageEvent;
+listen(privatePort,'message',(event)=>{
+  if(event.data?.kind==='rcp-live-data' && event.data.version===1)
+    dispatchLive(window,new LiveMessage('message',{data:event.data}));
+});
+""",
+        wrapper_script="""
+let pendingLive=null;
+channelReady.push(()=>{
+  if(pendingLive) portPost(artifactPort,pendingLive);
+  if(window.parent!==window) parentPost({type:'rcp-live-ready',version:1},'*');
+});
+listen(window,'message',(event)=>{
+  if(window.parent===window || event.source!==window.parent) return;
+  if(event.data?.kind!=='rcp-live-data' || event.data.version!==1) return;
+  pendingLive=event.data;
+  if(artifactPort) portPost(artifactPort,pendingLive);
+});
+""",
+    )

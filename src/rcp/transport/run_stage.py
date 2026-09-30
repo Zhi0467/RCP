@@ -942,6 +942,20 @@ finally:
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise StateUnavailable("remote artifact listing was invalid") from exc
 
+    def read_live_file(self, path: str, *, max_bytes: int, tail: bool = False) -> bytes:
+        """Use the same bounded, symlink-refusing reader as local artifact reads."""
+        script = (Path(__file__).parent.parent / "regular_file_reader.py").read_text(
+            encoding="utf-8"
+        )
+        result = self._ssh_bytes(
+            ["python3", "-c", script, path, str(max_bytes), "tail" if tail else "whole"]
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not read live artifact source")
+        if len(result.stdout) > max_bytes:
+            raise ValueError("live artifact source exceeds byte limit")
+        return result.stdout
+
     def read_artifact_bytes(self, scope_id: str, name: str, *, max_bytes: int) -> bytes:
         """Read one bounded direct regular child over SSH without making a local copy."""
         if self.root is None:

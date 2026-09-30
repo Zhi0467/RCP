@@ -1,0 +1,112 @@
+"""Artifact instructions rendered from the same types and limits as enforcement."""
+
+from __future__ import annotations
+
+import json
+from typing import Literal, get_args, get_origin
+
+from pydantic import BaseModel
+
+from rcp.artifacts import artifact_view
+from rcp.limits import (
+    CHAT_ARTIFACT_MAX_COUNT,
+    CHAT_ARTIFACT_MAX_FILE_BYTES,
+    CHAT_ARTIFACT_MAX_TOTAL_BYTES,
+    LIVE_ARTIFACT_LOG_TAIL_LINES,
+    LIVE_ARTIFACT_MAX_BYTES,
+    LIVE_ARTIFACT_MAX_NEEDS,
+    LIVE_ARTIFACT_MAX_ROWS,
+    LIVE_ARTIFACT_REFRESH_SECONDS,
+    LIVE_ARTIFACT_SSH_REFRESH_SECONDS,
+)
+from rcp.live_artifacts import (
+    NEED_SNAPSHOT_MODELS,
+    EpisodeNeed,
+    JobSnapshot,
+    LiveDataMessage,
+    LiveEvidence,
+    LiveSnapshot,
+    LiveTag,
+)
+from rcp.storage.artifact_models import Artifact
+
+
+def _allowed(annotation: object) -> str:
+    return " or ".join(json.dumps(value) for value in get_args(annotation))
+
+
+def _fields(model: type[BaseModel], *, indent: str, skip: tuple[str, ...] = ()) -> list[str]:
+    lines = []
+    for name, field in model.model_fields.items():
+        if name in skip:
+            continue
+        allowed = (
+            f" One of {_allowed(field.annotation)}."
+            if get_origin(field.annotation) is Literal
+            else ""
+        )
+        lines.append(f"{indent}- `{name}`: {field.description}{allowed}")
+    return lines
+
+
+def _need_shape(need: type[BaseModel]) -> str:
+    shape = {
+        name: (field.default if name == "kind" else f"<{name}>")
+        for name, field in need.model_fields.items()
+    }
+    return json.dumps(shape)
+
+
+def live_contract(*, allow_episode: bool = False) -> str:
+    example = LiveDataMessage(
+        snapshots=[JobSnapshot(key="training", state="running")],
+        refresh_seconds=LIVE_ARTIFACT_REFRESH_SECONDS,
+    ).model_dump_json()
+    lines = [
+        "Live HTML pages (optional):",
+        "- Use one only for data still changing after your turn, such as a training job, a sweep, or a node gathering Evidence. A finished result is an ordinary page.",
+        '- Declare the sources once: <script type="application/json" id="rcp-live">'
+        + json.dumps({"version": 1, "needs": [{"kind": "job", "key": "training"}]})
+        + "</script>. RCP binds them once per artifact version.",
+        *_fields(LiveTag, indent="  "),
+        "- RCP's viewer posts the data into the page. Listen for window `message` events whose `event.data.kind` is `rcp-live-data`; never fetch RCP endpoints. Example message: "
+        + example,
+        *_fields(LiveDataMessage, indent="  "),
+        "- Source kinds. Each snapshot also carries `error`: "
+        + (LiveSnapshot.model_fields["error"].description or ""),
+    ]
+    for need, snapshot in NEED_SNAPSHOT_MODELS:
+        if need is EpisodeNeed and not allow_episode:
+            continue
+        lines.append(f"  - {_need_shape(need)}: {need.model_fields['kind'].description}")
+        lines.extend(_fields(need, indent="    ", skip=("kind",)))
+        lines.append("    Snapshot fields:")
+        lines.extend(_fields(snapshot, indent="    ", skip=("kind", "error")))
+    lines.extend(
+        [
+            "  Each Evidence entry has:",
+            *_fields(LiveEvidence, indent="  "),
+            f"- Limits: at most {LIVE_ARTIFACT_MAX_NEEDS} sources; file reads cap at {LIVE_ARTIFACT_MAX_ROWS} rows and {LIVE_ARTIFACT_MAX_BYTES} bytes; job logs keep the last {LIVE_ARTIFACT_LOG_TAIL_LINES} lines.",
+            f"- The open viewer refreshes every {LIVE_ARTIFACT_REFRESH_SECONDS} seconds, or {LIVE_ARTIFACT_SSH_REFRESH_SECONDS} seconds for SSH files. When every watched job or episode ends, RCP saves a complete final snapshot. A page watching only nodes and files never becomes final.",
+            "- An invalid declaration leaves the page static with a notice. Show incomplete data and source errors as unavailable, never as zero. A report is never live.",
+            "- Sources are limited to the project's readable roots and this artifact's graph target. Scripts can still send received data out by navigating their own frame, so do not assume zero network access.",
+            "- The live-pages skill has worked examples.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def artifact_contract(artifact_path: str, *, allow_episode: bool = False) -> str:
+    media_types = get_args(Artifact.model_fields["media_type"].annotation)
+    viewable = ", ".join(
+        media_type for media_type in media_types if artifact_view(media_type) not in {"file", "pdf"}
+    )
+    return f"""Reply and artifact contract:
+- The final assistant message is the complete independent Markdown reply the human reads.
+- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line` suffix only for a repository file. Only an authorized repository file or a file in the turn's artifact directory resolves in RCP.
+- Artifacts are optional; an empty directory is normal. RCP discovers direct regular files in `{artifact_path}`, at most {CHAT_ARTIFACT_MAX_COUNT} files, {CHAT_ARTIFACT_MAX_FILE_BYTES} bytes per file and {CHAT_ARTIFACT_MAX_TOTAL_BYTES} bytes total. Do not use nested directories or symlinks.
+- Viewable media types: {viewable}. PDFs open separately; other types are download-only. Artifact cards offer Download and Keep.
+- When a turn names a commented artifact's writable path, edit that file in place. Its turn names the destination; do not choose a new output path for that edit.
+- HTML must be self-contained. Ordinary HTTP(S) reference links are allowed; external scripts, images, fonts, fetches, and other resource loads are blocked in the preview.
+
+{live_contract(allow_episode=allow_episode)}"""

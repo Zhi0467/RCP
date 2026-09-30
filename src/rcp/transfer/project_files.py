@@ -28,7 +28,12 @@ from rcp.service import (
     canonical_chat_backup_sources,
     iter_canonical_chat_transfer,
 )
-from rcp.storage.artifact_models import Artifact, ArtifactFile, ArtifactVersion
+from rcp.storage.artifact_models import (
+    Artifact,
+    ArtifactFile,
+    ArtifactVersion,
+    artifact_version_files,
+)
 from rcp.transfer.archive import TransferArchiveEntry
 from rcp.transfer.records import (
     TransferArtifactReference,
@@ -209,7 +214,8 @@ class TransferProjectFileCapture(BaseModel):
         }:
             raise ValueError("artifact versions differ from captured records")
         version_files = {
-            (v.artifact_id, v.file_id, v.sha256, v.size_bytes) for v in self.artifact_versions
+            (v.artifact_id, v.file_id, v.sha256, v.size_bytes)
+            for v in artifact_version_files(self.artifact_versions)
         }
         inventory_files = {
             (v.artifact_id, v.file_id, v.sha256, v.size_bytes) for v in self.artifact_inventory
@@ -326,14 +332,7 @@ def _capture_project_files_locked(
                 (records.project_id,),
             ).fetchall()
         versions = tuple(ArtifactVersion.model_validate_json(row[0]) for row in version_rows)
-        inventory = tuple(
-            {
-                (version.artifact_id, version.file_id): ArtifactFile(
-                    **version.model_dump(include=set(ArtifactFile.model_fields))
-                )
-                for version in versions
-            }.values()
-        )
+        inventory = tuple(artifact_version_files(versions))
         for item in inventory:
             entry = _capture_regular_file(
                 capture_root,

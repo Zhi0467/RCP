@@ -95,6 +95,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (29, "episode_isolation_v1"),
         (30, "artifact_storage_v1"),
         (31, "artifact_imports_v1"),
+        (32, "artifact_live_policy_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:

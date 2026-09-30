@@ -362,6 +362,7 @@ def _settle_discuss_outcome(
             context.artifact_scope_id,
             Path(str(context.artifact_directory)),
             context.remote_stage,
+            service=context.service,
         )
     except Exception as exc:
         # Preview attachments are optional. Even a programming or storage

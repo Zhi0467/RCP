@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Annotated, Literal, cast
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -476,6 +476,7 @@ async def content_agent_artifact(
     operation_id: str,
     artifact_id: str,
     request: Request,
+    version_id: str | None = None,
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
@@ -490,13 +491,15 @@ async def content_agent_artifact(
         "open",
     )
     try:
+        if version_id is not None:
+            data = store.read_artifact_bytes(artifact_id, version_id)
         document, media_type, csp = artifact_content(
             descriptor.name,
             descriptor.media_type,
             data,
             frame_addon=selection_frame_addon() if descriptor.can_discuss else None,
         )
-    except ValueError as exc:
+    except (OSError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Preview unavailable") from exc
     return Response(
         b"" if request.method == "HEAD" else document,
@@ -653,12 +656,21 @@ async def _artifact_viewer_response(
         if descriptor.can_discuss
         else None
     )
+    stored = store.artifact(artifact_id)
+    live_url = None
+    if stored is not None:
+        content_url += "?" + urlencode({"version_id": stored.current_version})
+        live_url = (
+            f"/api/projects/{quote(project_id, safe='')}/artifacts/{quote(artifact_id, safe='')}"
+            f"/versions/{quote(stored.current_version, safe='')}/live"
+        )
     document, csp = artifact_viewer_document(
         descriptor,
         content_url=content_url,
         keep_url=keep_url,
         state="kept" if descriptor.is_kept() else "temporary",
         panel=panel,
+        live_url=live_url,
     )
     return Response(
         b"" if head else document,
