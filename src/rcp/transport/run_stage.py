@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -293,6 +294,27 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
             raise ValueError("remote run stage is outside the RCP staging boundary")
         self.root = PurePosixPath(root)
         return self
+
+    def stage_last_touch(self) -> float:
+        """Read the retained stage's mtime without refreshing its retention clock."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        result = self._ssh(
+            ["python3", "-c", _remote_script("remote_stage_root.py"), "last-touch", str(self.root)]
+        )
+        if result.returncode == 44:
+            raise FileNotFoundError("remote run stage is missing")
+        if result.returncode == 1:
+            raise ValueError(result.stderr.strip() or "remote run stage is unsafe")
+        if result.returncode:
+            raise _ssh_failure(result, "could not inspect remote run stage retention")
+        try:
+            modified = float(result.stdout)
+            if not math.isfinite(modified):
+                raise ValueError("non-finite stage timestamp")
+        except ValueError as exc:
+            raise StateUnavailable("remote run stage returned an invalid timestamp") from exc
+        return modified
 
     def close(self) -> bool:
         self._clear_pending_inputs()

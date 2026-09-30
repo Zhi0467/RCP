@@ -471,3 +471,39 @@ def test_transfer_inventory_retains_original_and_current_artifact_versions(
         assert (
             capture_root / "artifacts" / entry.artifact_id / entry.file_id
         ).read_bytes() == store.artifact_file_path(entry).read_bytes()
+
+
+def test_transfer_artifact_capture_uses_one_snapshot_during_publication(
+    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, records, *_ = _finished_project(manifest, tmp_path)
+    store = service.paper.store
+    original = store.artifact("a" * 24)
+    validate = Artifact.model_validate_json
+    published = []
+
+    def publish_after_metadata_read(value, **kwargs):
+        artifact = validate(value, **kwargs)
+        if not published:
+            published.append(True)
+            store.publish_artifact_version(
+                original.artifact_id,
+                base_version=original.current_version,
+                operation_id=str(uuid.uuid4()),
+                data=b"<p>published during capture</p>",
+            )
+        return artifact
+
+    monkeypatch.setattr(Artifact, "model_validate_json", publish_after_metadata_read)
+    capture_root = tmp_path / "capture"
+    capture = capture_project_transfer_files(service, records, capture_root)
+
+    assert published
+    assert store.artifact(original.artifact_id).current_version != original.current_version
+    assert capture.artifacts == (original,)
+    assert len(capture.artifact_versions) == len(capture.artifact_inventory) == 1
+    assert capture.artifact_versions[0].version_id == original.current_version
+    entry = capture.artifact_inventory[0]
+    assert (capture_root / "artifacts" / entry.artifact_id / entry.file_id).read_bytes() == (
+        store.read_artifact_bytes(original.artifact_id, original.current_version)
+    )

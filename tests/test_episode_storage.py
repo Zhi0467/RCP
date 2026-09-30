@@ -47,12 +47,12 @@ def _downgrade_artifacts(connection: sqlite3.Connection) -> None:
     connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT NOT NULL DEFAULT ''")
     connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
     connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
-    for table in ("artifacts", "artifact_versions", "artifact_operations"):
-        connection.execute(f"DROP TABLE {table}")
+    for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
     for row in AppStore._legacy_storage_schema_cache:
         if row[0] == "table" and row[1] == "result_views":
             connection.execute(row[3])
-    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 30")
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version IN (30, 31)")
 
 
 def _create_legacy_campaign_tables(connection: sqlite3.Connection) -> None:
@@ -778,9 +778,11 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
             )
         connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
         connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
-        for table in ("artifacts", "artifact_versions", "artifact_operations"):
-            connection.execute(f"DROP TABLE {table}")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 30")
+        for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
+            connection.execute(f"DROP TABLE IF EXISTS {table}")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (30, 31)"
+        )
         connection.execute("CREATE TABLE result_views (view_id TEXT, html TEXT)")
         connection.execute("ALTER TABLE episode_reports DROP COLUMN display_title")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 17")

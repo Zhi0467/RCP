@@ -108,6 +108,7 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "project_transfer_uploads",
         "projects",
         "artifact_operations",
+        "artifact_imports",
         "writing_sessions",
     }
 )

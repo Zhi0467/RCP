@@ -5,8 +5,14 @@ Status: design settled with the human on 2026-09-29, then revised the same day
 after an xhigh design review and the human's answers to its two open
 questions. Slice 1 is implemented in this worktree: version storage, report and
 legacy-view migration, turn discovery including child Work recovery, and typed
-backup/transfer inventories. The candidate flow remains. Slices 2–5 remain open.
-Docs and code land in one PR.
+backup/transfer inventories. Slice 2a is implemented: per-project background
+import of legacy local, SSH, and repository-kept bytes; ordinary artifacts for
+unresolved candidates on their own turns; durable failure reasons and retry
+backoff; and one SQLite snapshot for transfer artifact metadata and inventory.
+Imported temporary artifacts expire at the source stage's last-touch time plus
+the existing retention period; kept artifacts have no expiry. Import never
+accepts a candidate or removes repository-kept files. The candidate flow remains;
+slice 2b and slices 3–5 remain open. Docs and code land in one PR.
 
 Slice 1 verification still needs the installed Linux coordinator transition and
 a rehearsal on a copy of real team data. Local storage, route, recovery, and

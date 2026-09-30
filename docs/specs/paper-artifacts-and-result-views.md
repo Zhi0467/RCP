@@ -56,8 +56,17 @@ Discovery copies bytes into RCP's data directory and attaches their identifiers
 with the task. Chat, Experiment, and Auto-research child Work use this path,
 including retries and recovered turns. Viewing and Download read only storage;
 stage availability no longer decides whether newly captured outputs are viewable.
-Existing stage-only and repository-kept outputs await the separate background
-import slice.
+Existing stage-only and repository-kept outputs import in bounded background
+passes per project, after startup effects are admitted. Local and SSH sources
+retain their identities and supplier bindings. Temporary imports expire at the
+stage's last-touch time plus its existing retention period; kept imports have no
+expiry and leave the repository file in place. Unresolved candidates import as
+ordinary artifacts on their own producing turns, without accepting a version of
+the source. Import failures retain a durable reason shown by artifact routes;
+transient failures retry with capped exponential backoff, while missing files,
+expired stages, and invalid sources are terminal. Repeated or interrupted import
+never replaces an existing artifact. Maintenance and shutdown drain active
+passes before releasing the background owner.
 
 HTML previews run in an opaque sandbox. Agent scripts cannot access or navigate
 the RCP parent, open popups, submit forms, initiate downloads, or use ordinary
@@ -298,7 +307,8 @@ temporary-or-kept transfer policy.
 
 New candidates are copied into artifact storage at discovery. A server update
 checkpoint also carries legacy recovery-critical local candidate stages; legacy
-remote candidates remain on their named host until background import. Offline backups intentionally exclude task staging. Restore
+remote candidates remain on their named host until background import succeeds.
+Offline backups intentionally exclude task staging. Restore
 therefore marks every unresolved candidate **Abandoned** before detaching native
 sessions and preserves the unchanged source; a new Work turn is required.
 
@@ -325,7 +335,9 @@ expiry, and pruning, and records an operation idempotency key. Captures share an
 in-process guard that delays file deletion until all captures finish. Reads,
 creation, Keep, and version publication do not take that guard; only publication
 that prunes files waits for captures before unlinking. Backup copies exactly the
-typed inventory from its SQLite snapshot. The report migration writes digest
+typed inventory from its SQLite snapshot. Project transfer reads artifact
+metadata and versions in one SQLite read transaction and derives the file
+inventory from those same versions. The report migration writes digest
 files before committing bindings and removing inline HTML; migration checks use
 a throwaway file root.
 

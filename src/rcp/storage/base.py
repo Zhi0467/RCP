@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 from rcp.artifacts import html_document_title
 from rcp.limits import BACKUP_SQLITE_BUSY_SLEEP_SECONDS, BACKUP_SQLITE_PAGES_PER_STEP
 from rcp.providers import PROVIDER_IDS, legacy_runtime_id
+from rcp.storage.artifact_imports import migrate_artifact_imports
 from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
@@ -68,6 +69,7 @@ class AppStoreBase:
         (28, "notifications_v1"),
         (29, "episode_isolation_v1"),
         (30, "artifact_storage_v1"),
+        (31, "artifact_imports_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -640,6 +642,12 @@ class AppStoreBase:
             version=30,
             name="artifact_storage_v1",
             migration=lambda conn: migrate_artifacts(conn, file_root),
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=31,
+            name="artifact_imports_v1",
+            migration=migrate_artifact_imports,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

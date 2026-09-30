@@ -266,6 +266,12 @@ def saved_artifacts(
 
 def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
     artifact = store.artifact(artifact_id)
+    if artifact is None:
+        status = store.artifact_import_status(artifact_id)
+        if status is not None and status["project_id"] == project_id:
+            raise HTTPException(
+                status_code=410, detail=status["reason"] or "Artifact import is pending."
+            )
     if artifact is None or artifact.project_id != project_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
     if (

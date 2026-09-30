@@ -114,7 +114,7 @@ def sweep_stages(retain_days: int, protected: set[str]) -> None:
                     remove_tree(target)
 
 
-def check_stage(root: str) -> None:
+def check_stage(root: str, *, missing_exit: int = 1) -> os.stat_result:
     """Exit 0 when `root` is this account's own private stage; 1 when it is not, 2 when unknown.
 
     The saved root itself is checked, never followed through a replacement.
@@ -130,7 +130,7 @@ def check_stage(root: str) -> None:
     try:
         info = os.lstat(root)
     except (FileNotFoundError, NotADirectoryError):
-        raise SystemExit(1) from None
+        raise SystemExit(missing_exit) from None
     except OSError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from None
@@ -142,6 +142,7 @@ def check_stage(root: str) -> None:
         if unsafe:
             print(message, file=sys.stderr)
             raise SystemExit(1)
+    return info
 
 
 def remove_stage(root: str) -> None:
@@ -271,6 +272,8 @@ def main(argv: list[str]) -> int:
             sweep_stages(int(argv[2]), set(json.loads(argv[3])))
         elif len(argv) == 3 and argv[1] == "check":
             check_stage(argv[2])
+        elif len(argv) == 3 and argv[1] == "last-touch":
+            print(check_stage(argv[2], missing_exit=44).st_mtime)
         elif len(argv) == 3 and argv[1] == "remove":
             remove_stage(argv[2])
         elif len(argv) == 5 and argv[1] == "prepare-artifacts":

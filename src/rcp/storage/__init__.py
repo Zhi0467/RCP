@@ -9,6 +9,7 @@ Record models and exceptions live in `models` and are re-exported here.
 from __future__ import annotations
 
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
+from rcp.storage.artifact_imports import ArtifactImportStoreMixin
 from rcp.storage.artifact_models import (
     Artifact,
     ArtifactFile,
@@ -53,6 +54,7 @@ class AppStore(
     ProjectProvisioningStoreMixin,
     ProjectStoreMixin,
     ArtifactStoreMixin,
+    ArtifactImportStoreMixin,
     EpisodeStoreMixin,
     AutoResearchStoreMixin,
     AutoResearchChildrenStoreMixin,

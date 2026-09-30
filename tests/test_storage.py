@@ -94,6 +94,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (28, "notifications_v1"),
         (29, "episode_isolation_v1"),
         (30, "artifact_storage_v1"),
+        (31, "artifact_imports_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -1992,6 +1993,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "_legacy_campaigns_archive": 0,
         "experiment_episode_state": 0,
         "artifact_operations": 0,
+        "artifact_imports": 0,
         "artifact_versions": 0,
         "artifacts": 0,
         "artifact_revision_candidates": 0,

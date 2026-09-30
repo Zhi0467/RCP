@@ -449,6 +449,9 @@ class ProjectStoreMixin:
                     "conversation_worktrees": connection.execute(
                         "DELETE FROM conversation_worktrees WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "artifact_imports": connection.execute(
+                        "DELETE FROM artifact_imports WHERE project_id = ?", (project_id,)
+                    ).rowcount,
                     "artifact_operations": connection.execute(
                         "DELETE FROM artifact_operations WHERE artifact_id IN "
                         "(SELECT artifact_id FROM artifacts WHERE project_id = ?)",

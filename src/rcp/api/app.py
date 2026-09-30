@@ -74,6 +74,7 @@ from rcp.api.team import router as team_router
 from rcp.api.terminals import router as terminals_router
 from rcp.api.update_notice import router as update_notice_router
 from rcp.api.watchers import router as watchers_router
+from rcp.artifact_import import import_project_artifacts
 from rcp.attachments import ChatAttachmentStore
 from rcp.background import (
     AgentTaskExecution,
@@ -90,6 +91,7 @@ from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
+    ARTIFACT_IMPORT_RETRY_SECONDS,
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
     SERVER_CONTROL_UPDATE_VERIFY_TIMEOUT_SECONDS,
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
@@ -1510,6 +1512,48 @@ def create_app(
 
     startup_maintenance: list[asyncio.Task[None]] = []
     runtime_loop: list[asyncio.AbstractEventLoop | None] = [None]
+    artifact_import_tasks: dict[str, asyncio.Task[None]] = {}
+
+    def import_artifact_pass(project_id: str) -> float | None:
+        with background_admission_gate.mutation("legacy artifact import"):
+            return import_project_artifacts(
+                store,
+                project_id,
+                workspace=lambda: catalog.open(project_id).history.workspace,
+            )
+
+    async def import_project_artifacts_in_background(project_id: str) -> None:
+        while not background_admission_gate.closed:
+            work = asyncio.create_task(asyncio.to_thread(import_artifact_pass, project_id))
+            try:
+                delay = await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # Cancelling to_thread does not stop its thread. Keep ownership
+                # until its admitted mutation has reached a durable boundary.
+                with suppress(Exception):
+                    await work
+                raise
+            except MaintenanceAdmissionClosed:
+                return
+            except Exception:
+                logger.exception("Could not import artifacts for project %s", project_id)
+                delay = ARTIFACT_IMPORT_RETRY_SECONDS
+            if delay is None or background_admission_gate.closed:
+                return
+            await asyncio.sleep(delay)
+
+    def schedule_artifact_imports() -> None:
+        if background_admission_gate.closed:
+            return
+        for record in store.projects():
+            if record.home_space_id != store.space_id:
+                continue
+            previous = artifact_import_tasks.get(record.project_id)
+            if previous is not None and not previous.done():
+                continue
+            task = asyncio.create_task(import_project_artifacts_in_background(record.project_id))
+            artifact_import_tasks[record.project_id] = task
+            startup_maintenance.append(task)
 
     def pause_update_runtime_owners(timeout: float) -> None:
         """Stop process-owned pollers and wait for already-scheduled async reads."""
@@ -1531,6 +1575,8 @@ def create_app(
 
         async def wait_for_scheduled_reads() -> None:
             await terminals.end_all(reason="server_maintenance")
+            for task in artifact_import_tasks.values():
+                task.cancel()
             pending = {
                 task
                 for task in (
@@ -1556,6 +1602,9 @@ def create_app(
         notification_sender.start()
         if phone_listener is not None:
             phone_listener.resume()
+        loop = runtime_loop[0]
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(schedule_artifact_imports)
 
     if control_server is not None:
         assert target_transfer_upload_coordinator is not None
@@ -1577,6 +1626,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         startup_maintenance.clear()
+        artifact_import_tasks.clear()
         runtime_loop[0] = asyncio.get_running_loop()
         control_started = False
         runtime_started = False
@@ -1733,6 +1783,7 @@ def create_app(
                     startup_maintenance.append(asyncio.create_task(sweep_remote_run_stages()))
                 startup_maintenance.append(asyncio.create_task(reconcile_running_compute_jobs()))
                 startup_maintenance.append(asyncio.create_task(probe_compute_routes()))
+                schedule_artifact_imports()
                 # Episode health is local, so its notification baseline is taken
                 # before serving. Startup graph sweeps and graph notification
                 # reconciliation read remote graphs, so both run on their

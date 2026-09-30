@@ -2432,6 +2432,40 @@ def test_remote_stage_sweeper_rejects_unsafe_protected_root() -> None:
         stage.sweep(protected_roots=["/tmp/not-an-rcp-stage"])
 
 
+def test_remote_stage_last_touch_preserves_retention(local_remote_stage) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
+    touched = time.time() - 3600
+    os.utime(root, (touched, touched))
+    before = root.stat().st_mtime
+    stage.attach_artifact_source(str(root))
+
+    assert stage.stage_last_touch() == before
+    assert root.stat().st_mtime == before
+
+
+def test_remote_stage_last_touch_distinguishes_missing_and_unsafe(local_remote_stage) -> None:
+    stage = local_remote_stage
+    root = Path(str(stage.root))
+    root.chmod(0o755)
+    with pytest.raises(ValueError):
+        stage.stage_last_touch()
+    root.rmdir()
+    with pytest.raises(FileNotFoundError):
+        stage.stage_last_touch()
+
+
+def test_remote_stage_last_touch_offline_is_retryable(monkeypatch) -> None:
+    stage = RemoteRunStage("research.example").attach_artifact_source("/tmp/rcp-run.saved")
+    monkeypatch.setattr(
+        stage,
+        "_ssh",
+        lambda _arguments: subprocess.CompletedProcess([], 255, "", "ssh: connect timed out"),
+    )
+    with pytest.raises(StateUnavailable):
+        stage.stage_last_touch()
+
+
 def test_remote_stage_artifact_read_refuses_a_fifo_without_blocking(local_remote_stage) -> None:
     stage = local_remote_stage
     (Path(str(stage.root)) / "workspace").mkdir()

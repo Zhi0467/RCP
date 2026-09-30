@@ -180,6 +180,11 @@ def _agent_artifact_response(
         if record.history_only
         else "Artifact bytes are no longer available."
     )
+    if stored is None:
+        status = store.artifact_import_status(descriptor.artifact_id)
+        unavailable_reason = (
+            status["reason"] if status and status["reason"] else "Artifact import is pending."
+        )
     can_discuss = (
         available
         and supports_comments(descriptor.media_type)
@@ -1123,7 +1128,15 @@ def _artifact_revision_candidate_bytes(
         raise ValueError("artifact revision candidate descriptor changed")
     stored_id = scoped_artifact_id(candidate.artifact_scope_id, candidate.source_name)
     stored = store.artifact(stored_id)
-    if stored is None or stored.project_id != candidate.project_id:
+    if stored is None:
+        status = store.artifact_import_status(stored_id)
+        raise HTTPException(
+            status_code=410,
+            detail=status["reason"]
+            if status and status["reason"]
+            else "Artifact import is pending.",
+        )
+    if stored.project_id != candidate.project_id:
         raise FileNotFoundError(candidate.source_name)
     data = store.read_artifact_bytes(stored_id)
     if (

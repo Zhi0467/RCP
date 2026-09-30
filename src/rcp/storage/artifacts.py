@@ -343,6 +343,10 @@ class ArtifactStoreMixin:
                     continue
                 with _capture_guard(self.path.parent).deletion():
                     with self.connection() as connection:
+                        connection.execute(
+                            "INSERT OR REPLACE INTO artifact_imports VALUES (?, ?, 'missing', 0, NULL, ?)",
+                            (artifact_id, artifact.project_id, "Artifact expired."),
+                        )
                         for table in ("artifact_operations", "artifact_versions", "artifacts"):
                             connection.execute(
                                 f"DELETE FROM {table} WHERE artifact_id = ?",

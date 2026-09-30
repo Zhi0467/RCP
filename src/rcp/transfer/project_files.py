@@ -313,11 +313,27 @@ def _capture_project_files_locked(
 ) -> TransferProjectFileCapture:
     store = service.paper.store
     try:
-        artifacts = tuple(store.artifacts(records.project_id))
-        versions = tuple(
-            version for item in artifacts for version in store.artifact_versions(item.artifact_id)
+        with store.connection() as connection:
+            connection.execute("BEGIN")
+            artifact_rows = connection.execute(
+                "SELECT metadata FROM artifacts WHERE project_id = ? ORDER BY artifact_id",
+                (records.project_id,),
+            ).fetchall()
+            artifacts = tuple(Artifact.model_validate_json(row[0]) for row in artifact_rows)
+            version_rows = connection.execute(
+                "SELECT v.metadata FROM artifact_versions v JOIN artifacts a USING(artifact_id) "
+                "WHERE a.project_id = ? ORDER BY v.artifact_id, v.sequence",
+                (records.project_id,),
+            ).fetchall()
+        versions = tuple(ArtifactVersion.model_validate_json(row[0]) for row in version_rows)
+        inventory = tuple(
+            {
+                (version.artifact_id, version.file_id): ArtifactFile(
+                    **version.model_dump(include=set(ArtifactFile.model_fields))
+                )
+                for version in versions
+            }.values()
         )
-        inventory = tuple(store.artifact_inventory(records.project_id))
         for item in inventory:
             entry = _capture_regular_file(
                 capture_root,
