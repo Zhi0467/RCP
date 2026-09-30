@@ -10,6 +10,7 @@ from rcp.runs.session_master import record_session_master
 from rcp.runs.tasks.artifact_edit import stream_artifact_edit_run
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
+from rcp.transport import StateUnavailable
 
 from .helpers import create_named_app
 from .test_unified_artifacts import _publish_artifact, _stored_artifact
@@ -650,3 +651,148 @@ def test_additional_edit_artifact_retains_episode_provenance(manifest, tmp_path)
     assert len(artifacts) == 1
     assert execution.store.artifact(artifacts[0].artifact_id).episode_id == "origin-episode"
     assert execution.store.agent_task("edit").episode_id is None
+
+
+def _staged_edit(manifest, tmp_path):
+    from rcp.runs.chat import prepare_artifact_edit_directory, stage_artifact_context
+
+    app, request, execution, source, workspace = _setup(manifest, tmp_path)
+    directory = prepare_artifact_edit_directory(request, execution, workspace, None)
+    staged = stage_artifact_context(
+        app.state.service,
+        request,
+        execution,
+        local_stage=workspace.parent,
+        remote_stage=None,
+        artifact_path=str(directory),
+    )
+    return app, request, execution, source, workspace, directory, staged
+
+
+@pytest.mark.parametrize("failure", [OSError("disk full"), StateUnavailable("offline")])
+@pytest.mark.parametrize("phase", ["read", "publish"])
+def test_transient_publish_failure_propagates_and_retry_keeps_edit(
+    manifest, tmp_path, monkeypatch, failure, phase
+):
+    from rcp.runs.chat import finalize_artifact_edit
+
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    (directory / source.name).write_bytes(b"<p>edited</p>")
+    import rcp.runs.chat as chat
+
+    owner = chat if phase == "read" else execution.store
+    method = "read_local_regular_file" if phase == "read" else "publish_artifact_version"
+    original = getattr(owner, method)
+
+    def fail(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(owner, method, fail)
+    kwargs = dict(
+        artifact_scope_id="edit",
+        artifact_directory=directory,
+        remote_stage=None,
+        artifacts=[],
+        service=app.state.service,
+    )
+    with pytest.raises(type(failure)):
+        finalize_artifact_edit(request, execution, **kwargs)
+    assert not execution.store.agent_task_has_receipt("edit", "artifact_edit_publish_failed")
+    monkeypatch.setattr(owner, method, original)
+    finalize_artifact_edit(request, execution, **kwargs)
+    assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
+
+
+def test_pointer_contract_without_receipt_recovers_on_new_execution(manifest, tmp_path):
+    from rcp.runs.chat import stage_artifact_context
+
+    app, request, execution, source, workspace, directory, staged = _staged_edit(manifest, tmp_path)
+    with execution.store.connection() as connection:
+        connection.execute(
+            "DELETE FROM graph_run_receipts WHERE operation_id = ? AND category = ?",
+            ("edit", "artifact_edit_staged"),
+        )
+    (directory / source.name).write_bytes(b"<p>preserved</p>")
+    record = execution.store.agent_task("edit")
+    with execution.store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status = 'failed' WHERE operation_id = 'edit'")
+    execution.store.create_agent_task(record.model_copy(update={"operation_id": "retry"}))
+    retry = AgentTaskExecution(
+        operation_id="retry",
+        store=execution.store,
+        control=AgentProcessControl(),
+        stage_root=execution.stage_root,
+    )
+    recovered = stage_artifact_context(
+        app.state.service,
+        request,
+        retry,
+        local_stage=workspace.parent,
+        remote_stage=None,
+        artifact_path=str(directory),
+    )
+    assert recovered.pointer == staged.pointer
+    assert (directory / source.name).read_bytes() == b"<p>preserved</p>"
+    assert execution.store.agent_task_has_receipt("edit", "artifact_edit_staged")
+
+
+@pytest.mark.parametrize("fork", [False, True])
+def test_live_resolution_failure_does_not_record_publish_completion(
+    manifest, tmp_path, monkeypatch, fork
+):
+    import rcp.live_artifact_runtime as live
+    from rcp.runs.chat import finalize_artifact_edit
+
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    (directory / source.name).write_bytes(b"<p>edited</p>")
+    if fork:
+        execution.store.undo_artifact(source.artifact_id)
+    calls = []
+
+    def resolve(*args):
+        calls.append(args[2:])
+        if len(calls) == 1:
+            raise OSError("interrupted")
+
+    monkeypatch.setattr(live, "resolve_artifact_live_version", resolve)
+    kwargs = dict(
+        artifact_scope_id="edit",
+        artifact_directory=directory,
+        remote_stage=None,
+        artifacts=[],
+        service=app.state.service,
+    )
+    with pytest.raises(OSError):
+        finalize_artifact_edit(request, execution, **kwargs)
+    assert not execution.store.agent_task_has_receipt("edit", "artifact_edit_published")
+    finalize_artifact_edit(request, execution, **kwargs)
+    assert len(calls) == 2
+    assert calls[0] == calls[1]
+    assert execution.store.agent_task_has_receipt("edit", "artifact_edit_published")
+
+
+def test_storage_byte_cap_records_permanent_publish_failure(manifest, tmp_path, monkeypatch):
+    import rcp.storage.artifacts as storage
+    from rcp.runs.chat import finalize_artifact_edit
+
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    edited = b"<p>edited beyond retention cap</p>"
+    (directory / source.name).write_bytes(edited)
+    monkeypatch.setattr(storage, "ARTIFACT_MAX_VERSION_BYTES", len(edited))
+    before = execution.store.artifact(source.artifact_id).current_version
+    assert (
+        finalize_artifact_edit(
+            request,
+            execution,
+            artifact_scope_id="edit",
+            artifact_directory=directory,
+            remote_stage=None,
+            artifacts=[],
+            service=app.state.service,
+        )
+        == []
+    )
+    assert execution.store.agent_task_has_receipt("edit", "artifact_edit_publish_failed")
+    assert not execution.store.agent_task_has_receipt("edit", "artifact_edit_published")
+    assert execution.store.artifact(source.artifact_id).current_version == before
+    assert (directory / source.name).read_bytes() == edited

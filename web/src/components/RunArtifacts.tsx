@@ -59,13 +59,8 @@ export function RunArtifacts({
                   onClick={() => {
                     setOpenError(null);
                     if (artifact.view === "pdf") {
-                      if (!artifact.origin_operation_id) {
-                        setOpenError("The PDF has no producing operation.");
-                        return;
-                      }
                       void openDesktopArtifactPdf({
                         projectId,
-                        taskId: artifact.origin_operation_id,
                         artifactId: artifact.artifact_id,
                       }).catch((failure) => setOpenError(errorMessage(failure)));
                     } else openArtifact({ projectId, artifactId: artifact.artifact_id });

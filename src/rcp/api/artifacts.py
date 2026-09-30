@@ -30,6 +30,7 @@ from rcp.background import BackgroundAgentTasks
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.artifact_edit_admission import (
+    ArtifactFreshSessionRequired,
     admit_artifact_edit,
     artifact_edit_availability,
     artifact_reply_origin,
@@ -317,7 +318,8 @@ def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
         status = store.artifact_import_status(artifact_id)
         if status is not None and status["project_id"] == project_id:
             raise HTTPException(
-                status_code=410, detail=status["reason"] or "Artifact import is pending."
+                status_code=410 if status["state"] == "missing" else 409,
+                detail=status["reason"] or "Artifact import is pending.",
             )
     if artifact is None or artifact.project_id != project_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -708,6 +710,11 @@ def comment_artifact(
             admitted,
             authorized_by=author,
         ).model_dump(mode="json")
+    except ArtifactFreshSessionRequired as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "fresh_session_required", "message": str(exc)},
+        ) from exc
     except AgentTaskAdmissionConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (OSError, StateUnavailable) as exc:

@@ -8,15 +8,19 @@ export type ArtifactPopupTarget =
   | { kind: "report"; projectId: string; episodeId: string };
 
 /** Only viewer entrances on the active RCP origin can become panel targets. */
-export function artifactPopupTarget(raw: string, origin: string): ArtifactPopupTarget | null {
+export function artifactPopupTarget(
+  raw: string,
+  origin: string,
+  projectId: string | null,
+): ArtifactPopupTarget | null {
   try {
     const url = new URL(raw);
-    if (url.origin !== origin) return null;
+    if (url.origin !== origin || !projectId) return null;
     const artifact =
       /^\/api\/projects\/([^/]+)\/artifacts\/([^/]+)\/(?:viewer|preview|content|download)$/.exec(
         url.pathname,
       );
-    if (artifact)
+    if (artifact && decodeURIComponent(artifact[1]) === projectId)
       return {
         kind: "artifact",
         projectId: decodeURIComponent(artifact[1]),
@@ -26,7 +30,7 @@ export function artifactPopupTarget(raw: string, origin: string): ArtifactPopupT
       /^\/api\/projects\/([^/]+)\/episodes\/([^/]+)\/report\/(?:viewer|preview|content|download)$/.exec(
         url.pathname,
       );
-    if (report)
+    if (report && decodeURIComponent(report[1]) === projectId)
       return {
         kind: "report",
         projectId: decodeURIComponent(report[1]),

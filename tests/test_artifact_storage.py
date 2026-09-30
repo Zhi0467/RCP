@@ -222,7 +222,8 @@ def test_undo_keeps_original_and_new_edit_has_no_redo_ancestry(tmp_path):
     assert third.version_id in {v.version_id for v in store.artifact_versions("one")}
 
 
-def test_admitted_edit_base_survives_pruning_until_staged(tmp_path, monkeypatch):
+@pytest.mark.parametrize("status", ["queued", "running", "pausing", "paused", "interrupted"])
+def test_admitted_edit_base_survives_pruning_until_staged(tmp_path, monkeypatch, status):
     import rcp.storage.artifacts as module
     from rcp.storage import AgentTaskRecord
 
@@ -237,7 +238,7 @@ def test_admitted_edit_base_survives_pruning_until_staged(tmp_path, monkeypatch)
             operation_id="admitted",
             project_id="project",
             kind="project_chat",
-            status="queued",
+            status=status,
             request={
                 "artifact_edit": {
                     "artifact_id": "one",
@@ -351,6 +352,7 @@ def test_live_policy_migration_covers_report_creation_before_lifecycle_commit(tm
     )
     assert "live_data_allowed" not in report.model_dump()
     with store.connection() as connection:
+        connection.execute("DROP INDEX graph_runs_artifact_edit_episode")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 32")
     reopened = AppStore(store.path)
     assert reopened.artifact(report.artifact_id).live_data_allowed is False

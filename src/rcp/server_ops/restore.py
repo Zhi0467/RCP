@@ -46,6 +46,9 @@ RESTORE_DIRECTORY_MODE = 0o700
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         "0d63563c127ccab2b1291464009400108912026d8323a204e5c3b33607c6dbf6",
+        # Artifact edit lookup by origin episode, fresh and upgraded in place.
+        "bafbf526e9d45c235c6402a4c1b55ef3c8336f5ca009608d57251fd0476548d8",
+        "528fbfe96fbbe84bd778bd75c7714f976a9dff62526a5c94485e59c3b0decdb9",
         # RCP-owned artifact files and immutable report bindings, fresh and upgraded.
         "9289984bd08b23f8d5d9f487dff067848d951f10900e053f720613f10d1da044",
         "cf65fb3b1697cefe435320c947a6b49d2788935e96d25b494df7eabe1d1eb2b6",

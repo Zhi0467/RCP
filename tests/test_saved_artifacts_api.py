@@ -328,7 +328,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
             client.post(
                 f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
             ).status_code
-            == 200
+            == 405
         )
         assert client.get(f"/api/projects/{project_id}/artifacts").json() == entries
 

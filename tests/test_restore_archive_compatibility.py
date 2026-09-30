@@ -247,6 +247,7 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
         connection.execute("DROP TABLE artifact_imports")
+        connection.execute("DROP INDEX graph_runs_artifact_edit_episode")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 31")
     assert _database_schema_sha256(store) in SUPPORTED_RESTORE_DATABASE_SCHEMAS
 

@@ -6,6 +6,7 @@ import {
   advanceDesktopProjectTransfer,
   desktopDownloadPath,
   downloadDesktopArtifact,
+  openDesktopArtifactPdf,
   desktopFolderSelectionPath,
   desktopFolderAccessAcknowledgementValue,
   discardDesktopProjectTransferExport,
@@ -664,6 +665,28 @@ test("native downloads accept stored artifacts without a task and retain task do
     assert.deepEqual(calls, [
       { command: "download_artifact", args: stored },
       { command: "download_artifact", args: { ...stored, taskId: "task" } },
+    ]);
+  } finally {
+    if (previous === undefined) delete globalThis.window;
+    else globalThis.window = previous;
+  }
+});
+
+test("native PDFs accept stored artifacts without a producing task", async () => {
+  const previous = globalThis.window;
+  const calls = [];
+  globalThis.window = {
+    __TAURI_INTERNALS__: {
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        return { opened: true };
+      },
+    },
+  };
+  try {
+    await openDesktopArtifactPdf({ projectId: "p", artifactId: "pdf" });
+    assert.deepEqual(calls, [
+      { command: "open_artifact_pdf", args: { projectId: "p", artifactId: "pdf" } },
     ]);
   } finally {
     if (previous === undefined) delete globalThis.window;

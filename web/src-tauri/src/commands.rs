@@ -991,7 +991,7 @@ pub async fn open_artifact_pdf(
     connections: State<'_, TeamConnectionState>,
     sessions: State<'_, TeamSessionState>,
     project_id: String,
-    task_id: String,
+    task_id: Option<String>,
     artifact_id: String,
 ) -> Result<OpenResult, String> {
     let target = current_resource_target(&window, &state, &sessions)?;
@@ -1000,7 +1000,7 @@ pub async fn open_artifact_pdf(
     let url = artifact_url(
         target.base_url(),
         &project_id,
-        Some(&task_id),
+        task_id.as_deref(),
         &artifact_id,
         "download",
     )?;

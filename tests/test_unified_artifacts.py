@@ -1125,7 +1125,7 @@ def test_viewer_filename_cannot_add_preview_attributes(chat_id: str | None, suff
     assert parser.attrs[label] == name
 
 
-def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> None:
+def test_episode_report_shell_has_no_repository_save_action() -> None:
     descriptor = AgentArtifactDescriptor(
         artifact_id="0123456789abcdef01234567",
         name="episode-report.html",
@@ -1138,17 +1138,16 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
         keep_url=None,
         state="report",
         descriptor=descriptor,
-        save_url="/save",
     )
 
     assert 'id="pending"' not in document
     assert "rcp-artifact-context" not in document
     assert "rcp-artifact-selection-enable" not in document
     assert ">Comment</button>" not in document
-    assert "fetch(config.saveUrl" in document
+    assert 'id="save"' not in document
     assert 'id="keep"' not in document
     assert 'id="state"' not in document
-    assert "connect-src 'self'" in csp
+    assert "connect-src 'self'" not in csp
 
     with_chat, _csp = artifact_viewer_document(
         content_url="/preview",
@@ -1165,11 +1164,10 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
             }
         ),
         descriptor=descriptor,
-        save_url="/save",
     )
     assert 'id="pending"' in with_chat
     assert 'id="message"' in with_chat
-    assert "fetch(config.saveUrl" in with_chat
+    assert 'id="save"' not in with_chat
 
 
 def test_box_selection_must_stay_inside_its_normalized_viewport() -> None:

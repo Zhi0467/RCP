@@ -46,14 +46,11 @@ VIEWER_MUTATION_INIT = {
 }
 _VIEWER_MUTATION_INIT_JS = json.dumps(VIEWER_MUTATION_INIT)
 
-_KEEP_SAVE_HANDLERS_JS = (
-    # The shell defines `config` with keepUrl/saveUrl and its status element.
+_KEEP_HANDLER_JS = (
+    # The shell defines `config` with keepUrl and its status element.
     "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,"
     + _VIEWER_MUTATION_INIT_JS
     + ");if(!response.ok)throw new Error('Keep failed');keep.remove();notice.textContent='Kept.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
-    "const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{save.disabled=true;notice.textContent='';try{const response=await fetch(config.saveUrl,"
-    + _VIEWER_MUTATION_INIT_JS
-    + ");if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${result.path}`;}catch(error){notice.textContent=error instanceof Error?error.message:String(error);}finally{save.disabled=false;}});\n"
 )
 
 
@@ -63,7 +60,6 @@ def artifact_viewer_document(
     content_url: str,
     state: str,
     keep_url: str | None = None,
-    save_url: str | None = None,
     panel: ViewerPanel | None = None,
     live_url: str | None = None,
 ) -> tuple[str, str]:
@@ -83,13 +79,12 @@ def artifact_viewer_document(
         if keep_url and not descriptor.is_kept()
         else ""
     )
-    save = '<button id="save" type="button">Save copy</button>' if save_url else ""
     scripts = []
-    if keep or save:
-        config = json.dumps({"keepUrl": keep_url, "saveUrl": save_url}).replace("<", "\\u003c")
+    if keep:
+        config = json.dumps({"keepUrl": keep_url}).replace("<", "\\u003c")
         scripts.append(
             f"const config={config};const notice=document.getElementById('notice');\n"
-            + _KEEP_SAVE_HANDLERS_JS
+            + _KEEP_HANDLER_JS
         )
     if panel and panel.script:
         scripts.append(panel.script)
@@ -104,9 +99,7 @@ def artifact_viewer_document(
     # The RCP panel shows the name and state; the shell keeps a bar only for its actions.
     notice = "" if panel else '<span id="notice" role="status"></span>'
     header = (
-        f'<header><span class="spacer"></span>{save}{keep}{notice}</header>\n'
-        if save or keep or notice
-        else ""
+        f'<header><span class="spacer"></span>{keep}{notice}</header>\n' if keep or notice else ""
     )
     rows = "48px minmax(0,1fr)" if header else "minmax(0,1fr)"
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)

@@ -514,7 +514,7 @@ def test_final_capture_treats_revoked_sources_as_terminal(live, revocation):
         elif revocation == "owner":
             connection.execute("UPDATE graph_runs SET project_id='other' WHERE operation_id='turn'")
         else:
-            connection.execute("DELETE FROM compute_jobs")
+            connection.execute("UPDATE compute_jobs SET origin_operation_id='other'")
     reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
     final = live.store.artifact_versions(artifact.artifact_id)[0].live
     assert final.invalid_reason and final.capture_error and final.next_capture_at is None
@@ -554,7 +554,7 @@ def test_final_capture_reads_outside_lock_and_preserves_concurrent_snapshot(live
     concurrent.final = True
     concurrent.snapshots[0].log_tail = "concurrent capture"
 
-    def capture(*args):
+    def capture(*args, **kwargs):
         def save():
             with live.store.artifact_lock(artifact.artifact_id):
                 live.store.save_artifact_live_snapshot(
@@ -568,7 +568,7 @@ def test_final_capture_reads_outside_lock_and_preserves_concurrent_snapshot(live
             pool.submit(save).result(timeout=5)
         finally:
             pool.shutdown(wait=False)
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(runtime, "_snapshot", capture)
     reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
@@ -629,3 +629,37 @@ def test_edit_produced_live_page_retains_episode_provenance(live):
     assert snapshot.snapshots[1].state == "queued"
     assert live.store.agent_task("turn").episode_id is None
     assert live.store.episode_tasks(episode.episode_id) == []
+
+
+@pytest.mark.parametrize(
+    ("format", "contents", "expected"),
+    [("jsonl", '{"loss": 1}', [{"loss": 1}]), ("csv", "1,2", [["1", "2"]])],
+)
+def test_final_capture_preserves_complete_unterminated_record(live, format, contents, expected):
+    job(live)
+    metrics = live.root / f"metrics.{format}"
+    metrics.write_text(contents)
+    artifact = live.create([{"kind": "job", "key": "train"}, file_need(metrics, format=format)])
+    if format == "jsonl":
+        assert read(live, artifact).snapshots[1].rows == expected
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    snapshot = read(live, artifact)
+    assert snapshot.final and snapshot.complete
+    assert snapshot.snapshots[1].rows == expected
+    assert not snapshot.snapshots[1].truncated
+
+
+def test_running_live_version_never_opens_project_during_reconcile(live):
+    job(live)
+    artifact = live.create([{"kind": "job", "key": "train"}])
+    with live.store.connection() as connection:
+        connection.execute("UPDATE compute_jobs SET status='running', ended_at=NULL")
+
+    def refuse_open(project_id):
+        pytest.fail("Unended live version opened the project")
+
+    live.catalog.open = refuse_open
+    reconcile_artifact_live_snapshots(live.store, live.catalog, "project")
+    version = live.store.artifact_versions(artifact.artifact_id)[0]
+    assert version.live.capture_attempts == 0
+    assert version.live_snapshot is None

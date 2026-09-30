@@ -303,6 +303,7 @@ def test_schema_30_upgrade_only_adds_import_state(store, tmp_path):
     _run(store)
     original = store.artifact(descriptor.artifact_id)
     with store.connection() as connection:
+        connection.execute("DROP INDEX graph_runs_artifact_edit_episode")
         connection.execute("DROP TABLE artifact_imports")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 31")
     reopened = AppStore(store.path)
@@ -366,3 +367,22 @@ def test_old_unresolved_candidate_gets_retention_after_import(store, tmp_path):
     assert descriptor.artifact_id not in store.legacy_artifact_import_ids()
     store.expire_artifacts()
     assert store.read_artifact_bytes(descriptor.artifact_id) == b"page"
+
+
+@pytest.mark.parametrize("status", ["pending", "accepting", "conflicted"])
+def test_transfer_waits_for_unresolved_candidate_import(store, tmp_path, status):
+    _, _, _, descriptor, candidate = _candidate(store, tmp_path)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE artifact_revision_candidates SET status = ?, diagnostic = 'Import pending' "
+            "WHERE candidate_id = ?",
+            (status, candidate.candidate_id),
+        )
+        # An unrelated project's import must not block this project.
+        store._require_finished_transfer_state(connection, "other-project")
+        with pytest.raises(ValueError):
+            store._require_finished_transfer_state(connection, "project")
+    _run(store)
+    assert store.artifact(descriptor.artifact_id) is not None
+    with store.connection() as connection:
+        store._require_finished_transfer_state(connection, "project")

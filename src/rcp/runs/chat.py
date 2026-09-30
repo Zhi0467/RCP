@@ -84,6 +84,7 @@ from rcp.storage import (
     ArtifactVersionConflict,
 )
 from rcp.storage.artifact_models import ArtifactOperationConflict
+from rcp.storage.artifacts import ArtifactByteLimitError
 from rcp.transport import (
     RemoteRunStage,
     RunStageMailbox,
@@ -989,11 +990,27 @@ def stage_artifact_context(
     )
     if edit is not None:
         for operation_id in dict.fromkeys((execution.operation_id, edit.operation_id)):
+            saved = execution.store.agent_task_contract(operation_id, "artifact_edit_pointer")
+            if saved is not None and not execution.store.agent_task_has_receipt(
+                operation_id, "artifact_edit_staged"
+            ):
+                pointer = json.loads(saved)
+                if pointer.get("path") != str(Path(artifact_path) / edit.source_name):
+                    raise ValueError("The saved artifact edit path changed.")
+                execution.store.record_agent_task_receipt(
+                    operation_id,
+                    "artifact_edit_staged",
+                    {
+                        "artifact_id": edit.artifact_id,
+                        "base_version": edit.base_version,
+                        "path": pointer["path"],
+                        "operation_id": edit.operation_id,
+                        "sha256": pointer["sha256"],
+                    },
+                    tier="summary",
+                )
             for receipt in execution.store.agent_task_receipts(operation_id):
                 if receipt.category == "artifact_edit_staged":
-                    saved = execution.store.agent_task_contract(
-                        operation_id, "artifact_edit_pointer"
-                    )
                     pointer = json.loads(saved) if saved else receipt.payload.get("pointer")
                     if not isinstance(pointer, dict):
                         raise ValueError("The saved artifact edit pointer is unavailable.")
@@ -1235,71 +1252,7 @@ def finalize_artifact_edit(
         media_type = classify_artifact_bytes(edit.source_name, data)
         if media_type != edit.media_type:
             raise ValueError("The artifact edit changed its file type.")
-        base_sha256 = staged.payload.get("sha256") or staged.payload.get("pointer", {}).get(
-            "sha256"
-        )
-        if hashlib.sha256(data).hexdigest() == base_sha256:
-            return artifacts
-        try:
-            version = execution.store.publish_artifact_version(
-                edit.artifact_id,
-                base_version=edit.base_version,
-                operation_id=edit.operation_id,
-                data=data,
-            )
-        except ArtifactOperationConflict:
-            raise
-        except ArtifactVersionConflict:
-            task = execution.store.agent_task(execution.operation_id)
-            if task is None:
-                raise ValueError("The artifact edit task is unavailable.") from None
-            descriptor = descriptor_for(
-                artifact_scope_id, edit.source_name, media_type=media_type, size_bytes=len(data)
-            )
-            now = execution.store.now()
-            execution.store.create_artifact(
-                Artifact(
-                    artifact_id=descriptor.artifact_id,
-                    project_id=task.project_id,
-                    supplier="turn",
-                    supplier_id=artifact_scope_id,
-                    source_name=edit.source_name,
-                    media_type=media_type,
-                    created_at=now,
-                    expires_at=(
-                        datetime.fromisoformat(now) + timedelta(days=RUN_STAGE_RETENTION_DAYS)
-                    ).isoformat(),
-                    origin_operation_id=task.operation_id,
-                    episode_id=edit.episode_id,
-                    chat_id=task.request.get("chat_id"),
-                ),
-                data=data,
-            )
-            forked = execution.store.artifact(descriptor.artifact_id)
-            execution.store.record_agent_task_receipt(
-                edit.operation_id,
-                "artifact_edit_published",
-                {
-                    "artifact_id": forked.artifact_id,
-                    "descriptor": descriptor.model_dump(mode="json"),
-                },
-                tier="summary",
-            )
-            resolve_artifact_live_version(
-                execution.store, service, forked.artifact_id, forked.current_version
-            )
-            return [*artifacts, descriptor]
-        execution.store.record_agent_task_receipt(
-            edit.operation_id,
-            "artifact_edit_published",
-            {"artifact_id": edit.artifact_id, "version_id": version.version_id},
-            tier="summary",
-        )
-        resolve_artifact_live_version(
-            execution.store, service, edit.artifact_id, version.version_id
-        )
-        return artifacts
-    except (OSError, StateUnavailable, ValueError, KeyError) as exc:
+    except (FileNotFoundError, ValueError) as exc:
         execution.store.record_agent_task_receipt(
             execution.operation_id,
             "artifact_edit_publish_failed",
@@ -1307,6 +1260,75 @@ def finalize_artifact_edit(
             tier="summary",
         )
         return artifacts
+
+    base_sha256 = staged.payload.get("sha256") or staged.payload.get("pointer", {}).get("sha256")
+    if hashlib.sha256(data).hexdigest() == base_sha256:
+        return artifacts
+    try:
+        version = execution.store.publish_artifact_version(
+            edit.artifact_id,
+            base_version=edit.base_version,
+            operation_id=edit.operation_id,
+            data=data,
+        )
+    except ArtifactByteLimitError as exc:
+        execution.store.record_agent_task_receipt(
+            execution.operation_id,
+            "artifact_edit_publish_failed",
+            {"error": str(exc)},
+            tier="summary",
+        )
+        return artifacts
+    except ArtifactOperationConflict:
+        raise
+    except ArtifactVersionConflict:
+        task = execution.store.agent_task(execution.operation_id)
+        if task is None:
+            raise ValueError("The artifact edit task is unavailable.") from None
+        descriptor = descriptor_for(
+            artifact_scope_id, edit.source_name, media_type=media_type, size_bytes=len(data)
+        )
+        now = execution.store.now()
+        execution.store.create_artifact(
+            Artifact(
+                artifact_id=descriptor.artifact_id,
+                project_id=task.project_id,
+                supplier="turn",
+                supplier_id=artifact_scope_id,
+                source_name=edit.source_name,
+                media_type=media_type,
+                created_at=now,
+                expires_at=(
+                    datetime.fromisoformat(now) + timedelta(days=RUN_STAGE_RETENTION_DAYS)
+                ).isoformat(),
+                origin_operation_id=task.operation_id,
+                episode_id=edit.episode_id,
+                chat_id=task.request.get("chat_id"),
+            ),
+            data=data,
+        )
+        forked = execution.store.artifact(descriptor.artifact_id)
+        resolve_artifact_live_version(
+            execution.store, service, forked.artifact_id, forked.current_version
+        )
+        execution.store.record_agent_task_receipt(
+            edit.operation_id,
+            "artifact_edit_published",
+            {
+                "artifact_id": forked.artifact_id,
+                "descriptor": descriptor.model_dump(mode="json"),
+            },
+            tier="summary",
+        )
+        return [*artifacts, descriptor]
+    resolve_artifact_live_version(execution.store, service, edit.artifact_id, version.version_id)
+    execution.store.record_agent_task_receipt(
+        edit.operation_id,
+        "artifact_edit_published",
+        {"artifact_id": edit.artifact_id, "version_id": version.version_id},
+        tier="summary",
+    )
+    return artifacts
 
 
 def artifact_omissions(receipt: AgentTaskReceiptRecord) -> dict[str, int | bool]:

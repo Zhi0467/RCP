@@ -28,6 +28,19 @@ let sendError = "";
 let stateLoading = false;
 let stateTimer = null;
 let stopped = false;
+let permanentStateError = false;
+let freshSessionRequired = false;
+const retryState = document.createElement("button");
+retryState.type = "button";
+retryState.textContent = "Retry";
+retryState.hidden = true;
+notice.after(retryState);
+retryState.addEventListener("click", () => {
+  permanentStateError = false;
+  retryState.hidden = true;
+  clearTimeout(stateTimer);
+  pollState();
+});
 const draftKey = `rcp:artifact-selections:${encodeURIComponent(config.projectId)}:${config.artifactId}`;
 const bounded = (value, limit) =>
   String(value || "")
@@ -184,14 +197,19 @@ if (boxLayer)
   });
 function updateSend() {
   add.disabled = sending || !viewerState?.can_comment || !message.value.trim();
-  add.textContent = viewerState?.fresh_session_required ? "Edit in a new session" : "Send";
+  add.textContent = (freshSessionRequired || viewerState?.fresh_session_required) ? "Edit in a new session" : "Send";
 }
 async function refreshState() {
-  if (stateLoading || stopped || document.hidden) return;
+  if (stateLoading || stopped || permanentStateError || document.hidden) return;
   stateLoading = true;
   try {
     const response = await fetch(config.stateUrl, {credentials: "same-origin"});
-    if (!response.ok) throw new Error("Comment availability could not be loaded.");
+    if (!response.ok) {
+      permanentStateError = response.status >= 400 && response.status < 500 &&
+        ![408, 409, 425, 429].includes(response.status);
+      retryState.hidden = !permanentStateError;
+      throw new Error("Comment availability could not be loaded.");
+    }
     viewerState = await response.json();
     notice.textContent = sendError || viewerState.comment_unavailable_reason || "";
   } catch (error) {
@@ -214,10 +232,16 @@ add.addEventListener("click", async () => {
       credentials: "same-origin",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({message: message.value, selections,
-        fresh_session: !!viewerState?.fresh_session_required}),
+        fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required}),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(typeof result.detail === "string" ? result.detail : "Comment could not be sent.");
+    if (!response.ok) {
+      if (response.status === 409 && result.detail?.code === "fresh_session_required")
+        freshSessionRequired = true;
+      throw new Error(typeof result.detail === "string" ? result.detail :
+        result.detail?.message || "Comment could not be sent.");
+    }
+    freshSessionRequired = false;
     selections.length = 0;
     message.value = "";
     saveSelections();
@@ -237,7 +261,7 @@ add.addEventListener("click", async () => {
 window.addEventListener("focus", refreshState);
 async function pollState() {
   await refreshState();
-  if (!stopped) stateTimer = setTimeout(pollState, config.stateRefreshMs);
+  if (!stopped && !permanentStateError) stateTimer = setTimeout(pollState, config.stateRefreshMs);
 }
 window.addEventListener("pagehide", () => { stopped = true; clearTimeout(stateTimer); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshState(); });

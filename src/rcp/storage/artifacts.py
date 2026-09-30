@@ -26,9 +26,15 @@ from rcp.storage.artifact_models import (
 )
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 
+_EDIT_RETENTION_STATUSES = (*sorted(ACTIVE_AGENT_TASK_STATUSES), "paused", "interrupted")
+
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 _CAPTURE_GUARDS: dict[str, _CaptureGuard] = {}
+
+
+class ArtifactByteLimitError(ValueError):
+    """The retained artifact versions cannot fit within their storage byte cap."""
 
 
 class _CaptureGuard:
@@ -287,7 +293,8 @@ class ArtifactStoreMixin:
             rows = connection.execute(
                 "SELECT json_extract(request_json, '$.artifact_context.artifact_id') "
                 "FROM graph_runs WHERE status IN "
-                "('queued', 'running', 'pausing', 'paused', 'interrupted')"
+                f"({','.join('?' for _ in _EDIT_RETENTION_STATUSES)})",
+                _EDIT_RETENTION_STATUSES,
             ).fetchall()
         return frozenset(row[0] for row in rows if isinstance(row[0], str))
 
@@ -363,7 +370,7 @@ class ArtifactStoreMixin:
             lineage = self._artifact_ancestors(current, versions) + [current]
             version = version.model_copy(update={"ancestors": [v.version_id for v in lineage]})
             ancestors = [v for v in lineage if v.sequence > 0]
-            statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
+            statuses = _EDIT_RETENTION_STATUSES
             with self.connection() as connection:
                 pending = connection.execute(
                     "SELECT json_extract(request_json, '$.artifact_edit.base_version') FROM graph_runs g "
@@ -407,7 +414,9 @@ class ArtifactStoreMixin:
                 sum(v.size_bytes for v in artifact_version_files(retained))
                 > ARTIFACT_MAX_VERSION_BYTES
             ):
-                raise ValueError("original and new artifact version exceed storage byte limit")
+                raise ArtifactByteLimitError(
+                    "original and new artifact version exceed storage byte limit"
+                )
             write_artifact_file(self.path.parent, version, data)
             artifact = artifact.model_copy(update={"current_version": version.version_id})
             with self.connection() as connection:

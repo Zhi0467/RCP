@@ -2555,6 +2555,11 @@ class AppStoreBase:
 
     @staticmethod
     def _migrate_artifact_live_policy(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_artifact_edit_episode ON graph_runs "
+            "(json_extract(request_json, '$.artifact_edit.episode_id'), created_at, operation_id) "
+            "WHERE visible = 1"
+        )
         # Before the rule was stored, the supplier was the creation-owner proof.
         # Include bytes committed just before a crash prevented the report binding.
         connection.execute(

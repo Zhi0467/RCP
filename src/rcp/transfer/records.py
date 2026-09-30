@@ -422,6 +422,13 @@ class TransferRunRequestHistory(_StrictTransferRecord):
     invoked_skill_ids: tuple[str, ...] = ()
     invoked_provider_skill_names: tuple[str, ...] = ()
 
+    @model_serializer(mode="wrap")
+    def serialize_request(self, handler: SerializerFunctionWrapHandler) -> dict[str, JsonValue]:
+        data = handler(self)
+        if "artifact_edit" not in self.model_fields_set:
+            data.pop("artifact_edit", None)
+        return data
+
 
 class TransferPaperCoachRequestHistory(_StrictTransferRecord):
     shape: Literal["paper_coach"] = "paper_coach"

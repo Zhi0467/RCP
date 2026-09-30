@@ -16,6 +16,7 @@ test("only recognised viewer entrances in the active space become panel targets"
       artifactPopupTarget(
         `${origin}/api/projects/project%20one/artifacts/a/${action}?v=2#part`,
         origin,
+        "project one",
       ),
       {
         kind: "artifact",
@@ -24,7 +25,7 @@ test("only recognised viewer entrances in the active space become panel targets"
       },
     );
     assert.deepEqual(
-      artifactPopupTarget(`${origin}/api/projects/p/episodes/e/report/${action}`, origin),
+      artifactPopupTarget(`${origin}/api/projects/p/episodes/e/report/${action}`, origin, "p"),
       {
         kind: "report",
         projectId: "p",
@@ -42,5 +43,18 @@ test("only recognised viewer entrances in the active space become panel targets"
     "about:blank",
     "not a URL",
   ])
-    assert.equal(artifactPopupTarget(url, origin), null);
+    assert.equal(artifactPopupTarget(url, origin, "p"), null);
+});
+
+test("popup targets must belong to the currently open project", () => {
+  for (const route of ["artifacts/a/viewer", "episodes/e/report/viewer"])
+    for (const projectId of ["other", null])
+      assert.equal(
+        artifactPopupTarget(
+          `https://rcp.example/api/projects/p/${route}`,
+          "https://rcp.example",
+          projectId,
+        ),
+        null,
+      );
 });

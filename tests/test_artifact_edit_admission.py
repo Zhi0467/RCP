@@ -311,7 +311,55 @@ def test_availability_uses_no_remote_or_content_reads(edit_origin, monkeypatch):
 
     monkeypatch.setattr(RemoteRunStage, "directory_exists", forbidden)
     monkeypatch.setattr(store, "read_artifact_bytes", forbidden)
-    monkeypatch.setattr(store, "agent_task_contract", forbidden)
     assert artifact_edit_availability(
         store, app.state.service, store.artifact(artifact.artifact_id)
     ).can_comment
+
+
+@pytest.mark.parametrize("missing", ["stage", "contract"])
+def test_availability_detects_missing_local_resume_material(edit_origin, missing):
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "artifact.md", b"Original")
+    record_session_master(store, task.operation_id, "master bytes")
+    if missing == "stage":
+        Path(task.stage_root).rmdir()
+    else:
+        with store.connection() as connection:
+            connection.execute(
+                "DELETE FROM graph_run_contracts WHERE operation_id = ?", (task.operation_id,)
+            )
+    availability = artifact_edit_availability(
+        store, app.state.service, store.artifact(artifact.artifact_id)
+    )
+    assert availability.can_comment
+    assert availability.fresh_session_required
+    response = TestClient(app).post(
+        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"message": "Update"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "fresh_session_required"
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"), [("pending", 409), ("unavailable", 409), ("missing", 410)]
+)
+def test_pending_import_is_transient(edit_origin, monkeypatch, state, expected):
+    from fastapi.testclient import TestClient
+
+    app, store, task = edit_origin
+    monkeypatch.setattr(
+        store,
+        "artifact_import_status",
+        lambda artifact_id: {
+            "project_id": task.project_id,
+            "state": state,
+            "reason": None,
+        },
+    )
+    response = TestClient(app).get(f"/api/projects/{task.project_id}/artifacts/{'a' * 24}/download")
+    assert response.status_code == expected

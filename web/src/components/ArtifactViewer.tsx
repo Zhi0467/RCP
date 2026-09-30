@@ -17,6 +17,7 @@ import {
   type ViewerPlacement,
 } from "../artifactViewerLayout";
 import { artifactPopupTarget, isPermanentArtifactError } from "../artifactViewerRequests";
+import { parseProjectHash } from "../experimentBoard";
 import { listenDesktopEvent } from "../desktopRuntime";
 import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { errorMessage } from "../errors";
@@ -71,7 +72,11 @@ export function ArtifactViewer() {
     let disposed = false;
     const unlisten = listenDesktopEvent<string>("rcp://open-artifact", async (url) => {
       if (disposed) return;
-      const popup = artifactPopupTarget(url, window.location.origin);
+      const popup = artifactPopupTarget(
+        url,
+        window.location.origin,
+        parseProjectHash(window.location.hash).projectId,
+      );
       if (!popup) {
         console.warn("[rcp] dropped unrecognised artifact popup", url);
         return;

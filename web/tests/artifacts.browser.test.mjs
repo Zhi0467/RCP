@@ -566,3 +566,93 @@ test("viewer persists placement and follows an edit through publication and Undo
     await server.close();
   }
 });
+
+test("desktop reports download and run PDFs open by stored identity without a producing task", async () => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    logLevel: "silent",
+    server: { host: "127.0.0.1", port: 0 },
+  });
+  let browser;
+  try {
+    await server.listen();
+    browser = await chromium.launch();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      window.nativeCalls = [];
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
+      window.__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        unregisterCallback() {},
+        invoke: async (command, args) => {
+          window.nativeCalls.push({ command, args });
+          return { saved: true, path: "/tmp/report.html", opened: true };
+        },
+      };
+    });
+    await page.route("**/api/projects/project/artifacts", (route) =>
+      route.fulfill({
+        json: [
+          {
+            id: "report",
+            artifact_id: "report",
+            operation_id: null,
+            name: "Report.html",
+            view: "html",
+            can_open: false,
+            can_download: true,
+            download_url: "/api/projects/project/artifacts/report/download",
+          },
+        ],
+      }),
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/artifacts.html`,
+    );
+    await page.getByRole("button", { name: "Download Report.html" }).click();
+    await page.waitForFunction(() =>
+      window.nativeCalls.some((call) => call.command === "download_artifact"),
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        window.nativeCalls.find((call) => call.command === "download_artifact"),
+      ),
+      {
+        command: "download_artifact",
+        args: { projectId: "project", artifactId: "report", suggestedName: "Report.html" },
+      },
+    );
+    await page.evaluate(async () => {
+      const { renderRunArtifacts } = await import("/tests/fixtures/artifacts.tsx");
+      renderRunArtifacts([
+        {
+          artifact_id: "pdf",
+          name: "Results.pdf",
+          view: "pdf",
+          supplier: "turn",
+          origin_operation_id: null,
+          created_at: new Date().toISOString(),
+        },
+      ]);
+    });
+    await page.getByRole("button", { name: "Results.pdf" }).click();
+    await page.waitForFunction(() =>
+      window.nativeCalls.some((call) => call.command === "open_artifact_pdf"),
+    );
+    assert.deepEqual(
+      await page.evaluate(() =>
+        window.nativeCalls.find((call) => call.command === "open_artifact_pdf"),
+      ),
+      {
+        command: "open_artifact_pdf",
+        args: { projectId: "project", artifactId: "pdf" },
+      },
+    );
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});

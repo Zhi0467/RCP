@@ -115,6 +115,15 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (32,),
         ]
 
+        plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM graph_runs "
+            "WHERE json_extract(request_json, '$.artifact_edit.episode_id') = ? "
+            "AND visible = 1 ORDER BY created_at, operation_id",
+            ("episode",),
+        ).fetchall()
+        assert any("USING INDEX graph_runs_artifact_edit_episode" in row[3] for row in plan)
+        assert not any("TEMP B-TREE" in row[3] for row in plan)
+
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed legacy migration was rescanned")
 

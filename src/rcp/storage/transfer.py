@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, JsonValue
 
+from rcp.artifacts import artifact_id as scoped_artifact_id
 from rcp.artifacts import html_document_title
 from rcp.core.models import EpisodeIsolation, EpisodeIsolationState
 from rcp.storage.artifact_models import Artifact, ArtifactVersion
@@ -359,6 +360,25 @@ class ProjectTransferStoreMixin:
         connection: sqlite3.Connection,
         project_id: str,
     ) -> None:
+        candidates = connection.execute(
+            "SELECT candidate_id, artifact_scope_id, source_name "
+            "FROM artifact_revision_candidates WHERE project_id = ? "
+            "AND status IN ('pending', 'accepting', 'conflicted')",
+            (project_id,),
+        ).fetchall()
+        for candidate in candidates:
+            artifact_id = scoped_artifact_id(candidate[1], candidate[2])
+            if (
+                connection.execute(
+                    "SELECT 1 FROM artifacts WHERE artifact_id = ? AND project_id = ?",
+                    (artifact_id, project_id),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError(
+                    "project transfer requires every unresolved artifact candidate to be "
+                    f"imported into artifact storage (candidate {candidate[0]})"
+                )
         checks = (
             (
                 "SELECT operation_id FROM graph_runs WHERE project_id = ? "

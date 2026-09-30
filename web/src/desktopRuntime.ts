@@ -148,7 +148,7 @@ export interface BackendIdentityEventDetail extends BackendIdentityResult {
 
 export interface ArtifactCommand {
   projectId: string;
-  taskId: string;
+  taskId?: string;
   artifactId: string;
 }
 
@@ -660,7 +660,7 @@ export async function openDesktopArtifactPdf(command: ArtifactCommand): Promise<
 }
 
 export async function downloadDesktopArtifact(
-  command: Omit<ArtifactCommand, "taskId"> & { taskId?: string; suggestedName: string },
+  command: ArtifactCommand & { suggestedName: string },
 ): Promise<string | null> {
   if (!isDesktopRuntime())
     throw new Error("Desktop artifact download is unavailable in this browser.");

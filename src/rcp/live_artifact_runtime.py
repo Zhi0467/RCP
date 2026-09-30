@@ -240,13 +240,20 @@ def _read(host, path, *, tail):
     return data.decode("utf-8"), truncated
 
 
-def _file_snapshot(binding):
+def _file_snapshot(binding, *, final=False):
     need = binding.need
     text, truncated = _read(binding.host, need.path, tail=need.read == "tail")
     byte_truncated = truncated
-    if need.format in {"jsonl", "csv"} and text and not text.endswith("\n"):
-        text = text.rpartition("\n")[0]
-        truncated = True
+    if text and not text.endswith("\n"):
+        discard_last = need.format == "csv" and not final
+        if need.format == "jsonl":
+            try:
+                json.loads(text.rpartition("\n")[2])
+            except json.JSONDecodeError:
+                discard_last = True
+        if discard_last:
+            text = text.rpartition("\n")[0]
+            truncated = True
     if need.format == "jsonl":
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
     elif need.format == "csv":
@@ -298,7 +305,7 @@ def _validate_read(store, service, artifact, version):
     return graph_history
 
 
-def _snapshot(store, service, artifact, version):
+def _snapshot(store, service, artifact, version, *, final=False):
     graph_history = _validate_read(store, service, artifact, version)
     snapshots = []
     graph = None
@@ -306,7 +313,7 @@ def _snapshot(store, service, artifact, version):
         need = binding.need
         try:
             if need.kind == "file":
-                snapshot = _file_snapshot(binding)
+                snapshot = _file_snapshot(binding, final=final)
             elif need.kind == "job":
                 job = store.compute_job(binding.job_id)
                 log, _ = _read(job.execution_host, job.log_path, tail=True)
@@ -443,6 +450,8 @@ def reconcile_artifact_live_snapshots(store, catalog, project_id: str) -> None:
                 continue
             if live.next_capture_at and datetime.fromisoformat(live.next_capture_at) > now:
                 continue
+            if not _ended(store, live):
+                continue
             original_live = live.model_copy(deep=True)
             snapshot = None
             try:
@@ -452,11 +461,9 @@ def reconcile_artifact_live_snapshots(store, catalog, project_id: str) -> None:
                 except (ValueError, KeyError) as exc:
                     live.invalid_reason = str(exc)
                     raise
-                if not _ended(store, live):
-                    continue
                 live.capture_attempts += 1
                 # SSH and file reads never hold the lock used by viewer actions.
-                snapshot = _snapshot(store, service, artifact, version)
+                snapshot = _snapshot(store, service, artifact, version, final=True)
                 if not snapshot.complete:
                     raise ValueError(
                         "; ".join(item.error for item in snapshot.snapshots if item.error)

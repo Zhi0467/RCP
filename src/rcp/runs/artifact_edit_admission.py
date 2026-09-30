@@ -40,6 +40,11 @@ def artifact_edit_availability(
         fresh = origin.history_only or not (
             origin.native_session_id and origin.stage_root and master
         )
+        if not fresh and not origin.stage_host:
+            stage = Path(origin.stage_root or "")
+            fresh = not (stage.is_absolute() and stage.is_dir() and not stage.is_symlink())
+        if master and not fresh:
+            fresh = store.agent_task_contract(master[0], SESSION_MASTER_ROLE) is None
         if master and not fresh:
             try:
                 _launch_kind_for_master_owner(store.agent_task(master[0]))
