@@ -121,7 +121,9 @@ def _settle(service, request, execution, workspace, remote, directory, outcome) 
         return
     edit = request.artifact_edit
     assert edit is not None
-    artifacts = _discover_chat_artifacts(execution, edit.staged_scope_id, directory, remote)
+    artifacts = _discover_chat_artifacts(
+        execution, edit.staged_scope_id, directory, remote, service=service
+    )
     artifacts = finalize_artifact_edit(
         request,
         execution,
@@ -129,6 +131,7 @@ def _settle(service, request, execution, workspace, remote, directory, outcome) 
         artifact_directory=directory,
         remote_stage=remote,
         artifacts=artifacts,
+        service=service,
     )
     if edit.reply_episode_id is None:
         _append_chat_exchange(

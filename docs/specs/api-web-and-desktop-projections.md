@@ -1322,3 +1322,17 @@ by the ordinary periodic reconciliation pass, plus queued tasks and completed
 watcher groups checked for the verified account. It is not a launch count:
 already-settled episodes and inputs still waiting on other conditions may be
 included. The web reports items rechecked for resumption.
+
+### Versioned live artifact data
+
+`GET /api/projects/{project_id}/artifacts/{artifact_id}/versions/{version_id}/live`
+accepts no source declaration or file path. Project membership and the stored
+graph target are checked for each read. The returned `rcp-live-data` envelope
+contains ordered snapshots, completeness, final/static state, a diagnostic when
+applicable, and the refresh interval. Saved final bytes are authoritative for
+that version. Invalid declarations expose their stored reason as static data.
+
+The authenticated artifact shell pins both HTML and live reads to one version,
+polls while visible, and relays through the existing private artifact channel.
+The agent frame remains opaque with its existing CSP and sandbox restrictions.
+This adds no docked viewer controls.

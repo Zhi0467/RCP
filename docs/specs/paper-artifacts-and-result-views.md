@@ -98,6 +98,46 @@ A broken preview never hides Download or Keep, and never erases the reply.
 Keep refreshes the authoritative task projection after the mutation succeeds.
 Omission counts remain visible even when the turn has no artifact cards.
 
+## Live HTML pages
+
+A live page is an HTML artifact for a source still changing after its producing
+turn: a job, sweep, episode, or node gathering Evidence. Final results remain
+ordinary pages. Episode reports are never live. Their creation owner records
+`live_data_allowed: false` on the Artifact; shared live-data code enforces this
+stored rule. Migration and legacy report import preserve it.
+
+One `application/json` script with id `rcp-live` declares protocol `version: 1`
+and a `needs` array. The code model in `rcp.live_artifacts` owns the declaration,
+snapshot fields, and `rcp-live-data` message. Needs name a helper job's launch
+key, a node id in the artifact's graph target, the artifact's own episode, or
+an absolute file path on its execution host. Files select `tail` or `whole`
+and `jsonl`, `csv`, or `text`. Registered project repository roots and the
+artifact's bound worktree constrain file access; a path alone grants no access.
+
+Discovery resolves needs once per version. Edited-version publishers call the
+same resolver. Job keys bind to stable ids through helper-command receipts and
+their existing recovery lineage. An invalid declaration remains static with a
+stored reason. Live resolution and final-capture diagnostics belong to the
+version, so Undo or a later edit cannot silently retarget an earlier page.
+
+The authenticated viewer requests a snapshot for an artifact and version only.
+Every read rechecks project membership and the graph target. The server reads
+only stored bindings, through readers that refuse symlinks and nonregular
+files. Local and SSH reads, rows, needs, and log tails are bounded by `limits.py`.
+Episode budget fields measure invocations, matching the existing episode meter.
+
+The shell polls while visible, more slowly for SSH file needs, and relays
+`rcp-live-data` over the existing private artifact channel. HTML remains opaque
+and receives no new RCP request capability. Data received by the page can leave
+through scripts navigating their own frame; this is not a zero-network promise.
+
+Server reconciliation captures final data after every watched job and episode
+has ended, without requiring an open viewer. A failed read stays incomplete and
+retries with bounded backoff. Only a complete capture becomes the immutable final
+snapshot, served after source files disappear. Node/file-only pages have no final
+snapshot. Snapshot bytes live beside version bytes and share their typed backup,
+transfer, retention, and integrity inventory.
+
 ## Episode reports
 
 Every non-Stop Experiment or Auto-research ending receives one hidden visual

@@ -265,3 +265,93 @@ def test_admitted_edit_base_survives_pruning_until_staged(tmp_path, monkeypatch)
         last.version_id,
     }
     assert next_version.ancestors == [original.current_version]
+
+
+def test_live_snapshot_metadata_integrity_and_relocation(tmp_path):
+    from rcp.live_artifacts import ResolvedLiveVersion
+    from rcp.storage.artifact_models import ArtifactVersion
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    artifact = _artifact(store)
+    version_id = artifact.current_version
+    live = ResolvedLiveVersion(invalid_reason="Invalid declaration")
+    store.set_artifact_version_live("one", version_id, live)
+    assert store.artifact_versions("one")[0].live == live
+    assert store.read_artifact_live_snapshot("one", version_id) is None
+    data = b'{"final":true,"needs":[]}'
+    entry = store.save_artifact_live_snapshot("one", version_id, data)
+    assert store.save_artifact_live_snapshot("one", version_id, data) == entry
+    assert store.read_artifact_live_snapshot("one", version_id) == data
+    with pytest.raises(ArtifactVersionConflict):
+        store.save_artifact_live_snapshot("one", version_id, b"different")
+    version = store.artifact_versions("one")[0]
+    with pytest.raises(ValueError, match="another artifact"):
+        ArtifactVersion.model_validate(
+            {
+                **version.model_dump(),
+                "live_snapshot": {**entry.model_dump(), "artifact_id": "other"},
+            }
+        )
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    store.path.rename(relocated / "rcp.sqlite3")
+    (tmp_path / "artifacts").rename(relocated / "artifacts")
+    store = AppStore(relocated / "rcp.sqlite3")
+    assert store.read_artifact_live_snapshot("one", version_id) == data
+    store.artifact_file_path(entry).write_bytes(b"corrupt")
+    with pytest.raises(ValueError, match="inventory"):
+        store.read_artifact_live_snapshot("one", version_id)
+
+
+def test_snapshot_pruning_waits_for_capture_and_preserves_retained_versions(tmp_path, monkeypatch):
+    import rcp.storage.artifacts as module
+
+    monkeypatch.setattr(module, "ARTIFACT_RECENT_VERSIONS", 1)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    original = _artifact(store)
+    original_snapshot = store.save_artifact_live_snapshot(
+        "one", original.current_version, b"original data"
+    )
+    first = store.publish_artifact_version(
+        "one", base_version=original.current_version, operation_id="first", data=b"first"
+    )
+    snapshot = store.save_artifact_live_snapshot("one", first.version_id, b"first data")
+    path = store.artifact_file_path(snapshot)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with store.artifact_capture():
+            inventory = store.artifact_inventory()
+            publish = pool.submit(
+                store.publish_artifact_version,
+                "one",
+                base_version=first.version_id,
+                operation_id="second",
+                data=b"second",
+            )
+            wait_until(
+                lambda: store.artifact("one").current_version != first.version_id,
+                detail="publication updates metadata before capture releases files",
+            )
+            assert snapshot in inventory
+            assert not publish.done()
+            assert path.read_bytes() == b"first data"
+        publish.result(timeout=5)
+    assert not path.exists()
+    assert store.artifact_file_path(original_snapshot).read_bytes() == b"original data"
+    assert set(p.name for p in path.parent.iterdir()) == {
+        v.file_id for v in store.artifact_inventory()
+    }
+
+
+def test_live_policy_migration_covers_report_creation_before_lifecycle_commit(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    ordinary = _artifact(store)
+    report = store.create_artifact(
+        ordinary.model_copy(update={"artifact_id": "unbound-report", "supplier": "episode_ending"}),
+        data=b"report captured before lifecycle commit",
+    )
+    assert "live_data_allowed" not in report.model_dump()
+    with store.connection() as connection:
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 32")
+    reopened = AppStore(store.path)
+    assert reopened.artifact(report.artifact_id).live_data_allowed is False
+    assert reopened.artifact(ordinary.artifact_id).live_data_allowed is True

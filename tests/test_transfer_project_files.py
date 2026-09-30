@@ -507,3 +507,26 @@ def test_transfer_artifact_capture_uses_one_snapshot_during_publication(
     assert (capture_root / "artifacts" / entry.artifact_id / entry.file_id).read_bytes() == (
         store.read_artifact_bytes(original.artifact_id, original.current_version)
     )
+
+
+def test_transfer_inventory_includes_saved_snapshot(manifest, tmp_path):
+    service, records, *_ = _finished_project(manifest, tmp_path)
+    store = service.paper.store
+    artifact = store.artifact("a" * 24)
+    snapshot = store.save_artifact_live_snapshot(
+        artifact.artifact_id, artifact.current_version, b'{"final":true}'
+    )
+    root = tmp_path / "live-capture"
+    capture = capture_project_transfer_files(service, records, root)
+    assert snapshot in capture.artifact_inventory
+    assert (
+        root / "artifacts" / snapshot.artifact_id / snapshot.file_id
+    ).read_bytes() == b'{"final":true}'
+    payload = project_files_module.transfer_project_file_payload(capture)
+    assert project_files_module.parse_transfer_project_file_payload(payload) == capture
+    invalid = capture.model_dump(mode="json")
+    invalid["artifact_inventory"] = [
+        item for item in invalid["artifact_inventory"] if item["file_id"] != snapshot.file_id
+    ]
+    with pytest.raises(ValueError, match="inventory"):
+        TransferProjectFileCapture.model_validate(invalid)

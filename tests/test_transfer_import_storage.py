@@ -296,6 +296,7 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
         assert episode.report is not None
         stored_report = target.episode_report(episode.episode_id)
         assert stored_report is not None
+        assert target.artifact(stored_report.artifact_id).live_data_allowed is False
         assert (
             target.read_artifact_bytes(
                 stored_report.artifact_id, stored_report.artifact_version_id
@@ -444,15 +445,15 @@ def test_storage_import_rejects_record_schema_not_negotiated_before_release(
     assert target.agent_tasks(archive.project_id) == []
 
 
-@pytest.mark.parametrize("damage", ["expiry", "allocation"])
+@pytest.mark.parametrize("damage", [None, "expiry", "allocation"])
 def test_transfer_report_requires_permanent_artifact_and_exact_allocation(
-    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+    manifest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str | None
 ) -> None:
     from rcp.storage import Artifact, ArtifactFile, ArtifactVersion
     from rcp.transfer.archive import TransferArchiveEntry
     from rcp.transfer.project_files import TransferProjectFileCapture
 
-    fixture = _archive_fixture(manifest, tmp_path, monkeypatch)
+    fixture = _archive_fixture(manifest, tmp_path, monkeypatch, include_episode_archive=True)
     capture = _rich_capture(fixture, with_report=True)
     episode = capture.records.episodes[0]
     report = episode.report
@@ -502,6 +503,37 @@ def test_transfer_report_requires_permanent_artifact_and_exact_allocation(
         }
     )
     TransferProjectFileCapture.model_validate(capture)
+    # Old artifact-backed archives omit the new rule without changing their
+    # canonical encoding; the report import owner establishes it at destination.
+    assert "live_data_allowed" not in artifact.model_dump()
+    payload = transfer_project_file_payload(capture)
+    assert transfer_project_file_payload(parse_transfer_project_file_payload(payload)) == payload
+    if damage is None:
+        from rcp.storage import AppStore
+
+        target = fixture["target"]
+        archive = fixture["archive"]
+        configuration = fixture["configuration"]
+        target.begin_project_transfer_import(
+            archive.target_request_id,
+            archive_manifest_sha256=archive.sha256(),
+            target_manifest_sha256=configuration.receipt.target_manifest_sha256,
+            operational_payload_sha256=hashlib.sha256(payload).hexdigest(),
+            target_configuration_receipt=configuration.receipt.model_dump(mode="json"),
+            capture=capture,
+            kept_result_view_html={},
+        )
+        assert target.artifact(artifact_id).live_data_allowed is False
+        # Reconstruct version 31 metadata, then exercise the real migration
+        # registry rather than calling its SQL helper directly.
+        with target.connection() as connection:
+            connection.execute(
+                "UPDATE artifacts SET metadata = json_remove(metadata, '$.live_data_allowed') WHERE artifact_id = ?",
+                (artifact_id,),
+            )
+            connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 32")
+        assert AppStore(target.path).artifact(artifact_id).live_data_allowed is False
+        return
     changed = artifact.model_copy(
         update={"expires_at": report.created_at}
         if damage == "expiry"

@@ -922,8 +922,8 @@ archive. It contains the durable project identity, accepted main and graph-branc
 canonical history and exact heads; typed canonical RCP chat transcripts; the
 current Paper draft and canonical introduction; opaque `.research/facts/`
 files; all finished human-visible operational history; and the exact bytes of
-all database-referenced artifact versions, using one typed inventory. Legacy
-archives with inline report HTML and repository-kept files remain importable.
+all database-referenced artifact versions and saved live snapshots, using one
+typed inventory. Legacy archives with inline report HTML and repository-kept files remain importable.
 Immutable branch
 metadata, Patches, and merge receipts travel; main and branch materialized
 outputs do not. Finished database history includes terminal task attempts and
@@ -1241,8 +1241,8 @@ canonical heads, and the append-only main/branch history needed to replay or
 validate those heads. Immutable branch metadata, Patches, and merge receipts are
 included; derived main and branch materializations are not. It separately
 captures canonical RCP chat JSONL, the optional canonical Paper introduction,
-safe regular `.research/facts/` files, and the artifact version files referenced
-by the SQLite snapshot. One typed artifact inventory binds every relative file
+safe regular `.research/facts/` files, and the artifact version and saved live
+snapshot files referenced by the SQLite snapshot. One typed artifact inventory binds every relative file
 identifier, digest, and size. SQLite snapshot and file capture hold the artifact
 pruning lock; only inventoried files are copied. Restore relocates these files
 under the replacement data directory. Old repository-kept files remain

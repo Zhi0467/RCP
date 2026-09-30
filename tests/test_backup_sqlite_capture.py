@@ -617,10 +617,11 @@ def test_capture_copies_all_referenced_versions_and_excludes_orphan_files(tmp_pa
         operation_id=str(uuid.uuid4()),
         data=b"edited",
     )
+    store.save_artifact_live_snapshot(artifact.artifact_id, artifact.current_version, b"final data")
     (data_dir / "artifacts" / artifact.artifact_id / ("f" * 64)).write_bytes(b"orphan")
     publication = BackupCaptureCoordinator(store, data_dir, _metadata(data_dir)).capture_sqlite()
     inventory = publication.receipt.artifact_inventory
-    assert len(inventory) == 2
+    assert len(inventory) == 3
     root = Path(publication.receipt.snapshot_path).parent
     assert {p.name for p in (root / "artifacts" / artifact.artifact_id).iterdir()} == {
         i.file_id for i in inventory

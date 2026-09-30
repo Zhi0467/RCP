@@ -557,6 +557,15 @@ policy version, and whether the project has ontology extensions. A key change bo
 replaces the earlier master. A branch-merge continuation re-sends the graph
 rules inline once main's ontology extensions differ from its master's.
 
+Discuss, Work, and Experiment render one artifact contract from the Artifact
+media model and enforced caps. An empty artifact directory is normal. A turn
+naming a commented artifact's writable path instructs editing that file in
+place. Figures are useful when clearer than prose; a short result needs none.
+The live-page section renders declaration and snapshot fields from the enforced
+live-data model. Only episode contracts offer the episode need. The packaged
+`live-pages` skill supplies validated worked examples. Master and policy versions
+are unchanged; existing native sessions retain their recorded master.
+
 The episode report is its own node type, `report`. It reuses the operational
 session but gets no master pointer, and says the operational instructions no
 longer apply; `compose` adds both, and refuses a report with a master or any

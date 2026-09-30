@@ -7,6 +7,7 @@ import textwrap
 from datetime import datetime
 from typing import Literal
 
+from rcp.agents.artifact_contract import artifact_contract
 from rcp.agents.continuation_prompt import (
     MASTER_OVERLAY_RULE,
     SECTIONS,
@@ -51,9 +52,8 @@ REPLY_STYLE = """Writing the reply:
 - Leave out operational detail the reader does not need to understand the result, such as
   commands, job ids, retries, and file lists. When the human needs some of it to act or to check,
   put it in a short final section.
-- Show results rather than list them. When a result has numbers, comparisons, a trend, or
-  structure, and the turn names an artifact directory, draw it as a figure there and link it.
-  Prefer one clear figure to a table of numbers."""
+- Use a figure when it makes the result clearer than prose, and link it from the reply.
+  A short result needs no figure."""
 
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
@@ -1056,18 +1056,7 @@ Boundary:
 
 {REPLY_STYLE}
 
-Reply contract:
-- The final assistant message is the complete independent Markdown reply the human reads.
-- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
-  suffix to point at one line of a repository file. Only an authorized repository file or a file
-  you wrote in the artifact directory resolves in RCP; a relative path, a line suffix on an
-  artifact, or any other location does not.
-- A preview is optional. RCP shows each bounded direct regular file of any type in
-  the turn's artifact directory as a card with Download and Keep. HTML, images, Markdown, and text
-  also open in a viewer; other files are download-only. Do not use nested directories,
-  symlinks, provider directives, or other paths.
-- HTML must be self-contained; ordinary HTTP(S) reference links are allowed, but external scripts,
-  images, fonts, fetches, and other resource loads do not work in the preview.
+{artifact_contract(artifact_path)}
 """)
 
     @staticmethod
@@ -1218,18 +1207,7 @@ Operational authority:
 
 {REPLY_STYLE}
 
-Reply and artifact contract:
-- The final assistant message is the complete independent Markdown reply the human reads.
-- Cite a file with an ordinary Markdown link to its absolute path on its host; add a `:line`
-  suffix to point at one line of a repository file. Only an authorized repository file or a file
-  you wrote in the artifact directory resolves in RCP; a relative path, a line suffix on an
-  artifact, or any other location does not.
-- A preview is optional. RCP shows each bounded direct regular file of any type in
-  `{artifact_path}` as a card with Download and Keep. HTML, images, Markdown, and text
-  also open in a viewer; other files are download-only. Do not use nested directories,
-  symlinks, provider directives, or other paths.
-- HTML must be self-contained; ordinary HTTP(S) reference links are allowed, but external scripts,
-  images, fonts, fetches, and other resource loads do not work in the preview.
+{artifact_contract(artifact_path)}
 
 Graph Patch (optional):
 - Write one only when the work changes research state; no Patch is a normal result.

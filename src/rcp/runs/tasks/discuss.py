@@ -388,6 +388,7 @@ def _settle_discuss_outcome(
             context.artifact_scope_id,
             Path(str(context.artifact_directory)),
             context.remote_stage,
+            service=context.service,
         )
     except Exception as exc:
         # Preview attachments are optional. Even a programming or storage
@@ -408,6 +409,7 @@ def _settle_discuss_outcome(
         artifact_directory=Path(str(context.artifact_directory)),
         remote_stage=context.remote_stage,
         artifacts=artifacts,
+        service=context.service,
     )
     yield _sse(AgentEvent(event="answer", text=answer))
     for artifact in artifacts:

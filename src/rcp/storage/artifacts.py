@@ -14,12 +14,14 @@ from datetime import datetime
 from pathlib import Path
 
 from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
+from rcp.live_artifacts import ResolvedLiveVersion
 from rcp.storage.artifact_models import (
     Artifact,
     ArtifactFile,
     ArtifactOperationConflict,
     ArtifactVersion,
     ArtifactVersionConflict,
+    artifact_version_files,
 )
 
 _LOCKS: dict[str, threading.RLock] = {}
@@ -146,14 +148,7 @@ class ArtifactStoreMixin:
                 (project_id,) if project_id else (),
             ).fetchall()
         entries = [ArtifactVersion.model_validate_json(row[0]) for row in rows]
-        return list(
-            {
-                (v.artifact_id, v.file_id): ArtifactFile(
-                    **v.model_dump(include=set(ArtifactFile.model_fields))
-                )
-                for v in entries
-            }.values()
-        )
+        return artifact_version_files(entries)
 
     def artifact_file_path(self, entry: ArtifactFile) -> Path:
         entry = ArtifactFile.model_validate(
@@ -213,6 +208,48 @@ class ArtifactStoreMixin:
         if len(data) != version.size_bytes or hashlib.sha256(data).hexdigest() != version.sha256:
             raise ValueError("stored artifact bytes differ from inventory")
         return data
+
+    def set_artifact_version_live(
+        self, artifact_id: str, version_id: str, live: ResolvedLiveVersion
+    ) -> None:
+        with self.artifact_lock(artifact_id):
+            version = self._artifact_version(artifact_id, version_id)
+            version = version.model_copy(update={"live": ResolvedLiveVersion.model_validate(live)})
+            self._save_artifact_version_metadata(version)
+
+    def save_artifact_live_snapshot(
+        self, artifact_id: str, version_id: str, data: bytes
+    ) -> ArtifactFile:
+        """Publish immutable captured bytes before their version's reference."""
+        with self.artifact_lock(artifact_id):
+            version = self._artifact_version(artifact_id, version_id)
+            if version.live_snapshot is not None:
+                if self.read_artifact_live_snapshot(artifact_id, version_id) != data:
+                    raise ArtifactVersionConflict("final live snapshot is already saved")
+                return version.live_snapshot
+            digest = hashlib.sha256(data).hexdigest()
+            entry = ArtifactFile(
+                artifact_id=artifact_id, file_id=digest, sha256=digest, size_bytes=len(data)
+            )
+            inventory = artifact_version_files(self.artifact_versions(artifact_id))
+            additional = 0 if entry in inventory else entry.size_bytes
+            if sum(item.size_bytes for item in inventory) + additional > ARTIFACT_MAX_VERSION_BYTES:
+                raise ValueError("live snapshot exceeds artifact storage byte limit")
+            write_artifact_file(self.path.parent, entry, data)
+            self._save_artifact_version_metadata(
+                version.model_copy(update={"live_snapshot": entry})
+            )
+            return entry
+
+    def read_artifact_live_snapshot(self, artifact_id: str, version_id: str) -> bytes | None:
+        with self.artifact_lock(artifact_id):
+            entry = self._artifact_version(artifact_id, version_id).live_snapshot
+            if entry is None:
+                return None
+            data = self.artifact_file_path(entry).read_bytes()
+            if len(data) != entry.size_bytes or hashlib.sha256(data).hexdigest() != entry.sha256:
+                raise ValueError("stored live snapshot bytes differ from inventory")
+            return data
 
     def keep_artifact(self, artifact_id: str) -> Artifact:
         with self.artifact_lock(artifact_id):
@@ -339,13 +376,17 @@ class ArtifactStoreMixin:
             )
             while (
                 len(retained) > 2
-                and sum(v.size_bytes for v in retained) > ARTIFACT_MAX_VERSION_BYTES
+                and sum(v.size_bytes for v in artifact_version_files(retained))
+                > ARTIFACT_MAX_VERSION_BYTES
             ):
                 removable = next((v for v in retained[1:-1] if v.version_id not in pinned), None)
                 if removable is None:
                     break
                 retained.remove(removable)
-            if sum(v.size_bytes for v in retained) > ARTIFACT_MAX_VERSION_BYTES:
+            if (
+                sum(v.size_bytes for v in artifact_version_files(retained))
+                > ARTIFACT_MAX_VERSION_BYTES
+            ):
                 raise ValueError("original and new artifact version exceed storage byte limit")
             write_artifact_file(self.path.parent, version, data)
             artifact = artifact.model_copy(update={"current_version": version.version_id})
@@ -373,7 +414,7 @@ class ArtifactStoreMixin:
                     "INSERT INTO artifact_operations VALUES (?, ?, ?)",
                     (artifact_id, operation_id, version.model_dump_json(exclude={"file_id"})),
                 )
-            kept_files = {v.file_id for v in retained}
+            kept_files = {v.file_id for v in artifact_version_files(retained)}
             folder = self.path.parent / "artifacts" / artifact_id
             obsolete = [
                 path
@@ -428,6 +469,19 @@ class ArtifactStoreMixin:
                     removed += 1
         return removed
 
+    def _artifact_version(self, artifact_id: str, version_id: str) -> ArtifactVersion:
+        for version in self.artifact_versions(artifact_id):
+            if version.version_id == version_id:
+                return version
+        raise KeyError(version_id)
+
+    def _save_artifact_version_metadata(self, version: ArtifactVersion) -> None:
+        with self.connection() as connection:
+            connection.execute(
+                "UPDATE artifact_versions SET metadata = ? WHERE artifact_id = ? AND version_id = ?",
+                (version.model_dump_json(), version.artifact_id, version.version_id),
+            )
+
 
 def migrate_artifacts(connection: sqlite3.Connection, file_root: Path) -> None:
     connection.execute(
@@ -450,6 +504,7 @@ def migrate_artifacts(connection: sqlite3.Connection, file_root: Path) -> None:
             artifact_id=hashlib.sha256(row["report_id"].encode()).hexdigest()[:24],
             project_id=row["project_id"],
             supplier="episode_ending",
+            live_data_allowed=False,
             supplier_id=row["episode_id"],
             source_name="episode-report.html",
             media_type="text/html",

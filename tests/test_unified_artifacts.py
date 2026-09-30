@@ -1450,7 +1450,11 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
         )
     assert outside.read_bytes() == b"<p>protected</p>"
     target.unlink()
-    target.write_bytes(b"<p>edited</p>")
+    edited = (
+        b'<script type="application/json" id="rcp-live">'
+        b'{"version":1,"needs":[{"kind":"job","key":"missing"}]}</script>'
+    )
+    target.write_bytes(edited)
     (directory / "extra.txt").write_text("other output")
     discovered = _discover_chat_artifacts(execution, operation_id, directory, None)
     assert [a.name for a in discovered] == ["extra.txt"]
@@ -1461,6 +1465,7 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
         artifact_directory=directory,
         remote_stage=None,
         artifacts=discovered,
+        service=app.state.service,
     )
     again = finalize_artifact_edit(
         request,
@@ -1469,15 +1474,20 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
         artifact_directory=directory,
         remote_stage=None,
         artifacts=discovered,
+        service=app.state.service,
     )
     assert results == again
     if undo_during_edit:
         assert store.read_artifact_bytes(source.artifact_id) == b"<p>original</p>"
         assert len(results) == 2
-        assert store.read_artifact_bytes(results[-1].artifact_id) == b"<p>edited</p>"
+        published = store.artifact(results[-1].artifact_id)
     else:
         assert len(results) == 1
-        assert store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
+        published = store.artifact(source.artifact_id)
+    assert store.read_artifact_bytes(published.artifact_id) == edited
+    live = {v.version_id: v.live for v in store.artifact_versions(published.artifact_id)}
+    assert "missing" in live[published.current_version].invalid_reason
+    if not undo_during_edit:
         assert len(store.artifact_versions(source.artifact_id)) == 3
         from rcp.storage.artifact_models import ArtifactOperationConflict
 
@@ -1490,6 +1500,7 @@ def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
                 artifact_directory=directory,
                 remote_stage=None,
                 artifacts=discovered,
+                service=app.state.service,
             )
 
 

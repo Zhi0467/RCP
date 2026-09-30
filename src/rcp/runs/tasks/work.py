@@ -2207,6 +2207,7 @@ def _finalize_work_artifacts(
             turn.artifact_scope_id,
             Path(str(turn.artifact_directory)),
             turn.remote_stage,
+            service=turn.service,
         )
     except Exception as exc:
         with suppress(Exception):

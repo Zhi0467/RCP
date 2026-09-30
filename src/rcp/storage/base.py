@@ -70,6 +70,7 @@ class AppStoreBase:
         (29, "episode_isolation_v1"),
         (30, "artifact_storage_v1"),
         (31, "artifact_imports_v1"),
+        (32, "artifact_live_policy_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -648,6 +649,12 @@ class AppStoreBase:
             version=31,
             name="artifact_imports_v1",
             migration=migrate_artifact_imports,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=32,
+            name="artifact_live_policy_v1",
+            migration=self._migrate_artifact_live_policy,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -2544,6 +2551,16 @@ class AppStoreBase:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS auto_research_recoveries_episode "
             "ON auto_research_recoveries(episode_id, updated_at DESC, recovery_id DESC)"
+        )
+
+    @staticmethod
+    def _migrate_artifact_live_policy(connection: sqlite3.Connection) -> None:
+        # Before the rule was stored, the supplier was the creation-owner proof.
+        # Include bytes committed just before a crash prevented the report binding.
+        connection.execute(
+            "UPDATE artifacts SET metadata = json_set(metadata, '$.live_data_allowed', json('false')) "
+            "WHERE artifact_id IN (SELECT artifact_id FROM episode_reports WHERE artifact_id IS NOT NULL) "
+            "OR json_extract(metadata, '$.supplier') = 'episode_ending'"
         )
 
     def _run_storage_schema_migration(

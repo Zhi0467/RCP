@@ -94,6 +94,11 @@ Episode starts and reauthorization are not gated on compute readiness.
 A helper launch probes only its own route. Settings shows the helper slot, and
 the scheduler slot only when a job manager is set; it has no probe button.
 
+Live artifact job needs use the helper's launch key. Successful helper-command
+receipts retain the stable job id with their existing response and resolve keys
+through the same recovery lineage used for idempotent launch replay. Declaring
+a job need grants observation only, never launch or cancellation authority.
+
 ## Generic launch helper
 
 `compute_jobs.backends` contains the generic OS owners. `systemd_user` uses

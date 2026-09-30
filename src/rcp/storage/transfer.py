@@ -2209,6 +2209,7 @@ class ProjectTransferStoreMixin:
                         artifact_id=artifact_id,
                         project_id=records.project_id,
                         supplier="episode_ending",
+                        live_data_allowed=False,
                         supplier_id=episode.episode_id,
                         source_name="episode-report.html",
                         media_type="text/html",
@@ -2230,6 +2231,12 @@ class ProjectTransferStoreMixin:
                     )
                     write_artifact_file(self.path.parent, version, data)
                     insert_artifact(connection, artifact, [version])
+                # The report lifecycle owns its static rule, including archives
+                # created before that rule was explicit artifact metadata.
+                connection.execute(
+                    "UPDATE artifacts SET metadata = json_set(metadata, '$.live_data_allowed', json('false')) WHERE artifact_id = ?",
+                    (artifact_id,),
+                )
                 connection.execute(
                     """
                     INSERT INTO episode_reports (
