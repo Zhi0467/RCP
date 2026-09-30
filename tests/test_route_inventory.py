@@ -178,6 +178,8 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("HEAD",), "/api/projects/{project_id}/artifacts/{artifact_id}/download"),
     (("GET",), "/api/projects/{project_id}/artifacts/{artifact_id}/download"),
     (("POST",), "/api/projects/{project_id}/artifacts/{artifact_id}/keep"),
+    (("POST",), "/api/projects/{project_id}/artifacts/{artifact_id}/comments"),
+    (("POST",), "/api/projects/{project_id}/artifacts/{artifact_id}/undo"),
     (("HEAD",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
     (("GET",), "/api/projects/{project_id}/result-views/{view_id}/preview"),
     (("POST",), "/api/projects/{project_id}/result-views/{view_id}/keep"),
@@ -191,10 +193,6 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/download"),
     (("GET",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/viewer"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/artifacts/{artifact_id}/keep"),
-    (("HEAD",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/content"),
-    (("GET",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/content"),
-    (("POST",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/accept"),
-    (("POST",), "/api/projects/{project_id}/artifact-revisions/{candidate_id}/reject"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/pause"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/resume"),
     (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/repair-graph-update"),
@@ -247,13 +245,13 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 188
-    assert len(_FROZEN_ROUTE_INVENTORY) == 188
+    assert len(entries) == 186
+    assert len(_FROZEN_ROUTE_INVENTORY) == 186
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 184
+    assert sum(isinstance(route, APIRoute) for route in routes) == 182
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

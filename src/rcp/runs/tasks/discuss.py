@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
+    MasterRef,
     changed_since_master,
     classify,
     compose,
@@ -50,6 +51,8 @@ from rcp.runs.chat import (
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
     chat_prompt_values,
+    finalize_artifact_edit,
+    prepare_artifact_edit_directory,
     retained_work_values,
     stage_artifact_context,
 )
@@ -66,7 +69,11 @@ from rcp.runs.recorded_settlement import (
     note_stage_unreachable as _note_stage_unreachable,
 )
 from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
-from rcp.runs.session_master import record_inline_prompt, record_session_master
+from rcp.runs.session_master import (
+    record_inline_prompt,
+    record_session_master,
+    stage_session_master,
+)
 from rcp.runs.shared import (
     _pinned_to_profile,
     _protected_run_stage_roots,
@@ -103,15 +110,32 @@ def _prepare_discuss_chat_prompt(
 
     if request.message is None:
         raise ValueError("An ordinary Discuss turn requires a human message.")
-    node, master, context_delta = _prepare_chat_prompt_state(
-        execution,
-        request,
-        local_stage=local_stage,
-        remote_stage=remote_stage,
-        master_context=master_context,
-        contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
-        values=stable_values,
-    )
+    if request.artifact_edit is not None and request.artifact_edit.master_operation_id is not None:
+        edit = request.artifact_edit
+        assert (
+            execution is not None
+            and edit.master_sha256 is not None
+            and edit.master_path is not None
+        )
+        path = stage_session_master(
+            execution.store,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            operation_id=edit.master_operation_id,
+            sha256=edit.master_sha256,
+            path=edit.master_path,
+        )
+        node, master, context_delta = "human_turn", MasterRef(path=path, bootstrap=False), None
+    else:
+        node, master, context_delta = _prepare_chat_prompt_state(
+            execution,
+            request,
+            local_stage=local_stage,
+            remote_stage=remote_stage,
+            master_context=master_context,
+            contract_key=chat_master_contract_key(ontology_extensions=ontology_extensions),
+            values=stable_values,
+        )
     prompt = PromptFactory.discuss_turn_prompt(
         artifact_path=artifact_path,
         human_message=request.message,
@@ -342,6 +366,8 @@ def _settle_discuss_outcome(
     # emitted none has not answered, and promoting its last trace would show
     # reasoning or tool output to the human as if it were the answer.
     answer = "\n\n".join(item.strip() for item in outcome.answers if item.strip()).strip()
+    if request.artifact_edit is not None and (outcome.failed or outcome.paused):
+        return
     if not outcome.completed:
         if outcome.failed or outcome.paused:
             return
@@ -375,6 +401,14 @@ def _settle_discuss_outcome(
                 detail=str(exc),
             )
         artifacts = []
+    artifacts = finalize_artifact_edit(
+        request,
+        execution,
+        artifact_scope_id=context.artifact_scope_id,
+        artifact_directory=Path(str(context.artifact_directory)),
+        remote_stage=context.remote_stage,
+        artifacts=artifacts,
+    )
     yield _sse(AgentEvent(event="answer", text=answer))
     for artifact in artifacts:
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
@@ -528,20 +562,33 @@ async def stream_discuss_run(
                 # A reused folder must not hand this turn any previous turn output.
                 _clear_stale_turn_handoffs(workspace, remote_stage)
             artifact_scope_id = (
-                _logical_chat_turn_operation_id(execution.store, execution.operation_id)
+                request.artifact_edit.staged_scope_id
+                if request.artifact_edit is not None
+                else _logical_chat_turn_operation_id(execution.store, execution.operation_id)
                 if execution is not None and resuming
                 else execution.operation_id
                 if execution is not None
                 else str(uuid.uuid4())
             )
-            if remote_stage is not None:
+            if request.artifact_edit is not None:
+                assert execution is not None
+                artifact_directory = prepare_artifact_edit_directory(
+                    request,
+                    execution,
+                    workspace,
+                    remote_stage,
+                )
+            elif remote_stage is not None:
                 artifact_directory = remote_stage.prepare_artifact_directory(
-                    artifact_scope_id, reuse=resuming
+                    artifact_scope_id,
+                    reuse=resuming,
                 )
             else:
                 assert local_stage is not None
                 artifact_directory = _prepare_local_artifact_directory(
-                    workspace, artifact_scope_id, reuse=resuming
+                    workspace,
+                    artifact_scope_id,
+                    reuse=resuming,
                 )
 
             token = _task_token(execution)
@@ -618,7 +665,7 @@ async def stream_discuss_run(
                 experiment_watcher_resources=experiment_resource_pointers,
                 workspace=str(workspace),
             )
-            if resuming or retry_attempt:
+            if (resuming or retry_attempt) and request.artifact_edit is None:
                 assert request.message is not None
                 retry_diagnostics_path = (
                     _stage_json_task_input(
@@ -821,6 +868,7 @@ async def stream_discuss_run(
                     prompt,
                     workspace=workspace,
                     session_id=request.session_id,
+                    required_session_id=request.session_id if request.artifact_edit else None,
                     read_dirs=read_dirs,
                     write_dirs=[],
                     write_scope=None,

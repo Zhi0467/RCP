@@ -51,7 +51,12 @@ class ArtifactVersion(ArtifactFile):
     operation_id: str
     created_at: str
     sequence: int = Field(ge=0)
+    ancestors: list[str] | None = None
 
 
 class ArtifactVersionConflict(ValueError):
     pass
+
+
+class ArtifactOperationConflict(ArtifactVersionConflict):
+    """An operation cannot publish a different result on retry."""

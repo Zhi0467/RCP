@@ -5,8 +5,9 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.artifacts import artifact_id as scoped_artifact_id
 from rcp.limits import ARTIFACT_IMPORT_MAX_RETRY_SECONDS, ARTIFACT_IMPORT_RETRY_SECONDS
-from rcp.storage.models import AgentTaskRecord
+from rcp.storage.models import AgentTaskRecord, ArtifactRevisionCandidateRecord
 
 
 def migrate_artifact_imports(connection: sqlite3.Connection) -> None:
@@ -20,6 +21,45 @@ def migrate_artifact_imports(connection: sqlite3.Connection) -> None:
 
 
 class ArtifactImportStoreMixin:
+    def legacy_artifact_candidates(
+        self, project_id: str
+    ) -> tuple[ArtifactRevisionCandidateRecord, ...]:
+        """Read archived candidates solely for importing their saved bytes."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM artifact_revision_candidates WHERE project_id = ? "
+                "AND status IN ('pending', 'accepting', 'conflicted') ORDER BY created_at",
+                (project_id,),
+            ).fetchall()
+        records = []
+        for row in rows:
+            values = dict(row)
+            raw_actor = values.pop("decided_by_json")
+            values["decided_by"] = json.loads(raw_actor) if raw_actor else None
+            records.append(ArtifactRevisionCandidateRecord.model_validate(values))
+        return tuple(records)
+
+    def legacy_artifact_import_ids(self) -> frozenset[str]:
+        """Protect archived candidate/source bytes only until storage import completes."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT source_artifact_id, artifact_scope_id, source_name "
+                "FROM artifact_revision_candidates "
+                "WHERE status IN ('pending', 'accepting', 'conflicted')"
+            ).fetchall()
+            imported = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT artifact_id FROM artifact_imports WHERE state = 'imported'"
+                ).fetchall()
+            }
+        return frozenset(
+            value
+            for row in rows
+            for value in (row[0], scoped_artifact_id(row[1], row[2]))
+            if value not in imported
+        )
+
     def artifact_import_status(self, artifact_id: str) -> dict | None:
         with self.connection() as connection:
             row = connection.execute(

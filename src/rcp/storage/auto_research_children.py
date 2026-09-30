@@ -1384,13 +1384,16 @@ class AutoResearchChildrenStoreMixin:
 
         task = connection.execute(
             """
-            SELECT operation_id, episode_id, attempt, native_session_id, stage_root, failure_kind
+            SELECT operation_id, episode_id, attempt, native_session_id, stage_root, failure_kind,
+                   json_extract(request_json, '$.artifact_edit') AS artifact_edit
             FROM graph_runs WHERE operation_id = ?
             """,
             (operation_id,),
         ).fetchone()
         if task is None:
             raise KeyError(operation_id)
+        if task["artifact_edit"] is not None:
+            return None
         work = connection.execute(
             """
             SELECT route.episode_id, route.worker_id, route.stop_requested_at

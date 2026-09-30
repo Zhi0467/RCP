@@ -906,6 +906,43 @@ finally:
             raise _ssh_failure(result, "could not prepare remote artifact directory")
         return target
 
+    def prepare_artifact_edit_directory(self, scope_id: str, *, staged: bool) -> PurePosixPath:
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        result = self._ssh(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "prepare-edit-artifacts",
+                str(self.workspace),
+                scope_id,
+                "1" if staged else "0",
+            ]
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not prepare the retained artifact edit directory")
+        return self.workspace / "turns" / scope_id / "artifacts"
+
+    def stage_artifact_bytes(self, scope_id: str, name: str, data: bytes) -> None:
+        """Stage editable bytes once; a recovered edit keeps its retained file."""
+        if self.root is None:
+            raise RuntimeError("remote run stage is not open")
+        result = self._ssh_bytes(
+            [
+                "python3",
+                "-c",
+                _remote_script("remote_stage_root.py"),
+                "stage-artifact",
+                str(self.workspace),
+                scope_id,
+                name,
+            ],
+            input_data=data,
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not stage remote artifact edit")
+
     def list_artifact_files(self, scope_id: str) -> list[tuple[str, int]]:
         """List direct, non-symlink regular artifact candidates and their sizes."""
         if self.root is None:

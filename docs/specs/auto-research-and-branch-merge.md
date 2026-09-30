@@ -553,8 +553,10 @@ The selected target persists through Research, Inbox, and Chats. **Main graph**
 returns to main. Drafts, selections, request fences, viewport, and chat state are
 scoped by project and graph target, even at equal numerical revisions. A missing
 or foreign branch fails explicitly; it never substitutes main state or a main
-conversation. Historical episode reports remain immutable, so later branch
-edits are visible through the graph and its provenance.
+conversation. A report retains its original lifecycle version; file edits
+produce later artifact versions without changing that lifecycle or graph
+provenance. Orchestrator artifact comments and replies stay in the episode
+thread and spend no operational budget.
 
 Today's surface is one branch per episode and one human-dispatched merge. There
 is no general branch manager, conflict editor, cherry-pick, or repository control.

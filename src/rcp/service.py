@@ -851,8 +851,9 @@ class ArtifactContextRequest(BaseModel):
     operation_id: str = Field(min_length=1)
     artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     episode_id: str | None = None
+    fresh_session: bool = False
     selections: list[ArtifactSelection] = Field(
-        min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+        default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
     )
 
     @model_validator(mode="after")
@@ -860,6 +861,29 @@ class ArtifactContextRequest(BaseModel):
         if (self.source == "episode_report") != (self.episode_id is not None):
             raise ValueError("episode report context requires exactly one episode_id")
         return self
+
+
+class ArtifactEditAdmission(BaseModel):
+    """Server-owned edit binding, frozen before reserving the provider session."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    artifact_id: str
+    base_version: str
+    source_name: str
+    media_type: str
+    operation_id: str
+    staged_scope_id: str
+    origin_operation_id: str
+    launch_kind: Literal["discuss", "revoking"]
+    master_operation_id: str | None = None
+    master_sha256: str | None = None
+    master_path: str | None = None
+    stage_host: str | None = None
+    stage_root: str | None = None
+    reply_episode_id: str | None = None
+    episode_id: str | None = None
+    fresh_session: bool = False
 
 
 class RunRequest(BaseModel):
@@ -890,6 +914,9 @@ class RunRequest(BaseModel):
     artifact_context: ArtifactContextRequest | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
+    )
+    artifact_edit: ArtifactEditAdmission | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     trigger: TaskTrigger = "human"
     patch_kind: GraphPatchKind = "work"

@@ -17,6 +17,7 @@ from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
 from rcp.storage.artifact_models import (
     Artifact,
     ArtifactFile,
+    ArtifactOperationConflict,
     ArtifactVersion,
     ArtifactVersionConflict,
 )
@@ -228,6 +229,50 @@ class ArtifactStoreMixin:
                 )
             return artifact
 
+    def protected_edit_artifact_ids(self) -> frozenset[str]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT json_extract(request_json, '$.artifact_context.artifact_id') "
+                "FROM graph_runs WHERE status IN "
+                "('queued', 'running', 'pausing', 'paused', 'interrupted')"
+            ).fetchall()
+        return frozenset(row[0] for row in rows if isinstance(row[0], str))
+
+    @staticmethod
+    def _artifact_ancestors(
+        current: ArtifactVersion, versions: list[ArtifactVersion]
+    ) -> list[ArtifactVersion]:
+        # Older versions formed one linear history. New versions carry the
+        # bounded retained ancestry, so pinned abandoned edits never become Undo targets.
+        return [
+            v
+            for v in versions
+            if (
+                v.version_id in current.ancestors
+                if current.ancestors is not None
+                else v.sequence < current.sequence
+            )
+        ]
+
+    def undo_artifact(self, artifact_id: str) -> Artifact:
+        """Move to the preceding retained version without ever dropping the original."""
+        with self.artifact_lock(artifact_id):
+            artifact = self.artifact(artifact_id)
+            if artifact is None:
+                raise KeyError(artifact_id)
+            versions = self.artifact_versions(artifact_id)
+            current = next(v for v in versions if v.version_id == artifact.current_version)
+            previous = self._artifact_ancestors(current, versions)
+            if not previous:
+                raise ArtifactVersionConflict("artifact is already at its original version")
+            artifact = artifact.model_copy(update={"current_version": previous[-1].version_id})
+            with self.connection() as connection:
+                connection.execute(
+                    "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
+                    (artifact.model_dump_json(), artifact_id),
+                )
+            return artifact
+
     def publish_artifact_version(
         self, artifact_id: str, *, base_version: str, operation_id: str, data: bytes
     ) -> ArtifactVersion:
@@ -244,7 +289,7 @@ class ArtifactStoreMixin:
             if receipt:
                 outcome = json.loads(receipt[0])
                 if outcome["sha256"] != hashlib.sha256(data).hexdigest():
-                    raise ArtifactVersionConflict(
+                    raise ArtifactOperationConflict(
                         "operation was already published with different bytes"
                     )
                 return ArtifactVersion.model_validate({**outcome, "file_id": outcome["sha256"]})
@@ -261,20 +306,45 @@ class ArtifactStoreMixin:
                 created_at=self.now(),
                 sequence=max(v.sequence for v in versions) + 1,
             )
+            current = next(v for v in versions if v.version_id == base_version)
+            lineage = self._artifact_ancestors(current, versions) + [current]
+            version = version.model_copy(update={"ancestors": [v.version_id for v in lineage]})
+            ancestors = [v for v in lineage if v.sequence > 0]
+            with self.connection() as connection:
+                pending = connection.execute(
+                    "SELECT json_extract(request_json, '$.artifact_edit.base_version') FROM graph_runs g "
+                    "WHERE json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
+                    "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts r WHERE "
+                    "r.operation_id = json_extract(g.request_json, '$.artifact_edit.operation_id') "
+                    "AND r.category = 'artifact_edit_staged')",
+                    (artifact_id,),
+                ).fetchall()
+            pinned = {row[0] for row in pending}
+
             retained = [
                 versions[0],
                 *(
-                    [v for v in versions[1:]][-(ARTIFACT_RECENT_VERSIONS - 1) :]
+                    ancestors[-(ARTIFACT_RECENT_VERSIONS - 1) :]
                     if ARTIFACT_RECENT_VERSIONS > 1
                     else []
                 ),
                 version,
             ]
+            retained = sorted(
+                {
+                    v.version_id: v
+                    for v in [*retained, *(v for v in versions if v.version_id in pinned)]
+                }.values(),
+                key=lambda v: v.sequence,
+            )
             while (
                 len(retained) > 2
                 and sum(v.size_bytes for v in retained) > ARTIFACT_MAX_VERSION_BYTES
             ):
-                retained.pop(1)
+                removable = next((v for v in retained[1:-1] if v.version_id not in pinned), None)
+                if removable is None:
+                    break
+                retained.remove(removable)
             if sum(v.size_bytes for v in retained) > ARTIFACT_MAX_VERSION_BYTES:
                 raise ValueError("original and new artifact version exceed storage byte limit")
             write_artifact_file(self.path.parent, version, data)

@@ -7,22 +7,29 @@ from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rcp.api.dependencies import (
+    get_background_tasks,
     get_catalog,
     get_graph_service,
+    get_identity_access,
     get_store,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
 )
 from rcp.api.episodes import episode_on_branch
+from rcp.api.identity import IdentityAccess
 from rcp.api.tasks import _agent_artifact_response
 from rcp.artifact_views import artifact_content, artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactView, artifact_view
+from rcp.background import BackgroundAgentTasks
+from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
-from rcp.storage import AgentTaskRecord, AppStore, EpisodeMode
+from rcp.runs.artifact_edit_admission import admit_artifact_edit, start_artifact_edit
+from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
+from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, EpisodeMode
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -277,7 +284,8 @@ def _stored_artifact(store: AppStore, project_id: str, artifact_id: str):
     if (
         artifact.expires_at is not None
         and artifact.expires_at <= store.now()
-        and artifact_id not in store.protected_revision_artifact_ids()
+        and artifact_id
+        not in (store.protected_edit_artifact_ids() | store.legacy_artifact_import_ids())
     ):
         raise HTTPException(status_code=410, detail="Artifact expired")
     return artifact
@@ -386,3 +394,96 @@ def download_stored_artifact(
             "Content-Length": str(len(data)),
         },
     )
+
+
+class ArtifactCommentBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    message: str
+    fresh_session: bool = False
+    selections: list[ArtifactSelection] = Field(
+        default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    )
+
+
+@router.post(
+    "/api/projects/{project_id}/artifacts/{artifact_id}/comments",
+    status_code=202,
+    dependencies=[Depends(require_project_write_admission)],
+)
+def comment_artifact(
+    project_id: str,
+    artifact_id: str,
+    body: ArtifactCommentBody,
+    request: Request,
+    *,
+    catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
+    store: Annotated[AppStore, Depends(get_store)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
+    background_tasks: Annotated[BackgroundAgentTasks, Depends(get_background_tasks)],
+):
+    artifact = store.artifact(artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if not body.message.strip() or len(body.message) > STEERING_MESSAGE_MAX_CHARS:
+        raise HTTPException(status_code=422, detail="The artifact comment is empty or too long.")
+    author = identity_access.require_patch_capable_identity(request)
+    origin = store.agent_task(artifact.origin_operation_id or "")
+    if origin is None:
+        raise HTTPException(status_code=409, detail="The artifact's origin is unavailable.")
+    service = get_graph_service(catalog, project_id, origin.graph_target.branch_id)
+    try:
+        admitted = admit_artifact_edit(
+            store,
+            service,
+            project_id,
+            RunRequest(
+                message="\n\n".join(
+                    [
+                        body.message,
+                        *(
+                            f"Selection {index}: {selection.comment}"
+                            for index, selection in enumerate(body.selections, 1)
+                            if selection.comment
+                        ),
+                    ]
+                ),
+                artifact_context=ArtifactContextRequest(
+                    operation_id=origin.operation_id,
+                    artifact_id=artifact_id,
+                    fresh_session=body.fresh_session,
+                    selections=body.selections,
+                ),
+            ),
+        )
+        return start_artifact_edit(
+            background_tasks,
+            project_id,
+            admitted,
+            authorized_by=author,
+        ).model_dump(mode="json")
+    except AgentTaskAdmissionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post(
+    "/api/projects/{project_id}/artifacts/{artifact_id}/undo",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def undo_artifact(
+    project_id: str,
+    artifact_id: str,
+    *,
+    store: Annotated[AppStore, Depends(get_store)],
+):
+    artifact = store.artifact(artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    try:
+        return store.undo_artifact(artifact_id).model_dump(mode="json")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

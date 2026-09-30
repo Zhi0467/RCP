@@ -25,7 +25,8 @@ space Runs rows, and available artifact rows also rise from the surface and
 press inward while held. Expanded run detail and unavailable artifacts do not
 use the same action cue. An available artifact's preview link spans its entire
 row and keeps the existing browser or desktop preview behavior. Its **Source
-chat** link remains a separate click target.
+chat** link remains a separate click target. Artifact comments edit the existing
+artifact; the chat has no candidate comparison dialog or Accept/Reject controls.
 
 The space landing page's **Display** control places **Mode** above **Theme**.
 Mode offers **System**, **Light**, and **Dark** independently of **Classic** or

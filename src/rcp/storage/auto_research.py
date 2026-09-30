@@ -2080,6 +2080,7 @@ class AutoResearchStoreMixin:
                 JOIN episodes AS child ON child.episode_id = route.child_episode_id
                 JOIN graph_runs AS task ON task.episode_id = child.episode_id
                 WHERE wrapup.episode_id = ?
+                  AND json_extract(task.request_json, '$.artifact_edit') IS NULL
                 """,
                 (episode_id,),
             ).fetchall()
@@ -2134,7 +2135,8 @@ class AutoResearchStoreMixin:
             LEFT JOIN auto_research_child_experiments AS route
               ON route.child_episode_id = run.episode_id
             LEFT JOIN episodes AS experiment ON experiment.episode_id = route.child_episode_id
-            WHERE invocation.episode_id = ? OR route.auto_research_episode_id = ?
+            WHERE (invocation.episode_id = ? OR route.auto_research_episode_id = ?)
+              AND json_extract(run.request_json, '$.artifact_edit') IS NULL
             """,
             (episode_id, episode_id),
         ).fetchall()

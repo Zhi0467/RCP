@@ -824,6 +824,16 @@ def create_app(
                 async for frame in stream:
                     yield frame
             return
+        if kind == "artifact_edit":
+            from rcp.runs.tasks.artifact_edit import stream_artifact_edit_run
+
+            assert isinstance(request, RunRequest)
+            async with aclosing(
+                stream_artifact_edit_run(service, launcher, request, app_data, execution)
+            ) as stream:
+                async for frame in stream:
+                    yield frame
+            return
         if kind == "episode_report":
             if not isinstance(request, EpisodeReportRunRequest):
                 raise TypeError("An episode report task requires its frozen report request.")

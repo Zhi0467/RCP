@@ -1,7 +1,7 @@
 # Paper, artifacts, and viewing
 
 This specification owns the human paper draft, read-only coaching, temporary
-artifacts, immutable episode reports, the unified artifact viewer, kept
+artifacts, versioned episode reports, the unified artifact viewer, kept
 artifacts, and repository-file previews.
 
 ## Human paper authorship
@@ -47,8 +47,8 @@ exact RCP-created artifact directory, of any type. It ignores provider
 directives, provider-owned paths, URLs in prose, nested files, and symlinks.
 Discovery reads at most eight files, each at most 16 MiB, and attaches at most
 32 MiB per turn; a size is checked before a read is spent. Files are considered
-in filename order, with an explicitly requested revision replacement first so
-extra outputs cannot crowd its candidate out of the same bounded discovery.
+in filename order. An admitted edit reads its exact staged file separately;
+discovery attaches only the other outputs as new artifacts.
 Empty files and files past a bound get no card, but the turn reports how many
 were left out and why, and says so when discovery itself failed. The report
 comes from the durable discovery receipt; it carries counts, never paths.
@@ -204,9 +204,10 @@ image request; ordinary navigation to that URL receives the shell.
 
 ### Selection-to-prompt, not artifact annotation
 
-Only HTML, raster images, and SVG support selection, comment, and revision.
-Other types never show the rail, and the server refuses artifact context or a
-revision for them whatever the client sends.
+HTML, raster images, and SVG support selection gestures. Every type the viewer
+shows accepts an edit comment, including Markdown, text, data, and code; these
+other types accept comments without selections. PDF and download-only files
+refuse editing.
 
 HTML selection gestures activate only when the surrounding confirmation shell
 opts in through the private preview bridge. A viewer without an originating chat,
@@ -253,64 +254,48 @@ carries at most 50 annotations. On send, each artifact annotation adds
 order, and the prompt lists the same numbers with what each selection covers; no
 markup is added. The selection payload, comments, and final
 question are bounded and treated as untrusted input.
-The current artifact bytes are staged as a read-only turn input so the resumed
-agent can inspect what the human saw.
+### Editing and versions
 
-The turn resumes the artifact's originating native session and chat. Failure to
-resume is visible, with a separate explicit fresh-session action; RCP never
-silently changes sessions. The default mode is Discuss. The prompt asks the
-agent to address every comment and question, not to edit the artifact. An
-artifact edit is allowed only when the human explicitly requests one and sends
-the turn as Work.
+Comment admission records the current artifact version and the origin session's
+recorded master. A chat master, including a child Work boundary, receives an
+ordinary Discuss turn. An Experiment or orchestrator master receives a separate
+revoking artifact-edit task with no master, graph contract, watcher commands,
+or repository write authority. Admission decides this once; prompt construction
+uses the frozen decision. Comments never become Work turns.
 
-### Candidate revision and explicit disposition
+Admission atomically reserves the native session and stage against every launch
+owner. A busy session returns 409 with its unavailable reason; comments are
+neither queued nor steered. Edits spend no episode invocation and do not change
+Stop or episode health. The next operational launch reopens its master after a
+revoking edit; an edit finishing does not clear that requirement.
 
-A Work turn never overwrites its source artifact. RCP validates the changed file
-in the Work task's exact artifact scope, records the digest of the bytes supplied
-to that turn, and exposes one pending candidate on the original artifact card.
-The source artifact directory is part of the provider-enforced write deny set
-for that launch, whether the source is temporary or kept. RCP discovers the
-candidate only after all patch and watcher correction turns have settled, so the
-candidate digest describes the final bytes left by the native session. Only
-the exact replacement becomes the candidate; any other file the revision turn
-leaves becomes an ordinary card of that turn.
-The human compares **Current** and **Candidate**, then explicitly chooses
-**Accept revision** or **Reject**. There can be only one unresolved candidate for
-one source artifact; another Work revision is refused until that disposition,
-while Discuss remains available.
+The reply destination comes from durable origin and episode records. Chat and
+child Work artifacts use their own chat. Experiment artifacts and reports use
+the episode's Experiment node chat. Orchestrator artifacts and reports use the
+Runs orchestrator thread: the human comment is recorded as already-delivered
+mail, and the edit task's labelled answer is its reply. No new chat is created,
+and the open view has no routing authority.
 
-Accept preserves the same artifact identity and card. Under one per-artifact
-mutation lock, RCP reads the current source again and publishes only when its
-digest still matches the Work turn's base. If the source already matches the
-candidate, Accept completes the durable decision as recovery from an interrupted
-post-publication write. Any other current digest changes the candidate to
-**Conflict**; the source remains untouched and the human may Reject and request
-a fresh revision. A permanently missing source is the same conflict, while a
-transient storage failure leaves the candidate pending for retry. Review and
-Reject remain available when a current or candidate preview cannot render.
-Reject never changes the source. Repeated Accept or Reject of the same completed
-disposition is idempotent.
+RCP stages the admitted base bytes at a writable file in turn scratch, preserving
+its filename. Recovery and Retry reuse that exact staged file and operation key.
+RCP reads it after settlement and publishes under the artifact lock only if the
+base is still current. If Undo moved the pointer, the edited bytes become an
+ordinary new artifact on that turn. Other files in the artifact directory are
+ordinary outputs. Artifact storage remains outside the provider's writable
+scratch. A failed turn retains its stage and does not publish a version.
 
-The rule is identical for temporary or kept artifacts and local or remote
-stages. Keep and disposition share the same mutation lock, so Keep may move a
-source while a candidate is pending without making Accept target stale storage.
-An unresolved candidate protects its producing task stage and any temporary
-source stage from cleanup, prevents either task from becoming history-only, and
-prevents project transfer. Once accepted or rejected, normal stage retention may
-remove those bytes. Candidate creation, comparison, and disposition append no
-Patch and grant no graph authority.
+Undo moves back one retained version under the same lock as publication, Keep,
+expiry, and pruning. The original remains; there is no redo. Undo is permitted
+while an edit is admitted. Version bases awaiting staging are retained so
+concurrent publication cannot remove the admitted bytes.
 
-Candidate rows are local operational state rather than portable project history.
-An unresolved row blocks project transfer; settled disposition rows are excluded
-from the transfer archive, while the accepted source artifact follows its normal
-temporary-or-kept transfer policy.
-
-New candidates are copied into artifact storage at discovery. A server update
-checkpoint also carries legacy recovery-critical local candidate stages; legacy
-remote candidates remain on their named host until background import succeeds.
-Offline backups intentionally exclude task staging. Restore
-therefore marks every unresolved candidate **Abandoned** before detaching native
-sessions and preserves the unchanged source; a new Work turn is required.
+A history-only origin or missing native session or stage returns an unavailable
+reason. The explicit fresh-session flag authorizes a new provider session and
+scratch while retaining the same reply thread; it never restores the old
+execution authority. Candidate creation, comparison, Accept, and Reject are
+removed. Legacy rows are read only for background import and archive capture.
+The docked viewer and its direct comment controls remain the later viewer slice;
+existing selection-to-composer controls remain until then.
 
 ### Shape boundary
 
@@ -341,10 +326,8 @@ inventory from those same versions. The report migration writes digest
 files before committing bindings and removing inline HTML; migration checks use
 a throwaway file root.
 
-The existing candidate flow remains until the editing slice. Accept publishes a
-stored version only when the source still matches the candidate's base. It never
-writes the source stage or repository. Keep and Accept append no Patch, spend no
-graph revision, create no Proposal, and grant no graph authority.
+Publication, Undo, and Keep append no Patch, spend no graph revision, create no
+Proposal, and grant no graph authority.
 
 ## Repository-file previews
 

@@ -18,6 +18,7 @@ from pydantic import (
 )
 
 from rcp.artifacts import AgentArtifactDescriptor
+from rcp.artifacts import artifact_id as scoped_artifact_id
 from rcp.core.authority import (
     AgentDispatchAuthority,
     AgentDispatchScope,
@@ -219,6 +220,123 @@ class AgentTaskStoreMixin:
         assert stored is not None
         return stored
 
+    def create_artifact_edit_task(
+        self, record: AgentTaskRecord, *, continuation_cause: str = "fresh"
+    ) -> AgentTaskRecord:
+        """Admit a file edit without spending or changing its episode."""
+
+        if (
+            record.kind not in {"artifact_edit", "node_chat", "project_chat"}
+            or not isinstance(record.request.get("artifact_edit"), dict)
+            or record.dispatch_authority is not None
+        ):
+            raise ValueError("An artifact edit requires its snapshot and no graph authority.")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_project_accepts_new_work(connection, record.project_id)
+            if self._has_active_chat_overlap(connection, record):
+                raise AgentTaskAdmissionConflict(
+                    "Another task is already active in this conversation."
+                )
+            self._insert_agent_task(connection, record, continuation_cause=continuation_cause)
+            edit = record.request.get("artifact_edit")
+            reply_episode_id = edit.get("reply_episode_id") if isinstance(edit, dict) else None
+            if reply_episode_id is not None:
+                episode = connection.execute(
+                    "SELECT root_operation_id FROM episodes WHERE episode_id = ? "
+                    "AND project_id = ? AND mode = 'auto_research'",
+                    (reply_episode_id, record.project_id),
+                ).fetchone()
+                if episode is None or reply_episode_id != record.episode_id:
+                    raise ValueError("The artifact edit reply thread does not match its episode.")
+                author = record.authorized_by
+                connection.execute(
+                    """
+                    INSERT INTO auto_research_messages (
+                        message_id, episode_id, sender_role, sender_task_id,
+                        authorized_space_id, authorized_user_id, authorized_display_name,
+                        recipient_task_id, control_node_id, body, created_at,
+                        delivered_at, delivery_operation_id
+                    ) VALUES (?, ?, 'human', NULL, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    ON CONFLICT(message_id) DO UPDATE SET
+                        delivery_operation_id = excluded.delivery_operation_id,
+                        delivered_at = excluded.delivered_at
+                    """,
+                    (
+                        str(
+                            uuid.uuid5(
+                                uuid.NAMESPACE_URL,
+                                "artifact-edit:"
+                                + str(edit.get("operation_id", record.operation_id)),
+                            )
+                        ),
+                        reply_episode_id,
+                        author.space_id if author else None,
+                        author.user_id if author else None,
+                        author.display_name if author else None,
+                        episode["root_operation_id"],
+                        record.request.get("message", ""),
+                        record.created_at,
+                        record.created_at,
+                        record.operation_id,
+                    ),
+                )
+        stored = self.agent_task(record.operation_id)
+        assert stored is not None
+        return stored
+
+    def session_launch_unavailable_reason(self, record: AgentTaskRecord) -> str | None:
+        """Explain a current collision; admission still checks atomically."""
+
+        with self.connection() as connection:
+            try:
+                self._require_session_launch_available(connection, record)
+            except AgentTaskAdmissionConflict as exc:
+                return str(exc)
+        return None
+
+    @staticmethod
+    def _require_session_launch_available(
+        connection: sqlite3.Connection, record: AgentTaskRecord
+    ) -> None:
+        """Reserve the native session and scratch in the admission transaction."""
+
+        if record.status not in ACTIVE_AGENT_TASK_STATUSES:
+            return
+        session_id = record.native_session_id or record.request.get("session_id")
+        if not session_id and not record.stage_root:
+            return
+        held = connection.execute(
+            """
+            SELECT operation_id FROM graph_runs
+            WHERE operation_id != ? AND status IN ('queued', 'running', 'pausing')
+              AND COALESCE(stage_host, '') = ?
+              AND (
+                (? IS NOT NULL AND ? != '' AND stage_root = ?)
+                OR (? IS NOT NULL AND ? != ''
+                    AND json_extract(request_json, '$.provider') IS ?
+                    AND COALESCE(native_session_id,
+                                 json_extract(request_json, '$.session_id')) = ?)
+              )
+            LIMIT 1
+            """,
+            (
+                record.operation_id,
+                record.stage_host or "",
+                record.stage_root,
+                record.stage_root,
+                record.stage_root,
+                session_id,
+                session_id,
+                record.request.get("provider"),
+                session_id,
+            ),
+        ).fetchone()
+        if held is not None:
+            raise AgentTaskAdmissionConflict(
+                "Another task is already using this native session or workspace."
+            )
+
     def create_branch_merge_task(self, record: AgentTaskRecord) -> AgentTaskRecord:
         """Admit one human-dispatched, graph-only merge without spending episode budget."""
 
@@ -306,6 +424,7 @@ class AgentTaskStoreMixin:
             raise ValueError("agent task requests must use episode_id, not campaign_id")
         self._validate_dispatch_authority_insert(connection, record)
         record = self._bind_chat_stage(connection, record)
+        self._require_session_launch_available(connection, record)
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
         self._require_graph_branch_admission_open(connection, record)
@@ -321,7 +440,7 @@ class AgentTaskStoreMixin:
                 held != record.operation_id
             ):
                 raise ValueError("episode_merge_reservation_changed")
-        else:
+        elif not isinstance(record.request.get("artifact_edit"), dict):
             self.require_episode_binding_admission_open(
                 connection,
                 record.project_id,
@@ -503,6 +622,11 @@ class AgentTaskStoreMixin:
         record: AgentTaskRecord,
     ) -> None:
         """Keep a recovery or continuation on its parent's admitted authority."""
+
+        if record.kind == "artifact_edit":
+            if record.dispatch_authority is not None:
+                raise ValueError("An artifact edit cannot carry graph authority.")
+            return
 
         if record.kind == "episode_report":
             if record.episode_id is None or record.parent_operation_id is None:
@@ -700,6 +824,28 @@ class AgentTaskStoreMixin:
         session in the wrong directory.
         """
 
+        edit = record.request.get("artifact_edit")
+        if isinstance(edit, dict) and edit.get("stage_root"):
+            origin = connection.execute(
+                "SELECT project_id, native_session_id, stage_host, stage_root "
+                "FROM graph_runs WHERE operation_id = ? AND history_only = 0",
+                (edit.get("origin_operation_id"),),
+            ).fetchone()
+            if (
+                origin is None
+                or origin["project_id"] != record.project_id
+                or origin["stage_root"] != edit["stage_root"]
+                or (origin["stage_host"] or "") != (edit.get("stage_host") or "")
+                or origin["native_session_id"] != record.request.get("session_id")
+            ):
+                raise ValueError("The artifact edit no longer has its exact origin session.")
+            return record.model_copy(
+                update={
+                    "native_session_id": origin["native_session_id"],
+                    "stage_host": origin["stage_host"],
+                    "stage_root": origin["stage_root"],
+                }
+            )
         if record.kind not in {"node_chat", "project_chat"}:
             return record
         chat_id = record.request.get("chat_id")
@@ -1048,24 +1194,6 @@ class AgentTaskStoreMixin:
         if nonterminal:
             raise ValueError(
                 "Only terminal tasks can become history-only: " + ", ".join(nonterminal)
-            )
-
-        unresolved_revision = connection.execute(
-            """
-            SELECT candidate_id
-            FROM artifact_revision_candidates
-            WHERE status IN ('pending', 'accepting', 'conflicted')
-              AND (
-                source_operation_id IN (SELECT value FROM json_each(?))
-                OR revision_operation_id IN (SELECT value FROM json_each(?))
-              )
-            LIMIT 1
-            """,
-            (selected_json, selected_json),
-        ).fetchone()
-        if unresolved_revision is not None:
-            raise ValueError(
-                "A task with an unresolved artifact revision cannot become history-only."
             )
 
         shared = connection.execute(
@@ -1635,7 +1763,9 @@ class AgentTaskStoreMixin:
                                  )
                            ) AS recovery_abandoned
                     FROM graph_runs
-                    WHERE episode_id = ? AND (? OR visible = 1)
+                    WHERE episode_id = ?
+                      AND (? OR (visible = 1
+                        AND json_extract(request_json, '$.artifact_edit') IS NULL))
                     ORDER BY created_at DESC, operation_id DESC
                 """
                 + ("    LIMIT ?" if newest is not None else "")
@@ -3277,6 +3407,23 @@ class AgentTaskStoreMixin:
     ) -> None:
         now = self.now()
         with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(operation_id)
+            record = self._agent_task_record(row)
+            self._require_session_launch_available(
+                connection,
+                record.model_copy(
+                    update={
+                        "native_session_id": native_session_id or record.native_session_id,
+                        "stage_host": stage_host or record.stage_host,
+                        "stage_root": stage_root or record.stage_root,
+                    }
+                ),
+            )
             updated = connection.execute(
                 """
                 UPDATE graph_runs
@@ -3725,7 +3872,8 @@ class AgentTaskStoreMixin:
             ).fetchall()
             artifact_revision_rows = connection.execute(
                 """
-                SELECT candidate.candidate_id,
+                SELECT candidate.candidate_id, candidate.source_artifact_id,
+                       candidate.artifact_scope_id, candidate.source_name,
                        candidate.stage_host, candidate.stage_root, candidate.status,
                        COALESCE(source.stage_host, '') AS source_stage_host,
                        source.stage_root AS source_stage_root,
@@ -3787,20 +3935,25 @@ class AgentTaskStoreMixin:
                 must_exist=False,
                 protect_from_cleanup=True,
             )
+        legacy_imports = self.legacy_artifact_import_ids()
         for row in artifact_revision_rows:
-            unresolved = row["status"] in {"pending", "accepting", "conflicted"}
+            unresolved = (
+                scoped_artifact_id(row["artifact_scope_id"], row["source_name"]) in legacy_imports
+            )
             add(
                 stage_host=row["stage_host"],
                 stage_root=row["stage_root"],
-                owner_ref=f"artifact_revision_candidates:{row['candidate_id']}",
+                owner_ref=f"artifact_import_candidates:{row['candidate_id']}",
                 must_exist=unresolved,
                 protect_from_cleanup=unresolved,
             )
-            source_required = unresolved and bool(row["source_stage_required"])
+            source_required = row["source_artifact_id"] in legacy_imports and bool(
+                row["source_stage_required"]
+            )
             add(
                 stage_host=row["source_stage_host"],
                 stage_root=row["source_stage_root"],
-                owner_ref=f"artifact_revision_sources:{row['candidate_id']}",
+                owner_ref=f"artifact_import_sources:{row['candidate_id']}",
                 must_exist=source_required,
                 protect_from_cleanup=source_required,
             )
@@ -3852,6 +4005,7 @@ class AgentTaskStoreMixin:
                     FROM graph_runs AS run
                     JOIN episodes AS episode ON episode.episode_id = run.episode_id
                     WHERE run.operation_id = ?
+                      AND json_extract(run.request_json, '$.artifact_edit') IS NULL
                     """,
                     (operation_id,),
                 ).fetchone()
@@ -4505,7 +4659,10 @@ class AgentTaskStoreMixin:
 
         return {
             "artifacts": self.expire_artifacts(
-                as_of=current, protected_artifact_ids=self.protected_revision_artifact_ids()
+                as_of=current,
+                protected_artifact_ids=(
+                    self.protected_edit_artifact_ids() | self.legacy_artifact_import_ids()
+                ),
             ),
             "outputs": outputs,
             "events": events,

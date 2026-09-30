@@ -11,15 +11,14 @@ unresolved candidates on their own turns; durable failure reasons and retry
 backoff; and one SQLite snapshot for transfer artifact metadata and inventory.
 Imported temporary artifacts expire at the source stage's last-touch time plus
 the existing retention period; kept artifacts have no expiry. Import never
-accepts a candidate or removes repository-kept files. The candidate flow remains;
-slice 2b and slices 3–5 remain open. Docs and code land in one PR.
-
-Slice 2b preflight stopped before implementation: the editing reply destination
-assumes the artifact's origin task belongs to a chat. Report artifacts instead
-point to hidden report allocations with no chat id; Auto-research orchestrator
-tasks also have no chat id, including the report's parent. A destination rule
-for these edits must be settled before implementing admission. No runtime
-behavior changed in this preflight.
+accepts a candidate or removes repository-kept files. Slice 2b is implemented:
+comments edit staged files under Discuss or revoking scratch-only authority,
+admission reserves sessions and stages across launch owners, publication uses
+version compare-and-set with retry identity, Undo moves back a version, and
+candidate creation and Accept/Reject are removed. Reply destinations follow the
+settled episode rule below. Explicit fresh sessions retain those destinations.
+Focused and integration verification is recorded in COMMIT_PLAN.md. Slices 3–5
+remain open. Docs and code land in one PR.
 
 Slice 1 verification still needs the installed Linux coordinator transition and
 a rehearsal on a copy of real team data. Local storage, route, recovery, and

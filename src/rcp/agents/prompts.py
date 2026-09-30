@@ -544,12 +544,7 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
             lines.append(f"- {described}: `{item['path']}`")
             continue
         lines.append(f"- Artifact {described}, the copy the human viewed: `{item['path']}`")
-        revision_path = item.get("revision_output_path")
-        lines.append(
-            f"  To revise it, write the whole file to: `{revision_path}`"
-            if isinstance(revision_path, str)
-            else "  This is an episode report; it cannot be revised."
-        )
+        lines.append(f"  Edit this file in place, keeping its name: `{item['path']}`")
         selections = item.get("selections")
         for index, selection in enumerate(selections if isinstance(selections, list) else [], 1):
             if selection.get("kind") == "text":

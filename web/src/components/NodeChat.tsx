@@ -33,15 +33,8 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { api, removeChatAttachment, steerChatTurn, uploadChatAttachment } from "../api";
 import {
-  api,
-  decideArtifactRevision,
-  removeChatAttachment,
-  steerChatTurn,
-  uploadChatAttachment,
-} from "../api";
-import {
-  artifactRevisionContentUrl,
   artifactUrl,
   chatTasksMissingFromHistory,
   isActiveTask,
@@ -133,11 +126,6 @@ import {
   CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD,
 } from "../uiConstants";
 import { profileRunConfig } from "./AgentConfigControls";
-import {
-  handleAutoResearchDialogKeyDown,
-  makeAutoResearchDialogBackgroundInert,
-  restoreAutoResearchDialogFocus,
-} from "./AutoResearchDialog";
 import { SkillPicker, useSkillPicker } from "./SkillPicker";
 import { RepositoryScope } from "./RepositoryScope";
 import { WorktreeControls, useConversationWorktree } from "./WorktreeControls";
@@ -196,11 +184,6 @@ interface DictationSpan {
   sessionId: string;
   start: number;
   end: number;
-}
-
-interface ArtifactRevisionReview {
-  taskId: string;
-  artifactId: string;
 }
 
 interface SelectedChatAnnotationComposer {
@@ -564,8 +547,6 @@ export function NodeChat({
   const annotationComposerRef = useRef<HTMLFormElement | null>(null);
   const annotationOriginRef = useRef<HTMLElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const revisionDialogRef = useRef<HTMLElement | null>(null);
-  const revisionCloseRef = useRef<HTMLButtonElement | null>(null);
   const attachmentSetIdRef = useRef<string | null>(null);
   const attachmentUploadBusyRef = useRef(false);
   const cancelledAttachmentIdsRef = useRef<Set<string>>(new Set());
@@ -583,9 +564,6 @@ export function NodeChat({
     () => new Map(),
   );
   const [keepingArtifacts, setKeepingArtifacts] = useState<Set<string>>(() => new Set());
-  const [revisionReview, setRevisionReview] = useState<ArtifactRevisionReview | null>(null);
-  const [revisionDecision, setRevisionDecision] = useState<"accept" | "reject" | null>(null);
-  const [revisionDecisionError, setRevisionDecisionError] = useState<string | null>(null);
   const [repositoryFileErrors, setRepositoryFileErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
@@ -621,45 +599,6 @@ export function NodeChat({
     ? steeringTask.steer_action_label
     : [...relatedTasks].reverse().find((task) => task.active)?.steer_unavailable_reason;
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
-  const revisionReviewTask = revisionReview
-    ? (relatedTasks.find((task) => task.operation_id === revisionReview.taskId) ?? null)
-    : null;
-  const revisionReviewArtifact = revisionReviewTask?.result?.artifacts?.find(
-    (artifact) => artifact.artifact_id === revisionReview?.artifactId,
-  );
-  const revisionReviewCandidate = revisionReviewArtifact?.revision_candidate ?? null;
-
-  useEffect(() => {
-    if (!revisionReview || !revisionReviewCandidate) return;
-    const returnFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const restoreBackground = revisionDialogRef.current
-      ? makeAutoResearchDialogBackgroundInert(revisionDialogRef.current)
-      : () => undefined;
-    const frame = window.requestAnimationFrame(() => revisionCloseRef.current?.focus());
-    return () => {
-      window.cancelAnimationFrame(frame);
-      restoreBackground();
-      restoreAutoResearchDialogFocus(returnFocus);
-    };
-  }, [revisionReview, revisionReviewCandidate?.candidate_id]);
-
-  useEffect(() => {
-    if (!revisionReview || !revisionReviewCandidate) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!revisionDialogRef.current) return;
-      handleAutoResearchDialogKeyDown(
-        event,
-        revisionDialogRef.current,
-        document.activeElement,
-        Boolean(revisionDecision),
-        () => setRevisionReview(null),
-      );
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [revisionDecision, revisionReview, revisionReviewCandidate?.candidate_id]);
-
   useEffect(() => {
     const accept = (raw: unknown) => {
       const payload = parseArtifactContextPayload(raw);
@@ -755,7 +694,7 @@ export function NodeChat({
     [...historyMessages].reverse().find((message) => message.native_session_id)
       ?.native_session_id ??
     null;
-  const mode = modeState.value;
+  const mode = artifactContext ? "discuss" : modeState.value;
   modeRef.current = mode;
   const chatTitle = node?.title || conversationTitle || project.name;
   const attachmentClientId = useMemo(() => chatAttachmentClientId(), []);
@@ -945,12 +884,12 @@ export function NodeChat({
     // A follow-up inherits the running turn's capability, so the toggle would
     // describe something it cannot change. While a turn merely runs unsteerable,
     // the choice still belongs to the next turn and stays available.
-    if (steeringTask) return;
+    if (steeringTask || artifactContext) return;
     selectMode(toggleConversationMode(modeRef.current));
-  }, [steeringTask, selectMode]);
+  }, [steeringTask, artifactContext, selectMode]);
 
   useEffect(() => {
-    if (presentation !== "workspace" || readOnly) return;
+    if (presentation !== "workspace" || readOnly || artifactContext) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.repeat) return;
       if (!isConversationModeShortcut(event.key, event.shiftKey)) return;
@@ -959,11 +898,11 @@ export function NodeChat({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [presentation, readOnly, toggleMode]);
+  }, [presentation, readOnly, artifactContext, toggleMode]);
 
   const updateMessage = (next: string) => {
     if (readOnly) return;
-    if (next && !modeState.pinned) {
+    if (next && !modeState.pinned && !artifactContext) {
       writeStorage(modeKey, mode);
       setModeState({ value: mode, pinned: true });
     }
@@ -998,8 +937,10 @@ export function NodeChat({
     const start = textarea?.selectionStart ?? message.length;
     const sessionId = crypto.randomUUID();
     dictationSpanRef.current = { sessionId, start, end: start };
-    writeStorage(modeKey, mode);
-    setModeState({ value: mode, pinned: true });
+    if (!artifactContext) {
+      writeStorage(modeKey, mode);
+      setModeState({ value: mode, pinned: true });
+    }
     setSubmitError(null);
     setDictationError(null);
     setDictationState("starting");
@@ -1404,7 +1345,7 @@ export function NodeChat({
       removeSessionStorage(annotationsKey);
       setAttachmentSetId(null);
       attachmentSetIdRef.current = null;
-      selectMode(mode);
+      if (!artifactContext) selectMode(mode);
     } catch (error) {
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       setMessage((current) => (current ? current : draftMessage));
@@ -1555,41 +1496,6 @@ export function NodeChat({
         next.delete(key);
         return next;
       });
-    }
-  };
-
-  const decideRevision = async (decision: "accept" | "reject") => {
-    const review = revisionReview;
-    const candidate = revisionReviewCandidate;
-    if (!review || !candidate || revisionDecision) return;
-    setRevisionDecision(decision);
-    setRevisionDecisionError(null);
-    let decisionError: string | null = null;
-    try {
-      await decideArtifactRevision(project.id, candidate.candidate_id, decision);
-    } catch (error) {
-      decisionError = error instanceof Error ? error.message : String(error);
-    }
-    try {
-      const refreshed = await onRefreshTask(review.taskId);
-      const refreshedArtifact = refreshed.result?.artifacts?.find(
-        (artifact) => artifact.artifact_id === review.artifactId,
-      );
-      if (!refreshedArtifact?.revision_candidate) {
-        setRevisionReview(null);
-      } else if (refreshedArtifact.revision_candidate.diagnostic) {
-        decisionError = null;
-      }
-      setRevisionDecisionError(decisionError);
-    } catch (error) {
-      const refreshError = error instanceof Error ? error.message : String(error);
-      setRevisionDecisionError(
-        decisionError
-          ? `${decisionError} Refresh also failed: ${refreshError}`
-          : `The decision was saved, but the artifact could not refresh: ${refreshError}`,
-      );
-    } finally {
-      setRevisionDecision(null);
     }
   };
 
@@ -1936,7 +1842,6 @@ export function NodeChat({
                 <span className="node-chat-text">{line.text}</span>
               )}
               {line.artifacts?.map((artifact) => {
-                const revisionCandidate = artifact.revision_candidate ?? null;
                 const taskUpdatedAt =
                   relatedTasks.find((task) => task.operation_id === line.taskId)?.updated_at ?? "";
                 const previewFailed = failedArtifactPreviews.has(
@@ -2028,21 +1933,6 @@ export function NodeChat({
                           onClick={() => void keepArtifact(line.taskId, artifact)}
                         >
                           Keep
-                        </button>
-                      )}
-                      {revisionCandidate && (
-                        <button
-                          type="button"
-                          className="review-revision"
-                          onClick={() => {
-                            setRevisionDecisionError(null);
-                            setRevisionReview({
-                              taskId: line.taskId,
-                              artifactId: artifact.artifact_id,
-                            });
-                          }}
-                        >
-                          Review revision
                         </button>
                       )}
                     </div>
@@ -2229,7 +2119,7 @@ export function NodeChat({
             }}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
-              if (isConversationModeShortcut(event.key, event.shiftKey)) {
+              if (!artifactContext && isConversationModeShortcut(event.key, event.shiftKey)) {
                 if (presentation !== "workspace") {
                   event.preventDefault();
                   toggleMode();
@@ -2258,35 +2148,43 @@ export function NodeChat({
               >
                 <Plus size={16} />
               </button>
-              <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
-                {(["discuss", "work"] as const).map((option) => (
-                  <button
-                    type="button"
-                    className={option}
-                    aria-pressed={mode === option}
-                    title={MODE_HINTS[option]}
-                    disabled={Boolean(steeringTask)}
-                    onClick={() => selectMode(option)}
-                    key={option}
-                  >
-                    {modeLabel(option)}
-                  </button>
-                ))}
-              </div>
-              <WorktreeControls
-                key={`${project.id}:${chatId}`}
-                state={worktree.state}
-                error={worktree.error}
-                chosen={worktree.chosen}
-                disabled={Boolean(
-                  relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
-                )}
-                onChoose={worktree.choose}
-                onIntegrate={integrateWorktree}
-                onRemove={worktree.remove}
-                onPreviewRemove={worktree.previewRemoval}
-                onRefresh={worktree.refresh}
-              />
+              {!artifactContext && (
+                <>
+                  <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
+                    {(["discuss", "work"] as const).map((option) => (
+                      <button
+                        type="button"
+                        className={option}
+                        aria-pressed={mode === option}
+                        title={MODE_HINTS[option]}
+                        disabled={Boolean(steeringTask)}
+                        onClick={() => selectMode(option)}
+                        key={option}
+                      >
+                        {modeLabel(option)}
+                      </button>
+                    ))}
+                  </div>
+                  <WorktreeControls
+                    key={`${project.id}:${chatId}`}
+                    state={worktree.state}
+                    error={worktree.error}
+                    chosen={worktree.chosen}
+                    disabled={Boolean(
+                      relatedActive ||
+                      pausedAttempt ||
+                      submitting ||
+                      reviewPending ||
+                      repairingTaskId,
+                    )}
+                    onChoose={worktree.choose}
+                    onIntegrate={integrateWorktree}
+                    onRemove={worktree.remove}
+                    onPreviewRemove={worktree.previewRemoval}
+                    onRefresh={worktree.refresh}
+                  />
+                </>
+              )}
               {computeConnections.length > 0 && (
                 <div className="chat-compute-picker">
                   <button
@@ -2383,100 +2281,6 @@ export function NodeChat({
           </div>
         </div>
       )}
-      {revisionReview &&
-        revisionReviewTask &&
-        revisionReviewArtifact &&
-        revisionReviewCandidate && (
-          <div
-            className="artifact-revision-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget && !revisionDecision) {
-                setRevisionReview(null);
-              }
-            }}
-          >
-            <section
-              ref={revisionDialogRef}
-              className="artifact-revision-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="artifact-revision-title"
-              tabIndex={-1}
-            >
-              <header>
-                <div>
-                  <span>Pending revision</span>
-                  <h2 id="artifact-revision-title">{revisionReviewArtifact.name}</h2>
-                </div>
-                <button
-                  ref={revisionCloseRef}
-                  type="button"
-                  className="icon-button"
-                  aria-label="Close revision review"
-                  disabled={Boolean(revisionDecision)}
-                  onClick={() => setRevisionReview(null)}
-                >
-                  <X size={16} />
-                </button>
-              </header>
-              <div className="artifact-revision-compare">
-                <figure>
-                  <figcaption>Current</figcaption>
-                  <iframe
-                    title={`Current ${revisionReviewArtifact.name}`}
-                    src={versionedArtifactContentUrl(
-                      project.id,
-                      revisionReview.taskId,
-                      revisionReviewArtifact.artifact_id,
-                      revisionReviewTask.updated_at,
-                    )}
-                    sandbox="allow-scripts"
-                  />
-                </figure>
-                <figure>
-                  <figcaption>Candidate</figcaption>
-                  <iframe
-                    title={`Candidate ${revisionReviewArtifact.name}`}
-                    src={artifactRevisionContentUrl(
-                      project.id,
-                      revisionReviewCandidate.candidate_id,
-                    )}
-                    sandbox="allow-scripts"
-                  />
-                </figure>
-              </div>
-              {revisionReviewCandidate.diagnostic && (
-                <strong className="artifact-revision-error" role="alert">
-                  {revisionReviewCandidate.diagnostic}
-                </strong>
-              )}
-              {revisionDecisionError && (
-                <strong className="artifact-revision-error" role="alert">
-                  {revisionDecisionError}
-                </strong>
-              )}
-              <footer>
-                <button
-                  type="button"
-                  className="button secondary"
-                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_reject}
-                  onClick={() => void decideRevision("reject")}
-                >
-                  {revisionDecision === "reject" ? "Rejecting…" : "Reject"}
-                </button>
-                <button
-                  type="button"
-                  className="button primary"
-                  disabled={Boolean(revisionDecision) || !revisionReviewCandidate.can_accept}
-                  onClick={() => void decideRevision("accept")}
-                >
-                  {revisionDecision === "accept" ? "Accepting…" : "Accept revision"}
-                </button>
-              </footer>
-            </section>
-          </div>
-        )}
       {annotationComposer && typeof document !== "undefined"
         ? createPortal(
             <form

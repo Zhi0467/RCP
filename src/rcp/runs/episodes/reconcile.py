@@ -132,7 +132,9 @@ class EpisodeReconciler:
                 for route in self.store.auto_research_child_experiments(episode_id)
             )
         return any(
-            task.visible and task.episode_id in owned_episode_ids
+            task.visible
+            and task.episode_id in owned_episode_ids
+            and not isinstance(task.request.get("artifact_edit"), dict)
             for task in self.store.unsettled_graph_target_tasks(
                 episode.project_id, episode.graph_target
             )

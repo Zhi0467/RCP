@@ -570,6 +570,10 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "Use start_episode_report so the existing hidden allocation is preserved."
             )
+        if isinstance(request, RunRequest) and request.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+            return start_artifact_edit(self, project_id, request, authorized_by=authorized_by)
         experiment_root = (
             isinstance(request, RunRequest)
             and request.patch_kind == "experiment_loop"
@@ -629,6 +633,17 @@ class BackgroundAgentTasks:
                 "Retry it instead."
             )
         original = self._request_from_record(previous)
+        if isinstance(original, RunRequest) and original.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+            return start_artifact_edit(
+                self,
+                previous.project_id,
+                original.model_copy(update={"session_id": previous.native_session_id}),
+                authorized_by=authorized_by or previous.authorized_by,
+                parent=previous,
+                continuation="resume",
+            )
         if isinstance(original, AutoResearchRunRequest):
             preflight_auto_research_task_resume(self, previous)
         preflight_experiment_episode_recovery(self, previous, request=original)
@@ -671,6 +686,27 @@ class BackgroundAgentTasks:
         if not previous.can_retry:
             raise ValueError("Only a paused, interrupted, or failed task can be retried.")
         original = self._request_from_record(previous)
+        if isinstance(original, RunRequest) and original.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import start_artifact_edit
+
+            if any(
+                value is not None and value != getattr(original, key)
+                for key, value in (
+                    ("provider", provider),
+                    ("model", model),
+                    ("reasoning", reasoning),
+                    ("run_on", run_on),
+                )
+            ):
+                raise ValueError("An edit retry must retain its admitted execution profile.")
+            return start_artifact_edit(
+                self,
+                previous.project_id,
+                original.model_copy(update={"session_id": previous.native_session_id}),
+                authorized_by=authorized_by or previous.authorized_by,
+                parent=previous,
+                continuation="retry",
+            )
         _require_recoverable_machine(previous, original, run_on)
         if isinstance(original, AutoResearchRunRequest):
             return retry_auto_research_task(
@@ -1530,6 +1566,12 @@ class BackgroundAgentTasks:
             raise ValueError("The admitted task has an empty execution stage root.")
         if record.write_scope_fingerprint is not None:
             raise ValueError("A queued admitted task cannot already carry a write-scope binding.")
+
+        if isinstance(request, RunRequest) and request.artifact_edit is not None:
+            from rcp.runs.artifact_edit_admission import validate_artifact_edit_launch
+
+            validate_artifact_edit_launch(record, request, parent=parent)
+            return
 
         if record.kind == "episode_report":
             if record.dispatch_authority is not None:

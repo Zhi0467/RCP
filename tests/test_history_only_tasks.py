@@ -399,8 +399,8 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
             },
         },
     )
-    assert context_response.status_code == 422
-    assert "native session is unavailable" in context_response.json()["detail"]
+    assert context_response.status_code == 409
+    assert context_response.json()["detail"]
     assert len(store.agent_tasks(project_id, include_hidden=True)) == task_count
 
 

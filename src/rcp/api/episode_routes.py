@@ -637,7 +637,7 @@ def content_episode_report(
         raise HTTPException(status_code=404, detail="Episode report not found")
     try:
         document, csp = html_preview_document(
-            store.read_artifact_bytes(report.artifact_id, report.artifact_version_id),
+            store.read_artifact_bytes(report.artifact_id),
             frame_addon=selection_frame_addon()
             if _report_discussable_origin(store, episode_id)
             else None,
@@ -764,7 +764,7 @@ def _episode_report_viewer_response(
         artifact_id=artifact_id,
         name="episode-report.html",
         media_type="text/html",
-        size_bytes=len(store.read_artifact_bytes(report.artifact_id, report.artifact_version_id)),
+        size_bytes=len(store.read_artifact_bytes(report.artifact_id)),
     )
     content_url = (
         f"/api/projects/{quote(project_id, safe='')}/episodes/"

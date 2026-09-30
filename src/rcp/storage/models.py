@@ -1923,6 +1923,7 @@ AgentTaskKind = Literal[
     "auto_research",
     "branch_merge",
     "episode_report",
+    "artifact_edit",
 ]
 AgentTaskStatus = Literal[
     "queued",
@@ -2085,12 +2086,8 @@ ArtifactRevisionCandidateStatus = Literal[
 ]
 
 
-class ArtifactRevisionConflict(ValueError):
-    """One artifact already has an unresolved candidate or changed underneath it."""
-
-
 class ArtifactRevisionCandidateRecord(BaseModel):
-    """Durable candidate bytes awaiting one explicit human disposition."""
+    """Archived candidate provenance retained for legacy byte import."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -3653,7 +3650,6 @@ __all__ = [
     "ProviderReadinessSnapshotRecord",
     "ArtifactRevisionCandidateRecord",
     "ArtifactRevisionCandidateStatus",
-    "ArtifactRevisionConflict",
     "AgentTaskAdmissionConflict",
     "AgentTaskAlreadyContinued",
     "ACTIVE_AGENT_TASK_STATUSES",

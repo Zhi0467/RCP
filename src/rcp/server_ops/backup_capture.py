@@ -609,9 +609,7 @@ def inspect_snapshot_project_inventory(
             )
         unresolved_revisions = {
             (candidate.source_operation_id, candidate.source_artifact_id): candidate
-            for candidate in snapshot_store.unresolved_project_artifact_revision_candidates(
-                record.project_id
-            )
+            for candidate in snapshot_store.legacy_artifact_candidates(record.project_id)
         }
         artifacts = _kept_artifact_references(tasks, unresolved_revisions)
         return BackupSnapshotProjectInventory(

@@ -441,7 +441,20 @@ def serialize_episode(
         ended_at=episode.ended_at,
         archived=archive_state.archived if archive_state is not None else False,
         can_archive=archive_state.can_archive if archive_state is not None else False,
-        tasks=tasks,
+        tasks=tasks
+        + [
+            _serialize_task(
+                task,
+                episode=episode,
+                role="orchestrator"
+                if task.request["artifact_edit"].get("reply_episode_id")
+                else "worker",
+                depth=0,
+                degradation=None,
+            )
+            for task in store.episode_tasks(episode.episode_id, include_hidden=True)
+            if task.visible and isinstance(task.request.get("artifact_edit"), dict)
+        ],
         report=report,
         can_stop=(
             episode.status in _STOPPABLE_EPISODE_STATUSES
@@ -657,7 +670,8 @@ def _serialize_task(
     public_fields = EpisodeTaskResponse.model_fields.keys()
     values = task.model_dump(include=public_fields)
     values.update(role=role, depth=depth, degradation=degradation)
-    values.update(_episode_task_controls(episode, task))
+    if not isinstance(task.request.get("artifact_edit"), dict):
+        values.update(_episode_task_controls(episode, task))
     return EpisodeTaskResponse.model_validate(values)
 
 

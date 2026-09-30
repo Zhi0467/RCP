@@ -10,7 +10,7 @@ from urllib.parse import quote, urlencode
 from PIL import Image, ImageOps
 
 from rcp.artifact_views import ViewerPanel
-from rcp.artifacts import FrameAddon
+from rcp.artifacts import ARTIFACT_MEDIA_TYPES, FrameAddon
 from rcp.limits import (
     ARTIFACT_CHAT_OPEN_TIMEOUT_MS,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
@@ -24,7 +24,10 @@ COMMENTABLE_MEDIA_TYPES = frozenset(
 
 
 def supports_comments(media_type: str) -> bool:
-    return media_type in COMMENTABLE_MEDIA_TYPES
+    return media_type in set(ARTIFACT_MEDIA_TYPES.values()) - {
+        "application/pdf",
+        "application/octet-stream",
+    }
 
 
 # Raster artifacts a boxed selection is cropped from; SVG and HTML are read as source.

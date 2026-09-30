@@ -43,6 +43,8 @@ from rcp.storage import (
 )
 from rcp.storage.provisioning import project_provisioning_review_digest
 
+from .legacy_artifacts import insert_legacy_candidate
+
 SOURCE_COMMIT = "a" * 40
 WEB_BUILD_ID = "sha256:" + ("b" * 64)
 PUBLIC_KEY_FINGERPRINT = "SHA256:" + ("A" * 43)
@@ -242,7 +244,8 @@ def _create_unresolved_kept_artifact_revision(
         )
     )
     base_sha256 = hashlib.sha256(b"original kept bytes").hexdigest()
-    candidate = store.create_artifact_revision_candidate(
+    candidate = insert_legacy_candidate(
+        store,
         ArtifactRevisionCandidateRecord(
             candidate_id=uuid.uuid4().hex[:24],
             project_id=project_id,
@@ -260,17 +263,15 @@ def _create_unresolved_kept_artifact_revision(
             status="pending",
             created_at=now,
             updated_at=now,
-        )
+        ),
     )
     if status == "accepting":
-        store.begin_artifact_revision_acceptance(
-            candidate.candidate_id,
-            decided_by=AuthorizedHuman(
-                space_id=store.space_id,
-                user_id=str(uuid.uuid4()),
-                display_name="Backup test",
-            ),
-        )
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE artifact_revision_candidates SET status = 'accepting' "
+                "WHERE candidate_id = ?",
+                (candidate.candidate_id,),
+            )
     return base_sha256
 
 

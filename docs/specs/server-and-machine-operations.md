@@ -1254,12 +1254,11 @@ source repositories, other materialized outputs, temporary input attachments,
 run/transfer staging, scratch, and caches. Backup does not pause dispatch or
 Apply and never marks an unreachable project protected.
 
-New artifact revision candidates are included in the typed artifact inventory.
-Legacy stage-only candidates await background import and are excluded from
-offline backup. Restore marks unresolved candidates Abandoned before native
-session detachment; restoring bytes never accepts a candidate. Server update
-checkpoints preserve whole stopped roots, including unresolved local legacy
-candidates and their replacement journals.
+Artifact versions and imported legacy candidates are included in the typed
+artifact inventory. Legacy stage-only candidates await background import and
+are excluded from offline backup. Candidate mutation is retired; restoring
+bytes never accepts a candidate. Server update checkpoints preserve whole
+stopped roots, including local legacy import sources.
 
 The app-data inventory is closed rather than an implicit recursive copy.
 `rcp.sqlite3` enters only through SQLite's online snapshot, and transferred

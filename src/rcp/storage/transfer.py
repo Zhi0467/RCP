@@ -416,11 +416,6 @@ class ProjectTransferStoreMixin:
                 "WHERE episode.project_id = ? AND message.delivered_at IS NULL LIMIT 1",
                 "Auto-research message",
             ),
-            (
-                "SELECT candidate_id FROM artifact_revision_candidates WHERE project_id = ? "
-                "AND status IN ('pending', 'accepting', 'conflicted') LIMIT 1",
-                "artifact revision candidate",
-            ),
         )
         for query, label in checks:
             row = connection.execute(query, (project_id,)).fetchone()

@@ -198,3 +198,70 @@ def test_artifact_rejects_invalid_imported_metadata(tmp_path, field, value):
     fields = _artifact(store).model_dump()
     with pytest.raises(ValueError):
         Artifact.model_validate({**fields, field: value})
+
+
+def test_undo_keeps_original_and_new_edit_has_no_redo_ancestry(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    original = _artifact(store)
+    first = store.publish_artifact_version(
+        "one", base_version=original.current_version, operation_id="first", data=b"first"
+    )
+    store.publish_artifact_version(
+        "one", base_version=first.version_id, operation_id="second", data=b"second"
+    )
+    assert store.undo_artifact("one").current_version == first.version_id
+    third = store.publish_artifact_version(
+        "one", base_version=first.version_id, operation_id="third", data=b"third"
+    )
+    assert store.read_artifact_bytes("one") == b"third"
+    assert store.undo_artifact("one").current_version == first.version_id
+    assert store.undo_artifact("one").current_version == original.current_version
+    with pytest.raises(ArtifactVersionConflict):
+        store.undo_artifact("one")
+    assert store.read_artifact_bytes("one") == b"original"
+    assert third.version_id in {v.version_id for v in store.artifact_versions("one")}
+
+
+def test_admitted_edit_base_survives_pruning_until_staged(tmp_path, monkeypatch):
+    import rcp.storage.artifacts as module
+    from rcp.storage import AgentTaskRecord
+
+    monkeypatch.setattr(module, "ARTIFACT_RECENT_VERSIONS", 1)
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    original = _artifact(store)
+    base = store.publish_artifact_version(
+        "one", base_version=original.current_version, operation_id="base", data=b"base"
+    )
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="admitted",
+            project_id="project",
+            kind="project_chat",
+            status="queued",
+            request={
+                "artifact_edit": {
+                    "artifact_id": "one",
+                    "base_version": base.version_id,
+                    "operation_id": "admitted",
+                }
+            },
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Queued",
+        )
+    )
+    store.undo_artifact("one")
+    next_version = store.publish_artifact_version(
+        "one", base_version=original.current_version, operation_id="next", data=b"next"
+    )
+    assert store.read_artifact_bytes("one", base.version_id) == b"base"
+    assert store.undo_artifact("one").current_version == original.current_version
+    store.record_agent_task_receipt("admitted", "artifact_edit_staged", {})
+    last = store.publish_artifact_version(
+        "one", base_version=original.current_version, operation_id="last", data=b"last"
+    )
+    assert {v.version_id for v in store.artifact_versions("one")} == {
+        original.current_version,
+        last.version_id,
+    }
+    assert next_version.ancestors == [original.current_version]

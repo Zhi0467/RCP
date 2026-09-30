@@ -80,7 +80,6 @@ from rcp.runs.chat import (
     _validated_remote_chat_resume_stage,
     chat_continuation_master,
     chat_prompt_values,
-    finalize_artifact_revision,
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import (
@@ -2219,14 +2218,7 @@ def _finalize_work_artifacts(
                 detail=str(exc),
             )
         artifacts = []
-    return finalize_artifact_revision(
-        turn.request,
-        turn.execution,
-        artifact_scope_id=turn.artifact_scope_id,
-        artifact_directory=Path(str(turn.artifact_directory)),
-        remote_stage=turn.remote_stage,
-        artifacts=artifacts,
-    )
+    return artifacts
 
 
 async def finalize_work_result(

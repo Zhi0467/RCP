@@ -34,7 +34,7 @@ from .helpers import create_named_app
 def test_soft_classification(name, data, media_type, view):
     assert classify_artifact_bytes(name, data) == media_type
     assert artifact_view(media_type) == view
-    assert not supports_comments(media_type)
+    assert supports_comments(media_type) == (view not in {"pdf", "file"})
 
 
 def _seed(app, tmp_path: Path, name: str, data: bytes, *, media_type=None, chat=True):

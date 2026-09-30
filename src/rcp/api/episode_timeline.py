@@ -247,7 +247,13 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
         )
     roles = store.auto_research_invocations(list(tasks)) if auto else {}
     for task in tasks.values():
-        work = store.auto_research_child_work_for_operation(task.operation_id) if auto else None
+        edit = task.request.get("artifact_edit")
+        actor_operation_id = (
+            edit.get("origin_operation_id", task.operation_id)
+            if isinstance(edit, dict)
+            else task.operation_id
+        )
+        work = store.auto_research_child_work_for_operation(actor_operation_id) if auto else None
         if work and work.worker_id in works:
             task_actors[task.operation_id] = f"actor:worker:{work.worker_id}"
         elif task.episode_id in children:

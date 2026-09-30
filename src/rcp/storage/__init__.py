@@ -16,7 +16,6 @@ from rcp.storage.artifact_models import (
     ArtifactVersion,
     ArtifactVersionConflict,
 )
-from rcp.storage.artifact_revisions import ArtifactRevisionStoreMixin
 from rcp.storage.artifacts import ArtifactStoreMixin
 from rcp.storage.auto_research import AutoResearchStoreMixin
 from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
@@ -47,7 +46,6 @@ class AppStore(
     ComputeJobStoreMixin,
     ChatDisplayStoreMixin,
     ConversationWorktreeStoreMixin,
-    ArtifactRevisionStoreMixin,
     ProjectTransferStoreMixin,
     RestoreDetachmentStoreMixin,
     SpaceStoreMixin,

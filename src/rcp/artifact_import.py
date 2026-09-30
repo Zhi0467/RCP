@@ -38,7 +38,7 @@ def _sources(
 ) -> Iterator[
     tuple[AgentTaskRecord, AgentArtifactDescriptor, ArtifactRevisionCandidateRecord | None]
 ]:
-    for candidate in store.unresolved_project_artifact_revision_candidates(project_id):
+    for candidate in store.legacy_artifact_candidates(project_id):
         descriptor = descriptor_for(
             candidate.artifact_scope_id,
             candidate.source_name,
@@ -127,7 +127,7 @@ def import_project_artifacts(
     store: AppStore, project_id: str, *, workspace: Callable[[], StateWorkspace]
 ) -> float | None:
     """One bounded pass. Return the next delay, or None when this project is done."""
-    protected = store.protected_revision_artifact_ids()
+    protected = store.legacy_artifact_import_ids() | store.protected_edit_artifact_ids()
     for processed, (task, descriptor, candidate) in enumerate(_sources(store, project_id)):
         if processed >= ARTIFACT_IMPORT_BATCH_SIZE:
             return 0

@@ -16,6 +16,8 @@ from rcp.storage import AgentTaskRecord, AppStore, ArtifactRevisionCandidateReco
 from rcp.transport.run_stage import RemoteRunStage
 from rcp.transport.state import StateUnavailable, StateWorkspace
 
+from .legacy_artifacts import insert_legacy_candidate
+
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
@@ -191,7 +193,8 @@ def test_permanent_sources_are_recorded_and_not_retried(store, tmp_path, failure
 def _candidate(store, tmp_path):
     source, original, _ = _legacy(store, tmp_path)
     turn, descriptor, _ = _legacy(store, tmp_path, result=False)
-    candidate = store.create_artifact_revision_candidate(
+    candidate = insert_legacy_candidate(
+        store,
         ArtifactRevisionCandidateRecord(
             candidate_id="c" * 24,
             project_id="project",
@@ -209,17 +212,19 @@ def _candidate(store, tmp_path):
             status="pending",
             created_at=store.now(),
             updated_at=store.now(),
-        )
+        ),
     )
     return source, original, turn, descriptor, candidate
 
 
 def test_candidate_is_an_ordinary_artifact_on_own_turn_without_acceptance(store, tmp_path):
     source, original, turn, descriptor, candidate = _candidate(store, tmp_path)
+    assert store.legacy_artifact_import_ids() == {original.artifact_id, descriptor.artifact_id}
     assert _run(store) is None
+    assert not store.legacy_artifact_import_ids()
     assert store.artifact(descriptor.artifact_id).origin_operation_id == turn.operation_id
     assert len(store.artifact_versions(original.artifact_id)) == 1
-    assert store.artifact_revision_candidate(candidate.candidate_id).status == "pending"
+    assert store.legacy_artifact_candidates("project")[0].status == "pending"
     assert store.agent_task(turn.operation_id).result["artifacts"] == [
         descriptor.model_dump(mode="json")
     ]

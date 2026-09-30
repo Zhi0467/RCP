@@ -13,7 +13,7 @@ export type AppView =
   | "chats";
 export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
-export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge";
+export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge" | "artifact_edit";
 /**
  * Opaque on purpose, like `EpisodeStatus`. A task's lifecycle reaches the client
  * already answered, as `active`, `awaiting_human`, `settled`, `status_label`, and
@@ -2227,25 +2227,6 @@ export interface AgentArtifactDescriptor {
   can_keep: boolean;
   can_discuss: boolean;
   can_revise: boolean;
-  revision_candidate?: ArtifactRevisionCandidate | null;
-}
-
-/**
- * Opaque because the backend publishes the diagnostic and both disposition
- * decisions; browser code must not derive either from lifecycle spelling.
- */
-declare const OPAQUE_ARTIFACT_REVISION_STATUS: unique symbol;
-export type ArtifactRevisionStatus = {
-  readonly [OPAQUE_ARTIFACT_REVISION_STATUS]: "ArtifactRevisionStatus";
-};
-
-export interface ArtifactRevisionCandidate {
-  candidate_id: string;
-  status: ArtifactRevisionStatus;
-  created_at: string;
-  diagnostic: string | null;
-  can_accept: boolean;
-  can_reject: boolean;
 }
 
 export type ArtifactSelection =

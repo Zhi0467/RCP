@@ -827,7 +827,7 @@ single-start, exact-episode, and graceful-Stop fences.
 WebMCP is not a second API or authority plane. Calls run in the current
 authenticated browser session and receive no capability that the corresponding
 RCP surface lacks. There is no WebMCP tool for Proposal judgment, Decision choice,
-graph editing or Sync, artifact retention or revision disposition, settings,
+graph editing or Sync, artifact retention or version undo, settings,
 membership, project creation/deletion, or Auto-research authorization. Provider
 answers, artifacts, and tool output still cannot become canonical graph truth;
 only the ordinary typed Patch and human-authority paths can do so.

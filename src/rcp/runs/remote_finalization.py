@@ -18,6 +18,10 @@ from rcp.runs.remote_reconciliation import (
     read_remote_journal,
     reconcile_remote_pass,
 )
+from rcp.runs.tasks.artifact_edit import (
+    ARTIFACT_EDIT_FINALIZATION_ROLE,
+    finalize_recorded_artifact_edit_result,
+)
 from rcp.runs.tasks.auto_research_child_work import (
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_auto_research_child_work_result,
@@ -63,6 +67,7 @@ class RecordedFinalizer(Protocol):
 
 #: Retained finalization contract -> the owner that wrote and can consume it.
 RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
+    ARTIFACT_EDIT_FINALIZATION_ROLE: finalize_recorded_artifact_edit_result,
     WORK_FINALIZATION_CONTEXT_ROLE: finalize_recorded_work_result,
     DISCUSS_FINALIZATION_CONTEXT_ROLE: finalize_recorded_discuss_result,
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: (

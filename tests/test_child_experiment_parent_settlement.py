@@ -129,7 +129,7 @@ def test_parent_waits_for_child_turn_and_its_exact_recovery(tmp_path, task_state
 def test_parent_report_waits_for_child_and_then_enters_wrapup(tmp_path):
     store, parent, root, child = _parent_with_child(tmp_path)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="root-session", stage_root=str(tmp_path)
+        root.operation_id, native_session_id="root-session", stage_root=str(tmp_path / "root-stage")
     )
     signal = auto_research_exhaustion_signal(store, parent.episode_id)
 
@@ -154,7 +154,7 @@ def test_parent_report_waits_for_child_and_then_enters_wrapup(tmp_path):
 def test_report_snapshot_detects_child_ending_without_another_turn(tmp_path):
     store, parent, root, child = _parent_with_child(tmp_path)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="root-session", stage_root=str(tmp_path)
+        root.operation_id, native_session_id="root-session", stage_root=str(tmp_path / "root-stage")
     )
     store.complete_agent_task(child.operation_id, applied_revision=None, result={})
     signal = auto_research_exhaustion_signal(store, parent.episode_id)
@@ -184,7 +184,7 @@ def test_stale_report_snapshot_fails_visibly_after_child_recovery(
 ):
     store, parent, root, child = _parent_with_child(tmp_path)
     store.checkpoint_agent_task(
-        root.operation_id, native_session_id="root-session", stage_root=str(tmp_path)
+        root.operation_id, native_session_id="root-session", stage_root=str(tmp_path / "root-stage")
     )
     if child_completion == "recovery":
         store.fail_agent_task(child.operation_id, "Recoverable interruption.")

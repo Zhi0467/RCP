@@ -426,6 +426,7 @@ class EpisodeStoreMixin:
                     WHERE run.episode_id IN ({episode_placeholders})
                       AND run.visible = 1
                       AND run.kind != 'episode_report'
+                      AND json_extract(run.request_json, '$.artifact_edit') IS NULL
                     ORDER BY run.created_at, run.operation_id
                     """,
                     lifecycle_episode_ids,
@@ -701,6 +702,7 @@ class EpisodeStoreMixin:
                   ON graph_runs.operation_id = agent_usage.operation_id
                 WHERE graph_runs.episode_id = ?
                   AND graph_runs.kind != 'episode_report'
+                  AND json_extract(graph_runs.request_json, '$.artifact_edit') IS NULL
                   AND agent_usage.counted = 1
                 """,
                 (episode_id,),
@@ -979,6 +981,7 @@ class EpisodeStoreMixin:
                         SELECT 1 FROM graph_runs
                         WHERE episode_id = ? AND operation_id = ?
                           AND visible = 1 AND kind != 'episode_report'
+                          AND json_extract(request_json, '$.artifact_edit') IS NULL
                         """,
                         (episode_id, wrapup.concluding_operation_id),
                     ).fetchone()
@@ -1122,6 +1125,7 @@ class EpisodeStoreMixin:
                     SELECT 1 FROM graph_runs
                     WHERE episode_id = ? AND operation_id = ?
                       AND visible = 1 AND kind != 'episode_report'
+                          AND json_extract(request_json, '$.artifact_edit') IS NULL
                     """,
                     (episode_id, wrapup.concluding_operation_id),
                 ).fetchone()
@@ -1484,6 +1488,10 @@ class EpisodeStoreMixin:
                     """,
                     (diagnostic, now, now, current["attempt_id"]),
                 )
+            self._require_session_launch_available(
+                connection,
+                self._agent_task_record(task_row).model_copy(update={"status": "queued"}),
+            )
             connection.execute(
                 """
                 UPDATE graph_runs
@@ -1693,9 +1701,9 @@ class EpisodeStoreMixin:
         stage_host: str | None,
         stage_root: str,
     ) -> bool:
-        """Whether an episode report's instructions are still the newest this session holds.
+        """Whether revoking instructions are still the newest this session holds.
 
-        A report attempt on the exact session sets it. It clears only once an operational
+        A report attempt or artifact edit sets it. It clears only once an operational
         task created after that attempt, on the same session and stage, has succeeded; a
         launch that failed or was interrupted proves nothing reached the provider.
         """
@@ -1704,11 +1712,19 @@ class EpisodeStoreMixin:
         with self.connection() as connection:
             reported = connection.execute(
                 """
-                SELECT MAX(attempt.created_at) AS reported_at
-                FROM episode_report_attempts AS attempt
-                JOIN graph_runs AS run ON run.operation_id = attempt.allocation_operation_id
-                WHERE run.project_id = ? AND run.native_session_id = ?
-                  AND COALESCE(run.stage_host, '') = ? AND run.stage_root = ?
+                SELECT MAX(revoked_at) AS reported_at FROM (
+                    SELECT run.project_id, run.native_session_id, run.stage_host,
+                           run.stage_root, attempt.created_at AS revoked_at
+                    FROM episode_report_attempts AS attempt
+                    JOIN graph_runs AS run
+                      ON run.operation_id = attempt.allocation_operation_id
+                    UNION ALL
+                    SELECT project_id, native_session_id, stage_host, stage_root,
+                           created_at AS revoked_at
+                    FROM graph_runs WHERE kind = 'artifact_edit'
+                )
+                WHERE project_id = ? AND native_session_id = ?
+                  AND COALESCE(stage_host, '') = ? AND stage_root = ?
                 """,
                 session,
             ).fetchone()
@@ -1719,7 +1735,9 @@ class EpisodeStoreMixin:
                 SELECT 1 FROM graph_runs
                 WHERE project_id = ? AND native_session_id = ?
                   AND COALESCE(stage_host, '') = ? AND stage_root = ?
-                  AND kind != 'episode_report' AND status = 'succeeded' AND created_at > ?
+                  AND kind IN ('node_chat', 'project_chat', 'auto_research')
+                  AND json_extract(request_json, '$.artifact_edit') IS NULL
+                  AND status = 'succeeded' AND created_at > ?
                 LIMIT 1
                 """,
                 (*session, reported["reported_at"]),

@@ -7,12 +7,11 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from datetime import date, datetime, timedelta
+from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
 
 import pytest
-from fastapi.testclient import TestClient
 from PIL import Image
 
 import rcp.artifact_replace as artifact_replace_module
@@ -29,20 +28,17 @@ from rcp.artifacts import (
     replace_local_regular_file,
 )
 from rcp.background import AgentTaskExecution
-from rcp.limits import CHAT_ARTIFACT_MAX_COUNT
 from rcp.runs.chat import (
     _discover_chat_artifacts,
-    _local_chat_artifact_directory,
-    _project_write_scope,
-    finalize_artifact_revision,
+    finalize_artifact_edit,
     stage_artifact_context,
 )
 from rcp.service import RunRequest, resolve_dispatch_authority
-from rcp.storage import AgentTaskRecord, Artifact, ArtifactRevisionCandidateRecord
-from rcp.transport import LocalStateWorkspace, RemoteRunStage, StateUnavailable
+from rcp.storage import AgentTaskRecord, Artifact
+from rcp.transport import LocalStateWorkspace, RemoteRunStage
 from rcp.transport.remote_lock_holder import replace_staged_artifact
 
-from .helpers import assert_frozen_backend_ships, authorized_human, create_named_app
+from .helpers import assert_frozen_backend_ships, create_named_app
 
 
 def _workspace(tmp_path: Path) -> LocalStateWorkspace:
@@ -110,171 +106,6 @@ def _publish_artifact(store, artifact_id, data, operation_id="other-edit"):
         operation_id=operation_id,
         data=data,
     )
-
-
-def _seed_pending_local_candidate(
-    app,
-    tmp_path: Path,
-    *,
-    kept: bool,
-    revision_status: str = "succeeded",
-) -> tuple[AgentArtifactDescriptor, ArtifactRevisionCandidateRecord, str | None, bytes, bytes]:
-    store = app.state.background_tasks.store
-    project_id = app.state.default_project_id
-    origin_id = "aa97f8cc-031a-4ddd-8834-04832012a0d1"
-    revision_id = "0e251f79-c866-41f7-814e-94a4ab1673dc"
-    name = "comparison.html"
-    first = b"<!doctype html><p>base</p>"
-    second = b"<!doctype html><p>candidate</p>"
-    kept_filename = name if kept else None
-    source = _stored_artifact(app, origin_id, name, first, kept=kept)
-    request = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        chat_scope="project",
-        chat_id="586a3844-d144-4bd0-8012-d681a9563aaf",
-        message="Create a comparison.",
-        mode="discuss",
-        run_truth_scope=["repo-a"],
-    )
-    now = store.now()
-    origin = store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=origin_id,
-            project_id=project_id,
-            kind="project_chat",
-            status="succeeded",
-            request=request.model_dump(mode="json"),
-            result={"messages": ["Created."], "artifacts": [source.model_dump(mode="json")]},
-            created_at=now,
-            updated_at=now,
-            status_message="Completed.",
-            native_session_id="candidate-session",
-            stage_root=str(tmp_path / "candidate-source-stage"),
-        )
-    )
-    store.record_agent_task_receipt(
-        origin_id,
-        "operation_created",
-        {"kind": "project_chat", "attempt": 1, "has_parent": False, "resumed": False},
-    )
-    if not kept:
-        source_directory = _local_chat_artifact_directory(store, origin, origin_id)
-        source_directory.mkdir(parents=True)
-        (source_directory / name).write_bytes(first)
-    revision_request = RunRequest.model_validate(
-        {
-            **request.model_dump(mode="python"),
-            "mode": "work",
-            "session_id": "candidate-session",
-            "artifact_context": {
-                "source": "task",
-                "operation_id": origin_id,
-                "artifact_id": source.artifact_id,
-                "selections": [{"kind": "text", "text": "base", "comment": "Revise this."}],
-            },
-        }
-    )
-    revision = store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=revision_id,
-            project_id=project_id,
-            kind="project_chat",
-            status=revision_status,
-            request=revision_request.model_dump(mode="json"),
-            result={"messages": ["Changed."]},
-            created_at=now,
-            updated_at=now,
-            status_message="Completed.",
-            native_session_id="candidate-session",
-            stage_root=str(tmp_path / "candidate-revision-stage"),
-            dispatch_authority=resolve_dispatch_authority("project_chat", revision_request),
-        )
-    )
-    store.record_agent_task_receipt(
-        revision_id,
-        "operation_created",
-        {"kind": "project_chat", "attempt": 1, "has_parent": False, "resumed": False},
-    )
-    candidate_directory = _local_chat_artifact_directory(store, revision, revision_id)
-    candidate_directory.mkdir(parents=True)
-    (candidate_directory / name).write_bytes(second)
-    _stored_artifact(app, revision_id, name, second)
-    candidate = store.create_artifact_revision_candidate(
-        ArtifactRevisionCandidateRecord(
-            candidate_id="c" * 24,
-            project_id=project_id,
-            source_operation_id=origin_id,
-            source_artifact_id=source.artifact_id,
-            revision_operation_id=revision_id,
-            stage_host="",
-            stage_root=revision.stage_root or "",
-            artifact_scope_id=revision_id,
-            source_name=name,
-            media_type="text/html",
-            base_sha256=hashlib.sha256(first).hexdigest(),
-            candidate_sha256=hashlib.sha256(second).hexdigest(),
-            candidate_size_bytes=len(second),
-            status="pending",
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    return source, candidate, kept_filename, first, second
-
-
-@pytest.mark.parametrize("kept", [False, True])
-def test_artifact_revision_source_is_in_the_provider_enforced_deny_scope(
-    manifest,
-    tmp_path: Path,
-    kept: bool,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    source, candidate, kept_filename, _, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=kept,
-    )
-    store = app.state.background_tasks.store
-    service = app.state.service
-    revision = store.agent_task(candidate.revision_operation_id)
-    assert revision is not None and revision.stage_root
-    request = RunRequest.model_validate(revision.request)
-    execution = AgentTaskExecution(
-        operation_id=revision.operation_id,
-        store=store,
-        control=AgentProcessControl(),
-    )
-    local_stage = Path(revision.stage_root)
-    staged = stage_artifact_context(
-        service,
-        request,
-        execution,
-        local_stage=local_stage,
-        remote_stage=None,
-        artifact_path=str(_local_chat_artifact_directory(store, revision, revision.operation_id)),
-    )
-    assert staged is not None
-    context = service.assemble_chat(request)
-    scope = _project_write_scope(
-        context,
-        service,
-        "laptop",
-        local_stage=local_stage,
-        workspace=local_stage,
-        remote_stage=None,
-        data_dir=tmp_path / "data",
-        execution=execution,
-        capability="work_auto",
-        additional_protected_write_paths=list(staged.protected_write_paths),
-    )
-    source_task = store.agent_task(candidate.source_operation_id)
-    assert source_task is not None
-    assert source.artifact_id == candidate.source_artifact_id
-    assert str((tmp_path / "data").resolve()) in scope.protected_write_paths
-    assert str((tmp_path / "data" / "artifacts").resolve()) in scope.protected_write_paths
 
 
 def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
@@ -1357,653 +1188,6 @@ def test_box_selection_must_stay_inside_its_normalized_viewport() -> None:
         )
 
 
-def test_work_revision_waits_for_human_accept_without_a_second_card(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    project_id = app.state.default_project_id
-    chat_id = "3a979535-17c3-4fd2-85fc-219de0ee7a75"
-    origin_id = "241df76b-d927-496d-a9a1-02ba7537f9ec"
-    revision_id = "d70b7937-ed31-44b7-9823-c2af557d3161"
-    name = "curves.html"
-    first = b"<!doctype html><p>first</p>"
-    second = b"<!doctype html><p>second</p>"
-    source = _stored_artifact(app, origin_id, name, first, kept=True)
-    origin_request = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="laptop",
-        chat_scope="project",
-        chat_id=chat_id,
-        message="Create the curves.",
-        mode="discuss",
-    )
-    now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=origin_id,
-            project_id=project_id,
-            kind="project_chat",
-            status="succeeded",
-            request=origin_request.model_dump(mode="json"),
-            result={"messages": ["Created."], "artifacts": [source.model_dump(mode="json")]},
-            created_at=now,
-            updated_at=now,
-            status_message="Completed.",
-            native_session_id="artifact-session",
-            stage_root=str(tmp_path / "origin-stage"),
-        )
-    )
-    store.record_agent_task_receipt(
-        origin_id,
-        "operation_created",
-        {"kind": "project_chat", "attempt": 1, "has_parent": False, "resumed": False},
-    )
-    revision_request = RunRequest.model_validate(
-        {
-            **origin_request.model_dump(mode="python"),
-            "message": "Make the requested change.",
-            "mode": "work",
-            "session_id": "artifact-session",
-            "artifact_context": {
-                "source": "task",
-                "operation_id": origin_id,
-                "artifact_id": source.artifact_id,
-                "selections": [
-                    {"kind": "text", "text": "first", "comment": "Change this to second."}
-                ],
-            },
-        }
-    )
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=revision_id,
-            project_id=project_id,
-            kind="project_chat",
-            status="running",
-            request=revision_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Running.",
-            native_session_id="artifact-session",
-            stage_root=str(tmp_path / "revision-stage"),
-        )
-    )
-    execution = AgentTaskExecution(
-        operation_id=revision_id,
-        store=store,
-        control=AgentProcessControl(),
-    )
-    revision = store.agent_task(revision_id)
-    assert revision is not None
-    artifact_directory = _local_chat_artifact_directory(store, revision, revision_id)
-    artifact_directory.mkdir(parents=True)
-    (artifact_directory / name).write_bytes(second)
-    extras = []
-    for index in range(9):
-        extra_name = f"a-extra-{index}.html"
-        extra_data = f"<!doctype html><p>extra {index}</p>".encode()
-        (artifact_directory / extra_name).write_bytes(extra_data)
-        extras.append(
-            descriptor_for(
-                revision_id, extra_name, media_type="text/html", size_bytes=len(extra_data)
-            )
-        )
-    store.record_agent_task_receipt(
-        revision_id,
-        "artifact_revision_base",
-        {
-            "source_operation_id": origin_id,
-            "source_artifact_id": source.artifact_id,
-            "sha256": hashlib.sha256(first).hexdigest(),
-        },
-    )
-
-    remaining = finalize_artifact_revision(
-        revision_request,
-        execution,
-        artifact_scope_id=revision_id,
-        artifact_directory=artifact_directory,
-        remote_stage=None,
-        artifacts=_discover_chat_artifacts(execution, revision_id, artifact_directory, None),
-    )
-
-    assert remaining == extras[: CHAT_ARTIFACT_MAX_COUNT - 1]
-    assert store.read_artifact_bytes(source.artifact_id) == first
-    pending = store.unresolved_artifact_revision_candidate(origin_id, source.artifact_id)
-    assert pending is not None and pending.status == "pending"
-    updated = store.agent_task(origin_id)
-    assert updated is not None
-    assert updated.result["artifacts"] == [source.model_dump(mode="json")]
-    assert any(
-        receipt.category == "artifact_revision_staged"
-        for receipt in store.agent_task_receipts(revision_id)
-    )
-    store.complete_agent_task(revision_id, applied_revision=None, result={})
-    lifecycle = next(
-        item for item in store.run_stage_lifecycles() if item.stage_root == revision.stage_root
-    )
-    assert lifecycle.must_exist is True
-    assert lifecycle.protect_from_cleanup is True
-    with (
-        store.connection() as connection,
-        pytest.raises(
-            ValueError,
-            match="every artifact revision candidate to be settled",
-        ),
-    ):
-        store._require_finished_transfer_state(connection, project_id)
-
-    client = TestClient(app)
-    detail = client.get(f"/api/projects/{project_id}/tasks/{origin_id}")
-    projected_artifact = detail.json()["result"]["artifacts"][0]
-    candidate = projected_artifact["revision_candidate"]
-    assert candidate["candidate_id"] == pending.candidate_id
-    assert candidate["can_accept"] is True
-    assert projected_artifact["can_discuss"] is True
-    assert projected_artifact["can_revise"] is False
-    viewer = client.get(
-        f"/api/projects/{project_id}/tasks/{origin_id}/artifacts/{source.artifact_id}/viewer"
-    )
-    assert viewer.status_code == 200
-    assert '"chatAvailable": true' in viewer.text
-    preview = client.get(
-        f"/api/projects/{project_id}/artifact-revisions/{pending.candidate_id}/content"
-    )
-    assert preview.status_code == 200
-    assert "second" in preview.text
-
-    accepted = client.post(
-        f"/api/projects/{project_id}/artifact-revisions/{pending.candidate_id}/accept"
-    )
-    assert accepted.status_code == 200
-    assert accepted.json()["status"] == "accepted"
-    assert store.read_artifact_bytes(source.artifact_id) == second
-    updated = store.agent_task(origin_id)
-    assert updated is not None
-    assert updated.result["artifacts"] == [
-        source.model_copy(update={"size_bytes": len(second)}).model_dump(mode="json")
-    ]
-    assert (
-        client.post(
-            f"/api/projects/{project_id}/artifact-revisions/{pending.candidate_id}/accept"
-        ).json()["status"]
-        == "accepted"
-    )
-    lifecycle = next(
-        item for item in store.run_stage_lifecycles() if item.stage_root == revision.stage_root
-    )
-    assert lifecycle.must_exist is False
-    assert lifecycle.protect_from_cleanup is False
-
-
-def test_revision_conflict_preserves_external_edit_until_human_rejects(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    source, candidate, kept_filename, _, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    workspace = app.state.background_tasks.store
-    source_task_before = app.state.background_tasks.store.agent_task(candidate.source_operation_id)
-    assert source_task_before is not None
-    external = b"<!doctype html><p>external edit</p>"
-    _publish_artifact(workspace, candidate.source_artifact_id, external)
-    client = TestClient(app)
-    base = (
-        f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
-    )
-
-    response = client.post(f"{base}/accept")
-
-    assert response.status_code == 409, response.text
-    assert "changed after this candidate" in response.json()["detail"]
-    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == external
-    conflicted = app.state.background_tasks.store.artifact_revision_candidate(
-        candidate.candidate_id
-    )
-    assert conflicted is not None and conflicted.status == "conflicted"
-    source_task_after = app.state.background_tasks.store.agent_task(candidate.source_operation_id)
-    assert source_task_after is not None
-    assert source_task_after.updated_at > source_task_before.updated_at
-    projected = client.get(
-        f"/api/projects/{app.state.default_project_id}/tasks/{candidate.source_operation_id}"
-    ).json()["result"]["artifacts"][0]
-    assert projected["artifact_id"] == source.artifact_id
-    assert projected["revision_candidate"]["can_accept"] is False
-    assert projected["revision_candidate"]["can_reject"] is True
-
-    rejected = client.post(f"{base}/reject")
-
-    assert rejected.status_code == 200
-    assert rejected.json()["status"] == "rejected"
-    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == external
-    assert (
-        "revision_candidate"
-        not in client.get(
-            f"/api/projects/{app.state.default_project_id}/tasks/{candidate.source_operation_id}"
-        ).json()["result"]["artifacts"][0]
-    )
-
-
-def test_revision_accept_conflicts_when_external_edit_has_invalid_media_bytes(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, candidate, kept_filename, _, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    workspace = app.state.background_tasks.store
-    invalid_html = b"\x00not HTML"
-    _publish_artifact(workspace, candidate.source_artifact_id, invalid_html)
-
-    response = TestClient(app).post(
-        f"/api/projects/{app.state.default_project_id}"
-        f"/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-
-    assert response.status_code == 409, response.text
-    assert "changed after this candidate" in response.json()["detail"]
-    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == invalid_html
-    conflicted = app.state.background_tasks.store.artifact_revision_candidate(
-        candidate.candidate_id
-    )
-    assert conflicted is not None and conflicted.status == "conflicted"
-    assert conflicted.diagnostic == response.json()["detail"]
-
-
-def test_revision_accept_conflicts_when_current_artifact_was_deleted(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, candidate, kept_filename, _, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    store = app.state.background_tasks.store
-    store.artifact_file_path(store.artifact_versions(candidate.source_artifact_id)[0]).unlink()
-    client = TestClient(app)
-    base = (
-        f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
-    )
-
-    response = client.post(f"{base}/accept")
-
-    assert response.status_code == 409, response.text
-    assert "no longer available" in response.json()["detail"]
-    conflicted = app.state.background_tasks.store.artifact_revision_candidate(
-        candidate.candidate_id
-    )
-    assert conflicted is not None and conflicted.status == "conflicted"
-    assert conflicted.diagnostic == response.json()["detail"]
-    retry = client.post(f"{base}/accept")
-    assert retry.status_code == 409
-
-
-def test_revision_accept_keeps_transiently_unavailable_source_pending(
-    manifest,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, candidate, kept_filename, first, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    workspace = app.state.background_tasks.store
-    original_read = workspace.read_artifact_bytes
-
-    def unavailable(*_args, **_kwargs) -> bytes:
-        raise StateUnavailable("temporary read failure")
-
-    monkeypatch.setattr(workspace, "read_artifact_bytes", unavailable)
-
-    response = TestClient(app).post(
-        f"/api/projects/{app.state.default_project_id}"
-        f"/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-
-    assert response.status_code == 503, response.text
-    pending = app.state.background_tasks.store.artifact_revision_candidate(candidate.candidate_id)
-    assert pending is not None and pending.status == "pending"
-    assert pending.diagnostic is None
-    assert original_read(candidate.source_artifact_id) == first
-
-
-@pytest.mark.parametrize(
-    "failure",
-    [OSError("post-exchange fsync failed"), StateUnavailable("remote reply disconnected")],
-    ids=("local-post-exchange", "remote-commit-then-disconnect"),
-)
-def test_revision_accept_retries_ambiguous_publication_without_allowing_reject(
-    manifest,
-    tmp_path: Path,
-    monkeypatch,
-    failure: Exception,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, candidate, kept_filename, _, second = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    workspace = app.state.background_tasks.store
-    original_replace = workspace.publish_artifact_version
-
-    def publish_then_fail(*args, **kwargs) -> bool:
-        original_replace(*args, **kwargs)
-        raise failure
-
-    monkeypatch.setattr(workspace, "publish_artifact_version", publish_then_fail)
-    client = TestClient(app)
-    base = (
-        f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}"
-    )
-
-    response = client.post(f"{base}/accept")
-
-    assert response.status_code == 503, response.text
-    accepting = app.state.background_tasks.store.artifact_revision_candidate(candidate.candidate_id)
-    assert accepting is not None and accepting.status == "accepting"
-    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == second
-    assert client.post(f"{base}/reject").status_code == 409
-
-    monkeypatch.setattr(workspace, "publish_artifact_version", original_replace)
-    retry = client.post(f"{base}/accept")
-    assert retry.status_code == 200, retry.text
-    assert retry.json()["status"] == "accepted"
-
-
-def test_revision_accept_detects_an_edit_during_publication(
-    manifest,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, candidate, kept_filename, _, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    workspace = app.state.background_tasks.store
-    original_replace = workspace.publish_artifact_version
-    external = b"<!doctype html><p>racing external edit</p>"
-
-    def race_then_replace(artifact_id, *, data, base_version, operation_id):
-        original_replace(
-            artifact_id, data=external, base_version=base_version, operation_id="racing-edit"
-        )
-        return original_replace(
-            artifact_id, data=data, base_version=base_version, operation_id=operation_id
-        )
-
-    monkeypatch.setattr(workspace, "publish_artifact_version", race_then_replace)
-
-    response = TestClient(app).post(
-        f"/api/projects/{app.state.default_project_id}"
-        f"/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-
-    assert response.status_code == 409, response.text
-    assert "changed while this candidate was being accepted" in response.json()["detail"]
-    assert workspace.read_artifact_bytes(candidate.source_artifact_id) == external
-
-
-def test_retry_rechecks_unresolved_artifact_revision_admission(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, candidate, _, _, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-        revision_status="failed",
-    )
-
-    response = TestClient(app).post(
-        f"/api/projects/{app.state.default_project_id}/tasks/"
-        f"{candidate.revision_operation_id}/retry"
-    )
-
-    assert response.status_code == 409, response.text
-    assert "pending artifact revision" in response.json()["detail"]
-
-
-def test_keep_during_pending_revision_moves_accept_to_the_kept_artifact(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    source, candidate, _, first, second = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=False,
-    )
-    project_id = app.state.default_project_id
-    client = TestClient(app)
-
-    kept = client.post(
-        f"/api/projects/{project_id}/tasks/{candidate.source_operation_id}"
-        f"/artifacts/{source.artifact_id}/keep"
-    )
-
-    source_task = app.state.background_tasks.store.agent_task(candidate.source_operation_id)
-    assert source_task is not None
-    source_lifecycle = next(
-        item
-        for item in app.state.background_tasks.store.run_stage_lifecycles()
-        if item.stage_root == source_task.stage_root
-    )
-    assert source_lifecycle.must_exist is False
-    assert source_lifecycle.protect_from_cleanup is False
-    assert kept.status_code == 200, kept.text
-    assert kept.json()["kept_filename"] is None
-    assert (
-        app.state.background_tasks.store.read_artifact_bytes(candidate.source_artifact_id) == first
-    )
-    accepted = client.post(
-        f"/api/projects/{project_id}/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-    assert accepted.status_code == 200
-    assert (
-        app.state.background_tasks.store.read_artifact_bytes(candidate.source_artifact_id) == second
-    )
-
-
-def test_pending_revision_protects_temporary_source_and_blocks_history_detachment(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    source, candidate, _, _, _ = _seed_pending_local_candidate(app, tmp_path, kept=False)
-    store = app.state.background_tasks.store
-    source_task = store.agent_task(candidate.source_operation_id)
-    assert source_task is not None
-
-    source_lifecycle = next(
-        item for item in store.run_stage_lifecycles() if item.stage_root == source_task.stage_root
-    )
-
-    assert source_lifecycle.must_exist is True
-    assert source_lifecycle.protect_from_cleanup is True
-    assert f"artifact_revision_sources:{candidate.candidate_id}" in source_lifecycle.owner_refs
-    with pytest.raises(ValueError, match="unresolved artifact revision"):
-        store.mark_agent_tasks_history_only(
-            [candidate.source_operation_id, candidate.revision_operation_id]
-        )
-
-    rejected = TestClient(app).post(
-        f"/api/projects/{app.state.default_project_id}"
-        f"/artifact-revisions/{candidate.candidate_id}/reject"
-    )
-    assert rejected.status_code == 200
-    projected = next(
-        item for item in store.run_stage_lifecycles() if item.stage_root == source_task.stage_root
-    )
-    assert projected.must_exist is False
-    assert projected.protect_from_cleanup is False
-
-
-def test_interrupted_accept_recovers_from_the_already_published_digest(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, candidate, kept_filename, _, second = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    store = app.state.background_tasks.store
-    workspace = app.state.background_tasks.store
-    store.begin_artifact_revision_acceptance(
-        candidate.candidate_id,
-        decided_by=authorized_human(app),
-    )
-    _publish_artifact(
-        workspace, candidate.source_artifact_id, second, candidate.revision_operation_id
-    )
-
-    client = TestClient(app)
-    recovered = client.post(
-        f"/api/projects/{app.state.default_project_id}"
-        f"/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-
-    assert recovered.status_code == 200, recovered.text
-    assert recovered.json()["status"] == "accepted"
-
-
-def test_offline_restore_abandons_pending_candidate_and_preserves_source(
-    manifest,
-    tmp_path: Path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, unrestored, kept_filename, first, _ = _seed_pending_local_candidate(
-        app,
-        tmp_path,
-        kept=True,
-    )
-    assert kept_filename is not None
-    store = app.state.background_tasks.store
-    store.detach_restored_lifecycle(
-        diagnostic="Offline restore detached provider state.",
-        confirmed_by="operator",
-    )
-    abandoned = store.artifact_revision_candidate(unrestored.candidate_id)
-    assert abandoned is not None and abandoned.status == "abandoned"
-    assert store.read_artifact_bytes(unrestored.source_artifact_id) == first
-    lifecycle = next(
-        item for item in store.run_stage_lifecycles() if item.stage_root == unrestored.stage_root
-    )
-    assert lifecycle.protect_from_cleanup is False
-
-
-def test_remote_candidate_accept_uses_storage_without_contacting_stages(
-    manifest,
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.background_tasks.store
-    project_id = app.state.default_project_id
-    origin_id = "461998aa-3ae0-4c6e-bee4-f26760279c06"
-    revision_id = "ee9bcf12-ea01-4e11-bf20-9429e65c0ed0"
-    name = "remote.html"
-    first = b"<!doctype html><p>remote base</p>"
-    second = b"<!doctype html><p>remote candidate</p>"
-    source = descriptor_for(origin_id, name, media_type="text/html", size_bytes=len(first))
-    request = RunRequest(
-        provider="codex",
-        model="",
-        reasoning="medium",
-        run_on="remote",
-        chat_scope="project",
-        chat_id="f916649f-3abe-461d-b567-21b78a3befcf",
-        message="Create remote output.",
-        mode="discuss",
-    )
-    now = store.now()
-    for operation_id, mode, stage_root, result in (
-        (
-            origin_id,
-            "discuss",
-            "/remote/source-stage",
-            {"messages": ["Created."], "artifacts": [source.model_dump(mode="json")]},
-        ),
-        (revision_id, "work", "/remote/candidate-stage", {"messages": ["Changed."]}),
-    ):
-        store.create_agent_task(
-            AgentTaskRecord(
-                operation_id=operation_id,
-                project_id=project_id,
-                kind="project_chat",
-                status="succeeded",
-                request=request.model_copy(update={"mode": mode}).model_dump(mode="json"),
-                result=result,
-                created_at=now,
-                updated_at=now,
-                status_message="Completed.",
-                native_session_id="remote-candidate-session",
-                stage_host="research-gpu",
-                stage_root=stage_root,
-            )
-        )
-        store.record_agent_task_receipt(
-            operation_id,
-            "operation_created",
-            {"kind": "project_chat", "attempt": 1, "has_parent": False, "resumed": False},
-        )
-    candidate = store.create_artifact_revision_candidate(
-        ArtifactRevisionCandidateRecord(
-            candidate_id="d" * 24,
-            project_id=project_id,
-            source_operation_id=origin_id,
-            source_artifact_id=source.artifact_id,
-            revision_operation_id=revision_id,
-            stage_host="research-gpu",
-            stage_root="/remote/candidate-stage",
-            artifact_scope_id=revision_id,
-            source_name=name,
-            media_type="text/html",
-            base_sha256=hashlib.sha256(first).hexdigest(),
-            candidate_sha256=hashlib.sha256(second).hexdigest(),
-            candidate_size_bytes=len(second),
-            status="pending",
-            created_at=now,
-            updated_at=now,
-        )
-    )
-    _stored_artifact(app, origin_id, name, first)
-    _stored_artifact(app, revision_id, name, second)
-    response = TestClient(app).post(
-        f"/api/projects/{project_id}/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-
-    assert response.status_code == 200, response.text
-    assert store.read_artifact_bytes(source.artifact_id) == second
-
-
 # A box from the viewer before elements were named measured the viewer area, not the
 # image, so it is described but never cropped.
 @pytest.mark.parametrize("current_viewer", [True, False])
@@ -2116,38 +1300,12 @@ def test_packaged_backend_ships_the_artifact_replacement_source() -> None:
     assert_frozen_backend_ships("artifact_replace.py")
 
 
-def test_expired_pending_revision_survives_pruning_and_can_be_accepted(manifest, tmp_path):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    source, candidate, _, first, second = _seed_pending_local_candidate(app, tmp_path, kept=False)
-    store = app.state.background_tasks.store
-    replacement_id = descriptor_for(
-        candidate.artifact_scope_id,
-        source.name,
-        media_type=source.media_type,
-        size_bytes=len(second),
-    ).artifact_id
-    expired = (datetime.fromisoformat(store.now()) - timedelta(days=1)).isoformat()
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE artifacts SET metadata = json_set(metadata, '$.expires_at', ?)", (expired,)
-        )
-    assert store.prune_operational_storage()["artifacts"] == 0
-    assert store.read_artifact_bytes(source.artifact_id) == first
-    assert store.read_artifact_bytes(replacement_id) == second
-    response = TestClient(app).post(
-        f"/api/projects/{app.state.default_project_id}/artifact-revisions/{candidate.candidate_id}/accept"
-    )
-    assert response.status_code == 200, response.text
-    assert store.read_artifact_bytes(source.artifact_id) == second
-
-
-def test_report_context_stages_its_immutable_first_version(manifest, tmp_path):
+def test_report_context_stages_its_current_version(manifest, tmp_path):
     from .test_saved_artifacts_api import _create_chat_report
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     task, report = _create_chat_report(app, tmp_path)
     store = app.state.background_tasks.store
-    first = store.read_artifact_bytes(report.artifact_id, report.artifact_version_id)
     _publish_artifact(store, report.artifact_id, b"<h1>Later version</h1>")
     request = RunRequest(
         chat_scope="node",
@@ -2173,28 +1331,206 @@ def test_report_context_stages_its_immutable_first_version(manifest, tmp_path):
         artifact_path="unused",
     )
     assert staged is not None
-    assert Path(staged.pointer["path"]).read_bytes() == first
+    assert Path(staged.pointer["path"]).read_bytes() == b"<h1>Later version</h1>"
     assert staged.pointer["source_artifact_id"] == report.artifact_id
 
 
-def test_active_revision_protects_source_before_candidate_capture(manifest, tmp_path):
+@pytest.mark.parametrize("workspace_layout", ["root", "split"])
+@pytest.mark.parametrize("undo_during_edit", [False, True])
+def test_edit_reuses_staged_file_and_publishes_or_preserves_conflict(
+    manifest, tmp_path, undo_during_edit, workspace_layout
+):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    source, candidate, _, first, _ = _seed_pending_local_candidate(
-        app, tmp_path, kept=False, revision_status="running"
-    )
     store = app.state.background_tasks.store
-    expired = (datetime.fromisoformat(store.now()) - timedelta(days=1)).isoformat()
-    with store.connection() as connection:
-        connection.execute("DELETE FROM artifact_revision_candidates")
-        connection.execute(
-            "UPDATE artifacts SET metadata = json_set(metadata, '$.expires_at', ?) "
-            "WHERE artifact_id = ?",
-            (expired, source.artifact_id),
-        )
-    assert store.prune_operational_storage()["artifacts"] == 0
-    assert store.read_artifact_bytes(source.artifact_id) == first
-    response = TestClient(app).get(
-        f"/api/projects/{candidate.project_id}/artifacts/{source.artifact_id}/download"
+    origin_id, operation_id = "artifact-origin", "artifact-edit"
+    source = _stored_artifact(app, origin_id, "page.html", b"<p>original</p>")
+    base = _publish_artifact(store, source.artifact_id, b"<p>base</p>")
+    stage = tmp_path / "edit-stage"
+    workspace = stage / "workspace" if workspace_layout == "split" else stage
+    directory = workspace / "turns" / operation_id / "artifacts"
+    workspace.mkdir(parents=True)
+    request = RunRequest(
+        mode="discuss",
+        artifact_context={
+            "operation_id": origin_id,
+            "artifact_id": source.artifact_id,
+            "selections": [],
+        },
+        artifact_edit={
+            "artifact_id": source.artifact_id,
+            "base_version": base.version_id,
+            "source_name": source.name,
+            "media_type": source.media_type,
+            "operation_id": operation_id,
+            "staged_scope_id": operation_id,
+            "origin_operation_id": origin_id,
+            "launch_kind": "discuss",
+        },
     )
-    assert response.status_code == 200
-    assert response.content == first
+    for task_id in (origin_id, operation_id):
+        store.create_agent_task(
+            AgentTaskRecord(
+                operation_id=task_id,
+                project_id=app.state.default_project_id,
+                kind="project_chat",
+                status="running" if task_id == operation_id else "succeeded",
+                request=request.model_dump(mode="json"),
+                created_at=store.now(),
+                updated_at=store.now(),
+                status_message="Editing",
+                stage_root=str(stage),
+            )
+        )
+    execution = AgentTaskExecution(
+        operation_id=operation_id, store=store, control=AgentProcessControl()
+    )
+    from rcp.runs.chat import _chat_stage_name, prepare_artifact_edit_directory
+
+    assert prepare_artifact_edit_directory(request, execution, workspace, None) == directory
+
+    fresh_request = request.model_copy(
+        update={
+            "chat_id": "existing-chat",
+            "artifact_edit": request.artifact_edit.model_copy(update={"fresh_session": True}),
+        }
+    )
+    assert (
+        _chat_stage_name(app.state.service, fresh_request, execution)
+        == "artifact-edit-artifact-edit"
+    )
+    staged = stage_artifact_context(
+        app.state.service,
+        request,
+        execution,
+        local_stage=stage,
+        remote_stage=None,
+        artifact_path=str(directory),
+    )
+    target = Path(staged.pointer["path"])
+    assert target == directory / source.name
+    assert target.read_bytes() == b"<p>base</p>"
+    assert target.stat().st_mode & 0o200
+    target.write_bytes(b"<p>edited</p>")
+    assert prepare_artifact_edit_directory(request, execution, workspace, None) == directory
+    assert target.read_bytes() == b"<p>edited</p>"
+    if undo_during_edit:
+        store.undo_artifact(source.artifact_id)
+    resumed = stage_artifact_context(
+        app.state.service,
+        request,
+        execution,
+        local_stage=stage,
+        remote_stage=None,
+        artifact_path=str(directory),
+    )
+    assert resumed.pointer == staged.pointer
+    assert target.read_bytes() == b"<p>edited</p>"
+    target.unlink()
+    with pytest.raises(FileNotFoundError):
+        stage_artifact_context(
+            app.state.service,
+            request,
+            execution,
+            local_stage=stage,
+            remote_stage=None,
+            artifact_path=str(directory),
+        )
+    assert not target.exists()
+    outside = tmp_path / "protected.html"
+    outside.write_bytes(b"<p>protected</p>")
+    target.symlink_to(outside)
+    with pytest.raises(ValueError):
+        stage_artifact_context(
+            app.state.service,
+            request,
+            execution,
+            local_stage=stage,
+            remote_stage=None,
+            artifact_path=str(directory),
+        )
+    assert outside.read_bytes() == b"<p>protected</p>"
+    target.unlink()
+    target.write_bytes(b"<p>edited</p>")
+    (directory / "extra.txt").write_text("other output")
+    discovered = _discover_chat_artifacts(execution, operation_id, directory, None)
+    assert [a.name for a in discovered] == ["extra.txt"]
+    results = finalize_artifact_edit(
+        request,
+        execution,
+        artifact_scope_id=operation_id,
+        artifact_directory=directory,
+        remote_stage=None,
+        artifacts=discovered,
+    )
+    again = finalize_artifact_edit(
+        request,
+        execution,
+        artifact_scope_id=operation_id,
+        artifact_directory=directory,
+        remote_stage=None,
+        artifacts=discovered,
+    )
+    assert results == again
+    if undo_during_edit:
+        assert store.read_artifact_bytes(source.artifact_id) == b"<p>original</p>"
+        assert len(results) == 2
+        assert store.read_artifact_bytes(results[-1].artifact_id) == b"<p>edited</p>"
+    else:
+        assert len(results) == 1
+        assert store.read_artifact_bytes(source.artifact_id) == b"<p>edited</p>"
+        assert len(store.artifact_versions(source.artifact_id)) == 3
+        from rcp.storage.artifact_models import ArtifactOperationConflict
+
+        target.write_bytes(b"<p>different retry bytes</p>")
+        with pytest.raises(ArtifactOperationConflict):
+            finalize_artifact_edit(
+                request,
+                execution,
+                artifact_scope_id=operation_id,
+                artifact_directory=directory,
+                remote_stage=None,
+                artifacts=discovered,
+            )
+
+
+def test_comment_eligibility_matches_viewer_types():
+    from rcp.artifact_comments import supports_comments
+    from rcp.artifacts import ARTIFACT_MEDIA_TYPES, artifact_view
+
+    for media_type in set(ARTIFACT_MEDIA_TYPES.values()) | {"application/octet-stream"}:
+        assert supports_comments(media_type) == (artifact_view(media_type) not in {"pdf", "file"})
+
+
+def test_remote_edit_staging_reuses_existing_file_and_refuses_symlinks(tmp_path):
+    from rcp.transport.remote_stage_root import stage_artifact
+
+    directory = tmp_path / "turns" / "edit" / "artifacts"
+    directory.mkdir(parents=True)
+    target = directory / "page.html"
+    stage_artifact(str(tmp_path), "edit", target.name, b"base")
+    assert target.read_bytes() == b"base"
+    target.write_bytes(b"agent edit")
+    stage_artifact(str(tmp_path), "edit", target.name, b"base")
+    assert target.read_bytes() == b"agent edit"
+    target.unlink()
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"protected")
+    target.symlink_to(outside)
+    with pytest.raises(ValueError):
+        stage_artifact(str(tmp_path), "edit", target.name, b"base")
+    assert outside.read_bytes() == b"protected"
+
+
+def test_remote_edit_directory_can_retry_before_staging_but_never_reset_after(tmp_path):
+    from rcp.transport.remote_stage_root import prepare_edit_artifacts
+
+    prepare_edit_artifacts(str(tmp_path), "edit", False)
+    directory = tmp_path / "turns" / "edit" / "artifacts"
+    (directory / "retained.txt").write_text("partial edit")
+    prepare_edit_artifacts(str(tmp_path), "edit", False)
+    assert (directory / "retained.txt").read_text() == "partial edit"
+    (directory / "retained.txt").unlink()
+    directory.rmdir()
+    with pytest.raises(SystemExit):
+        prepare_edit_artifacts(str(tmp_path), "edit", True)
+    assert not directory.exists()

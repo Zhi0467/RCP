@@ -432,6 +432,11 @@ that started the session (see
 Current inline instructions take precedence while the objective, attempt ledger,
 and completed native-session progress remain intact. The episode report gets no
 pointer, and the next operational turn on its session reopens the master.
+Revoking artifact edits use the same reopening rule. Only a successful
+operational launch clears it; edit completion does not. All owners reserve the
+exact native session and stage atomically, including human chats, episode
+invocations, wakes, recovery, reports, and artifact edits. Busy edit admission
+returns 409 without queueing, steering, spending budget, or changing Stop.
 
 The Experiment-loop Patch may update its own attempt/status and guidance, create
 Evidence and Blockers, assert legal epistemic and output edges, and create the

@@ -81,14 +81,16 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     Artifact,
-    ArtifactRevisionCandidateRecord,
+    ArtifactVersionConflict,
 )
+from rcp.storage.artifact_models import ArtifactOperationConflict
 from rcp.transport import (
     RemoteRunStage,
     RunStageMailbox,
     StateUnavailable,
     clear_turn_handoff_files,
 )
+from rcp.transport.remote_stage_root import stage_artifact
 from rcp.transport.run_stage import remote_stage_name
 
 if TYPE_CHECKING:
@@ -821,6 +823,28 @@ def _prepare_local_artifact_directory(
     return target
 
 
+def prepare_artifact_edit_directory(
+    request: RunRequest,
+    execution: AgentTaskExecution,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> Path | PurePosixPath:
+    """Create an unstarted edit, preserve any existing output, and fail closed after staging."""
+    edit = request.artifact_edit
+    if edit is None:
+        raise ValueError("An artifact edit requires its admitted snapshot.")
+    staged = any(
+        execution.store.agent_task_has_receipt(operation_id, "artifact_edit_staged")
+        for operation_id in {execution.operation_id, edit.operation_id}
+    )
+    if remote_stage is not None:
+        return remote_stage.prepare_artifact_edit_directory(edit.staged_scope_id, staged=staged)
+    scope = workspace / "turns" / edit.staged_scope_id
+    return _prepare_local_artifact_directory(
+        workspace, edit.staged_scope_id, reuse=staged or os.path.lexists(scope)
+    )
+
+
 def _discover_chat_artifacts(
     execution: AgentTaskExecution | None,
     scope_id: str,
@@ -850,19 +874,15 @@ def _discover_chat_artifacts(
         return []
 
     task = execution.store.agent_task(execution.operation_id) if execution is not None else None
-    context = task.request.get("artifact_context") if task is not None else None
-    preferred_name = None
-    if isinstance(context, dict) and context.get("source", "task") == "task":
-        source = execution.store.artifact(context.get("artifact_id", ""))
-        if source is not None and source.project_id == task.project_id:
-            preferred_name = source.source_name
+    edit = task.request.get("artifact_edit") if task is not None else None
+    edited_name = edit.get("source_name") if isinstance(edit, dict) else None
 
     attached: list[AgentArtifactDescriptor] = []
     total_bytes = 0
     allowed_candidates = 0
-    for name, advertised_size in sorted(
-        candidates, key=lambda item: (item[0] != preferred_name, item[0])
-    ):
+    for name, advertised_size in sorted(candidates):
+        if name == edited_name:
+            continue
         if advertised_size < 0 or advertised_size > CHAT_ARTIFACT_MAX_FILE_BYTES:
             ignore("file_size_limit")
             continue
@@ -950,53 +970,54 @@ def stage_artifact_context(
     origin = execution.store.agent_task(context.operation_id)
     if current is None or origin is None or origin.project_id != current.project_id:
         raise ValueError("The artifact context origin is unavailable.")
-    descriptor: AgentArtifactDescriptor | None = None
-    if context.source == "episode_report":
-        report = execution.store.episode_report(context.episode_id or "")
-        if report is None:
-            raise ValueError("The episode report context is unavailable.")
-        data = execution.store.read_artifact_bytes(report.artifact_id, report.artifact_version_id)
-        descriptor = AgentArtifactDescriptor(
-            artifact_id=report.artifact_id,
-            name="episode-report.html",
-            media_type="text/html",
-            size_bytes=len(data),
-        )
-    else:
-        raw_artifacts = origin.result.get("artifacts") if origin.result else None
-        if isinstance(raw_artifacts, list):
-            for raw in raw_artifacts:
-                try:
-                    candidate = AgentArtifactDescriptor.model_validate(raw)
-                except (TypeError, ValueError):
-                    continue
-                if candidate.artifact_id == context.artifact_id:
-                    descriptor = candidate
-                    break
-        if descriptor is None:
-            raise ValueError("The artifact context is unavailable.")
-    assert descriptor is not None
+    edit = request.artifact_edit
+    protected_write_paths = (
+        (str(execution.store.path.parent / "artifacts"),) if not current.stage_host else ()
+    )
+    if edit is not None:
+        for operation_id in dict.fromkeys((execution.operation_id, edit.operation_id)):
+            for receipt in execution.store.agent_task_receipts(operation_id):
+                if receipt.category == "artifact_edit_staged" and isinstance(
+                    receipt.payload.get("pointer"), dict
+                ):
+                    pointer = receipt.payload["pointer"]
+                    if pointer.get("path") != str(Path(artifact_path) / edit.source_name):
+                        raise ValueError("The saved artifact edit path changed.")
+                    if remote_stage is not None:
+                        remote_stage.read_artifact_bytes(
+                            edit.staged_scope_id,
+                            edit.source_name,
+                            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+                        )
+                    else:
+                        read_local_regular_file(
+                            Path(artifact_path),
+                            edit.source_name,
+                            max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES,
+                        )
+                    return StagedArtifactContext(
+                        pointer=pointer, protected_write_paths=protected_write_paths
+                    )
+    artifact = execution.store.artifact(edit.artifact_id if edit else context.artifact_id)
+    if artifact is None or artifact.project_id != current.project_id:
+        raise ValueError("The artifact context is unavailable.")
+    data = execution.store.read_artifact_bytes(
+        artifact.artifact_id, edit.base_version if edit else artifact.current_version
+    )
+    descriptor = AgentArtifactDescriptor(
+        artifact_id=artifact.artifact_id,
+        name=artifact.source_name,
+        media_type=artifact.media_type,
+        size_bytes=len(data),
+    )
     if not supports_comments(descriptor.media_type):
-        raise ValueError("The artifact type does not support comments or revisions.")
-    if context.source == "task":
-        data = execution.store.read_artifact_bytes(descriptor.artifact_id)
+        raise ValueError("The artifact type does not support comments.")
     if classify_artifact_bytes(descriptor.name, data) != descriptor.media_type:
         raise ValueError("The current artifact no longer matches its declared type.")
     base_sha256 = hashlib.sha256(data).hexdigest()
     protected_write_paths = (
         (str(execution.store.path.parent / "artifacts"),) if not current.stage_host else ()
     )
-    if context.source == "task" and request.mode == "work":
-        execution.store.record_agent_task_receipt(
-            execution.operation_id,
-            "artifact_revision_base",
-            {
-                "source_operation_id": origin.operation_id,
-                "source_artifact_id": descriptor.artifact_id,
-                "sha256": base_sha256,
-            },
-            tier="summary",
-        )
 
     # Each box the current viewer drew on a raster image is cropped from the exact bytes
     # staged beside it, so a recovery restages the same crops.
@@ -1077,10 +1098,31 @@ def stage_artifact_context(
             for index, item in enumerate(context.selections, 1)
         ],
     }
-    if context.source == "task":
-        pointer["revision_output_path"] = str(Path(artifact_path) / descriptor.name)
-    else:
-        pointer["immutable"] = True
+    if edit is not None:
+        staged_path = Path(artifact_path) / descriptor.name
+        if remote_stage is not None:
+            remote_stage.stage_artifact_bytes(edit.staged_scope_id, descriptor.name, data)
+        else:
+            assert local_stage is not None
+            stage_artifact(
+                str(Path(artifact_path).parents[2]), edit.staged_scope_id, descriptor.name, data
+            )
+        pointer["path"] = str(staged_path)
+        if not execution.store.agent_task_has_receipt(
+            execution.operation_id, "artifact_edit_staged"
+        ):
+            execution.store.record_agent_task_receipt(
+                execution.operation_id,
+                "artifact_edit_staged",
+                {
+                    "artifact_id": edit.artifact_id,
+                    "base_version": edit.base_version,
+                    "path": str(staged_path),
+                    "operation_id": edit.operation_id,
+                    "pointer": pointer,
+                },
+                tier="summary",
+            )
     return StagedArtifactContext(
         pointer=pointer,
         protected_write_paths=protected_write_paths,
@@ -1111,7 +1153,7 @@ def _make_tree_writable(root: Path) -> None:
             folder.chmod(0o700)
 
 
-def finalize_artifact_revision(
+def finalize_artifact_edit(
     request: RunRequest,
     execution: AgentTaskExecution | None,
     *,
@@ -1120,130 +1162,78 @@ def finalize_artifact_revision(
     remote_stage: RemoteRunStage | None,
     artifacts: list[AgentArtifactDescriptor],
 ) -> list[AgentArtifactDescriptor]:
-    """Retain an explicit Work replacement as a candidate for human disposition."""
-
-    context = request.artifact_context
-    if context is None or context.source != "task" or request.mode != "work" or execution is None:
+    """Publish the admitted file, or retain a raced edit as an ordinary turn artifact."""
+    edit = request.artifact_edit
+    if edit is None or execution is None:
         return artifacts
-    origin = execution.store.agent_task(context.operation_id)
-    if origin is None:
-        raise ValueError("The artifact revision origin is unavailable.")
-    raw_artifacts = origin.result.get("artifacts") if origin.result else None
-    source: AgentArtifactDescriptor | None = None
-    if isinstance(raw_artifacts, list):
-        for raw in raw_artifacts:
-            candidate = AgentArtifactDescriptor.model_validate(raw)
-            if candidate.artifact_id == context.artifact_id:
-                source = candidate
-                break
-    if source is None:
-        raise ValueError("The artifact revision origin is unavailable.")
-    if not supports_comments(source.media_type):
-        raise ValueError("The artifact type does not support revisions.")
-    other_artifacts = [artifact for artifact in artifacts if artifact.name != source.name]
-    replacement = next((artifact for artifact in artifacts if artifact.name == source.name), None)
-    if replacement is None:
-        return other_artifacts
-    data = execution.store.read_artifact_bytes(replacement.artifact_id)
-    if classify_artifact_bytes(source.name, data) != source.media_type:
-        raise ValueError("The artifact revision changed its file type.")
-    base_receipt = next(
+    if artifact_scope_id != edit.staged_scope_id:
+        raise ValueError("The artifact edit staging scope changed.")
+    staged = next(
         (
             receipt
-            for receipt in reversed(execution.store.agent_task_receipts(execution.operation_id))
-            if receipt.category == "artifact_revision_base"
-            and receipt.payload.get("source_operation_id") == origin.operation_id
-            and receipt.payload.get("source_artifact_id") == source.artifact_id
+            for operation_id in dict.fromkeys((execution.operation_id, edit.operation_id))
+            for receipt in execution.store.agent_task_receipts(operation_id)
+            if receipt.category == "artifact_edit_staged"
         ),
         None,
     )
-    base_sha256 = base_receipt.payload.get("sha256") if base_receipt is not None else None
-    if not isinstance(base_sha256, str) or len(base_sha256) != 64:
-        raise ValueError("The artifact revision base could not be verified.")
-    candidate_sha256 = hashlib.sha256(data).hexdigest()
-    if candidate_sha256 == base_sha256:
-        if not execution.store.agent_task_has_receipt(
-            execution.operation_id, "artifact_revision_unchanged"
-        ):
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "artifact_revision_unchanged",
-                {
-                    "source_operation_id": origin.operation_id,
-                    "source_artifact_id": source.artifact_id,
-                },
-                tier="summary",
-            )
-        return other_artifacts
-    current = execution.store.agent_task(execution.operation_id)
-    if current is None or not current.stage_root:
-        raise ValueError("The artifact revision candidate stage is unavailable.")
-    existing = execution.store.unresolved_artifact_revision_candidate(
-        origin.operation_id,
-        source.artifact_id,
-    )
-    if existing is not None and existing.revision_operation_id == current.operation_id:
-        same_candidate = (
-            existing.stage_host == (current.stage_host or "")
-            and existing.stage_root == current.stage_root
-            and existing.artifact_scope_id == artifact_scope_id
-            and existing.source_name == source.name
-            and existing.media_type == source.media_type
-            and existing.base_sha256 == base_sha256
-            and existing.candidate_sha256 == candidate_sha256
-            and existing.candidate_size_bytes == len(data)
+    if staged is None or staged.payload.get("path") != str(artifact_directory / edit.source_name):
+        raise ValueError("The artifact edit staged path could not be verified.")
+    data = (
+        remote_stage.read_artifact_bytes(
+            edit.staged_scope_id, edit.source_name, max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES
         )
-        if not same_candidate:
-            raise ValueError("The retained artifact revision changed during finalization.")
-        if not execution.store.agent_task_has_receipt(
-            execution.operation_id, "artifact_revision_staged"
-        ):
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "artifact_revision_staged",
-                {
-                    "candidate_id": existing.candidate_id,
-                    "source_operation_id": origin.operation_id,
-                    "source_artifact_id": source.artifact_id,
-                    "size_bytes": len(data),
-                },
-                tier="summary",
-            )
-        return other_artifacts
-    now = execution.store.now()
-    candidate = ArtifactRevisionCandidateRecord(
-        candidate_id=hashlib.sha256(
-            f"{current.operation_id}\0{origin.operation_id}\0{source.artifact_id}".encode()
-        ).hexdigest()[:24],
-        project_id=current.project_id,
-        source_operation_id=origin.operation_id,
-        source_artifact_id=source.artifact_id,
-        revision_operation_id=current.operation_id,
-        stage_host=current.stage_host or "",
-        stage_root=current.stage_root,
-        artifact_scope_id=artifact_scope_id,
-        source_name=source.name,
-        media_type=source.media_type,
-        base_sha256=base_sha256,
-        candidate_sha256=candidate_sha256,
-        candidate_size_bytes=len(data),
-        status="pending",
-        created_at=now,
-        updated_at=now,
+        if remote_stage is not None
+        else read_local_regular_file(
+            artifact_directory, edit.source_name, max_bytes=CHAT_ARTIFACT_MAX_FILE_BYTES
+        )
     )
-    execution.store.create_artifact_revision_candidate(candidate)
+    media_type = classify_artifact_bytes(edit.source_name, data)
+    if media_type != edit.media_type:
+        raise ValueError("The artifact edit changed its file type.")
+    try:
+        version = execution.store.publish_artifact_version(
+            edit.artifact_id,
+            base_version=edit.base_version,
+            operation_id=edit.operation_id,
+            data=data,
+        )
+    except ArtifactOperationConflict:
+        raise
+    except ArtifactVersionConflict:
+        task = execution.store.agent_task(execution.operation_id)
+        if task is None:
+            raise ValueError("The artifact edit task is unavailable.") from None
+        descriptor = descriptor_for(
+            artifact_scope_id, edit.source_name, media_type=media_type, size_bytes=len(data)
+        )
+        now = execution.store.now()
+        execution.store.create_artifact(
+            Artifact(
+                artifact_id=descriptor.artifact_id,
+                project_id=task.project_id,
+                supplier="turn",
+                supplier_id=artifact_scope_id,
+                source_name=edit.source_name,
+                media_type=media_type,
+                created_at=now,
+                expires_at=(
+                    datetime.fromisoformat(now) + timedelta(days=RUN_STAGE_RETENTION_DAYS)
+                ).isoformat(),
+                origin_operation_id=task.operation_id,
+                episode_id=task.episode_id,
+                chat_id=task.request.get("chat_id"),
+            ),
+            data=data,
+        )
+        return [*artifacts, descriptor]
     execution.store.record_agent_task_receipt(
         execution.operation_id,
-        "artifact_revision_staged",
-        {
-            "candidate_id": candidate.candidate_id,
-            "source_operation_id": origin.operation_id,
-            "source_artifact_id": source.artifact_id,
-            "size_bytes": len(data),
-        },
+        "artifact_edit_published",
+        {"artifact_id": edit.artifact_id, "version_id": version.version_id},
         tier="summary",
     )
-    return other_artifacts
+    return artifacts
 
 
 def artifact_omissions(receipt: AgentTaskReceiptRecord) -> dict[str, int | bool]:
@@ -1438,6 +1428,12 @@ def _chat_stage_name(
             raise ValueError(
                 "Cannot identify this chat's project workspace; retry the turn from the beginning."
             )
+        if request.artifact_edit is not None and request.artifact_edit.fresh_session:
+            if task.attempt > 1 or execution.operation_id != request.artifact_edit.operation_id:
+                raise ValueError(
+                    "Cannot resume the artifact edit because its saved stage is missing."
+                )
+            return _safe_stage_name(f"artifact-edit-{request.artifact_edit.operation_id}")
         project_identity = f"task-project\0{task.project_id}"
     else:
         # Direct streams have no catalog task record. The canonical workspace
