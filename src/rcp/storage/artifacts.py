@@ -23,9 +23,40 @@ from rcp.storage.artifact_models import (
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
+_CAPTURE_GUARDS: dict[str, _CaptureGuard] = {}
 
 
-def _lock(root: Path, artifact_id: str = "") -> threading.RLock:
+class _CaptureGuard:
+    """Allow overlapping captures; exclude deletion until every capture exits."""
+
+    def __init__(self) -> None:
+        self.condition = threading.Condition()
+        self.captures = 0
+
+    @contextmanager
+    def capture(self) -> Iterator[None]:
+        with self.condition:
+            self.captures += 1
+        try:
+            yield
+        finally:
+            with self.condition:
+                self.captures -= 1
+                self.condition.notify_all()
+
+    @contextmanager
+    def deletion(self) -> Iterator[None]:
+        with self.condition:
+            self.condition.wait_for(lambda: self.captures == 0)
+            yield
+
+
+def _capture_guard(root: Path) -> _CaptureGuard:
+    with _LOCKS_GUARD:
+        return _CAPTURE_GUARDS.setdefault(str(root.resolve()), _CaptureGuard())
+
+
+def _lock(root: Path, artifact_id: str) -> threading.RLock:
     key = str(root.resolve()) + "/" + artifact_id
     with _LOCKS_GUARD:
         return _LOCKS.setdefault(key, threading.RLock())
@@ -75,12 +106,12 @@ def insert_artifact(
 class ArtifactStoreMixin:
     @contextmanager
     def artifact_capture(self) -> Iterator[None]:
-        with _lock(self.path.parent):
+        with _capture_guard(self.path.parent).capture():
             yield
 
     @contextmanager
     def artifact_lock(self, artifact_id: str) -> Iterator[None]:
-        with self.artifact_capture(), _lock(self.path.parent, artifact_id):
+        with _lock(self.path.parent, artifact_id):
             yield
 
     def artifact(self, artifact_id: str) -> Artifact | None:
@@ -164,27 +195,23 @@ class ArtifactStoreMixin:
             return artifact
 
     def read_artifact_bytes(self, artifact_id: str, version_id: str | None = None) -> bytes:
-        with self.artifact_lock(artifact_id):
-            artifact = self.artifact(artifact_id)
-            if artifact is None:
-                raise KeyError(artifact_id)
-            version = next(
-                (
-                    v
-                    for v in self.artifact_versions(artifact_id)
-                    if v.version_id == (version_id or artifact.current_version)
-                ),
-                None,
-            )
-            if version is None:
-                raise KeyError(version_id)
-            data = self.artifact_file_path(version).read_bytes()
-            if (
-                len(data) != version.size_bytes
-                or hashlib.sha256(data).hexdigest() != version.sha256
-            ):
-                raise ValueError("stored artifact bytes differ from inventory")
-            return data
+        artifact = self.artifact(artifact_id)
+        if artifact is None:
+            raise KeyError(artifact_id)
+        version = next(
+            (
+                v
+                for v in self.artifact_versions(artifact_id)
+                if v.version_id == (version_id or artifact.current_version)
+            ),
+            None,
+        )
+        if version is None:
+            raise KeyError(version_id)
+        data = self.artifact_file_path(version).read_bytes()
+        if len(data) != version.size_bytes or hashlib.sha256(data).hexdigest() != version.sha256:
+            raise ValueError("stored artifact bytes differ from inventory")
+        return data
 
     def keep_artifact(self, artifact_id: str) -> Artifact:
         with self.artifact_lock(artifact_id):
@@ -278,42 +305,50 @@ class ArtifactStoreMixin:
                 )
             kept_files = {v.file_id for v in retained}
             folder = self.path.parent / "artifacts" / artifact_id
-            for path in folder.iterdir():
+            obsolete = [
+                path
+                for path in folder.iterdir()
                 if (
                     re.fullmatch(r"[a-f0-9]{64}", path.name)
                     and path.name not in kept_files
                     and path.is_file()
                     and not path.is_symlink()
-                ):
-                    path.unlink(missing_ok=True)
+                )
+            ]
+            if obsolete:
+                with _capture_guard(self.path.parent).deletion():
+                    for path in obsolete:
+                        path.unlink(missing_ok=True)
             return version
 
     def expire_artifacts(
         self, *, as_of: datetime | None = None, protected_artifact_ids: frozenset[str] = frozenset()
     ) -> int:
-        """Remove expired records and bytes under the same locks as capture and Keep."""
+        """Serialize expiry with Keep and hold off deletion during captures."""
         removed = 0
-        with self.artifact_capture():
-            with self.connection() as connection:
-                rows = connection.execute("SELECT metadata FROM artifacts").fetchall()
-            now = as_of or datetime.fromisoformat(self.now())
-            for row in rows:
-                artifact = Artifact.model_validate_json(row[0])
+        with self.connection() as connection:
+            rows = connection.execute("SELECT artifact_id FROM artifacts").fetchall()
+        now = as_of or datetime.fromisoformat(self.now())
+        for row in rows:
+            artifact_id = row[0]
+            with self.artifact_lock(artifact_id):
+                artifact = self.artifact(artifact_id)
                 if (
-                    artifact.artifact_id in protected_artifact_ids
+                    artifact is None
+                    or artifact_id in protected_artifact_ids
                     or artifact.kept_at
                     or not artifact.expires_at
                     or datetime.fromisoformat(artifact.expires_at) > now
                 ):
                     continue
-                with self.artifact_lock(artifact.artifact_id):
+                with _capture_guard(self.path.parent).deletion():
                     with self.connection() as connection:
                         for table in ("artifact_operations", "artifact_versions", "artifacts"):
                             connection.execute(
                                 f"DELETE FROM {table} WHERE artifact_id = ?",
-                                (artifact.artifact_id,),
+                                (artifact_id,),
                             )
-                    folder = self.path.parent / "artifacts" / artifact.artifact_id
+                    folder = self.path.parent / "artifacts" / artifact_id
                     if folder.exists():
                         shutil.rmtree(folder)
                     removed += 1

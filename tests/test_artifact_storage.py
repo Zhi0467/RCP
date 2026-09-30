@@ -4,11 +4,11 @@ import gzip
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event
 
 import pytest
 
 from rcp.storage import AppStore, Artifact, ArtifactVersionConflict
+from tests.helpers import wait_until
 
 
 def _artifact(store: AppStore) -> Artifact:
@@ -66,29 +66,54 @@ def test_versions_compare_and_set_retry_retention_and_keep(tmp_path, monkeypatch
     }
 
 
-def test_capture_holds_files_and_database_pointer_together(tmp_path):
+def test_capture_allows_reads_and_creation_but_holds_pruned_files(tmp_path, monkeypatch):
+    import rcp.storage.artifacts as module
+
+    monkeypatch.setattr(module, "ARTIFACT_RECENT_VERSIONS", 1)
     store = AppStore(tmp_path / "rcp.sqlite3")
     artifact = _artifact(store)
-    started = Event()
-    finished = Event()
-
-    def publish():
-        started.set()
-        store.publish_artifact_version(
-            "one", base_version=artifact.current_version, operation_id="edit", data=b"edited"
-        )
-        finished.set()
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    captured_version = store.publish_artifact_version(
+        "one", base_version=artifact.current_version, operation_id="first", data=b"first"
+    )
+    captured_path = store.artifact_file_path(captured_version)
+    # Another store for the same directory must share the capture guard.
+    writer = AppStore(store.path)
+    with ThreadPoolExecutor(max_workers=3) as pool:
         with store.artifact_capture():
-            future = pool.submit(publish)
-            assert started.wait(1)
-            assert not finished.is_set()
-            inventory = store.artifact_inventory()
-            assert len(inventory) == 1
-            assert store.artifact_file_path(inventory[0]).read_bytes() == b"original"
-        future.result(timeout=5)
-    assert finished.is_set()
+            snapshot_path = tmp_path / "snapshot.sqlite3"
+            store.online_snapshot(snapshot_path)
+            snapshot = AppStore.open_read_only_snapshot(snapshot_path)
+            inventory = snapshot.artifact_inventory()
+            publish = pool.submit(
+                writer.publish_artifact_version,
+                "one",
+                base_version=captured_version.version_id,
+                operation_id="second",
+                data=b"second",
+            )
+            wait_until(
+                lambda: writer.artifact("one").current_version != captured_version.version_id,
+                detail="publishing must advance metadata during capture",
+            )
+            read = pool.submit(writer.read_artifact_bytes, "one")
+            create = pool.submit(
+                writer.create_artifact,
+                artifact.model_copy(update={"artifact_id": "two"}),
+                data=b"new artifact",
+            )
+            assert read.result(timeout=5) == b"second"
+            assert create.result(timeout=5).artifact_id == "two"
+            assert not publish.done()
+            assert captured_path.read_bytes() == b"first"
+            assert {item.file_id for item in inventory} == {
+                artifact.current_version,
+                captured_version.file_id,
+            }
+            for item in inventory:
+                assert len(store.artifact_file_path(item).read_bytes()) == item.size_bytes
+        publish.result(timeout=5)
+    assert not captured_path.exists()
+    assert writer.read_artifact_bytes("two") == b"new artifact"
 
 
 def test_migration_check_uses_throwaway_files_and_relocation(tmp_path):

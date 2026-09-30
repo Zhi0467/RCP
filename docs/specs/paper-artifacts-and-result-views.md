@@ -321,10 +321,13 @@ under the data directory, referenced by relative digest identifiers. Writes use
 temporary files and atomic replacement. Original bytes are retained with the
 last bounded number of versions, subject to the byte cap in `limits.py`.
 Publishing checks the base version under the same artifact lock used by Keep,
-expiry, and pruning, and records an operation idempotency key. Capture pins the
-exact typed file inventory while copying it, so pruning cannot race backup or
-transfer. The report migration writes digest files before committing bindings
-and removing inline HTML; migration checks use a throwaway file root.
+expiry, and pruning, and records an operation idempotency key. Captures share an
+in-process guard that delays file deletion until all captures finish. Reads,
+creation, Keep, and version publication do not take that guard; only publication
+that prunes files waits for captures before unlinking. Backup copies exactly the
+typed inventory from its SQLite snapshot. The report migration writes digest
+files before committing bindings and removing inline HTML; migration checks use
+a throwaway file root.
 
 The existing candidate flow remains until the editing slice. Accept publishes a
 stored version only when the source still matches the candidate's base. It never
