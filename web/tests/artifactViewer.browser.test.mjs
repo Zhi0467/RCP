@@ -20,10 +20,15 @@ test("served viewer observes static edits and Undo, stops permanent errors, retr
     await page.addInitScript(() => {
       const original = window.fetch;
       window.stateAborts = 0;
-      window.fetch = (url, init) => {
-        if (String(url).endsWith("/state"))
-          init?.signal?.addEventListener("abort", () => window.stateAborts++);
-        return original(url, init);
+      window.fetch = async (url, init) => {
+        if (!String(url).endsWith("/state")) return original(url, init);
+        const aborted = () => window.stateAborts++;
+        init?.signal?.addEventListener("abort", aborted);
+        try {
+          return await original(url, init);
+        } finally {
+          init?.signal?.removeEventListener("abort", aborted);
+        }
       };
     });
     let version = 1;

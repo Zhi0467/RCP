@@ -3,7 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-test("Artifacts lists durable entries, refreshes after saving and retries failures", async () => {
+test("Artifacts lists durable entries, refreshes and retries failures", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -264,14 +264,11 @@ test("Artifacts lists durable entries, refreshes after saving and retries failur
     }
     // A refresh reprojects the existing rows after entering the desktop runtime.
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
-    const pdf = page
-      .locator(".artifact-entry")
-      .filter({ has: page.locator('a[download="pdf.dat"]') });
-    await pdf.getByRole("button").click();
+    await page.getByRole("button", { name: "Open pdf.dat", exact: true }).click();
     await page.waitForFunction(() => window.previewCalls.length === 1);
     assert.deepEqual(await page.evaluate(() => window.previewCalls[0]), {
       command: "open_artifact_pdf",
-      args: { projectId: "project", taskId: "task", artifactId: "pdf" },
+      args: { projectId: "project", artifactId: "pdf" },
     });
     assert.deepEqual(errors, []);
   } finally {
@@ -523,7 +520,7 @@ test("viewer persists placement and follows an edit through publication and Undo
     await page.getByRole("button", { name: "Dock viewer" }).click();
     const tab = page.getByRole("button", { name: "Restore Saved plot" });
     const tabRect = await tab.boundingBox();
-    assert.equal(tabRect.y, 0);
+    assert.ok(tabRect.y > 0, "The dock tab clears the project header");
     assert.equal(tabRect.x + tabRect.width, 1200);
     await tab.click();
     const title = panel.locator("header strong");

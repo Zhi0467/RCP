@@ -109,8 +109,8 @@ of the current session: `session_stale` (the provider no longer has it) or
 `session_context_unavailable` (the saved continuation context failed and
 requires a retry), the classification Retry uses to refuse resuming a dropped
 session. A `session_limit` failure continues the session: its classification
-also matches account quota, after which the session can still resume. A
-result-view revision runs on the view's saved session and never becomes the
+also matches account quota, after which the session can still resume. An
+artifact edit runs on the artifact's saved session and never becomes the
 chat's current session. The exact provider, machine, chat, graph target,
 stage, and launch write scope remain enforced. **New session** creates a new
 chat id.

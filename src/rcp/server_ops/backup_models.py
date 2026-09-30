@@ -716,6 +716,9 @@ class BackupManifestConfiguration(_StrictBackupModel):
     default_run_truth_scope: tuple[str, ...]
     default_auto_research_invocation_ceiling: int = Field(ge=1)
     skill_defaults: SkillDefaults
+    declared_skill_defaults: dict[Literal["workflow_ids", "skill_ids"], list[str]] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     agent_profiles: tuple[BackupManifestAgentProfile, ...]
     sources: BackupManifestSources
     compute_connections: tuple[BackupManifestComputeConnection, ...] = Field(
@@ -797,6 +800,7 @@ class BackupManifestConfiguration(_StrictBackupModel):
                 manifest.agent.default_auto_research_invocation_ceiling
             ),
             skill_defaults=manifest.agent.skill_defaults,
+            declared_skill_defaults=manifest.agent.skill_defaults.model_dump(exclude_unset=True),
             agent_profiles=tuple(
                 BackupManifestAgentProfile(
                     profile=profile,
@@ -826,6 +830,30 @@ class BackupManifestConfiguration(_StrictBackupModel):
                 for connection in manifest.compute_connections
             ),
         )
+
+    @property
+    def skill_defaults_configuration(self) -> dict[str, list[str]]:
+        # Old records did not distinguish declared settings from release defaults.
+        if self.declared_skill_defaults is None:
+            return self.skill_defaults.model_dump()
+        return self.declared_skill_defaults
+
+    def matches_configuration(self, current: BackupManifestConfiguration) -> bool:
+        """Compare human configuration, retaining old receipts' exact integrity hashes."""
+        exclude = {"skill_defaults", "declared_skill_defaults"}
+        if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
+            return False
+        if self.declared_skill_defaults is None:
+            # A legacy receipt has only resolved values. Check every setting the
+            # manifest actually declares; omitted values belong to the running code.
+            return all(
+                getattr(self.skill_defaults, name) == value
+                for name, value in current.skill_defaults_configuration.items()
+            )
+        return self.declared_skill_defaults == current.skill_defaults_configuration
+
+    def matches_manifest(self, manifest: Manifest) -> bool:
+        return self.matches_configuration(self.from_manifest(manifest))
 
     @property
     def sha256(self) -> str:

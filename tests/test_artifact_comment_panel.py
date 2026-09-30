@@ -19,7 +19,7 @@ const elements = new Map();
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     value: "", textContent: "", hidden: false, disabled: false,
-    listeners: {}, replaceChildren() {},
+    listeners: {}, replaceChildren() {}, after() {},
     addEventListener(type, listener) { this.listeners[type] = listener; },
   });
   return elements.get(id);
@@ -32,7 +32,10 @@ const context = {
   config: {projectId: "project", artifactId: "artifact", selectionEnabled: false,
     maxSelections: 8, stateUrl: "/state", commentsUrl: "/comments"},
   setTimeout: callback => { poll = callback; return 1; }, clearTimeout() {},
-  document: {addEventListener() {}, getElementById: id => ["preview", "previewImage"].includes(id) ? null : element(id)},
+  document: {
+    addEventListener() {}, createElement: () => element(Symbol()),
+    getElementById: id => ["preview", "previewImage"].includes(id) ? null : element(id),
+  },
   window: {addEventListener() {}, parent: {postMessage: (...args) => messages.push(args)}},
   location: {origin: "https://rcp.test"},
   localStorage: {getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value)},

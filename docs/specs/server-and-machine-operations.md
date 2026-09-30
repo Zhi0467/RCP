@@ -1377,6 +1377,14 @@ required only for a machine that owns a repository and keeps its provisioned
 host and account. A missing, credential-bearing, or inconsistent descriptor
 makes that project uncaptured.
 
+Skill configuration comparisons use the fields declared in the manifest, not
+release-resolved defaults. New recovery descriptors retain that declaration,
+including omitted fields; restore and validation overlays preserve it. Older
+descriptors lack this metadata, so compatibility checks compare their recorded
+values only for fields the current manifest declares. Their recorded payloads
+and integrity hashes remain unchanged. All other configuration and checkout
+authority still compare exactly.
+
 The first archive contract accepts only a native X25519 `age1...` recipient and
 uses the upstream `age` CLI from `1.0.0` through the 1.x line. Plugin, SSH,
 passphrase, and post-quantum recipients are not accepted in this slice, so an

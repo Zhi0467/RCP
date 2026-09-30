@@ -16,6 +16,7 @@ import pytest
 import rcp.server_ops.backup_checkout as backup_checkout
 import rcp.server_ops.backup_project_files as project_files
 import rcp.server_ops.backup_project_io as project_io
+import rcp.skill_registry as skill_registry
 import rcp.transport.state as state_module
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
@@ -347,6 +348,53 @@ def _inventory_for_space(
         recovery_document
     )
     return BackupSnapshotProjectInventory.model_validate(inventory_document)
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["current-receipt", "legacy-receipt"])
+@pytest.mark.parametrize("change_settings", [False, True], ids=["registry-growth", "manifest-edit"])
+def test_project_file_capture_distinguishes_registry_growth_from_manifest_edits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, legacy: bool, change_settings: bool
+) -> None:
+    packages = skill_registry._OFFICIAL_PACKAGE_SPECS
+    monkeypatch.setattr(
+        skill_registry,
+        "_OFFICIAL_PACKAGE_SPECS",
+        tuple(package for package in packages if package[1] != "live-pages"),
+    )
+    inventory, _ = _project_inventory(
+        tmp_path, project_id=str(uuid.uuid4()), task_id=str(uuid.uuid4()), with_files=False
+    )
+    assert inventory.recovery is not None
+    assert "live-pages" not in inventory.recovery.configuration.skill_defaults.skill_ids
+    if legacy:
+        configuration_payload = inventory.recovery.configuration.model_dump(mode="json")
+        configuration_payload.pop("declared_skill_defaults")
+        configuration = BackupManifestConfiguration.model_validate_json(
+            json.dumps(configuration_payload)
+        )
+        recovery = inventory.recovery.model_copy(
+            update={"configuration": configuration, "configuration_sha256": configuration.sha256}
+        )
+        inventory = inventory.model_copy(update={"recovery": recovery})
+    data_dir = tmp_path / "data"
+    receipt_path, receipt_sha256 = _sqlite_capture_with_projects(data_dir, (inventory,))
+    monkeypatch.setattr(skill_registry, "_OFFICIAL_PACKAGE_SPECS", packages)
+    assert "live-pages" in load_manifest(inventory.locator).agent.skill_defaults.skill_ids
+    if change_settings:
+        manifest_path = Path(inventory.locator)
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8")
+            + "\n[agent.skill_defaults]\nskill_ids = []\n",
+            encoding="utf-8",
+        )
+
+    publication = BackupProjectFileCaptureCoordinator(data_dir).capture(
+        receipt_path, expected_sha256=receipt_sha256
+    )
+    project = publication.receipt.projects[0]
+    assert project.status == ("uncaptured" if change_settings else "captured")
+    if change_settings:
+        assert project.unavailable_kind == "capture_failure"
 
 
 @pytest.mark.parametrize("artifact_name", ["kept-figure.png", "kept-result.csv", "kept-result"])

@@ -3,6 +3,7 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 import { timelineFixture } from "./fixtures/timeline.mjs";
+import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 
 const ada = { space_id: "team", user_id: "ada", display_name: "Ada Lovelace" };
 const grace = { space_id: "team", user_id: "grace", display_name: "Grace Hopper" };
@@ -352,6 +353,7 @@ test("active and unresolved episodes archive without stopping work and restore a
         await route.fulfill({ json: payload });
       }
     });
+    await mockEpisodeArtifacts(page);
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/episodeArchive.html`);
     const project = page.locator('[data-surface="project"]');
     const space = page.locator('[data-surface="space"]');

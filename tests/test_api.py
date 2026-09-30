@@ -3766,8 +3766,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
             "chat_id": origin.request["chat_id"],
             "message": "Why does this section jump?",
             "mode": "discuss",
-            # Artifact-context admission uses the chat's current session profile.
-            # Atomic task insertion resolves its session and stage.
+            # Artifact edits retain the artifact's origin session and profile.
             "run_on": "stale-machine",
             "artifact_context": {
                 "source": "task",
@@ -3780,8 +3779,8 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert asked.status_code == 202
     admitted = admitted_requests[-1]
     assert admitted.mode == "discuss"
-    assert admitted.session_id is None
-    assert admitted.reasoning == latest.request["reasoning"]
+    assert admitted.session_id == origin.native_session_id
+    assert admitted.reasoning == origin.request["reasoning"]
     assert admitted.artifact_context is not None
     assert admitted.artifact_context.operation_id == origin.operation_id
 

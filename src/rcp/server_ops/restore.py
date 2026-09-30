@@ -721,7 +721,13 @@ def _recover_repositories(request, manifest, previous_store, members):
                     capture.project_id
                 ),
             )
-            if registration.recovery != recovery:
+            if registration.recovery.model_dump(
+                exclude={"configuration", "configuration_sha256"}
+            ) != recovery.model_dump(
+                exclude={"configuration", "configuration_sha256"}
+            ) or not recovery.configuration.matches_configuration(
+                registration.recovery.configuration
+            ):
                 raise RestoreRefused(
                     "Existing project checkout authority differs from the protected archive."
                 )

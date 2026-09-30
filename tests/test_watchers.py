@@ -1707,13 +1707,25 @@ def test_chat_wake_starts_fresh_when_the_provider_dropped_the_current_session(
     assert resolution["source_operation_id"] == latest.operation_id
 
 
-def test_result_view_revision_does_not_become_the_chat_session(store) -> None:
+def test_artifact_edit_does_not_become_the_chat_session(store) -> None:
     chat = _completed_chat_turn(store, "human-before", "chat-native-session")
+    origin = _completed_chat_turn(
+        store, "artifact-origin", "artifact-session", request_updates={"chat_id": "origin-chat"}
+    )
     _completed_chat_turn(
         store,
-        "revision",
-        "view-session",
-        request_updates={"result_view": {"action": "revise", "view_id": "a" * 24}},
+        "artifact-edit",
+        "artifact-session",
+        request_updates={
+            "session_id": origin.native_session_id,
+            "artifact_edit": {
+                "artifact_id": "a" * 24,
+                "base_version": 1,
+                "origin_operation_id": origin.operation_id,
+                "stage_host": origin.stage_host,
+                "stage_root": origin.stage_root,
+            },
+        },
     )
     store.create_watchers([_record("done", origin=chat.operation_id, status="completed")])
 

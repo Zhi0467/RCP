@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import tomlkit
 from pydantic import ValidationError
 
 from rcp.config import (
@@ -465,6 +468,51 @@ def test_backup_configuration_preserves_secret_free_compute_metadata(manifest) -
     assert recovery.compute_connections[0].id == "gpu"
     assert recovery.compute_connections[0].ssh_target == "alice@gpu.example"
     assert "password" not in recovery.model_dump_json().casefold()
+
+
+def test_legacy_backup_configuration_keeps_its_payload_and_digest(tmp_path: Path) -> None:
+    record, _ = _completed_registration(tmp_path)
+    payload = BackupManifestConfiguration.from_manifest(load_manifest(record.locator)).model_dump(
+        mode="json"
+    )
+    payload.pop("declared_skill_defaults")
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    configuration = BackupManifestConfiguration.model_validate_json(encoded)
+
+    assert configuration.declared_skill_defaults is None
+    assert configuration.model_dump(mode="json") == payload
+    assert configuration.sha256 == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize("declared", [{}, {"workflow_ids": []}, {"skill_ids": ["graph-audit"]}])
+def test_backup_manifest_renderers_preserve_only_declared_skill_defaults(
+    tmp_path: Path, declared: dict[str, list[str]]
+) -> None:
+    from rcp.projects import _render_restored_manifest
+    from rcp.server_ops.application_validation import _render_overlay_manifest
+
+    record, _ = _completed_registration(tmp_path)
+    path = Path(record.locator)
+    document = tomlkit.parse(path.read_text(encoding="utf-8"))
+    document["agent"].pop("skill_defaults", None)
+    if declared:
+        document["agent"]["skill_defaults"] = declared
+    path.write_text(tomlkit.dumps(document), encoding="utf-8")
+    manifest = load_manifest(path)
+    configuration = BackupManifestConfiguration.from_manifest(manifest)
+    assert configuration.declared_skill_defaults == declared
+    paths = {repository.alias: repository.path for repository in configuration.repositories}
+
+    restored = _render_restored_manifest(configuration, paths)
+    overlay = _render_overlay_manifest(
+        configuration, {alias: Path(root) for alias, root in paths.items()}, tmp_path / "overlay"
+    )
+
+    for content in (restored, overlay):
+        agent = tomlkit.parse(content).unwrap()["agent"]
+        assert agent.get("skill_defaults", {}) == declared
+        assert ("skill_defaults" in agent) == bool(declared)
 
 
 def test_backup_needs_a_recovery_proof_but_snapshots_later_manifest_edits(

@@ -19,7 +19,7 @@ def _task(store, operation_id, **updates):
         project_id="project",
         kind="node_chat",
         status="queued",
-        request={"provider": "codex", "session_id": "native", "chat_id": operation_id},
+        request={"provider": "codex", "session_id": "native"},
         native_session_id="native",
         stage_root="/scratch/native",
         created_at=now,
@@ -155,13 +155,16 @@ def test_orchestrator_edit_records_delivered_message_without_changing_stopped_ep
         store,
         "orchestrator-edit",
         kind="artifact_edit",
-        episode_id=episode.episode_id,
         graph_target=episode.graph_target,
         authorized_by=episode.authorized_by,
         request={
             "provider": "codex",
             "message": "Update the chart legend.",
-            "artifact_edit": {"reply_episode_id": episode.episode_id, "operation_id": "edit-root"},
+            "artifact_edit": {
+                "reply_episode_id": episode.episode_id,
+                "episode_id": episode.episode_id,
+                "operation_id": "edit-root",
+            },
         },
     )
     store.create_artifact_edit_task(edit)
@@ -207,11 +210,13 @@ def test_child_artifact_edits_do_not_change_parent_quiescence_or_report_snapshot
         store,
         "child-edit",
         kind="artifact_edit",
-        episode_id=child.episode_id,
         graph_target=child.graph_target,
         native_session_id="child-session",
         stage_root=str(tmp_path),
-        request={"provider": "codex", "artifact_edit": {"operation_id": "child-edit"}},
+        request={
+            "provider": "codex",
+            "artifact_edit": {"episode_id": child.episode_id, "operation_id": "child-edit"},
+        },
     )
     store.create_artifact_edit_task(edit)
     reconciler = EpisodeReconciler(store, None, logger=logging.getLogger(__name__))
