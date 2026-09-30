@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageSquare, PanelRightClose, X } from "lucide-react";
-import { api } from "../api";
+import { api, ApiError } from "../api";
 import {
   closeArtifactViewer,
+  openArtifact,
+  openEpisodeReport,
   useArtifactViewerTarget,
   type ArtifactViewerTarget,
 } from "../artifactViewer";
@@ -10,9 +12,13 @@ import {
   acceptsArtifactEditMessage,
   artifactVersionChanged,
   collapseViewer,
+  toggleViewerFullscreen,
   parseViewerPlacement,
   type ViewerPlacement,
 } from "../artifactViewerLayout";
+import { artifactPopupTarget, isPermanentArtifactError } from "../artifactViewerRequests";
+import { listenDesktopEvent } from "../desktopRuntime";
+import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import { errorMessage } from "../errors";
 import { startLiveEpisodePolling } from "../hooks/useEpisodeDialogs";
 import { repositoryFilePreviewUrl } from "../repositoryFileLinks";
@@ -61,21 +67,46 @@ export function ArtifactViewer() {
     if (target) setPlacement((current) => collapseViewer(current, false));
   }, [target]);
 
+  useEffect(() => {
+    let disposed = false;
+    const unlisten = listenDesktopEvent<string>("rcp://open-artifact", async (url) => {
+      if (disposed) return;
+      const popup = artifactPopupTarget(url, window.location.origin);
+      if (!popup) {
+        console.warn("[rcp] dropped unrecognised artifact popup", url);
+        return;
+      }
+      try {
+        if (popup.kind === "artifact") openArtifact(popup);
+        else await openEpisodeReport(popup);
+      } catch (failure) {
+        setError(errorMessage(failure));
+      }
+    });
+    return () => {
+      disposed = true;
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
+
   const collapsed = placement.collapsed;
   useEffect(() => {
     const generation = ++requestGeneration.current;
     if (!target || target.kind !== "artifact" || collapsed) return;
     let disposed = false;
+    let permanentError = false;
+    const controller = new AbortController();
     let pending: Promise<void> | null = null;
     let latest: ArtifactViewerState | null = null;
     let editStarted = false;
     let editSignal = 0;
     const url = `/api/projects/${encodeURIComponent(target.projectId)}/artifacts/${encodeURIComponent(target.artifactId)}`;
     const load = (): Promise<void> => {
-      if (disposed || document.visibilityState !== "visible") return Promise.resolve();
+      if (disposed || permanentError || document.visibilityState !== "visible")
+        return Promise.resolve();
       if (pending) return pending;
       const signalAtStart = editSignal;
-      pending = api<ArtifactViewerState>(`${url}/state`)
+      pending = api<ArtifactViewerState>(`${url}/state`, { signal: controller.signal })
         .then((next) => {
           if (disposed || generation !== requestGeneration.current) return;
           if (artifactVersionChanged(latest?.current_version ?? null, next.current_version))
@@ -86,6 +117,12 @@ export function ArtifactViewer() {
           setEditing(editStarted);
           setError("");
         })
+        .catch((failure) => {
+          if (disposed) return;
+          if (failure instanceof ApiError)
+            permanentError = isPermanentArtifactError(failure.status);
+          throw failure;
+        })
         .finally(() => {
           pending = null;
         });
@@ -93,6 +130,7 @@ export function ArtifactViewer() {
     };
     refresh.current = async () => {
       await pending?.catch(() => {});
+      permanentError = false;
       await load();
     };
     const showError = (failure: unknown) => {
@@ -120,16 +158,10 @@ export function ArtifactViewer() {
     window.addEventListener("message", message);
     document.addEventListener("visibilitychange", visible);
     visible();
-    const stop = startLiveEpisodePolling(
-      window,
-      async () => {
-        if (!latest || editStarted || latest.live === "live") await load();
-      },
-      showError,
-      () => {},
-    );
+    const stop = startLiveEpisodePolling(window, load, showError, () => {});
     return () => {
       disposed = true;
+      controller.abort();
       stop();
       window.removeEventListener("message", message);
       document.removeEventListener("visibilitychange", visible);
@@ -181,7 +213,18 @@ export function ArtifactViewer() {
       viewer={{ placement, onChange: updatePlacement }}
       focusRequestToken={target.kind === "artifact" ? target.artifactId : target.path}
     >
-      <header className="artifact-viewer-header" data-drag-handle>
+      <header
+        className="artifact-viewer-header"
+        data-drag-handle
+        tabIndex={0}
+        aria-label="Artifact title bar"
+        aria-keyshortcuts="Enter Space"
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget || !["Enter", " "].includes(event.key)) return;
+          event.preventDefault();
+          updatePlacement(toggleViewerFullscreen(placement));
+        }}
+      >
         <strong title={title}>{title}</strong>
         {state?.live && (
           <span className={`artifact-viewer-status ${state.live}`}>
@@ -242,9 +285,16 @@ export function ArtifactViewer() {
           title={title}
         />
       ) : state ? (
-        <a className="artifact-viewer-file" href={state.download_url} download={state.name}>
+        <StoredArtifactDownload
+          key={state.artifact_id}
+          projectId={target.projectId}
+          artifactId={state.artifact_id}
+          name={state.name}
+          className="artifact-viewer-file"
+          href={state.download_url}
+        >
           Download {title}
-        </a>
+        </StoredArtifactDownload>
       ) : (
         <div className="artifact-viewer-loading" role="status">
           Loading…

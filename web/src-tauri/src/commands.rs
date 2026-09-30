@@ -1000,7 +1000,7 @@ pub async fn open_artifact_pdf(
     let url = artifact_url(
         target.base_url(),
         &project_id,
-        &task_id,
+        Some(&task_id),
         &artifact_id,
         "download",
     )?;
@@ -1044,7 +1044,7 @@ pub async fn download_artifact(
     connections: State<'_, TeamConnectionState>,
     sessions: State<'_, TeamSessionState>,
     project_id: String,
-    task_id: String,
+    task_id: Option<String>,
     artifact_id: String,
     suggested_name: String,
 ) -> Result<DownloadResult, String> {
@@ -1053,7 +1053,7 @@ pub async fn download_artifact(
     let url = artifact_url(
         target.base_url(),
         &project_id,
-        &task_id,
+        task_id.as_deref(),
         &artifact_id,
         "download",
     )?;
@@ -1147,23 +1147,20 @@ pub async fn apply_update(
 fn artifact_url(
     base_url: &str,
     project_id: &str,
-    task_id: &str,
+    task_id: Option<&str>,
     artifact_id: &str,
     action: &str,
 ) -> Result<Url, String> {
     let mut url = Url::parse(base_url).map_err(|error| format!("invalid backend URL: {error}"))?;
-    url.path_segments_mut()
-        .map_err(|_| "backend URL cannot contain path segments".to_string())?
-        .extend([
-            "api",
-            "projects",
-            project_id,
-            "tasks",
-            task_id,
-            "artifacts",
-            artifact_id,
-            action,
-        ]);
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|_| "backend URL cannot contain path segments".to_string())?;
+    segments.extend(["api", "projects", project_id]);
+    if let Some(task_id) = task_id {
+        segments.extend(["tasks", task_id]);
+    }
+    segments.extend(["artifacts", artifact_id, action]);
+    drop(segments);
     Ok(url)
 }
 
@@ -1179,6 +1176,29 @@ fn safe_filename(suggested: &str) -> &str {
 mod tests {
     use super::*;
     use crate::team_session::{TeamIdentity, TeamUserIdentity};
+
+    #[test]
+    fn artifact_download_routes_support_stored_reports_and_task_artifacts() {
+        let base = "http://127.0.0.1:8421";
+        assert_eq!(
+            artifact_url(base, "project", None, "report", "download")
+                .unwrap()
+                .path(),
+            "/api/projects/project/artifacts/report/download",
+        );
+        assert_eq!(
+            artifact_url(base, "project", Some("task"), "file", "download")
+                .unwrap()
+                .path(),
+            "/api/projects/project/tasks/task/artifacts/file/download",
+        );
+        assert_eq!(
+            artifact_url(base, "project/one", None, "file?x", "download")
+                .unwrap()
+                .path(),
+            "/api/projects/project%2Fone/artifacts/file%3Fx/download",
+        );
+    }
 
     fn saved_connection(connection_id: &str, port: u16) -> TeamConnectionMetadata {
         TeamConnectionMetadata {

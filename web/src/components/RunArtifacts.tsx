@@ -3,6 +3,7 @@ import { isDesktopRuntime, openDesktopArtifactPdf } from "../desktopRuntime";
 import { errorMessage } from "../errors";
 import { openArtifact } from "../artifactViewer";
 import type { RunArtifactEntry } from "../types";
+import { StoredArtifactDownload } from "./StoredArtifactDownload";
 import "../styles/runArtifacts.css";
 
 export function RunArtifacts({
@@ -41,14 +42,15 @@ export function RunArtifacts({
               {artifact.view === "file" || (artifact.view === "pdf" && !isDesktopRuntime()) ? (
                 <>
                   <span>{artifact.name}</span>
-                  <a
+                  <StoredArtifactDownload
+                    projectId={projectId}
+                    artifactId={artifact.artifact_id}
+                    name={artifact.name}
                     className="button compact secondary"
                     href={`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`}
-                    download={artifact.name}
-                    aria-label={`Download ${artifact.name}`}
                   >
                     Download
-                  </a>
+                  </StoredArtifactDownload>
                 </>
               ) : (
                 <button

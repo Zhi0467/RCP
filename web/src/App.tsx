@@ -51,8 +51,7 @@ import {
 import { isActiveTask } from "./agentTasks";
 import { mergeProviderLogins } from "./providers";
 import { loadChatTranscript } from "./chatApi";
-import { ArtifactViewer } from "./components/ArtifactViewer";
-import { openArtifact, openEpisodeReport } from "./artifactViewer";
+import { closeArtifactViewer, openArtifact, openEpisodeReport } from "./artifactViewer";
 import {
   chatIndicator,
   unreadChatIdsFromReads,
@@ -1021,6 +1020,7 @@ export default function App() {
   const [spaceSettingsOpen, setSpaceSettingsOpen] = useState(false);
   // Space settings is a page over the current route; any navigation leaves it.
   useEffect(() => setSpaceSettingsOpen(false), [projectId, setupOpen]);
+  useEffect(() => closeArtifactViewer(), [projectId]);
   const appearance = useTheme();
   const [loading, setLoading] = useState(true);
   const [projectReconciliation, setProjectReconciliation] =
@@ -4266,7 +4266,6 @@ export default function App() {
 
   return (
     <div className="app-shell overview-shell">
-      <ArtifactViewer />
       {acceptanceAgentSurface}
       {!projectHeaderCollapsed && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>

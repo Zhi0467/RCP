@@ -136,6 +136,18 @@ pub fn create_main(
 }
 
 fn open_main_popup(app: &AppHandle, url: Url) {
+    // Only the displayed space can consume a popup target. Other saved spaces
+    // must not be interpreted using the current window's credentials.
+    if app
+        .get_webview_window("main")
+        .and_then(|window| window.url().ok())
+        .is_some_and(|current| navigation::same_origin(&url, &current))
+    {
+        if let Err(error) = app.emit_to("main", "rcp://open-artifact", url.as_str()) {
+            eprintln!("[rcp] could not route artifact popup: {error}");
+        }
+        return;
+    }
     let current_base = app
         .state::<BackendState>()
         .status()
@@ -143,6 +155,7 @@ fn open_main_popup(app: &AppHandle, url: Url) {
         .map(|status| status.base_url);
     if let Some(base_url) = current_base {
         if is_same_origin_popup(&url, &base_url) {
+            eprintln!("[rcp] dropped popup outside the active space: {url}");
             return;
         }
     }
@@ -155,10 +168,15 @@ fn open_main_popup(app: &AppHandle, url: Url) {
                 .any(|connection| is_same_origin_popup(&url, &connection.local_origin))
         })
     {
+        eprintln!("[rcp] dropped popup outside the active space: {url}");
         return;
     }
     if navigation::is_external_reference(&url) {
-        let _ = app.opener().open_url(url.as_str(), None::<&str>);
+        if let Err(error) = app.opener().open_url(url.as_str(), None::<&str>) {
+            eprintln!("[rcp] could not open reference popup: {error}");
+        }
+    } else {
+        eprintln!("[rcp] dropped unsupported popup: {url}");
     }
 }
 

@@ -25,7 +25,7 @@ test("viewer starts docked at the right and resizes against its fixed right edge
   assert.equal(wider.width, rect.width + 100);
   assert.equal(wider.x + wider.width, viewport.width);
 });
-test("floating, full screen and dock restore preserve placement", () => {
+test("full screen restores floating placement and the dock tab restores docked placement", () => {
   const floating = moveViewer(
     floatViewer(defaultViewerPlacement, viewport),
     { x: -150, y: 30 },
@@ -37,7 +37,13 @@ test("floating, full screen and dock restore preserve placement", () => {
   const fullscreen = toggleViewerFullscreen(floating);
   assert.deepEqual(viewerRect(fullscreen, viewport), { x: 0, y: 0, ...viewport });
   assert.deepEqual(toggleViewerFullscreen(fullscreen), floating);
-  assert.deepEqual(collapseViewer(collapseViewer(floating, true), false), floating);
+  for (const placement of [floating, fullscreen, defaultViewerPlacement]) {
+    const restored = collapseViewer(collapseViewer(placement, true), false);
+    assert.equal(restored.mode, "docked");
+    assert.equal(restored.fullscreen, false);
+    assert.equal(restored.collapsed, false);
+    assert.equal(restored.width, placement.width);
+  }
   assert.deepEqual(parseViewerPlacement(JSON.stringify(floating)), floating);
 });
 test("saved viewer geometry stays reachable on smaller screens and rejects corrupt preferences", () => {

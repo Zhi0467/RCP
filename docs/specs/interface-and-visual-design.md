@@ -403,12 +403,14 @@ surfaces.
 
 ## Artifact viewer
 
-One viewer panel is mounted in the project shell. Chat artifacts, Artifacts,
+One viewer panel is mounted beside the application shell, surviving loading and
+identity branches. Changing the open project closes it. Chat artifacts, Artifacts,
 History reports, Runs, repository-file links, and WebMCP all open it. Its default is
 right-docked and full height. Dragging its left edge resizes it; dragging the
 title bar floats it. Double-clicking the title bar enters full screen and
-repeats to restore the prior placement. The dock control collapses it to a
-slim tab at the top right; the tab restores it. There is no mode button row.
+repeats to restore the prior placement. Enter or Space on the focused title bar
+does the same. The dock control collapses it to a slim tab at the top right;
+the tab restores it in docked mode. There is no mode button row.
 Size and placement persist on this browser origin and remain reachable after
 viewport changes.
 
@@ -416,8 +418,10 @@ The title bar contains the name, Live or Finished when supplied, version,
 Undo when offered, the reply-thread control when supplied, dock, and close.
 An admitted edit shows Editing until the server clears it; the panel refreshes
 the iframe when the current version changes. State polling runs only while
-open and visible. Undo reloads the current version. Errors remain explicit and
-retryable.
+open and visible, including static artifacts so other members' edits and Undo
+appear. Disposing the viewer request aborts it. Permanent HTTP errors stop
+automatic requests until Retry; network and transient HTTP failures remain polled.
+Undo reloads the current version. Errors remain explicit and retryable.
 
 The iframe hosts the same-origin viewer shell, which owns selection, comments,
 Send, and the reason Send is unavailable. Agent HTML stays in the shell's
@@ -426,7 +430,11 @@ never dispatches an edit or stages a chat draft. Repository files use their
 script-free preview. PDFs open in the desktop system viewer; in the browser
 they offer Download only, with no Open action.
 
-Each Runs card lists its report first, followed by every turn and worker
-artifact, with name, kind, time, and the worker label when present. Worker and
+Desktop downloads use the native save dialog and the stored-artifact route,
+including reports without a producing task. Recognised same-origin artifact and
+report popups open the main viewer; other dropped popups are logged.
+
+Each Runs card preserves the server order: its report first, followed by every
+turn and worker artifact, with name, kind, time, and the worker label when present. Worker and
 turn timeline popovers show artifacts from their exact producing operation,
 using the same fetched run list. Every preview opens the shared panel.

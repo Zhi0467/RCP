@@ -14,13 +14,14 @@ const entry = (id, operation, minute, extra = {}) => ({
   ...extra,
 });
 
-test("reports lead all turn and worker artifacts without mutating input", () => {
+test("server order keeps the run report ahead of earlier child reports without mutating input", () => {
+  const report = entry("own-report", null, 5, { supplier: "episode_ending" });
   const worker = entry("worker", "work", 2, { worker_label: "Worker 1" });
-  const report = entry("report", null, 3, { supplier: "episode_ending" });
-  const turn = entry("turn", "agent", 1);
-  const input = [worker, report, turn];
-  assert.deepEqual(orderRunArtifacts(input), [report, turn, worker]);
-  assert.deepEqual(input, [worker, report, turn]);
+  const child = entry("child-report", null, 1, { supplier: "episode_ending" });
+  const input = [report, child, worker];
+  const ordered = orderRunArtifacts(input);
+  assert.deepEqual(ordered, input);
+  assert.notEqual(ordered, input);
 });
 
 test("turn popovers match exact producing operations and exclude reports and unknown origins", () => {
@@ -33,7 +34,7 @@ test("turn popovers match exact producing operations and exclude reports and unk
     entry("report", "work", 4, { supplier: "episode_ending" }),
   ];
   assert.deepEqual(artifactsForOperations(entries, ["work"]), [worker]);
-  assert.deepEqual(artifactsForOperations(entries, ["work", "agent", "work"]), [turn, worker]);
+  assert.deepEqual(artifactsForOperations(entries, ["work", "agent", "work"]), [worker, turn]);
   assert.deepEqual(artifactsForOperations(entries, []), []);
   assert.deepEqual(artifactsForOperations(entries, ["wor"]), []);
 });
