@@ -101,19 +101,26 @@ def artifact_viewer_document(
             + f"const defaultLiveDelay={LIVE_ARTIFACT_REFRESH_SECONDS * 1000};\n"
             + importlib.resources.files("rcp").joinpath("artifact_live.js").read_text("utf-8")
         )
+    # The RCP panel shows the name and state; the shell keeps a bar only for its actions.
+    notice = "" if panel else '<span id="notice" role="status"></span>'
+    header = (
+        f'<header><span class="spacer"></span>{save}{keep}{notice}</header>\n'
+        if save or keep or notice
+        else ""
+    )
+    rows = "48px minmax(0,1fr)" if header else "minmax(0,1fr)"
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)
     document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title><style>
 :root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--accent:#a94f31;--panel:#fbfaf5}}
 *{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}}
-body{{display:grid;grid-template-rows:48px minmax(0,1fr)}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
+body{{display:grid;grid-template-rows:{rows}}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
 .spacer{{flex:1}}
 button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:2px;font:inherit;cursor:pointer}}button:disabled{{opacity:.45;cursor:default}}
 main{{display:grid;min-height:0}}.canvas{{position:relative;min-width:0;min-height:0;background:white}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}
 {panel.style if panel else ""}</style></head><body>
-<header><span class="spacer"></span>{save}{keep}{"" if panel else '<span id="notice" role="status"></span>'}</header>
-<main><div class="canvas">{preview}</div>{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
+{header}<main><div class="canvas">{preview}</div>{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
     csp = "default-src 'none'; "
     if scripts:
         csp += "script-src 'unsafe-inline'; connect-src 'self'; "

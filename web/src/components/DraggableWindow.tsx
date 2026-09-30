@@ -89,6 +89,9 @@ export function DraggableWindow({
   }));
   const viewerDrag = useRef<{ placement: ViewerPlacement; pointer: Point } | null>(null);
   const viewerResize = useRef<{ placement: ViewerPlacement; x: number } | null>(null);
+  // Pointer capture retargets the following dblclick to this root, so the handle
+  // check happens on the press, where the target is still the pressed element.
+  const pressedHandle = useRef(false);
   const drag = useRef<{ origin: Point; pointer: Point } | null>(null);
   const resize = useRef<{
     corner: ResizeCorner;
@@ -182,8 +185,8 @@ export function DraggableWindow({
             }
           : {}),
       }}
-      onDoubleClick={(event) => {
-        if (viewer && shouldStartWindowDrag(event.target as Element)) {
+      onDoubleClick={() => {
+        if (viewer && pressedHandle.current) {
           viewer.onChange(toggleViewerFullscreen(viewer.placement));
         }
       }}
@@ -191,7 +194,8 @@ export function DraggableWindow({
       onFocusCapture={() => setZIndex(++topFloatingZIndex)}
       onPointerDown={(event) => {
         const target = event.target as HTMLElement;
-        if (!shouldStartWindowDrag(target)) return;
+        pressedHandle.current = shouldStartWindowDrag(target);
+        if (!pressedHandle.current) return;
         if (viewer) {
           viewerDrag.current = {
             placement: floatViewer(viewer.placement, viewport),

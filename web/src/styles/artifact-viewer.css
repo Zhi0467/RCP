@@ -58,7 +58,8 @@
 }
 .artifact-viewer-tab {
   position: fixed;
-  top: 0;
+  /* Below the project header, so the tab never covers its controls. */
+  top: 72px;
   right: 0;
   z-index: 200;
   max-width: 240px;
