@@ -628,6 +628,9 @@ async def test_background_stream_close_leaves_stored_bytes_unchanged(
         )
     )
     created = store.list_result_views(project_id, chat_id=chat_id)[0]
+    # The direct stream bypasses BackgroundAgentTasks, which normally checkpoints
+    # provider session events before admitting the next ordinary turn.
+    store.checkpoint_agent_task(create_operation, native_session_id=session_id)
     store.complete_agent_task(create_operation, applied_revision=None, result={})
     target = (
         Path(created.stage_root) / "workspace" / "views" / created.view_id / created.source_name

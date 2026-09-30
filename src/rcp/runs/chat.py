@@ -303,7 +303,14 @@ def _prepare_chat_prompt_state(
     """Persist a candidate baseline and return the turn's node, master, and compact delta."""
 
     previous, expected_snapshot_sha256 = _committed_chat_prompt_state(execution, request)
-    node = classify(LaunchPhase(session_id=request.session_id, phase="turn"))
+    node = classify(
+        LaunchPhase(
+            session_id=request.session_id,
+            phase="wake"
+            if execution is not None and execution.continuation == "watcher_wake"
+            else "turn",
+        )
+    )
     master_operation_id: str | None = None
     master_sha256: str | None = None
     master_source = "rendered"
@@ -395,6 +402,7 @@ def _prepare_chat_prompt_state(
             execution.operation_id,
             "chat_master_context",
             {
+                "node": node,
                 "bootstrapped": must_bootstrap,
                 "master_context_version": CHAT_MASTER_CONTEXT_VERSION,
                 "master_context_path": master_context_path,

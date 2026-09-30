@@ -23,7 +23,7 @@ from rcp.config import ComputeConnectionConfig
 from rcp.providers import ProviderSkillReference
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.work import stream_work_run
-from rcp.service import RunRequest
+from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.skill_registry import SkillDefaults
 from rcp.storage import AgentTaskRecord, AppStore
 
@@ -91,6 +91,7 @@ def _execution(
             updated_at=now,
             status_message="running",
             native_session_id=native_session_id,
+            dispatch_authority=resolve_dispatch_authority(task_kind, request),
         )
     )
     store.record_agent_task_receipt(
@@ -234,8 +235,9 @@ async def test_contract_version_change_rebootstraps_an_existing_native_chat(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["recorded", "legacy_file", "legacy_missing"])
+@pytest.mark.parametrize("watcher_wake", [False, True])
 async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
-    manifest, tmp_path, state
+    manifest, tmp_path, state, watcher_wake
 ) -> None:
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
@@ -260,10 +262,11 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
             request=request,
             native_session_id=session_id,
         )
-        async for _frame in stream_discuss_run(
-            service, launcher, request, tmp_path / "data", execution=execution
-        ):
-            pass
+        if watcher_wake and request.session_id is not None:
+            execution.continuation = "watcher_wake"
+        run = stream_work_run if request.mode == "work" else stream_discuss_run
+        async for _frame in run(service, launcher, request, tmp_path / "data", execution=execution):
+            assert json.loads(_frame.removeprefix("data: "))["event"] != "error", _frame
         store.complete_agent_task(operation_id, applied_revision=None, result={})
 
     await turn("session-master-first", first_request)
@@ -303,18 +306,36 @@ async def test_follow_up_reuses_the_session_master_by_its_exact_bytes(
 
     await turn(
         "session-master-second",
-        first_request.model_copy(update={"message": "Continue.", "session_id": session_id}),
+        first_request.model_copy(
+            update={
+                "message": "Continue.",
+                "session_id": session_id,
+                "mode": "work" if watcher_wake else "discuss",
+            }
+        ),
     )
+    assert launcher.sessions == [None, session_id]
+    prompt_receipt = next(
+        receipt
+        for receipt in store.agent_task_receipts("session-master-second")
+        if receipt.category == "chat_master_context"
+    )
+    assert prompt_receipt.payload["node"] == ("wake" if watcher_wake else "human_turn")
+    assert prompt_receipt.payload["bootstrapped"] is (state == "legacy_missing")
+    assert store.agent_task_contract("session-master-second", "chat_turn") == launcher.prompts[1]
     last_section = launcher.prompts[1].split("\n\n")[-1]
     captured = store.agent_task_contract("session-master-second", "session_master")
     committed = json.loads(store.chat_session_context("codex", "laptop", session_id).snapshot_json)
     if state == "legacy_missing":
         # Nothing proves what the session held, so a fresh master is sent as a replacement.
+        master_path = Path(committed["master_context_path"])
         assert last_section == SECTIONS["master_rebootstrap"].format(path=master_path)
         assert captured == master_path.read_text(encoding="utf-8")
         assert committed["master_operation_id"] == "session-master-second"
         return
     assert last_section == SECTIONS["master_pointer"].format(path=master_path)
+    if watcher_wake:
+        assert "patch.command_client" in changed_values(launcher.prompts[1])
     assert master_path.read_text(encoding="utf-8") == recorded
     assert recorded not in launcher.prompts[1]
     assert captured == (recorded if state == "legacy_file" else None)

@@ -1,13 +1,14 @@
 # Agent link robustness
 
 Date: 2026-09-29
-Status: slice B implemented. An xhigh design review ran on 2026-09-29 and
-its findings are folded in below. The remaining slices await implementation
+Status: slices A and B implemented; A has a sandbox-limited live check.
+An xhigh design review ran on 2026-09-29 and its findings are folded in below. The remaining slices await implementation
 and the human decisions below.
 
-Implemented: fix B (newline-only SSE and JSONL text readers).
-Remaining: fixes A, C, and D, the open decisions marked **Human decision**, and the
-tool audit's remaining owners.
+Implemented: fix A (server-owned chat wake session binding) and fix B
+(newline-only SSE and JSONL text readers).
+Remaining: A's live acceptance check, fixes C and D, the open decisions marked
+**Human decision**, and the tool audit's remaining owners.
 
 Settled with the human on 2026-09-29:
 
@@ -67,60 +68,51 @@ observed; they cannot be checked from the repository.
 
 ## A. Chat watcher wakes continue the chat's session
 
-Today:
+Settled with the human on 2026-09-29:
 
-- `_generic_watcher_delivery_request` in `src/rcp/api/app.py` builds the wake
-  with `session_id=None`, and `start_watcher_notification` in
-  `src/rcp/runs/watcher_admission.py` refuses a generic wake that carries one.
-  Experiment and Auto-research child wakes take other paths.
-- A human turn's session comes from the Web client: `latestNativeSessionId` in
-  `web/src/agentTasks.ts` takes the newest chat task with any session, whatever
-  its status. So after a fresh wake, the human's next turn continues the wake's
-  session. The server already resolves sessions for artifact context
-  (`src/rcp/api/tasks.py`) and recovery, and binds the stage when it inserts a
-  task (`src/rcp/storage/agent_tasks.py`).
-- The chat prompt owner (`src/rcp/runs/chat.py`) classifies with a hardcoded
-  `phase="turn"`. With no session it is a session start, so the full contract
-  is the right prompt for the launch as built.
-- Chat tasks are already serialized: queued, running, and pausing tasks of one
-  chat cannot overlap, and a watcher wake defers on overlap. Watcher admission
-  does not check paused, resumable turns, which human admission does
-  (`src/rcp/runs/chat_admission.py`).
-- **New session** in the chat header creates a different chat id. Watchers
-  stay with the old chat. That behavior stays.
+1. The current session is the latest authoritative native-session binding of
+   this exact chat, with exact chat, graph target, provider, machine, stage,
+   and write-scope checks. Active, paused, resumable, detached, or unresolved
+   turns defer the wake. Never search back for an older usable session.
+2. Refuse a wake when its recorded provider or model differs from that current
+   session, with an actionable recorded reason. Never silently change policy.
+3. With no session that can be continued, start fresh visibly, recording whether
+   the chat had no session yet or why its current session cannot be continued.
+   Experiment and Auto-research child wake policies stay unchanged.
 
-Target:
+Implemented:
 
-- One server rule resolves a chat's current session, extending the stage
-  binding that already happens at task insertion. The Web client uses it too.
-- Admission resolves and binds the session atomically, with the same exact
-  checks as today: chat, graph target, provider, machine, stage, write scope.
-  A wake defers behind an active, paused, or unresolved turn.
-- A wake stays a new logical turn with the `watcher_wake` cause, which clears
-  the previous turn's handoffs (invariant 10c). It is never relabelled as
-  Resume, which keeps them.
-- The chat prompt owner selects the `wake` node. It sends the delta and the
-  master pointer when a compatible master exists, and bootstraps a master when
-  none does, as it does today.
-- Session lookup reads task metadata only, never chat text (invariant 10d).
+- `AgentTaskStoreMixin._bind_chat_stage` selects the latest native-session task
+  from metadata during insertion, inside the existing overlap transaction.
+  Human turns and ordinary watcher wakes share that lookup. Paused-turn checks
+  now run inside this transaction for both; unresolved current turns defer
+  without claiming the watchers. History-only, abandoned-recovery, or missing-stage sessions start
+  fresh rather than reviving an older binding. Existing launch-time write-scope
+  enforcement continues to validate the resolved filesystem scope.
+- `chat_session_resolution` receipts record continued/fresh/refused outcomes,
+  reason codes, and source task identity. A provider/model/machine mismatch
+  consumes the watcher completion into a failed notification task with an
+  actionable error; no provider launches for that task.
+- Generic wake admission stores `watcher_wake`, preserving the new logical-turn
+  handoff clearing rule (invariant 10c). The chat prompt owner selects `wake`
+  on a continuing session and records its node, with the compatible master
+  pointer or a bootstrapped master. Provider output is pinned to the resolved
+  wake session. No transcript participates in resolution (invariant 10d).
+- Task API projections expose `current_chat_session_id`. NodeChat and WebMCP
+  consume it without searching native-session history or chat text. Artifact
+  context keeps exact artifact ownership but follows the current chat profile;
+  insertion owns final session selection. Client session hints cannot select a
+  different ordinary-chat session. **New session** still creates a new chat id.
 
-Decisions:
-
-1. **Human decision:** which task is the chat's current session. Recommended:
-   the latest authoritative session binding, with exact ownership checks. If
-   that session needs recovery, the wake waits. It never searches back for an
-   older session that looks usable.
-2. **Human decision:** the watcher's recorded provider or model differs from the
-   chat's current session. Recommended: refuse the wake with an actionable
-   message. Never change policy silently or revive an older session.
-3. **Human decision:** a chat with no resumable session. Recommended: start
-   fresh only when the chat never had a session; otherwise require explicit
-   recovery. Episodes keep invariant 10g.
-
-Checks: drive a chat wake end to end and assert the recorded prompt is a delta
-with a pointer, on the chat's session. Cover a failed prior turn, a paused
-turn, and the first Work turn after Discuss. Then one real-provider wake on
-disposable data.
+Verification covers same-session human/wake/human admission, paused and
+interrupted deferral, provider/model refusal reasons, fresh-start reasons,
+no older-session fallback, and recorded wake prompts with master pointers,
+including the first Work turn after Discuss and missing-master bootstrap.
+Focused storage, API, prompt, watcher, and web checks are recorded in the
+implementation report. The local acceptance-provider journey remains open:
+this execution sandbox refuses creation of the command broker's Unix socket
+with `Operation not permitted`. Run the existing acceptance watcher tests and
+one disposable real-provider wake from an environment that permits that broker.
 
 ## B. Event and JSONL readers split on newlines only
 

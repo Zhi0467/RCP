@@ -2534,6 +2534,7 @@ async def stream_work_run(
             contract_path,
             staged,
             None,
+            required_session_id=turn.request.session_id if turn.waking else None,
             supervise_remote=bool(turn.execution_host),
         )
     ) as stream:

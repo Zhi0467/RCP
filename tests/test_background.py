@@ -592,9 +592,16 @@ def test_launch_admitted_rejects_invalid_launch_bindings_before_dispatch(
 ) -> None:
     store = _store(tmp_path)
     tasks = BackgroundAgentTasks(store, _done_stream)
+    operation_id = f"invalid-binding-{message.replace(' ', '-')}"
+    if "native_session_id" in record_updates:
+        with pytest.raises(ValueError, match=message):
+            _admitted_launch_task(store, operation_id=operation_id, record_updates=record_updates)
+        assert store.agent_task(operation_id) is None
+        assert operation_id not in tasks._workers
+        return
     task = _admitted_launch_task(
         store,
-        operation_id=f"invalid-binding-{message.replace(' ', '-')}",
+        operation_id=operation_id,
         record_updates=record_updates,
     )
     before = store.agent_task_receipts(task.operation_id)
@@ -1772,6 +1779,73 @@ def test_experiment_root_and_recovery_use_atomic_episode_admission(tmp_path: Pat
     assert recovered.parent_operation_id == root.operation_id
     assert recovered.episode_id == episode.episode_id
     assert store.episode_budget_meter(episode.episode_id).invocations_used == 1
+
+
+def test_generic_chat_wake_is_a_new_turn_on_the_server_resolved_session(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    stage = tmp_path / "chat-stage"
+    stage.mkdir()
+    launches = []
+    request = _work_request("watcher-chat")
+    authorizer = fabricated_authorizer("Researcher")
+
+    async def stream(_project_id, _kind, launched_request, execution):
+        launches.append(
+            (launched_request.trigger, launched_request.session_id, execution.continuation)
+        )
+        execution.checkpoint_stage("", str(stage))
+        yield _sse(AgentEvent(event="session", session_id="chat-native-session"))
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    first = tasks.start("project", "project_chat", request, authorized_by=authorizer)
+    first = wait_for_task(store, first.operation_id, expect="succeeded")
+    store.create_watchers(
+        [
+            WatcherRecord(
+                watcher_id="chat-complete",
+                project_id="project",
+                origin_operation_id=first.operation_id,
+                origin_task_kind="project_chat",
+                chat_id=request.chat_id,
+                check_command="true",
+                cwd=str(stage),
+                log_path=str(stage / "watch.log"),
+                continuation=WatcherContinuation(
+                    provider="codex",
+                    model="",
+                    reasoning="medium",
+                    run_on="laptop",
+                    run_truth_scope=["repo"],
+                    patch_kind="work",
+                ),
+                status="completed",
+                created_at=store.now(),
+                completed_at=store.now(),
+            )
+        ]
+    )
+    wake = start_watcher_notification(
+        tasks,
+        "project",
+        "project_chat",
+        request.model_copy(update={"trigger": "watcher", "watcher_ids": ["chat-complete"]}),
+        ["chat-complete"],
+        authorized_by=authorizer,
+    )
+    assert wake is not None
+    wake = wait_for_task(store, wake.operation_id, expect="succeeded")
+    human = tasks.start("project", "project_chat", request, authorized_by=authorizer)
+    human = wait_for_task(store, human.operation_id, expect="succeeded")
+
+    assert launches == [
+        ("human", None, "fresh"),
+        ("watcher", "chat-native-session", "watcher_wake"),
+        ("human", "chat-native-session", "fresh"),
+    ]
+    assert human.native_session_id == wake.native_session_id == first.native_session_id
+    assert human.stage_root == wake.stage_root == first.stage_root == str(stage)
+    assert store.agent_task_continuation_cause(wake.operation_id) == "watcher_wake"
 
 
 def test_experiment_watcher_wake_uses_atomic_episode_invocation(tmp_path: Path) -> None:

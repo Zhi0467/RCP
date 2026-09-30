@@ -1135,6 +1135,13 @@ in the same chat does not count. Such a latest turn also stays listed for
 `AGENT_TASK_LIST_FINISHED_CHAT_SECONDS` after it finishes, so a client sees the
 terminal record.
 
+Chat task responses include `current_chat_session_id`, resolved from server task
+metadata independently of the displayed historical task. NodeChat and WebMCP
+use that projection, never a search through task or transcript native-session
+ids. Admission re-resolves and binds atomically; a client hint cannot pin a new
+ordinary turn to a superseded session. Artifact comments keep their artifact's
+ownership checks while following the chat's current session profile.
+
 Read state is stored per user on the server, so it survives a reload, a closed
 app, and a second device. `GET /api/projects/{project_id}/chat-reads` returns
 the acting user's markers, one finish time per chat, plus a `baseline`: the

@@ -6,7 +6,7 @@ import {
   artifactUrl,
   chatMessageTranscriptLine,
   chatTasksMissingFromHistory,
-  latestNativeSessionId,
+  resolvedChatSessionId,
   orderTranscriptLines,
   projectActivityTask,
   reconcileChatHistoryArtifacts,
@@ -70,6 +70,7 @@ test("node chat reconstruction follows the latest chat id for that node", () => 
       request: { node_id: "node/a", chat_id: "new-chat", message: "What does this mean?" },
       result: { messages: ["First answer"] },
       native_session_id: "native-1",
+      current_chat_session_id: "native-1",
     }),
     task({
       operation_id: "other",
@@ -82,6 +83,7 @@ test("node chat reconstruction follows the latest chat id for that node", () => 
       request: { node_id: "node/a", chat_id: "new-chat", message: "Clarify it" },
       result: { messages: ["Clearer answer"] },
       native_session_id: "native-1",
+      current_chat_session_id: "native-1",
     }),
   ];
 
@@ -99,7 +101,7 @@ test("node chat reconstruction follows the latest chat id for that node", () => 
       { role: "agent", text: "Clearer answer" },
     ],
   );
-  assert.equal(latestNativeSessionId(related), "native-1");
+  assert.equal(resolvedChatSessionId(related), "native-1");
 });
 
 test("temporary input attachment metadata follows the human turn only", () => {
@@ -404,7 +406,7 @@ test("historical artifact decisions survive transcript reconciliation without UI
   });
 
   assert.deepEqual(reconstructTaskTranscript([completed])[0].artifacts, [unavailable]);
-  assert.equal(latestNativeSessionId([completed]), null);
+  assert.equal(resolvedChatSessionId([completed]), null);
 });
 
 test("artifact metadata without backend decisions is not rendered", () => {
@@ -776,4 +778,22 @@ test("omission-only turns survive reconstruction and persisted history reconcili
     assert.equal(persisted.length, 2);
     assert.deepEqual(persisted[1].artifactOmissions, omissions);
   }
+});
+
+test("chat session follows the server projection without reviving historical native sessions", () => {
+  const previous = task({
+    operation_id: "previous",
+    native_session_id: "old-session",
+    current_chat_session_id: "old-session",
+  });
+  const wake = task({
+    operation_id: "wake",
+    created_at: "2026-07-28T00:01:00Z",
+    native_session_id: "wake-session",
+    current_chat_session_id: "server-session",
+    request: { trigger: "watcher" },
+  });
+  assert.equal(resolvedChatSessionId([wake, previous]), "server-session");
+  assert.equal(resolvedChatSessionId([previous, { ...wake, current_chat_session_id: null }]), null);
+  assert.equal(resolvedChatSessionId([{ ...wake, current_chat_session_id: undefined }]), null);
 });
