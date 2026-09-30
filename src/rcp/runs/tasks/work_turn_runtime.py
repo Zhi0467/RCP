@@ -836,6 +836,7 @@ def apply_work_patch(
     record_lock_lost: Callable[[str, str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
     under_lock: Callable[[], None] | None = None,
+    prior_commit_status: Literal["present", "unknown"] | None = None,
 ) -> tuple[GraphUpdateResult | None, DeliverableFailure | None]:
     """Validate and atomically commit one candidate prepared by its concrete owner.
 
@@ -844,6 +845,8 @@ def apply_work_patch(
     reported. An unknown commit is never retried here (invariants 6 and 6b).
     ``under_lock`` runs once the canonical run lock is owned and before anything
     is read or appended; an exception it raises leaves history untouched.
+    ``prior_commit_status`` is what an earlier attempt with the same source
+    binding established; a failure before this attempt's history check keeps it.
     """
 
     if execution is not None:
@@ -959,6 +962,10 @@ def apply_work_patch(
             # The append's own lease is also checked after publication, so a
             # lost lease there cannot say which side of the commit it was on.
             commit_status = "unknown"
+        elif commit_phase == "before" and prior_commit_status is not None:
+            # This attempt never read history, so it has no evidence to lower
+            # what an earlier attempt established.
+            commit_status = prior_commit_status
         else:
             # Before the commit point, or inside append before it published:
             # history reports a failed publication as BatchPublishFailed.

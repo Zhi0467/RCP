@@ -45,22 +45,30 @@ def apply_again_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
         or store.auto_research_child_work_for_operation(record.operation_id) is not None
     ):
         return "Only an ordinary Work turn can apply its graph update again."
-    refusal = _chat_order_refusal(store, record)
+    refusal = _active_chat_refusal(store, record)
     if refusal is not None:
         return refusal
+    # Only an `absent` commit is refused here. A `present` or `unknown` one may
+    # already be in history; that is decided under the run lock, after refresh.
+    if _commit_status(record) == "absent" and store.later_chat_turn_may_have_committed(record):
+        return _LATER_TURN_REFUSAL
     if store.agent_task_patch_output(record.operation_id) is None:
         return "The retained patch is no longer available. Start a new Work turn instead."
     return None
 
 
-def _chat_order_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
-    """Refuse an older update that would land after a newer turn in the same chat.
+_LATER_TURN_REFUSAL = (
+    "A later turn in this chat applied, or may have applied, a graph update, so this "
+    "older one cannot be applied after it. Start a new Work turn instead."
+)
 
-    Apply again reuses the turn's source binding, so an `unknown` commit that did
-    land is recorded, not appended twice (invariants 6 and 6b). A `present`
-    commit is already in history, so a later turn cannot be overtaken by it.
-    """
 
+def _commit_status(record: AgentTaskRecord) -> object:
+    graph_update = record.result.get("graph_update") if record.result else None
+    return graph_update.get("commit_status") if isinstance(graph_update, dict) else None
+
+
+def _active_chat_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
     chat_id = record.request.get("chat_id")
     if isinstance(chat_id, str) and store.has_active_chat_task(
         record.project_id,
@@ -68,13 +76,6 @@ def _chat_order_refusal(store: AppStore, record: AgentTaskRecord) -> str | None:
         chat_id,
     ):
         return "Wait for the running turn in this chat to finish."
-    graph_update = record.result.get("graph_update") if record.result else None
-    commit_status = graph_update.get("commit_status") if isinstance(graph_update, dict) else None
-    if commit_status != "present" and store.later_chat_turn_applied_graph_update(record):
-        return (
-            "A later turn in this chat already applied a graph update, so this older one "
-            "cannot be applied after it. Start a new Work turn instead."
-        )
     return None
 
 
@@ -112,13 +113,25 @@ def apply_work_graph_update_again(
         def recheck_chat_order() -> None:
             # A later turn can be admitted, and can commit, while this waits for
             # the lock. Under the lock no other commit can land until it is released.
-            refusal = _chat_order_refusal(store, record)
+            refusal = _active_chat_refusal(store, record)
             if refusal is not None:
                 raise _ApplyAgainRefused(refusal)
             # The source-binding check must see a commit that landed while the link
             # was down, including through another device on a remote host.
             service.history.workspace.refresh()
+            # This turn's own commit already landed: Apply again only records it,
+            # so a later turn cannot be overtaken (invariants 6 and 6b).
+            landed = any(
+                item.source_operation_id == operation_id and item.admission == "accepted"
+                for item in service.history.load_patches()
+            )
+            if not landed and store.later_chat_turn_may_have_committed(record):
+                raise _ApplyAgainRefused(_LATER_TURN_REFUSAL)
 
+        prior = expected.get("commit_status")
+        prior_commit_status: Literal["present", "unknown"] | None = (
+            "present" if prior == "present" else "unknown" if prior == "unknown" else None
+        )
         try:
             # The same source binding as the turn: if the earlier commit did land,
             # the canonical-binding check records it instead of appending twice.
@@ -132,6 +145,8 @@ def apply_work_graph_update_again(
                 source_operation_id=operation_id,
                 cancelled=lambda: time.monotonic() > deadline,
                 under_lock=recheck_chat_order,
+                # A failure before this attempt reads history keeps what is known.
+                prior_commit_status=prior_commit_status,
             )
         except _ApplyAgainRefused as exc:
             raise ValueError(str(exc)) from exc
@@ -151,9 +166,17 @@ def apply_work_graph_update_again(
                     failure.correctable and record.native_session_id and record.stage_root
                 ),
             )
-            record_work_graph_failure(store, operation_id, graph_update)
         else:
             graph_update = result.model_copy(update={"correction_rounds": rounds})
+        # Swap first: a refused swap must leave no receipt or event behind.
+        store.replace_agent_task_graph_update(
+            operation_id,
+            expected=expected,
+            graph_update=graph_update.model_dump(mode="json"),
+        )
+        if result is None:
+            record_work_graph_failure(store, operation_id, graph_update)
+        else:
             store.record_agent_task_event(
                 operation_id,
                 f"Apply again applied the retained graph update at revision "
@@ -168,11 +191,6 @@ def apply_work_graph_update_again(
                 "commit_status": graph_update.commit_status,
                 "authorized_user_id": authorized_by.user_id if authorized_by else None,
             },
-        )
-        store.replace_agent_task_graph_update(
-            operation_id,
-            expected=expected,
-            graph_update=graph_update.model_dump(mode="json"),
         )
         # Every outcome gets a receipt, so the chat's latest one offers the right
         # recovery (Repair after a rejection); earlier receipts stay as history.

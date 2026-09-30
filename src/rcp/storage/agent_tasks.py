@@ -143,6 +143,24 @@ def _joined_repositories(aliases: Sequence[str]) -> str:
     return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
+def _completed_graph_status_message(graph_update: object) -> str:
+    """A completed task's status line for a graph update that did not simply apply."""
+
+    status = graph_update.get("status") if isinstance(graph_update, dict) else None
+    if status == "unavailable":
+        commit_status = (
+            graph_update.get("commit_status") if isinstance(graph_update, dict) else None
+        )
+        if commit_status == "present":
+            return "Completed; graph update committed but not confirmed."
+        if commit_status == "unknown":
+            return "Completed; graph update may have been committed."
+        return "Completed; graph update not applied."
+    if status == "rejected":
+        return "Completed; graph update rejected."
+    return "Agent task completed."
+
+
 @dataclass(frozen=True)
 class _AgentTaskTransitionResult:
     outcome: Literal["applied", "refused", "missing"]
@@ -1554,8 +1572,12 @@ class AgentTaskStoreMixin:
         assert claimed is not None
         return claimed
 
-    def later_chat_turn_applied_graph_update(self, record: AgentTaskRecord) -> bool:
-        """Whether a later task in this exact chat already applied a graph update."""
+    def later_chat_turn_may_have_committed(self, record: AgentTaskRecord) -> bool:
+        """Whether a later task in this exact chat committed, or may have committed, a graph update.
+
+        An unavailable update whose commit is `present` landed; an `unknown` one may
+        have, so it counts too rather than being treated as absent.
+        """
 
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
@@ -1567,7 +1589,14 @@ class AgentTaskStoreMixin:
                 WHERE project_id = ? AND kind = ? AND operation_id != ?
                   AND json_extract(request_json, '$.chat_id') = ?
                   AND created_at > ?
-                  AND json_extract(result_json, '$.graph_update.status') = 'applied'
+                  AND (
+                    json_extract(result_json, '$.graph_update.status') = 'applied'
+                    OR (
+                      json_extract(result_json, '$.graph_update.status') = 'unavailable'
+                      AND json_extract(result_json, '$.graph_update.commit_status')
+                        IN ('present', 'unknown')
+                    )
+                  )
                 LIMIT 1
                 """,
                 (
@@ -1610,15 +1639,15 @@ class AgentTaskStoreMixin:
                 """
                 UPDATE graph_runs
                 SET result_json = ?, applied_revision = COALESCE(?, applied_revision),
-                    status_message = CASE WHEN ? IS NULL THEN status_message ELSE ? END,
-                    updated_at = ?
+                    status_message = ?, updated_at = ?
                 WHERE operation_id = ?
                 """,
                 (
                     self._bounded_result_json({**result, "graph_update": graph_update}),
                     applied_revision,
-                    applied_revision,
-                    f"Project graph updated to revision {applied_revision}.",
+                    f"Project graph updated to revision {applied_revision}."
+                    if applied_revision is not None
+                    else _completed_graph_status_message(graph_update),
                     now,
                     operation_id,
                 ),
@@ -4331,13 +4360,7 @@ class AgentTaskStoreMixin:
         # Both keep the retained Patch text: a rejection for repair, and an
         # unavailable Apply for Apply again (invariant 9).
         graph_rejected = graph_status == "rejected" or graph_unavailable
-        status_message = (
-            "Completed; graph update not applied."
-            if graph_unavailable
-            else "Completed; graph update rejected."
-            if graph_rejected
-            else "Agent task completed."
-        )
+        status_message = _completed_graph_status_message(graph_update)
         message = (
             f"Project graph updated to revision {applied_revision}."
             if applied_revision is not None

@@ -281,13 +281,18 @@ Target:
   before the binding check, so a landed commit is recorded, never appended
   twice. That makes it safe for `absent`, `present` and `unknown` alike; a new
   Work turn, with a new source id, is the unsafe path. It is refused when the
-  text is gone, while the chat is active, after a later applied turn in the
-  chat (except for `present`, which is only recorded), and for Experiment-loop
-  or Auto-research child turns. The chat checks repeat under the run lock, so a
-  turn admitted while Apply again waits still refuses it. A matching canonical
-  commit is marked present before materialization, so a later failure keeps
-  that certainty. Every Apply-again outcome appends a chat receipt, and the task
-  event and chat receipt name the commit status. Rules:
+  text is gone, while the chat is active, after a later turn in the chat that
+  committed or may have (`applied`, or `unavailable` with `present` or
+  `unknown`) unless this turn's own binding is already in refreshed history,
+  and for Experiment-loop or Auto-research child turns. The chat checks repeat
+  under the run lock, so a turn admitted while Apply again waits still refuses
+  it. A matching canonical commit is marked present before materialization, so
+  a later failure keeps that certainty, and a failure before the binding check
+  keeps a stored `present` or `unknown`. The task's graph update is swapped
+  before any event or receipt is written. Every Apply-again outcome appends a
+  chat receipt; only the latest one offers an action. The task event, chat
+  receipt, task status line, and Experiment wake summary name the commit
+  status. Rules:
   [graph history](../specs/graph-history-and-transitions.md#human-preview-and-agent-correction).
 - Every failed transfer records bounded raw stderr, the exit code, the phase,
   the partition, and the commit certainty.
