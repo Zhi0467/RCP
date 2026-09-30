@@ -50,7 +50,7 @@ _KEEP_SAVE_HANDLERS_JS = (
     # The shell defines `config` with keepUrl/saveUrl and its status element.
     "const keep=document.getElementById('keep');if(keep) keep.addEventListener('click',async()=>{keep.disabled=true;notice.textContent='';try{const response=await fetch(config.keepUrl,"
     + _VIEWER_MUTATION_INIT_JS
-    + ");if(!response.ok)throw new Error('Keep failed');document.getElementById('state').textContent='kept';keep.remove();notice.textContent='Kept.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
+    + ");if(!response.ok)throw new Error('Keep failed');keep.remove();notice.textContent='Kept.';}catch(error){keep.disabled=false;notice.textContent=error instanceof Error?error.message:String(error);}});\n"
     "const save=document.getElementById('save');if(save) save.addEventListener('click',async()=>{save.disabled=true;notice.textContent='';try{const response=await fetch(config.saveUrl,"
     + _VIEWER_MUTATION_INIT_JS
     + ");if(!response.ok)throw new Error('Could not save the report. Try again.');const result=await response.json();notice.textContent=`Saved to ${result.path}`;}catch(error){notice.textContent=error instanceof Error?error.message:String(error);}finally{save.disabled=false;}});\n"
@@ -107,17 +107,17 @@ def artifact_viewer_document(
 :root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--accent:#a94f31;--panel:#fbfaf5}}
 *{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}}
 body{{display:grid;grid-template-rows:48px minmax(0,1fr)}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
-header strong{{font-family:Georgia,serif;font-size:16px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}.state{{color:var(--muted);font-size:11px;text-transform:uppercase}}.spacer{{flex:1}}
+.spacer{{flex:1}}
 button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:2px;font:inherit;cursor:pointer}}button:disabled{{opacity:.45;cursor:default}}
 main{{display:grid;min-height:0}}.canvas{{position:relative;min-width:0;min-height:0;background:white}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}
 {panel.style if panel else ""}</style></head><body>
-<header><strong>{title}</strong><span id="state" class="state">{html.escape(state)}</span><span class="spacer"></span>{save}{keep}{"" if panel else '<span id="notice" role="status"></span>'}</header>
+<header><span class="spacer"></span>{save}{keep}{"" if panel else '<span id="notice" role="status"></span>'}</header>
 <main><div class="canvas">{preview}</div>{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
     csp = "default-src 'none'; "
     if scripts:
         csp += "script-src 'unsafe-inline'; connect-src 'self'; "
-    csp += "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'"
+    csp += "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'"
     return document, csp
 
 

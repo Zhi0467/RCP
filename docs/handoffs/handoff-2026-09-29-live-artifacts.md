@@ -20,7 +20,12 @@ settled episode rule below. Explicit fresh sessions retain those destinations.
 Slices 3 and 4 are implemented: the rendered artifact contract and live
 section, the `live-pages` skill, per-version source resolution for discovered
 and edited versions, the snapshot endpoint and shell relay, and server-saved
-final snapshots. Slice 5 remains open. Docs and code land in one PR.
+final snapshots. Slice 5A is implemented: viewer state and run artifact endpoints,
+direct comments in the embedded shell, same-origin preview framing, and removal
+of native preview windows. Slice 5B remains open: the React panel and its
+consumers, including removal of chat-draft handoff and candidate-era fields.
+Integrated served-app and packaged desktop checks remain open. Docs and code
+land in one PR.
 
 Slice 1 verification still needs the installed Linux coordinator transition and
 a rehearsal on a copy of real team data. Local storage, route, recovery, and

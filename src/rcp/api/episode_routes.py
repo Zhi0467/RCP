@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from functools import partial
 from typing import Annotated, Literal, cast
@@ -638,9 +637,7 @@ def content_episode_report(
     try:
         document, csp = html_preview_document(
             store.read_artifact_bytes(report.artifact_id),
-            frame_addon=selection_frame_addon()
-            if _report_discussable_origin(store, episode_id)
-            else None,
+            frame_addon=selection_frame_addon(),
         )
     except (UnicodeError, ValueError, KeyError, OSError) as exc:
         raise HTTPException(status_code=410, detail="Episode report unavailable") from exc
@@ -726,22 +723,6 @@ def view_episode_report(
     )
 
 
-def _report_discussable_origin(store: AppStore, episode_id: str) -> bool:
-    wrapup = store.episode_wrapup(episode_id)
-    origin = (
-        store.agent_task(wrapup.concluding_operation_id)
-        if wrapup and wrapup.concluding_operation_id
-        else None
-    )
-    return bool(
-        origin
-        and isinstance(origin.request.get("chat_id"), str)
-        and not origin.history_only
-        and origin.native_session_id
-        and origin.stage_root
-    )
-
-
 def _episode_report_viewer_response(
     project_id: str,
     episode_id: str,
@@ -755,13 +736,8 @@ def _episode_report_viewer_response(
     wrapup = store.episode_wrapup(episode.episode_id)
     if report is None or wrapup is None or wrapup.concluding_operation_id is None:
         raise HTTPException(status_code=404, detail="Episode report not found")
-    origin = store.agent_task(wrapup.concluding_operation_id)
-    chat_id = origin.request.get("chat_id") if origin is not None else None
-    if not isinstance(chat_id, str):
-        chat_id = None
-    artifact_id = hashlib.sha256(report.report_id.encode("utf-8")).hexdigest()[:24]
     descriptor = AgentArtifactDescriptor(
-        artifact_id=artifact_id,
+        artifact_id=report.artifact_id,
         name="episode-report.html",
         media_type="text/html",
         size_bytes=len(store.read_artifact_bytes(report.artifact_id)),
@@ -770,22 +746,12 @@ def _episode_report_viewer_response(
         f"/api/projects/{quote(project_id, safe='')}/episodes/"
         f"{quote(episode_id, safe='')}/report/content"
     )
-    panel = (
-        comment_panel(
-            {
-                "projectId": project_id,
-                "chatId": chat_id,
-                "operationId": wrapup.concluding_operation_id,
-                "artifactId": descriptor.artifact_id,
-                "artifactName": descriptor.name,
-                "mediaType": descriptor.media_type,
-                "source": "episode_report",
-                "episodeId": episode_id,
-                "branchId": origin.graph_target.branch_id if origin else None,
-            }
-        )
-        if _report_discussable_origin(store, episode_id)
-        else None
+    panel = comment_panel(
+        {
+            "projectId": project_id,
+            "artifactId": report.artifact_id,
+            "mediaType": descriptor.media_type,
+        }
     )
     document, csp = artifact_viewer_document(
         descriptor,

@@ -135,7 +135,7 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
         projected = result["artifacts"][0]
         commentable = supports_comments(descriptor.media_type)
         assert projected["can_discuss"] is commentable
-        assert projected["can_revise"] is commentable
+        assert "can_revise" not in projected
         assert projected["can_download"] and projected["can_keep"]
         download = client.get(base + "/download")
         assert download.status_code == 200 and download.content == data
@@ -195,13 +195,13 @@ def test_stored_type_pinning_and_changed_typed_bytes(tmp_path, manifest):
         assert client.get(typed + "/download").status_code == 410
 
 
-def test_viewer_without_chat_has_no_comment_addon(tmp_path, manifest):
+def test_viewer_without_chat_uses_stored_artifact_admission(tmp_path, manifest):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     _, _, _, base = _seed(app, tmp_path, "view.html", b"<p>view</p>", chat=False)
     with TestClient(app) as client:
         viewer = client.get(base + "/viewer")
-        assert viewer.status_code == 200 and 'id="pending"' not in viewer.text
+        assert viewer.status_code == 200 and 'id="message"' in viewer.text
         content = client.get(base + "/content")
         assert content.status_code == 200
-        assert "installArtifactSelection" not in content.text
+        assert "installArtifactSelection" in content.text
         assert "rcp-reference" in content.text

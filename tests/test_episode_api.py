@@ -1051,16 +1051,15 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert "rcp-result-view-gesture" not in preview.text
     assert "connect-src &amp;#x27;none&amp;#x27;" in preview.text
     assert viewer.status_code == 200
-    # An Auto-research episode concludes with a non-chat task, so this report has no
-    # originating chat: the shell is read-only and draws no selection rail.
+    # Reports use the same comment shell and admission checks as other artifacts.
     assert "rcp-artifact-context" not in viewer.text
-    assert 'id="pending"' not in viewer.text
-    assert ">Comment</button>" not in viewer.text
-    assert "rcp-artifact-selection-enable" not in viewer.text
+    assert 'id="pending"' in viewer.text
+    assert 'id="message"' in viewer.text
+    assert "rcp-artifact-selection-enable" in viewer.text
     assert 'id="keep"' not in viewer.text
     assert "fetch(config.saveUrl" in viewer.text
     assert f"/episodes/{episode.episode_id}/report/save" in viewer.text
-    assert ">report</span>" in viewer.text
+    assert 'id="state"' not in viewer.text
     assert 'id="notice"' in viewer.text
     assert legacy_preview.status_code == 200
     assert url in legacy_preview.text

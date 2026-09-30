@@ -3410,7 +3410,6 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_pa
                 "can_download": False,
                 "can_keep": False,
                 "can_discuss": False,
-                "can_revise": False,
             }
         ],
     }
@@ -3707,7 +3706,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     origin = store.agent_task(completed["operation_id"])
     assert origin is not None and origin.native_session_id
     revisable_viewer = client.get(viewer_url)
-    assert "rcp-artifact-context" in revisable_viewer.text
+    assert "rcp-artifact-edit-started" in revisable_viewer.text
     admitted_requests: list[RunRequest] = []
 
     def capture_artifact_question(

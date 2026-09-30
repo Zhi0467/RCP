@@ -347,7 +347,6 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_download": True,
         "can_keep": False,
         "can_discuss": False,
-        "can_revise": False,
     }
     reason = artifacts["temporary.html"].pop("unavailable_reason")
     assert (reason is None) == retained_temporary
@@ -359,7 +358,6 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
         "can_download": retained_temporary,
         "can_keep": False,
         "can_discuss": False,
-        "can_revise": False,
     }
     base = f"/api/projects/{project_id}/tasks/{chat_operation_id}/artifacts"
     kept_base = f"{base}/{kept.artifact_id}"

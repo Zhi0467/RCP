@@ -312,6 +312,11 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert "Saved comparison" in content.text
         retained_report = next(entry for entry in entries if entry["kind"] == "report")
         assert retained_report["id"] == f"report:{report.report_id}"
+        assert retained_report["artifact_id"] == report.artifact_id
+        assert retained_report["viewer_url"] == (
+            f"/api/projects/{project_id}/artifacts/{report.artifact_id}/viewer"
+        )
+        assert client.get(retained_report["download_url"]).status_code == 200
         assert retained_report["episode_id"] == episode.episode_id
         assert retained_report["created_at"] == report.created_at
         assert retained_report["source_chat_href"] is None

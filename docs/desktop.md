@@ -100,6 +100,19 @@ errors. Native window, Quit, artifact, packaged-environment, update, and text-sc
 behavior are verified through the desktop itself; a browser check does not stand in
 for any of them.
 
+## Artifact viewer checks
+
+Artifacts, episode reports, and repository-file previews open in the panel inside
+RCP's main window. There is no native preview window or preview-opening command.
+PDFs still open in the system viewer, and downloads still use the native save dialog.
+
+After rebuilding the desktop, open an artifact, an episode report, and a
+repository file using disposable data. Verify that each stays in the main window,
+that the panel can dock, float, resize, and go full screen, and that a comment
+sends from the viewer. Verify a PDF opens in the system viewer and a download
+opens the save dialog. The agent content remains inside the opaque inner frame;
+the surrounding viewer and repository preview allow only same-origin framing.
+
 ## WebView origin probes
 
 Two example probes drive a real WKWebView to answer questions browser tests

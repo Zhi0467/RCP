@@ -1023,7 +1023,7 @@ def test_keep_refuses_unsafe_artifacts_entry(tmp_path: Path) -> None:
         )
 
 
-def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
+def test_viewer_sends_comments_through_stored_artifact_route() -> None:
     descriptor = AgentArtifactDescriptor(
         artifact_id="0123456789abcdef01234567",
         name="curves.html",
@@ -1048,9 +1048,12 @@ def test_viewer_assembles_context_without_dispatch_or_mode_change() -> None:
         descriptor=descriptor,
     )
 
-    assert "rcp-artifact-context" in document
-    assert 'BroadcastChannel("rcp-artifact-context")' in document
-    assert "/#/projects/project?view=chats&amp;chat=chat&amp;branch_id=branch%2Fid" in document
+    assert "rcp-artifact-context" not in document
+    assert "BroadcastChannel" not in document
+    assert "rcp-artifact-edit-started" in document
+    assert "/api/projects/project/artifacts/0123456789abcdef01234567/comments" in document
+    assert "frame-ancestors 'self'" in csp
+    assert 'id="state"' not in document
     assert "mode" not in document
     assert "fetch(config.keepUrl" in document
     assert "right - left < 4" in document
@@ -1144,7 +1147,7 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
     assert ">Comment</button>" not in document
     assert "fetch(config.saveUrl" in document
     assert 'id="keep"' not in document
-    assert ">report</span>" in document
+    assert 'id="state"' not in document
     assert "connect-src 'self'" in csp
 
     with_chat, _csp = artifact_viewer_document(
@@ -1165,7 +1168,7 @@ def test_episode_report_without_originating_chat_is_readonly_but_saveable() -> N
         save_url="/save",
     )
     assert 'id="pending"' in with_chat
-    assert '"chatAvailable": true' in with_chat
+    assert 'id="message"' in with_chat
     assert "fetch(config.saveUrl" in with_chat
 
 

@@ -30,6 +30,12 @@ from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
 from rcp.storage.models import GraphWatcherRecord
 
 
+def worker_label(instruction: str) -> str:
+    """A worker's display name: its assignment's first Markdown heading."""
+    heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", instruction, re.MULTILINE)
+    return heading.group(1) if heading else "Worker"
+
+
 def _span(operation_id: str | None) -> str | None:
     return f"span:{operation_id}" if operation_id else None
 
@@ -280,13 +286,12 @@ def build_episode_timeline(store: AppStore, episode: EpisodeRecord) -> EpisodeTi
     }
     for work in works.values():
         actor_id = f"actor:worker:{work.worker_id}"
-        heading = re.search(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", work.instruction, re.MULTILINE)
         current = tasks.get(work.current_operation_id)
         handoff = handoff_by_actor.get(actor_id)
         add_actor(
             actor_id,
             "worker",
-            heading.group(1) if heading else "Worker",
+            worker_label(work.instruction),
             work.episode_id,
             subtitle=work.control_node_id,
             started_at=work.created_at,
