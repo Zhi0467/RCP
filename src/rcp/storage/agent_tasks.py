@@ -53,7 +53,7 @@ from rcp.limits import (
     WRITING_SESSION_RETENTION_DAYS,
     WRITING_SESSIONS_PER_PROJECT,
 )
-from rcp.providers import ProviderUsage, require_runtime_id
+from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_PROJECTION_FIELDS,
@@ -95,6 +95,7 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "operation_dispatch_started",
     "operation_dispatch_reset",
     "chat_stage_layout",
+    "chat_session_resolution",
     # The latest discovery outcome is projected as the turn's omission notice.
     "artifact_discovery",
     "compute_command_started",
@@ -141,6 +142,24 @@ def _joined_repositories(aliases: Sequence[str]) -> str:
     if len(names) == 1:
         return names[0]
     return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _completed_graph_status_message(graph_update: object) -> str:
+    """A completed task's status line for a graph update that did not simply apply."""
+
+    status = graph_update.get("status") if isinstance(graph_update, dict) else None
+    if status == "unavailable":
+        commit_status = (
+            graph_update.get("commit_status") if isinstance(graph_update, dict) else None
+        )
+        if commit_status == "present":
+            return "Completed; graph update committed but not confirmed."
+        if commit_status == "unknown":
+            return "Completed; graph update may have been committed."
+        return "Completed; graph update not applied."
+    if status == "rejected":
+        return "Completed; graph update rejected."
+    return "Agent task completed."
 
 
 @dataclass(frozen=True)
@@ -424,7 +443,7 @@ class AgentTaskStoreMixin:
         if self._contains_legacy_lineage_key(record.request):
             raise ValueError("agent task requests must use episode_id, not campaign_id")
         self._validate_dispatch_authority_insert(connection, record)
-        record = self._bind_chat_stage(connection, record)
+        record, session_resolution = self._bind_chat_stage(connection, record, continuation_cause)
         self._require_session_launch_available(connection, record)
         self._validate_experiment_task_insert(connection, record)
         self._validate_graph_target_insert(connection, record)
@@ -458,8 +477,8 @@ class AgentTaskStoreMixin:
                 history_only, stage_root, graph_target_json, write_scope_fingerprint,
                 estimate_seconds, estimate_samples, phase,
                 last_activity_at, dispatch_authority_json, authorized_space_id,
-                authorized_user_id, authorized_display_name, visible
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                authorized_user_id, authorized_display_name, visible, failure_kind
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.operation_id,
@@ -498,6 +517,7 @@ class AgentTaskStoreMixin:
                 record.authorized_by.user_id if record.authorized_by is not None else None,
                 record.authorized_by.display_name if record.authorized_by is not None else None,
                 int(record.visible),
+                record.failure_kind,
             ),
         )
         self._insert_agent_task_receipt(
@@ -516,6 +536,16 @@ class AgentTaskStoreMixin:
             tier="summary",
             created_at=record.created_at,
         )
+
+        if session_resolution is not None:
+            self._insert_agent_task_receipt(
+                connection,
+                record.operation_id,
+                "chat_session_resolution",
+                self._bounded_receipt_payload(session_resolution),
+                tier="summary",
+                created_at=record.created_at,
+            )
 
     def validate_agent_task_graph_target(self, record: AgentTaskRecord) -> None:
         """Recheck the same durable target contract immediately before dispatch."""
@@ -810,10 +840,76 @@ class AgentTaskStoreMixin:
             )
 
     @staticmethod
+    def _current_chat_session_row(
+        connection: sqlite3.Connection, project_id: str, kind: str, chat_id: str
+    ) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT run.*, EXISTS (
+                SELECT 1 FROM graph_run_receipts AS receipt
+                WHERE receipt.operation_id = run.operation_id
+                  AND receipt.category IN (
+                      'experiment_recovery_abandoned', 'auto_research_recovery_abandoned'
+                  )
+            ) AS recovery_abandoned, (
+                SELECT CASE
+                    WHEN SUM(receipt.category = 'provider_terminal_error'
+                             AND json_extract(receipt.payload_json, '$.classification')
+                                 = 'stale_session') THEN 'session_stale'
+                    WHEN SUM(receipt.category = 'continuation_context_unavailable'
+                             AND json_extract(receipt.payload_json, '$.retry_required') = 1)
+                        THEN 'session_context_unavailable'
+                END
+                FROM graph_run_receipts AS receipt
+                WHERE receipt.operation_id = run.operation_id
+            ) AS session_dropped
+            FROM graph_runs AS run
+            WHERE project_id = ? AND kind = ?
+              AND json_extract(request_json, '$.chat_id') = ?
+              AND native_session_id IS NOT NULL AND native_session_id != ''
+              -- An artifact edit runs on the artifact's own origin session.
+              AND json_extract(request_json, '$.artifact_edit') IS NULL
+            ORDER BY created_at DESC, run.rowid DESC LIMIT 1
+            """,
+            (project_id, kind, chat_id),
+        ).fetchone()
+
+    @staticmethod
+    def _dropped_chat_session_reason(row: sqlite3.Row) -> str | None:
+        """Why the provider can no longer continue this row's session, when it cannot.
+
+        The classification Retry uses to refuse resuming a dropped session, except
+        `session_limit`: it also matches account quota, after which the session
+        itself can still continue.
+        """
+
+        classification = classify_terminal_error(row["error"] or "")
+        if row["session_dropped"] == "session_stale" or classification == "stale_session":
+            return "session_stale"
+        return row["session_dropped"]
+
+    def current_chat_session(
+        self, project_id: str, kind: str, chat_id: str
+    ) -> AgentTaskRecord | None:
+        """Read the latest binding, never looking back past an unusable session."""
+        with self.connection() as connection:
+            row = self._current_chat_session_row(connection, project_id, kind, chat_id)
+        if row is None:
+            return None
+        dropped = self._dropped_chat_session_reason(row)
+        data = dict(row)
+        data.pop("session_dropped")
+        current = self._agent_task_record(data)
+        if row["recovery_abandoned"] or dropped is not None:
+            return current.model_copy(update={"native_session_id": None})
+        return current
+
     def _bind_chat_stage(
+        self,
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
-    ) -> AgentTaskRecord:
+        continuation_cause: str,
+    ) -> tuple[AgentTaskRecord, dict[str, object] | None]:
         """Keep one exact scratch directory bound to a conversation.
 
         Every later task in the same chat inherits the prior host/root pair
@@ -840,18 +936,22 @@ class AgentTaskStoreMixin:
                 or origin["native_session_id"] != record.request.get("session_id")
             ):
                 raise ValueError("The artifact edit no longer has its exact origin session.")
-            return record.model_copy(
-                update={
-                    "native_session_id": origin["native_session_id"],
-                    "stage_host": origin["stage_host"],
-                    "stage_root": origin["stage_root"],
-                }
+            return (
+                record.model_copy(
+                    update={
+                        "native_session_id": origin["native_session_id"],
+                        "stage_host": origin["stage_host"],
+                        "stage_root": origin["stage_root"],
+                    }
+                ),
+                None,
             )
+        resolution: dict[str, object] | None = None
         if record.kind not in {"node_chat", "project_chat"}:
-            return record
+            return record, resolution
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
-            return record
+            return record, resolution
         prior_chat_targets = connection.execute(
             """
             SELECT DISTINCT graph_target_json
@@ -868,17 +968,138 @@ class AgentTaskStoreMixin:
             raise ValueError(
                 "This conversation belongs to another graph target and cannot continue here."
             )
+        if (
+            record.status == "queued"
+            and record.parent_operation_id is None
+            and record.request.get("patch_kind", "work") == "work"
+            and record.request.get("control_episode_id") is None
+            and record.request.get("trigger", "human") in {"human", "watcher"}
+            and continuation_cause in {"fresh", "watcher_wake"}
+        ):
+            if self._has_resumable_paused_chat_task(
+                connection, record.project_id, record.kind, chat_id
+            ):
+                raise AgentTaskAdmissionConflict(
+                    "This conversation has a paused turn. Resume or retry it before starting a new turn."
+                )
+            current = self._current_chat_session_row(
+                connection, record.project_id, record.kind, chat_id
+            )
+            reason = "no_session_yet"
+            session_id = None
+            if current is not None:
+                previous = json.loads(current["request_json"])
+                unresolved = current["status"] in {
+                    "queued",
+                    "running",
+                    "pausing",
+                    "paused",
+                    "interrupted",
+                }
+                waking = record.request.get("trigger") == "watcher"
+                # Only a wake waits on an unresolved turn; a human turn keeps the
+                # overlap and paused-turn guards it always had.
+                if (
+                    waking
+                    and unresolved
+                    and not current["history_only"]
+                    and not current["recovery_abandoned"]
+                ):
+                    raise AgentTaskAdmissionConflict(
+                        "The current chat session has an unresolved turn. Resume or retry it before continuing."
+                    )
+                if previous.get("node_id") != record.request.get("node_id"):
+                    raise ValueError("This native session belongs to another chat node.")
+                reason = "current_session"
+                # A human may switch models within one native session; a wake
+                # replays a recorded policy, so any drift refuses it instead.
+                compared = (
+                    (("provider", "provider_mismatch"), ("model", "model_mismatch"))
+                    if waking
+                    else (("provider", "provider_mismatch"),)
+                )
+                for field, code in (
+                    *compared,
+                    ("run_on", "machine_mismatch"),
+                ):
+                    if previous.get(field) != record.request.get(field):
+                        reason = code
+                        break
+                if reason != "current_session" and record.request.get("trigger") == "watcher":
+                    message = (
+                        f"Watcher wake refused: {reason}. The watcher's recorded {field} "
+                        "differs from the chat's current session. Stop this watcher and re-arm it "
+                        "from the current chat with the intended provider, model, and machine."
+                    )
+                    return record.model_copy(
+                        update={
+                            "status": "failed",
+                            "phase": "failed",
+                            "error": message,
+                            "status_message": message,
+                            "finished_at": record.created_at,
+                            "failure_kind": "session_refused",
+                        }
+                    ), {
+                        "outcome": "refused",
+                        "reason_code": reason,
+                        "source_operation_id": current["operation_id"],
+                    }
+                if reason == "current_session":
+                    if current["history_only"]:
+                        reason = "session_history_only"
+                    elif current["recovery_abandoned"]:
+                        reason = "session_recovery_abandoned"
+                    elif (dropped := self._dropped_chat_session_reason(current)) is not None:
+                        reason = dropped
+                    elif not current["stage_root"]:
+                        reason = "session_stage_unavailable"
+                    else:
+                        session_id = current["native_session_id"]
+                        if record.stage_root is not None and (
+                            record.stage_root != current["stage_root"]
+                            or (record.stage_host or "") != (current["stage_host"] or "")
+                        ):
+                            raise ValueError(
+                                "The current chat session has a different saved stage."
+                            )
+            supplied_session = record.request.get("session_id")
+            if supplied_session and supplied_session != session_id:
+                raise ValueError(
+                    "A supplied native session cannot select another conversation or graph target; "
+                    "this turn must use the chat's current binding."
+                )
+            if record.native_session_id not in {None, record.request.get("session_id")}:
+                raise ValueError("The task's native session conflicts with its requested binding.")
+            record = record.model_copy(
+                update={
+                    "request": {**record.request, "session_id": session_id},
+                    "native_session_id": session_id,
+                }
+            )
+            resolution = {
+                "outcome": "continued" if session_id else "fresh",
+                "reason_code": reason,
+                "session_id": session_id,
+                "source_operation_id": current["operation_id"] if current else None,
+            }
+            if session_id is None:
+                record = record.model_copy(
+                    update={
+                        "status_message": f"Starting a fresh chat session: {reason}.",
+                    }
+                )
         # Recovery carries a server-owned stage, but must still prove that the
         # stable conversation has not moved to a different graph target.
-        if record.stage_root is not None:
-            return record
+        if record.stage_root is not None and resolution is None:
+            return record, resolution
         session_id = record.request.get("session_id")
         watcher_ids = record.request.get("watcher_ids")
         if isinstance(session_id, str) and session_id:
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root,
-                                graph_target_json,
+                                graph_target_json, request_json,
                                 json_extract(request_json, '$.chat_id') AS chat_id
                 FROM graph_runs
                 WHERE project_id = ? AND kind = ?
@@ -889,6 +1110,8 @@ class AgentTaskStoreMixin:
             if any(
                 GraphTargetRef.model_validate_json(row["graph_target_json"]) != record.graph_target
                 or row["chat_id"] != chat_id
+                or json.loads(row["request_json"]).get("provider") != record.request.get("provider")
+                or json.loads(row["request_json"]).get("run_on") != record.request.get("run_on")
                 for row in rows
             ):
                 raise ValueError(
@@ -918,7 +1141,7 @@ class AgentTaskStoreMixin:
                 (*watcher_ids, record.project_id, record.kind, chat_id),
             ).fetchall()
         else:
-            return record
+            return record, resolution
         bindings = {(str(row["host"]), str(row["root"])) for row in rows}
         if len(bindings) > 1:
             raise ValueError(
@@ -926,11 +1149,11 @@ class AgentTaskStoreMixin:
                 "continue safely."
             )
         if not bindings:
-            return record
+            return record, resolution
         saved_host, saved_root = next(iter(bindings))
         return record.model_copy(
             update={"stage_host": saved_host or None, "stage_root": saved_root}
-        )
+        ), resolution
 
     def chat_stage_layout(
         self,
@@ -1477,6 +1700,93 @@ class AgentTaskStoreMixin:
         claimed = self.agent_task(operation_id)
         assert claimed is not None
         return claimed
+
+    def later_chat_turn_may_have_committed(self, record: AgentTaskRecord) -> bool:
+        """Whether a later task in this exact chat committed, or may have committed, a graph update.
+
+        An unavailable update whose commit is `present` landed; an `unknown` one may
+        have, so it counts too rather than being treated as absent.
+        """
+
+        chat_id = record.request.get("chat_id")
+        if not isinstance(chat_id, str) or not chat_id:
+            return False
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM graph_runs
+                WHERE project_id = ? AND kind = ? AND operation_id != ?
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND created_at > ?
+                  AND (
+                    json_extract(result_json, '$.graph_update.status') = 'applied'
+                    OR (
+                      json_extract(result_json, '$.graph_update.status') = 'unavailable'
+                      AND json_extract(result_json, '$.graph_update.commit_status')
+                        IN ('present', 'unknown')
+                    )
+                  )
+                LIMIT 1
+                """,
+                (
+                    record.project_id,
+                    record.kind,
+                    record.operation_id,
+                    chat_id,
+                    record.created_at,
+                ),
+            ).fetchone()
+        return row is not None
+
+    def replace_agent_task_graph_update(
+        self,
+        operation_id: str,
+        *,
+        expected: dict[str, object],
+        graph_update: dict[str, object],
+    ) -> None:
+        """Replace a succeeded task's graph update, only if it still reads `expected`."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, result_json FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            result = json.loads(row["result_json"]) if row and row["result_json"] else None
+            if (
+                row is None
+                or row["status"] != "succeeded"
+                or not isinstance(result, dict)
+                or result.get("graph_update") != expected
+            ):
+                raise ValueError("This task's graph update changed. Reload the task.")
+            applied_revision = graph_update.get("applied_revision")
+            status = graph_update.get("status")
+            now = self.now()
+            connection.execute(
+                """
+                UPDATE graph_runs
+                SET result_json = ?, applied_revision = COALESCE(?, applied_revision),
+                    status_message = ?, updated_at = ?
+                WHERE operation_id = ?
+                """,
+                (
+                    self._bounded_result_json({**result, "graph_update": graph_update}),
+                    applied_revision,
+                    f"Project graph updated to revision {applied_revision}."
+                    if applied_revision is not None
+                    else _completed_graph_status_message(graph_update),
+                    now,
+                    operation_id,
+                ),
+            )
+            if status not in {"rejected", "unavailable"}:
+                # Invariant 9: retained Patch text is dropped only once it applied.
+                connection.execute(
+                    "DELETE FROM graph_run_outputs WHERE operation_id = ?",
+                    (operation_id,),
+                )
 
     def create_agent_task_graph_repair(
         self,
@@ -2253,33 +2563,39 @@ class AgentTaskStoreMixin:
         """
 
         with self.connection() as connection:
-            row = connection.execute(
-                """
-                SELECT 1
-                FROM graph_runs AS paused
-                WHERE paused.project_id = ?
-                    AND paused.kind = ?
-                    AND paused.status = 'paused'
-                    AND paused.history_only = 0
-                    AND paused.native_session_id IS NOT NULL
-                    AND (paused.stage_host IS NULL OR paused.stage_host = ''
-                         OR paused.stage_root IS NOT NULL)
-                    AND json_extract(paused.request_json, '$.chat_id') = ?
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM graph_runs AS child
-                        WHERE child.parent_operation_id = paused.operation_id
-                    )
-                    AND NOT EXISTS (
-                        SELECT 1
-                        FROM graph_run_receipts AS receipt
-                        WHERE receipt.operation_id = paused.operation_id
-                          AND receipt.category = 'experiment_recovery_abandoned'
-                    )
-                LIMIT 1
-                """,
-                (project_id, kind, chat_id),
-            ).fetchone()
+            return self._has_resumable_paused_chat_task(connection, project_id, kind, chat_id)
+
+    @staticmethod
+    def _has_resumable_paused_chat_task(
+        connection: sqlite3.Connection, project_id: str, kind: str, chat_id: str
+    ) -> bool:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM graph_runs AS paused
+            WHERE paused.project_id = ?
+                AND paused.kind = ?
+                AND paused.status = 'paused'
+                AND paused.history_only = 0
+                AND paused.native_session_id IS NOT NULL
+                AND (paused.stage_host IS NULL OR paused.stage_host = ''
+                     OR paused.stage_root IS NOT NULL)
+                AND json_extract(paused.request_json, '$.chat_id') = ?
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM graph_runs AS child
+                    WHERE child.parent_operation_id = paused.operation_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM graph_run_receipts AS receipt
+                    WHERE receipt.operation_id = paused.operation_id
+                      AND receipt.category = 'experiment_recovery_abandoned'
+                )
+            LIMIT 1
+            """,
+            (project_id, kind, chat_id),
+        ).fetchone()
         return row is not None
 
     def has_any_active_agent_task(self) -> bool:
@@ -3035,6 +3351,7 @@ class AgentTaskStoreMixin:
             "none",
             "applied",
             "rejected",
+            "unavailable",
         }:
             raw_change_summary = raw_graph_update.get("change_summary")
             raw_proposal_ids = raw_graph_update.get("proposal_ids")
@@ -3042,6 +3359,7 @@ class AgentTaskStoreMixin:
             change_count, change_length = (2, 200) if concise else (32, 1600)
             proposal_count, proposal_length = (8, 100) if concise else (32, 400)
             validation_count, validation_length = (2, 200) if concise else (8, 1600)
+            commit_status = raw_graph_update.get("commit_status")
             return {
                 "status": raw_graph_update["status"],
                 "applied_revision": (
@@ -3084,6 +3402,11 @@ class AgentTaskStoreMixin:
                     else 0
                 ),
                 "repairable": raw_graph_update.get("repairable") is True,
+                **(
+                    {"commit_status": commit_status}
+                    if commit_status in {"absent", "present", "unknown"}
+                    else {}
+                ),
             }
         return None
 
@@ -4185,13 +4508,17 @@ class AgentTaskStoreMixin:
                     (item for item in reversed(graph_updates) if isinstance(item, dict)),
                     None,
                 )
-        graph_rejected = isinstance(graph_update, dict) and graph_update.get("status") == "rejected"
-        status_message = (
-            "Completed; graph update rejected." if graph_rejected else "Agent task completed."
-        )
+        graph_status = graph_update.get("status") if isinstance(graph_update, dict) else None
+        graph_unavailable = graph_status == "unavailable"
+        # Both keep the retained Patch text: a rejection for repair, and an
+        # unavailable Apply for Apply again (invariant 9).
+        graph_rejected = graph_status == "rejected" or graph_unavailable
+        status_message = _completed_graph_status_message(graph_update)
         message = (
             f"Project graph updated to revision {applied_revision}."
             if applied_revision is not None
+            else "Operational work completed; its graph update could not reach canonical state."
+            if graph_unavailable
             else "Operational work completed, but its graph update was rejected."
             if graph_rejected
             else "Agent task completed."

@@ -275,3 +275,148 @@ def test_the_shipped_reader_separates_bad_evidence_from_an_unreachable_host(tmp_
     )
 
     assert completed.returncode == 3
+
+
+def test_recorded_settlement_drains_detached_mailbox_before_failing_task(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from rcp.agents import AgentProcessControl
+    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+    from rcp.runs.remote_finalization import WaitingTask
+    from rcp.runs.remote_reconciliation import Reconciliation
+
+    store = _store(tmp_path)
+    store.mark_agent_task_running("first")
+    pid_file = "/stage/provider.pid"
+    store.begin_remote_provider_pass("first", "remote", "/stage", pid_file, supervised=True)
+    store.update_agent_task_message("first", "Detached", phase="awaiting_remote_result")
+    execution = AgentTaskExecution("first", store, AgentProcessControl())
+    order = []
+    manager = BackgroundAgentTasks(store, None)
+    owner = SimpleNamespace(execution=execution)
+
+    def settle():
+        assert manager._detached_mailboxes["first"] is owner
+        order.append("drained")
+
+    owner.settle = settle
+    manager._detached_mailboxes["first"] = owner
+    original_fail = store.fail_agent_task
+
+    def fail(*args, **kwargs):
+        assert order == ["drained"]
+        order.append("settlement")
+        return original_fail(*args, **kwargs)
+
+    monkeypatch.setattr(store, "fail_agent_task", fail)
+    monkeypatch.setattr(
+        "rcp.runs.remote_finalization.plan_remote_reconciliation",
+        lambda _: [
+            WaitingTask(
+                store.agent_task("first"), Reconciliation("fail", "Stopped", pid_file), None
+            )
+        ],
+    )
+    assert not manager._reconcile_remote_results()
+    assert order == ["drained", "settlement"]
+    assert "first" not in manager._detached_mailboxes
+
+
+def test_one_invalid_mailbox_checkpoint_does_not_block_other_detached_turns(tmp_path, monkeypatch):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.runs.remote_finalization import WaitingTask
+    from rcp.runs.remote_reconciliation import Reconciliation
+
+    store = _store(tmp_path)
+    for operation_id in ("first", "second"):
+        store.mark_agent_task_running(operation_id)
+        store.begin_remote_provider_pass(
+            operation_id,
+            "remote",
+            f"/stage/{operation_id}",
+            f"/stage/{operation_id}/provider.pid",
+            supervised=True,
+        )
+        store.update_agent_task_message(operation_id, "Detached", phase="awaiting_remote_result")
+    restored = []
+
+    def restore(execution):
+        restored.append(execution.operation_id)
+        if execution.operation_id == "first":
+            raise ValueError("invalid private checkpoint")
+        return None
+
+    manager = BackgroundAgentTasks(store, None, resume_command_mailbox=restore)
+    monkeypatch.setattr(
+        "rcp.runs.remote_finalization.plan_remote_reconciliation",
+        lambda _: [
+            WaitingTask(store.agent_task(name), Reconciliation("wait", "Live"), None)
+            for name in ("first", "second")
+        ],
+    )
+    assert manager._reconcile_remote_results()
+    assert manager._reconcile_remote_results()
+    assert restored == ["first", "second", "second"]
+
+
+def _awaiting(store, operation_id):
+    store.mark_agent_task_running(operation_id)
+    store.begin_remote_provider_pass(
+        operation_id,
+        "remote",
+        f"/stage/{operation_id}",
+        f"/stage/{operation_id}/provider.pid",
+        supervised=True,
+    )
+    store.update_agent_task_message(operation_id, "Detached", phase="awaiting_remote_result")
+
+
+def test_startup_keeps_only_awaiting_turn_checkpoints(tmp_path):
+    from rcp.background import BackgroundAgentTasks
+    from rcp.storage.command_mailbox import CommandMailboxStore
+
+    store = _store(tmp_path)
+    _awaiting(store, "first")
+    secrets = CommandMailboxStore.for_data_dir(tmp_path)
+    for operation_id, mailbox_id in (("first", "a" * 32), ("second", "b" * 32)):
+        secrets.save(
+            operation_id,
+            {
+                "identity": {"task_id": operation_id},
+                "mailbox_id": mailbox_id,
+                "host": "remote",
+                "root": f"/stage/{operation_id}",
+            },
+        )
+    (secrets.root / "unreadable.json").write_text("{")
+
+    manager = BackgroundAgentTasks(store, None)
+    manager.recover_at_startup()
+
+    assert secrets.load("first") is not None
+    assert secrets.load("second") is None
+    assert not (secrets.root / "unreadable.json").exists()
+    # The ended turn's stage files are cleaned by a later reconciliation pass.
+    assert [document["mailbox_id"] for document in manager._orphan_mailboxes] == ["b" * 32]
+
+
+def test_member_removal_settles_a_detached_mailbox_before_pausing(tmp_path):
+    from types import SimpleNamespace
+
+    from rcp.background import BackgroundAgentTasks
+
+    store = _store(tmp_path)
+    _awaiting(store, "first")
+    manager = BackgroundAgentTasks(store, None)
+    statuses = []
+    owner = SimpleNamespace(
+        settle=lambda: statuses.append(store.agent_task("first").status),
+        suspend=lambda **_: None,
+    )
+    manager._detached_mailboxes["first"] = owner
+
+    paused = manager.request_member_removal_pause("first")
+
+    assert paused.status == "paused"
+    assert statuses == ["pausing"]
+    assert "first" not in manager._detached_mailboxes

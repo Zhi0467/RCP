@@ -655,6 +655,26 @@ commands. Both hand off the shell watcher described in
 This gives no additional graph output channel or command authority to other
 task surfaces.
 
+A remote Work, Experiment, or child Work mailbox has one thread-based owner from
+launch through settlement. A disconnected accepted turn transfers the owner to
+background reconciliation; its command service does not end with the stream.
+Before settlement the owner fences new requests and drains admitted work. Backend
+shutdown suspends detached owners, preserving their private restart checkpoints.
+Startup restores the same mailbox id, token, budget reservations, and completed
+responses before checking provider liveness. Concrete owners restore their exact
+launch-time policy; no new credential or authority is issued. Checkpoints use the
+existing private provider-credential storage protections and backup exclusion.
+
+Mailbox listing, request reading, handling, and response publication retry
+separately on classified temporary transport failures. Backoff is bounded and
+jittered, with one event per outage and recovery; remote polling has a separate
+interval. Completed responses survive lost writes and restart without repeating
+handlers, and validation retries spend only one budget reservation per request.
+Permanent failure or Stop publishes a permanent closure reason for later calls.
+Stop bounds failed drain attempts; an unreachable host can prevent publishing
+that closure, but cannot imply provider death or hang settlement indefinitely.
+All polling and retry bounds live in `limits.py`.
+
 ## Durable task lifecycle
 
 Agent work belongs to the backend, not a browser view. Before execution, RCP

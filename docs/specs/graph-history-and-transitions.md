@@ -321,6 +321,46 @@ indexes, rule, cause chain, affected ids, and invariant and returns that input t
 the same native session's correction path. No rejected preparation creates a
 canonical revision or an operational receipt claiming that it did.
 
+When Apply cannot reach canonical state (the state workspace is unavailable or
+unreachable, or the lock is lost), the rules never judged the Patch. The graph
+update is recorded as `unavailable`, not `rejected`. It carries the commit
+status: `absent` before the commit point, `present` after it, or `unknown`
+when the commit point's answer was lost. It is never correctable or
+repairable. A halted replay stays a non-correctable rejection: history is
+read-only until a human repairs it, and a lost link is not the cause. The task
+keeps its Patch text (invariant 9).
+
+An ordinary conversation Work turn in that state offers **Apply again**
+(`POST …/tasks/{operation_id}/apply-graph-update-again`, patch-capable identity,
+merge fence). It re-applies the retained Patch text without running the agent,
+through the same Apply path, source binding and current-graph validation. Under
+the canonical run lock, Apply refreshes canonical state before its
+canonical-binding check, so a commit that did land, on any device, is recorded
+rather than appended again (invariants 6 and 6b). That is why Apply again is
+offered for every commit status: `absent`, `present`, and `unknown`. Once the
+binding check finds the matching commit, the outcome is `present` even if the
+following materialization fails. Certainty never drops without evidence: a
+failure before the binding check (taking the lock, or the refresh) keeps a
+stored `present` or `unknown`. The outcome replaces the task's graph update
+(compare-and-swap first, then the task event and receipts): applied, which
+drops the retained text; rejected, which may then offer Repair; or unavailable
+again. Every outcome appends a chat receipt; only the task's latest receipt
+offers Apply again or Repair, and earlier receipts stay as history. The task
+projects `can_apply_again`. Task status lines and the Experiment wake summary
+name the commit status too.
+
+Apply again is refused when the retained text is gone, when a turn in the same
+chat is active, and for Experiment-loop and Auto-research child turns, whose
+control bookkeeping a bare re-apply would skip. It is also refused when a later
+turn in that chat committed a graph update (`applied`, or `unavailable` with
+`present`) or may have (`unavailable` with `unknown`), since the older update
+would land after it; unless this turn's own source binding is already in
+refreshed canonical history, in which case Apply again only records it. An
+`absent` update is checked before the lock too; every update is checked under
+it, after refresh and before anything is appended, so a later turn admitted
+while Apply again waits still refuses it with no commit. Nothing reaches the
+graph unless a human clicks it.
+
 ## Coherent projections and operational events
 
 Every successful mutation response carries one `ProjectTransitionProjection`:

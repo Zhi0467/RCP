@@ -23,6 +23,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_project_service,
     get_store,
+    get_watcher_delivery,
     project_write_admission,
     require_project_membership,
     require_project_write_admission,
@@ -63,6 +64,7 @@ from rcp.runs.steering import (
 )
 from rcp.runs.task_policy import load_stored_request, task_graph_capable
 from rcp.runs.tasks.coach import _resolved_coach_request
+from rcp.runs.tasks.work_apply_again import apply_again_refusal, apply_work_graph_update_again
 from rcp.service import ChatMessage, CoachRequest, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.storage import (
@@ -73,6 +75,7 @@ from rcp.storage import (
     AppStore,
 )
 from rcp.transport import StateUnavailable
+from rcp.watchers import WatcherDelivery
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
@@ -85,6 +88,7 @@ ExperimentAdmissionDependency = Annotated[
     ExperimentAdmission,
     Depends(get_experiment_admission),
 ]
+WatcherDeliveryDependency = Annotated[WatcherDelivery, Depends(get_watcher_delivery)]
 
 
 ArtifactMutationLocksDependency = Annotated[KeyedLocks, Depends(get_artifact_mutation_locks)]
@@ -182,8 +186,20 @@ def _agent_task_response(
     background_tasks: BackgroundAgentTasks,
     degradations: Mapping[str, str] | None = None,
     discoveries: Mapping[str, AgentTaskReceiptRecord] | None = None,
+    chat_sessions: dict[tuple[str, str], str | None] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    if record.kind in {"node_chat", "project_chat"}:
+        chat_id = record.request.get("chat_id")
+        session_id = None
+        if isinstance(chat_id, str):
+            # A list shares one lookup per chat; a single task reads its own.
+            cache = chat_sessions if chat_sessions is not None else {}
+            key = (record.kind, chat_id)
+            if key not in cache:
+                cache[key] = _current_chat_session_id(store, record.project_id, *key)
+            session_id = cache[key]
+        response["current_chat_session_id"] = session_id
     steering = chat_steering_state(background_tasks, record)
     response.update(
         steer_visible=chat_steering_visible(store, record),
@@ -194,6 +210,7 @@ def _agent_task_response(
         # The provider ran without part of what the launch asked for. Exported
         # here so no surface has to read exit receipts to learn it.
         degradation=(degradations or {}).get(record.operation_id),
+        can_apply_again=_can_apply_again(store, record),
     )
     result = response.get("result")
     stored_artifacts = record.result.get("artifacts") if record.result else None
@@ -225,6 +242,24 @@ def _agent_task_response(
         )
     result["artifacts"] = projected
     return response
+
+
+def _current_chat_session_id(
+    store: AppStore, project_id: str, kind: str, chat_id: str
+) -> str | None:
+    current = store.current_chat_session(project_id, kind, chat_id)
+    return (
+        current.native_session_id
+        if current is not None and not current.history_only and current.stage_root
+        else None
+    )
+
+
+def _can_apply_again(store: AppStore, record: AgentTaskRecord) -> bool:
+    graph_update = record.result.get("graph_update") if record.result else None
+    if not isinstance(graph_update, dict) or graph_update.get("status") != "unavailable":
+        return False
+    return apply_again_refusal(store, record) is None
 
 
 def _reject_history_only_control(record: AgentTaskRecord) -> None:
@@ -366,8 +401,11 @@ def agent_tasks(
     records = store.agent_tasks(project_id, graph_target=target)
     degradations = store.agent_task_degradations([record.operation_id for record in records])
     discoveries = store.agent_task_artifact_discoveries([record.operation_id for record in records])
+    chat_sessions: dict[tuple[str, str], str | None] = {}
     return [
-        _agent_task_response(store, record, background_tasks, degradations, discoveries)
+        _agent_task_response(
+            store, record, background_tasks, degradations, discoveries, chat_sessions
+        )
         for record in records
     ]
 
@@ -786,6 +824,55 @@ def repair_agent_task_graph_update(
 
 
 @router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def apply_agent_task_graph_update_again(
+    project_id: str,
+    operation_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+    background_tasks: BackgroundTasksDependency,
+    watcher_delivery: WatcherDeliveryDependency,
+) -> dict[str, object]:
+    """Re-apply a Work turn's retained Patch after canonical state was unreachable."""
+
+    previous = store.agent_task(operation_id)
+    if previous is None or previous.project_id != project_id or not previous.visible:
+        raise HTTPException(status_code=404, detail="Agent task not found")
+    _reject_history_only_control(previous)
+    if not task_graph_capable(previous.kind, previous.request):
+        raise HTTPException(status_code=409, detail="This task cannot change the graph.")
+    authorized_by = identity_access.require_patch_capable_identity(request)
+    service = get_graph_service(catalog, project_id, previous.graph_target.branch_id)
+    target = service.history.graph_target
+    require_graph_edit_admission(store, catalog.resolve_project_id(project_id), target)
+    try:
+        record = apply_work_graph_update_again(
+            service,
+            store,
+            operation_id,
+            authorized_by=authorized_by,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Agent task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    graph_update = record.result.get("graph_update") if record.result else None
+    if isinstance(graph_update, dict) and graph_update.get("status") == "applied":
+        watcher_delivery.evaluate_graph_wake_boundary(
+            catalog.resolve_project_id(project_id),
+            None,
+            source="Apply again",
+            graph_target=target,
+        )
+    return _agent_task_response(store, record, background_tasks)
+
+
+@router.post(
     "/api/projects/{project_id}/tasks/{operation_id}/retry",
     status_code=202,
     dependencies=[Depends(require_project_write_admission)],
@@ -1044,6 +1131,7 @@ def _validated_task_request(
         update={
             "chat_scope": chat_scope,
             "node_id": request.node_id if chat_scope == "node" else None,
+            "session_id": None,
         }
     )
     if not request.message or not request.message.strip() or not request.chat_id:
@@ -1057,10 +1145,8 @@ def _validated_task_request(
         uuid.UUID(request.chat_id)
     except ValueError as exc:
         raise ValueError("chat_id must be a UUID") from exc
-    # Artifact-context admission resolves the exact execution profile and native
-    # session recorded by the originating turn. Do not first resolve transient
-    # settings from the currently open chat; stale settings must not prevent a
-    # valid origin-session continuation.
+    # Artifact-context admission resolves the chat's current execution profile.
+    # Do not first resolve stale settings from the currently open client.
     if request.artifact_context is not None:
         return request
     return _resolved_graph_request(service, kind, request)

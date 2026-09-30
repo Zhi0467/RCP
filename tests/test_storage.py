@@ -34,10 +34,52 @@ from rcp.storage import (
     WatcherContinuation,
     WatcherRecord,
 )
+from rcp.storage.command_mailbox import CommandMailboxStore
 
 from .helpers import NON_UUID4
 from .storage_helpers import downgrade_artifacts
 from .test_compute_jobs_storage import job_record
+
+
+def test_command_mailbox_checkpoint_resumes_privately(tmp_path: Path) -> None:
+    import stat
+
+    store = CommandMailboxStore.for_data_dir(tmp_path)
+    checkpoint = {
+        "mailbox_id": "a" * 32,
+        "token": "b" * 64,
+        "budget": {"requests": 3},
+        "responses": {"request": {"status": "ok"}},
+        "permanent_reason": None,
+    }
+    assert store.load("operation") is None
+    store.save("operation", checkpoint)
+    path = next(store.root.glob("*.json"))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
+    assert path.parent.parent == tmp_path / "providers"
+    restarted = CommandMailboxStore.for_data_dir(tmp_path)
+    assert restarted.load("operation") == checkpoint
+    checkpoint["permanent_reason"] = "stopped"
+    restarted.save("operation", checkpoint)
+    assert store.load("operation") == checkpoint
+    restarted.delete("operation")
+    assert store.load("operation") is None
+    restarted.delete("operation")
+
+
+def test_command_mailbox_checkpoint_refuses_corrupt_or_unsafe_state(tmp_path: Path) -> None:
+    store = CommandMailboxStore.for_data_dir(tmp_path)
+    store.save("operation", {"token": "secret"})
+    path = next(store.root.glob("*.json"))
+    path.write_text("[]")
+    with pytest.raises(ValueError, match="object"):
+        store.load("operation")
+    store.root.chmod(0o755)
+    with pytest.raises(RuntimeError, match="unsafe"):
+        store.load("operation")
+    with pytest.raises(ValueError, match="identifier"):
+        store.save(" ", {})
 
 
 def _project(project_id: str) -> ProjectRecord:
@@ -3355,6 +3397,25 @@ def test_agent_task_result_keeps_a_bounded_latest_tail_of_graph_updates(tmp_path
         len(json.dumps(record.result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         < 64 * 1024
     )
+
+
+def test_completed_task_status_tells_each_unavailable_commit_certainty_apart(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = store.now()
+    messages = set()
+    for commit_status in ("absent", "present", "unknown"):
+        store.create_agent_task(
+            _task_record(now, operation_id=commit_status, kind="node_chat", status="running")
+        )
+        store.complete_agent_task(
+            commit_status,
+            applied_revision=None,
+            result={"graph_update": {"status": "unavailable", "commit_status": commit_status}},
+        )
+        record = store.agent_task(commit_status)
+        assert record is not None
+        messages.add(record.status_message)
+    assert len(messages) == 3
 
 
 def test_work_graph_repair_admission_rolls_back_claim_and_child_together(

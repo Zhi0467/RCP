@@ -54,3 +54,112 @@ def test_local_work_workspace_keeps_staged_inputs_outside_the_write_root(tmp_pat
     assert workspace.is_dir()
     assert not (workspace / "inputs").exists()
     assert contract.read_text(encoding="utf-8") == "immutable contract"
+
+
+@pytest.mark.parametrize("owner", ["work", "experiment_loop"])
+def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
+    owner, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    from rcp.runs.patch_validator import PatchValidationResult
+    from rcp.runs.tasks import experiment_loop, work
+
+    module = work if owner == "work" else experiment_loop
+    saved = {"run_truth_scope": ["rq-launch"]}
+    if owner == "experiment_loop":
+        saved.update(control_node_id="experiment-launch", control_decision_bundle=[])
+    execution = SimpleNamespace(operation_id="accepted-turn", continuation="fresh")
+    monkeypatch.setattr(module, "load_work_mailbox_context", lambda _: saved)
+    restored = {}
+    monkeypatch.setattr(
+        module,
+        "restore_work_validator_mailbox",
+        lambda _execution, **kwargs: restored.update(kwargs),
+    )
+    monkeypatch.setattr(module, "_work_patch_source_operation_id", lambda _: "accepted-turn")
+    service = object()
+    opened = []
+
+    def open_service():
+        opened.append(True)
+        return service
+
+    validated = []
+
+    def validate(actual_service, text, **policy):
+        validated.append((actual_service, text, policy))
+        return PatchValidationResult(status="valid")
+
+    monkeypatch.setattr(module, "_validate_work_patch_live", validate)
+    resume = (
+        work.resume_work_command_mailbox
+        if owner == "work"
+        else experiment_loop.resume_experiment_command_mailbox
+    )
+    resume(open_service, execution)
+    assert opened == []
+    assert restored["command_handler"] is None
+    assert restored["validate"]("candidate").status == "valid"
+    assert opened == [True]
+    expected = {"run_truth_scope": ["rq-launch"], "source_operation_id": "accepted-turn"}
+    if owner == "experiment_loop":
+        expected.update(control_node_id="experiment-launch", control_decision_bundle=[])
+    assert validated == [(service, "candidate", expected)]
+
+
+def test_resumed_compute_mailbox_keeps_the_launch_scope(manifest, tmp_path) -> None:
+    from rcp.agents.launcher import AgentProcessControl
+    from rcp.agents.write_scope import ProjectWriteScope
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.tasks.compute_commands import WorkComputeCommands
+    from rcp.runs.tasks.work import (
+        _resume_work_compute_commands,
+        _work_mailbox_context,
+        _WorkMailboxContext,
+    )
+    from rcp.storage import AgentTaskRecord, AppStore
+    from rcp.transport import RemoteRunStage
+
+    store = AppStore(tmp_path / "private-data" / "rcp.sqlite3")
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id="accepted-turn",
+            project_id="project",
+            kind="project_chat",
+            status="running",
+            request={},
+            created_at=store.now(),
+            updated_at=store.now(),
+            status_message="Running",
+        )
+    )
+    scope = ProjectWriteScope.create(
+        project_id="project",
+        execution_machine="laptop",
+        execution_host="remote",
+        capability="work_auto",
+        stage_root="/stage",
+        workspace_root="/stage/workspace",
+        repositories=[],
+        protected_write_paths=[],
+    )
+    execution = AgentTaskExecution(
+        "accepted-turn",
+        store,
+        AgentProcessControl(),
+        stage_host="remote",
+        stage_root="/stage",
+        write_scope_fingerprint=scope.fingerprint,
+    )
+    original = WorkComputeCommands(execution, manifest, scope, RemoteRunStage("remote"), "episode")
+    saved = _work_mailbox_context(["rq-launch"], original).model_dump(mode="json")
+    restored = _resume_work_compute_commands(execution, _WorkMailboxContext.model_validate(saved))
+    assert restored is not None
+    assert restored.write_scope == scope
+    assert restored.episode_id == "episode"
+    assert str(restored.remote_stage.workspace) == "/stage/workspace"
+    assert restored.manifest.model_dump() == manifest.model_dump()
+    execution.write_scope_fingerprint = "changed"
+    with pytest.raises(ValueError, match="scope"):
+        _resume_work_compute_commands(execution, _WorkMailboxContext.model_validate(saved))

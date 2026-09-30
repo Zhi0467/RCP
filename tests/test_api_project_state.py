@@ -1492,3 +1492,28 @@ def test_project_usage_endpoint_returns_counted_and_excluded_records(manifest, t
     assert payload["input_processed"]["cache_share"] == 0.5
     assert payload["generated"]["total_tokens"] == 200
     assert {record["counted"] for record in payload["records"]} == {True, False}
+
+
+def test_project_readiness_exposes_cached_state_transfer_engine(manifest, tmp_path, monkeypatch):
+    from rcp.transport import state_transfer
+
+    content = manifest.path.read_text()
+    manifest.path.write_text(
+        content + '\n[[machines]]\nalias = "worker"\nhost = "research.example"\n'
+    )
+    engine = state_transfer.TransferEngine("tar", None, "openrsync: protocol version 29", "3.2.7")
+    monkeypatch.setattr(state_transfer, "_CACHE", {"research.example": engine})
+    monkeypatch.setattr(
+        state_transfer, "_probe", lambda _argv: pytest.fail("readiness must not probe transfers")
+    )
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    monkeypatch.setattr(
+        app.state.catalog.launcher,
+        "readiness",
+        lambda provider, **_kwargs: ProviderReadiness(
+            provider=provider, installed=False, authenticated=False
+        ),
+    )
+    response = TestClient(app).get(f"/api/projects/{app.state.default_project_id}/readiness")
+    assert response.status_code == 200, response.text
+    assert response.json()["state_transfers"] == {"worker": engine.as_dict()}

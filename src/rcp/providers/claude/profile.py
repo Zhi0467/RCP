@@ -228,7 +228,7 @@ class ClaudeProfile(ProviderProfile):
 
     def probe_failure_evidence(self, result: subprocess.CompletedProcess[str]) -> str:
         diagnostics = [result.stderr]
-        for line in result.stdout.splitlines():
+        for line in result.stdout.split("\n"):
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:
@@ -372,7 +372,7 @@ class ClaudeProfile(ProviderProfile):
         if not isinstance(payload, str):
             raise ValueError("Claude skill inventory is not JSONL text")
         init: dict[str, object] | None = None
-        for line in payload.splitlines():
+        for line in payload.split("\n"):
             try:
                 value = json.loads(line)
             except json.JSONDecodeError:

@@ -1169,6 +1169,17 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
         kwargs["outcome"].remote_result_pending = True
         yield _sse(AgentEvent(event="remote_result_pending", text="Connection lost."))
 
+    original_start = work_module._start_work_validator_mailbox
+
+    def remote_correction_owner(service, mailbox, **kwargs):
+        from rcp.transport import RunStageMailbox
+
+        workspace = Path(mailbox.workspace)
+        remote = _FilesystemRemoteMailboxStage("test-host", workspace)
+        mailbox = dataclasses.replace(mailbox, mailbox=RunStageMailbox(workspace, remote))
+        return original_start(service, mailbox, **kwargs)
+
+    monkeypatch.setattr(work_module, "_start_work_validator_mailbox", remote_correction_owner)
     monkeypatch.setattr(runtime_module, "_stream_agent_events", disconnected_correction)
     monkeypatch.setattr(maintenance_module, "_stream_agent_events", disconnected_correction)
     if deliverable == "experiment-watch":
@@ -1215,6 +1226,8 @@ async def test_work_correction_disconnect_waits_and_recovers_original_reply(
             composed=composed,
         )
     ]
+    if execution.command_mailbox is not None:
+        await asyncio.to_thread(execution.command_mailbox.settle)
     assert len(correction_calls) == 1
     if deliverable == "experiment-watch":
         # This correction continues the pass it corrects, and a recovered
@@ -1499,3 +1512,191 @@ async def test_a_live_supervised_turn_whose_host_vanishes_fails_visibly(
             composed=composed,
         ):
             pass
+
+
+class _FilesystemRemoteMailboxStage:
+    """Exercise remote owner lifetimes using disposable local mailbox I/O."""
+
+    def __init__(self, host, workspace=None):
+        self.host = host
+        self.root = workspace.parent if workspace is not None else None
+        self._workspace = workspace
+
+    @property
+    def workspace(self):
+        return self._workspace or Path(self.root) / "workspace"
+
+    def _mailbox(self):
+        from rcp.transport import RunStageMailbox
+
+        return RunStageMailbox.for_stage(local_stage=Path(self.workspace), remote_stage=None)
+
+    def list_workspace_entries(self):
+        return self._mailbox().entry_names()
+
+    def read_workspace_text(self, name, *, max_bytes=None):
+        return self._mailbox().read_text(name, max_bytes=max_bytes)
+
+    def write_workspace_text(self, name, content):
+        self._mailbox().write_text(name, content)
+
+    def remove_workspace_file(self, name):
+        self._mailbox().remove(name)
+
+
+def test_discarded_mailbox_cleanup_removes_only_its_own_stage_files(tmp_path, monkeypatch):
+    from rcp.runs.tasks import work_turn_runtime as runtime
+
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(parents=True)
+    old, new = "a" * 32, "b" * 32
+    for mailbox_id in (old, new):
+        (workspace / f"rcp-command-{mailbox_id}-{'c' * 32}.request.json").write_text("{}")
+        (workspace / f"rcp-command-{mailbox_id}.credential.json").write_text("{}")
+    monkeypatch.setattr(runtime, "RemoteRunStage", _FilesystemRemoteMailboxStage)
+
+    assert runtime.clear_saved_remote_mailbox(
+        {"mailbox_id": old, "host": "test-host", "root": str(workspace.parent)}
+    )
+    assert sorted(path.name for path in workspace.iterdir()) == sorted(
+        [f"rcp-command-{new}-{'c' * 32}.request.json", f"rcp-command-{new}.credential.json"]
+    )
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, monkeypatch, restart):
+    from rcp.agents import AgentEvent, AgentProcessControl
+    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+    from rcp.runs.patch_validator import PatchValidationBudget, PatchValidationResult
+    from rcp.runs.remote_finalization import WaitingTask
+    from rcp.runs.remote_reconciliation import Reconciliation
+    from rcp.runs.shared import _ProviderOutcome, _sse
+    from rcp.runs.tasks import work_turn_runtime as runtime
+    from rcp.storage.command_mailbox import CommandMailboxStore
+    from rcp.transport import RunStageMailbox
+
+    from .helpers import wait_until
+    from .test_remote_provider_receipts import _store
+
+    store = _store(tmp_path)
+    workspace = tmp_path / "stage" / "workspace"
+    workspace.mkdir(parents=True)
+    staged = stage_patch_validation_mailbox(
+        local_stage=workspace,
+        remote_stage=None,
+        task_id="first",
+        turn_id="first:work",
+        timeout_seconds=2,
+    )
+    remote = _FilesystemRemoteMailboxStage("test-host", workspace)
+    staged = dataclasses.replace(staged, mailbox=RunStageMailbox(workspace, remote))
+    execution = AgentTaskExecution(
+        "first",
+        store,
+        AgentProcessControl(),
+        stage_host=remote.host,
+        stage_root=str(remote.root),
+    )
+    token = staged.credential.token
+    validations = []
+
+    def validate(text):
+        validations.append(text)
+        return PatchValidationResult(status="valid")
+
+    async def disconnect(*args, **kwargs):
+        kwargs["outcome"].remote_result_pending = True
+        yield _sse(AgentEvent(event="remote_result_pending"))
+
+    monkeypatch.setattr(runtime, "_stream_agent_events", disconnect)
+    monkeypatch.setattr(runtime, "RemoteRunStage", _FilesystemRemoteMailboxStage)
+
+    async def launch():
+        owner = runtime.start_work_validator_mailbox(
+            staged,
+            execution=execution,
+            budget=PatchValidationBudget(2),
+            validate=validate,
+            resume_context={"run_truth_scope": []},
+        )
+        async for _ in runtime.stream_work_agent_events(
+            None,
+            _request(),
+            "prompt",
+            workspace=workspace,
+            session_id=None,
+            read_dirs=[],
+            write_dirs=[],
+            write_scope=None,
+            execution_host=remote.host,
+            execution=execution,
+            remote_stage=remote,
+            outcome=_ProviderOutcome(),
+            binary=None,
+            validator_staged=staged,
+            validator_lifecycle=owner,
+            supervise_remote=True,
+        ):
+            pass
+        return owner
+
+    owner = asyncio.run(launch())
+    store.checkpoint_agent_task("first", stage_host=remote.host, stage_root=str(remote.root))
+    store.mark_agent_task_running("first")
+    pid_file = str(remote.root / "provider.pid")
+    store.begin_remote_provider_pass(
+        "first", remote.host, str(remote.root), pid_file, supervised=True
+    )
+    store.update_agent_task_message("first", "Detached", phase="awaiting_remote_result")
+    assert owner.detached and not owner.closed and not staged.credential.expired
+    secrets = CommandMailboxStore.for_data_dir(tmp_path)
+    if restart:
+        owner.suspend()
+        assert not staged.credential.expired
+        execution = AgentTaskExecution(
+            "first",
+            store,
+            AgentProcessControl(),
+            stage_host=remote.host,
+            stage_root=str(remote.root),
+        )
+
+        def restore(current):
+            return runtime.restore_work_validator_mailbox(current, validate=validate)
+
+        manager = BackgroundAgentTasks(store, None, resume_command_mailbox=restore)
+
+        def plan(current_store):
+            # Recovery must reattach before a liveness probe can return "wait".
+            assert "first" in manager._detached_mailboxes
+            return [
+                WaitingTask(current_store.agent_task("first"), Reconciliation("wait", "live"), None)
+            ]
+
+        monkeypatch.setattr("rcp.runs.remote_finalization.plan_remote_reconciliation", plan)
+        assert manager._reconcile_remote_results()
+        owner = manager._detached_mailboxes["first"]
+        assert owner.staged.credential.token == token
+        assert owner.staged.credential.mailbox_id == staged.credential.mailbox_id
+    request_id = uuid.uuid4().hex
+    name = f"rcp-command-{staged.credential.mailbox_id}-{request_id}"
+    payload = {
+        "version": 1,
+        "mailbox_id": staged.credential.mailbox_id,
+        "request_id": request_id,
+        "credential": token,
+        "verb": "validate",
+        "arguments": {"patch": "{}"},
+    }
+    try:
+        (workspace / f"{name}.request.json").write_text(json.dumps(payload))
+        response = wait_until(lambda: (workspace / f"{name}.response.json").exists())
+        assert response
+        assert json.loads((workspace / f"{name}.response.json").read_text())["status"] == "ok"
+        assert validations == ["{}"]
+        assert secrets.load("first")["budget_count"] == 3
+        assert not owner.closed
+    finally:
+        owner.settle()
+    assert owner.closed and owner.staged.credential.expired
+    assert secrets.load("first") is None

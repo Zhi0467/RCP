@@ -103,6 +103,7 @@ from rcp.runs.tasks.work import (
     _record_work_graph_rejection,
     _WorkPatchFailure,
 )
+from rcp.runs.tasks.work_turn_runtime import failed_graph_update
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
@@ -1904,13 +1905,10 @@ async def _settle_worker_patch(
             or correction_rounds >= PATCH_CORRECTION_MAX_ROUNDS
             or not native_session_id
         ):
-            rejected = GraphUpdateResult(
-                status="rejected",
-                change_summary=list(failure.change_summary),
-                proposal_ids=list(failure.proposal_ids),
-                validation_messages=_bounded_graph_messages(failure.message),
+            rejected = failed_graph_update(
+                failure,
+                bounded_messages=_bounded_graph_messages,
                 correction_rounds=correction_rounds,
-                repairable=False,
             )
             _record_work_graph_rejection(execution, rejected)
             return _PatchSettlement(rejected, tuple(correction_frames), had_patch=had_patch)

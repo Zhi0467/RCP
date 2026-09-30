@@ -439,6 +439,29 @@ def _socket_directory(home):
     return os.path.join(root, "sockets")
 
 
+def _closed_response(workspace, mailbox_id, request_id):
+    path = os.path.join(workspace, f"rcp-command-{mailbox_id}.closed.json")
+    try:
+        with open(path, encoding="utf-8") as stream:
+            value = json.loads(stream.read(COMMAND_MAILBOX_MAX_REQUEST_BYTES + 1))
+    except FileNotFoundError:
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != VERSION
+        or value.get("mailbox_id") != mailbox_id
+        or not isinstance(value.get("message"), str)
+    ):
+        raise ClientInputError("command mailbox closure is malformed")
+    return {
+        "version": VERSION,
+        "request_id": request_id,
+        "status": "unavailable",
+        "message": value["message"],
+        "result": {"permanent": True, "delivery": "not_sent"},
+    }
+
+
 def _run(namespace):
     if not math.isfinite(namespace.timeout) or namespace.timeout <= 0:
         raise ClientInputError("timeout must be a positive finite number")
@@ -457,6 +480,9 @@ def _run(namespace):
         mailbox_id, token = _credential(workspace, namespace.credential)
     verb, key, arguments = _request_arguments(namespace, workspace)
     request_id = uuid.uuid4().hex
+    closed = _closed_response(workspace, mailbox_id, request_id)
+    if closed is not None:
+        return _handle_response(closed, namespace.verb, request_id)
     prefix = f"rcp-command-{mailbox_id}-{request_id}"
     request = {
         "version": VERSION,
@@ -489,6 +515,10 @@ def _run(namespace):
             with open(response_path, encoding="utf-8") as stream:
                 response = json.load(stream)
         except FileNotFoundError:
+            closed = _closed_response(workspace, mailbox_id, request_id)
+            if closed is not None:
+                closed["result"]["delivery"] = "unknown"
+                return _handle_response(closed, namespace.verb, request_id)
             time.sleep(0.1)
             continue
         except (OSError, UnicodeError, ValueError) as exc:

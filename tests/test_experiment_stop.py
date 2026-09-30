@@ -1671,9 +1671,17 @@ def test_watcher_wake_retry_never_falls_back_to_a_fresh_session(
                 "node_id": EXPERIMENT_ID,
                 "message": "Discuss the preserved stopped-loop history.",
                 "mode": "discuss",
+                "model": failed.request["model"],
             },
         )
         assert ordinary.status_code == 202, ordinary.text
+        assert ordinary.json()["request"]["session_id"] is None
+        resolution = next(
+            receipt.payload
+            for receipt in loop.store.agent_task_receipts(ordinary.json()["operation_id"])
+            if receipt.category == "chat_session_resolution"
+        )
+        assert resolution["reason_code"] == "session_recovery_abandoned"
 
 
 def test_provider_limit_retry_rechecks_exact_episode_session(manifest, tmp_path) -> None:

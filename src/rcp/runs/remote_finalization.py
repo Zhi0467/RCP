@@ -25,6 +25,7 @@ from rcp.runs.tasks.artifact_edit import (
 from rcp.runs.tasks.auto_research_child_work import (
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_auto_research_child_work_result,
+    resume_child_work_command_mailbox,
 )
 from rcp.runs.tasks.discuss import (
     DISCUSS_FINALIZATION_CONTEXT_ROLE,
@@ -33,13 +34,19 @@ from rcp.runs.tasks.discuss import (
 from rcp.runs.tasks.experiment_loop import (
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_experiment_loop_result,
+    resume_experiment_command_mailbox,
 )
-from rcp.runs.tasks.work import WORK_FINALIZATION_CONTEXT_ROLE, finalize_recorded_work_result
+from rcp.runs.tasks.work import (
+    WORK_FINALIZATION_CONTEXT_ROLE,
+    finalize_recorded_work_result,
+    resume_work_command_mailbox,
+)
 
 if TYPE_CHECKING:
     from rcp.agents.launcher import AgentLauncher
     from rcp.background import AgentTaskExecution
     from rcp.runs.recorded_turn import RecordedProviderTurn
+    from rcp.runs.tasks.work_turn_runtime import WorkValidatorMailboxLifecycle
     from rcp.service import ProjectService
     from rcp.storage import AgentTaskRecord, AgentTaskRequest, AppStore
 
@@ -84,6 +91,33 @@ def recorded_finalizer(store: AppStore, operation_id: str) -> RecordedFinalizer 
         if store.agent_task_contract(operation_id, role) is not None
     ]
     return owners[0] if len(owners) == 1 else None
+
+
+RECORDED_MAILBOX_RESUMERS: dict[
+    str,
+    Callable[
+        [Callable[[], ProjectService], AgentTaskExecution], WorkValidatorMailboxLifecycle | None
+    ],
+] = {
+    WORK_FINALIZATION_CONTEXT_ROLE: resume_work_command_mailbox,
+    AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: resume_child_work_command_mailbox,
+    EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE: resume_experiment_command_mailbox,
+}
+
+
+def resume_recorded_command_mailbox(
+    service: Callable[[], ProjectService], execution: AgentTaskExecution
+) -> WorkValidatorMailboxLifecycle | None:
+    """Let the retained concrete owner resume its accepted turn before any host probe."""
+
+    owners = [
+        resume
+        for role, resume in RECORDED_MAILBOX_RESUMERS.items()
+        if execution.store.agent_task_contract(execution.operation_id, role) is not None
+    ]
+    if len(owners) > 1:
+        raise ValueError("The detached turn has conflicting command mailbox owners.")
+    return owners[0](service, execution) if owners else None
 
 
 @dataclass(frozen=True)

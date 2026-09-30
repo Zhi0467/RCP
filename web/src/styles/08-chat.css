@@ -672,6 +672,11 @@
 .chat-graph-receipt.rejected .chat-graph-receipt-actions button {
   color: var(--oxblood-dark);
 }
+.chat-graph-receipt.unavailable {
+  background: var(--amber-soft);
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line));
+  border-left-color: var(--amber);
+}
 .chat-graph-change-summary,
 .chat-graph-validation {
   display: grid;

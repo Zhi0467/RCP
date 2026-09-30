@@ -133,7 +133,7 @@ from rcp.runs.experiment_loop import (
 )
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
-from rcp.runs.remote_finalization import recorded_finalizer
+from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
 from rcp.runs.shared import _protected_run_stage_roots, _sweep_stale_stages
 from rcp.runs.task_policy import task_experiment_episode_id, task_graph_capable
 from rcp.runs.tasks.auto_research_child_work import stream_auto_research_child_work_run
@@ -1038,6 +1038,22 @@ def create_app(
             async for frame in stream:
                 yield frame
 
+    def background_resume_command_mailbox(execution: AgentTaskExecution):
+        task = store.agent_task(execution.operation_id)
+        if task is None:
+            raise ValueError("Command mailbox recovery lost its durable task.")
+
+        def service_for_validation() -> ProjectService:
+            service = catalog.open(task.project_id)
+            if task.graph_target.kind == "branch":
+                service = service.for_graph_target(
+                    task.graph_target,
+                    expected_episode_id=task.graph_target.branch_id,
+                )
+            return service
+
+        return resume_recorded_command_mailbox(service_for_validation, execution)
+
     background_tasks = BackgroundAgentTasks(
         store,
         background_task_stream,
@@ -1045,6 +1061,7 @@ def create_app(
         startup_effect_fence=startup_effect_fence,
         runtime_admission_gate=background_admission_gate,
         recorded_stream=background_recorded_task_stream,
+        resume_command_mailbox=background_resume_command_mailbox,
     )
     if control_server is not None:
         member_removal_coordinator = MemberRemovalCoordinator(

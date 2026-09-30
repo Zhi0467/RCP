@@ -698,7 +698,7 @@ class ConversationIndexer:
             raise OSError(result.stderr.strip() or f"remote index exited {result.returncode}")
         items: list[dict[str, Any]] = []
         summary: tuple[int, int] | None = None
-        for line in result.stdout.splitlines():
+        for line in result.stdout.split("\n"):
             if not line.strip():
                 continue
             item = json.loads(line)

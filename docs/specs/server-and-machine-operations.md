@@ -10,6 +10,75 @@ are in [Projects, spaces, and operations](projects-spaces-and-operations.md).
 The operator's terminal procedure is [`docs/server.md`](../server.md), which is
 a guide and never overrides this file.
 
+## External dependencies
+
+This is the source-derived inventory of named external programs started by
+`src/rcp`, including shipped execution-host helpers and remote shell commands.
+Desktop means the local backend; a team server can run those same backend
+operations. Names are normalized from absolute executable paths. Shell builtins
+used as remote commands are included. Configured provider executables and user
+job commands are fully dynamic; provider owners separately probe their selected
+executable and native protocol. The AST inventory excludes fully dynamic argv
+and `sys.executable`, which starts RCP's own Python runtime.
+
+| Program | Where it runs | Owning module(s) | Contract | How it is probed | Fallback or refusal when the probe fails |
+| --- | --- | --- | --- | --- | --- |
+| `age` | team server | `server_ops/backup.py`, `server_ops/install.py`, `server_ops/doctor.py` | Upstream 1.x; native X25519 archive encryption | PATH existence at install; `--version` at install, doctor and backup | Refuse incompatible/missing encryption tool; no fallback |
+| `age-keygen` | team server | `server_ops/backup_identity.py`, `server_ops/backup_config.py`, `server_ops/install.py` | Native X25519 identity creation and `-y` public recipient derivation | PATH existence at install; validate operation output; no independent version probe | Refuse identity creation/readback; never replace an unreadable retained identity |
+| `bash` | desktop / execution host / team server | `agents/launcher.py`, `transport/watcher_process.py`, `terminals/pty_shell.py`, `transport/remote_terminal_probe.py` | Login shell for provider discovery/watchers; interactive terminal shell | Terminal checks executable `/bin/bash`; no watcher/discovery version probe | Terminal unavailable when missing; watcher/provider launch reports failure |
+| `cat` | execution host | `setup.py`, `transport/run_stage.py` | Read a remote file to stdout | No probe today | Setup or stage read fails |
+| `curl` | team server | `server_ops/provider_update.py`, `server_ops/install.py` | HTTPS installer download with `-fsSL` | PATH existence at install; no feature/version probe for the absolute update executable | Provider update refuses failed download |
+| `env` | desktop / execution host / team server | `compute_jobs/backend_context.py`, `transport/compute_process_owner.py`, `server_ops/install.py`, `server_ops/provider_update.py`, `terminals/profile.py` | Explicit command environment; `-i` for isolated account/terminal environment | No independent probe today | Owning launch/update fails |
+| `findmnt` | desktop / execution host / team server | `terminals/launch.py`, `transport/remote_terminal_probe.py`, `terminals/profile.py` | Mount inspection for canonical-state read-only verification | PATH existence and `--version`; launch verifies mounts | Mirrored terminal unavailable; no unprotected fallback |
+| `getent` | team server | `server_ops/install.py` | NSS `shadow` lookup | No independent probe; installation validates lookup result | Refuse install if account password state cannot be proved |
+| `git` | desktop / execution host / team server | `git_identity.py`, `git_access.py`, `transport/conversation_worktree.py`, `transport/remote_transfer_git.py`, `transport/remote_backup_checkout.py`, `server_ops/git_credentials.py`, `server_ops/project_checkout.py` | Worktrees require >=2.38; repository, bundle and credential operations require Git CLI | Worktree `--version` gate; identity feature check; install/doctor executable/version probes; checkout operation readbacks | Refuse unsupported worktree or failed repository operation; no replacement VCS |
+| `id` | desktop / execution host / team server | `compute_jobs/backend_context.py` | Numeric effective uid from `-u` | Invocation output validated as decimal | Compute context refuses invalid uid |
+| `launchctl` | desktop / execution host | `compute_jobs/backends/launchd.py`, `transport/compute_process_owner.py` | Launchd GUI domain bootstrap, print and bootout | `print gui/<uid>` facility probe | Backend unavailable; failed cancellation remains explicit |
+| `loginctl` | team server | `server_ops/install.py`, `server_ops/doctor.py` | Enable and inspect execution-account linger | PATH existence at install; `show-user` readback and doctor | Refuse install or report unhealthy service account |
+| `mkdir` | execution host | `transport/state.py`, `transport/run_stage.py` | `-p` stage/root creation | No probe today | Refuse preparation/publication on command failure |
+| `npm` | desktop / team server | `web_assets.py` | Run the repository's Web build and watch scripts | No independent version probe today | Source Web build fails visibly; packaged prebuilt Web mode does not invoke npm |
+| `ps` | desktop / execution host / team server | `transport/remote_terminate_provider.py` | Process pid, parent, group and command inspection | No independent probe today | Cannot confirm provider process ownership/stopping; no inferred successful stop |
+| `python3` | execution host | `transport/state.py`, `transport/state_transfer.py`, `transport/run_stage.py`, `agents/launcher.py`, `compute_jobs/files.py`, `sources/indexer.py`, `terminals/probe.py`, `server_ops/backup_checkout.py` | Python >=3.9 standard library for shipped helpers | Used in discovery and helper execution; no explicit version gate today | Remote operation fails when interpreter/helper is unavailable |
+| `rm` | execution host | `transport/run_stage.py` | `-f` staged handoff cleanup | No probe today | Stage cleanup reports failure; no silent success |
+| `rsync` | desktop / execution host / team server | `transport/state_transfer.py`, `transport/state.py`, `transport/run_stage.py`, `sources/indexer.py` | Three state transfers: protocol >=29 and support for `-a`, `--delete`, `--exclude`, `-R` over `-e ssh` at both ends; GNU rsync and stock macOS openrsync qualify; other owners retain existing flags | State owner passes the required flags before `--version` and parses GNU/openrsync output for local PATH candidates and remote rsync; other owners have no contract probe today | Three state transfers use visible tar fallback; run-stage inputs, backup, restore, kept artifacts/result views and source index: rsync required; no fallback yet |
+| `runuser` | team server | `server_ops/install.py`, `server_ops/git_credentials.py`, `server_ops/backup_config.py` | Run argv under the exact service account | PATH existence at install; no independent feature/version probe | Refuse affected account operation |
+| `sh` | desktop / execution host / team server | `transport/state.py`, `compute_jobs/backends/launchd.py`, `compute_jobs/backends/systemd_user.py`, `server_ops/provider_update.py` | POSIX command shell for history probe, job wrappers and installer | No independent probe today | Owning command/launch fails |
+| `ssh` | desktop / execution host / team server | `transport/ssh.py`, `transport/remote_compute_probe.py`, `server_ops/git_credentials.py`, `server_ops/install.py`, `server_ops/doctor.py` | OpenSSH batch transport, connection/keepalive options, multiplexing and strict host-key mode where requested | Install PATH/`-V`; doctor checks OpenSSH version prefix; remote readiness executes the route; no general version gate | Remote operation unavailable on transport failure; no alternative transport |
+| `ssh-keygen` | execution host / team server | `server_ops/remote_git_credentials.py`, `server_ops/git_credentials.py`, `server_ops/install.py` | Ed25519 repository-scoped keys and public-key derivation | PATH existence at install; generated key/public-key readback; no version probe | Refuse credential preparation/readback |
+| `sudo` | team server | `server_ops/install.py`, `server_ops/cli.py`, `server_ops/git_credentials.py` | Noninteractive account-policy check and operator privilege boundary | PATH existence and `-n -U <account> -l` at install | Refuse install unless absence of service-account sudo authority is proved; operator command fails if unauthorized |
+| `systemctl` | desktop / execution host / team server | `server_ops/install.py`, `server_ops/doctor.py`, `terminals/launch.py`, `transport/remote_terminal.py`, `transport/remote_terminal_probe.py`, `transport/compute_process_owner.py` | System service lifecycle and reachable user manager | Install `--version`/manager readback; terminal/compute `--user show-environment`; doctor service-property checks | Refuse install or affected backend; no uncontained terminal fallback |
+| `systemd-run` | desktop / execution host / team server | `terminals/launch.py`, `terminals/profile.py`, `transport/remote_terminal_probe.py`, `compute_jobs/backends/systemd_user.py` | Transient user units and requested namespace protection; `--expand-environment=no` requires >=254 | PATH and `--version` terminal probes; user-manager and containment launch checks | Omit unsupported expansion option on older versions; refuse unavailable required containment/backend |
+| `tar` | execution host | `transport/remote_state_transfer.py`, `transport/state_transfer.py` | POSIX `-xpf -` stream extraction into a private folder, then per-file rename; pull archives are produced by shipped Python tarfile code | No independent probe today; transfer completion and extracted tree are verified | An incomplete pull archive leaves the mirror untouched; a failure while applying a complete one leaves each file whole, old or new, and the next pull converges |
+| `test` | execution host | `setup.py`, `transport/state.py` | POSIX shell file predicates (`-f`, `-e`, `-d`, `-L`, `-w`) | No independent probe today | Predicate result controls absence/refusal; SSH failure remains transport failure |
+| `true` | execution host | `transport/remote_compute_probe.py` | POSIX successful no-op to prove the SSH route | Executed by the SSH connection probe; no separate tool probe | Execution host reported unavailable if the route/probe fails |
+| `uname` | desktop / execution host / team server | `compute_jobs/backend_context.py` | `-s` operating-system identity | Invocation during compute context probe | Compute readiness fails on unusable identity |
+| `useradd` | team server | `server_ops/install.py` | Dedicated user/group/home creation with explicit shell and unusable password | PATH existence; NSS account readback after creation | Refuse installation on creation/readback failure |
+| `uv` | team server | `server_ops/install.py`, `server_ops/doctor.py` | Manage application Python 3.12 and install verified release dependencies | PATH/`--version`; managed Python version readback | Refuse installation/validation; no system-Python substitution |
+
+State engine selection belongs to `transport/state_transfer.py`: it requires
+protocol 29 or newer and accepts the actual transfer flags before reading the
+version output, without a release-version floor. GNU rsync and stock macOS
+openrsync pass this feature contract. It caches one completed contract verdict
+per execution host per backend process, records the selected absolute local rsync
+path, and probes again after exit 127 or a reported protocol mismatch. SSH exit
+255, timeouts and process-start errors are unavailable-host outcomes, not contract
+failures: they are neither cached nor warned, and the next call probes again.
+Local candidates retain backend PATH order. Only `_sync_remote_tree`,
+`_publish`, and `_publish_committed_history` use this engine selection. The tar
+engine verifies the complete archive and extraction before applying it to the
+existing mirror, and pushes exactly the listed paths to the existing remote
+stage. Pulls publish new or changed files through temporary siblings and
+`os.replace`, create directories and symlinks, then delete absent entries while
+leaving excluded names untouched. The mirror root stays in place. Interrupted
+application leaves complete old or new files, and repeating the pull converges.
+
+The first fallback for each host records a logger warning and, when a task is
+active, a task warning event naming the failed end, observed version and required
+installation. The existing project readiness projection includes `state_transfers`
+per execution-machine alias, with the active engine and versions after the first
+transfer; it does not initiate probes merely to display diagnostics. Fallback
+itself never blocks work.
+
 ## Confirmed first team-server target
 
 The first supported team deployment is deliberately narrow: one lab, one Linux

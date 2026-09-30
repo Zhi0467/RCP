@@ -39,6 +39,7 @@ from rcp.transport import (
     StateWorkspace,
     prepare_state_workspace,
     repository_access,
+    state_transfer,
 )
 from rcp.transport.ssh import ssh_arguments
 from rcp.transport.state import (
@@ -58,6 +59,18 @@ from .helpers import seed_patch, wait_until
 
 _ARCHIVE_BRANCH_ID = "11111111-1111-4111-8111-111111111111"
 _ARCHIVE_MERGE_ID = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def compatible_state_rsync(monkeypatch):
+    # Negotiation is covered independently; these tests exercise state ownership.
+    monkeypatch.setattr(
+        state_transfer,
+        "get_engine",
+        lambda _host: state_transfer.TransferEngine(
+            "rsync", "/verified/bin/rsync", "3.2.7", "3.2.7"
+        ),
+    )
 
 
 def _successful_process(arguments, **_kwargs):
@@ -1525,6 +1538,7 @@ def test_remote_refresh_and_transaction_use_one_canonical_lock_and_sync(
     assert lock_calls == ["/srv/project/.research/.refresh.lock"]
     assert len([call for call in rsync_calls if "--delete" in call]) == 1
     sync_call = next(call for call in rsync_calls if "--delete" in call)
+    assert sync_call[0] == "/verified/bin/rsync"
     assert {
         "--exclude=.refresh.lock",
         "--exclude=.agent-run.lock",
@@ -2537,3 +2551,46 @@ def test_remote_stage_resume_rejects_symlinked_artifact_scope(local_remote_stage
     (turns / "logical-turn").symlink_to(outside, target_is_directory=True)
     with pytest.raises(StateUnavailable):
         stage.prepare_artifact_directory("logical-turn", reuse=True)
+
+
+@pytest.mark.parametrize("committed", [False, True], ids=["ordinary", "committed"])
+def test_tar_publication_preserves_staging_and_exact_paths(tmp_path, monkeypatch, committed):
+    root = tmp_path / ".research"
+    paths = ["patches/000001.json", "graph.json"] if committed else ["graph.json"]
+    _publication_files(root, *paths, "unrelated.txt")
+    workspace = SSHStateWorkspace(root, "research.example", "/srv/project")
+    transfers = []
+    commands = []
+    monkeypatch.setattr(
+        state_transfer,
+        "get_engine",
+        lambda _host: state_transfer.TransferEngine("tar", None, "missing", "3.2.7"),
+    )
+
+    def push(host, stage, local_root, sources):
+        transfers.append((host, stage, local_root, sources))
+        return _successful_process([])
+
+    @contextmanager
+    def remote_lock(path, **_kwargs):
+        def command(payload):
+            commands.append(payload)
+            return {"ok": True, "commit_status": "present" if committed else None}
+
+        yield _command_lease(str(path), command)
+
+    monkeypatch.setattr(state_transfer, "push_tar", push)
+    monkeypatch.setattr(workspace, "_ssh", _successful_process)
+    monkeypatch.setattr(workspace, "_remote_advisory_lock", remote_lock)
+    if committed:
+        workspace.publish_committed_patch(paths, paths[0])
+    else:
+        workspace.publish(paths)
+    assert len(transfers) == len(commands) == 1
+    host, stage, local_root, sources = transfers[0]
+    assert host == workspace.host
+    assert local_root == root
+    assert sources == paths
+    assert stage.parent == workspace.remote_root / ".publish"
+    assert commands[0]["stage"] == str(stage)
+    assert commands[0]["paths"] == paths

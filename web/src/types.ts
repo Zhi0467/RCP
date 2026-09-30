@@ -2146,14 +2146,19 @@ export interface ProviderSkillReference {
 }
 
 export interface GraphUpdateResult {
-  status: "none" | "applied" | "rejected";
+  /** "unavailable": Apply could not reach canonical state; the rules never judged it. */
+  status: "none" | "applied" | "rejected" | "unavailable";
   applied_revision: number | null;
   change_summary: string[];
   proposal_ids: string[];
   validation_messages: string[];
   correction_rounds: number;
   repairable: boolean;
+  commit_status?: "absent" | "present" | "unknown" | null;
 }
+
+/** Repair reruns the agent on a rejected Patch; Apply again re-applies a retained one. */
+export type GraphUpdateRecovery = "repair" | "apply_again";
 
 export interface RevisionSummary {
   from_revision: number;
@@ -2334,6 +2339,8 @@ export interface AgentTask {
   runtime_label: string;
   provider_label: string;
   native_session_id?: string | null;
+  /** Current chat binding resolved by the server, independent of this historical turn. */
+  current_chat_session_id?: string | null;
   history_only: boolean;
   stage_host?: string | null;
   stage_root?: string | null;
@@ -2348,6 +2355,8 @@ export interface AgentTask {
   can_pause: boolean;
   can_resume: boolean;
   can_retry: boolean;
+  /** The backend's decision that this task's unavailable graph update may be applied again. */
+  can_apply_again?: boolean;
   steer_visible: boolean;
   can_steer: boolean;
   steer_unavailable_reason: string | null;

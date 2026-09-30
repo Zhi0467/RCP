@@ -18,6 +18,7 @@ from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.runs.experiment_loop import (
     _watcher_state,
     experiment_episode_context_values,
+    experiment_graph_result_summary,
     experiment_watcher_delivery_request,
     experiment_watcher_output_name,
     preflight_episode_wake,
@@ -36,7 +37,7 @@ from rcp.runs.tasks.experiment_loop import (
 from rcp.runs.tasks.experiment_watcher_maintenance import (
     _process_experiment_watcher_maintenance,
 )
-from rcp.service import RunRequest, resolve_dispatch_authority
+from rcp.service import GraphUpdateResult, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
@@ -838,7 +839,8 @@ def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path)
         store,
         "project-contract-recovery",
         "watcher-wake",
-        request,
+        # The chat's first turn has no native session for the server to bind.
+        request.model_copy(update={"session_id": None}),
         continuation="watcher_wake",
         stage_root=str(stage),
     )
@@ -917,7 +919,7 @@ def test_retry_contract_recovery_does_not_cross_stage_boundary(tmp_path: Path) -
         store,
         "project-stage-boundary",
         "old-binding",
-        request,
+        request.model_copy(update={"session_id": None}),
         stage_root=str(old_stage),
     )
     contract = "old provider contract\n"
@@ -2729,3 +2731,13 @@ def test_watcher_state_includes_current_and_compatible_stopped_history(
         "current-completed",
         "current-stopped",
     }
+
+
+def test_experiment_graph_result_tells_the_next_wake_each_commit_certainty_apart() -> None:
+    summaries = {
+        experiment_graph_result_summary(
+            GraphUpdateResult(status="unavailable", commit_status=commit_status)
+        )
+        for commit_status in ("absent", "present", "unknown")
+    }
+    assert len(summaries) == 3

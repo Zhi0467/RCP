@@ -6,9 +6,12 @@ import hmac
 import inspect
 import json
 import math
+import random
 import re
 import secrets
 import shlex
+import subprocess
+import threading
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -34,12 +37,20 @@ from rcp.agents.staged_command_client import COMMAND_MAILBOX_MAX_REQUEST_BYTES
 from rcp.limits import (
     COMMAND_BROKER_RESPONSE_GRACE_SECONDS,
     COMMAND_CLIENT_WAIT_SECONDS,
+    COMMAND_MAILBOX_HANDLER_MAX_RETRIES,
     COMMAND_MAILBOX_POLL_SECONDS,
+    COMMAND_MAILBOX_REMOTE_POLL_SECONDS,
+    COMMAND_MAILBOX_RETRY_INITIAL_SECONDS,
+    COMMAND_MAILBOX_RETRY_JITTER,
+    COMMAND_MAILBOX_RETRY_MAX_SECONDS,
+    COMMAND_MAILBOX_STOP_MAX_FAILED_ATTEMPTS,
+    COMMAND_MAILBOX_STOP_POLL_SECONDS,
     COMMAND_MAILBOX_TIMEOUT_SECONDS,
     COMMAND_REJECTION_NOTICE_MAX_BYTES,
     COMMAND_REJECTION_NOTICE_MAX_COUNT,
 )
-from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
+from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable, StateUnreachable
+from rcp.transport.run_stage import RemoteStageTransportFailure
 
 _MAILBOX_ID = re.compile(r"^[a-f0-9]{32}$")
 _CREDENTIAL = re.compile(r"^[a-f0-9]{64}$")
@@ -313,21 +324,39 @@ def cleanup_command_mailbox(
     _clear_command_state(mailbox)
 
 
+class _MailboxInterrupted(Exception):
+    pass
+
+
+class _StoppedMailboxUnavailable(Exception):
+    """A stopped turn exhausted its bounded response/closure delivery attempts."""
+
+
+class _CredentialRefused(ValueError):
+    pass
+
+
 async def serve_command_mailbox(
     *,
     staged: StagedCommandMailbox,
     handler: CommandHandler,
-    stop: asyncio.Event,
-    poll_seconds: float = COMMAND_MAILBOX_POLL_SECONDS,
+    stop: asyncio.Event | threading.Event,
+    poll_seconds: float | None = None,
     invocation_gate: ProviderInvocationGate | None = None,
     record_rejection: CommandRejectionRecorder | None = None,
+    record_transport: CommandRejectionRecorder | None = None,
+    responses: dict[str, CommandResponse] | None = None,
+    checkpoint: Callable[[], None] | None = None,
+    terminal: dict[str, str] | None = None,
+    suspend: threading.Event | None = None,
 ) -> None:
-    """Validate and dispatch requests; the injected handler owns every effect and record.
-
-    Refusals made here or by the broker never reach the handler, so they are
-    reported through ``record_rejection`` for the owner's task history.
-    """
-
+    """Stop fences admission and drains; suspend preserves this turn for restart."""
+    if poll_seconds is None:
+        poll_seconds = (
+            COMMAND_MAILBOX_REMOTE_POLL_SECONDS
+            if staged.mailbox.remote_stage is not None
+            else COMMAND_MAILBOX_POLL_SECONDS
+        )
     if not math.isfinite(poll_seconds) or poll_seconds <= 0:
         raise ValueError("command mailbox poll interval must be a positive finite number")
     credential = staged.credential
@@ -338,28 +367,116 @@ async def serve_command_mailbox(
         raise ValueError("validate-only mailbox does not accept a provider invocation gate")
     credential.activate()
     seen: set[str] = set()
+    answers = responses if responses is not None else {}
     recorded = 0
+    outage = False
+
+    def interrupted(*, drain: bool) -> bool:
+        return bool(suspend is not None and suspend.is_set()) or (not drain and stop.is_set())
+
+    async def pause(seconds: float, *, drain: bool = False) -> None:
+        deadline = asyncio.get_running_loop().time() + seconds
+        while not interrupted(drain=drain):
+            if drain and stop.is_set():
+                deadline = min(
+                    deadline,
+                    asyncio.get_running_loop().time() + COMMAND_MAILBOX_RETRY_INITIAL_SECONDS,
+                )
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(remaining, COMMAND_MAILBOX_STOP_POLL_SECONDS))
+        raise _MailboxInterrupted
 
     async def record(status: str, message: str) -> None:
-        # Bounded here too: an agent can write request files or copy notices freely.
         nonlocal recorded
         if record_rejection is None or recorded >= COMMAND_REJECTION_NOTICE_MAX_COUNT:
             return
         recorded += 1
         await asyncio.to_thread(record_rejection, status, message)
 
+    async def transport(status: str, message: str) -> None:
+        if record_transport is not None:
+            await asyncio.to_thread(record_transport, status, message)
+
+    async def retry(operation, *, drain: bool = False):
+        nonlocal outage
+        delay = COMMAND_MAILBOX_RETRY_INITIAL_SECONDS
+        stopped_failures = 0
+        while True:
+            if interrupted(drain=drain):
+                raise _MailboxInterrupted
+            try:
+                outcome = await operation()
+            except (
+                StateUnreachable,
+                RemoteStageTransportFailure,
+                TimeoutError,
+                subprocess.TimeoutExpired,
+            ) as exc:
+                if not outage:
+                    outage = True
+                    await transport("outage", f"Command mailbox transport unavailable: {exc}")
+                if stop.is_set():
+                    stopped_failures += 1
+                    if stopped_failures >= COMMAND_MAILBOX_STOP_MAX_FAILED_ATTEMPTS:
+                        raise _StoppedMailboxUnavailable(
+                            f"turn stopped; response delivery remains unavailable: {exc}"
+                        ) from exc
+                await pause(_jittered(delay), drain=drain)
+                delay = min(COMMAND_MAILBOX_RETRY_MAX_SECONDS, delay * 2)
+                continue
+            if outage:
+                outage = False
+                await transport("recovered", "Command mailbox transport recovered")
+            return outcome
+
+    async def handle(request: CommandRequest) -> tuple[CommandResponse, bool]:
+        # Only the handler's own no-verdict SSH failure is a blip, and only a turn
+        # that checkpoints its answers may re-run a handler; the rest answer now.
+        nonlocal outage
+        retries = COMMAND_MAILBOX_HANDLER_MAX_RETRIES if checkpoint is not None else 0
+        delay = COMMAND_MAILBOX_RETRY_INITIAL_SECONDS
+        while True:
+            try:
+                outcome = await _handle_request(request, staged, handler)
+            except (StateUnreachable, RemoteStageTransportFailure) as exc:
+                if retries == 0:
+                    return _error_response(
+                        request.request_id, "unavailable", "Command handler unavailable", exc
+                    ), False
+                if not outage:
+                    outage = True
+                    await transport("outage", f"Command handler transport unavailable: {exc}")
+            else:
+                if outage:
+                    outage = False
+                    await transport("recovered", "Command mailbox transport recovered")
+                return outcome
+            retries -= 1
+            await pause(_jittered(delay), drain=True)
+            delay = min(COMMAND_MAILBOX_RETRY_MAX_SECONDS, delay * 2)
+
+    reason = (terminal or {}).get(
+        "reason", "Command mailbox permanently closed: turn stopped or entered settlement."
+    )
+    # A turn that simply ends closes its mailbox quietly; only a failure warns,
+    # and a restored closure already warned when it happened.
+    failed = False
     try:
-        while not stop.is_set():
-            names = await asyncio.to_thread(staged.mailbox.entry_names)
+        while not interrupted(drain=False) and not (terminal and terminal.get("reason")):
+            names = await retry(lambda: asyncio.to_thread(staged.mailbox.entry_names))
             for name in sorted(
                 name
                 for name in names
                 if name not in seen and _rejection_notice_id(name, credential.mailbox_id)
             ):
-                seen.add(name)
-                notice = await asyncio.to_thread(_read_rejection_notice, staged, name)
+                notice = await retry(
+                    lambda name=name: asyncio.to_thread(_read_rejection_notice, staged, name)
+                )
                 if notice is not None:
                     await record(*notice)
+                seen.add(name)
             requests = sorted(
                 name
                 for name in names
@@ -367,74 +484,135 @@ async def serve_command_mailbox(
                 and name not in seen
             )
             for name in requests:
-                if stop.is_set():
-                    return
-                seen.add(name)
-                identity = _request_identity_from_name(name, credential.mailbox_id)
-                assert identity is not None
-                response, handled = await _answer_request(
-                    name,
-                    request_id=identity,
-                    staged=staged,
-                    handler=handler,
-                )
-                if not handled:
-                    await record(response.status, response.message or "")
+                if interrupted(drain=False):
+                    raise _MailboxInterrupted
+                request_id = _request_identity_from_name(name, credential.mailbox_id)
+                assert request_id is not None
+                refusal = None
+                if name not in answers:
+                    try:
+                        request = await retry(
+                            lambda name=name, request_id=request_id: _read_request(
+                                name, request_id, staged
+                            )
+                        )
+                    except _CredentialRefused as exc:
+                        refusal = exc
+                        if terminal is not None:
+                            terminal["reason"] = f"Command mailbox permanently closed: {exc}"
+                        response = _error_response(
+                            request_id, "invalid", "Command request invalid", exc
+                        )
+                        handled = False
+                    except (FileNotFoundError, UnicodeError, ValueError, ValidationError) as exc:
+                        response = _error_response(
+                            request_id, "invalid", "Command request invalid", exc
+                        )
+                        handled = False
+                    else:
+                        response, handled = await handle(request)
+                    answers[name] = response
+                    if checkpoint is not None:
+                        await asyncio.to_thread(checkpoint)
+                    if not handled:
+                        await record(response.status, response.message or "")
                 response_name = name.removesuffix(".request.json") + ".response.json"
-                await asyncio.to_thread(
-                    staged.mailbox.write_text,
-                    response_name,
-                    response.model_dump_json(indent=2) + "\n",
+                await retry(
+                    lambda response_name=response_name, name=name: asyncio.to_thread(
+                        staged.mailbox.write_text,
+                        response_name,
+                        answers[name].model_dump_json(indent=2) + "\n",
+                    ),
+                    drain=True,
                 )
-
-            with suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=poll_seconds)
+                seen.add(name)
+                if refusal is not None:
+                    raise refusal
+            await pause(poll_seconds)
+    except _MailboxInterrupted:
+        pass
+    except Exception as exc:
+        failed = True
+        reason = f"Command mailbox permanently closed: {' '.join(str(exc).split())}"[:2_000]
     finally:
-        credential.expire()
+        if terminal and terminal.get("reason") and terminal["reason"] != reason:
+            failed = True
+            reason = terminal["reason"]
+        if suspend is None or not suspend.is_set():
+            if terminal is not None:
+                terminal["reason"] = reason
+                if checkpoint is not None:
+                    await asyncio.to_thread(checkpoint)
+            if failed:
+                await transport("closed", reason)
+            try:
+                await retry(
+                    lambda: asyncio.to_thread(
+                        staged.mailbox.write_text,
+                        f"rcp-command-{credential.mailbox_id}.closed.json",
+                        json.dumps(
+                            {"version": 1, "mailbox_id": credential.mailbox_id, "message": reason}
+                        )
+                        + "\n",
+                    ),
+                    drain=True,
+                )
+            except (_MailboxInterrupted, _StoppedMailboxUnavailable):
+                # Terminal state and completed responses were checkpointed before
+                # publication. An unreachable stopped host cannot receive a marker.
+                pass
+            finally:
+                if suspend is None or not suspend.is_set():
+                    credential.expire()
 
 
-async def _answer_request(
-    name: str,
-    *,
-    request_id: str,
+async def _read_request(name: str, request_id: str, staged: StagedCommandMailbox) -> CommandRequest:
+    content = await asyncio.to_thread(
+        staged.mailbox.read_text,
+        name,
+        max_bytes=COMMAND_MAILBOX_MAX_REQUEST_BYTES,
+    )
+    request = validate_command_request(content)
+    if not request_identity_is_well_formed(request):
+        raise ValueError("command request identity is malformed")
+    if request.request_id != request_id or request.mailbox_id != staged.credential.mailbox_id:
+        raise ValueError("command request identity does not match its file name")
+    if not staged.credential.accepts(request, content):
+        raise _CredentialRefused("command credential is invalid or expired")
+    if (
+        command_requires_idempotency_key(request.verb)
+        and staged.credential.identity.authority != "broker"
+    ):
+        raise ValueError(f"{request.verb} requires broker authority")
+    return request
+
+
+async def _handle_request(
+    request: CommandRequest,
     staged: StagedCommandMailbox,
     handler: CommandHandler,
 ) -> tuple[CommandResponse, bool]:
-    """Answer one request; the flag says whether the handler produced the response."""
-
-    try:
-        content = await asyncio.to_thread(
-            staged.mailbox.read_text,
-            name,
-            max_bytes=COMMAND_MAILBOX_MAX_REQUEST_BYTES,
-        )
-        request = validate_command_request(content)
-        if not request_identity_is_well_formed(request):
-            raise ValueError("command request identity is malformed")
-        if request.request_id != request_id or request.mailbox_id != staged.credential.mailbox_id:
-            raise ValueError("command request identity does not match its file name")
-        if not staged.credential.accepts(request, content):
-            raise ValueError("command credential is invalid or expired")
-        if (
-            command_requires_idempotency_key(request.verb)
-            and staged.credential.identity.authority != "broker"
-        ):
-            raise ValueError(f"{request.verb} requires broker authority")
-    except (FileNotFoundError, OSError, StateUnavailable) as exc:
-        return _error_response(request_id, "unavailable", "Command request unavailable", exc), False
-    except (UnicodeError, ValueError, ValidationError) as exc:
-        return _error_response(request_id, "invalid", "Command request invalid", exc), False
-
     try:
         outcome = handler(request, staged.credential.identity)
         response = await outcome if inspect.isawaitable(outcome) else outcome
         if not isinstance(response, CommandResponse):
             raise TypeError("command handler returned an unsupported response")
-        if response.request_id != request_id:
+        if response.request_id != request.request_id:
             raise ValueError("command handler returned a mismatched request identity")
         return response, True
+    except (StateUnreachable, RemoteStageTransportFailure):
+        raise
     except Exception as exc:
-        return _error_response(request_id, "unavailable", "Command handler unavailable", exc), False
+        return _error_response(
+            request.request_id, "unavailable", "Command handler unavailable", exc
+        ), False
+
+
+def _jittered(delay: float) -> float:
+    return min(
+        COMMAND_MAILBOX_RETRY_MAX_SECONDS,
+        delay * random.uniform(1 - COMMAND_MAILBOX_RETRY_JITTER, 1),
+    )
 
 
 def _error_response(
@@ -466,6 +644,8 @@ def _read_rejection_notice(staged: StagedCommandMailbox, name: str) -> tuple[str
         value = json.loads(
             staged.mailbox.read_text(name, max_bytes=COMMAND_REJECTION_NOTICE_MAX_BYTES)
         )
+    except (StateUnreachable, RemoteStageTransportFailure):
+        raise
     except (OSError, StateUnavailable, UnicodeError, ValueError):
         return None
     if not isinstance(value, dict) or set(value) != _REJECTION_NOTICE_FIELDS:

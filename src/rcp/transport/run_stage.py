@@ -36,6 +36,10 @@ from rcp.transport.state import (
 )
 
 
+class RemoteStageTransportFailure(StateUnavailable):
+    """A transport call produced no host verdict; retry without inferring liveness."""
+
+
 class _SshNoVerdict(subprocess.CompletedProcess):
     """An ssh call that gave no verdict: it could not start, or RCP stopped waiting.
 
@@ -57,7 +61,7 @@ def _ssh_failure(
         stderr = stderr.decode("utf-8", errors="replace")
     detail = (stderr or "").strip() or default
     if isinstance(result, _SshNoVerdict):
-        return StateUnavailable(detail)
+        return RemoteStageTransportFailure(detail)
     if result.returncode == 255:
         return StateUnreachable(detail)
     return answered(detail)

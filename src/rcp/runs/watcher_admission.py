@@ -211,11 +211,13 @@ def start_watcher_notification(
                 stored = tasks.store.create_watcher_notification_task(
                     record,
                     watcher_ids,
-                    continuation_cause="fresh",
+                    continuation_cause="watcher_wake",
                 )
             if stored is None:
                 return
-            started = tasks.launch_admitted(stored.operation_id)
+            started = (
+                tasks.launch_admitted(stored.operation_id) if stored.status == "queued" else stored
+            )
 
     if admission_fence is not None:
         if not admission_fence(claim_and_spawn):

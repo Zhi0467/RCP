@@ -340,13 +340,9 @@ export function versionedArtifactContentUrl(
   return `${artifactUrl(projectId, taskId, artifactId, "content")}?task_updated_at=${encodeURIComponent(taskUpdatedAt)}`;
 }
 
-export function latestNativeSessionId(tasks: AgentTask[]): string | null {
-  return (
-    [...tasks]
-      .sort(compareTaskTime)
-      .reverse()
-      .find((task) => task.native_session_id)?.native_session_id ?? null
-  );
+/** The server resolves the chat binding; task or transcript session ids are history. */
+export function resolvedChatSessionId(tasks: AgentTask[]): string | null {
+  return [...tasks].sort(compareTaskTime).at(-1)?.current_chat_session_id ?? null;
 }
 
 function compareTaskTime(left: AgentTask, right: AgentTask): number {
