@@ -21,6 +21,7 @@ import type { ProjectCacheMetrics, UpdateNotice } from "../types";
 interface Props {
   spaceKind: "personal" | "team";
   updateNotice?: UpdateNotice | null;
+  onReleaseCheck?: (notice: UpdateNotice) => void;
   writesDisabled?: boolean;
   /** Any project in the space: the clear-all endpoint is addressed through one. */
   cacheProjectId: string | null;
@@ -39,6 +40,7 @@ export function showClearAllCachesWarning(clearStatus: () => void, openWarning: 
 export function SpaceSettings({
   spaceKind,
   updateNotice = null,
+  onReleaseCheck,
   writesDisabled = false,
   cacheProjectId,
   cacheClearDisabled,
@@ -56,7 +58,7 @@ export function SpaceSettings({
       </header>
       <section className="settings-page" data-settings-level="space">
         {spaceKind === "team" ? (
-          <ServerSettings />
+          <ServerSettings onReleaseCheck={onReleaseCheck} />
         ) : (
           <section className="settings-section">
             <ReleaseCheckRow notice={updateNotice} />

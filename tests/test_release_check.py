@@ -184,9 +184,9 @@ def test_route_reads_look_up_again_once_past_the_bound(github):
     routes["/latest"] = (200, stable("v0.4.11"))
     _age(checker, bound + 1)
     with ThreadPoolExecutor(4) as pool:
-        notices = list(pool.map(lambda _: checker.fresh(bound), range(4)))
-    assert {notice.status for notice in notices} == {"update_available"}
+        list(pool.map(lambda _: checker.fresh(bound), range(4)))
     assert requests.count("/latest") == 2
+    assert checker.snapshot().status == "update_available"
 
 
 def test_off_makes_no_calls_even_for_explicit_check(github, monkeypatch):

@@ -183,15 +183,18 @@ class ReleaseCheck:
     def fresh(self, max_age_seconds: float) -> UpdateNotice:
         """The cache, first looked up again when its last check is older than the bound.
 
-        Routes call this so opening a space never shows a result hours old.
-        Concurrent readers wait for one lookup instead of starting their own.
+        Routes call this so opening a space never shows a result hours old. A
+        reader that finds a lookup already running takes the cache rather than
+        holding a request worker for it; one lookup serves them all.
         """
-        if self._is_fresh(max_age_seconds):
+        if self._is_fresh(max_age_seconds) or not self._check_lock.acquire(blocking=False):
             return self.snapshot()
-        with self._check_lock:
+        try:
             if self._is_fresh(max_age_seconds):
                 return self.snapshot()
             return self._check(companion=True)
+        finally:
+            self._check_lock.release()
 
     def _is_fresh(self, max_age_seconds: float) -> bool:
         with self._lock:

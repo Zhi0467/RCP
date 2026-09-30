@@ -201,9 +201,10 @@ stable `vX.Y.Z` release with bounded, GitHub-only transport; whenever that
 release is newer it also confirms the `desktop-vX.Y.Z` companion (published,
 same commit, zip and checksum uploaded). A route answers from the cache
 while its last check is under 10 minutes old and otherwise makes one bounded
-lookup first, so opening a space never shows a status hours old; concurrent
-readers share that one lookup, and the team Settings refresh uses a 1-minute
-bound. A failed lookup still records its check time. A team
+lookup first, so opening a space never shows a status hours old; a reader
+that arrives while a lookup runs takes the cache instead of waiting, and the
+team Settings refresh uses a 1-minute bound and hands its result to the update
+notice. A failed lookup still records its check time. A team
 space compares the installed release from the selected receipt, reports
 `pinned` for a pinned server, and never lets a failed check change the doctor's
 install-integrity `source_state`; `rcp server doctor` makes one live lookup of
