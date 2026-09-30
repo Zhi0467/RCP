@@ -30,6 +30,7 @@ from rcp.limits import (
     AGENT_TRANSPORT_RETRY_LIMIT,
     BACKGROUND_TASKS_SHUTDOWN_TIMEOUT_SECONDS,
     CHAT_ARTIFACT_MAX_COUNT,
+    COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS,
     GRAPH_UPDATE_HISTORY_MAX_COUNT,
     REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS,
 )
@@ -422,6 +423,7 @@ class BackgroundAgentTasks:
         self.resume_command_mailbox = resume_command_mailbox
         self._detached_mailboxes: dict[str, TaskCommandMailbox] = {}
         self._mailbox_resume_refusals: set[str] = set()
+        self._mailbox_resume_failures: dict[str, int] = {}
         # Checkpoints of turns the restart sweep ended, awaiting remote cleanup.
         self._orphan_mailboxes: list[dict[str, object]] = []
         self._controls: dict[str, AgentProcessControl] = {}
@@ -601,9 +603,50 @@ class BackgroundAgentTasks:
                     level="warning",
                 )
             return None
-        if document is not None and remote:
-            clear_saved_remote_mailbox(document)
+        if document is not None and remote and not clear_saved_remote_mailbox(document):
+            # A later reconciliation pass retries the stage cleanup.
+            with self._controls_lock:
+                self._orphan_mailboxes.append(document)
         return document
+
+    def _settle_detached_mailbox(self, operation_id: str) -> None:
+        """End a detached turn's mailbox, or its saved checkpoint, before its task moves on.
+
+        Callers hold ``_remote_result_lock`` or the finalization claim. A settle
+        failure leaves the owner registered for a later pass to settle.
+        """
+
+        with self._controls_lock:
+            mailbox = self._detached_mailboxes.get(operation_id)
+        if mailbox is None:
+            self._discard_mailbox_checkpoint(operation_id)
+            return
+        mailbox.settle()
+        with self._controls_lock:
+            if self._detached_mailboxes.get(operation_id) is mailbox:
+                del self._detached_mailboxes[operation_id]
+
+    def _register_detached_mailbox(self, operation_id: str, mailbox: TaskCommandMailbox) -> None:
+        """Own one detached mailbox per task; an older owner is settled first."""
+
+        with self._controls_lock:
+            previous = self._detached_mailboxes.get(operation_id)
+        if previous is not None and previous is not mailbox:
+            try:
+                previous.settle()
+            except Exception as exc:
+                # Its stop was already requested; the new owner still takes over.
+                with suppress(Exception):
+                    self.store.record_agent_task_event(
+                        operation_id,
+                        f"Earlier command mailbox could not be settled: {exc}",
+                        level="warning",
+                    )
+        with self._controls_lock:
+            self._detached_mailboxes[operation_id] = mailbox
+            suspending = self._shutdown_requested
+        if suspending:
+            mailbox.suspend(timeout=0)
 
     def start(
         self,
@@ -1091,14 +1134,7 @@ class BackgroundAgentTasks:
             raise ValueError(
                 "The remote provider stopped; RCP will reconcile its recorded result before Pause."
             )
-        with self._controls_lock:
-            mailbox = self._detached_mailboxes.get(record.operation_id)
-        if mailbox is not None:
-            mailbox.settle()
-            with self._controls_lock:
-                self._detached_mailboxes.pop(record.operation_id, None)
-        else:
-            self._discard_mailbox_checkpoint(record.operation_id)
+        self._settle_detached_mailbox(record.operation_id)
         self.store.request_agent_task_pause(record.operation_id)
         self.store.finish_remote_provider_pass(record.operation_id, pid_file)
         self.store.pause_agent_task(
@@ -1113,6 +1149,7 @@ class BackgroundAgentTasks:
         current = self._require_operation(operation_id)
         if not current.active:
             return current
+        awaiting_remote_result = current.phase == "awaiting_remote_result"
         record = self.store.request_agent_task_pause(
             operation_id,
             requested_by="member_removal",
@@ -1123,10 +1160,25 @@ class BackgroundAgentTasks:
         with self._controls_lock:
             worker = self._workers.get(operation_id)
         if worker is None or not worker.is_alive():
-            self.store.pause_agent_task(
-                operation_id,
-                detail="Paused because the authorizing member was removed.",
-            )
+            with self._remote_result_lock:
+                # A detached turn's mailbox must stop answering for the removed
+                # member before the task stops awaiting its remote result.
+                if awaiting_remote_result:
+                    try:
+                        self._settle_detached_mailbox(operation_id)
+                    except Exception as exc:
+                        # Its stop is already requested; the next reconciliation
+                        # pass settles the owner it left registered.
+                        self.store.record_agent_task_event(
+                            operation_id,
+                            f"Command mailbox could not be settled: {exc}",
+                            level="warning",
+                        )
+                        self._schedule_remote_reconciliation(delay=0)
+                self.store.pause_agent_task(
+                    operation_id,
+                    detail="Paused because the authorizing member was removed.",
+                )
             settled = self.store.agent_task(operation_id)
             assert settled is not None
             return settled
@@ -1907,6 +1959,7 @@ class BackgroundAgentTasks:
             finally:
                 self._stream_closed(record, request, execution)
         except TaskPaused as exc:
+            self._settle_unowned_mailbox(execution)
             result: dict[str, object] | None = None
             if exc.messages or exc.artifacts:
                 result = {"messages": exc.messages}
@@ -1919,21 +1972,22 @@ class BackgroundAgentTasks:
             )
         except TaskAwaitingRemoteResult as exc:
             awaiting_remote_result = True
-            if execution.command_mailbox is not None:
-                execution.command_mailbox.detach()
-                with self._controls_lock:
-                    self._detached_mailboxes[operation_id] = execution.command_mailbox
-                    suspending = self._shutdown_requested
-                if suspending:
-                    execution.command_mailbox.suspend(timeout=0)
-            self.store.update_agent_task_message(
-                operation_id,
-                str(exc),
-                phase="awaiting_remote_result",
-                event=True,
-            )
+            # Registration and the phase change are one step for reconciliation,
+            # which settles any registered owner whose task is not awaiting.
+            with self._remote_result_lock:
+                if execution.command_mailbox is not None:
+                    execution.command_mailbox.detach()
+                    self._register_detached_mailbox(operation_id, execution.command_mailbox)
+                self.store.update_agent_task_message(
+                    operation_id,
+                    str(exc),
+                    phase="awaiting_remote_result",
+                    event=True,
+                )
             self._schedule_remote_reconciliation(delay=0)
         except Exception as exc:  # The persisted task is the API error boundary.
+            # No detached mailbox may act for a task once it is terminal.
+            self._settle_unowned_mailbox(execution)
             if isinstance(exc, StateUnreachable):
                 # A stage checkpoint or context read that could not reach the
                 # host escapes here untyped otherwise, and the classifier below
@@ -2010,6 +2064,7 @@ class BackgroundAgentTasks:
                     failure_kind=failure_kind,
                 )
         else:
+            self._settle_unowned_mailbox(execution)
             self._complete_task_outcome(record, request, execution, outcome)
         finally:
             try:
@@ -2018,7 +2073,6 @@ class BackgroundAgentTasks:
             finally:
                 try:
                     if not awaiting_remote_result:
-                        self._settle_unowned_mailbox(execution)
                         self._task_settled(record, request, execution)
                 finally:
                     self._forget_control(operation_id)
@@ -2231,6 +2285,34 @@ class BackgroundAgentTasks:
             continuation=cast(AgentTaskContinuation, continuation),
         )
 
+    def _settle_stale_detached_mailboxes(self) -> bool:
+        """Settle every detached owner whose task no longer awaits; report any left over."""
+
+        failed = False
+        with self._controls_lock:
+            candidates = list(self._detached_mailboxes.items())
+        for operation_id, mailbox in candidates:
+            with self._remote_result_lock:
+                record = self.store.agent_task(operation_id)
+                if record is not None and record.phase == "awaiting_remote_result":
+                    continue
+                try:
+                    # Settle this owner only: its checkpoint delete is keyed by
+                    # its own mailbox id, so a resumed turn keeps its checkpoint.
+                    mailbox.settle()
+                    with self._controls_lock:
+                        if self._detached_mailboxes.get(operation_id) is mailbox:
+                            del self._detached_mailboxes[operation_id]
+                except Exception as exc:
+                    failed = True
+                    with suppress(Exception):
+                        self.store.record_agent_task_event(
+                            operation_id,
+                            f"Command mailbox could not be settled: {exc}",
+                            level="warning",
+                        )
+        return failed
+
     def _reconcile_remote_results(self) -> bool:
         """Advance every host-journalled pass that has no live local consumer."""
 
@@ -2238,15 +2320,10 @@ class BackgroundAgentTasks:
         # this module. Background owns scheduling, not owner registration.
         from rcp.runs.remote_finalization import plan_remote_reconciliation
 
+        # Later passes retry what this one could not finish.
+        pending = self._settle_stale_detached_mailboxes()
         # Reattach before even probing the provider: a live, unreachable pass
         # still owns its mailbox, credential, budget and process control.
-        with self._controls_lock:
-            orphans, self._orphan_mailboxes = self._orphan_mailboxes, []
-        if orphans:
-            from rcp.runs.tasks.work_turn_runtime import clear_saved_remote_mailbox
-
-            for document in orphans:
-                clear_saved_remote_mailbox(document)
         if self.resume_command_mailbox is not None:
             for operation_id in self.store.operation_ids_awaiting_remote_result():
                 # Pause serializes on this lock, so it never misses a new owner.
@@ -2276,21 +2353,39 @@ class BackgroundAgentTasks:
                         )
                         continue
                     except Exception as exc:
-                        # Unreadable here, not invalid: a later restart may resume it.
-                        self._mailbox_resume_refusals.add(operation_id)
+                        # Unreadable here, not invalid: retry on a later pass, boundedly.
+                        attempts = self._mailbox_resume_failures.get(operation_id, 0) + 1
+                        self._mailbox_resume_failures[operation_id] = attempts
+                        if attempts >= COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS:
+                            self._mailbox_resume_refusals.add(operation_id)
+                        else:
+                            pending = True
                         self.store.record_agent_task_event(
                             operation_id,
                             f"Command mailbox could not be resumed: {exc}",
                             level="warning",
                         )
                         continue
-                    if owner is None:
-                        continue
-                    with self._controls_lock:
-                        self._detached_mailboxes[operation_id] = owner
-                        suspending = self._shutdown_requested
-                    if suspending:
-                        owner.suspend(timeout=0)
+                    self._mailbox_resume_failures.pop(operation_id, None)
+                    if owner is not None:
+                        self._register_detached_mailbox(operation_id, owner)
+
+        # Stage cleanup for ended turns waits on SSH, so it follows reattachment.
+        from rcp.runs.tasks.work_turn_runtime import clear_saved_remote_mailbox
+
+        with self._controls_lock:
+            orphans, self._orphan_mailboxes = self._orphan_mailboxes, []
+        while orphans:
+            with self._controls_lock:
+                if self._shutdown_requested:
+                    self._orphan_mailboxes.extend(orphans)
+                    return False
+            document = orphans.pop(0)
+            if not clear_saved_remote_mailbox(document):
+                # Kept for the next pass that runs anyway; a dead host must not
+                # keep reconciliation polling forever.
+                with self._controls_lock:
+                    self._orphan_mailboxes.append(document)
 
         retry = False
         for waiting in plan_remote_reconciliation(self.store):
@@ -2313,13 +2408,8 @@ class BackgroundAgentTasks:
                     mailbox.execution if mailbox is not None else self._recorded_execution(record)
                 )
                 assert execution is not None
-                if mailbox is not None:
-                    # No admission or handler may race Apply or watcher settlement.
-                    mailbox.settle()
-                    with self._controls_lock:
-                        self._detached_mailboxes.pop(record.operation_id, None)
-                else:
-                    self._discard_mailbox_checkpoint(record.operation_id)
+                # No admission or handler may race Apply or watcher settlement.
+                self._settle_detached_mailbox(record.operation_id)
                 pid_file = decision.pid_file
                 assert pid_file is not None
                 if decision.action == "fail":
@@ -2419,7 +2509,7 @@ class BackgroundAgentTasks:
             finally:
                 self._stream_closed(record, request, execution)
             self._task_settled(record, request, execution)
-        return retry
+        return retry or pending
 
     def _transport_retry_attempt(self, record: AgentTaskRecord) -> int:
         """How many times this lineage has already been reattempted for a lost link.

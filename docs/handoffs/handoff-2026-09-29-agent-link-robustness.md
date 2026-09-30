@@ -205,9 +205,15 @@ Implemented:
   backup-excluded directory. No secret enters task projections. Startup restores
   the concrete owner before liveness reconciliation, without staging, clearing
   handoffs, reissuing a credential, or requiring a reachable graph host.
-  A checkpoint is deleted wherever its task leaves `awaiting_remote_result`
-  without a live mailbox, and one unreadable checkpoint refuses only its own
-  turn during reattachment.
+  Every exit from `awaiting_remote_result`, including member-removal Pause,
+  settles the detached mailbox or deletes its checkpoint first. A failed turn
+  settles its mailbox before its terminal status. A task has at most one
+  detached owner, and an owner deletes only the checkpoint naming its own
+  mailbox id. Each reconciliation pass settles owners whose task stopped
+  awaiting, retries a transient resume error up to
+  `COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS` passes, and cleans ended turns' stage
+  files after reattachment, keeping failed cleanups. Unreadable checkpoints
+  are logged and deleted; an invalid binding refuses only its own turn.
 
 Settled decisions, 2026-09-29:
 

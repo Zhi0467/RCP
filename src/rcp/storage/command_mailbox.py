@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from pathlib import Path
 
 from rcp.agents.provider_environment import ProviderCredentialStore, _write_private
 from rcp.rcp_home import private_directory
+
+logger = logging.getLogger(__name__)
 
 # Background workers run separate event loops, and can construct separate stores.
 _CHECKPOINT_LOCK = threading.Lock()
@@ -56,15 +59,31 @@ class CommandMailboxStore:
             raise ValueError("command mailbox checkpoint must be an object")
         return value
 
-    def delete(self, operation_id: str) -> None:
+    def delete(self, operation_id: str, *, mailbox_id: str | None = None) -> None:
+        """Remove a turn's checkpoint; with ``mailbox_id``, only if it still names that mailbox.
+
+        A resumed turn reuses the operation id, so an older owner closing late
+        must not delete the newer mailbox's checkpoint.
+        """
+
         path = self._path(operation_id)
         with _CHECKPOINT_LOCK:
-            if self.root.exists():
-                private_directory(self.root, "command mailbox checkpoints")
-                path.unlink(missing_ok=True)
+            if not self.root.exists():
+                return
+            private_directory(self.root, "command mailbox checkpoints")
+            if mailbox_id is not None:
+                try:
+                    saved = json.loads(path.read_text())
+                except FileNotFoundError:
+                    return
+                except (OSError, ValueError):
+                    saved = None
+                if isinstance(saved, dict) and saved.get("mailbox_id") != mailbox_id:
+                    return
+            path.unlink(missing_ok=True)
 
     def operation_ids(self) -> list[str]:
-        """The turns whose checkpoints can still be read; unreadable ones are skipped."""
+        """The turns with readable checkpoints; unreadable ones are logged and deleted."""
 
         with _CHECKPOINT_LOCK:
             if not self.root.exists():
@@ -73,11 +92,18 @@ class CommandMailboxStore:
             paths = sorted(self.root.glob("*.json"))
         found: list[str] = []
         for path in paths:
+            task_id = None
             try:
-                identity = json.loads(path.read_text()).get("identity") or {}
-            except (OSError, ValueError, AttributeError):
+                task_id = (json.loads(path.read_text()).get("identity") or {}).get("task_id")
+            except FileNotFoundError:
                 continue
-            task_id = identity.get("task_id") if isinstance(identity, dict) else None
+            except (OSError, ValueError, AttributeError):
+                pass
             if isinstance(task_id, str) and task_id:
                 found.append(task_id)
+                continue
+            # No turn can be named, so none can resume it; its secret must not linger.
+            logger.warning("deleting unreadable command mailbox checkpoint %s", path.name)
+            with _CHECKPOINT_LOCK:
+                path.unlink(missing_ok=True)
         return found

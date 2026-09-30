@@ -108,6 +108,9 @@ COMMAND_MAILBOX_STOP_MAX_FAILED_ATTEMPTS = 3
 # A handler whose own SSH call gave no verdict is re-run at most this many more
 # times, and only for a turn that checkpoints its responses; then "unavailable".
 COMMAND_MAILBOX_HANDLER_MAX_RETRIES = 2
+# Reconciliation passes that may retry resuming a saved mailbox after a
+# transient read error, before that turn's mailbox is refused for this process.
+COMMAND_MAILBOX_RESUME_MAX_ATTEMPTS = 5
 COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
 # How long one client invocation waits before it returns "not answered yet".
 # Provider shell tools kill long commands (Claude Code's Bash stops at 120 s,
