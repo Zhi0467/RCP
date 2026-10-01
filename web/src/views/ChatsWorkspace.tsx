@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_LIST_SECTIONS,
+  agentGroupItems,
   branchEpisodeAgentRows,
   conversationAgentStatus,
   groupConversationAgents,
@@ -543,7 +544,39 @@ export function ChatsWorkspace({
                   </span>
                   <span>{groups[group].length + branchRowsIn(group).length}</span>
                 </div>
-                {groups[group].map(({ conversation, status }) => {
+                {agentGroupItems(groups[group], branchRowsIn(group)).map((item) => {
+                  if (item.kind === "branch") {
+                    const row = item.row;
+                    return (
+                      <div className="agent-row" key={`episode:${row.episodeId}`}>
+                        <a
+                          role="option"
+                          aria-selected={false}
+                          aria-label={`${row.title}, Experiment episode on a graph branch`}
+                          data-state={row.group}
+                          href={row.href}
+                          title={row.title}
+                          onClick={() => {
+                            if (narrow) setMobileListOpen(false);
+                          }}
+                        >
+                          <span className="agent-row-body">
+                            <span className="agent-row-title">
+                              <span className="agent-branch-pill">Branch</span>
+                              {row.title}
+                            </span>
+                            <span className="agent-row-meta">
+                              Experiment episode · opens in Runs
+                            </span>
+                          </span>
+                          <time>
+                            {row.group === "working" ? "live" : sinceLabel(row.updatedAt, now)}
+                          </time>
+                        </a>
+                      </div>
+                    );
+                  }
+                  const { conversation, status } = item.row;
                   const selectedConversation = conversation.chatId === selected?.chatId;
                   const unread = status.unread;
                   const latest = status.latest;
@@ -693,32 +726,6 @@ export function ChatsWorkspace({
                     </div>
                   );
                 })}
-                {branchRowsIn(group).map((row) => (
-                  <div className="agent-row" key={`episode:${row.episodeId}`}>
-                    <a
-                      role="option"
-                      aria-selected={false}
-                      aria-label={`${row.title}, Experiment episode on a graph branch`}
-                      data-state={row.group}
-                      href={row.href}
-                      title={row.title}
-                      onClick={() => {
-                        if (narrow) setMobileListOpen(false);
-                      }}
-                    >
-                      <span className="agent-row-body">
-                        <span className="agent-row-title">
-                          <span className="agent-branch-pill">Branch</span>
-                          {row.title}
-                        </span>
-                        <span className="agent-row-meta">Experiment episode · opens in Runs</span>
-                      </span>
-                      <time>
-                        {row.group === "working" ? "live" : sinceLabel(row.updatedAt, now)}
-                      </time>
-                    </a>
-                  </div>
-                ))}
               </div>
             ),
           )}

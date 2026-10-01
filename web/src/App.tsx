@@ -1940,7 +1940,11 @@ export default function App() {
         return;
       }
       try {
-        await Promise.all([refreshProjectExperimentLoops(projectId), refreshProviderLogins()]);
+        // Agents reads only the index; provider logins belong to the Runs view.
+        await Promise.all([
+          refreshProjectExperimentLoops(projectId),
+          ...(view === "execution" ? [refreshProviderLogins()] : []),
+        ]);
       } catch (error) {
         if (!stopped) {
           reportErrorNotice(

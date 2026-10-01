@@ -457,6 +457,25 @@ export function branchEpisodeAgentRows(
   return groups;
 }
 
+export type AgentGroupItem =
+  { kind: "chat"; row: ConversationAgentRow } | { kind: "branch"; row: BranchEpisodeAgentRow };
+
+/** One status group's chats and branch episodes together, newest first; an unsent draft leads. */
+export function agentGroupItems(
+  chats: ConversationAgentRow[],
+  branches: BranchEpisodeAgentRow[],
+): AgentGroupItem[] {
+  const items: AgentGroupItem[] = chats.map((row) => ({ kind: "chat", row }));
+  if (!branches.length) return items;
+  const at = (item: AgentGroupItem) =>
+    Date.parse(
+      (item.kind === "chat" ? item.row.conversation.updatedAt : item.row.updatedAt) || "9999-01-01",
+    );
+  return [...items, ...branches.map((row) => ({ kind: "branch" as const, row }))].sort(
+    (left, right) => at(right) - at(left),
+  );
+}
+
 /** A draft nobody has sent a turn in; opening a new chat reuses it. */
 export function unsentConversation(
   conversations: ChatConversation[],

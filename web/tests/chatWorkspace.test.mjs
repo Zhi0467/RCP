@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
+  agentGroupItems,
   branchEpisodeAgentRows,
   chatDraftStorageKey,
   chatIdForTask,
@@ -602,4 +603,17 @@ test("an Experiment episode on another graph branch lists by its own status and 
   assert.equal(experimentIndexEntryForRoute(entries, "p", route), entries[0]);
   // On the episode's own branch its chat lists normally, so no extra row.
   assert.equal(branchEpisodeAgentRows(entries, branch("live"), "p").working.length, 0);
+});
+
+test("a status group keeps chats and branch episodes in one recency order", () => {
+  const chat = (chatId, updatedAt) => ({ conversation: { chatId, updatedAt }, status: {} });
+  const branch = (episodeId, updatedAt) => ({ episodeId, updatedAt });
+  const items = agentGroupItems(
+    [chat("draft", ""), chat("new", "2026-10-01T03:00:00Z"), chat("old", "2026-10-01T01:00:00Z")],
+    [branch("middle", "2026-10-01T02:00:00Z")],
+  );
+  assert.deepEqual(
+    items.map((item) => (item.kind === "chat" ? item.row.conversation.chatId : item.row.episodeId)),
+    ["draft", "new", "middle", "old"],
+  );
 });

@@ -66,6 +66,8 @@ function Fixture() {
         conversations={conversations}
         selectedChatId={selected}
         nodes={{}}
+        experimentEntries={[]}
+        graphTarget={{ kind: "main" }}
         glossaryIndex={buildGlossaryIndex({})}
         runScope={[]}
         tasks={[]}
