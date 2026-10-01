@@ -1,4 +1,4 @@
-# Agents list: branch episodes and episode turns
+# Agents list: branch episodes and episode chats
 
 Date: 2026-10-01
 Status: design written; not implemented.
@@ -11,7 +11,8 @@ Settled with the human on 2026-10-01:
 - While main is viewed, an episode running on a graph branch is listed with
   its real status and opens read-only on main. Viewing it does not switch the
   viewed graph.
-- A running turn the human did not type shows in its chat while it runs.
+- Every human Run creates a new chat id, so each episode has its own row and
+  transcript. It never joins an existing human chat on the node.
 
 ## Evidence
 
@@ -35,10 +36,10 @@ existing node chat at 00:34:39 and ran until 04:21. While both ran:
    branch chat is gone from main.
 3. Selecting the draft runs the worktree check against main. The server
    refuses because the chat's runs are on the branch.
-4. `reconstructTaskTranscript` adds a line for a task only from its human
-   message, answers, deliverables, or error. A running Experiment or watcher
-   turn has none of these, so its chat shows no line and no
-   `InlineTaskProgress`.
+4. `startExperiment` takes its chat id from `ensureConversation`, which
+   returns the node's newest chat. The Run already starts a fresh native
+   session, but the Agents list groups by chat id, so the episode was filed
+   in the human's finished chat and drawn into its transcript.
 
 ## Fix 1: branch episode rows on main
 
@@ -54,17 +55,23 @@ existing node chat at 00:34:39 and ran until 04:21. While both ran:
 - The local draft the Run created is dropped once a task names its chat id.
 - Viewing the branch itself is unchanged.
 
-## Fix 2: a running turn the human did not type
+## Fix 2: one chat per episode
 
-- `reconstructTaskTranscript` emits one empty agent line for an active task
-  that has no human message and no answers yet. The existing
-  `activeLineTask` path then renders `InlineTaskProgress` on it. The line
-  disappears when the turn's first answer arrives.
+- `startExperiment` always calls `startConversation` for a new chat id
+  instead of `ensureConversation`. No server change: the Run already
+  requires a client chat id, and watcher wakes and continuations use the
+  chat id the episode recorded.
+- Opening a node's chat still picks the node's newest conversation, which
+  may now be an episode chat. That matches today's behavior for a node whose
+  first chat was an episode.
+- Out of scope: a running watcher wake in a human chat shows no line until
+  it answers. That is a separate display gap.
 
 ## Checks
 
 - Web unit tests: grouping with a branch-target task gives a Working row
-  marked with that target; a running non-human task yields one line.
+  marked with that target; a Run on a node that already has a chat sends a
+  chat id different from it.
 - Served app on disposable data with a seeded branch episode: the row shows
   Working, then Done; opening it shows the branch transcript read-only, with
   no worktree error in the console or network log.

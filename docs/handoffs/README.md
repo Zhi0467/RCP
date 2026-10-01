@@ -1,6 +1,6 @@
 # Active implementation handoffs
 
-- [Agents list: branch episodes and episode turns](handoff-2026-10-01-agents-list-branch-episodes.md)
+- [Agents list: branch episodes and episode chats](handoff-2026-10-01-agents-list-branch-episodes.md)
   — design written 2026-10-01; not implemented.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
   — implemented 2026-09-30 on the same PR; served-app, desktop, and real-data checks remain.
