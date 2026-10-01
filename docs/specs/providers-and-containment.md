@@ -645,8 +645,12 @@ owner/key arguments reuse the question; changed arguments are invalid. The clien
 polls pending questions with fresh transport request ids under the same outer
 wait deadline. At that deadline, pending tells the caller to repeat the exact
 call or end the turn. Transport failures retain their separate `delivery`
-semantics. No existing handler authorizes `ask` yet; owner admission and answer
-follow-up delivery remain in the [active design](../handoffs/handoff-2026-10-01-ask-verb.md).
+semantics. Only human-started Work chat turns, human-started Experiment episodes,
+and the Auto-research orchestrator authorize `ask`, each from its handler's
+resolved allowed verbs; Discuss, workers, and child Work or Experiments refuse it.
+Answer delivery for each owner is described in
+[conversations, episodes, and watchers](conversations-episodes-and-watchers.md)
+and [Auto-research](auto-research-and-branch-merge.md).
 
 Validation stages operations in their written order against earlier valid
 operations while retaining whole-patch node and edge lookup for legal forward
