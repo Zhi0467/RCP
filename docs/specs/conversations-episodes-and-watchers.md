@@ -236,6 +236,24 @@ cleared fail-closed before a new turn that could misattribute them. A committed
 native chat-session context retains that stage, including its immutable master
 context, even while no turn is active.
 
+Human-started Work chats and Experiment invocations may use the staged `ask`
+command for missing information. The human answers on the question card; the
+composer remains steering. Answers are human input, never approval or changes to
+capability, write roots, graph target, or budget. Discuss and Auto-research child
+Work and Experiments cannot ask directly.
+
+A call waits for the bounded client interval; repeating identical arguments keeps
+waiting, while ending the turn parks the question. An answered response counts as
+received only after the receiving task settles successfully on the original
+native session and authority binding. Failed or disconnected
+turns retain delivery eligibility. After full settlement and at startup, an
+unreceived chat answer admits at most one Work follow-up, transactionally claimed
+with task insertion, pinned to the asking turn's native session, authority, write
+scope and target. Occupied or paused sessions defer admission; unusable bindings
+remain visible. Each answer is projected once as a human chat message through
+StateWorkspace using its question id and answer revision. Fresh question snapshots
+come from operational records, never displayed chat history.
+
 While an ordinary human-triggered Discuss or Work turn runs, the human may send
 plain text to it through the ordinary composer: while the watched attempt can
 receive input, Send addresses that attempt: Codex app-server injects into its
@@ -661,7 +679,13 @@ arming is unchanged. Observing one
 job through genuinely different commands cannot be told apart mechanically, so
 the staged watcher state is what every surface that arms an Experiment observer
 reconciles against first. An empty final watcher declaration is
-legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
+legal with a success, Proposal, or Blocker Patch exit, or an open human question
+or undelivered answer belonging to that human-started episode. A question never
+excuses unwatched compute. An answer wake spends one normal Experiment invocation
+and preserves the session, scope, target, Stop fence and ceiling; exhaustion needs
+human reauthorization. Continuation episodes reopen their predecessor's questions
+without changing origin provenance; ended episodes withdraw their cards.
+Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.
 

@@ -267,6 +267,112 @@ class QuestionStoreMixin:
                 == 1
             )
 
+    def question_receipt_candidate_operations(self, question_id: str) -> list[str]:
+        """Find successful receiver evidence after a crash before settlement callbacks."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT receipt.operation_id FROM graph_run_receipts AS receipt
+                JOIN graph_runs AS task ON task.operation_id=receipt.operation_id
+                WHERE receipt.category='question_answer_offered' AND task.status='succeeded'
+                AND json_extract(receipt.payload_json,'$.question_id')=?""",
+                (question_id,),
+            ).fetchall()
+        return [row["operation_id"] for row in rows]
+
+    def record_question_continuation_receipt(
+        self,
+        question_id: str,
+        *,
+        answer_revision: int,
+        operation_id: str,
+        request_id: str,
+    ) -> bool:
+        """Receipt an inherited answer only with a successful, identically bound receiver.
+
+        The server's offered-answer receipt proves which response this settled turn
+        followed. Question provenance stays immutable; delivery names the actual receiver.
+        """
+        if not request_id:
+            raise ValueError("client receipt requires a transport request id")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM questions WHERE question_id=?", (question_id,)
+            ).fetchone()
+            task_row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if row is None or task_row is None:
+                return False
+            question = _question_record(row)
+            task = self._agent_task_record(task_row)
+            origin = question.origin
+            if (
+                question.state != "answered"
+                or question.answer_revision != answer_revision
+                or question.client_receipt_revision is not None
+                or question.followup_operation_id is not None
+                or task.status != "succeeded"
+                or task.project_id != origin.project_id
+                or task.request.get("provider") != origin.provider
+                or task.request.get("mode") != "work"
+                or task.native_session_id != origin.native_session_id
+                or task.stage_root != origin.stage_root
+                or (task.stage_host or "") != (origin.stage_host or "")
+                or task.write_scope_fingerprint != origin.write_scope_fingerprint
+                or task.graph_target != origin.graph_target
+                or task.dispatch_authority is None
+                or task.dispatch_authority.profile != "ordinary"
+                or task.dispatch_authority.task_contract != origin.capability
+            ):
+                return False
+            if origin.owner_kind == "chat":
+                if (
+                    task.kind not in {"node_chat", "project_chat"}
+                    or task.episode_id is not None
+                    or task.request.get("chat_id") != origin.owner_id
+                ):
+                    return False
+            else:
+                episode_id = task.episode_id
+                seen: set[str] = set()
+                while episode_id and episode_id not in seen:
+                    seen.add(episode_id)
+                    episode = connection.execute(
+                        "SELECT mode,project_id,continues_episode_id FROM episodes WHERE episode_id=?",
+                        (episode_id,),
+                    ).fetchone()
+                    if (
+                        episode is None
+                        or episode["mode"] != "experiment_loop"
+                        or episode["project_id"] != origin.project_id
+                    ):
+                        return False
+                    if episode_id == origin.owner_id:
+                        break
+                    episode_id = episode["continues_episode_id"]
+                if episode_id != origin.owner_id:
+                    return False
+            offered = connection.execute(
+                """SELECT 1 FROM graph_run_receipts
+                WHERE operation_id=? AND category='question_answer_offered'
+                AND json_extract(payload_json,'$.question_id')=?
+                AND json_extract(payload_json,'$.answer_revision')=?
+                AND json_extract(payload_json,'$.request_id')=? LIMIT 1""",
+                (operation_id, question_id, answer_revision, request_id),
+            ).fetchone()
+            if offered is None:
+                return False
+            return (
+                connection.execute(
+                    """UPDATE questions SET client_receipt_revision=?,client_receipt_operation_id=?,
+                client_receipt_request_id=?,client_receipt_at=? WHERE question_id=?
+                AND client_receipt_revision IS NULL AND followup_operation_id IS NULL""",
+                    (answer_revision, operation_id, request_id, self.now(), question_id),
+                ).rowcount
+                == 1
+            )
+
     def claim_question_followup(
         self,
         connection: sqlite3.Connection,

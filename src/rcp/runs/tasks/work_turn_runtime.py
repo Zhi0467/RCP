@@ -33,6 +33,12 @@ from rcp.runs.patch_validator import (
     PatchValidationResult,
     serve_patch_validation_mailbox,
 )
+from rcp.runs.question_snapshots import (
+    QuestionSnapshot,
+    question_snapshot,
+    question_snapshot_part,
+    record_question_snapshot_sent,
+)
 from rcp.runs.shared import (
     _ProviderOutcome,
     _record_patch_applied_receipt,
@@ -112,6 +118,7 @@ class WorkValidatorMailboxLifecycle:
     detached: bool = False
     suspension: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
+    command_handler: CommandHandler | None = None
     _ownership_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def detach(self) -> None:
@@ -177,6 +184,7 @@ class WorkTurn:
     answer: str | None = None
     compute_commands: WorkComputeCommands | None = None
     supervise_remote: bool = False
+    question_snapshot: QuestionSnapshot | None = None
 
     @property
     def run_truth_scope(self) -> list[str]:
@@ -410,6 +418,31 @@ def checkpoint_required_session(
     )
 
 
+def prepare_work_question_snapshot(turn: WorkTurn) -> str:
+    """Compose fresh question input before the owner records its launch prompt."""
+    from rcp.runs.questions import work_ask_authorized
+
+    turn.question_snapshot = None
+    if turn.execution is None or not turn.request.chat_id:
+        return ""
+    task = turn.execution.store.agent_task(turn.execution.operation_id)
+    if task is None or task.episode_id is not None or not work_ask_authorized(turn.execution):
+        return ""
+    turn.question_snapshot = question_snapshot(
+        turn.execution.store,
+        project_id=task.project_id,
+        owner_kind="chat",
+        owner_ids=[turn.request.chat_id],
+        operation_id=turn.execution.operation_id,
+        write_scope_fingerprint=turn.write_scope.fingerprint,
+    )
+    return question_snapshot_part(
+        turn.question_snapshot,
+        local_stage=turn.local_stage,
+        remote_stage=turn.remote_stage,
+    )
+
+
 async def stream_turn_agent_events(
     turn: WorkTurn,
     launcher: AgentLauncher,
@@ -424,6 +457,7 @@ async def stream_turn_agent_events(
 ) -> AsyncIterator[str]:
     """Stream one provider continuation from a staged Work execution context."""
 
+    snapshot = turn.question_snapshot
     if supervise_remote:
         # Every owner's supervised launch comes through here, so a pinned
         # continuation cannot reach a host without its pin being recoverable.
@@ -453,6 +487,10 @@ async def stream_turn_agent_events(
     ) as stream:
         async for frame in stream:
             yield frame
+    if snapshot is not None and outcome.completed and turn.execution is not None:
+        record_question_snapshot_sent(
+            turn.execution.store, snapshot, operation_id=turn.execution.operation_id
+        )
 
 
 async def stream_work_agent_events(
@@ -534,11 +572,15 @@ def start_work_validator_mailbox(
             with suppress(BaseException):
                 staged.cleanup()
             raise
-        return WorkValidatorMailboxLifecycle(staged, execution, stop, task)
+        return WorkValidatorMailboxLifecycle(
+            staged, execution, stop, task, command_handler=command_handler
+        )
 
     stop = threading.Event()
     result: Future[None] = Future()
-    owner = WorkValidatorMailboxLifecycle(staged, execution, stop, result)
+    owner = WorkValidatorMailboxLifecycle(
+        staged, execution, stop, result, command_handler=command_handler
+    )
     responses = responses if responses is not None else {}
     terminal = terminal if terminal is not None else {}
     checkpoint_store = (

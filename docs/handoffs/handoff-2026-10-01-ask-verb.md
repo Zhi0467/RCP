@@ -3,17 +3,18 @@
 Date: 2026-10-01
 Status: design settled with the human on 2026-10-01 and reviewed once by an
 xhigh design pass the same day. Implementation started in this PR on
-2026-10-01. Done: slice 1 protocol, polling client, durable question store, and
-nonblocking helper. Slice 3 now implements orchestrator dispatch, answer mail,
-fresh question snapshots, lifecycle withdrawal/reopening, health, and per-question
-notifications, including the Auto-research v3 prompt contracts from slice 4.
-Remaining: Work/Experiment integration and prompts (slice 2 and the rest of slice
-4), and the API/Web cards (slice 5). The API answer path calls
-`record_auto_research_question_answer(store, question_id)` after persisting an
-answer, then uses ordinary mail delivery; dismissal never dispatches mail.
-Slice 1 checks cover protocol, store migration and transitions, polling, and
-existing handler refusals; live broker socket checks require an unrestricted
-test host.
+2026-10-01. Done: the protocol, polling client, durable question store, and
+nonblocking helper (slice 1); human Work and Experiment handlers, receipt and
+follow-up admission, chat projection, owner prompts, and fresh question
+snapshots (slice 2); orchestrator dispatch, answer mail, wake snapshots,
+lifecycle withdrawal and reopening, the health overlay, and per-question
+notifications (slice 3). Slice 4's prompts landed inside slices 2 and 3.
+Remaining: API and Web (slice 5). After a human resolves a question, the answer
+API calls `app.state.reconcile_question_answers(project_id)` for chat and
+Experiment owners and `record_auto_research_question_answer(store, question_id)`
+then ordinary mail delivery for orchestrator questions; dismissal never
+dispatches mail. Live broker socket checks need an unrestricted test host, and
+the question-card journeys remain with slice 5.
 
 Close this handoff when all of these hold:
 

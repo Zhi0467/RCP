@@ -44,6 +44,160 @@ if TYPE_CHECKING:
 class ExperimentStoreMixin:
     """Bounded Experiment episodes and their loop runtime projection."""
 
+    def experiment_question_owner_ids(self, episode_id: str) -> list[str]:
+        """Follow continuation provenance without moving immutable question origins."""
+        owners: list[str] = []
+        while episode_id and episode_id not in owners:
+            episode = self.episode(episode_id)
+            if episode is None or episode.mode != "experiment_loop":
+                break
+            owners.append(episode_id)
+            episode_id = episode.continues_episode_id or ""
+        return owners
+
+    def experiment_has_question_continuation(
+        self, project_id: str, episode_id: str, *, operation_id: str | None = None
+    ) -> bool:
+        # Successful settlement will receipt these live answers. They cannot also
+        # justify an otherwise empty handoff and leave a running episode stranded.
+        offered = (
+            {
+                (receipt.payload.get("question_id"), receipt.payload.get("answer_revision"))
+                for receipt in self.agent_task_receipts(operation_id)
+                if receipt.category == "question_answer_offered"
+            }
+            if operation_id
+            else set()
+        )
+        return any(
+            not q.withdrawn_readonly
+            and (
+                q.state == "pending"
+                or (
+                    q.state == "answered"
+                    and q.client_receipt_revision is None
+                    and q.followup_operation_id is None
+                    and (q.question_id, q.answer_revision) not in offered
+                )
+            )
+            for owner in self.experiment_question_owner_ids(episode_id)
+            for q in self.list_questions(
+                project_id=project_id, owner_kind="episode", owner_id=owner
+            )
+        )
+
+    def create_experiment_question_invocation(
+        self, record: AgentTaskRecord, *, question_id: str, answer_revision: int
+    ) -> AgentTaskRecord | None:
+        """Claim an answer and spend one normal Experiment invocation atomically."""
+        question = self.get_question(question_id)
+        if question is None or question.origin.owner_kind != "episode":
+            raise ValueError("Experiment answer has no episode question")
+        origin = question.origin
+        if (
+            record.status != "queued"
+            or record.parent_operation_id is not None
+            or record.request.get("patch_kind") != "experiment_loop"
+            or record.request.get("trigger") != "watcher"
+            or record.project_id != origin.project_id
+            or record.native_session_id != origin.native_session_id
+            or record.request.get("provider") != origin.provider
+            or record.stage_root != origin.stage_root
+            or (record.stage_host or "") != (origin.stage_host or "")
+            or record.graph_target != origin.graph_target
+            or origin.owner_id not in self.experiment_question_owner_ids(record.episode_id or "")
+        ):
+            raise ValueError("Experiment answer changed its origin binding")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT state,answer_revision,client_receipt_revision,followup_operation_id,"
+                "withdrawn_readonly FROM questions WHERE question_id=?",
+                (question_id,),
+            ).fetchone()
+            if (
+                current is None
+                or current["state"] != "answered"
+                or current["answer_revision"] != answer_revision
+                or current["client_receipt_revision"] is not None
+                or current["followup_operation_id"] is not None
+                or current["withdrawn_readonly"]
+            ):
+                return None
+            row = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id=?", (record.episode_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Experiment answer lost its episode")
+            episode = self._episode_record(row)
+            if (
+                episode.status != "running"
+                or episode.ending is not None
+                or episode.stop_requested_at is not None
+                or self._experiment_has_ending_receipt(connection, episode.episode_id)
+            ):
+                return None
+            if episode.invocations_used >= episode.invocation_ceiling:
+                raise EpisodeInvocationCeilingReached("the episode requires human reauthorization")
+            if record.request.get("control_invocation") != episode.invocations_used + 1:
+                raise ValueError("Experiment answer invocation is out of sequence")
+            if connection.execute(
+                "SELECT 1 FROM auto_research_child_experiments WHERE child_episode_id=?",
+                (episode.episode_id,),
+            ).fetchone():
+                raise ValueError("An orchestrator child cannot receive human questions")
+            asking = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (origin.operation_id,)
+            ).fetchone()
+            if asking is None or asking["status"] not in {"succeeded", "failed"}:
+                return None
+            original = self._agent_task_record(asking)
+            if (
+                original.write_scope_fingerprint != origin.write_scope_fingerprint
+                or original.dispatch_authority is None
+                or original.dispatch_authority.task_contract != origin.capability
+                or original.request.get("mode") != "work"
+                or any(
+                    record.request.get(key) != original.request.get(key)
+                    for key in ("provider", "run_on", "run_truth_scope", "mode")
+                )
+            ):
+                raise ValueError("Experiment question origin authority is unavailable")
+            if self._has_resumable_paused_chat_task(
+                connection, origin.project_id, original.kind, original.request.get("chat_id")
+            ):
+                return None
+            if origin.stage_host and self._unresolved_remote_provider_passes(
+                connection, origin.stage_host, origin.stage_root
+            ):
+                return None
+            self._require_project_accepts_new_work(connection, origin.project_id)
+            if self._has_active_chat_overlap(connection, record):
+                return None
+            self._validate_experiment_wake_binding(connection, record)
+            if not self.claim_question_followup(
+                connection,
+                question_id,
+                answer_revision=answer_revision,
+                operation_id=record.operation_id,
+            ):
+                return None
+            self._insert_agent_task(connection, record, continuation_cause="message_wake")
+            connection.execute(
+                "INSERT INTO episode_invocations (episode_id,operation_id,invocation_number,created_at) VALUES (?,?,?,?)",
+                (
+                    episode.episode_id,
+                    record.operation_id,
+                    episode.invocations_used + 1,
+                    record.created_at,
+                ),
+            )
+            connection.execute(
+                "UPDATE episodes SET invocations_used=invocations_used+1,updated_at=? WHERE episode_id=?",
+                (record.created_at, episode.episode_id),
+            )
+        return self.agent_task(record.operation_id)
+
     @staticmethod
     def _experiment_episode_row(
         connection: sqlite3.Connection,
@@ -207,6 +361,16 @@ class ExperimentStoreMixin:
                         admission_id=auto_research_admission_id,
                     )
                 self._insert_episode(connection, started)
+                if continues_episode_id is not None:
+                    connection.execute(
+                        """WITH RECURSIVE owners(episode_id) AS (
+                            SELECT ? UNION ALL SELECT e.continues_episode_id FROM episodes e
+                            JOIN owners o ON e.episode_id=o.episode_id
+                            WHERE e.continues_episode_id IS NOT NULL
+                        ) UPDATE questions SET withdrawn_readonly=0
+                        WHERE owner_kind='episode' AND owner_id IN (SELECT episode_id FROM owners)""",
+                        (continues_episode_id,),
+                    )
                 connection.execute(
                     """
                     INSERT INTO experiment_episode_state (episode_id, created_at, updated_at)
