@@ -29,6 +29,7 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
 from rcp.service import ProjectService, RunRequest
+from rcp.storage.models import ExperimentEpisodeUnwakeable
 from rcp.transport import RemoteRunStage
 from rcp.watchers import (
     WatcherBinding,
@@ -251,6 +252,10 @@ async def _process_experiment_watcher_maintenance(
                                 staged.resource.watcher_snapshot_token
                             ),
                         )
+                    except ExperimentEpisodeUnwakeable as exc:
+                        # The transaction rolled back, so the staged state still holds.
+                        problem = str(exc)
+                        correctable = True
                     except (OSError, ReplayHalted, ValueError) as exc:
                         problem = str(exc)
                         correctable = False

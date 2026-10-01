@@ -29,6 +29,7 @@ from rcp.storage import (
     WatcherStopRequest,
     watcher_next_check_at,
 )
+from rcp.storage.models import ExperimentEpisodeUnwakeable
 from rcp.watchers import (
     ExperimentWatchSpec,
     WatcherBinding,
@@ -446,6 +447,42 @@ def test_cross_chat_maintenance_retires_and_replaces_without_rebinding_episode(
     assert store.watcher("old").status == "stopped"
     assert store.watcher("old").stop_operation_id == "maintenance"
     assert store.experiment_episode(episode_id) == before
+
+
+def test_maintenance_cannot_retire_the_last_way_a_running_episode_wakes(store) -> None:
+    episode_id = str(uuid.uuid4())
+    _bound_episode(store, episode_id)
+    store.create_agent_task(_maintenance_task(store, "maintenance"))
+    continuation = _loop_continuation(episode_id)
+    store.create_watchers(
+        [
+            _record("finished", origin="loop-root", status="completed", continuation=continuation),
+            _record("running", origin="loop-root", continuation=continuation),
+        ]
+    )
+    resource = store.experiment_watcher_resources("project")[0]
+    binding = _maintenance_binding(resource)
+
+    def retire(*watcher_ids: str) -> None:
+        store.persist_experiment_watchers_idempotently(
+            [],
+            stops=[
+                WatcherStopRequest(stop_watcher_id=item, reason="Cancelled the job")
+                for item in watcher_ids
+            ],
+            binding=binding,
+            expected_watcher_snapshot_token=resource.watcher_snapshot_token,
+        )
+
+    with pytest.raises(ExperimentEpisodeUnwakeable):
+        retire("finished", "running")
+    assert store.watcher("finished").status == "completed"
+    assert store.watcher("running").status == "active"
+
+    retire("running")
+    with pytest.raises(ExperimentEpisodeUnwakeable):
+        retire("finished")
+    assert store.watcher("finished").notified is False
 
 
 def test_episode_origin_cannot_arm_a_watcher_for_another_episode(store) -> None:

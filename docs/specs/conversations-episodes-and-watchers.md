@@ -683,6 +683,15 @@ Maintenance uses its own Work task/session, spends no Experiment invocation,
 does not create an attempt, and never replaces the episode's native-session
 binding. Stop, watcher claim, and competing maintenance have one atomic winner.
 
+Maintenance may not leave a running episode with nothing to wake it. A file
+that stops watchers and arms none is refused when, after its stops, the episode
+has no pending turn, no live watcher, and no undelivered completion. The refusal
+rolls back and enters the ordinary maintenance correction round. The agent
+either drops the stop, so the existing watcher still wakes the loop, or arms an
+observer for replacement work it already launched. A loop turn's own empty
+declaration keeps its separate Patch-exit rule, and only a human **Stop loop**
+ends the loop.
+
 ## Live artifact reconciliation
 
 The existing background reconciliation pass refreshes helper-job state and

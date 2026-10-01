@@ -26,6 +26,7 @@ from rcp.storage.models import (
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentEpisodeRecord,
+    ExperimentEpisodeUnwakeable,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
     StoredWatcherRecord,
@@ -1198,6 +1199,8 @@ class ExperimentStoreMixin:
                 else desired
             )
             self._insert_watcher(connection, persisted)
+        if resource is not None and not records:
+            self._reject_unwakeable_maintained_episode(connection, binding)
         stored_rows = []
         if watcher_ids:
             placeholders = ",".join("?" for _ in watcher_ids)
@@ -1207,6 +1210,43 @@ class ExperimentStoreMixin:
             ).fetchall()
         stored_by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows}
         return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    def _reject_unwakeable_maintained_episode(
+        self,
+        connection: sqlite3.Connection,
+        binding: WatcherBinding,
+    ) -> None:
+        """Refuse a Work edit that retires the last way the running loop can wake.
+
+        A loop turn may end with no watchers only through an explicit Patch exit.
+        A Work chat maintaining the episode's observers is not its turn, so no
+        later declaration would replace what its stops take away. The check reads
+        the same runtime the Runs card projects, after this transaction's stops,
+        so an episode it passes is never left on the bare Needs-action fallback.
+        """
+
+        control_node_id = binding.continuation.control_node_id
+        assert control_node_id is not None
+        runtime = self._project_experiment_loop_runtimes(
+            binding.project_id,
+            {control_node_id},
+            graph_target=binding.graph_target,
+            _connection=connection,
+        ).get(control_node_id)
+        if runtime is not None and (
+            runtime.task_active
+            or runtime.detached_work_active
+            or runtime.watcher_completion_pending
+        ):
+            return
+        raise ExperimentEpisodeUnwakeable(
+            "this file retires every watcher that can wake Experiment episode "
+            f"{binding.continuation.control_episode_id} and arms none, and no episode turn "
+            "is pending, so the running loop would have nothing left to wake it. Arm an "
+            "observer for replacement work that is already running, or drop the stop item "
+            "so the existing watcher can still wake the loop. Only a human Stop loop ends "
+            "the loop."
+        )
 
     @staticmethod
     def _experiment_observer_identity(
