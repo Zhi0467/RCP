@@ -244,6 +244,30 @@ test("branch Experiment links carry the exact child episode and target identity"
   );
 });
 
+test("a human Run isolated on its own branch has an exact route with no parent", () => {
+  const route = {
+    experiment_id: "experiment/isolated",
+    episode_id: "episode-1",
+    graph_target: { kind: "branch", branch_id: "episode-1" },
+    parent_episode_id: null,
+  };
+  assert.deepEqual(
+    parseProjectHash(experimentBoardHref("project-one", route)).experimentRoute,
+    route,
+  );
+  const token = experimentBoardRouteToken({
+    node: { id: route.experiment_id },
+    control: { episode_id: route.episode_id },
+    episode: { episode_id: route.episode_id },
+    graph_target: route.graph_target,
+    parent_episode_id: null,
+  });
+  assert.deepEqual(
+    parseProjectHash(experimentBoardHref("project-one", token)).experimentRoute,
+    route,
+  );
+});
+
 test("project Runs polls the Experiment index before a branch child is selected", () => {
   assert.equal(projectRunsNeedsExperimentIndex("project-one", "execution"), true);
   assert.equal(projectRunsNeedsExperimentIndex("project-one", "overview"), false);

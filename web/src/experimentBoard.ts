@@ -429,7 +429,13 @@ function experimentRouteFromParams(
       parent_episode_id: null,
     };
   }
-  if (targetKind === "branch" && branchId && parentEpisodeId === branchId) {
+  // An Auto-research child names its owning episode; a human Run isolated on its
+  // own branch has no parent.
+  if (
+    targetKind === "branch" &&
+    branchId &&
+    (parentEpisodeId === branchId || parentEpisodeId === null)
+  ) {
     return {
       experiment_id: experimentId,
       episode_id: episodeId,
@@ -481,13 +487,13 @@ function parseExperimentRouteIdentity(candidate: unknown): ExperimentRouteIdenti
     target.kind === "branch" &&
     typeof target.branch_id === "string" &&
     target.branch_id &&
-    value.parent_episode_id === target.branch_id
+    (value.parent_episode_id === target.branch_id || value.parent_episode_id === null)
   ) {
     return {
       experiment_id: value.experiment_id,
       episode_id: value.episode_id,
       graph_target: { kind: "branch", branch_id: target.branch_id },
-      parent_episode_id: target.branch_id,
+      parent_episode_id: value.parent_episode_id,
     };
   }
   return null;

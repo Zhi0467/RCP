@@ -1,7 +1,5 @@
 # Active implementation handoffs
 
-- [Agents list: branch episodes and episode chats](handoff-2026-10-01-agents-list-branch-episodes.md)
-  — design written 2026-10-01; not implemented.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
   — implemented 2026-09-30 on the same PR; served-app, desktop, and real-data checks remain.
 - [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)
@@ -59,5 +57,11 @@ stands in for it. Run one on disposable data, then delete its line here.
 - Continuation prompts: with a real provider, an Experiment episode through two
   watcher wakes, its report, then Add N turns on the same session, checking the
   recorded prompts carry a pointer, no pointer, and a re-opened master in turn.
+- Agents and branch episodes: with a real provider on a team server, start an
+  Experiment on a graph branch from main and confirm its Agents row reads
+  Working with a Branch tag, then Done, and opens its Runs card; start a second
+  Run on a node that already has a human chat and confirm that chat is
+  untouched; let a watcher wake a human chat and confirm its Activity row shows
+  while it runs.
 - Update notices: a `publish-desktop.yml` rerun after a failed upload; in the
   prebuilt app, the Download button, quit and reopen, and a team connection.

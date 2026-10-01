@@ -364,8 +364,10 @@ fresh human Run, which starts a new episode and records its own authorizer.
 
 Every episode has exactly one validated native-session binding at a time:
 provider, session id, execution host, exact reusable stage, project, graph
-target, and actor conversation. A human Run always starts a fresh episode and
-fresh native session. A provider switch is a deliberate recovery that becomes
+target, and actor conversation. A human Run always starts a fresh episode,
+fresh native session, and fresh conversation; it never joins an existing chat on
+its node. Watcher wakes and continuations keep the conversation the episode
+recorded. A provider switch is a deliberate recovery that becomes
 active only after a mechanically successful handoff; automatic work never
 silently switches or starts fresh. The switch is offered only where the actor
 can accept a new binding: a rebinding starts a clean native session, which an
