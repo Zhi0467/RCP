@@ -3244,3 +3244,26 @@ export interface UpdateNotice {
   source_at_release: boolean;
   update_command: string | null;
 }
+
+export interface AgentQuestion {
+  question_id: string;
+  owner_kind: "chat" | "episode";
+  owner_id: string;
+  operation_id: string;
+  question: string;
+  choices: string[];
+  multiple: boolean;
+  state: "pending" | "parked" | "answered" | "dismissed";
+  answer: string | null;
+  chosen_choices: string[];
+  resolved_by: AuthorizedHuman | null;
+  resolved_at: string | null;
+  withdrawn_readonly: boolean;
+  can_answer: boolean;
+  created_at: string;
+}
+
+export interface AnswerQuestionRequest {
+  answer: string;
+  choices: string[];
+}

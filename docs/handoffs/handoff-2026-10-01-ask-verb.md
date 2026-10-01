@@ -9,12 +9,20 @@ follow-up admission, chat projection, owner prompts, and fresh question
 snapshots (slice 2); orchestrator dispatch, answer mail, wake snapshots,
 lifecycle withdrawal and reopening, the health overlay, and per-question
 notifications (slice 3). Slice 4's prompts landed inside slices 2 and 3.
-Remaining: API and Web (slice 5). After a human resolves a question, the answer
+Slice 5 adds authenticated question list/answer/dismiss routes, shared Web cards
+in node/project chats and both episode views, and existing-cadence refresh.
+API tests cover concurrent retry, owner delivery, withdrawal, membership,
+strict input, and immutable follow-up binding; Web helper tests and the build
+pass. Disposable served HTTP checks pass for chat/episode question lists,
+dismissal persistence, and ended-episode refusal. Browser verification remains
+open: the local Chromium process cannot
+start because macOS refuses Mach-port registration, and the browser-control
+surface has no available browser. Live broker and provider/card journeys below
+still need a host that can run them. After a human resolves a question, the answer
 API calls `app.state.reconcile_question_answers(project_id)` for chat and
 Experiment owners and `record_auto_research_question_answer(store, question_id)`
 then ordinary mail delivery for orchestrator questions; dismissal never
-dispatches mail. Live broker socket checks need an unrestricted test host, and
-the question-card journeys remain with slice 5.
+dispatches mail. Live broker socket checks need an unrestricted test host.
 
 Close this handoff when all of these hold:
 

@@ -249,6 +249,39 @@ target. An active branch merge publishes graph mutation as unavailable and
 rejects manual Sync and new graph writers until it settles. An owner merge
 reservation also fences new Discuss turns on that binding through cleanup.
 
+## Human question API and cards
+
+Project members read questions through
+`GET /api/projects/{project_id}/chats/{chat_id}/questions` and
+`GET /api/projects/{project_id}/episodes/{episode_id}/questions`. Episode lists
+include predecessor questions without changing their origin. Each question
+publishes its id, owner and asking operation, text, choices, multiple-selection
+flag, state, answer, chosen choices, human resolver and time, creation time,
+`withdrawn_readonly`, and the server's `can_answer` offer. Open questions whose
+asking turn has settled, and orchestrator questions, project as `parked`.
+
+`POST /api/projects/{project_id}/questions/{question_id}/answer` accepts only
+`answer` text and `choices`; the store validates both and records the
+authenticated human. An exact retry is idempotent; a conflicting resolution or
+a withdrawn question returns 409. The endpoint enforces the store's resolution
+rules independently of the displayed offer. After committing a new answer it
+calls the chat/Experiment answer reconciler, or records orchestrator answer mail
+and invokes ordinary mail delivery. Durable reconciliation recovers an
+interrupted delivery. Answer input cannot change the original capability,
+scope, graph target, or mode. The strict request rejects additional fields.
+`POST .../questions/{question_id}/dismiss` accepts an empty object, resolves the
+card only, and never wakes an owner.
+
+Node and project chats show open question cards above the composer and resolved
+cards read-only in transcript order. The composer retains its steering behavior.
+A single choice submits immediately; multiple choices use toggles and explicit
+submission. Free text remains available with either choice format. A parked
+chat answer with no running turn names Work continuation on its submit control.
+Experiment and Auto-research detail show the same cards; withdrawn cards retain
+their history with an **Episode ended** state. Question refresh follows existing
+chat and episode refresh/polling, including turn command/state changes.
+Question notifications open the corresponding chat or expanded episode view.
+
 ## Episode merge API
 
 `POST /api/projects/{project_id}/episodes/{episode_id}/merge` resolves the

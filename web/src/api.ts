@@ -1,4 +1,6 @@
 import type {
+  AgentQuestion,
+  AnswerQuestionRequest,
   UpdateNotice,
   Machine,
   ExternalWatcherRecord,
@@ -666,5 +668,25 @@ export function verifyProviderLogin(
   return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
     method: "POST",
     body: JSON.stringify({ host }),
+  });
+}
+
+export function fetchQuestions(apiBase: string, ownerKind: "chat" | "episode", ownerId: string) {
+  return api<AgentQuestion[]>(
+    `${apiBase}/${ownerKind === "chat" ? "chats" : "episodes"}/${encodeURIComponent(ownerId)}/questions`,
+  );
+}
+
+export function answerQuestion(apiBase: string, questionId: string, body: AnswerQuestionRequest) {
+  return api<AgentQuestion>(`${apiBase}/questions/${encodeURIComponent(questionId)}/answer`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function dismissQuestion(apiBase: string, questionId: string) {
+  return api<AgentQuestion>(`${apiBase}/questions/${encodeURIComponent(questionId)}/dismiss`, {
+    method: "POST",
+    body: "{}",
   });
 }

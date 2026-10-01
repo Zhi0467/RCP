@@ -1,3 +1,4 @@
+import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import { ExternalLink, FlaskConical } from "lucide-react";
@@ -325,6 +326,10 @@ export function ExperimentRunDetail({
           )}
         </div>
       </div>
+
+      {episode && (
+        <EpisodeQuestions apiBase={apiBase} episodeId={episode.episode_id} freshness={run} />
+      )}
 
       {episode && (
         <RunArtifacts
