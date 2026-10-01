@@ -891,7 +891,7 @@ export default function App() {
   // same verified identity, actor, and team-session state that gates the page.
   const backendSessionReady =
     identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired;
-  const releaseUpdate = useUpdateNotice(backendSessionReady);
+  const [releaseUpdate, setReleaseUpdate] = useUpdateNotice(backendSessionReady);
   const {
     buildIdentity,
     reconnecting,
@@ -4116,6 +4116,7 @@ export default function App() {
         <SpaceSettings
           spaceKind={verifiedHealth?.space_kind ?? "personal"}
           updateNotice={releaseUpdate}
+          onReleaseCheck={setReleaseUpdate}
           cacheProjectId={projectId ?? projects[0]?.id ?? null}
           cacheClearDisabled={Boolean(activeTask)}
           onAllCachesCleared={(clearedProjectId, cacheMetrics) => {

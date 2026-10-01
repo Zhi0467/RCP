@@ -236,8 +236,9 @@ export function loadUpdateNotice(): Promise<UpdateNotice> {
   return api<UpdateNotice>("/api/update-notice");
 }
 
-export function loadServerStatus(): Promise<ServerStatus> {
-  return api<ServerStatus>("/api/server-status");
+/** `refresh` asks the server to look up the latest release again first. */
+export function loadServerStatus(refresh = false): Promise<ServerStatus> {
+  return api<ServerStatus>(refresh ? "/api/server-status?refresh=true" : "/api/server-status");
 }
 
 export function loadProjectProvisioningRequests(): Promise<ProjectProvisioningResponse[]> {

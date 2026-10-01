@@ -96,5 +96,6 @@ export function useUpdateNotice(
     }
     return startUpdateNoticePolling(load, setNotice, visibility, window);
   }, [enabled, load, visibility]);
-  return notice;
+  // The setter lets a fresher read elsewhere (Settings refresh) reach the notice.
+  return [notice, setNotice] as const;
 }

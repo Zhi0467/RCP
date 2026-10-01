@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { createServer } from "vite";
 import { chromium } from "playwright";
 
+import { releaseNotice } from "../src/updateNotice.ts";
+
 const fixture = {
   space: "personal",
   status: "update_available",
@@ -16,6 +18,7 @@ const fixture = {
   companion_ready: false,
   download_url: null,
   source_checkout: true,
+  source_at_release: false,
   update_command: "scripts/update-from-source v0.4.3",
 };
 
@@ -228,4 +231,26 @@ test("poll scheduling follows cache status and stops on cleanup", async () => {
   } finally {
     await server.close();
   }
+});
+
+test("a source app older than its current checkout still gets a notice", () => {
+  const current = {
+    ...fixture,
+    status: "current",
+    current_version: "0.4.3",
+    source_at_release: true,
+    update_command: null,
+  };
+  const source = { kind: "source", version: "0.4.2" };
+  const notice = releaseNotice(current, source);
+  assert.equal(notice?.kind, "source");
+  assert.equal(notice?.release, "0.4.3");
+  assert.match(notice?.command ?? "", /update-from-source v0\.4\.3 --desktop$/);
+  // Only the app's own version can make a current backend news.
+  assert.equal(releaseNotice(current, { ...source, version: "0.4.3" }), null);
+  assert.equal(releaseNotice(current, { ...source, kind: "prebuilt" }), null);
+  assert.equal(releaseNotice(current, null), null);
+  // A checkout past the release commit is current too, even at the same base
+  // version, and updating would downgrade it.
+  assert.equal(releaseNotice({ ...current, source_at_release: false }, source), null);
 });

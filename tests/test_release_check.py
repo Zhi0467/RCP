@@ -4,7 +4,9 @@ import json
 import socket
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
@@ -164,6 +166,39 @@ def test_companion_rechecks_until_published_then_stops(github, monkeypatch, sour
     assert requests.count("/tags/desktop-v0.4.10") == 2
 
 
+def _age(checker: ReleaseCheck, seconds: float) -> None:
+    checked = datetime.now(UTC) - timedelta(seconds=seconds)
+    checker._notice = checker._notice.model_copy(update={"checked_at": checked})
+
+
+def test_route_reads_look_up_again_once_past_the_bound(github):
+    routes, requests = github
+    checker = ReleaseCheck("personal", "0.4.10")
+    bound = limits.RELEASE_CHECK_FRESH_SECONDS
+    assert checker.fresh(bound).status == "current"
+    _age(checker, bound - 5)
+    checker.fresh(bound)
+    assert requests == ["/latest"]
+
+    # A stale cache found by several readers at once costs one lookup.
+    routes["/latest"] = (200, stable("v0.4.11"))
+    _age(checker, bound + 1)
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(lambda _: checker.fresh(bound), range(4)))
+    assert requests.count("/latest") == 2
+    assert checker.snapshot().status == "update_available"
+
+
+@pytest.mark.parametrize(("head", "expected"), [(COMMIT, True), ("b" * 40, False), (None, False)])
+def test_source_checkout_is_at_release_only_on_its_commit(github, monkeypatch, head, expected):
+    monkeypatch.setattr(release_check, "_checkout_head", lambda: head)
+    assert (
+        ReleaseCheck("personal", "0.4.10", source_checkout=True).check().source_at_release
+        is expected
+    )
+    assert not ReleaseCheck("personal", "0.4.10").check().source_at_release
+
+
 def test_off_makes_no_calls_even_for_explicit_check(github, monkeypatch):
     monkeypatch.setenv("RCP_UPDATE_CHECK", "off")
     checker = ReleaseCheck("personal", "0.4.9")
@@ -219,6 +254,7 @@ def test_poller_lifespan_and_personal_endpoint(github, tmp_path, monkeypatch):
             "companion_ready",
             "download_url",
             "source_checkout",
+            "source_at_release",
             "update_command",
         }
         assert notice["space"] == "personal"
@@ -280,6 +316,15 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
                     assert not status["releases"]["update_available"]
                     assert status["overall"]["tone"] == "good"
                     assert report.source_state == "aligned"
+                    # Refresh looks up again sooner than an ordinary read.
+                    _age(checker, limits.RELEASE_CHECK_REFRESH_SECONDS + 1)
+                    looked_up = github[1].count("/latest")
+                    client.get("/api/server-status")
+                    assert github[1].count("/latest") == looked_up
+                    status = client.get("/api/server-status", params={"refresh": "true"}).json()
+                    assert github[1].count("/latest") == looked_up + 1
+                    assert status["releases"]["running_version"] == "0.4.9"
+                    assert status["releases"]["latest_version"] == "0.4.10"
                 else:
                     assert github[1] == before
         finally:

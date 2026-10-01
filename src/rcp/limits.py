@@ -440,6 +440,10 @@ TERMINAL_MAX_DIMENSION = 1000
 # Public release metadata polling, shared by the app and the explicit doctor lookup.
 RELEASE_CHECK_START_DELAY_SECONDS = 5.0
 RELEASE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
+# A route looks GitHub up again past this age, so opening a space shows the
+# real status; the refresh button uses the shorter bound.
+RELEASE_CHECK_FRESH_SECONDS = 10 * 60
+RELEASE_CHECK_REFRESH_SECONDS = 60
 RELEASE_CHECK_DEADLINE_SECONDS = 10.0
 RELEASE_CHECK_MAX_BYTES = 256 * 1024
 RELEASE_CHECK_MAX_REDIRECTS = 3

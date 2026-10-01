@@ -1,5 +1,3 @@
-import { ReleaseCheckRow } from "./UpdateNotice";
-import type { UpdateNotice } from "../types";
 import {
   ArchiveRestore,
   DatabaseBackup,
@@ -11,11 +9,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { loadServerStatus } from "../api";
-import type { ServerStatus, ServerStatusSummary } from "../types";
+import type { ServerStatus, ServerStatusSummary, UpdateNotice } from "../types";
 
 interface Props {
-  updateNotice?: UpdateNotice | null;
-  loadStatus?: () => Promise<ServerStatus>;
+  loadStatus?: (refresh: boolean) => Promise<ServerStatus>;
+  /** Hands the fresh release check to the app-wide update notice. */
+  onReleaseCheck?: (notice: UpdateNotice) => void;
 }
 
 export function shortCommit(commit: string | null): string {
@@ -55,35 +54,60 @@ function StatusMark({ summary }: { summary: ServerStatusSummary }) {
   return <span className={`server-status-mark ${summary.tone}`}>{summary.label}</span>;
 }
 
-function CommitRow({ label, commit }: { label: string; commit: string | null }) {
+/** The latest known release, with the check's own state whenever it is not a fresh answer. */
+export function latestLabel(version: string | null, check: UpdateNotice["status"]): string {
+  const known = version ? `v${version}` : null;
+  if (check === "current" || check === "update_available") return known ?? "Not checked";
+  const state = check.replaceAll("_", " ");
+  return known ? `${known} · ${state}` : state;
+}
+
+export function releaseLabel(version: string | null, commit: string | null): string {
+  return version ? `v${version}` : shortCommit(commit);
+}
+
+function ReleaseRow({
+  label,
+  version,
+  commit,
+}: {
+  label: string;
+  version: string | null;
+  commit: string | null;
+}) {
   return (
     <div className="server-commit-row">
       <dt>{label}</dt>
-      <dd title={commit ?? undefined}>{shortCommit(commit)}</dd>
+      <dd title={commit ?? undefined}>{releaseLabel(version, commit)}</dd>
     </div>
   );
 }
 
-export function ServerSettings({ loadStatus = loadServerStatus, updateNotice = null }: Props) {
+export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }: Props) {
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setStatus(await loadStatus());
-    } catch (failure) {
-      setStatus(null);
-      setError(failure instanceof Error ? failure.message : String(failure));
-    } finally {
-      setLoading(false);
-    }
-  }, [loadStatus]);
+  const reload = useCallback(
+    async (refresh: boolean) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const loaded = await loadStatus(refresh);
+        setStatus(loaded);
+        onReleaseCheck?.(loaded.release_check);
+      } catch (failure) {
+        setStatus(null);
+        setError(failure instanceof Error ? failure.message : String(failure));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [loadStatus, onReleaseCheck],
+  );
 
   useEffect(() => {
-    void reload();
+    void reload(false);
   }, [reload]);
 
   return (
@@ -99,13 +123,11 @@ export function ServerSettings({ loadStatus = loadServerStatus, updateNotice = n
           type="button"
           aria-label="Refresh server status"
           disabled={loading}
-          onClick={() => void reload()}
+          onClick={() => void reload(true)}
         >
           <RefreshCw className={loading ? "spin" : undefined} size={15} />
         </button>
       </header>
-
-      <ReleaseCheckRow notice={updateNotice} label="Release check" />
 
       {error ? (
         <div className="server-settings-error" role="alert">
@@ -122,23 +144,45 @@ export function ServerSettings({ loadStatus = loadServerStatus, updateNotice = n
 
       {status ? (
         <div className="server-settings-body">
-          <section className="server-release-ledger" aria-label="Selected release commits">
+          <section className="server-release-ledger" aria-label="Server release">
             <div className="server-settings-section-title">
               <GitCompareArrows size={15} />
-              <h3>Selected release</h3>
+              <h3>Release</h3>
               <StatusMark summary={status.releases.status} />
             </div>
             <dl className="server-commit-rail">
-              <CommitRow label="Running" commit={status.releases.running_commit} />
-              <CommitRow label="Installed" commit={status.releases.current_release_commit} />
+              <ReleaseRow
+                label="Running"
+                version={status.releases.running_version}
+                commit={status.releases.running_commit}
+              />
+              <ReleaseRow
+                label="Installed"
+                version={status.releases.installed_version}
+                commit={status.releases.current_release_commit}
+              />
+              <div className="server-commit-row">
+                <dt>Latest</dt>
+                <dd>{latestLabel(status.releases.latest_version, status.release_check.status)}</dd>
+              </div>
+              <div className="server-commit-row">
+                <dt>Checked</dt>
+                <dd>{formatServerTimestamp(status.release_check.checked_at)}</dd>
+              </div>
               {status.releases.candidate_commit ? (
-                <CommitRow label="Candidate" commit={status.releases.candidate_commit} />
+                <ReleaseRow
+                  label="Built update"
+                  version={null}
+                  commit={status.releases.candidate_commit}
+                />
               ) : null}
             </dl>
             {status.releases.last_update_failure ? (
               <p className="server-status-problem">{status.releases.last_update_failure}</p>
             ) : null}
-            <code>{status.releases.command}</code>
+            {status.releases.status.tone !== "good" ? (
+              <code>{status.release_check.update_command ?? status.releases.command}</code>
+            ) : null}
           </section>
 
           <div className="server-status-card-grid">
