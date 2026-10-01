@@ -23,6 +23,7 @@ from rcp.episode_health import (
     _auto_research_control_task_id,
     _episode_task_controls,
     _EpisodeProjectionParent,
+    episode_has_open_questions,
     operational_episode_tasks,
     project_episode_health,
 )
@@ -395,6 +396,7 @@ def serialize_episode(
                 current_control_task_id,
                 recovery,
                 report_login_blocked,
+                episode_has_open_questions(store, episode.project_id, episode.episode_id),
             )
         ]
     )[episode.episode_id]
@@ -829,7 +831,16 @@ def space_auto_research_episode_projection(
         recovery_for(current_control_task_id) if current_control_task_id is not None else None
     )
     health, _recommendation, _task_control, _blocked_reason = project_episode_health(
-        [EpisodeHealthInput(episode.episode_id, episode, tasks, current_control_task_id, recovery)]
+        [
+            EpisodeHealthInput(
+                episode.episode_id,
+                episode,
+                tasks,
+                current_control_task_id,
+                recovery,
+                has_open_questions=snapshot.has_open_questions,
+            )
+        ]
     )[episode.episode_id]
     run_section = _episode_run_section(health)
     last_activity_at = next(

@@ -29,7 +29,7 @@ from rcp.storage.models import (
     _stored_space_kind,
     normalize_space_name,
 )
-from rcp.storage.notifications import migrate_notifications
+from rcp.storage.notifications import migrate_notifications, migrate_question_notifications
 from rcp.storage.questions import migrate_questions
 
 if TYPE_CHECKING:
@@ -73,6 +73,7 @@ class AppStoreBase:
         (31, "artifact_imports_v1"),
         (32, "artifact_live_policy_v1"),
         (33, "questions_v1"),
+        (34, "question_notifications_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -660,6 +661,12 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=33, name="questions_v1", migration=migrate_questions
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=34,
+            name="question_notifications_v1",
+            migration=migrate_question_notifications,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

@@ -38,6 +38,7 @@ from rcp.core.models import (
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
+    AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH,
     CHAT_ARTIFACT_MAX_FILE_BYTES,
     MEMBER_REMOVAL_PREVIEW_MAX_ITEMS,
     TEAM_DEVICE_PAIRING_CODE_MAX_LENGTH,
@@ -2414,6 +2415,7 @@ class AutoResearchSpaceRunProjectionSnapshot(BaseModel):
     tasks: list[AutoResearchSpaceRunTaskState]
     current_orchestrator_task_id: str | None
     has_report: bool
+    has_open_questions: bool = False
 
 
 class EpisodeBudgetMeter(BaseModel):
@@ -2692,7 +2694,7 @@ class AutoResearchMessageRecord(BaseModel):
     authorized_by: AuthorizedHuman | None = None
     recipient_task_id: str
     control_node_id: str | None = None
-    body: str = Field(min_length=1, max_length=16_000)
+    body: str = Field(min_length=1, max_length=AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH)
     created_at: str
     delivered_at: str | None = None
     delivery_operation_id: str | None = None

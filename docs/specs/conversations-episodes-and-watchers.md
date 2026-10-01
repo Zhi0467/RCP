@@ -43,6 +43,14 @@ observed. Episodes created after that baseline notify on their first eligible
 observation, including one that has already ended between passes. Ending during
 downtime therefore remains observable on restart.
 
+Questions use the same `episode_needs_action` (Needs you) preference for chats
+and episodes. A durable creation event per question id produces one push, even
+when another question already holds an episode in `needs_action`. Chat questions
+link to their chat; episode questions link to their episode. Delivery checks
+recognize question items independently of episode health. A health transition
+whose cause is that question does not send a second push. Dismissal, later wakes,
+and reauthorization produce no new question event.
+
 ## Discuss and Work turns
 
 Discuss and Work are explicit per-turn modes in one conversation. Submit time

@@ -402,6 +402,7 @@ class EpisodeStoreMixin:
             task_rows: list[sqlite3.Row] = []
             recovery_rows: list[sqlite3.Row] = []
             report_rows: list[sqlite3.Row] = []
+            question_episode_ids: set[str] = set()
             if lifecycle_episode_ids:
                 episode_placeholders = ", ".join("?" for _ in lifecycle_episode_ids)
                 task_rows = connection.execute(
@@ -440,6 +441,24 @@ class EpisodeStoreMixin:
                     """,
                     lifecycle_episode_ids,
                 ).fetchall()
+                question_episode_ids = {
+                    str(row["episode_id"])
+                    for row in connection.execute(
+                        f"""
+                        WITH RECURSIVE attention(episode_id, project_id) AS (
+                            SELECT owner_id, project_id FROM questions
+                            WHERE owner_kind='episode' AND state='pending' AND withdrawn_readonly=0
+                            UNION
+                            SELECT episode.episode_id, episode.project_id FROM episodes AS episode
+                            JOIN attention ON episode.continues_episode_id=attention.episode_id
+                              AND episode.project_id=attention.project_id
+                        )
+                        SELECT episode_id FROM attention
+                        WHERE episode_id IN ({episode_placeholders})
+                        """,
+                        lifecycle_episode_ids,
+                    ).fetchall()
+                }
                 report_rows = connection.execute(
                     f"""
                     SELECT episode_id FROM episode_reports
@@ -524,6 +543,7 @@ class EpisodeStoreMixin:
                         else None
                     ),
                     has_report=episode.episode_id in report_episode_ids,
+                    has_open_questions=episode.episode_id in question_episode_ids,
                 )
             )
         return snapshots
@@ -685,6 +705,9 @@ class EpisodeStoreMixin:
                 """,
                 (now, now, detail, now, now, episode_id),
             )
+            self.set_episode_chain_questions_withdrawn_in_connection(
+                connection, episode_id, withdrawn=True
+            )
 
     def episode_budget_meter(self, episode_id: str) -> EpisodeBudgetMeter:
         record = self.episode(episode_id)
@@ -825,6 +848,9 @@ class EpisodeStoreMixin:
             WHERE episode_id = ?
             """,
             (ending, diagnostic, now, episode_id),
+        )
+        self.set_episode_chain_questions_withdrawn_in_connection(
+            connection, episode_id, withdrawn=True
         )
         updated = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
@@ -1064,6 +1090,9 @@ class EpisodeStoreMixin:
                 WHERE episode_id = ?
                 """,
                 (final_status, ending, diagnostic, now, now, episode_id),
+            )
+            self.set_episode_chain_questions_withdrawn_in_connection(
+                connection, episode_id, withdrawn=True
             )
             self._terminalize_auto_research_child_experiment_with_notice(
                 connection,
@@ -2193,8 +2222,13 @@ class EpisodeStoreMixin:
             ),
         )
 
-    @staticmethod
+        if record.continues_episode_id is not None:
+            self.set_episode_chain_questions_withdrawn_in_connection(
+                connection, record.episode_id, withdrawn=False
+            )
+
     def _insert_episode_wrapup(
+        self,
         connection: sqlite3.Connection,
         record: EpisodeWrapupRecord,
     ) -> None:
@@ -2232,6 +2266,10 @@ class EpisodeStoreMixin:
                 record.updated_at,
                 record.finished_at,
             ),
+        )
+
+        self.set_episode_chain_questions_withdrawn_in_connection(
+            connection, record.episode_id, withdrawn=True
         )
 
     @staticmethod
