@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
+from rcp import limits
 from rcp.api.dependencies import get_release_check
 from rcp.release_check import ReleaseCheck, UpdateNotice
 
@@ -14,4 +15,4 @@ router = APIRouter()
 def update_notice(
     release_check: Annotated[ReleaseCheck, Depends(get_release_check)],
 ) -> UpdateNotice:
-    return release_check.snapshot()
+    return release_check.fresh(limits.RELEASE_CHECK_FRESH_SECONDS)

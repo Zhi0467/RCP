@@ -1191,7 +1191,9 @@ answers, graph outcomes, and recovery chains.
 
 In a team space, Settings also reads one authenticated `/api/server-status`
 projection. It carries backend-owned labels and presentation tones for the
-running/current/managed/upstream release relationship, update readiness, the
+running/current/managed/upstream release relationship with the running,
+installed, and latest release versions and the release check time, update
+readiness, the
 latest backup attempt and latest independently retained protected-archive
 receipt, protected and uncaptured project counts, completed-restore age,
 installed machine-tool readiness, and private provider-check availability. The
@@ -1200,7 +1202,9 @@ not reconstruct operational state from raw status vocabularies. An unsafe
 concrete doctor, backup-receipt, or restore read fails visibly instead of
 becoming an empty or healthy panel.
 
-That route is GET-only and available only to an authenticated team member. It
+That route is GET-only and available only to an authenticated team member.
+`?refresh=true`, sent by the panel's refresh button, only shortens the release
+lookup bound to 1 minute. It
 does not configure or run backup, update, restore, Git credential preparation,
 project provisioning, provider login/check, or member removal. It also does not
 enumerate the console operations that do: an operator holds machine authority
@@ -1287,7 +1291,8 @@ remain Codex Desktop behavior rather than RCP product state.
 
 ### Update notice
 
-`GET /api/update-notice` returns the cached release check: space, status
+`GET /api/update-notice` returns the release check, looked up again first when
+its cache is older than 10 minutes: space, status
 (`update_available`, `current`, `pinned`, `unchecked`, `failed`, `off`,
 `unknown`), current and latest versions, check times, companion readiness, a
 locally built download URL, and the update command. The one update surface,
@@ -1301,7 +1306,10 @@ surface shows the native **Update** button instead, which replaces and
 relaunches the app and asks before interrupting running agent tasks.
 The native shell reports its build kind, version, and checkout through
 `desktop_build_identity`, because a desktop may reuse a backend of the other
-kind. A visible page polls the endpoint (30 s while `unchecked`, then 10 min,
+kind. A source app compares its own version even when the backend
+reports `current` and `source_at_release` (its checkout `HEAD` is the latest
+release commit; a later commit keeps the same base version), because its native shell can be older than an updated
+checkout; it then shows `scripts/update-from-source vX.Y.Z --desktop`. A visible page polls the endpoint (30 s while `unchecked`, then 10 min,
 and on becoming visible); dismissal is per release. A protocol mismatch names
 the confirmed download, the releases page when the check is unavailable, or the
 update script for a source build.

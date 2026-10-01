@@ -13,7 +13,7 @@ Object.defineProperty(navigator, "clipboard", {
 });
 window.readIdentity = desktopBuildIdentity;
 function App() {
-  const notice = useUpdateNotice(true, undefined, window.visibility);
+  const [notice] = useUpdateNotice(true, undefined, window.visibility);
   return (
     <>
       <UpdateNotice
