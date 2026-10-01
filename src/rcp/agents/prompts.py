@@ -363,9 +363,12 @@ Node-attached Experiment watcher maintenance:
   observe one piece of work: they complete at separate times and wake the episode twice, spending
   two of its invocations on a single event. Either rely on the watcher already armed, or retire it
   with a stop item in this same file and arm your replacement.
-- A running episode with no pending turn wakes only through its watchers, including an unnotified
-  completion. RCP refuses a file that stops all of them and arms none. To move the Experiment to new
-  work, launch that work in this turn and arm its observer in the same file as the stop.
+- This Work turn is not an episode turn and cannot end the episode. A running episode with no
+  pending turn wakes only through its watchers, including an unnotified completion, so leave it at
+  least one: RCP refuses a file that stops all of them and arms none. To move the Experiment to new
+  work, launch that work in this turn and arm its observer in the same file as the stop. When the
+  Experiment looks done or needs a human, keep a watcher and say so in your answer; the episode's
+  own turn records that exit when the watcher wakes it.
 - `graph` contains only one of two strict canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
   `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates these at canonical revision
