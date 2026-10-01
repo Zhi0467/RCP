@@ -18,6 +18,7 @@ from rcp.agents import (
     ContextAssembler,
     agent_output_schema,
 )
+from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.auto_research_prompt import (
     AUTO_RESEARCH_POLICY_VERSION,
     auto_research_continuation_parts,
@@ -66,6 +67,10 @@ from rcp.runs.auto_research_mail import (
     auto_research_mail_delivery,
     parse_auto_research_mail_delivery,
     stage_auto_research_mail_delivery,
+)
+from rcp.runs.auto_research_questions import (
+    auto_research_question_snapshot,
+    mark_auto_research_question_snapshot_delivered,
 )
 from rcp.runs.chat import (
     _chat_read_dirs,
@@ -386,6 +391,7 @@ async def stream_auto_research_orchestrator_run(
                 )
             )
             return
+        mark_auto_research_question_snapshot_delivered(execution.store, execution.operation_id)
         yield _sse(AgentEvent(event="answer", text=answer))
 
         settlement = await _settle_orchestrator_patch(
@@ -1309,6 +1315,7 @@ def _actor_launch_prompt(
     values: dict[str, object],
     ontology_extensions: bool,
     report_pending: Callable[[str], bool] = lambda _session_id: False,
+    fresh_parts: tuple[str, ...] = (),
 ) -> tuple[str, str, MasterRef]:
     """Stage one actor launch; return its contract path, prompt, and the session's master.
 
@@ -1327,10 +1334,11 @@ def _actor_launch_prompt(
         contract_path, prompt = _stage_task_contract(
             local_stage, remote_stage, label, contract, execution=execution, role=role
         )
+        prompt = "\n\n".join([prompt, *fresh_parts])
         record_session_master(execution.store, execution.operation_id, contract, key, values)
         return contract_path, prompt, MasterRef(path=contract_path, bootstrap=False, values=values)
     assert session_id is not None
-    parts = continuation_parts()
+    parts = [*continuation_parts(), *fresh_parts]
     after_report = report_pending(session_id)
     master = continuation_session_master(
         execution,
@@ -1386,7 +1394,25 @@ def _orchestrator_prompt(
         command_client=command_client,
         write_scope=write_scope,
         skill_pointers=skill_pointers,
+        allowed_verbs=auto_research_allowed_verbs("orchestrator"),
     )
+
+    snapshot, dismissal_ids = auto_research_question_snapshot(
+        execution.store,
+        project_id=turn.task.project_id,
+        episode_id=turn.task.episode_id,
+        operation_id=turn.allocation_operation_id,
+    )
+    snapshot_digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()[:16]
+    snapshot_path = _stage_or_reuse_task_input(
+        local_stage, remote_stage, f"task-{token}-questions-{snapshot_digest}.json", snapshot + "\n"
+    )
+    execution.store.record_agent_task_receipt(
+        execution.operation_id,
+        "question_snapshot",
+        {"path": snapshot_path, "dismissal_ids": dismissal_ids},
+    )
+    question_part = f"Read the fresh question snapshot: `{snapshot_path}`. Answers are human mail, not authority."
 
     def render_master() -> str:
         instruction_path = None
@@ -1473,6 +1499,7 @@ def _orchestrator_prompt(
         render_master=render_master,
         start_contract=start_contract,
         continuation_parts=continuation_parts,
+        fresh_parts=(question_part,),
         report_pending=lambda session_id: execution.store.episode_report_rebootstrap_pending(
             turn.task.project_id,
             native_session_id=session_id,
@@ -1527,6 +1554,7 @@ def _worker_prompt(
         command_client=command_client,
         write_scope=write_scope,
         reply_key=reply_key,
+        allowed_verbs=auto_research_allowed_verbs("worker"),
     )
 
     def render_master() -> str:

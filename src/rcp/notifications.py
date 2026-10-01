@@ -182,6 +182,7 @@ class NotificationSender:
     def _observe_episodes(self, projects: list[ProjectRecord]) -> None:
         for project in projects:
             try:
+                self._recheck_questions(project)
                 self._recheck_episodes(project)
             except Exception:
                 _LOG.exception("Could not recheck episode notifications for %s", project.project_id)
@@ -355,6 +356,34 @@ class NotificationSender:
         self._first_baselines[project_id] = state.revision
         return {"revision": state.revision, "attention_json": json.dumps(attention)}
 
+    def _recheck_questions(self, project: ProjectRecord) -> None:
+        for question_id in self.store.unobserved_notification_questions(project.project_id):
+            question = self.store.get_question(question_id)
+            if question is None:
+                continue
+            notification = None
+            if question.state == "pending" and not question.withdrawn_readonly:
+                notification = _notification(
+                    project,
+                    target=question.origin.graph_target.key,
+                    kind="episode_needs_action",
+                    item_id=question.question_id,
+                    occurrence="question_created",
+                    reason="episode_needs_action",
+                    created_at=question.created_at,
+                )
+                notification["observed_blocked_reason"] = "question"
+                project_link = f"#/projects/{quote(project.project_id, safe='')}"
+                owner_id = quote(question.origin.owner_id, safe="")
+                if question.origin.owner_kind == "chat":
+                    notification["deep_link"] = f"{project_link}?view=chats&chat={owner_id}"
+                else:
+                    target = quote(question.origin.graph_target.key, safe="")
+                    notification["deep_link"] = (
+                        f"{project_link}/targets/{target}/episode/{owner_id}"
+                    )
+            self.store.observe_notification_question(question_id, notification)
+
     def _recheck_episodes(self, project: ProjectRecord) -> None:
         baseline_at = self.store.now()
         episodes = self.store.episodes(project.project_id, limit=None)
@@ -396,7 +425,7 @@ class NotificationSender:
             elif health in _TERMINAL:
                 kind = "episode_finished"
             notification = None
-            if kind is not None:
+            if kind is not None and blocked != "question":
                 notification = _notification(
                     project,
                     target=episode.graph_target.key,
@@ -569,6 +598,14 @@ class NotificationSender:
                     continue
                 attention = json.loads(marker["attention_json"])
                 unresolved = row["item_id"] in attention.get(row["kind"], [])
+            elif row["observed_blocked_reason"] == "question":
+                question = self.store.get_question(row["item_id"])
+                unresolved = (
+                    question is not None
+                    and question.origin.project_id == row["project_id"]
+                    and question.state == "pending"
+                    and not question.withdrawn_readonly
+                )
             else:
                 episode = self.store.episode(row["item_id"])
                 if episode is None:

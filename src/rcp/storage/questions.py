@@ -16,6 +16,17 @@ from rcp.storage.question_models import (
     QuestionStateConflict,
 )
 
+_EPISODE_ANCESTORS = """
+    WITH RECURSIVE ancestors(episode_id, project_id, continues_episode_id) AS (
+        SELECT episode_id, project_id, continues_episode_id FROM episodes WHERE episode_id=?
+        UNION
+        SELECT episode.episode_id, episode.project_id, episode.continues_episode_id
+        FROM episodes AS episode JOIN ancestors
+          ON episode.episode_id=ancestors.continues_episode_id
+         AND episode.project_id=ancestors.project_id
+    )
+"""
+
 
 def migrate_questions(connection: sqlite3.Connection) -> None:
     connection.execute(
@@ -309,3 +320,52 @@ class QuestionStoreMixin:
                 WHERE project_id=? AND owner_kind='episode' AND owner_id=?""",
                 (withdrawn, project_id, episode_id),
             ).rowcount
+
+    def episode_questions(self, project_id: str, episode_id: str) -> list[QuestionRecord]:
+        """Read this continuation's questions without moving their original bindings."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                _EPISODE_ANCESTORS
+                + """SELECT questions.* FROM questions JOIN ancestors
+                     ON questions.owner_id=ancestors.episode_id
+                    AND questions.project_id=ancestors.project_id
+                    WHERE questions.project_id=? AND questions.owner_kind='episode'
+                    ORDER BY questions.created_at, questions.question_id""",
+                (episode_id, project_id),
+            ).fetchall()
+        return [_question_record(row) for row in rows]
+
+    def set_episode_chain_questions_withdrawn_in_connection(
+        self, connection: sqlite3.Connection, episode_id: str, *, withdrawn: bool
+    ) -> None:
+        """Change answerability atomically with an ending or continuation creation."""
+        if not connection.in_transaction:
+            raise ValueError("episode question lifecycle requires an active transaction")
+        connection.execute(
+            _EPISODE_ANCESTORS
+            + """UPDATE questions SET withdrawn_readonly=?
+                WHERE owner_kind='episode' AND EXISTS (
+                    SELECT 1 FROM ancestors WHERE ancestors.episode_id=questions.owner_id
+                    AND ancestors.project_id=questions.project_id
+                )""",
+            (episode_id, withdrawn),
+        )
+
+    def withdraw_episode_question_if_ended(self, question_id: str) -> bool:
+        """Close a question whose creation raced its episode's ending fence.
+
+        Serialized with endings: either this check sees the fence, or the later
+        ending sees the newly inserted question. Only this card is affected.
+        """
+        with self.connection() as connection:
+            return bool(
+                connection.execute(
+                    """UPDATE questions SET withdrawn_readonly=1
+                WHERE question_id=? AND owner_kind='episode' AND EXISTS (
+                    SELECT 1 FROM episodes WHERE episodes.episode_id=questions.owner_id
+                    AND episodes.project_id=questions.project_id
+                    AND (status!='running' OR ending IS NOT NULL OR stop_requested_at IS NOT NULL)
+                )""",
+                    (question_id,),
+                ).rowcount
+            )

@@ -226,10 +226,11 @@ def test_episode_withdrawal_and_continuation_preserve_provenance(store, origin, 
 def test_migration_upgrades_existing_database_and_preserves_existing_rows(store) -> None:
     with sqlite3.connect(store.path) as connection:
         identity = connection.execute("SELECT * FROM space_identity").fetchall()
+        connection.execute("DROP TABLE notification_question_events")
         connection.execute("DROP TABLE questions")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=33")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=33")
     migrated = AppStore(store.path)
-    assert migrated.storage_schema_ledger_head() == 33
+    assert migrated.storage_schema_ledger_head() == 34
     assert migrated.list_questions() == []
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT * FROM space_identity").fetchall() == identity
