@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
+  branchEpisodeAgentRows,
   chatDraftStorageKey,
   chatIdForTask,
   chatIndicator,
@@ -558,4 +559,42 @@ test("agent search matches every word against what the card already holds", () =
   for (const query of ["diverged", "WARMUP", "codex trainer", "exp/loss", "node chat"])
     assert.equal(found(query), 1, query);
   assert.equal(found("codex claude"), 0);
+});
+
+test("an Experiment episode on another graph branch lists by its own status and links to Runs", () => {
+  const branch = (id) => ({ kind: "branch", branch_id: id });
+  const episode = (overrides) => ({
+    mode: "experiment_loop",
+    control_node_id: "exp/a",
+    graph_target: branch(overrides.episode_id),
+    archived: false,
+    continued_by_episode_id: null,
+    ending: null,
+    run_section: "running",
+    updated_at: "2026-10-01T00:00:00Z",
+    ended_at: null,
+    ...overrides,
+  });
+  const episodes = [
+    episode({ episode_id: "live" }),
+    episode({ episode_id: "ended", run_section: "completed", ending: "completed" }),
+    episode({ episode_id: "on-main", graph_target: { kind: "main", branch_id: null } }),
+    episode({ episode_id: "archived", archived: true }),
+    episode({ episode_id: "continued", continued_by_episode_id: "live" }),
+    { ...episode({ episode_id: "auto" }), mode: "auto_research", control_node_id: null },
+    episode({ episode_id: "child", graph_target: branch("auto") }),
+  ];
+  const main = { kind: "main", branch_id: null };
+  const rows = branchEpisodeAgentRows(episodes, main, { "exp/a": "Experiment A" }, "p");
+
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(rows).map(([group, items]) => [group, items.map((row) => row.episodeId)]),
+    ),
+    { failed: [], stopped: [], working: ["live"], done: ["ended"] },
+  );
+  assert.equal(rows.working[0].title, "Experiment A");
+  assert.match(rows.working[0].href, /view=runs.*episode=live.*target=branch.*branch=live/);
+  // On the episode's own branch its chat lists normally, so no extra row.
+  assert.equal(branchEpisodeAgentRows(episodes, branch("live"), {}, "p").working.length, 0);
 });

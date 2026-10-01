@@ -128,6 +128,8 @@ test("chat history exposes one explicit end-of-list page control", () => {
     conversations: [],
     selectedChatId: null,
     nodes: {},
+    episodes: [],
+    graphTarget: { kind: "main", branch_id: null },
     runScope: [],
     tasks: [],
     activeTask: null,
@@ -872,6 +874,65 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
   assert.ok(html.indexOf("chat-task-live") < html.indexOf('<details class="chat-task-activity">'));
   assert.doesNotMatch(html, /<details class="chat-task-activity" open=/);
   assert.doesNotMatch(html, /role="progressbar"/);
+});
+
+test("a running watcher wake or episode turn shows its Activity row before any answer", () => {
+  const now = "2026-09-02T16:00:00Z";
+  for (const trigger of ["watcher", "experiment_run"]) {
+    const running = {
+      operation_id: `task-${trigger}`,
+      project_id: project.id,
+      kind: "project_chat",
+      status: "running",
+      request: { message: "Automatic prompt", chat_id: "chat-auto", mode: "work", trigger },
+      created_at: now,
+      updated_at: now,
+      status_message: "Reading the job output.",
+      attempt: 1,
+      runtime_id: "local",
+      runtime_label: "Local",
+      history_only: false,
+      graph_target: { kind: "main", branch_id: null },
+      estimate_seconds: 60,
+      estimate_samples: 0,
+      phase: "agent",
+      elapsed_seconds: 10,
+      progress: 0.2,
+      can_pause: false,
+      can_resume: false,
+      can_retry: false,
+      active: true,
+      queued: false,
+      pausing: false,
+      awaiting_human: false,
+      paused: false,
+      failed: false,
+      settled: false,
+      finished: false,
+      status_label: "Running",
+    };
+    const html = renderToStaticMarkup(
+      React.createElement(NodeChat, {
+        project,
+        node: null,
+        runScope: ["repo"],
+        tasks: [running],
+        activeTask: running,
+        historyMessages: [],
+        chatId: "chat-auto",
+        onStartTask() {},
+        onInspectTask() {},
+        onOpenInbox() {},
+        onRepairGraphUpdate() {},
+        onClose() {},
+      }),
+    );
+    assert.equal(html.split('<details class="chat-task-activity">').length - 1, 1, trigger);
+    assert.match(html, /Reading the job output\./);
+    // The automatic prompt is not shown as if the human had typed it.
+    assert.doesNotMatch(html, /Automatic prompt/);
+    assert.equal(html.includes('class="chat-turn-trigger watcher"'), trigger === "watcher");
+  }
 });
 
 test("retry keeps the original task boundary and exposes provider configuration", () => {

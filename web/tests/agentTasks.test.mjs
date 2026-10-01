@@ -827,3 +827,33 @@ test("chat session follows the server projection without reviving historical nat
   assert.equal(resolvedChatSessionId([previous, { ...wake, current_chat_session_id: null }]), null);
   assert.equal(resolvedChatSessionId([{ ...wake, current_chat_session_id: undefined }]), null);
 });
+
+test("a running turn the human did not type holds one progress line until it has output", () => {
+  for (const trigger of ["watcher", "experiment_run"]) {
+    const running = task({
+      operation_id: `run-${trigger}`,
+      status: "running",
+      active: true,
+      request: { trigger, message: "Automatic prompt", chat_id: "chat" },
+    });
+    assert.deepEqual(
+      reconstructTaskTranscript([running]).map(({ role, running: holds }) => ({ role, holds })),
+      [{ role: "agent", holds: true }],
+    );
+    const answered = withTaskAnswers({ ...running, result: { messages: ["Partial"] } });
+    assert.equal(
+      reconstructTaskTranscript([answered]).some((line) => line.running),
+      false,
+    );
+  }
+  const human = task({
+    operation_id: "human",
+    status: "running",
+    active: true,
+    request: { message: "Hi", chat_id: "chat" },
+  });
+  assert.equal(
+    reconstructTaskTranscript([human]).some((line) => line.running),
+    false,
+  );
+});

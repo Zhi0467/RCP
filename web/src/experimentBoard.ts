@@ -1,4 +1,4 @@
-import { graphTargetFromHash, graphViewHash } from "./graphTarget";
+import { graphTargetFromHash, graphViewHash } from "./graphTarget.ts";
 import type {
   AgentTask,
   AppView,

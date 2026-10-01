@@ -3294,7 +3294,9 @@ export default function App() {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       try {
-        const chatId = ensureConversation(conversations, "node_chat", node, project.name);
+        // A fresh Run is its own conversation. Reusing the node's newest chat
+        // would file the episode inside a human's finished Work chat.
+        const chatId = window.crypto.randomUUID();
         const profile = project.agent_profiles.node_chat;
         const task = await api<AgentTask>(
           graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
@@ -3345,8 +3347,6 @@ export default function App() {
       graphTarget,
       isActiveGraph,
       beginTaskStart,
-      conversations,
-      ensureConversation,
       experimentStartRequiresSync,
       mutationsDisabled,
       project,
@@ -4939,6 +4939,8 @@ export default function App() {
               conversations={conversations}
               selectedChatId={selectedChatId}
               nodes={presentedGraph.nodes}
+              episodes={episodes}
+              graphTarget={graphTarget}
               glossaryIndex={glossaryIndex}
               runScope={runScope}
               tasks={tasks}

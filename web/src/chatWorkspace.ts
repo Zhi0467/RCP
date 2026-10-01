@@ -1,3 +1,5 @@
+import { experimentBoardHref } from "./experimentBoard.ts";
+import { sameGraphTarget } from "./graphTarget.ts";
 import type {
   AgentRunConfig,
   AgentTask,
@@ -8,6 +10,8 @@ import type {
   ChatReads,
   ChatSummary,
   ConversationMode,
+  Episode,
+  GraphTargetRef,
   SkillDefaults,
   StartAgentTask,
   WorktreeIntegrationOption,
@@ -381,6 +385,87 @@ export function groupConversationAgents(
       (pinOrder.get(left.conversation.chatId) ?? 0) -
       (pinOrder.get(right.conversation.chatId) ?? 0),
   );
+  return groups;
+}
+
+/**
+ * An Experiment episode on a graph branch other than the viewed one. Its chat
+ * and tasks belong to that branch, so the row links to the episode in Runs.
+ */
+export interface BranchEpisodeAgentRow {
+  episodeId: string;
+  title: string;
+  group: Exclude<ConversationAgentGroup, "new_reply">;
+  href: string;
+  updatedAt: string;
+}
+
+/**
+ * Rows for Experiment episodes that run on another graph branch, from the
+ * stored episode list so older ones stay listed. An Auto-research child is
+ * left out: its branch belongs to the Auto-research episode, not a human Run.
+ */
+export function branchEpisodeAgentRows(
+  episodes: Episode[],
+  viewedTarget: GraphTargetRef,
+  nodeTitles: Record<string, string>,
+  projectId: string,
+  query = "",
+): Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> {
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const autoResearchIds = new Set(
+    episodes.filter((episode) => episode.mode === "auto_research").map((e) => e.episode_id),
+  );
+  const groups: Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> = {
+    failed: [],
+    stopped: [],
+    working: [],
+    done: [],
+  };
+  for (const episode of episodes) {
+    const target = episode.graph_target;
+    const experimentId = episode.control_node_id;
+    if (
+      episode.mode !== "experiment_loop" ||
+      !experimentId ||
+      episode.archived ||
+      // A continuation lists once, as the newest member of its chain.
+      episode.continued_by_episode_id ||
+      target.kind !== "branch" ||
+      autoResearchIds.has(target.branch_id) ||
+      sameGraphTarget(target, viewedTarget)
+    ) {
+      continue;
+    }
+    const title = nodeTitles[experimentId] ?? experimentId;
+    if (terms.length) {
+      const text = `${title}\n${experimentId}\nbranch`.toLocaleLowerCase();
+      if (!terms.every((term) => text.includes(term))) continue;
+    }
+    const group =
+      episode.ending === "failed"
+        ? "failed"
+        : episode.run_section === "running"
+          ? "working"
+          : episode.run_section === "actionable"
+            ? "stopped"
+            : "done";
+    groups[group].push({
+      episodeId: episode.episode_id,
+      title,
+      group,
+      href: experimentBoardHref(projectId, {
+        experiment_id: experimentId,
+        episode_id: episode.episode_id,
+        graph_target: target,
+        parent_episode_id: null,
+      }),
+      updatedAt: episode.ended_at ?? episode.updated_at,
+    });
+  }
+  for (const rows of Object.values(groups)) {
+    rows.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  }
   return groups;
 }
 
