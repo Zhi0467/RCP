@@ -435,11 +435,12 @@ export function branchEpisodeAgentRows(
       const text = `${title}\n${entry.node.id}\nbranch`.toLocaleLowerCase();
       if (!terms.every((term) => text.includes(term))) continue;
     }
+    // A failed episode still writing its report is running, as Runs shows it.
     const group =
-      episode.ending === "failed"
-        ? "failed"
-        : episode.run_section === "running"
-          ? "working"
+      episode.run_section === "running"
+        ? "working"
+        : episode.ending === "failed"
+          ? "failed"
           : episode.run_section === "actionable"
             ? "stopped"
             : "done";

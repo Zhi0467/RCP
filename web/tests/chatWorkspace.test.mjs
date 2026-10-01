@@ -583,6 +583,8 @@ test("an Experiment episode on another graph branch lists by its own status and 
   });
   const entries = [
     entry("live"),
+    entry("reporting", { ending: "failed" }),
+    entry("failed", { run_section: "completed", ending: "failed" }),
     entry("ended", { run_section: "completed", ending: "completed" }),
     entry("on-main", { target: { kind: "main" } }),
     entry("archived", { archived: true }),
@@ -595,14 +597,17 @@ test("an Experiment episode on another graph branch lists by its own status and 
     Object.fromEntries(
       Object.entries(rows).map(([group, items]) => [group, items.map((row) => row.episodeId)]),
     ),
-    { failed: [], stopped: [], working: ["live"], done: ["ended"] },
+    { failed: ["failed"], stopped: [], working: ["live", "reporting"], done: ["ended"] },
   );
   assert.equal(rows.working[0].title, "Title live");
   // The row opens the same exact Runs route the index entry resolves to.
   const route = parseProjectHash(rows.working[0].href).experimentRoute;
   assert.equal(experimentIndexEntryForRoute(entries, "p", route), entries[0]);
   // On the episode's own branch its chat lists normally, so no extra row.
-  assert.equal(branchEpisodeAgentRows(entries, branch("live"), "p").working.length, 0);
+  assert.deepEqual(
+    branchEpisodeAgentRows(entries, branch("live"), "p").working.map((row) => row.episodeId),
+    ["reporting"],
+  );
 });
 
 test("a status group keeps chats and branch episodes in one recency order", () => {
