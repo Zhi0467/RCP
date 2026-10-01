@@ -45,8 +45,11 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
-        # Durable per-question notification creation receipts.
+        # Human questions and their notification receipts, fresh and upgraded in place.
         "2add10d7e7cde73f1c655f240a5679cda9b18834644c8fc5b56f25ab431be72d",
+        "0c08dcf1d945ccab8daad804ab586bb946b193824eae805b28ebe3470e764322",
+        "62d2ef65952d9c9fd33652da6dd56df3b5f0d849dbaf46637424e331e06ece19",
+        "65d6022a3e7e28a1c0278f3bd60e98af9acef4c42dc8070fd8d7c256aa3f96d0",
         "0d63563c127ccab2b1291464009400108912026d8323a204e5c3b33607c6dbf6",
         # Artifact edit lookup by origin episode, fresh and upgraded in place.
         "bafbf526e9d45c235c6402a4c1b55ef3c8336f5ca009608d57251fd0476548d8",

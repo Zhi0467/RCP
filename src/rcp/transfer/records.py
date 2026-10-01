@@ -94,6 +94,9 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "notification_graph_markers",
         "notification_episode_observations",
         "notification_project_baselines",
+        "notification_question_events",
+        # Questions bind to source-machine sessions and turns.
+        "questions",
         "project_aliases",
         "project_invitations",
         "project_members",

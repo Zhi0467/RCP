@@ -31,7 +31,7 @@ _EPISODE_ANCESTORS = """
 def migrate_questions(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
-        CREATE TABLE questions (
+        CREATE TABLE IF NOT EXISTS questions (
             question_id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
             owner_kind TEXT NOT NULL CHECK(owner_kind IN ('chat','episode')),
@@ -62,7 +62,7 @@ def migrate_questions(connection: sqlite3.Connection) -> None:
         """
     )
     connection.execute(
-        "CREATE INDEX questions_open ON questions(project_id,state,withdrawn_readonly)"
+        "CREATE INDEX IF NOT EXISTS questions_open ON questions(project_id,state,withdrawn_readonly)"
     )
 
 

@@ -68,7 +68,7 @@ def migrate_notifications(connection: sqlite3.Connection) -> None:
 
 def migrate_question_notifications(connection: sqlite3.Connection) -> None:
     connection.execute(
-        "CREATE TABLE notification_question_events "
+        "CREATE TABLE IF NOT EXISTS notification_question_events "
         "(question_id TEXT PRIMARY KEY REFERENCES questions(question_id), observed_at TEXT NOT NULL)"
     )
 
