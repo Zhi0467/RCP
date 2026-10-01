@@ -3707,6 +3707,7 @@ __all__ = [
     "AutoResearchSpaceRunTaskState",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
+    "ExperimentEpisodeUnwakeable",
     "ExperimentEpisodeProjectionSnapshot",
     "ExperimentControlProjectionSnapshot",
     "ExperimentLoopRuntime",

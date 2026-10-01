@@ -21,6 +21,7 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeInvocationCeilingReached,
+    ExperimentEpisodeUnwakeable,
     GraphWatcherRecord,
     NodeStatusGraphCondition,
     WatcherClaimConflict,
@@ -29,7 +30,6 @@ from rcp.storage import (
     WatcherStopRequest,
     watcher_next_check_at,
 )
-from rcp.storage.models import ExperimentEpisodeUnwakeable
 from rcp.watchers import (
     ExperimentWatchSpec,
     WatcherBinding,

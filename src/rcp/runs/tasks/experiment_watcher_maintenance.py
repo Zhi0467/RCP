@@ -29,7 +29,7 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.work_turn_runtime import checkpoint_required_session
 from rcp.service import ProjectService, RunRequest
-from rcp.storage.models import ExperimentEpisodeUnwakeable
+from rcp.storage import ExperimentEpisodeUnwakeable
 from rcp.transport import RemoteRunStage
 from rcp.watchers import (
     WatcherBinding,
