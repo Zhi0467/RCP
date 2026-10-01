@@ -2,7 +2,12 @@ import type { DesktopBuildIdentity } from "./desktopRuntime";
 import type { UpdateNotice } from "./types";
 
 export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuildIdentity | null) {
-  if (!notice || notice.status !== "update_available" || !notice.latest_version) return null;
+  if (!notice || !notice.latest_version) return null;
+  // A source app can run an older native shell than its updated checkout, so a
+  // backend that is current says nothing about the app: compare the app itself.
+  const sourceApp = notice.space === "personal" && identity?.kind === "source";
+  if (notice.status !== "update_available" && !(sourceApp && notice.status === "current"))
+    return null;
   const current =
     notice.space === "personal" && identity ? identity.version : notice.current_version;
   if (
@@ -32,10 +37,9 @@ export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuil
     command:
       kind === "prebuilt"
         ? null
-        : notice.update_command
-          ? notice.update_command +
-            (kind === "source" && identity?.kind === "source" ? " --desktop" : "")
-          : null,
+        : sourceApp
+          ? `${notice.update_command ?? `scripts/update-from-source v${notice.latest_version}`} --desktop`
+          : notice.update_command,
     download,
   };
 }
