@@ -1192,7 +1192,8 @@ answers, graph outcomes, and recovery chains.
 In a team space, Settings also reads one authenticated `/api/server-status`
 projection. It carries backend-owned labels and presentation tones for the
 running/current/managed/upstream release relationship with the running,
-installed, and latest release versions and the release check time, update
+installed, and latest release versions and the release check time and any
+failure reason, update
 readiness, the
 latest backup attempt and latest independently retained protected-archive
 receipt, protected and uncaptured project counts, completed-restore age,

@@ -207,7 +207,9 @@ while its last check is under 10 minutes old and otherwise makes one bounded
 lookup first, so opening a space never shows a status hours old; a reader
 that arrives while a lookup runs takes the cache instead of waiting, and the
 team Settings refresh uses a 1-minute bound and hands its result to the update
-notice. A failed lookup still records its check time. A team
+notice. A failed lookup still records its check time, logs a warning, and keeps
+a short reason (an HTTP status, a timeout, or a connection error, never a
+response body) that Settings shows; the next successful lookup clears it. A team
 space compares the installed release from the selected receipt, reports
 `pinned` for a pinned server, and never lets a failed check change the doctor's
 install-integrity `source_state`; `rcp server doctor` makes one live lookup of

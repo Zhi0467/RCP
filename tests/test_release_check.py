@@ -251,6 +251,7 @@ def test_poller_lifespan_and_personal_endpoint(github, tmp_path, monkeypatch):
             "latest_version",
             "checked_at",
             "last_success_at",
+            "failure_reason",
             "companion_ready",
             "download_url",
             "source_checkout",
@@ -314,6 +315,7 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
                     assert checker.check().status == "failed"
                     status = client.get("/api/server-status").json()
                     assert not status["releases"]["update_available"]
+                    assert status["release_check"]["failure_reason"] == "GitHub answered HTTP 503"
                     assert status["overall"]["tone"] == "good"
                     assert report.source_state == "aligned"
                     # Refresh looks up again sooner than an ordinary read.
@@ -321,8 +323,11 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
                     looked_up = github[1].count("/latest")
                     client.get("/api/server-status")
                     assert github[1].count("/latest") == looked_up
+                    github[0]["/latest"] = (200, stable())
                     status = client.get("/api/server-status", params={"refresh": "true"}).json()
                     assert github[1].count("/latest") == looked_up + 1
+                    assert status["release_check"]["status"] == "update_available"
+                    assert status["release_check"]["failure_reason"] is None
                     assert status["releases"]["running_version"] == "0.4.9"
                     assert status["releases"]["latest_version"] == "0.4.10"
                 else:
