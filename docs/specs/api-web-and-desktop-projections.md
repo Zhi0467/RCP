@@ -1307,7 +1307,7 @@ relaunches the app and asks before interrupting running agent tasks.
 The native shell reports its build kind, version, and checkout through
 `desktop_build_identity`, because a desktop may reuse a backend of the other
 kind. A source app compares its own version even when the backend
-reports `current`, because its native shell can be older than an updated
+reports `current` with its checkout exactly at the latest release, because its native shell can be older than an updated
 checkout; it then shows `scripts/update-from-source vX.Y.Z --desktop`. A visible page polls the endpoint (30 s while `unchecked`, then 10 min,
 and on becoming visible); dismissal is per release. A protocol mismatch names
 the confirmed download, the releases page when the check is unavailable, or the

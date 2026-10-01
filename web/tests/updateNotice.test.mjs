@@ -248,4 +248,6 @@ test("a source app older than its current checkout still gets a notice", () => {
   assert.equal(releaseNotice(current, { ...source, version: "0.4.3" }), null);
   assert.equal(releaseNotice(current, { ...source, kind: "prebuilt" }), null);
   assert.equal(releaseNotice(current, null), null);
+  // A checkout ahead of the release is current too, but updating would downgrade it.
+  assert.equal(releaseNotice({ ...current, current_version: "0.4.4" }, source), null);
 });
