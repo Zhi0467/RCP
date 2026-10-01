@@ -95,8 +95,8 @@ def test_work_and_experiment_compute_handler_refuses_ask(commands):  # noqa: F81
     assert "ask" not in commands.handler.allowed_verbs
 
 
-@pytest.mark.parametrize("role", ["root", "worker", "correction"])
-def test_auto_research_handlers_refuse_ask(tmp_path, role):
+@pytest.mark.parametrize("role", ["worker", "correction"])
+def test_auto_research_workers_and_corrections_refuse_ask(tmp_path, role):
     store, episode, root = _setup_auto_research(tmp_path)
     effects = _Effects(store, episode, root)
     dispatcher = _dispatcher(store, effects.bundle())
