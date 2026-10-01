@@ -247,15 +247,11 @@ export function ChatsWorkspace({
     unreadChatIds,
     query,
   );
-  // Archive and pins belong to chats; a branch episode is archived from Runs.
-  const branchRows = branchEpisodeAgentRows(
-    showingArchived ? [] : experimentEntries,
-    graphTarget,
-    project.id,
-    query,
-  );
+  // Archive and pins belong to chats; a branch episode is archived from Runs, so
+  // it counts toward All and Working but is not drawn in the Archived view.
+  const branchRows = branchEpisodeAgentRows(experimentEntries, graphTarget, project.id, query);
   const branchRowsIn = (group: AgentListSection) =>
-    group === "pinned" || group === "new_reply" ? [] : branchRows[group];
+    showingArchived || group === "pinned" || group === "new_reply" ? [] : branchRows[group];
   const pinnedChatIds = new Set(display.pinned);
   useEffect(() => {
     onEnsureListed?.(display.pinned);
