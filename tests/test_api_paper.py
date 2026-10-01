@@ -42,3 +42,30 @@ def test_paper_endpoints_cover_snapshot_create_save_and_sessions(manifest, tmp_p
         json={"strategy": "use_canonical"},
     )
     assert removed_conflict_route.status_code == 405
+
+
+def test_paper_save_survives_a_concurrent_cache_update(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    catalog = app.state.services.catalog
+    assert client.get(f"/api/projects/{project_id}").json()["paper"]["sync_state"] == "not_created"
+    commit = catalog.commit_cached_snapshot
+    raced = []
+
+    def commit_after_a_newer_freshness_update(pid, snapshot, *, generation, **kwargs):
+        if not raced and snapshot["paper"]["sync_state"] != "not_created":
+            raced.append(True)
+            winner = catalog.cached_snapshot(pid)
+            winner["snapshot_freshness"] = "reconciling"
+            newer = catalog.reserve_cached_snapshot_generation(pid)
+            assert commit(pid, winner, generation=newer)
+        return commit(pid, snapshot, generation=generation, **kwargs)
+
+    catalog.commit_cached_snapshot = commit_after_a_newer_freshness_update
+    created = client.post(f"/api/projects/{project_id}/paper/create").json()
+
+    cached = client.get(f"/api/projects/{project_id}").json()
+    assert raced
+    assert cached["paper"] == created
+    assert cached["snapshot_freshness"] == "reconciling"

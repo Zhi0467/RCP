@@ -50,6 +50,7 @@ from rcp.core.transition_models import GraphAttentionProjection, GraphHeadRef, G
 from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
 from rcp.limits import (
+    CACHED_SNAPSHOT_FIELD_UPDATE_ATTEMPTS,
     PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES,
     REMOTE_STATE_HEAD_PROBE_INTERVAL_SECONDS,
 )
@@ -2035,17 +2036,22 @@ class ProjectCatalog:
 
     def _update_cached_snapshot_field(self, project_id: str, key: str, value: object) -> bool:
         project_id = self._canonical_project_id(project_id)
-        current = self.cached_snapshot(project_id)
-        if current is None:
-            return False
-        if current.get(key) == value:
-            return True
-        generation = self.reserve_cached_snapshot_generation(project_id)
-        snapshot = self.cached_snapshot(project_id)
-        if snapshot is None:
-            return False
-        snapshot[key] = value
-        return self.commit_cached_snapshot(project_id, snapshot, generation=generation)
+        # A concurrent field update can commit a newer generation built from the
+        # same old snapshot; rebuild from the winner rather than lose this field.
+        for _attempt in range(CACHED_SNAPSHOT_FIELD_UPDATE_ATTEMPTS):
+            current = self.cached_snapshot(project_id)
+            if current is None:
+                return False
+            if current.get(key) == value:
+                return True
+            generation = self.reserve_cached_snapshot_generation(project_id)
+            snapshot = self.cached_snapshot(project_id)
+            if snapshot is None:
+                return False
+            snapshot[key] = value
+            if self.commit_cached_snapshot(project_id, snapshot, generation=generation):
+                return True
+        return False
 
     def reserve_cached_snapshot_generation(self, project_id: str) -> int:
         """Reserve construction order for one future display snapshot candidate."""
