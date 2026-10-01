@@ -14,11 +14,13 @@ in node/project chats and both episode views, and existing-cadence refresh.
 API tests cover concurrent retry, owner delivery, withdrawal, membership,
 strict input, and immutable follow-up binding; Web helper tests and the build
 pass. Disposable served HTTP checks pass for chat/episode question lists,
-dismissal persistence, and ended-episode refusal. Browser verification remains
-open: the local Chromium process cannot
-start because macOS refuses Mach-port registration, and the browser-control
-surface has no available browser. Live broker and provider/card journeys below
-still need a host that can run them. After a human resolves a question, the answer
+dismissal persistence, and ended-episode refusal. On 2026-10-01 the served app
+on disposable seeded data rendered the chat cards and the Auto-research and
+ended-Experiment episode cards, answered a single-choice question (the card moved
+into the transcript as answered), and fit a 375 px phone width; the question
+browser test passes outside the Codex sandbox. Still open: the close criteria
+below with a real provider and broker (live answer within one call, parked
+answer starting the follow-up turn, restart, orchestrator wake and phone push). After a human resolves a question, the answer
 API calls `app.state.reconcile_question_answers(project_id)` for chat and
 Experiment owners and `record_auto_research_question_answer(store, question_id)`
 then ordinary mail delivery for orchestrator questions; dismissal never
