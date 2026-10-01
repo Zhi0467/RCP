@@ -35,10 +35,11 @@ def execution_instructions():
     return "test-client launch --scope example --output /stage/launch-receipt.json"
 
 
-def test_work_compute_handoff_preserves_the_resolved_execution_instructions(execution_instructions):
-    contract = _work_contract(
-        watch_path="/stage/watch.json", execution_instructions=execution_instructions
-    )
+@pytest.mark.parametrize("watch_path", [None, "/stage/watch.json"])
+def test_work_compute_handoff_preserves_the_resolved_execution_instructions(
+    execution_instructions, watch_path
+):
+    contract = _work_contract(watch_path=watch_path, execution_instructions=execution_instructions)
     assert execution_instructions in contract
 
 

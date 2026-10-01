@@ -85,6 +85,7 @@ from rcp.storage import (
 )
 from rcp.storage.artifact_models import ArtifactOperationConflict
 from rcp.storage.artifacts import ArtifactByteLimitError
+from rcp.storage.question_models import QuestionRecord
 from rcp.transport import (
     RemoteRunStage,
     RunStageMailbox,
@@ -1778,6 +1779,10 @@ def _project_write_scope(
                 ).fingerprint
             )
         execution.compatible_related_write_scope_fingerprints = frozenset(variants)
+    if execution is not None:
+        question = execution.store.question_for_followup(execution.operation_id)
+        if question is not None and scope.fingerprint != question.origin.write_scope_fingerprint:
+            raise ValueError("question_origin_write_scope_changed")
     return scope
 
 
@@ -1788,6 +1793,115 @@ def _chat_path(service: ProjectService, request: RunRequest) -> Path:
         chat_scope=request.chat_scope,
         node_id=request.node_id,
     )
+
+
+def question_answer_text(question: QuestionRecord) -> str:
+    return question.answer or "\n".join(question.chosen_choices)
+
+
+def _question_answer_message_id(question: QuestionRecord) -> str:
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"rcp:question:{question.question_id}:answer:{question.answer_revision}",
+        )
+    )
+
+
+def project_chat_question_answer(
+    service: ProjectService, store: AppStore, question: QuestionRecord
+) -> None:
+    """Retry canonical projection from SQLite; the stable id makes replay harmless."""
+    task = store.agent_task(question.origin.operation_id)
+    if task is None:
+        raise ValueError("question_origin_missing")
+    request = RunRequest.model_validate(task.request)
+    with service.history.workspace.transaction():
+        _append_chat_records(
+            service,
+            _chat_path(service, request),
+            [
+                {
+                    "uuid": _question_answer_message_id(question),
+                    "sessionId": request.chat_id,
+                    "nativeSessionId": question.origin.native_session_id,
+                    "nodeId": request.node_id,
+                    "chatScope": request.chat_scope,
+                    "provider": question.origin.provider,
+                    "model": request.model or "provider-default",
+                    "reasoning": request.reasoning,
+                    "executionMachine": request.run_on,
+                    "cwd": str(service.manifest.research_dir.parent),
+                    "timestamp": question.resolved_at,
+                    "operationId": question.followup_operation_id,
+                    "mode": "work",
+                    "trigger": "human",
+                    "type": "user",
+                    "role": "user",
+                    "text": question_answer_text(question),
+                    "questionId": question.question_id,
+                    "answerRevision": question.answer_revision,
+                    "attachments": [],
+                }
+            ],
+        )
+    service.invalidate_source_index()
+
+
+def reconcile_chat_question_answers(
+    store: AppStore,
+    background_tasks,
+    project_service: Callable[[str], ProjectService],
+    *,
+    project_id: str | None = None,
+) -> dict[str, str]:
+    """Answer/API, settlement and startup entry; never invoked by provider output.
+
+    The question itself is the durable projection outbox. Replaying every answer
+    repairs a crash between SQLite admission and canonical history publication.
+    Deferred or unusable origins remain unclaimed with a returned reason.
+    """
+    statuses = {}
+    for question in store.list_questions(project_id=project_id):
+        if question.state != "answered":
+            continue
+        origin_task = store.agent_task(question.origin.operation_id)
+        if origin_task is not None and origin_task.kind not in {"node_chat", "project_chat"}:
+            continue
+        try:
+            from rcp.runs.questions import reconcile_question_receipt
+
+            reconcile_question_receipt(store, question.question_id)
+            question = store.get_question(question.question_id)
+            assert question is not None
+            service = project_service(question.origin.project_id).for_graph_target(
+                question.origin.graph_target
+            )
+            project_chat_question_answer(service, store, question)
+            if question.origin.owner_kind != "chat":
+                # Experiment's owner admits its paid invocation after projection.
+                statuses[question.question_id] = "projected"
+                continue
+            if question.client_receipt_revision is not None:
+                statuses[question.question_id] = "received"
+                continue
+            task = (
+                store.agent_task(question.followup_operation_id)
+                if question.followup_operation_id
+                else store.admit_chat_question_followup(question.question_id)
+            )
+            if task is not None and task.status == "queued":
+                background_tasks.launch_admitted(task.operation_id)
+            current = store.agent_task(task.operation_id) if task is not None else None
+            if current is not None and current.status in {"failed", "interrupted", "paused"}:
+                statuses[question.question_id] = (
+                    current.error or f"question_followup_{current.status}"
+                )
+            else:
+                statuses[question.question_id] = "admitted" if task is not None else "ineligible"
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            statuses[question.question_id] = str(exc)
+    return statuses
 
 
 def _append_chat_exchange(
@@ -1824,10 +1938,19 @@ def _append_chat_exchange(
         }
         records = []
         if request.trigger != "watcher":
+            question = (
+                execution.store.question_for_followup(execution.operation_id)
+                if execution is not None
+                else None
+            )
             records.append(
                 {
                     **common,
-                    "uuid": str(uuid.uuid4()),
+                    "uuid": (
+                        _question_answer_message_id(question)
+                        if question is not None
+                        else str(uuid.uuid4())
+                    ),
                     "type": "user",
                     "role": "user",
                     "text": request.message,
@@ -1906,6 +2029,11 @@ def _append_chat_records(
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
+            if path.exists():
+                existing_ids = {
+                    json.loads(line).get("uuid") for line in path.read_text().split("\n") if line
+                }
+                records = [item for item in records if item.get("uuid") not in existing_ids]
             if reserve_prompt and path.exists():
                 # A live steer may already have recorded this attempt's original
                 # human prompt, or finalization may be resuming after appending

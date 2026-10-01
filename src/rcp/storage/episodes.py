@@ -672,6 +672,7 @@ class EpisodeStoreMixin:
                     """,
                     (receipt_json, receipt_sha256, detail, now, now, episode_id),
                 )
+            self._withdraw_episode_question_chain(connection, episode_id)
             connection.execute(
                 """
                 UPDATE episodes
@@ -728,6 +729,18 @@ class EpisodeStoreMixin:
         assert stopped is not None
         return stopped
 
+    @staticmethod
+    def _withdraw_episode_question_chain(connection: sqlite3.Connection, episode_id: str) -> None:
+        connection.execute(
+            """WITH RECURSIVE owners(episode_id) AS (
+                SELECT ? UNION ALL SELECT e.continues_episode_id FROM episodes e
+                JOIN owners o ON e.episode_id=o.episode_id
+                WHERE e.continues_episode_id IS NOT NULL
+            ) UPDATE questions SET withdrawn_readonly=1
+            WHERE owner_kind='episode' AND owner_id IN (SELECT episode_id FROM owners)""",
+            (episode_id,),
+        )
+
     def _request_episode_stop_in_connection(
         self,
         connection: sqlite3.Connection,
@@ -755,6 +768,7 @@ class EpisodeStoreMixin:
             raise EpisodeNotRunning("the episode has already entered wrap-up")
         if episode.stop_requested_at is not None:
             return episode
+        self._withdraw_episode_question_chain(connection, episode_id)
         connection.execute(
             """
             UPDATE episodes
@@ -818,6 +832,7 @@ class EpisodeStoreMixin:
             raise EpisodeNotRunning("Stop already fenced this episode")
         if episode.status not in {"queued", "running"}:
             raise EpisodeNotRunning("the episode can no longer accept an ending fence")
+        self._withdraw_episode_question_chain(connection, episode_id)
         connection.execute(
             """
             UPDATE episodes
@@ -992,6 +1007,7 @@ class EpisodeStoreMixin:
                     continuation_cause="episode_report",
                 )
                 self._insert_episode_wrapup(connection, wrapup)
+                self._withdraw_episode_question_chain(connection, episode_id)
                 connection.execute(
                     """
                     UPDATE episodes
@@ -1055,6 +1071,7 @@ class EpisodeStoreMixin:
             # ending before it learns whether a report can be generated at all.
             if episode.status not in {"queued", "running", "wrapping_up"}:
                 raise EpisodeNotRunning("the episode can no longer accept an ending fence")
+            self._withdraw_episode_question_chain(connection, episode_id)
             connection.execute(
                 """
                 UPDATE episodes
@@ -1241,6 +1258,7 @@ class EpisodeStoreMixin:
             finished_at=now,
         )
         self._insert_episode_wrapup(connection, wrapup)
+        self._withdraw_episode_question_chain(connection, episode_id)
         connection.execute(
             """
             UPDATE episodes

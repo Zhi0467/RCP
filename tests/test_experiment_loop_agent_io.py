@@ -1169,7 +1169,10 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     # it never repeats, rules block included.
     assert store.agent_task_contract("loop-wake", "experiment_loop_wake") == wake_contract
     master_path = next((initial_stage / "inputs").glob("experiment-master-*.md"))
-    assert master_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    master_text = master_path.read_text(encoding="utf-8")
+    assert master_text == store.agent_task_contract("loop-initial", "session_master")
+    assert launcher.contracts[0].startswith(master_text)
+    assert json.loads(launcher.contracts[0].splitlines()[-1]) == {"questions": [], "omitted": 0}
     assert wake_contract.endswith(SECTIONS["master_pointer"].format(path=master_path))
     assert graph_rules(edits=True, ontology_extensions=False) not in wake_contract
     assert graph_rules(edits=True, ontology_extensions=False) in launcher.contracts[0]
@@ -1372,7 +1375,10 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
     store.complete_agent_task("loop-resume-delivered", applied_revision=None, result={})
     # The session's own start contract is what it re-opens; the master itself never changes.
     master_path = next(Path(initial.stage_root, "inputs").glob("experiment-master-*.md"))
-    assert master_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    master_text = master_path.read_text(encoding="utf-8")
+    assert master_text == store.agent_task_contract(initial.operation_id, "session_master")
+    assert launcher.contracts[0].startswith(master_text)
+    assert json.loads(launcher.contracts[0].splitlines()[-1]) == {"questions": [], "omitted": 0}
     reopen = SECTIONS["report_rebootstrap"].format(path=master_path)
     pointer = SECTIONS["master_pointer"].format(path=master_path)
     for prompt in (undelivered.contracts[0], launcher.contracts[1]):
@@ -1455,7 +1461,10 @@ async def test_added_turns_continue_the_ended_session_inline(manifest, tmp_path:
     assert launcher.sessions[1] == session_id
     prompt = launcher.contracts[1]
     master_path = next(Path(initial.stage_root, "inputs").glob("experiment-master-*.md"))
-    assert master_path.read_text(encoding="utf-8") == launcher.contracts[0]
+    master_text = master_path.read_text(encoding="utf-8")
+    assert master_text == store.agent_task_contract(initial.operation_id, "session_master")
+    assert launcher.contracts[0].startswith(master_text)
+    assert json.loads(launcher.contracts[0].splitlines()[-1]) == {"questions": [], "omitted": 0}
     assert store.agent_task_contract("loop-added-turns", "experiment_loop_turn") == prompt
     assert prompt.endswith(SECTIONS["master_pointer"].format(path=master_path))
     assert prompt.index("Try the larger sweep next.") < prompt.index(SECTIONS["context_delta"])
@@ -1537,7 +1546,9 @@ async def test_provider_switch_stages_full_recovery_contract_with_durable_proven
     assert switched_episode is not None and switched_episode.session_bound
     assert switched_episode.native_session_id == "claude-session-after-switch"
     assert switch_execution.stage_root is not None
-    assert store.agent_task_contract("loop-provider-switch", "session_master") == contract
+    master = store.agent_task_contract("loop-provider-switch", "session_master")
+    assert master is not None and contract.startswith(master)
+    assert json.loads(contract.splitlines()[-1]) == {"questions": [], "omitted": 0}
     diagnostics_path = Path(
         next(code for code in contract.split("`")[1::2] if code.endswith("-retry-diagnostics.json"))
     )

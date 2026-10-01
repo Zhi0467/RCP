@@ -4,10 +4,15 @@ Date: 2026-10-01
 Status: design settled with the human on 2026-10-01 and reviewed once by an
 xhigh design pass the same day. Implementation started in this PR on
 2026-10-01. Done: slice 1 protocol, polling client, durable question store, and
-nonblocking helper. No handler authorizes `ask` yet. Remaining: slices 2–5 below.
-Slice 1 checks cover protocol, store migration and transitions, polling, and
-existing handler refusals; live broker socket checks require an unrestricted
-test host.
+nonblocking helper; slice 2 human Work and Experiment handlers, receipt and
+follow-up admission, chat projection, owner prompts and fresh question snapshots.
+Remaining: orchestrator and attention in slice 3, its slice 4 prompt/snapshot
+integration, and API/Web in slice 5. The answer API should invoke
+`app.state.reconcile_question_answers(project_id)` after durable resolution.
+Owner integration checks cover authority bindings, receipt recovery, duplicate
+admission, Experiment budget/continuation, prompt snapshots, and provider-session
+refusal. Live broker socket checks require an unrestricted test host; the complete
+question-card journeys remain with the API/Web slice.
 
 Close this handoff when all of these hold:
 
