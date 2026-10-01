@@ -3,7 +3,11 @@
 Date: 2026-10-01
 Status: design settled with the human on 2026-10-01 and reviewed once by an
 xhigh design pass the same day. Implementation started in this PR on
-2026-10-01. Done: nothing yet. Remaining: every slice below.
+2026-10-01. Done: slice 1 protocol, polling client, durable question store, and
+nonblocking helper. No handler authorizes `ask` yet. Remaining: slices 2–5 below.
+Slice 1 checks cover protocol, store migration and transitions, polling, and
+existing handler refusals; live broker socket checks require an unrestricted
+test host.
 
 Close this handoff when all of these hold:
 

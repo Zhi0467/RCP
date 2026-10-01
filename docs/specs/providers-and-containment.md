@@ -635,6 +635,19 @@ made before a handler sees a request, by the mailbox or the broker, are recorded
 as bounded task events. Broker refusal notices are signed with the turn token
 under a notice-only prefix and bound to their file name, so neither an agent
 nor a copied signed request can pass as one.
+
+The protocol also defines keyed `ask --key <key> --question <text>` with
+repeatable `--choice <text>` and optional `--multiple` (requires choices).
+Its nonblocking helper persists an immutable origin binding and returns `status: ok`
+with `result.state` of `pending`, `answered`, `dismissed`, or `parked`, plus
+`question_id`; `answered` includes answer text and selected `choices`. Identical
+owner/key arguments reuse the question; changed arguments are invalid. The client
+polls pending questions with fresh transport request ids under the same outer
+wait deadline. At that deadline, pending tells the caller to repeat the exact
+call or end the turn. Transport failures retain their separate `delivery`
+semantics. No existing handler authorizes `ask` yet; owner admission and answer
+follow-up delivery remain in the [active design](../handoffs/handoff-2026-10-01-ask-verb.md).
+
 Validation stages operations in their written order against earlier valid
 operations while retaining whole-patch node and edge lookup for legal forward
 references; it never reorders operations. A validator self-check is not a

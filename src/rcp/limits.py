@@ -117,6 +117,11 @@ COMMAND_BROKER_RESPONSE_GRACE_SECONDS = 5.0
 # probed 2026-09-29), so a slow command must return inside that and let the
 # agent rerun the same keyed call; RCP keeps working on the request meanwhile.
 COMMAND_CLIENT_WAIT_SECONDS = 90.0
+COMMAND_ASK_POLL_SECONDS = 2.0
+ASK_QUESTION_MAX_LENGTH = 8_000
+ASK_CHOICE_MAX_COUNT = 20
+ASK_CHOICE_MAX_LENGTH = 1_000
+ASK_ANSWER_MAX_LENGTH = 16_000
 # A signed broker refusal notice; the broker writes at most this many per turn.
 COMMAND_REJECTION_NOTICE_MAX_BYTES = 8 * 1024
 COMMAND_REJECTION_NOTICE_MAX_COUNT = 20

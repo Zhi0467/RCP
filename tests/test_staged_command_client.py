@@ -1992,3 +1992,271 @@ async def test_stop_during_response_outage_finishes_with_saved_permanent_reason(
     assert terminal == saved["terminal"]
     assert staged.credential.expired
     assert not list(tmp_path.glob("*.closed.json"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["answered", "dismissed", "parked"])
+async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, state) -> None:
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id=None,
+        task_id="work-task",
+        turn_id="work-turn",
+        authority="broker",
+        timeout_seconds=5,
+    )
+    seen = []
+
+    def handler(request, _identity):
+        seen.append(request)
+        result = {"state": "pending" if len(seen) == 1 else state, "question_id": "question"}
+        if result["state"] == "answered":
+            result.update(answer="Use A", choices=["A"])
+        return CommandResponse(request_id=request.request_id, status="ok", result=result)
+
+    stop = asyncio.Event()
+    async with staged.invocation_gate.serve_current_session():
+        server = asyncio.create_task(
+            serve_command_mailbox(
+                staged=staged,
+                handler=handler,
+                stop=stop,
+                poll_seconds=0.01,
+                invocation_gate=staged.invocation_gate,
+            )
+        )
+        try:
+            code, output = await _run_client(
+                staged,
+                "ask",
+                "--key",
+                "choice",
+                "--question",
+                "A or B?",
+                "--choice",
+                "A",
+                "--choice",
+                "B",
+                "--multiple",
+            )
+        finally:
+            stop.set()
+            await server
+    assert code == 0, output
+    result = json.loads(output)["result"]
+    assert result["state"] == state
+    if state == "answered":
+        assert result["answer"] == "Use A" and result["choices"] == ["A"]
+    assert len(seen) == 2
+    assert seen[0].request_id != seen[1].request_id
+    assert seen[0].idempotency_key == seen[1].idempotency_key == "choice"
+    assert seen[0].arguments == seen[1].arguments
+    assert seen[0].arguments.model_dump() == {
+        "question": "A or B?",
+        "choices": ["A", "B"],
+        "multiple": True,
+    }
+
+
+@pytest.mark.parametrize("state", ["pending", "answered", "dismissed", "parked"])
+def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, state) -> None:
+    from rcp.agents import staged_command_client as client
+
+    elapsed = [0.0]
+    requests = []
+    monkeypatch.setattr(client.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(
+        client.time, "sleep", lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds)
+    )
+    monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", 0.4)
+
+    def round_trip(_namespace, _broker, content, request_id, deadline):
+        request = json.loads(content)
+        requests.append((request, deadline))
+        elapsed[0] += 0.1
+        return client._handle_response(
+            {
+                "request_id": request_id,
+                "status": "ok",
+                "result": {
+                    "state": "pending" if len(requests) == 1 else state,
+                    "question_id": "question",
+                },
+            },
+            "ask",
+            request_id,
+        )
+
+    monkeypatch.setattr(client, "_run_brokered", round_trip)
+    code = client.main(
+        [
+            "--broker",
+            "~/.rcp/sockets/rcp-command-test.sock",
+            "--mailbox-id",
+            "a" * 32,
+            "--timeout",
+            "1",
+            "--workspace",
+            str(tmp_path),
+            "ask",
+            "--key",
+            "once",
+            "--question",
+            "Proceed?",
+        ]
+    )
+    assert code == 0
+    assert elapsed[0] == (1 if state == "pending" else 0.6)
+    assert len(requests) == 2
+    assert {deadline for _, deadline in requests} == {1}
+    assert len({request["request_id"] for request, _ in requests}) == 2
+    assert json.loads(capsys.readouterr().out)["result"] == {
+        "state": state,
+        "question_id": "question",
+    }
+
+
+@pytest.mark.parametrize("delivery", ["not_sent", "unknown"])
+def test_ask_transport_failure_preserves_delivery(tmp_path, monkeypatch, capsys, delivery) -> None:
+    from rcp.agents import staged_command_client as client
+
+    calls = []
+    monkeypatch.setattr(client, "COMMAND_ASK_POLL_SECONDS", 0)
+
+    def failed(_namespace, _broker, _content, request_id, _deadline):
+        calls.append(request_id)
+        if len(calls) == 1:
+            return client._handle_response(
+                {
+                    "request_id": request_id,
+                    "status": "ok",
+                    "result": {
+                        "state": "pending",
+                        "question_id": "question",
+                    },
+                },
+                "ask",
+                request_id,
+            )
+        # A prior pending state must not conceal an uncertain later transport round.
+        return client._handle_response(
+            {"request_id": request_id, "status": "unavailable", "result": {"delivery": delivery}},
+            "ask",
+            request_id,
+        )
+
+    monkeypatch.setattr(client, "_run_brokered", failed)
+    assert (
+        client.main(
+            [
+                "--broker",
+                "~/.rcp/sockets/rcp-command-test.sock",
+                "--mailbox-id",
+                "a" * 32,
+                "--timeout",
+                "1",
+                "--workspace",
+                str(tmp_path),
+                "ask",
+                "--key",
+                "once",
+                "--question",
+                "Proceed?",
+            ]
+        )
+        == 2
+    )
+    assert json.loads(capsys.readouterr().out)["result"] == {"delivery": delivery}
+
+
+@pytest.mark.asyncio
+async def test_ask_broker_refreshes_state_after_an_undelivered_pending(
+    tmp_path, monkeypatch
+) -> None:
+    from rcp.agents import staged_command_broker as broker
+
+    staged = stage_command_mailbox(
+        local_stage=tmp_path,
+        remote_stage=None,
+        episode_id=None,
+        task_id="work-task",
+        turn_id="work-turn",
+        authority="broker",
+        timeout_seconds=2,
+    )
+    monkeypatch.setattr(broker, "_peer_identity", lambda _connection: (os.getpid(), os.getuid()))
+    monkeypatch.setattr(broker, "_is_live_descendant", lambda *_args: True)
+    seen = []
+
+    def handler(request, _identity):
+        seen.append(request)
+        result = {"question_id": "question", "state": "pending"}
+        if len(seen) > 1:
+            result.update(state="answered", answer="Proceed", choices=[])
+        return CommandResponse(request_id=request.request_id, status="ok", result=result)
+
+    class Connection:
+        def __init__(self, number):
+            self.content = (
+                json.dumps(
+                    {
+                        "version": 1,
+                        "mailbox_id": staged.credential.mailbox_id,
+                        "request_id": f"{number:032x}",
+                        "verb": "ask",
+                        "idempotency_key": "once",
+                        "arguments": {"question": "Proceed?"},
+                    }
+                ).encode()
+                + b"\n"
+            )
+            self.lost = number == 1
+            self.response = None
+
+        def recv(self, count):
+            chunk, self.content = self.content[:count], self.content[count:]
+            return chunk
+
+        def sendall(self, content):
+            self.response = json.loads(content)
+            if self.lost:
+                raise BrokenPipeError("client disconnected before receiving pending")
+
+        def close(self):
+            pass
+
+    stop = asyncio.Event()
+    server = asyncio.create_task(
+        serve_command_mailbox(
+            staged=staged,
+            handler=handler,
+            stop=stop,
+            poll_seconds=0.01,
+            invocation_gate=staged.invocation_gate,
+        )
+    )
+    responses = []
+    try:
+        for number in (1, 2):
+            connection = Connection(number)
+            await asyncio.to_thread(
+                broker._handle,
+                connection,
+                root_pid=os.getpid(),
+                root_birth=None,
+                expected_session=None,
+                mailbox_id=staged.credential.mailbox_id,
+                token=staged.credential.token,
+                workspace=str(tmp_path),
+                response_timeout=2,
+            )
+            responses.append(connection.response)
+    finally:
+        stop.set()
+        await server
+    assert [response["result"]["state"] for response in responses] == ["pending", "answered"]
+    assert responses[1]["result"]["answer"] == "Proceed"
+    assert [request.request_id for request in seen] == [f"{number:032x}" for number in (1, 2)]
+    assert seen[0].idempotency_key == seen[1].idempotency_key == "once"
+    assert seen[0].arguments == seen[1].arguments

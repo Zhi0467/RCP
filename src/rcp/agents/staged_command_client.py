@@ -1,8 +1,10 @@
 """Stdlib-only client staged into an agent run workspace.
 
-This file is deliberately self-contained. RCP ships its source verbatim to a
-local or SSH execution stage, where no RCP installation is assumed.
+This file is deliberately self-contained. RCP injects the polling limit and
+ships its source to a local or SSH stage, where no RCP installation is assumed.
 """
+
+from __future__ import annotations
 
 import argparse
 import hashlib
@@ -16,6 +18,8 @@ import sys
 import tempfile
 import time
 import uuid
+
+COMMAND_ASK_POLL_SECONDS = None  # Injected from limits.py when staged.
 
 VERSION = 1
 OK = 0
@@ -31,6 +35,7 @@ _TOKEN = re.compile(r"^[a-f0-9]{64}$")
 _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MUTATING = frozenset(
     (
+        "ask",
         "apply",
         "spawn",
         "pause",
@@ -144,6 +149,12 @@ def _parser():
     parser.add_argument("--workspace", required=True)
     subparsers = parser.add_subparsers(dest="verb", required=True)
 
+    ask = subparsers.add_parser("ask")
+    ask.add_argument("--key", required=True)
+    ask.add_argument("--question", required=True)
+    ask.add_argument("--choice", action="append", default=[])
+    ask.add_argument("--multiple", action="store_true")
+
     validate = subparsers.add_parser("validate")
     validate.add_argument("patch_path")
 
@@ -244,7 +255,15 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError("episode id must be at most 200 characters")
         return verb, None, {"worker_id": worker_id, "episode_id": episode_id}
     key = _nonblank(namespace.key, "idempotency key")
-    if verb == "apply":
+    if verb == "ask":
+        if namespace.multiple and not namespace.choice:
+            raise ClientInputError("--multiple requires --choice")
+        arguments = {
+            "question": _nonblank(namespace.question, "question"),
+            "choices": [_nonblank(choice, "choice") for choice in namespace.choice],
+            "multiple": namespace.multiple,
+        }
+    elif verb == "apply":
         patch_file = _keyed_command_file(
             workspace, namespace.patch_path, "patch.json", required_name="patch.json"
         )
@@ -409,6 +428,13 @@ def _handle_response(response, verb, request_id):
             "RCP command returned an unsupported status.",
             "unknown",
         )
+    if (
+        verb == "ask"
+        and response.get("status") == "ok"
+        and isinstance(response.get("result"), dict)
+        and response["result"].get("state") == "pending"
+    ):
+        return response
     _print_json(_display_response(response, verb))
     return exit_code
 
@@ -479,6 +505,34 @@ def _run(namespace):
             raise ClientInputError("mailbox id is supplied by the credential")
         mailbox_id, token = _credential(workspace, namespace.credential)
     verb, key, arguments = _request_arguments(namespace, workspace)
+    deadline = time.monotonic() + namespace.timeout
+    while True:
+        response = _run_round(
+            namespace,
+            workspace,
+            mailbox_id,
+            token,
+            verb,
+            key,
+            arguments,
+            broker if namespace.broker is not None else None,
+            deadline,
+        )
+        if not isinstance(response, dict):
+            return response
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(COMMAND_ASK_POLL_SECONDS, remaining))
+        if time.monotonic() >= deadline:
+            response["message"] = (
+                "The question is still pending. Repeat the exact same call to keep waiting, "
+                "or end the turn so the question parks."
+            )
+            _print_json(_display_response(response, verb))
+            return OK
+
+
+def _run_round(namespace, workspace, mailbox_id, token, verb, key, arguments, broker, deadline):
     request_id = uuid.uuid4().hex
     closed = _closed_response(workspace, mailbox_id, request_id)
     if closed is not None:
@@ -495,7 +549,7 @@ def _run(namespace):
     }
     request_content = _encoded_request(request)
     if namespace.broker is not None:
-        return _run_brokered(namespace, broker, request_content, request_id)
+        return _run_brokered(namespace, broker, request_content, request_id, deadline)
 
     request_path = os.path.join(workspace, prefix + ".request.json")
     response_path = os.path.join(workspace, prefix + ".response.json")
@@ -509,7 +563,6 @@ def _run(namespace):
             "not_sent",
         )
 
-    deadline = time.monotonic() + namespace.timeout
     while time.monotonic() < deadline:
         try:
             with open(response_path, encoding="utf-8") as stream:
@@ -519,7 +572,7 @@ def _run(namespace):
             if closed is not None:
                 closed["result"]["delivery"] = "unknown"
                 return _handle_response(closed, namespace.verb, request_id)
-            time.sleep(0.1)
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
             continue
         except (OSError, UnicodeError, ValueError) as exc:
             return _client_failure(
@@ -541,9 +594,10 @@ def _remaining(deadline):
     return remaining
 
 
-def _run_brokered(namespace, broker, request_content, request_id):
+def _run_brokered(namespace, broker, request_content, request_id, deadline=None):
     # One deadline for the whole invocation, not one allowance per socket step.
-    deadline = time.monotonic() + namespace.timeout
+    if deadline is None:
+        deadline = time.monotonic() + namespace.timeout
     connection = None
     content = bytearray()
     try:
@@ -635,6 +689,7 @@ def _display_response(response, verb):
 def _requested_verb(argv):
     for argument in argv:
         if argument in (
+            "ask",
             "validate",
             "apply",
             "status",
