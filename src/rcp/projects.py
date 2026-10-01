@@ -2032,20 +2032,28 @@ class ProjectCatalog:
     ) -> bool:
         """Version one freshness-only cache update through the normal guards."""
 
-        return self._update_cached_snapshot_field(project_id, "snapshot_freshness", freshness)
+        return self._update_cached_snapshot_field(
+            project_id, "snapshot_freshness", lambda: freshness
+        )
 
-    def update_cached_snapshot_paper(self, project_id: str, paper: PaperSnapshot) -> bool:
+    def update_cached_snapshot_paper(
+        self, project_id: str, read_paper: Callable[[], PaperSnapshot]
+    ) -> bool:
         """Keep the display snapshot's Paper current after a create or save.
 
         Graph refreshes reuse the cached Paper, so without this a restart opens
-        Paper from the state it had before the introduction existed.
+        Paper from the state it had before the introduction existed. The Paper
+        is read under the snapshot lock, so of two overlapping saves the later
+        cache update always holds the newer Paper.
         """
 
         return self._update_cached_snapshot_field(
-            project_id, "paper", paper.model_dump(mode="json")
+            project_id, "paper", lambda: read_paper().model_dump(mode="json")
         )
 
-    def _update_cached_snapshot_field(self, project_id: str, key: str, value: object) -> bool:
+    def _update_cached_snapshot_field(
+        self, project_id: str, key: str, read_value: Callable[[], object]
+    ) -> bool:
         """Read, version, and commit one field under one hold of the snapshot lock.
 
         Holding it across the read is what keeps a concurrent field update from
@@ -2059,6 +2067,7 @@ class ProjectCatalog:
             snapshot = self._cached_snapshot_locked(project_id)
             if snapshot is None:
                 return False
+            value = read_value()
             if snapshot.get(key) == value:
                 return True
             snapshot[key] = value

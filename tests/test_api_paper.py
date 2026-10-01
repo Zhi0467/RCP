@@ -91,3 +91,33 @@ def test_a_failed_cache_refresh_does_not_fail_the_save(manifest, tmp_path, monke
     )
     assert saved.status_code == 200
     assert client.get(f"/api/projects/{project_id}/paper").json()["content"] == "# Kept\n"
+
+
+def test_a_late_cache_refresh_keeps_the_newer_paper(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    catalog = app.state.services.catalog
+    client.get(f"/api/projects/{project_id}")
+    created = client.post(f"/api/projects/{project_id}/paper/create").json()
+    refresh = catalog.update_cached_snapshot_paper
+    delayed = []
+
+    def delay_the_first_refresh(*args):
+        if not delayed:
+            delayed.append(args)
+            return True
+        return refresh(*args)
+
+    catalog.update_cached_snapshot_paper = delay_the_first_refresh
+    first = client.put(
+        f"/api/projects/{project_id}/paper",
+        json={"content": "# First\n", "base_hash": created["base_hash"]},
+    ).json()
+    second = client.put(
+        f"/api/projects/{project_id}/paper",
+        json={"content": "# Second\n", "base_hash": first["base_hash"]},
+    ).json()
+    refresh(*delayed[0])
+
+    assert catalog.cached_snapshot(project_id)["paper"]["content"] == second["content"]
