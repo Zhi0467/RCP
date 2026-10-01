@@ -1049,6 +1049,22 @@ details[open] > .view-disclosure-summary > svg:last-child {
   padding: 1px 6px;
   vertical-align: 1px;
 }
+/* A branch episode keeps the chat card's look and also tells which graph it is on. */
+.agent-branch-pill {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-block;
+  font-size: var(--type-3xs);
+  font-weight: 650;
+  margin-right: 6px;
+  padding: 0 6px;
+  vertical-align: 1px;
+}
+.conversation-list a[role="option"] {
+  color: inherit;
+  text-decoration: none;
+}
 .agent-row {
   position: relative;
 }

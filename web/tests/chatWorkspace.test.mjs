@@ -5,6 +5,8 @@ import test from "node:test";
 import {
   AGENT_LIST_SECTIONS,
   CONVERSATION_AGENT_GROUPS,
+  agentGroupItems,
+  branchEpisodeAgentRows,
   chatDraftStorageKey,
   chatIdForTask,
   chatIndicator,
@@ -27,6 +29,7 @@ import {
   unreadChatIdsFromReads,
   unsentConversation,
 } from "../src/chatWorkspace.ts";
+import { experimentIndexEntryForRoute, parseProjectHash } from "../src/experimentBoard.ts";
 
 function task(overrides) {
   return withTaskAnswers({
@@ -558,4 +561,64 @@ test("agent search matches every word against what the card already holds", () =
   for (const query of ["diverged", "WARMUP", "codex trainer", "exp/loss", "node chat"])
     assert.equal(found(query), 1, query);
   assert.equal(found("codex claude"), 0);
+});
+
+test("an Experiment episode on another graph branch lists by its own status and links to Runs", () => {
+  const branch = (id) => ({ kind: "branch", branch_id: id });
+  const entry = (episodeId, { target = branch(episodeId), parent = null, ...episode } = {}) => ({
+    project_id: "p",
+    graph_target: target,
+    parent_episode_id: parent,
+    node: { id: `exp/${episodeId}`, title: `Title ${episodeId}` },
+    control: { episode_id: episodeId },
+    episode: {
+      episode_id: episodeId,
+      archived: false,
+      ending: null,
+      run_section: "running",
+      updated_at: "2026-10-01T00:00:00Z",
+      ended_at: null,
+      ...episode,
+    },
+  });
+  const entries = [
+    entry("live"),
+    entry("reporting", { ending: "failed" }),
+    entry("failed", { run_section: "completed", ending: "failed" }),
+    entry("ended", { run_section: "completed", ending: "completed" }),
+    entry("on-main", { target: { kind: "main" } }),
+    entry("archived", { archived: true }),
+    entry("child", { target: branch("auto"), parent: "auto" }),
+    { ...entry("other-project"), project_id: "q" },
+  ];
+  const rows = branchEpisodeAgentRows(entries, { kind: "main" }, "p");
+
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(rows).map(([group, items]) => [group, items.map((row) => row.episodeId)]),
+    ),
+    { failed: ["failed"], stopped: [], working: ["live", "reporting"], done: ["ended"] },
+  );
+  assert.equal(rows.working[0].title, "Title live");
+  // The row opens the same exact Runs route the index entry resolves to.
+  const route = parseProjectHash(rows.working[0].href).experimentRoute;
+  assert.equal(experimentIndexEntryForRoute(entries, "p", route), entries[0]);
+  // On the episode's own branch its chat lists normally, so no extra row.
+  assert.deepEqual(
+    branchEpisodeAgentRows(entries, branch("live"), "p").working.map((row) => row.episodeId),
+    ["reporting"],
+  );
+});
+
+test("a status group keeps chats and branch episodes in one recency order", () => {
+  const chat = (chatId, updatedAt) => ({ conversation: { chatId, updatedAt }, status: {} });
+  const branch = (episodeId, updatedAt) => ({ episodeId, updatedAt });
+  const items = agentGroupItems(
+    [chat("draft", ""), chat("new", "2026-10-01T03:00:00Z"), chat("old", "2026-10-01T01:00:00Z")],
+    [branch("middle", "2026-10-01T02:00:00Z")],
+  );
+  assert.deepEqual(
+    items.map((item) => (item.kind === "chat" ? item.row.conversation.chatId : item.row.episodeId)),
+    ["draft", "new", "middle", "old"],
+  );
 });

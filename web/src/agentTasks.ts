@@ -24,6 +24,8 @@ export interface TaskTranscriptLine {
   trigger?: TaskTrigger;
   graphUpdate?: GraphUpdateResult | null;
   steering?: SteerReceipt | null;
+  /** Holds the live progress of a running turn the human did not type. */
+  running?: boolean;
 }
 
 export function isActiveTask(task: AgentTask): boolean {
@@ -296,6 +298,20 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         taskId: task.operation_id,
         timestamp: task.created_at,
         trigger,
+      });
+    }
+    // A watcher wake or episode turn has no human line to carry its progress,
+    // so until it produces output the chat would show nothing at all.
+    if (!lines.length && trigger !== "human" && task.active) {
+      lines.push({
+        lineId: `task:${task.operation_id}:running`,
+        role: "agent",
+        text: "",
+        taskId: task.operation_id,
+        timestamp: task.created_at,
+        mode,
+        trigger,
+        running: true,
       });
     }
     return lines;

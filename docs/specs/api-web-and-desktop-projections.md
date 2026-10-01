@@ -1119,7 +1119,16 @@ History retain their existing complete records.
 Agents (route view `chats`) groups project and node conversations. Every human and assistant turn
 keeps its immutable Discuss/Work label; progress stays inline under the triggering
 message. There is no global task banner. The composer and history remain usable
-while unrelated background tasks run.
+while unrelated background tasks run. A running watcher wake or episode turn has
+no human message, so it holds an Activity row in its chat until its first output.
+
+Conversations and their tasks are scoped to the viewed graph. A human-started
+Experiment episode on another graph branch is listed from the project's
+Experiment index instead, which Agents polls like Runs, in the group its
+`run_section` and `ending` give, with a Branch tag and its own graph's title. Its
+row links to the index entry's exact Runs route; an exact branch route without a
+parent is a human Run isolated on its own branch. Archived episodes and
+Auto-research children are not listed.
 
 The composer shows **Work in a worktree** before the first Work turn. The backend
 projects eligibility and the reason a zero/multiple-repository or wrong-machine

@@ -6895,6 +6895,33 @@ def test_run_endpoint_preserves_a_nonblank_experiment_goal(manifest, tmp_path) -
     assert seen.wait(timeout=1)
 
 
+def test_run_endpoint_refuses_a_chat_that_already_has_turns(manifest, tmp_path) -> None:
+    app, service = _experiment_project(manifest, tmp_path)
+
+    async def stream(_project_id, _kind, _request, _execution):
+        yield _sse(AgentEvent(event="answer", text="Done."))
+        yield _sse(AgentEvent(event="done"))
+
+    app.state.background_tasks.stream = stream
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    turn = client.post(
+        f"/api/projects/{project_id}/tasks/node_chat",
+        json={"node_id": "exp/bounded-loop", "chat_id": chat_id, "message": "Plan it."},
+    )
+    assert turn.status_code == 202, turn.text
+    _wait_for_run(client, project_id, turn.json()["operation_id"])
+
+    response = client.post(
+        f"/api/projects/{project_id}/experiments/exp%2Fbounded-loop/run",
+        json={"chat_id": chat_id},
+    )
+
+    assert response.status_code == 422
+    assert app.state.background_tasks.store.episodes(project_id) == []
+
+
 def test_experiment_admission_conflict_status_uses_exception_type(
     manifest, tmp_path, monkeypatch
 ) -> None:
