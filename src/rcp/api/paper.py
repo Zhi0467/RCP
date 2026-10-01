@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -11,9 +12,20 @@ from rcp.api.dependencies import (
     require_project_membership,
     require_project_write_admission,
 )
+from rcp.paper import PaperSnapshot
 from rcp.projects import ProjectCatalog
 
+_LOG = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(require_project_membership)])
+
+
+def _refresh_cached_paper(catalog: ProjectCatalog, project_id: str, paper: PaperSnapshot) -> None:
+    """Best effort: the write already succeeded, and Paper opens from /paper itself."""
+
+    try:
+        catalog.update_cached_snapshot_paper(project_id, paper)
+    except (KeyError, OSError, ValueError) as exc:
+        _LOG.warning("Could not refresh the cached Paper of project %s: %s", project_id, exc)
 
 
 class PaperSaveRequest(BaseModel):
@@ -39,7 +51,7 @@ def create_paper(
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
     paper = get_project_service(catalog, project_id).paper.create()
-    catalog.update_cached_snapshot_paper(project_id, paper)
+    _refresh_cached_paper(catalog, project_id, paper)
     return paper.model_dump(mode="json")
 
 
@@ -53,7 +65,7 @@ def save_paper(
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
     paper = get_project_service(catalog, project_id).paper.save(body.content, body.base_hash)
-    catalog.update_cached_snapshot_paper(project_id, paper)
+    _refresh_cached_paper(catalog, project_id, paper)
     return paper.model_dump(mode="json")
 
 
