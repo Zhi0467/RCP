@@ -5,11 +5,10 @@ export function releaseNotice(notice: UpdateNotice | null, identity: DesktopBuil
   if (!notice || !notice.latest_version) return null;
   // A source app can run an older native shell than its updated checkout, so a
   // backend that is current says nothing about the app: compare the app itself.
-  // Only a checkout exactly at the release qualifies; one ahead of it must never
-  // be offered a downgrade.
+  // Only a checkout on the release commit qualifies: one past it keeps the same
+  // base version and must never be offered a downgrade.
   const sourceApp = notice.space === "personal" && identity?.kind === "source";
-  const checkoutAtRelease =
-    notice.status === "current" && notice.current_version === notice.latest_version;
+  const checkoutAtRelease = notice.status === "current" && notice.source_at_release;
   if (notice.status !== "update_available" && !(sourceApp && checkoutAtRelease)) return null;
   const current =
     notice.space === "personal" && identity ? identity.version : notice.current_version;

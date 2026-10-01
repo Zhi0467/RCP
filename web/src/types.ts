@@ -3240,5 +3240,6 @@ export interface UpdateNotice {
   companion_ready: boolean;
   download_url: string | null;
   source_checkout: boolean;
+  source_at_release: boolean;
   update_command: string | null;
 }

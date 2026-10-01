@@ -18,6 +18,7 @@ const fixture = {
   companion_ready: false,
   download_url: null,
   source_checkout: true,
+  source_at_release: false,
   update_command: "scripts/update-from-source v0.4.3",
 };
 
@@ -237,6 +238,7 @@ test("a source app older than its current checkout still gets a notice", () => {
     ...fixture,
     status: "current",
     current_version: "0.4.3",
+    source_at_release: true,
     update_command: null,
   };
   const source = { kind: "source", version: "0.4.2" };
@@ -248,6 +250,7 @@ test("a source app older than its current checkout still gets a notice", () => {
   assert.equal(releaseNotice(current, { ...source, version: "0.4.3" }), null);
   assert.equal(releaseNotice(current, { ...source, kind: "prebuilt" }), null);
   assert.equal(releaseNotice(current, null), null);
-  // A checkout ahead of the release is current too, but updating would downgrade it.
-  assert.equal(releaseNotice({ ...current, current_version: "0.4.4" }, source), null);
+  // A checkout past the release commit is current too, even at the same base
+  // version, and updating would downgrade it.
+  assert.equal(releaseNotice({ ...current, source_at_release: false }, source), null);
 });

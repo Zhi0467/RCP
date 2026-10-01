@@ -189,6 +189,16 @@ def test_route_reads_look_up_again_once_past_the_bound(github):
     assert checker.snapshot().status == "update_available"
 
 
+@pytest.mark.parametrize(("head", "expected"), [(COMMIT, True), ("b" * 40, False), (None, False)])
+def test_source_checkout_is_at_release_only_on_its_commit(github, monkeypatch, head, expected):
+    monkeypatch.setattr(release_check, "_checkout_head", lambda: head)
+    assert (
+        ReleaseCheck("personal", "0.4.10", source_checkout=True).check().source_at_release
+        is expected
+    )
+    assert not ReleaseCheck("personal", "0.4.10").check().source_at_release
+
+
 def test_off_makes_no_calls_even_for_explicit_check(github, monkeypatch):
     monkeypatch.setenv("RCP_UPDATE_CHECK", "off")
     checker = ReleaseCheck("personal", "0.4.9")
@@ -244,6 +254,7 @@ def test_poller_lifespan_and_personal_endpoint(github, tmp_path, monkeypatch):
             "companion_ready",
             "download_url",
             "source_checkout",
+            "source_at_release",
             "update_command",
         }
         assert notice["space"] == "personal"

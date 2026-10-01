@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import threading
 from datetime import UTC, datetime
 from typing import Literal
@@ -15,6 +16,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from rcp import limits
+from rcp.source_checkout import source_checkout_root
 
 REPOSITORY = "Zhi0467/RCP"
 API_BASE = f"https://api.github.com/repos/{REPOSITORY}/releases"
@@ -46,6 +48,9 @@ class UpdateNotice(BaseModel):
     companion_ready: bool = False
     download_url: str | None = None
     source_checkout: bool = False
+    #: The source checkout sits exactly on the latest release commit. A checkout
+    #: past it keeps the same base version, so only this can rule out a downgrade.
+    source_at_release: bool = False
     update_command: str | None = None
 
 
@@ -112,6 +117,23 @@ def _stable(data: dict) -> tuple[str, str]:
     ):
         raise ValueError("release is not an exact published stable identity")
     return tag[1:], commit
+
+
+def _checkout_head() -> str | None:
+    root = source_checkout_root()
+    if root is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=limits.RELEASE_CHECK_DEADLINE_SECONDS,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip()
 
 
 def _companion_ready(data: dict, version: str, commit: str) -> bool:
@@ -208,7 +230,7 @@ class ReleaseCheck:
             return self.snapshot()
         checked = datetime.now(UTC)
         try:
-            version, ready = asyncio.run(self._lookup(companion))
+            version, commit, ready = asyncio.run(self._lookup(companion))
         except (httpx.HTTPError, OSError, ValueError, TimeoutError, KeyError) as exc:
             with self._lock:
                 self._notice = self._notice.model_copy(
@@ -218,6 +240,7 @@ class ReleaseCheck:
                     }
                 )
         else:
+            at_release = self._notice.source_checkout and _checkout_head() == commit
             with self._lock:
                 current = self._notice.current_version
                 newer = current is not None and _numbers(version) > _numbers(current)
@@ -228,6 +251,7 @@ class ReleaseCheck:
                         "checked_at": checked,
                         "last_success_at": datetime.now(UTC),
                         "companion_ready": ready,
+                        "source_at_release": at_release,
                         "download_url": f"https://github.com/{REPOSITORY}/releases/tag/desktop-v{version}"
                         if ready
                         else None,
@@ -235,7 +259,7 @@ class ReleaseCheck:
                 )
         return self.snapshot()
 
-    async def _lookup(self, companion: bool) -> tuple[str, bool]:
+    async def _lookup(self, companion: bool) -> tuple[str, str, bool]:
         async with asyncio.timeout(limits.RELEASE_CHECK_DEADLINE_SECONDS):
             async with httpx.AsyncClient(
                 timeout=limits.RELEASE_CHECK_DEADLINE_SECONDS,
@@ -266,7 +290,7 @@ class ReleaseCheck:
                         ready = _companion_ready(data, version, commit)
                         if ready:
                             self._confirmed = (version, commit)
-                return version, ready
+                return version, commit, ready
 
     def start(self) -> None:
         if self._thread is not None or os.environ.get("RCP_UPDATE_CHECK") == "off":
