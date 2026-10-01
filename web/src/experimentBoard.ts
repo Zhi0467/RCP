@@ -51,8 +51,9 @@ export function experimentBoardRouteToken(entry: ExperimentLoopIndexEntry): stri
   return `${INDEX_ROUTE_PREFIX}${JSON.stringify(experimentRouteIdentity(entry))}`;
 }
 
+/** Runs shows the index, and Agents lists its branch episodes from it. */
 export function projectRunsNeedsExperimentIndex(projectId: string | null, view: AppView): boolean {
-  return Boolean(projectId && view === "execution");
+  return Boolean(projectId && (view === "execution" || view === "chats"));
 }
 
 export function spaceRunRouteToken(entry: SpaceRunIndexEntry): string {

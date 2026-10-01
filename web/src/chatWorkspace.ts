@@ -1,4 +1,4 @@
-import { experimentBoardHref } from "./experimentBoard.ts";
+import { experimentBoardHref, experimentBoardRouteToken } from "./experimentBoard.ts";
 import { sameGraphTarget } from "./graphTarget.ts";
 import type {
   AgentRunConfig,
@@ -10,7 +10,7 @@ import type {
   ChatReads,
   ChatSummary,
   ConversationMode,
-  Episode,
+  ExperimentLoopIndexEntry,
   GraphTargetRef,
   SkillDefaults,
   StartAgentTask,
@@ -401,45 +401,38 @@ export interface BranchEpisodeAgentRow {
 }
 
 /**
- * Rows for Experiment episodes that run on another graph branch, from the
- * stored episode list so older ones stay listed. An Auto-research child is
- * left out: its branch belongs to the Auto-research episode, not a human Run.
+ * Rows for human-started Experiment episodes on another graph branch, from the
+ * Experiment index Runs itself reads, so every row opens a card that exists and
+ * carries the title from the episode's own graph. An Auto-research child is
+ * reached through its parent episode instead.
  */
 export function branchEpisodeAgentRows(
-  episodes: Episode[],
+  entries: ExperimentLoopIndexEntry[],
   viewedTarget: GraphTargetRef,
-  nodeTitles: Record<string, string>,
   projectId: string,
   query = "",
 ): Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> {
   const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  const autoResearchIds = new Set(
-    episodes.filter((episode) => episode.mode === "auto_research").map((e) => e.episode_id),
-  );
   const groups: Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> = {
     failed: [],
     stopped: [],
     working: [],
     done: [],
   };
-  for (const episode of episodes) {
-    const target = episode.graph_target;
-    const experimentId = episode.control_node_id;
+  for (const entry of entries) {
+    const { episode } = entry;
     if (
-      episode.mode !== "experiment_loop" ||
-      !experimentId ||
+      entry.project_id !== projectId ||
+      entry.graph_target.kind !== "branch" ||
+      entry.parent_episode_id !== null ||
       episode.archived ||
-      // A continuation lists once, as the newest member of its chain.
-      episode.continued_by_episode_id ||
-      target.kind !== "branch" ||
-      autoResearchIds.has(target.branch_id) ||
-      sameGraphTarget(target, viewedTarget)
+      sameGraphTarget(entry.graph_target, viewedTarget)
     ) {
       continue;
     }
-    const title = nodeTitles[experimentId] ?? experimentId;
+    const title = entry.node.title;
     if (terms.length) {
-      const text = `${title}\n${experimentId}\nbranch`.toLocaleLowerCase();
+      const text = `${title}\n${entry.node.id}\nbranch`.toLocaleLowerCase();
       if (!terms.every((term) => text.includes(term))) continue;
     }
     const group =
@@ -454,12 +447,7 @@ export function branchEpisodeAgentRows(
       episodeId: episode.episode_id,
       title,
       group,
-      href: experimentBoardHref(projectId, {
-        experiment_id: experimentId,
-        episode_id: episode.episode_id,
-        graph_target: target,
-        parent_episode_id: null,
-      }),
+      href: experimentBoardHref(projectId, experimentBoardRouteToken(entry)),
       updatedAt: episode.ended_at ?? episode.updated_at,
     });
   }

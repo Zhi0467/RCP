@@ -128,7 +128,7 @@ test("chat history exposes one explicit end-of-list page control", () => {
     conversations: [],
     selectedChatId: null,
     nodes: {},
-    episodes: [],
+    experimentEntries: [],
     graphTarget: { kind: "main", branch_id: null },
     runScope: [],
     tasks: [],

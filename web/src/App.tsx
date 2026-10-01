@@ -4940,7 +4940,7 @@ export default function App() {
               conversations={conversations}
               selectedChatId={selectedChatId}
               nodes={presentedGraph.nodes}
-              episodes={episodes}
+              experimentEntries={experimentLoops}
               graphTarget={graphTarget}
               glossaryIndex={glossaryIndex}
               runScope={runScope}

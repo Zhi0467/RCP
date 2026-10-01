@@ -35,7 +35,7 @@ import type {
   AgentTask,
   ChatDisplay,
   ChatTranscript,
-  Episode,
+  ExperimentLoopIndexEntry,
   GraphNode,
   GraphTargetRef,
   GraphUpdateRecovery,
@@ -52,8 +52,8 @@ interface Props {
   conversations: ChatConversation[];
   selectedChatId: string | null;
   nodes: Record<string, GraphNode>;
-  /** Every listed episode; those on another graph branch get their own rows. */
-  episodes: Episode[];
+  /** The Experiment index; episodes on another graph branch get their own rows. */
+  experimentEntries: ExperimentLoopIndexEntry[];
   graphTarget: GraphTargetRef;
   glossaryIndex: GlossaryIndex;
   runScope: string[];
@@ -173,7 +173,7 @@ export function ChatsWorkspace({
   conversations: storedConversations,
   selectedChatId,
   nodes,
-  episodes,
+  experimentEntries,
   graphTarget,
   glossaryIndex,
   runScope,
@@ -246,15 +246,10 @@ export function ChatsWorkspace({
     unreadChatIds,
     query,
   );
-  const nodeTitles = useMemo(
-    () => Object.fromEntries(Object.values(nodes).map((node) => [node.id, node.title])),
-    [nodes],
-  );
   // Archive and pins belong to chats; a branch episode is archived from Runs.
   const branchRows = branchEpisodeAgentRows(
-    showingArchived ? [] : episodes,
+    showingArchived ? [] : experimentEntries,
     graphTarget,
-    nodeTitles,
     project.id,
     query,
   );

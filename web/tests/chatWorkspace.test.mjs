@@ -28,6 +28,7 @@ import {
   unreadChatIdsFromReads,
   unsentConversation,
 } from "../src/chatWorkspace.ts";
+import { experimentIndexEntryForRoute, parseProjectHash } from "../src/experimentBoard.ts";
 
 function task(overrides) {
   return withTaskAnswers({
@@ -563,29 +564,31 @@ test("agent search matches every word against what the card already holds", () =
 
 test("an Experiment episode on another graph branch lists by its own status and links to Runs", () => {
   const branch = (id) => ({ kind: "branch", branch_id: id });
-  const episode = (overrides) => ({
-    mode: "experiment_loop",
-    control_node_id: "exp/a",
-    graph_target: branch(overrides.episode_id),
-    archived: false,
-    continued_by_episode_id: null,
-    ending: null,
-    run_section: "running",
-    updated_at: "2026-10-01T00:00:00Z",
-    ended_at: null,
-    ...overrides,
+  const entry = (episodeId, { target = branch(episodeId), parent = null, ...episode } = {}) => ({
+    project_id: "p",
+    graph_target: target,
+    parent_episode_id: parent,
+    node: { id: `exp/${episodeId}`, title: `Title ${episodeId}` },
+    control: { episode_id: episodeId },
+    episode: {
+      episode_id: episodeId,
+      archived: false,
+      ending: null,
+      run_section: "running",
+      updated_at: "2026-10-01T00:00:00Z",
+      ended_at: null,
+      ...episode,
+    },
   });
-  const episodes = [
-    episode({ episode_id: "live" }),
-    episode({ episode_id: "ended", run_section: "completed", ending: "completed" }),
-    episode({ episode_id: "on-main", graph_target: { kind: "main", branch_id: null } }),
-    episode({ episode_id: "archived", archived: true }),
-    episode({ episode_id: "continued", continued_by_episode_id: "live" }),
-    { ...episode({ episode_id: "auto" }), mode: "auto_research", control_node_id: null },
-    episode({ episode_id: "child", graph_target: branch("auto") }),
+  const entries = [
+    entry("live"),
+    entry("ended", { run_section: "completed", ending: "completed" }),
+    entry("on-main", { target: { kind: "main" } }),
+    entry("archived", { archived: true }),
+    entry("child", { target: branch("auto"), parent: "auto" }),
+    { ...entry("other-project"), project_id: "q" },
   ];
-  const main = { kind: "main", branch_id: null };
-  const rows = branchEpisodeAgentRows(episodes, main, { "exp/a": "Experiment A" }, "p");
+  const rows = branchEpisodeAgentRows(entries, { kind: "main" }, "p");
 
   assert.deepEqual(
     Object.fromEntries(
@@ -593,8 +596,10 @@ test("an Experiment episode on another graph branch lists by its own status and 
     ),
     { failed: [], stopped: [], working: ["live"], done: ["ended"] },
   );
-  assert.equal(rows.working[0].title, "Experiment A");
-  assert.match(rows.working[0].href, /view=runs.*episode=live.*target=branch.*branch=live/);
+  assert.equal(rows.working[0].title, "Title live");
+  // The row opens the same exact Runs route the index entry resolves to.
+  const route = parseProjectHash(rows.working[0].href).experimentRoute;
+  assert.equal(experimentIndexEntryForRoute(entries, "p", route), entries[0]);
   // On the episode's own branch its chat lists normally, so no extra row.
-  assert.equal(branchEpisodeAgentRows(episodes, branch("live"), {}, "p").working.length, 0);
+  assert.equal(branchEpisodeAgentRows(entries, branch("live"), "p").working.length, 0);
 });

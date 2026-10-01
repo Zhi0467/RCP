@@ -270,6 +270,7 @@ test("a human Run isolated on its own branch has an exact route with no parent",
 
 test("project Runs polls the Experiment index before a branch child is selected", () => {
   assert.equal(projectRunsNeedsExperimentIndex("project-one", "execution"), true);
+  assert.equal(projectRunsNeedsExperimentIndex("project-one", "chats"), true);
   assert.equal(projectRunsNeedsExperimentIndex("project-one", "overview"), false);
   assert.equal(projectRunsNeedsExperimentIndex(null, "execution"), false);
 });
