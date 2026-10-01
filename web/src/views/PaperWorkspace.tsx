@@ -87,6 +87,60 @@ export function loadPaperSnapshot(
   return load(`${apiBase}/paper`);
 }
 
+/**
+ * Opens the editor only after one read of the Paper itself. The project
+ * snapshot's Paper can be older than the saved file, and the editor never
+ * replaces its own buffer from a later read.
+ */
+export function LoadedPaperWorkspace(props: Omit<Props, "initialPaper">) {
+  const { apiBase, onPaperChange } = props;
+  const [paper, setPaper] = useState<PaperSnapshot | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const reportPaper = useRef(onPaperChange);
+  reportPaper.current = onPaperChange;
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    loadPaperSnapshot(api, apiBase).then(
+      (next) => {
+        if (cancelled) return;
+        reportPaper.current(next);
+        setPaper(next);
+      },
+      (reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, attempt]);
+
+  if (paper) return <PaperWorkspace {...props} initialPaper={paper} />;
+  return (
+    <section className="paper-empty" aria-busy={error === null}>
+      <div className="paper-empty-action">
+        {error ? (
+          <>
+            <div className="paper-inline-error" role="alert">
+              {error}
+            </div>
+            <button className="button" onClick={() => setAttempt((value) => value + 1)}>
+              Try again
+            </button>
+          </>
+        ) : (
+          <span>
+            <LoaderCircle className="spin" size={15} /> Opening introduction…
+          </span>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export function PaperWorkspace({
   apiBase,
   project,

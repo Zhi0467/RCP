@@ -169,6 +169,12 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
                 <dt>Checked</dt>
                 <dd>{formatServerTimestamp(status.release_check.checked_at)}</dd>
               </div>
+              {status.release_check.failure_reason ? (
+                <div className="server-commit-row">
+                  <dt>Check failed</dt>
+                  <dd>{status.release_check.failure_reason}</dd>
+                </div>
+              ) : null}
               {status.releases.candidate_commit ? (
                 <ReleaseRow
                   label="Built update"

@@ -13,8 +13,10 @@ dropped state transfer), and D's Apply recovery (the `unavailable` outcome and
 Apply again).
 Remaining: A's real-provider wake check, D's remaining checks (a killed
 acknowledgement after a confirmed commit leaves one commit; a timeout reaches a
-classified outcome) and its other rsync owners, and the tool audit's remaining
-owners.
+classified outcome), and the tool audit's remaining owners. The other rsync
+owners now retry a dropped stream; run-stage inputs also have the tar
+fallback, and backup, restore, kept artifacts and result views, and the source
+index still require rsync.
 
 Settled with the human on 2026-09-29:
 
@@ -244,7 +246,8 @@ Today:
 - The state pull (`_sync_remote_tree`), ordinary publication (`_publish`), and
   committed-history publication (`_publish_committed_history`) in
   `src/rcp/transport/state.py` now select a checked rsync or tar-over-SSH engine
-  through `src/rcp/transport/state_transfer.py` (slice 2a). Other rsync owners
+  through `src/rcp/transport/state_transfer.py` (slice 2a). So does the
+  run-stage input upload. The other rsync owners retry a dropped stream but
   still require rsync and have no fallback.
 - Committed-history publication already retries materialization when the
   commit is present, and lost lock ownership triggers commit reconciliation
@@ -306,11 +309,12 @@ Target:
 - Every failed transfer records bounded raw stderr, the exit code, the phase,
   the partition, and the commit certainty.
 - Timeouts are normalized without erasing commit uncertainty.
-- The same review covers the other rsync owners: stage inputs
-  (`src/rcp/transport/run_stage.py`, which clears its pending inputs on exit
-  and must keep the exact snapshot during a retry), backup, restore, kept
-  artifacts and result views, and the source index. An accepted provider is
-  never relaunched only to redo a transfer.
+- Other rsync owners: stage inputs (`src/rcp/transport/run_stage.py`) use the
+  engine selection and retry, re-sending the same pending snapshot into the
+  same batch folder before `commit-inputs` runs. Backup, restore, kept
+  artifacts and result views, and the source index retry through `run_rsync`
+  but have no contract probe or tar fallback. An accepted provider is never
+  relaunched only to redo a transfer.
 
 Settled 2026-09-29: feature detection with a visible fallback.
 
@@ -350,8 +354,9 @@ repeating the pull converges.
 Slice 2a checks cover version parsing, PATH selection, cached warnings, engine
 invalidation, uncached transport failures, tar mirroring/excludes, interrupted
 application and convergence, staged pushes, and the task-event/readiness
-integration. Commit reconciliation changes and migration of other rsync owners
-remain unimplemented.
+integration. Commit reconciliation changes and a tar fallback for backup,
+restore, kept artifacts and result views, and the source index remain
+unimplemented.
 
 Remaining checks: a
 killed acknowledgement after a confirmed commit leaves one commit; a timeout
@@ -369,8 +374,8 @@ the app was started.
 Slice 2a replaces the preliminary tool list with the source-derived dependency
 map in the specification below. State transfers now inspect every executable
 named `rsync` on backend PATH in order and use the first passing absolute path;
-the inherited PATH is unchanged. Other rsync call sites still require rsync and
-have no fallback. Non-rsync feature gates and fallbacks remain with their owners;
+the inherited PATH is unchanged. So does the run-stage input upload. Other
+rsync call sites still require rsync and have no fallback. Non-rsync feature gates and fallbacks remain with their owners;
 the table explicitly marks missing probes rather than claiming they exist.
 
 Settled 2026-09-29: the rsync rule above is the general dependency policy, not

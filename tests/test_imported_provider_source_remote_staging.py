@@ -19,7 +19,7 @@ from rcp.runs.tasks.graph import (
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord
 from rcp.transfer import TransferArchiveEntry
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage, StateUnavailable, state_transfer
 
 from .helpers import create_named_app as create_app
 
@@ -56,7 +56,7 @@ def _local_remote_stage(monkeypatch: pytest.MonkeyPatch) -> RemoteRunStage:
     real_run = subprocess.run
 
     def fake_run(arguments, **_kwargs):
-        if arguments[0] == "rsync":
+        if Path(arguments[0]).name == "rsync":
             source = Path(arguments[-2].rstrip("/"))
             destination = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
             shutil.copytree(source, destination)
@@ -64,6 +64,11 @@ def _local_remote_stage(monkeypatch: pytest.MonkeyPatch) -> RemoteRunStage:
         return real_run(arguments, capture_output=True, text=True, check=False)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        state_transfer,
+        "get_engine",
+        lambda _host: state_transfer.TransferEngine("rsync", "rsync", "3.2.7", "3.2.7"),
+    )
     monkeypatch.setattr(
         RemoteRunStage,
         "_ssh",

@@ -2096,7 +2096,7 @@ def test_remote_run_inputs_are_published_as_one_bundle(tmp_path, monkeypatch) ->
     stage.finalize_inputs()
 
     assert len(rsync_calls) == 1
-    assert rsync_calls[0][0:2] == ["rsync", "-a"]
+    assert rsync_calls[0][0:2] == ["/verified/bin/rsync", "-a"]
     assert len(ssh_calls) == 1
     assert ssh_calls[0][0:2] == ["python3", "-c"]
     _root, _batch, labels, transferred, _reusable = ssh_calls[0][
@@ -2125,7 +2125,7 @@ def test_remote_directory_input_is_moved_before_being_protected(tmp_path, monkey
     real_run = subprocess.run
 
     def fake_run(arguments, **_kwargs):
-        if arguments[0] == "rsync":
+        if Path(arguments[0]).name == "rsync":
             source = Path(arguments[-2].rstrip("/"))
             destination = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
             shutil.copytree(source, destination)
@@ -2168,7 +2168,7 @@ def test_remote_directory_input_reuses_only_matching_immutable_content(
 
     def fake_run(arguments, **_kwargs):
         nonlocal rsync_calls
-        if arguments[0] == "rsync":
+        if Path(arguments[0]).name == "rsync":
             rsync_calls += 1
             source = Path(arguments[-2].rstrip("/"))
             destination = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
@@ -2220,7 +2220,7 @@ def test_content_addressed_input_survives_a_read_that_never_reached_the_host(
     real_run = subprocess.run
 
     def fake_run(arguments, **_kwargs):
-        if arguments[0] == "rsync":
+        if Path(arguments[0]).name == "rsync":
             source = Path(arguments[-2].rstrip("/"))
             destination = Path(arguments[-1].split(":", 1)[1].rstrip("/"))
             shutil.copytree(source, destination, dirs_exist_ok=True)

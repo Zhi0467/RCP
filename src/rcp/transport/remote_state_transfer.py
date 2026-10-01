@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -25,6 +26,9 @@ def main() -> int:
             archive.add(root, arcname=".", filter=include)
         return 0
     if operation == "push":
+        # Like rsync, create the destination itself but never its parents.
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(root)
         # Extract into a private folder, then rename complete files into place:
         # an abandoned earlier attempt can then never leave a truncated file.
         incoming = tempfile.mkdtemp(prefix=".incoming-", dir=root)
