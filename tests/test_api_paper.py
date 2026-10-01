@@ -10,6 +10,7 @@ def test_paper_endpoints_cover_snapshot_create_save_and_sessions(manifest, tmp_p
     client = TestClient(app)
     project_id = app.state.default_project_id
 
+    assert client.get(f"/api/projects/{project_id}").json()["paper"]["sync_state"] == "not_created"
     initial = client.get(f"/api/projects/{project_id}/paper")
     assert initial.status_code == 200
     assert initial.json()["sync_state"] == "not_created"
@@ -28,6 +29,9 @@ def test_paper_endpoints_cover_snapshot_create_save_and_sessions(manifest, tmp_p
     assert saved.status_code == 200
     assert saved.json()["content"] == "# API introduction\n"
     assert saved.json()["sync_state"] == "synced"
+    # The project snapshot, which a restarted app opens Paper from, follows the save.
+    restarted = TestClient(create_named_app(str(manifest.path), data_dir=tmp_path / "data"))
+    assert restarted.get(f"/api/projects/{project_id}").json()["paper"] == saved.json()
 
     sessions = client.get(f"/api/projects/{project_id}/paper/sessions")
     assert sessions.status_code == 200

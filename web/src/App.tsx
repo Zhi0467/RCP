@@ -438,8 +438,8 @@ const ExecutionView = lazy(() =>
 const ScientificView = lazy(() =>
   import("./views/GraphViews").then((module) => ({ default: module.ScientificView })),
 );
-const PaperWorkspace = lazy(() =>
-  import("./views/PaperWorkspace").then((module) => ({ default: module.PaperWorkspace })),
+const LoadedPaperWorkspace = lazy(() =>
+  import("./views/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
 );
 const ProjectSettings = lazy(() =>
   import("./views/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
@@ -4880,11 +4880,10 @@ export default function App() {
                 paperUnsynced={paper.sync_state !== "synced"}
                 onChange={changeView}
               />
-              <PaperWorkspace
+              <LoadedPaperWorkspace
                 key={project.id}
                 apiBase={apiBase}
                 project={project}
-                initialPaper={paper}
                 tasks={projectTasks}
                 onStartTask={startAgentTask}
                 onPaperChange={updatePaper}

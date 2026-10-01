@@ -2020,17 +2020,31 @@ class ProjectCatalog:
     ) -> bool:
         """Version one freshness-only cache update through the normal guards."""
 
+        return self._update_cached_snapshot_field(project_id, "snapshot_freshness", freshness)
+
+    def update_cached_snapshot_paper(self, project_id: str, paper: PaperSnapshot) -> bool:
+        """Keep the display snapshot's Paper current after a create or save.
+
+        Graph refreshes reuse the cached Paper, so without this a restart opens
+        Paper from the state it had before the introduction existed.
+        """
+
+        return self._update_cached_snapshot_field(
+            project_id, "paper", paper.model_dump(mode="json")
+        )
+
+    def _update_cached_snapshot_field(self, project_id: str, key: str, value: object) -> bool:
         project_id = self._canonical_project_id(project_id)
         current = self.cached_snapshot(project_id)
         if current is None:
             return False
-        if current.get("snapshot_freshness") == freshness:
+        if current.get(key) == value:
             return True
         generation = self.reserve_cached_snapshot_generation(project_id)
         snapshot = self.cached_snapshot(project_id)
         if snapshot is None:
             return False
-        snapshot["snapshot_freshness"] = freshness
+        snapshot[key] = value
         return self.commit_cached_snapshot(project_id, snapshot, generation=generation)
 
     def reserve_cached_snapshot_generation(self, project_id: str) -> int:

@@ -38,8 +38,9 @@ def create_paper(
     project_id: str,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
-    paper = get_project_service(catalog, project_id).paper
-    return paper.create().model_dump(mode="json")
+    paper = get_project_service(catalog, project_id).paper.create()
+    catalog.update_cached_snapshot_paper(project_id, paper)
+    return paper.model_dump(mode="json")
 
 
 @router.put(
@@ -51,8 +52,9 @@ def save_paper(
     body: PaperSaveRequest,
     catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
 ):
-    paper = get_project_service(catalog, project_id).paper
-    return paper.save(body.content, body.base_hash).model_dump(mode="json")
+    paper = get_project_service(catalog, project_id).paper.save(body.content, body.base_hash)
+    catalog.update_cached_snapshot_paper(project_id, paper)
+    return paper.model_dump(mode="json")
 
 
 @router.get("/api/projects/{project_id}/paper/sessions")

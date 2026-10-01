@@ -21,6 +21,11 @@ toggle exposes incoming canonical content in the preview pane, and one reversibl
 Apply action swaps it with the editor content. Only a later human edit re-pins
 the draft and resumes canonical save.
 
+Opening Paper reads the Paper itself before showing an editor, because the
+project snapshot's copy can be older than the saved file; until that read
+answers, the view shows neither an empty editor nor Create introduction. Create
+and save also refresh the project snapshot's copy.
+
 No conflict strategy may discard either whole version or silently overwrite the
 human draft.
 
