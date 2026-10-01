@@ -4,7 +4,7 @@ Date: 2026-10-01
 Status: design written; not implemented.
 
 Implemented: nothing yet.
-Remaining: both fixes below, their tests, and the served-app check.
+Remaining: the three fixes below, their tests, and the served-app check.
 
 Settled with the human on 2026-10-01:
 
@@ -13,6 +13,8 @@ Settled with the human on 2026-10-01:
   viewed graph.
 - Every human Run creates a new chat id, so each episode has its own row and
   transcript. It never joins an existing human chat on the node.
+- A running turn the human did not type, such as a watcher wake, shows a
+  line in its chat while it runs.
 
 ## Evidence
 
@@ -64,14 +66,23 @@ existing node chat at 00:34:39 and ran until 04:21. While both ran:
 - Opening a node's chat still picks the node's newest conversation, which
   may now be an episode chat. That matches today's behavior for a node whose
   first chat was an episode.
-- Out of scope: a running watcher wake in a human chat shows no line until
-  it answers. That is a separate display gap.
+
+## Fix 3: a running turn the human did not type
+
+- `reconstructTaskTranscript` adds a line for a task only from its human
+  message, answers, deliverables, or error. A running watcher wake or
+  episode turn has none, so its chat shows nothing until it answers.
+- It emits one empty agent line for an active task with no human message and
+  no answers yet. The existing `activeLineTask` path renders
+  `InlineTaskProgress` on it, under the existing Watcher chip for a wake.
+  The line is replaced when the first answer arrives.
 
 ## Checks
 
 - Web unit tests: grouping with a branch-target task gives a Working row
   marked with that target; a Run on a node that already has a chat sends a
-  chat id different from it.
+  chat id different from it; a running watcher task yields one line.
 - Served app on disposable data with a seeded branch episode: the row shows
   Working, then Done; opening it shows the branch transcript read-only, with
-  no worktree error in the console or network log.
+  no worktree error in the console or network log. A running watcher wake
+  in a human chat shows the Watcher chip and Activity line.
