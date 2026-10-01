@@ -2021,46 +2021,41 @@ class SSHStateWorkspace(StateWorkspace):
             self._mark_reachable()
             return destination
         remote = f"{self.host}:{shlex.quote(str(self.remote_root))}/"
-        try:
-            result = subprocess.run(
-                [
-                    "rsync",
-                    "-a",
-                    "--delete",
-                    "--exclude=/patches/.batch-*/***",
-                    "--exclude=/patches/.unconfirmed-*",
-                    "--exclude=/branches/.unconfirmed-*/***",
-                    "--exclude=/branches/*/graph.json",
-                    "--exclude=/branches/*/research.md",
-                    "--exclude=/branches/*/glossary.json",
-                    "--exclude=/branches/*/proposals.json",
-                    "--exclude=/branches/*/coverage.json",
-                    "--exclude=/branches/*/patches/.unconfirmed-*",
-                    "--include=/manifest.toml",
-                    "--include=/scope-base.json",
-                    "--include=/patches/***",
-                    "--include=/branches/***",
-                    "--include=/chat/***",
-                    "--include=/facts/***",
-                    "--include=/paper/***",
-                    "--exclude=.refresh.lock",
-                    "--exclude=.agent-run.lock",
-                    "--exclude=.append.lock",
-                    "--exclude=.chat.lock",
-                    "--exclude=.publish",
-                    "--exclude=*",
-                    *rsync_ssh_arguments(),
-                    remote,
-                    f"{destination}/",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=BACKUP_REMOTE_EXPORT_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            self._mark_unreachable(str(exc))
-            raise StateUnavailable("The remote backup source export was unavailable.") from exc
+        result = state_transfer.run_rsync(
+            self.host,
+            [
+                "rsync",
+                "-a",
+                "--delete",
+                "--exclude=/patches/.batch-*/***",
+                "--exclude=/patches/.unconfirmed-*",
+                "--exclude=/branches/.unconfirmed-*/***",
+                "--exclude=/branches/*/graph.json",
+                "--exclude=/branches/*/research.md",
+                "--exclude=/branches/*/glossary.json",
+                "--exclude=/branches/*/proposals.json",
+                "--exclude=/branches/*/coverage.json",
+                "--exclude=/branches/*/patches/.unconfirmed-*",
+                "--include=/manifest.toml",
+                "--include=/scope-base.json",
+                "--include=/patches/***",
+                "--include=/branches/***",
+                "--include=/chat/***",
+                "--include=/facts/***",
+                "--include=/paper/***",
+                "--exclude=.refresh.lock",
+                "--exclude=.agent-run.lock",
+                "--exclude=.append.lock",
+                "--exclude=.chat.lock",
+                "--exclude=.publish",
+                "--exclude=*",
+                *rsync_ssh_arguments(),
+                remote,
+                f"{destination}/",
+            ],
+            phase="backup export",
+            timeout=BACKUP_REMOTE_EXPORT_TIMEOUT_SECONDS,
+        )
         if (
             len(result.stdout.encode("utf-8", errors="replace")) > 256 * 1024
             or len(result.stderr.encode("utf-8", errors="replace")) > 256 * 1024
@@ -2323,17 +2318,11 @@ class SSHStateWorkspace(StateWorkspace):
             self._mark_unreachable(prepared.stderr)
             raise StateUnavailable(self.error or "restored project staging failed")
         destination = f"{self.host}:{shlex.quote(str(stage))}/content.bin"
-        try:
-            result = subprocess.run(
-                ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            self._mark_unreachable(str(exc))
-            raise StateUnavailable(self.error or "restored project staging failed") from exc
+        result = state_transfer.run_rsync(
+            self.host,
+            ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
+            phase="restore staging",
+        )
         if result.returncode:
             self._mark_unreachable(result.stderr)
             raise StateUnavailable(self.error or "restored project staging failed")
@@ -2377,19 +2366,11 @@ class SSHStateWorkspace(StateWorkspace):
                 source = Path(temporary) / "content.html"
                 source.write_bytes(content)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"
-                try:
-                    result = subprocess.run(
-                        ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    self._mark_unreachable(str(exc))
-                    raise StateUnavailable(
-                        self.error or "repository result-view staging failed"
-                    ) from exc
+                result = state_transfer.run_rsync(
+                    self.host,
+                    ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
+                    phase="result-view staging",
+                )
             if result.returncode:
                 self._mark_unreachable(result.stderr)
                 raise StateUnavailable(self.error or "repository result-view staging failed")
@@ -2485,19 +2466,11 @@ class SSHStateWorkspace(StateWorkspace):
                 source = Path(temporary) / "content.bin"
                 source.write_bytes(data)
                 destination = f"{self.host}:{shlex.quote(str(stage))}/"
-                try:
-                    result = subprocess.run(
-                        ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    self._mark_unreachable(str(exc))
-                    raise StateUnavailable(
-                        self.error or "repository artifact staging failed"
-                    ) from exc
+                result = state_transfer.run_rsync(
+                    self.host,
+                    ["rsync", "-a", *rsync_ssh_arguments(), str(source), destination],
+                    phase="artifact staging",
+                )
             if result.returncode:
                 self._mark_unreachable(result.stderr)
                 raise StateUnavailable(self.error or "repository artifact staging failed")

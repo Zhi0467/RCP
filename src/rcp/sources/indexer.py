@@ -32,6 +32,7 @@ from rcp.sources.cache import (
     RebuildableCacheMetrics,
 )
 from rcp.sources.record_parsing import normalize_path, normalize_record, path_matches_roots
+from rcp.transport import state_transfer
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 
 
@@ -593,25 +594,18 @@ class ConversationIndexer:
 
     @staticmethod
     def _fetch_remote_file(host: str, remote_path: str, destination: Path) -> None:
-        try:
-            result = subprocess.run(
-                [
-                    "rsync",
-                    "-a",
-                    *rsync_ssh_arguments(),
-                    f"{host}:{shlex.quote(remote_path)}",
-                    str(destination),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise OSError(
-                "remote conversation reconstruction timed out after "
-                f"{REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS} seconds"
-            ) from exc
+        result = state_transfer.run_rsync(
+            host,
+            [
+                "rsync",
+                "-a",
+                *rsync_ssh_arguments(),
+                f"{host}:{shlex.quote(remote_path)}",
+                str(destination),
+            ],
+            phase="conversation source fetch",
+            timeout=REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
+        )
         try:
             metadata = destination.lstat()
         except OSError:
@@ -746,25 +740,18 @@ class ConversationIndexer:
         if pin_artifact is not None:
             for path in cached.values():
                 pin_artifact(path)
-        try:
-            result = subprocess.run(
-                [
-                    "rsync",
-                    "-aR",
-                    *rsync_ssh_arguments(),
-                    *(f"{host}:{shlex.quote(path)}" for path in remote_paths),
-                    f"{directory}/",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise OSError(
-                f"remote {provider} conversation cache timed out after "
-                f"{REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS} seconds"
-            ) from exc
+        result = state_transfer.run_rsync(
+            host,
+            [
+                "rsync",
+                "-aR",
+                *rsync_ssh_arguments(),
+                *(f"{host}:{shlex.quote(path)}" for path in remote_paths),
+                f"{directory}/",
+            ],
+            phase=f"{provider} conversation cache",
+            timeout=REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
+        )
         if result.returncode:
             raise OSError(result.stderr.strip() or f"rsync exited {result.returncode}")
         for path in cached.values():

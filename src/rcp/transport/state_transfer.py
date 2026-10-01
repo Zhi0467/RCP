@@ -190,7 +190,12 @@ def transfer_result(
 
 
 def _remote_arguments(
-    host: str, operation: str, root: str | Path, excludes: Sequence[str] = ()
+    host: str,
+    operation: str,
+    root: str | Path,
+    excludes: Sequence[str] = (),
+    *,
+    partition: str | None = None,
 ) -> list[str]:
     source = (
         importlib.resources.files("rcp.transport")
@@ -200,6 +205,7 @@ def _remote_arguments(
     return ssh_arguments(
         host,
         shlex.join(["python3", "-c", source, operation, str(root), json.dumps(list(excludes))]),
+        partition=partition,
     )
 
 
@@ -348,17 +354,34 @@ def _pull_tar_once(
 
 
 def push_tar(
-    host: str, remote_stage: str | Path, local_root: Path, relative_paths: Sequence[str | Path]
+    host: str,
+    remote_stage: str | Path,
+    local_root: Path,
+    relative_paths: Sequence[str | Path],
+    *,
+    phase: str = "push",
+    partition: str | None = None,
+    timeout: float = STATE_TRANSFER_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     return _retrying(
-        host, "push", lambda: _push_tar_once(host, remote_stage, local_root, relative_paths)
+        host,
+        phase,
+        lambda: _push_tar_once(
+            host, remote_stage, local_root, relative_paths, partition=partition, timeout=timeout
+        ),
     )
 
 
 def _push_tar_once(
-    host: str, remote_stage: str | Path, local_root: Path, relative_paths: Sequence[str | Path]
+    host: str,
+    remote_stage: str | Path,
+    local_root: Path,
+    relative_paths: Sequence[str | Path],
+    *,
+    partition: str | None,
+    timeout: float,
 ) -> subprocess.CompletedProcess[str]:
-    argv = _remote_arguments(host, "push", remote_stage)
+    argv = _remote_arguments(host, "push", remote_stage, partition=partition)
     try:
         with tempfile.TemporaryFile() as stream:
             with tarfile.open(fileobj=stream, mode="w") as archive:
@@ -373,7 +396,7 @@ def _push_tar_once(
                 stdin=stream,
                 capture_output=True,
                 check=False,
-                timeout=STATE_TRANSFER_TIMEOUT_SECONDS,
+                timeout=timeout,
             )
             return transfer_result(
                 host,
@@ -389,13 +412,18 @@ def _push_tar_once(
 
 
 def run_rsync(
-    host: str, arguments: list[str], *, phase: str, cwd: Path | None = None
+    host: str,
+    arguments: list[str],
+    *,
+    phase: str,
+    cwd: Path | None = None,
+    timeout: float = STATE_TRANSFER_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
-    return _retrying(host, phase, lambda: _run_rsync_once(host, arguments, cwd))
+    return _retrying(host, phase, lambda: _run_rsync_once(host, arguments, cwd, timeout))
 
 
 def _run_rsync_once(
-    host: str, arguments: list[str], cwd: Path | None
+    host: str, arguments: list[str], cwd: Path | None, timeout: float
 ) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
@@ -404,7 +432,7 @@ def _run_rsync_once(
             capture_output=True,
             text=True,
             check=False,
-            timeout=STATE_TRANSFER_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         result = _failure(arguments, exc)

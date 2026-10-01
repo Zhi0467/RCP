@@ -20,11 +20,12 @@ from rcp.limits import (
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
     REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
     REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
+    RUN_STAGE_INPUT_TRANSFER_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.rcp_home import rcp_temp_dir
 from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
-from rcp.transport import remote_stage_root
+from rcp.transport import remote_stage_root, state_transfer
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
     StateMissing,
@@ -517,26 +518,35 @@ if actual!=expected:
         batch = self.root / f".input-batch-{uuid.uuid4().hex}"
         reusable_labels = sorted(self._reusable_inputs.intersection(labels))
         try:
-            spawned = True
-            try:
-                result = subprocess.run(
+            # The shared transfer owner retries a dropped stream and falls back
+            # to tar when rsync fails its contract. Every attempt re-sends this
+            # same pending snapshot into this same batch, so it stays queued
+            # until the commit below has answered.
+            engine = state_transfer.get_engine(self.host)
+            if engine.engine == "tar":
+                result = state_transfer.push_tar(
+                    self.host,
+                    batch,
+                    pending,
+                    _tree_entries(pending),
+                    phase="stage inputs",
+                    partition=self.transport_partition,
+                    timeout=RUN_STAGE_INPUT_TRANSFER_TIMEOUT_SECONDS,
+                )
+            else:
+                result = state_transfer.run_rsync(
+                    self.host,
                     [
-                        "rsync",
+                        engine.local_path,
                         "-a",
+                        "--delete",
                         *rsync_ssh_arguments(partition=self.transport_partition),
                         f"{pending}/",
                         f"{self.host}:{shlex.quote(str(batch))}/",
                     ],
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                    check=False,
+                    phase="stage inputs",
+                    timeout=RUN_STAGE_INPUT_TRANSFER_TIMEOUT_SECONDS,
                 )
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                # The commit script needs a failed code to clean the batch up.
-                # This code is RCP's own, not ssh's, so it never names a lost link.
-                spawned = False
-                result = subprocess.CompletedProcess([], 255, "", str(exc))
             committed = self._ssh(
                 [
                     "python3",
@@ -551,12 +561,11 @@ if actual!=expected:
                 ]
             )
             # rsync and ssh both exit 255 only when the connection itself failed;
-            # any other code is the host refusing or rejecting the inputs, and a
-            # reattempt would meet the same answer.
+            # RCP's own codes for a transfer that could not start or ran out of
+            # time are 127 and 1. Any other code is the host refusing or
+            # rejecting the inputs, and a reattempt would meet the same answer.
             if result.returncode:
-                unavailable = (
-                    StateUnreachable if spawned and result.returncode == 255 else StateUnavailable
-                )
+                unavailable = StateUnreachable if result.returncode == 255 else StateUnavailable
                 raise unavailable(result.stderr.strip() or "could not transfer remote task inputs")
             if committed.returncode:
                 raise _ssh_failure(committed, "could not commit remote task inputs")
@@ -1194,6 +1203,19 @@ def _copy_imported_provider_sources(
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
+
+
+def _tree_entries(root: Path) -> list[str]:
+    """Every entry below root, parents first, for a non-recursive tar push."""
+
+    entries: list[str] = []
+    for directory, children, files in os.walk(root):
+        children.sort()
+        relative = Path(directory).relative_to(root)
+        if relative != Path("."):
+            entries.append(relative.as_posix())
+        entries.extend((relative / name).as_posix() for name in sorted(files))
+    return entries
 
 
 def _directory_fingerprint(root: Path) -> str:

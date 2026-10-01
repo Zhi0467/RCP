@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+from pathlib import Path, PurePosixPath
 
 import pytest
 
-from rcp.transport import state_transfer
-from rcp.transport.run_stage import RemoteStageTransportFailure
+from rcp.transport import StateUnreachable, state_transfer
+from rcp.transport.run_stage import RemoteRunStage, RemoteStageTransportFailure
 
 
 @pytest.fixture(autouse=True)
@@ -300,3 +302,81 @@ def test_dropped_transfer_retries_boundedly(monkeypatch, failures, code, stderr,
     assert result.returncode == final
     if final and attempts > 1:
         assert result.stderr.count(stderr) == attempts
+
+
+def _open_local_stage(tmp_path):
+    root = tmp_path / "stage"
+    (root / "inputs").mkdir(parents=True)
+    stage = RemoteRunStage("fixture")
+    stage.root = PurePosixPath(str(root))
+    source = tmp_path / "source"
+    (source / "nested").mkdir(parents=True)
+    (source / "nested" / "notes.md").write_bytes(b"inputs\n")
+    stage.put_directory(source, "context")
+    (tmp_path / "schema.json").write_bytes(b"{}\n")
+    stage.put_file(tmp_path / "schema.json", "schema.json")
+    return stage, root, source
+
+
+def test_stage_inputs_use_the_tar_fallback_without_rsync(tmp_path, fake_ssh, monkeypatch, caplog):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, target in (("python3", sys.executable), ("tar", shutil.which("tar"))):
+        (tools / name).symlink_to(target)
+    monkeypatch.setenv("PATH", f"{fake_ssh.parent}{os.pathsep}{tools}")
+    stage, root, source = _open_local_stage(tmp_path)
+
+    with caplog.at_level("WARNING", logger=state_transfer.__name__):
+        stage.finalize_inputs()
+
+    assert state_transfer.diagnostics("fixture")["engine"] == "tar"
+    assert len([r for r in caplog.records if "use tar over SSH" in r.getMessage()]) == 1
+    assert (root / "inputs" / "context" / "nested" / "notes.md").read_bytes() == b"inputs\n"
+    assert (root / "inputs" / "schema.json").read_bytes() == b"{}\n"
+    assert sorted(path.name for path in root.iterdir()) == ["inputs"]
+    assert source.exists() and stage._pending_inputs is None
+
+
+@pytest.mark.parametrize("drops", [1, state_transfer.STATE_TRANSFER_ATTEMPTS])
+def test_dropped_stage_input_upload_resends_the_same_snapshot(
+    tmp_path, fake_ssh, monkeypatch, drops
+):
+    monkeypatch.setattr(
+        state_transfer,
+        "get_engine",
+        lambda _host: state_transfer.TransferEngine("rsync", "/probed/rsync", "3.2.7", "3.2.7"),
+    )
+    monkeypatch.setattr(state_transfer.time, "sleep", lambda _seconds: None)
+    stage, root, _source = _open_local_stage(tmp_path)
+    real_run = subprocess.run
+    attempts = []
+
+    def run(argv, **kwargs):
+        if argv[0] != "/probed/rsync":
+            return real_run(argv, **kwargs)
+        source, destination = argv[-2], argv[-1].split(":", 1)[1].rstrip("/")
+        attempts.append((source, destination))
+        batch = Path(destination)
+        # A dropped stream leaves a partial batch that the next attempt must replace.
+        shutil.copytree(source, batch, dirs_exist_ok=True)
+        if len(attempts) <= drops:
+            (batch / "schema.json").write_bytes(b"{")
+            return subprocess.CompletedProcess(argv, 255, "", "Connection reset by peer")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    if drops < state_transfer.STATE_TRANSFER_ATTEMPTS:
+        stage.finalize_inputs()
+        assert (root / "inputs" / "schema.json").read_bytes() == b"{}\n"
+        assert (root / "inputs" / "context" / "nested" / "notes.md").read_bytes() == b"inputs\n"
+    else:
+        with pytest.raises(StateUnreachable) as caught:
+            stage.finalize_inputs()
+        assert str(caught.value).count("exit 255: Connection reset by peer") == drops
+        assert sorted(path.name for path in (root / "inputs").iterdir()) == []
+
+    assert len(attempts) == min(drops + 1, state_transfer.STATE_TRANSFER_ATTEMPTS)
+    assert len(set(attempts)) == 1
+    assert sorted(path.name for path in root.iterdir()) == ["inputs"]
+    assert stage._pending_inputs is None
