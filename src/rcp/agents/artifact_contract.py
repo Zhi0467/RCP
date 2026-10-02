@@ -14,14 +14,18 @@ from rcp.limits import (
     CHAT_ARTIFACT_MAX_TOTAL_BYTES,
     LIVE_ARTIFACT_LOG_TAIL_LINES,
     LIVE_ARTIFACT_MAX_BYTES,
+    LIVE_ARTIFACT_MAX_FILES,
     LIVE_ARTIFACT_MAX_NEEDS,
     LIVE_ARTIFACT_MAX_ROWS,
+    LIVE_ARTIFACT_MAX_TOTAL_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
     LIVE_ARTIFACT_SSH_REFRESH_SECONDS,
 )
 from rcp.live_artifacts import (
     NEED_SNAPSHOT_MODELS,
     EpisodeNeed,
+    FileSnapshot,
+    FilesSnapshot,
     JobSnapshot,
     LiveDataMessage,
     LiveEvidence,
@@ -82,14 +86,17 @@ def live_contract(*, allow_episode: bool = False) -> str:
         lines.extend(_fields(need, indent="    ", skip=("kind",)))
         lines.append("    Snapshot fields:")
         lines.extend(_fields(snapshot, indent="    ", skip=("kind", "error")))
+        if snapshot is FilesSnapshot:
+            lines.append("    Each matched file has:")
+            lines.extend(_fields(FileSnapshot, indent="      ", skip=("kind",)))
     lines.extend(
         [
             "  Each Evidence entry has:",
             *_fields(LiveEvidence, indent="  "),
-            f"- Limits: at most {LIVE_ARTIFACT_MAX_NEEDS} sources; file reads cap at {LIVE_ARTIFACT_MAX_ROWS} rows and {LIVE_ARTIFACT_MAX_BYTES} bytes; job logs keep the last {LIVE_ARTIFACT_LOG_TAIL_LINES} lines.",
-            f"- The open viewer refreshes every {LIVE_ARTIFACT_REFRESH_SECONDS} seconds, or {LIVE_ARTIFACT_SSH_REFRESH_SECONDS} seconds for SSH files. When every watched job or episode ends, RCP saves a complete final snapshot. A page watching only nodes and files never becomes final.",
+            f"- Limits: at most {LIVE_ARTIFACT_MAX_NEEDS} sources; file reads cap at {LIVE_ARTIFACT_MAX_ROWS} rows and {LIVE_ARTIFACT_MAX_BYTES} bytes; folder sources cap at {LIVE_ARTIFACT_MAX_FILES} files and {LIVE_ARTIFACT_MAX_TOTAL_BYTES} total bytes; job logs keep the last {LIVE_ARTIFACT_LOG_TAIL_LINES} lines.",
+            f"- The open viewer refreshes every {LIVE_ARTIFACT_REFRESH_SECONDS} seconds, or {LIVE_ARTIFACT_SSH_REFRESH_SECONDS} seconds for SSH files. When every watched job or episode ends, RCP saves a complete final snapshot. A page watching only nodes, files, and folders never becomes final.",
             "- An invalid declaration leaves the page static with a notice. Show incomplete data and source errors as unavailable, never as zero. A report is never live.",
-            "- Sources are limited to the project's readable roots and this artifact's graph target. Scripts can still send received data out by navigating their own frame, so do not assume zero network access.",
+            "- Sources are limited to registered project repository paths (the repositories listed in this prompt), this artifact's own ready conversation/episode worktree, and this artifact's graph target. RCP run stages (conversation workspace, turn folders, artifact folders) are not readable; a path alone grants no access. Scripts can still send received data out by navigating their own frame, so do not assume zero network access.",
             "- The live-pages skill has worked examples.",
         ]
     )

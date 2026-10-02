@@ -116,9 +116,26 @@ One `application/json` script with id `rcp-live` declares protocol `version: 1`
 and a `needs` array. The code model in `rcp.live_artifacts` owns the declaration,
 snapshot fields, and `rcp-live-data` message. Needs name a helper job's launch
 key, a node id in the artifact's graph target, the artifact's own episode, or
-an absolute file path on its execution host. Files select `tail` or `whole`
-and `jsonl`, `csv`, or `text`. Registered project repository roots and the
-artifact's bound worktree constrain file access; a path alone grants no access.
+an absolute file path or folder on its execution host. `file` and `files` sources
+select `tail` or `whole` and `jsonl`, `csv`, or `text`. Readable roots are the
+registered project repository paths listed in the prompt and this artifact's
+own ready conversation/episode worktree. RCP run stages (the conversation
+workspace, turn folders, and artifact folders) are not readable. A path alone
+grants no access.
+
+A `files` source declares an absolute `dir` and a relative `/`-separated
+`pattern`, such as `*/task-*/status.json`. Each of at most eight segments is a
+literal or an `fnmatch` glob (`*`, `?`, `[...]`); absolute patterns, `**`, parent
+traversal, empty segments, and dot segments are invalid. Matching walks directory
+file descriptors without following symlinks and skips nonregular files. Each
+snapshot discovers current matches, sorted by relative path, including files
+created after binding. An existing folder with no matches succeeds with an empty
+`files` list; a missing or unreadable folder returns an error. Each file has its
+relative `path`, `rows`, `truncated`, and `error`, so one failed file does not
+hide the others. The folder's `truncated` flag reports omitted content: at most
+128 files and 1 MiB total file bytes are read, with the existing per-file byte
+and row caps. Each remote folder source lists and reads its matches in one SSH
+invocation; local reads execute the same reader directly.
 
 Discovery resolves needs once per version. Edited-version publishers call the
 same resolver. Job keys bind to stable ids through helper-command receipts and
@@ -144,8 +161,9 @@ after exhaustion. Expired unkept artifacts are skipped; invalid ownership,
 lineage, and history-only sources are terminal. Source reads happen outside the
 artifact lock; saving rechecks the version under the lock. Only a complete
 capture becomes the immutable final snapshot, served after source files
-disappear. Node/file-only pages have no final snapshot. Snapshot bytes live beside version bytes and share their typed backup,
-transfer, retention, and integrity inventory.
+disappear. Pages watching only nodes, files, and folders have no final snapshot.
+Snapshot bytes live beside version bytes and share their typed backup, transfer,
+retention, and integrity inventory.
 
 ## Episode reports
 
