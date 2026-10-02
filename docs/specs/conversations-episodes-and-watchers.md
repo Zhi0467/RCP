@@ -254,9 +254,11 @@ remain visible. Each answer is projected once as a human chat message through
 StateWorkspace using its question id and answer revision. Its follow-up turn's id
 derives from the same pair, so the projected answer names that turn before it is
 admitted and a queued follow-up never repeats it. An Experiment answer names only a
-claimed follow-up, because a later continuation may claim it under its own id. An answer projected while
-the asking turn is unsettled (running, paused, interrupted, or failed) first reserves that turn's prompt at its creation time, as
-a live steer does, so the answer never precedes the prompt. Settlement and the answer
+claimed follow-up, because a later continuation may claim it under its own id.
+Projecting a chat answer first reserves the asking turn's prompt at the turn's
+creation time, as a live steer does, so the answer never precedes the prompt.
+The reservation is a no-op once the prompt is recorded. An Experiment
+transcript shows no turn prompts, so it gets none. Settlement and the answer
 route reconcile only their project's unreceived answers; startup sweeps every
 project. A durable projected-revision
 marker retires successful projections from reconciliation; stable-id replay repairs

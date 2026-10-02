@@ -61,6 +61,7 @@ function shell(stored = new Map()) {
       stateUrl: "/state",
       commentsUrl: "/comments",
       maxSelections: 10,
+      maxChars: 4096,
       stateRefreshMs: 1000,
     },
     document: {
@@ -241,4 +242,17 @@ test("a reopened viewer offers the unsent comment on its own selection, and Canc
     text: "",
     selection: null,
   });
+});
+
+test("the queue refuses a comment that the server's joined size would reject", async () => {
+  const app = shell();
+  await settle();
+  const add = (text) => {
+    app.elements.message.value = text;
+    return app.addComment({ kind: "whole" });
+  };
+  // Whole-artifact comments join with a blank line, which counts toward the limit.
+  assert.equal(add("a".repeat(2047)), true);
+  assert.equal(add("b".repeat(2047)), true);
+  assert.equal(add("c"), false);
 });

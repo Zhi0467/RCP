@@ -3699,7 +3699,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
   color: color-mix(in srgb, var(--agent-stopped) 70%, var(--ink));
   font-weight: 650;
 }
-@media (max-width: 900px) {
+@media (max-width: 920px) {
   .agent-board {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

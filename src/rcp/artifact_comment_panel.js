@@ -133,7 +133,13 @@ function addComment(selection) {
     notice.textContent = `A prompt can include at most ${config.maxSelections} comments.`;
     return false;
   }
-  if (comments.reduce((total, { text }) => total + text.length, comment.text.length) > config.maxChars) {
+  // Measured as the server does: whole-artifact comments join with a blank line.
+  const next = [...comments, comment];
+  const general = next.filter((item) => !item.selection).map((item) => item.text);
+  const size =
+    general.join("\n\n").length +
+    next.filter((item) => item.selection).reduce((total, item) => total + item.text.length, 0);
+  if (size > config.maxChars) {
     notice.textContent = "These comments are too long to send together. Send or remove some first.";
     return false;
   }

@@ -221,7 +221,8 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
     followup = store.admit_chat_question_followup(question.question_id)
     # Projected before admission, the answer already names its follow-up's turn,
     # so the queued follow-up is not shown a second time from its request.
-    (answer,) = service.chat_transcript(chat_id).messages
+    prompt, answer = service.chat_transcript(chat_id).messages
+    assert prompt.operation_id == "origin"
     assert answer.operation_id == followup.operation_id
     _append_chat_exchange(
         service,
@@ -238,6 +239,7 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         assert reconcile_chat_question_answers(AppStore(store.path), None, lambda _: service) == {}
     transcript = service.chat_transcript(chat_id)
     assert [(item.role, item.text) for item in transcript.messages] == [
+        ("user", "Pick a route"),
         ("user", "Use route A"),
         ("assistant", "Understood"),
     ]
@@ -254,8 +256,8 @@ def test_unclaimed_episode_answer_names_no_followup(manifest, tmp_path):
     assert answer.operation_id is None
 
 
-@pytest.mark.parametrize("status", ["running", "paused", "interrupted", "failed"])
-def test_answer_during_unsettled_turn_follows_its_prompt(manifest, tmp_path, status):
+@pytest.mark.parametrize("status", ["running", "paused", "interrupted", "failed", "succeeded"])
+def test_answer_follows_its_asking_prompt(manifest, tmp_path, status):
     from types import SimpleNamespace
 
     from rcp.runs.chat import _append_chat_exchange, project_chat_question_answer

@@ -2062,7 +2062,8 @@ export default function App() {
         chatId: route.chatId,
         graphTarget: nextTarget,
       });
-      if (route.chatId) setAgentsBoard(false);
+      // A route that names a chat opens it; any other entry shows the board.
+      setAgentsBoard(!route.chatId);
       if (
         route.projectId !== activeId ||
         !sameGraphTarget(nextTarget, activeGraphTargetRef.current)

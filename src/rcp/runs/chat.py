@@ -85,7 +85,6 @@ from rcp.storage import (
 )
 from rcp.storage.artifact_models import ArtifactOperationConflict
 from rcp.storage.artifacts import ArtifactByteLimitError
-from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 from rcp.storage.question_models import QuestionRecord, question_followup_operation_id
 from rcp.transport import (
     RemoteRunStage,
@@ -1810,10 +1809,6 @@ def _question_answer_message_id(question: QuestionRecord) -> str:
     )
 
 
-# A failed turn is included: it never writes its exchange, yet its follow-up is admitted.
-_UNSETTLED_TURN_STATUSES = ACTIVE_AGENT_TASK_STATUSES | {"paused", "interrupted", "failed"}
-
-
 def project_chat_question_answer(
     service: ProjectService, store: AppStore, question: QuestionRecord
 ) -> None:
@@ -1827,10 +1822,12 @@ def project_chat_question_answer(
     request = RunRequest.model_validate(task.request)
     path = _chat_path(service, request)
     with service.history.workspace.transaction():
-        if task.status in _UNSETTLED_TURN_STATUSES and request.trigger != "watcher":
-            # The exchange arrives only on settlement, which a paused or interrupted
-            # turn reaches once resumed and a failed one never does. Reserve the asking turn's prompt first,
-            # as a live steer does, so the answer cannot precede it.
+        if question.origin.owner_kind == "chat" and request.trigger != "watcher":
+            # A chat turn's exchange may not be written yet (live, paused, or
+            # interrupted), never (failed), or not at all (a swallowed write failure).
+            # Reserve its prompt first, as a live steer does, so the answer cannot
+            # precede it; an already recorded prompt makes this a no-op. An Experiment
+            # transcript shows no turn prompts, so it gets none.
             _append_chat_records(
                 service,
                 path,

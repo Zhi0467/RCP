@@ -241,7 +241,7 @@ column is refused, because the run decides the state, and a working agent cannot
 be archived. A branch episode card opens in Runs and does not move. Touch scrolls
 the board rather than dragging, so archiving there goes through the card's menu;
 Alt+Up and Alt+Down reorder a focused card from the keyboard. The board's
-columns go to two below 900px and to one at 560px or less.
+columns go to two at 920px or less and to one at 560px or less.
 
 At viewport widths of 560px or less, Agents uses a single column. The conversation
 list starts closed behind an **Agents** disclosure above the conversation and
