@@ -146,7 +146,7 @@ def comment_panel(config: dict[str, object]) -> ViewerPanel:
 .selection p{margin:4px 0 0;font-size:13px}.selection .remove{float:right;padding:2px 6px;font-size:11px}
 .excerpt{max-height:72px;overflow:auto;font-size:13px;color:var(--muted)}
 textarea{width:100%;min-height:72px;margin-top:8px;resize:vertical;border:1px solid var(--rule);border-radius:var(--radius);background:var(--field);padding:8px;color:var(--ink);font:13px/1.4 var(--ui);box-sizing:border-box}
-.notice{color:var(--accent);font-size:12px;text-align:right}.notice:empty{display:none}
+.notice{width:min(340px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--rule);border-radius:var(--radius);box-shadow:var(--shadow);padding:8px 12px;color:var(--accent);font-size:12px}.notice:empty{display:none}
 """,
         script=_selection_script() + "\nconst config=" + encoded + ";\n" + _comment_panel_script(),
     )
