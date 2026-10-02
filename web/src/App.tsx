@@ -2700,6 +2700,11 @@ export default function App() {
     changeView("chats");
   };
 
+  // Leaving Agents resets it to the board, so only a link that names a chat skips it.
+  useEffect(() => {
+    if (view !== "chats") setAgentsBoard(true);
+  }, [view]);
+
   useEffect(() => {
     if (
       !requestedChat.chatId ||

@@ -232,7 +232,8 @@ to the board. The board has four columns: **Needs you** (New reply, Failed,
 Stopped), **Working**, **Done**, and **Archived**. Each card shows the provider
 logo, with a spinner ring while the agent works, the title, a provider · model ·
 effort · task-type line, and its state or age with Retry or Resume when offered.
-Clicking a card opens its chat with the composer focused. A mouse drag reorders
+Clicking a card opens its chat with the list folded and the composer focused.
+Leaving Agents for another view resets it to the board. A mouse drag reorders
 cards within a column, and that order is the viewer's own, kept in browser
 storage per project; pins still lead their column. Dropping on Archived archives
 the chat, and dragging out of Archived restores it. A drop on another state

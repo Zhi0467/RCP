@@ -602,6 +602,8 @@ export function ChatsWorkspace({
   const openCard = (card: BoardCard) => {
     if (card.kind !== "chat") return;
     onSelect(card.id);
+    // The board already did the list's job, so the chat opens with the list folded.
+    setListCollapsed(true);
     focusComposer.current = true;
     onBoardChange(false);
   };

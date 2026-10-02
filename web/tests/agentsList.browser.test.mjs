@@ -151,6 +151,7 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
     await card("Codex chat").getByRole("button", { name: "Open Codex chat" }).click();
     await page.locator(".conversation-surface").waitFor();
     assert.equal(await page.locator(".agents-board-view").count(), 0);
+    assert.equal(await page.locator(".conversation-list").isHidden(), true);
     await page.waitForFunction(
       () => document.activeElement?.getAttribute("aria-label") === "Message",
     );
