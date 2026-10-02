@@ -292,7 +292,7 @@ function ThisMac({
   const mode = (value: { enabled: boolean; active: boolean }) =>
     value.active ? "active" : value.enabled ? "waiting" : "off";
   return (
-    <section className="settings-section machine-power-settings">
+    <section className="settings-section provider-path-settings machine-power-settings">
       <header>
         <span>
           <HardDrive size={16} />

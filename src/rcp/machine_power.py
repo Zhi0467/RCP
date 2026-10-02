@@ -598,7 +598,10 @@ class MachinePowerController:
 
     def _release(self, cause, *, keep_idle=False):
         dropping_idle = self._idle is not None and not keep_idle
-        if cause != self._release_cause or dropping_idle or self._desired == "on":
+        held = dropping_idle or self._desired == "on"
+        # Ending demand is only a release when something was held; a safety
+        # cause is always recorded because it latches or blocks re-arming.
+        if held or (cause != self._release_cause and cause != "demand_gone"):
             self._record_release(cause)  # Best effort, before any cleanup.
         # Publish off before waiting for the idle assertion to terminate.
         try:
