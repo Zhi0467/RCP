@@ -232,6 +232,9 @@ publish() {{
     bounded /bin/mv -fh "$staged" "$2"
 }}
 """
+        if rendezvous is not None:
+            # Setup before the approved marker gets its own window too.
+            script += f"bounded /usr/bin/touch {q(str(rendezvous / 'authorized'))}\n"
         if not uninstall:
             parent = q(str(paths.directory.parent))
             lock_path = q(str(paths.directory / "owner.lock"))
@@ -374,8 +377,12 @@ bounded /bin/rm -f {daemon}
 
                 threading.Thread(target=authorize, daemon=True).start()
                 deadline = time.monotonic() + MACHINE_POWER_ADMIN_TIMEOUT_SECONDS
+                authorized = False
                 try:
                     while not done.is_set() and not (rendezvous / "approved").exists():
+                        if not authorized and (rendezvous / "authorized").exists():
+                            authorized = True
+                            deadline = time.monotonic() + MACHINE_POWER_ADMIN_TIMEOUT_SECONDS
                         if time.monotonic() >= deadline:
                             raise InstallError("admin_failed")
                         done.wait(0.02)

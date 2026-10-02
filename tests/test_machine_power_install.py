@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -245,6 +246,23 @@ def test_approved_script_gets_its_own_window(installer, monkeypatch, tmp_path):
     monkeypatch.setattr("rcp.machine_power_install.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 2)
     # The post-approval flag check outlasts the whole 2 s prompt window.
     (tmp_path / "pmset").write_text("#!/bin/sh\nsleep 2.2\necho ' SleepDisabled 0'\n")
+    assert installer.install().installed
+
+
+@macos_tools
+def test_setup_before_approval_marker_gets_its_own_window(installer, monkeypatch, tmp_path):
+    """A late approval is not cut off by the setup that precedes the approved marker."""
+    monkeypatch.setattr("rcp.machine_power_install.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 3)
+    run = installer.run
+
+    def late_approval(argv, timeout):
+        time.sleep(2)
+        return run(argv, timeout - 2)
+
+    installer.run = late_approval
+    # The prompt plus two parent checks before the marker outlast the 3 s window.
+    stat = tmp_path / "stat"
+    stat.write_text("#!/bin/sh\nsleep 0.8\n" + stat.read_text().split("\n", 1)[1])
     assert installer.install().installed
 
 
