@@ -1,5 +1,6 @@
 import type {
   UpdateNotice,
+  MachinePowerStatus,
   Machine,
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
@@ -667,4 +668,23 @@ export function verifyProviderLogin(
     method: "POST",
     body: JSON.stringify({ host }),
   });
+}
+
+export function loadMachinePower(): Promise<MachinePowerStatus> {
+  return api("/api/machine-power");
+}
+
+export function updateMachinePower(body: {
+  idle_hold?: boolean;
+  lid_mode?: boolean;
+}): Promise<MachinePowerStatus> {
+  return api("/api/machine-power", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export function installMachinePower(): Promise<MachinePowerStatus> {
+  return api("/api/machine-power/install", { method: "POST" });
+}
+
+export function uninstallMachinePower(): Promise<MachinePowerStatus> {
+  return api("/api/machine-power/uninstall", { method: "POST" });
 }

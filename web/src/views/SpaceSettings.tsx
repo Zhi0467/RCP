@@ -8,7 +8,15 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useState } from "react";
-import { clearAllProjectCaches, deleteSpaceMachine } from "../api";
+import {
+  clearAllProjectCaches,
+  deleteSpaceMachine,
+  installMachinePower,
+  uninstallMachinePower,
+  updateMachinePower,
+} from "../api";
+import { useMachinePower } from "../hooks/useMachinePower";
+import { showMachinePowerCard } from "../machinePower";
 import { MachineCard } from "../components/MachineCard";
 import { ProviderLogins } from "../components/ProviderLogins";
 import { ServerSettings } from "../components/ServerSettings";
@@ -16,7 +24,7 @@ import { ReleaseCheckRow } from "../components/UpdateNotice";
 import { errorMessage } from "../errors";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
 import { machineHostLabel } from "../spaceMachines";
-import type { ProjectCacheMetrics, UpdateNotice } from "../types";
+import type { MachinePowerStatus, ProjectCacheMetrics, UpdateNotice } from "../types";
 
 interface Props {
   spaceKind: "personal" | "team";
@@ -64,6 +72,7 @@ export function SpaceSettings({
             <ReleaseCheckRow notice={updateNotice} />
           </section>
         )}
+        <ThisMac spaceKind={spaceKind} writesDisabled={writesDisabled} />
         <SpaceMachineList spaceKind={spaceKind} writesDisabled={writesDisabled} />
         <ProviderLogins
           spaceKind={spaceKind}
@@ -237,6 +246,177 @@ function ClearAllCaches({
               >
                 {clearing ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}
                 {clearing ? "Clearing…" : "Clear all project caches"}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ThisMac({
+  spaceKind,
+  writesDisabled,
+}: {
+  spaceKind: "personal" | "team";
+  writesDisabled: boolean;
+}) {
+  const { status, setStatus, error: loadError } = useMachinePower(spaceKind);
+  const [installOpen, setInstallOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (action: () => Promise<MachinePowerStatus>) => {
+    if (busy || writesDisabled) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await action());
+      setInstallOpen(false);
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (loadError)
+    return (
+      <div className="settings-error" role="alert">
+        {loadError}
+      </div>
+    );
+  if (!showMachinePowerCard(spaceKind, status) || !status) return null;
+  const disabled = writesDisabled || busy;
+  const lidEnabled = status.lid_mode.enabled && !status.latched;
+  const label = (value: string) => value.replaceAll("_", " ");
+  const mode = (value: { enabled: boolean; active: boolean }) =>
+    value.active ? "active" : value.enabled ? "waiting" : "off";
+  return (
+    <section className="settings-section machine-power-settings">
+      <header>
+        <span>
+          <HardDrive size={16} />
+        </span>
+        <h2>This Mac</h2>
+      </header>
+      <div className="machine-power-controls">
+        <label
+          className={
+            status.idle_hold.enabled ? "settings-repository selected" : "settings-repository"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={status.idle_hold.enabled}
+            disabled={disabled}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              void run(() => updateMachinePower({ idle_hold: enabled }));
+            }}
+          />
+          <span className="settings-check">{status.idle_hold.enabled && <Check size={12} />}</span>
+          <strong>Idle hold</strong>
+        </label>
+        <label className={lidEnabled ? "settings-repository selected" : "settings-repository"}>
+          <input
+            type="checkbox"
+            checked={lidEnabled}
+            disabled={disabled}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              if (enabled && !status.installed) {
+                setError(null);
+                setInstallOpen(true);
+              } else void run(() => updateMachinePower({ lid_mode: enabled }));
+            }}
+          />
+          <span className="settings-check">{lidEnabled && <Check size={12} />}</span>
+          <strong>Lid-closed mode</strong>
+        </label>
+        {(status.installed || status.install_problem === "partial") && (
+          <button
+            className="button secondary compact"
+            type="button"
+            disabled={disabled}
+            onClick={() => void run(uninstallMachinePower)}
+          >
+            Uninstall
+          </button>
+        )}
+      </div>
+      <p className="machine-power-status" role="status">
+        Idle hold: {mode(status.idle_hold)} · Lid-closed mode:{" "}
+        {status.latched ? "latched off" : mode(status.lid_mode)}
+        {" · Demand: "}
+        {status.demand ? status.demand_reasons.map(label).join(", ") || "active" : "none"}
+        {status.last_release && ` · Last release: ${label(status.last_release.cause)}`}
+        {status.latched && ` · Latch: ${label(status.latched)}`}
+        {status.external_owner && " · External owner"}
+        {status.install_problem && ` · Installation: ${label(status.install_problem)}`}
+      </p>
+      {error && !installOpen && (
+        <div className="settings-error" role="alert">
+          {error}
+        </div>
+      )}
+      {installOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busy) setInstallOpen(false);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && !busy) setInstallOpen(false);
+          }}
+        >
+          <section
+            className="project-delete-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="machine-power-install-title"
+            aria-describedby="machine-power-install-warning"
+          >
+            <header>
+              <TriangleAlert size={18} />
+              <h2 id="machine-power-install-title">Enable lid-closed mode?</h2>
+            </header>
+            <ul id="machine-power-install-warning">
+              <li>Use it on a desk, not in a bag; the Mac gets warm.</li>
+              <li>The battery drains, down to the 20% floor.</li>
+              <li>
+                Any process in this macOS account, including agent shells, can toggle the flag once
+                this is installed.
+              </li>
+              <li>A reboot always clears the flag, including one you set yourself.</li>
+            </ul>
+            {error && (
+              <div className="project-delete-error" role="alert">
+                {error}
+              </div>
+            )}
+            <footer>
+              <button
+                className="button secondary"
+                type="button"
+                autoFocus
+                disabled={busy}
+                onClick={() => setInstallOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="button primary"
+                type="button"
+                disabled={disabled}
+                onClick={() =>
+                  void run(async () => {
+                    const installed = await installMachinePower();
+                    setStatus(installed);
+                    return installed.installed ? updateMachinePower({ lid_mode: true }) : installed;
+                  })
+                }
+              >
+                {busy ? "Installing…" : "Install"}
               </button>
             </footer>
           </section>
