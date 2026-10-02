@@ -3405,3 +3405,27 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-size: var(--type-2xs);
   font-weight: 700;
 }
+
+.machine-power-controls,
+.machine-power-warning {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.machine-power-controls .settings-repository {
+  flex: 1 1 180px;
+}
+.machine-power-status {
+  margin: 16px 0 0;
+}
+.machine-power-warning {
+  padding: 16px;
+  border: 1px solid var(--mustard);
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: var(--walnut);
+}
+.machine-power-warning code {
+  overflow-wrap: anywhere;
+}
