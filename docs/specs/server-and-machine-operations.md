@@ -459,6 +459,34 @@ returns a replacement before invalidating the old token. This slice does not let
 mint or impersonate a member credential; with the required two-member lab,
 ordinary loss recovery is re-invitation by the other enrolled member.
 
+## Keeping a Mac awake
+
+A personal-space backend on macOS keeps its Mac from idle-sleeping while it has
+work. `src/rcp/machine_power.py` owns the policy; Settings → This Mac shows it
+and has one toggle, on by default. A team space has no controller, and the API
+returns 404. Other platforms report `supported: false`; each supported
+platform is one entry in `IDLE_HOLD_COMMANDS`.
+
+**The hold.** While there is demand, the backend runs
+`caffeinate -i -w <backend pid>`, an ordinary idle-sleep assertion. It needs no
+root, leaves no system state behind, and ends with the backend. A locked
+screen or a sleeping display does not end it. macOS still overrides it: closing
+the lid without an external display sleeps the Mac, as does a battery or
+thermal emergency. Work then pauses, and the wake gate in `machine_sleep.py`
+holds automatic launches until the Mac has stayed awake. Lid-closed operation
+is not part of this hold.
+
+**Demand** is coarse. There is demand while a locally owned episode has health
+`starting`, `active`, `recovering`, `stopping`, or `wrapping_up` (not
+`wrapping_up` blocked on sign-in); a task is running, pausing, or queued and
+not refused for sign-in; the background runtime is not idle; or a transport
+retry is scheduled. Ended episodes, human-only waits, and armed watchers alone
+are not demand. A pass every 10 s re-reads demand. A failed read keeps the
+current hold and is logged, since it is not evidence that work ended.
+
+The preference lives in the data directory's SQLite `machine_power_state`
+row, not in project manifests.
+
 ## Release selection, deployment, and automatic recovery
 
 The separately versioned `supervisor/` distribution imports no RCP modules and

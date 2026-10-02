@@ -308,3 +308,11 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
     assert migrated.delete_project_records("project")["episode_archives"] == 1
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM episode_archives").fetchone() == (0,)
+
+
+def test_live_episodes_skip_finished_history(tmp_path):
+    store, _ = _store(tmp_path)
+    store.create_episode(_episode(store, "done"))
+    _end(store, "done")
+    store.create_episode(_episode(store, "live"))
+    assert [episode.episode_id for episode in store.live_episodes("project")] == ["live"]

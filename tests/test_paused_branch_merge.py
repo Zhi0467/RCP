@@ -81,7 +81,7 @@ def test_merge_over_a_paused_orchestrator_leaves_the_episode_exactly_as_it_was(
         harness.app.state.launcher, "stream", fail_provider if provider_fails else launcher.stream
     )
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert response.status_code == 202, response.text
     admitted = response.json()

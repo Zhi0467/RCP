@@ -610,6 +610,16 @@ accept any other HTTP-to-HTTPS origin substitution. This keeps browser mutation
 protection aligned with the desktop TLS terminator instead of rejecting the
 desktop's own invitation and team-control requests.
 
+A personal backend has no session, and it listens on a predictable loopback
+port, so any web page can aim requests at it. Browsers send a cross-site POST
+without a CORS preflight only when it has no content type or a simple one
+(`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`).
+The personal backend refuses those POSTs with 415
+`personal_simple_request_refused`. The one exception is the multipart chat
+attachment upload, matching the team rule. PUT, PATCH, and DELETE always
+preflight. Every RCP client already sends `application/json`, or
+`application/octet-stream` for transfer proofs.
+
 Tunnel admission owns saved-row lookup and closes before removal, Quit, or
 desktop update drains children. A failed lifecycle operation explicitly reopens
 admission only when the app returns to service. A cleanup failure keeps the
@@ -1010,6 +1020,11 @@ does not hide the durable report or change which episode owns it. The backend
 publishes `report_is_current` alongside its owning episode id. Runs renders
 **Previous episode report** when false and **Open report** when true, so an older
 retrospective is not presented as the current episode's report.
+
+In a personal space on macOS, Space Settings also carries a **This Mac** card
+(`ThisMac` in `SpaceSettings.tsx`) from `GET /api/machine-power`: one toggle
+for the idle hold, a status line with the demand reasons, and a note that a
+closed lid still sleeps the Mac. `PUT` changes `idle_hold`.
 
 Episode cards lead with the owning Experiment name or Auto-research identity;
 their start time is secondary metadata and is never prefixed with a redundant

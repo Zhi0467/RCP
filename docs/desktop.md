@@ -100,6 +100,30 @@ errors. Native window, Quit, artifact, packaged-environment, update, and text-sc
 behavior are verified through the desktop itself; a browser check does not stand in
 for any of them.
 
+## Keep-awake checks
+
+The idle hold is a machine-wide power assertion, so a disposable
+`RCP_DATA_DIR` does not isolate it. Behavior is in
+[the server spec](specs/server-and-machine-operations.md#keeping-a-mac-awake).
+With work running, the assertion is listed:
+
+```bash
+pmset -g assertions | grep caffeinate
+```
+
+1. **Lock screen.** Start an episode or task, lock the screen, and wait past
+   the display and system sleep timers. Unlock: `pmset -g log` shows no sleep
+   in between, and the work kept advancing.
+2. **Work ends.** When nothing is running, the assertion is gone.
+
+### Linux laptops
+
+RCP does not change Linux power settings. To keep a Linux laptop running with
+the lid closed, set `HandleLidSwitch=ignore` and
+`HandleLidSwitchExternalPower=ignore` in `/etc/systemd/logind.conf`, then
+restart `systemd-logind`. To stop idle sleep while RCP runs, start it under
+`systemd-inhibit --what=idle:sleep`.
+
 ## Artifact viewer checks
 
 Artifacts, episode reports, and repository-file previews open in the panel inside

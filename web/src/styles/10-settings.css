@@ -3421,3 +3421,24 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-size: var(--type-2xs);
   font-weight: 700;
 }
+
+.machine-power-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px 0;
+}
+.machine-power-controls .settings-repository {
+  flex: 1 1 180px;
+}
+.machine-power-status,
+.machine-power-note {
+  color: var(--muted);
+  font-size: var(--type-xs);
+  margin: 0;
+  padding: 12px 20px 0;
+}
+.machine-power-note {
+  padding-bottom: 18px;
+}

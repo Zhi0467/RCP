@@ -169,7 +169,7 @@ def test_background_import_serves_legacy_artifact_or_durable_reason(manifest, tm
         download = client.get(base + "/download")
         assert download.status_code == 200
         assert download.content == data
-        kept = client.post(base + "/keep")
+        kept = client.post(base + "/keep", json={})
         assert kept.status_code == 200
         artifact = store.artifact(descriptor.artifact_id)
         assert artifact.kept_at is not None and artifact.expires_at is None

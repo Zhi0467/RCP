@@ -210,6 +210,20 @@ class EpisodeStoreMixin:
             ).fetchall()
         return [self._episode_record(row) for row in rows]
 
+    def live_episodes(self, project_id: str) -> list[EpisodeRecord]:
+        """Return episodes not yet completed, stopped, or failed, without history."""
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM episodes
+                WHERE project_id = ? AND status NOT IN ('completed', 'stopped', 'failed')
+                ORDER BY created_at DESC, episode_id DESC
+                """,
+                (project_id,),
+            ).fetchall()
+        return [self._episode_record(row) for row in rows]
+
     def episode_archive_states(self, project_id: str) -> dict[str, EpisodeArchiveState]:
         with self.connection() as connection:
             connection.execute("BEGIN")

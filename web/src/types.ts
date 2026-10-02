@@ -3245,6 +3245,14 @@ export interface UpdateNotice {
   update_command: string | null;
 }
 
+export type MachinePowerDemandReason = "episode" | "task" | "runtime" | "retry";
+
+export interface MachinePowerStatus {
+  supported: boolean;
+  idle_hold: { enabled: boolean; active: boolean };
+  demand_reasons: MachinePowerDemandReason[];
+}
+
 export interface AgentQuestion {
   question_id: string;
   owner_kind: "chat" | "episode";

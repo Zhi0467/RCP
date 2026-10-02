@@ -242,7 +242,7 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
             json={"message": "Review the introduction."},
         )
     )
-    paper = client.post(f"/api/projects/{project_id}/paper/create")
+    paper = client.post(f"/api/projects/{project_id}/paper/create", json={})
     assert paper.status_code == 200
     assert started_kinds == []
 
@@ -365,7 +365,9 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
         lambda _operation_id, **_kwargs: discuss_record,
     )
     _assert_name_required(
-        client.post(f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/resume")
+        client.post(
+            f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/resume", json={}
+        )
     )
     _assert_name_required(
         client.post(
@@ -376,7 +378,8 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     assert recovery_authorizers == {}
     assert (
         client.post(
-            f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/repair-graph-update"
+            f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/repair-graph-update",
+            json={},
         ).status_code
         == 202
     )
@@ -385,7 +388,9 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     assert paused_record is not None
     monkeypatch.setattr(app.state.background_tasks, "pause", lambda _operation_id: paused_record)
     assert (
-        client.post(f"/api/projects/{project_id}/tasks/{operation_ids['resume']}/pause").status_code
+        client.post(
+            f"/api/projects/{project_id}/tasks/{operation_ids['resume']}/pause", json={}
+        ).status_code
         == 202
     )
     assert len(store.agent_tasks(project_id)) == len(operation_ids) + 2
@@ -393,7 +398,7 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     named = client.patch("/api/identity", json={"display_name": "Researcher"})
     assert named.status_code == 200
     resumed_discuss = client.post(
-        f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/resume"
+        f"/api/projects/{project_id}/tasks/{discuss_record.operation_id}/resume", json={}
     )
     retried_coach = client.post(
         f"/api/projects/{project_id}/tasks/{coach_record.operation_id}/retry",
@@ -969,7 +974,7 @@ def test_old_project_url_alias_is_canonicalized_for_tasks_chat_and_paper(
     assert chat.status_code == 200
     assert chat.json()["chat_id"] == chat_id
 
-    created_paper = client.post(f"/api/projects/{old_project_id}/paper/create")
+    created_paper = client.post(f"/api/projects/{old_project_id}/paper/create", json={})
     read_paper = client.get(f"/api/projects/{old_project_id}/paper?proof=kept")
     assert created_paper.status_code == 200
     assert read_paper.status_code == 200

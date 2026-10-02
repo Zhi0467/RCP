@@ -17,7 +17,7 @@ def test_paper_endpoints_cover_snapshot_create_save_and_sessions(manifest, tmp_p
     assert initial.status_code == 200
     assert initial.json()["sync_state"] == "not_created"
 
-    created = client.post(f"/api/projects/{project_id}/paper/create")
+    created = client.post(f"/api/projects/{project_id}/paper/create", json={})
     assert created.status_code == 200
     assert created.json()["sync_state"] == "unsynced"
 
@@ -67,7 +67,7 @@ def test_paper_cache_update_holds_the_snapshot_lock(manifest, tmp_path) -> None:
         return commit(pid, snapshot, **kwargs)
 
     catalog._commit_cached_snapshot_locked = commit_while_a_freshness_update_waits
-    created = client.post(f"/api/projects/{project_id}/paper/create").json()
+    created = client.post(f"/api/projects/{project_id}/paper/create", json={}).json()
     racers[0].join(10)
 
     cached = catalog.cached_snapshot(project_id)
@@ -79,7 +79,7 @@ def test_a_failed_cache_refresh_does_not_fail_the_save(manifest, tmp_path, monke
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     client = TestClient(app)
     project_id = app.state.default_project_id
-    created = client.post(f"/api/projects/{project_id}/paper/create").json()
+    created = client.post(f"/api/projects/{project_id}/paper/create", json={}).json()
 
     def too_large(*_args):
         raise ValueError("Project display snapshot exceeds its size limit")
@@ -99,7 +99,7 @@ def test_a_late_cache_refresh_keeps_the_newer_paper(manifest, tmp_path) -> None:
     project_id = app.state.default_project_id
     catalog = app.state.services.catalog
     client.get(f"/api/projects/{project_id}")
-    created = client.post(f"/api/projects/{project_id}/paper/create").json()
+    created = client.post(f"/api/projects/{project_id}/paper/create", json={}).json()
     refresh = catalog.update_cached_snapshot_paper
     delayed = []
 

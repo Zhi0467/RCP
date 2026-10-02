@@ -8,7 +8,9 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useState } from "react";
-import { clearAllProjectCaches, deleteSpaceMachine } from "../api";
+import { clearAllProjectCaches, deleteSpaceMachine, updateMachinePower } from "../api";
+import { useMachinePower } from "../hooks/useMachinePower";
+import { showMachinePowerCard } from "../machinePower";
 import { MachineCard } from "../components/MachineCard";
 import { ProviderLogins } from "../components/ProviderLogins";
 import { ServerSettings } from "../components/ServerSettings";
@@ -64,6 +66,7 @@ export function SpaceSettings({
             <ReleaseCheckRow notice={updateNotice} />
           </section>
         )}
+        <ThisMac spaceKind={spaceKind} writesDisabled={writesDisabled} />
         <SpaceMachineList spaceKind={spaceKind} writesDisabled={writesDisabled} />
         <ProviderLogins
           spaceKind={spaceKind}
@@ -240,6 +243,80 @@ function ClearAllCaches({
               </button>
             </footer>
           </section>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ThisMac({
+  spaceKind,
+  writesDisabled,
+}: {
+  spaceKind: "personal" | "team";
+  writesDisabled: boolean;
+}) {
+  const { status, setStatus, error: loadError } = useMachinePower(spaceKind);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (loadError)
+    return (
+      <div className="settings-error" role="alert">
+        {loadError}
+      </div>
+    );
+  if (!showMachinePowerCard(spaceKind, status) || !status) return null;
+  const toggle = async (enabled: boolean) => {
+    if (busy || writesDisabled) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setStatus(await updateMachinePower({ idle_hold: enabled }));
+    } catch (failure) {
+      setError(errorMessage(failure));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const reasons = status.demand_reasons.join(", ");
+  return (
+    <section className="settings-section provider-path-settings machine-power-settings">
+      <header>
+        <span>
+          <HardDrive size={16} />
+        </span>
+        <h2>This Mac</h2>
+      </header>
+      <div className="machine-power-controls">
+        <label
+          className={
+            status.idle_hold.enabled ? "settings-repository selected" : "settings-repository"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={status.idle_hold.enabled}
+            disabled={writesDisabled || busy}
+            onChange={(event) => void toggle(event.target.checked)}
+          />
+          <span className="settings-check">{status.idle_hold.enabled && <Check size={12} />}</span>
+          <strong>Stay awake while RCP is working</strong>
+        </label>
+      </div>
+      <p className="machine-power-status" role="status">
+        {status.idle_hold.active
+          ? `Keeping this Mac awake: ${reasons}`
+          : status.idle_hold.enabled
+            ? "Nothing running; this Mac may sleep"
+            : "Off"}
+      </p>
+      <p className="machine-power-note">
+        Locking the screen is fine. Closing the lid still sleeps this Mac: running work pauses, and
+        automatic launches wait until it has been awake for a while.
+      </p>
+      {error && (
+        <div className="settings-error" role="alert">
+          {error}
         </div>
       )}
     </section>
