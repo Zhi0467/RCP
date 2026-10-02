@@ -86,6 +86,7 @@ def _serialize(store: AppStore, question: QuestionRecord) -> QuestionResponse:
 def chat_questions(
     project_id: str, chat_id: str, *, store: StoreDependency, catalog: CatalogDependency
 ) -> list[QuestionResponse]:
+    project_id = catalog.resolve_project_id(project_id)
     require_registered_project(catalog, project_id)
     return [
         _serialize(store, question)
@@ -99,6 +100,7 @@ def chat_questions(
 def episode_questions(
     project_id: str, episode_id: str, *, store: StoreDependency, catalog: CatalogDependency
 ) -> list[QuestionResponse]:
+    project_id = catalog.resolve_project_id(project_id)
     _episode_for_http(store, catalog, project_id, episode_id)
     return [_serialize(store, item) for item in store.episode_questions(project_id, episode_id)]
 
@@ -120,8 +122,10 @@ def answer_question(
     request: Request,
     *,
     store: StoreDependency,
+    catalog: CatalogDependency,
     identity_access: IdentityDependency,
 ) -> QuestionResponse:
+    project_id = catalog.resolve_project_id(project_id)
     human = identity_access.require_patch_capable_identity(request)
     with project_write_admission(project_id, request):
         _question_for_http(store, project_id, question_id)
@@ -164,8 +168,10 @@ def dismiss_question(
     request: Request,
     *,
     store: StoreDependency,
+    catalog: CatalogDependency,
     identity_access: IdentityDependency,
 ) -> QuestionResponse:
+    project_id = catalog.resolve_project_id(project_id)
     human = identity_access.require_patch_capable_identity(request)
     with project_write_admission(project_id, request):
         _question_for_http(store, project_id, question_id)

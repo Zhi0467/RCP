@@ -268,3 +268,27 @@ def test_answer_launch_keeps_origin_binding(questions_api, monkeypatch):
     assert binding["continuation"] == "message_wake"
     assert client.post(url, json={"answer": "a"}).status_code == 200
     assert len(launches) == 1
+
+
+def test_legacy_project_alias_reaches_canonical_questions(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    question = _question(store, project_id)
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO project_aliases(alias_id, canonical_project_id) VALUES (?, ?)",
+            ("legacy-project-url", project_id),
+        )
+    # Reopen to load the durable alias into the catalog's request-path snapshot.
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    app.state.reconcile_question_answers = Mock()
+    base = "/api/projects/legacy-project-url"
+    with TestClient(app) as client:
+        listed = client.get(f"{base}/chats/chat/questions")
+        assert [item["question_id"] for item in listed.json()] == [question.question_id]
+        answered = client.post(
+            f"{base}/questions/{question.question_id}/answer", json={"choices": ["a"]}
+        )
+        assert answered.status_code == 200
+    assert app.state.reconcile_question_answers.call_args_list == [call(project_id)]
