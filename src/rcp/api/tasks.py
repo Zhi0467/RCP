@@ -1019,10 +1019,17 @@ def _read_agent_artifact_bytes(
 ) -> tuple[AgentArtifactResponse, bytes]:
     """Read bounded source bytes without applying viewer-specific media validation."""
     record = store.agent_task(operation_id)
+    # An in-place edit lists the artifact it published, which its origin turn's scope owns.
+    # A revoking edit runs as its own `artifact_edit` task and serves only that artifact.
+    edit = record.request.get("artifact_edit") if record is not None else None
+    edited = isinstance(edit, dict) and edit.get("artifact_id") == artifact_id
     if (
         record is None
         or record.project_id != project_id
-        or record.kind not in {"node_chat", "project_chat"}
+        or not (
+            record.kind in {"node_chat", "project_chat"}
+            or (record.kind == "artifact_edit" and edited)
+        )
     ):
         raise HTTPException(status_code=404, detail="Agent task not found")
     descriptor = _agent_artifact_descriptor(record, artifact_id)
@@ -1039,9 +1046,6 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    # An in-place edit lists the artifact it published, which its origin turn's scope owns.
-    edit = record.request.get("artifact_edit")
-    edited = isinstance(edit, dict) and edit.get("artifact_id") == descriptor.artifact_id
     if (
         not edited
         and scoped_artifact_id(

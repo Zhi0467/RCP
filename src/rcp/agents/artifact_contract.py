@@ -17,6 +17,7 @@ from rcp.limits import (
     LIVE_ARTIFACT_MAX_FILES,
     LIVE_ARTIFACT_MAX_NEEDS,
     LIVE_ARTIFACT_MAX_ROWS,
+    LIVE_ARTIFACT_MAX_SCANNED_ENTRIES,
     LIVE_ARTIFACT_MAX_TOTAL_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
     LIVE_ARTIFACT_SSH_REFRESH_SECONDS,
@@ -93,7 +94,7 @@ def live_contract(*, allow_episode: bool = False) -> str:
         [
             "  Each Evidence entry has:",
             *_fields(LiveEvidence, indent="  "),
-            f"- Limits: at most {LIVE_ARTIFACT_MAX_NEEDS} sources; file reads cap at {LIVE_ARTIFACT_MAX_ROWS} rows and {LIVE_ARTIFACT_MAX_BYTES} bytes; folder sources cap at {LIVE_ARTIFACT_MAX_FILES} files and {LIVE_ARTIFACT_MAX_TOTAL_BYTES} total bytes; job logs keep the last {LIVE_ARTIFACT_LOG_TAIL_LINES} lines.",
+            f"- Limits: at most {LIVE_ARTIFACT_MAX_NEEDS} sources; file reads cap at {LIVE_ARTIFACT_MAX_ROWS} rows and {LIVE_ARTIFACT_MAX_BYTES} bytes; folder sources cap at {LIVE_ARTIFACT_MAX_FILES} files and {LIVE_ARTIFACT_MAX_TOTAL_BYTES} total bytes and list at most {LIVE_ARTIFACT_MAX_SCANNED_ENTRIES} directory entries, so keep the folder narrow; job logs keep the last {LIVE_ARTIFACT_LOG_TAIL_LINES} lines.",
             f"- The open viewer refreshes every {LIVE_ARTIFACT_REFRESH_SECONDS} seconds, or {LIVE_ARTIFACT_SSH_REFRESH_SECONDS} seconds for SSH files. When every watched job or episode ends, RCP saves a complete final snapshot. A page watching only nodes, files, and folders never becomes final.",
             "- An invalid declaration leaves the page static with a notice. Show incomplete data and source errors as unavailable, never as zero. A report is never live.",
             "- Sources are limited to registered project repository paths (the repositories listed in this prompt), this artifact's own ready conversation/episode worktree, and this artifact's graph target. RCP run stages (conversation workspace, turn folders, artifact folders) are not readable; a path alone grants no access. Scripts can still send received data out by navigating their own frame, so do not assume zero network access.",

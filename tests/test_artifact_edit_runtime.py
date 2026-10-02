@@ -555,10 +555,7 @@ def test_in_place_edit_turn_lists_and_serves_the_published_artifact(manifest, tm
     assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
     assert _finalize(app, request, execution, directory) == artifacts
     store = execution.store
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET kind = 'project_chat' WHERE operation_id = 'edit'"
-        )
+    assert store.agent_task("edit").kind == "artifact_edit"
     store.complete_agent_task(
         "edit",
         applied_revision=None,

@@ -642,7 +642,7 @@ def test_folder_skips_symlinks_and_nonregular_entries(live):
     ]
 
 
-@pytest.mark.parametrize("cap", ["matches", "total_bytes", "file_bytes", "rows"])
+@pytest.mark.parametrize("cap", ["matches", "total_bytes", "file_bytes", "rows", "scanned_entries"])
 def test_folder_caps_report_omitted_content(live, monkeypatch, cap):
     import rcp.live_artifact_runtime as runtime
 
@@ -653,6 +653,7 @@ def test_folder_caps_report_omitted_content(live, monkeypatch, cap):
         "total_bytes": ("LIVE_ARTIFACT_MAX_TOTAL_BYTES", 8),
         "file_bytes": ("LIVE_ARTIFACT_MAX_BYTES", 4),
         "rows": ("LIVE_ARTIFACT_MAX_ROWS", 1),
+        "scanned_entries": ("LIVE_ARTIFACT_MAX_SCANNED_ENTRIES", 1),
     }[cap]
     monkeypatch.setattr(runtime, setting, value)
     artifact = live.create([files_need(live.root, "*")])

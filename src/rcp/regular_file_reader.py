@@ -84,9 +84,23 @@ def read_local_regular_file(
         os.close(directory_fd)
 
 
-def _matching_regular_files(directory_fd: int, parts: list[str], prefix: str = ""):
-    """Yield matches while keeping their parent directory descriptor open."""
-    for name in sorted(os.listdir(directory_fd)):
+def _matching_regular_files(
+    directory_fd: int, parts: list[str], scan: dict[str, int], prefix: str = ""
+):
+    """Yield matches while keeping their parent directory descriptor open.
+
+    `scan["left"]` bounds the directory entries listed across the whole walk, so a
+    broad pattern over a large tree stops early instead of listing everything.
+    """
+    names: list[str] = []
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            if scan["left"] <= 0:
+                scan["exhausted"] = 1
+                break
+            scan["left"] -= 1
+            names.append(entry.name)
+    for name in sorted(names):
         if not fnmatch.fnmatchcase(name, parts[0]):
             continue
         try:
@@ -106,7 +120,7 @@ def _matching_regular_files(directory_fd: int, parts: list[str], prefix: str = "
                     continue
                 raise
             try:
-                yield from _matching_regular_files(child_fd, parts[1:], relative + "/")
+                yield from _matching_regular_files(child_fd, parts[1:], scan, relative + "/")
             finally:
                 os.close(child_fd)
 
@@ -118,6 +132,7 @@ def read_local_regular_files(
     max_files: int,
     max_total_bytes: int,
     max_bytes: int,
+    max_entries: int,
     tail: bool = False,
 ) -> dict:
     """Read bounded folder matches through directory fds, never symlinks."""
@@ -128,7 +143,8 @@ def read_local_regular_files(
     files: list[dict] = []
     truncated = False
     remaining = max_total_bytes
-    matches = _matching_regular_files(directory_fd, parts)
+    scan = {"left": max_entries, "exhausted": 0}
+    matches = _matching_regular_files(directory_fd, parts, scan)
     try:
         for parent_fd, name, relative in matches:
             if len(files) >= max_files or remaining <= 0:
@@ -181,7 +197,10 @@ def read_local_regular_files(
     finally:
         matches.close()
         os.close(directory_fd)
-    return {"files": sorted(files, key=lambda item: item["path"]), "truncated": truncated}
+    return {
+        "files": sorted(files, key=lambda item: item["path"]),
+        "truncated": truncated or bool(scan["exhausted"]),
+    }
 
 
 if __name__ == "__main__" and sys.argv[1] == "files":
@@ -193,7 +212,8 @@ if __name__ == "__main__" and sys.argv[1] == "files":
                 max_files=int(sys.argv[4]),
                 max_total_bytes=int(sys.argv[5]),
                 max_bytes=int(sys.argv[6]),
-                tail=sys.argv[7] == "tail",
+                max_entries=int(sys.argv[7]),
+                tail=sys.argv[8] == "tail",
             )
         )
     )

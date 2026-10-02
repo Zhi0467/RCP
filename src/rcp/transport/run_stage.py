@@ -1012,6 +1012,7 @@ finally:
         max_files: int,
         max_total_bytes: int,
         max_bytes: int,
+        max_entries: int,
         tail: bool = False,
     ) -> dict:
         """List and read a bounded folder source in one SSH invocation."""
@@ -1029,6 +1030,7 @@ finally:
                 str(max_files),
                 str(max_total_bytes),
                 str(max_bytes),
+                str(max_entries),
                 "tail" if tail else "whole",
             ]
         )

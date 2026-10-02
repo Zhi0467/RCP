@@ -22,6 +22,7 @@ from rcp.limits import (
     LIVE_ARTIFACT_MAX_FILES,
     LIVE_ARTIFACT_MAX_RETRY_SECONDS,
     LIVE_ARTIFACT_MAX_ROWS,
+    LIVE_ARTIFACT_MAX_SCANNED_ENTRIES,
     LIVE_ARTIFACT_MAX_TOTAL_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
     LIVE_ARTIFACT_RETRY_SECONDS,
@@ -292,6 +293,7 @@ def _files_snapshot(binding, *, final=False):
         max_files=LIVE_ARTIFACT_MAX_FILES,
         max_total_bytes=LIVE_ARTIFACT_MAX_TOTAL_BYTES,
         max_bytes=LIVE_ARTIFACT_MAX_BYTES,
+        max_entries=LIVE_ARTIFACT_MAX_SCANNED_ENTRIES,
         tail=need.read == "tail",
     )
     result = (
