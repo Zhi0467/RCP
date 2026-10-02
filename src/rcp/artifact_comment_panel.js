@@ -299,7 +299,11 @@ async function postComments(now) {
         result.detail?.message || "Comment could not be sent.");
     }
     freshSessionRequired = false;
-    for (const comment of sent) comments.splice(comments.indexOf(comment), 1);
+    // A sent comment removed meanwhile is already gone.
+    for (const comment of sent) {
+      const index = comments.indexOf(comment);
+      if (index >= 0) comments.splice(index, 1);
+    }
     saveComments();
     tray.open = comments.length > 0 && tray.open;
     render();

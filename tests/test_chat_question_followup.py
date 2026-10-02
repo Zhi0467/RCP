@@ -243,7 +243,18 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
     ]
 
 
-@pytest.mark.parametrize("status", ["running", "paused", "interrupted"])
+def test_unclaimed_episode_answer_names_no_followup(manifest, tmp_path):
+    from rcp.runs.chat import project_chat_question_answer
+
+    service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
+    # A continuation may claim an Experiment answer under its own id, so none is guessed.
+    origin = question.origin.model_copy(update={"owner_kind": "episode"})
+    project_chat_question_answer(service, store, question.model_copy(update={"origin": origin}))
+    (answer,) = service.chat_transcript(chat_id).messages
+    assert answer.operation_id is None
+
+
+@pytest.mark.parametrize("status", ["running", "paused", "interrupted", "failed"])
 def test_answer_during_unsettled_turn_follows_its_prompt(manifest, tmp_path, status):
     from types import SimpleNamespace
 

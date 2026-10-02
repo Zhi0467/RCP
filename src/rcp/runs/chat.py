@@ -1810,7 +1810,8 @@ def _question_answer_message_id(question: QuestionRecord) -> str:
     )
 
 
-_UNSETTLED_TURN_STATUSES = ACTIVE_AGENT_TASK_STATUSES | {"paused", "interrupted"}
+# A failed turn is included: it never writes its exchange, yet its follow-up is admitted.
+_UNSETTLED_TURN_STATUSES = ACTIVE_AGENT_TASK_STATUSES | {"paused", "interrupted", "failed"}
 
 
 def project_chat_question_answer(
@@ -1828,7 +1829,7 @@ def project_chat_question_answer(
     with service.history.workspace.transaction():
         if task.status in _UNSETTLED_TURN_STATUSES and request.trigger != "watcher":
             # The exchange arrives only on settlement, which a paused or interrupted
-            # turn still reaches once resumed. Reserve the asking turn's prompt first,
+            # turn reaches once resumed and a failed one never does. Reserve the asking turn's prompt first,
             # as a live steer does, so the answer cannot precede it.
             _append_chat_records(
                 service,
@@ -1876,10 +1877,17 @@ def project_chat_question_answer(
                     "executionMachine": request.run_on,
                     "cwd": str(service.manifest.research_dir.parent),
                     "timestamp": question.resolved_at,
-                    # The follow-up this answer starts, if one is ever admitted.
+                    # A chat follow-up always takes the derived id, so the answer can
+                    # name it before admission. An Experiment answer may instead be
+                    # claimed by a continuation with its own id, so it names only a
+                    # claimed follow-up.
                     "operationId": question.followup_operation_id
-                    or question_followup_operation_id(
-                        question.question_id, question.answer_revision
+                    or (
+                        question_followup_operation_id(
+                            question.question_id, question.answer_revision
+                        )
+                        if question.origin.owner_kind == "chat"
+                        else None
                     ),
                     "mode": "work",
                     "trigger": "human",
