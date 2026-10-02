@@ -26,14 +26,22 @@ export function toggleQuestionChoice(selected: string[], choice: string): string
     : [...selected, choice];
 }
 
+/** Keeps transcript order and slots each resolved question before the first later line. */
 export function questionTranscript<T extends { timestamp: string }>(
   lines: T[],
   questions: AgentQuestion[],
 ) {
-  return [
-    ...lines.map((line) => ({ kind: "line" as const, line, timestamp: line.timestamp })),
-    ...questions
-      .filter((question) => !questionIsOpen(question) || question.withdrawn_readonly)
-      .map((question) => ({ kind: "question" as const, question, timestamp: question.created_at })),
-  ].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+  type Entry = { kind: "line"; line: T } | { kind: "question"; question: AgentQuestion };
+  const pending = questions
+    .filter((question) => !questionIsOpen(question) || question.withdrawn_readonly)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const entries: Entry[] = [];
+  for (const line of lines) {
+    const at = Date.parse(line.timestamp);
+    while (pending.length > 0 && !Number.isNaN(at) && Date.parse(pending[0].created_at) < at) {
+      entries.push({ kind: "question", question: pending.shift()! });
+    }
+    entries.push({ kind: "line", line });
+  }
+  return [...entries, ...pending.map((question) => ({ kind: "question" as const, question }))];
 }

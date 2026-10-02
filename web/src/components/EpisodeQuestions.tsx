@@ -8,7 +8,7 @@ export function EpisodeQuestions({
 }: {
   apiBase: string;
   episodeId: string;
-  freshness: unknown;
+  freshness: string;
 }) {
   const { questions, error, refresh } = useQuestions(apiBase, "episode", episodeId, freshness);
   return (

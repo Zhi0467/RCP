@@ -63,3 +63,15 @@ test("resolved and withdrawn cards retain their chronological transcript positio
   }
   assert.equal(questionTranscript(lines, [question]).length, 2);
 });
+
+test("transcript lines keep their order even without parseable timestamps", () => {
+  const lines = [
+    { id: "late", timestamp: "2026-10-01T12:05:00Z" },
+    { id: "untimed", timestamp: "" },
+    { id: "early", timestamp: "2026-10-01T12:00:00Z" },
+  ];
+  assert.deepEqual(
+    questionTranscript(lines, []).map((item) => item.line.id),
+    ["late", "untimed", "early"],
+  );
+});

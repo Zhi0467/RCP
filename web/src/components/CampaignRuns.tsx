@@ -425,7 +425,11 @@ export function AutoResearchEpisodeCard({
             </section>
           )}
 
-          <EpisodeQuestions apiBase={apiBase} episodeId={episode.episode_id} freshness={episode} />
+          <EpisodeQuestions
+            apiBase={apiBase}
+            episodeId={episode.episode_id}
+            freshness={`${episode.updated_at}:${episode.status}`}
+          />
 
           {episode.starting_instruction && (
             <div className="campaign-starting-instruction">

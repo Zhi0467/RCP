@@ -328,7 +328,11 @@ export function ExperimentRunDetail({
       </div>
 
       {episode && (
-        <EpisodeQuestions apiBase={apiBase} episodeId={episode.episode_id} freshness={run} />
+        <EpisodeQuestions
+          apiBase={apiBase}
+          episodeId={episode.episode_id}
+          freshness={`${episode.updated_at}:${episode.status}`}
+        />
       )}
 
       {episode && (

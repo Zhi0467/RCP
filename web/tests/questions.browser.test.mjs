@@ -34,9 +34,11 @@ test("chat question answers stay separate from steering and resolved cards enter
       created_at: "2026-09-05T12:00:01Z",
     }));
     const mutations = [];
-    await page.route("**/api/projects/project/chats/steering-chat/questions", (route) =>
-      route.fulfill({ json: questions }),
-    );
+    let questionReads = 0;
+    await page.route("**/api/projects/project/chats/steering-chat/questions", (route) => {
+      questionReads += 1;
+      return route.fulfill({ json: questions });
+    });
     await page.route("**/api/projects/project/questions/*/*", (route) => {
       const [, id, action] = route
         .request()
@@ -57,6 +59,21 @@ test("chat question answers stay separate from steering and resolved cards enter
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/liveSteering.html`,
     );
     const single = page.locator('[data-question-id="single"]');
+    await single.waitFor();
+    assert.equal(questionReads, 1);
+    await page.evaluate(async () => {
+      window.setSteeringFixture({ elapsed_seconds: 6 });
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    // Let any unwanted read finish before comparing; elapsed time is display-only.
+    await page.waitForTimeout(150);
+    assert.equal(questionReads, 1);
+    const changedOwnerRead = page.waitForResponse(
+      "**/api/projects/project/chats/steering-chat/questions",
+    );
+    await page.evaluate(() => window.setSteeringFixture({ updated_at: "2026-09-05T12:00:02Z" }));
+    await changedOwnerRead;
+    assert.equal(questionReads, 2);
     await single.getByRole("button", { name: "a", exact: true }).click();
     await page
       .locator('.node-chat-lines [data-question-id="single"][data-question-state="answered"]')

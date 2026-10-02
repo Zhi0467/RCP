@@ -7,7 +7,7 @@ export function useQuestions(
   apiBase: string,
   kind: "chat" | "episode",
   ownerId: string | undefined,
-  freshness: unknown,
+  freshness: string,
 ) {
   const [snapshot, setSnapshot] = useState<{ key: string; items: AgentQuestion[] }>({
     key: "",
