@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import rcp.storage.experiments as experiments_storage
 from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_questions import reconcile_experiment_question_answers
 from rcp.runs.question_snapshots import question_snapshot
@@ -212,6 +213,28 @@ def test_continuation_claims_answer_in_first_snapshot_at_ceiling(tmp_path, chang
     assert reopened.origin == question.origin
     assert reopened.client_receipt_revision is None
     assert store.episode(continued_id).invocations_used == 1
+
+
+def test_continuation_claims_only_answers_its_snapshot_carries(tmp_path, monkeypatch):
+    store, episode_id, question, _ = _ready_answer(tmp_path, ceiling=1)
+    store.end_episode_without_report(episode_id, ending="exhausted")
+    monkeypatch.setattr(experiments_storage, "QUESTION_SNAPSHOT_MAX_RECORDS", 0)
+    continued_id = str(uuid.uuid4())
+    continued = _task(
+        store,
+        "continued-root",
+        continued_id,
+        ceiling=2,
+        session_id="native-session",
+        stage_root="/tmp/exact-experiment-stage",
+    )
+    store.create_experiment_episode_with_invocation(
+        continued,
+        continues_episode_id=episode_id,
+        continuation_request_id=str(uuid.uuid4()),
+    )
+    assert store.get_question(question.question_id).followup_operation_id is None
+    assert store.experiment_has_question_continuation("project", continued_id)
 
 
 @pytest.mark.parametrize("projection_failed", [False, True])

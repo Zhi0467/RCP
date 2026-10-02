@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
+from rcp.limits import EPISODE_RECEIPT_MAX_BYTES, QUESTION_SNAPSHOT_MAX_RECORDS
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
@@ -382,6 +382,7 @@ class ExperimentStoreMixin:
                         RETURNING *""",
                         (continues_episode_id,),
                     ).fetchall()
+                    claimable = []
                     for question_row in reopened:
                         question = _question_record(question_row)
                         if (
@@ -406,6 +407,12 @@ class ExperimentStoreMixin:
                                 (question.question_id,),
                             )
                             continue
+                        claimable.append(question)
+                    # Claim only what this invocation's snapshot carries: claimed answers
+                    # sort first there, by the same key, under the same cap. The rest stay
+                    # unclaimed for later answer wakes.
+                    claimable.sort(key=lambda item: (item.created_at, item.question_id))
+                    for question in claimable[:QUESTION_SNAPSHOT_MAX_RECORDS]:
                         self.claim_question_followup(
                             connection,
                             question.question_id,
