@@ -660,6 +660,17 @@ class ProjectStoreMixin:
                     counts[table] = connection.execute(
                         f"DELETE FROM {table} WHERE project_id = ?", (project_id,)
                     ).rowcount
+                counts["notification_question_events"] = connection.execute(
+                    """
+                    DELETE FROM notification_question_events WHERE question_id IN (
+                        SELECT question_id FROM questions WHERE project_id = ?
+                    )
+                    """,
+                    (project_id,),
+                ).rowcount
+                counts["questions"] = connection.execute(
+                    "DELETE FROM questions WHERE project_id = ?", (project_id,)
+                ).rowcount
                 counts["projects"] = connection.execute(
                     "DELETE FROM projects WHERE project_id = ?", (project_id,)
                 ).rowcount

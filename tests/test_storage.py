@@ -18,6 +18,7 @@ import rcp.storage.base as storage_base_module
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES, AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -35,6 +36,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.command_mailbox import CommandMailboxStore
+from rcp.storage.question_models import QuestionOrigin
 
 from .helpers import NON_UUID4
 from .storage_helpers import downgrade_artifacts
@@ -1957,6 +1959,24 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     assert owner is not None
     store.seat_project_member("delete-me", owner.user_id)
     store.seat_project_member("keep-me", owner.user_id)
+    for project_id in ("delete-me", "keep-me"):
+        question = store.create_or_get_question(
+            origin=QuestionOrigin(
+                owner_kind="chat",
+                project_id=project_id,
+                owner_id=f"{project_id}-chat",
+                operation_id=f"{project_id}-operation",
+                provider="codex",
+                native_session_id="session",
+                stage_root="/stage",
+                capability="work_auto",
+                write_scope_fingerprint="a" * 64,
+                graph_target=GraphTargetRef(),
+            ),
+            key="key",
+            question="Which metric?",
+        )
+        store.observe_notification_question(question.question_id, None)
 
     for operation_id in ("delete-run", "keep-run"):
         store.record_agent_task_event(operation_id, "event")
@@ -2023,6 +2043,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "notification_graph_markers": 0,
         "notification_episode_observations": 0,
         "notification_project_baselines": 0,
+        "notification_question_events": 1,
+        "questions": 1,
         "chat_pins": 0,
         "conversation_worktrees": 0,
         "episode_isolations": 0,
