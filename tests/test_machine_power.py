@@ -475,7 +475,7 @@ def demand_inputs(tmp_path, monkeypatch):
         space_id="personal",
         path=tmp_path / "rcp.sqlite3",
         projects=lambda: [project],
-        episodes=lambda *a, **kw: [episode],
+        live_episodes=lambda _: [episode],
         active_project_agent_tasks=lambda _: tasks,
         has_any_active_agent_task=lambda: bool(tasks),
     )

@@ -116,8 +116,7 @@ def demand_snapshot(store, background) -> list[str]:
         episode
         for project in projects
         if project.home_space_id == store.space_id
-        for episode in store.episodes(project.project_id, limit=None)
-        if episode.status not in {"completed", "stopped", "failed"}
+        for episode in store.live_episodes(project.project_id)
     ]
     health = load_episode_health(store, episodes)
     if any(

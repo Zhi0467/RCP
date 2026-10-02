@@ -42,6 +42,10 @@ Confirmed by the human 2026-10-01.
 - **A removed sudoers rule can strand the flag.** If something deletes it while
   the flag is set, RCP cannot clear it. The home page shows the exact command.
 - **A reboot, install, or uninstall clears a flag the user set themselves.**
+- **Uninstall holds no lock of its own.** If the backend dies just after the
+  admin prompt, a second RCP on another data directory could start a `sudo
+  pmset` before the rule is removed and finish after the final clear. Its watchdog then fails to clear, and the
+  home page shows the command.
 - **The Mac may stay awake longer than needed** when demand over-counts, until
   the battery floor.
 - **No guarantee beyond orchestration.** Wi-Fi, provider sign-in, SSH, and
