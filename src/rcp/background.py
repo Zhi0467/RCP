@@ -1264,6 +1264,12 @@ class BackgroundAgentTasks:
         with self._watcher_delivery_lock:
             self._accepting_watcher_deliveries = False
 
+    def has_pending_transport_retry(self) -> bool:
+        """Report whether an automatic transport retry is scheduled but not yet started."""
+
+        with self._controls_lock:
+            return bool(self._transport_retry_timers)
+
     def runtime_is_idle(self) -> bool:
         """Report whether provider workers and recorded finalization have settled."""
 

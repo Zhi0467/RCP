@@ -74,6 +74,8 @@ read_flag() {
     done <<FLAGS
 $flag
 FLAGS
+    # pmset omits the line until the flag has been set once since boot.
+    case "$flag" in *'System-wide power settings:'*) printf '0\n'; return 0 ;; esac
     return 1
 }
 

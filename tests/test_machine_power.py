@@ -35,6 +35,7 @@ FLAG = "System-wide power settings:\nCurrently in use:\n SleepDisabled          
         (power.parse_lid, '"AppleClamshellState" = Yes\n', True),
         (power.parse_flag, FLAG, False),
         (power.parse_flag, " SleepDisabled 1\n", True),
+        (power.parse_flag, "System-wide power settings:\nCurrently in use:\n sleep 1\n", False),
     ],
 )
 def test_power_output_parsers(parser, output, expected):
@@ -221,14 +222,14 @@ def test_no_ack_never_requests_on(machine):
 
 
 @pytest.mark.parametrize("reading", ["batt", "therm", "lid", "-g"])
-def test_reading_timeouts_release_both_holds(machine, reading):
+def test_reading_timeouts_release_lid_mode_but_keep_idle_hold(machine, reading):
     machine.activate()
     machine.fail = reading
     machine.commands.clear()
     machine.controller.safety_pass()
     assert len(machine.commands) == 4
     assert power.read_record(machine.root / "heartbeat")["cause"] == "reading_failed"
-    assert machine.controller.status()["idle_hold"]["active"] is False
+    assert machine.controller.status()["idle_hold"]["active"] is True
     assert machine.controller.status()["lid_mode"]["active"] is False
 
 
@@ -454,7 +455,7 @@ def test_unsupported_platform_has_no_os_commands(machine):
 @pytest.fixture
 def demand_inputs(tmp_path, monkeypatch):
     project = SimpleNamespace(project_id="p", home_space_id="personal", locator="unused")
-    episode = SimpleNamespace(episode_id="e")
+    episode = SimpleNamespace(episode_id="e", status="running")
     tasks = []
     store = SimpleNamespace(
         space_id="personal",
@@ -462,11 +463,11 @@ def demand_inputs(tmp_path, monkeypatch):
         projects=lambda: [project],
         episodes=lambda *a, **kw: [episode],
         all_project_agent_tasks=lambda _: tasks,
+        has_any_active_agent_task=lambda: bool(tasks),
     )
     background = SimpleNamespace(
         runtime_is_idle=lambda: True,
-        _controls_lock=threading.Lock(),
-        _transport_retry_timers=[],
+        has_pending_transport_retry=lambda: False,
     )
     health = {}
     monkeypatch.setattr(
@@ -544,7 +545,7 @@ def test_runtime_demand(demand_inputs):
 
 
 def test_retry_timer_demand(demand_inputs):
-    demand_inputs.background._transport_retry_timers.append(object())
+    demand_inputs.background.has_pending_transport_retry = lambda: True
     assert power.demand_snapshot(demand_inputs.store, demand_inputs.background) == ["retry"]
 
 

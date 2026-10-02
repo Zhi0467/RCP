@@ -100,9 +100,12 @@ def parse_lid(output: str) -> bool:
 
 def parse_flag(output: str) -> bool:
     match = re.search(r"^\s*(?:SleepDisabled|disablesleep)\s+([01])\s*$", output, re.M)
-    if match is None:
-        raise ValueError("unknown SleepDisabled flag")
-    return match[1] == "1"
+    if match is not None:
+        return match[1] == "1"
+    # pmset omits the line until the flag has been set once since boot.
+    if "System-wide power settings:" in output:
+        return False
+    raise ValueError("unknown SleepDisabled flag")
 
 
 def demand_snapshot(store, background) -> list[str]:
@@ -114,6 +117,7 @@ def demand_snapshot(store, background) -> list[str]:
         for project in projects
         if project.home_space_id == store.space_id
         for episode in store.episodes(project.project_id, limit=None)
+        if episode.status not in {"completed", "stopped", "failed"}
     ]
     health = load_episode_health(store, episodes)
     if any(
@@ -123,7 +127,7 @@ def demand_snapshot(store, background) -> list[str]:
     ):
         reasons.append("episode")
     credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
-    for project in projects:
+    for project in projects if store.has_any_active_agent_task() else ():
         for task in store.all_project_agent_tasks(project.project_id):
             if task.status in {"running", "pausing"}:
                 reasons.append("task")
@@ -148,10 +152,8 @@ def demand_snapshot(store, background) -> list[str]:
             break
     if not background.runtime_is_idle():
         reasons.append("runtime")
-    # The timer owner protects insertion/removal with this same lock.
-    with background._controls_lock:
-        if background._transport_retry_timers:
-            reasons.append("retry")
+    if background.has_pending_transport_retry():
+        reasons.append("retry")
     return reasons
 
 
@@ -594,8 +596,9 @@ class MachinePowerController:
             process.kill()
             process.wait(timeout=MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
 
-    def _release(self, cause):
-        if cause != self._release_cause or self._idle is not None or self._desired == "on":
+    def _release(self, cause, *, keep_idle=False):
+        dropping_idle = self._idle is not None and not keep_idle
+        if cause != self._release_cause or dropping_idle or self._desired == "on":
             self._record_release(cause)  # Best effort, before any cleanup.
         # Publish off before waiting for the idle assertion to terminate.
         try:
@@ -610,7 +613,8 @@ class MachinePowerController:
                     self._heartbeat("off", cause)
         finally:
             self._lid_active = False
-            self._drop_idle()
+            if not keep_idle:
+                self._drop_idle()
 
     def safety_pass(self):
         with self._lock:
@@ -690,15 +694,21 @@ class MachinePowerController:
                 self._start_watchdog(recover=True)
                 self._release(cause or "watchdog_lost")
                 return
-        if cause:
+        # A failed reading only blocks lid mode. The idle hold is an ordinary
+        # assertion that macOS still overrides at low battery, and a desktop Mac
+        # has no lid to read.
+        if cause and cause != "reading_failed":
             self._release(cause)
             return
-        if self._state["idle_hold"]:
+        if self._state["idle_hold"] and self._reasons:
             if self._idle is None or self._idle.poll() is not None:
                 pid, _ = self.identity_reader()
                 self._idle = self.spawn(["/usr/bin/caffeinate", "-i", "-w", str(pid)])
         else:
             self._drop_idle()
+        if cause:
+            self._release(cause, keep_idle=True)
+            return
 
         if not self._state["lid_mode"] or self._state["latched"]:
             if self._watchdog is not None:

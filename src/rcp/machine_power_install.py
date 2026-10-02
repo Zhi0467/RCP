@@ -266,7 +266,9 @@ clear=false
 attempt=0
 while [ "$attempt" -lt {MACHINE_POWER_COMMAND_TIMEOUT_SECONDS} ]; do
     bounded /usr/bin/pmset -g > "$work/flag" || fail clear_failed
-    if bounded /usr/bin/grep -Eq '^[[:space:]]*SleepDisabled[[:space:]]+0([[:space:]]|$)' "$work/flag"; then
+    # pmset omits the line until the flag has been set once since boot.
+    if bounded /usr/bin/grep -Eq '^[[:space:]]*SleepDisabled[[:space:]]+0([[:space:]]|$)' "$work/flag" ||
+        ! bounded /usr/bin/grep -Eq '^[[:space:]]*SleepDisabled[[:space:]]' "$work/flag"; then
         clear=true
         break
     fi
