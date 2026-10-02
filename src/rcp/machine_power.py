@@ -728,18 +728,19 @@ class MachinePowerController:
         installed = installation.installed
         if self._watchdog is None:
             can_recover = installation.install_problem in {None, "partial"}
-            if can_recover and not self._acquire():
-                return
-            activation = read_record(self.directory / "activation")
-            owned = activation.get("set") == "1"
-            self._external = readings.get("flag", False) and not owned
-            # Recover a previously owned flag even with partial installation or
-            # failed safety inputs. The replacement executor receives only off.
-            if owned and can_recover:
-                self._start_watchdog(recover=True)
-                self._release(cause or "watchdog_lost")
-                return
-            self._close_owner()
+            # Another backend owning lid mode gates only recovery and lid mode;
+            # this backend's idle hold still follows its own demand below.
+            if not can_recover or self._acquire():
+                activation = read_record(self.directory / "activation")
+                owned = activation.get("set") == "1"
+                self._external = readings.get("flag", False) and not owned
+                # Recover a previously owned flag even with partial installation or
+                # failed safety inputs. The replacement executor receives only off.
+                if owned and can_recover:
+                    self._start_watchdog(recover=True)
+                    self._release(cause or "watchdog_lost")
+                    return
+                self._close_owner()
         # A failed reading only blocks lid mode. The idle hold is an ordinary
         # assertion that macOS still overrides at low battery, and a desktop Mac
         # has no lid to read.

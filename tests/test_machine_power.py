@@ -152,7 +152,7 @@ class Machine:
                 )
             child.on_wait = lambda: self.execute(child)
         else:
-            assert argv == ["/usr/bin/caffeinate", "-i", "-w", "123"]
+            assert argv[:3] == ["/usr/bin/caffeinate", "-i", "-w"]
         self.children.append((argv, child))
         return child
 
@@ -382,10 +382,12 @@ def test_machine_lock_prevents_two_data_directories_from_owning_lid_mode(machine
         installer=machine.installer,
         platform="darwin",
     )
-    other.update({"lid_mode": True, "idle_hold": False})
+    other.update({"lid_mode": True})
     other.safety_pass()
     assert other.status()["external_owner"] is True
     assert other._watchdog is None
+    # Lock contention gates lid mode only; this backend's idle hold still runs.
+    assert other.status()["idle_hold"]["active"] is True
     assert power.read_record(machine.root / "heartbeat")["pid"] == "123"
     other.stop()
 
