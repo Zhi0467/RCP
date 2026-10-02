@@ -175,7 +175,6 @@ async def stream_artifact_edit_run(
         master=None,
         delta=None,
         parts=[
-            "Edit the attached file in place according to the human's comment. Keep its name. "
             "You have writable scratch only. Do not change project files, the graph, watchers, "
             "or episode controls. Reply to the human when finished.",
             _attachment_items([attachment.pointer]),

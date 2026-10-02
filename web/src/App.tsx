@@ -860,6 +860,8 @@ export default function App() {
     chatId: initialRoute.project.chatId,
     graphTarget: initialRoute.graphTarget,
   }));
+  // The Agents tab opens the board; anything that names a chat opens that chat.
+  const [agentsBoard, setAgentsBoard] = useState(!initialRoute.project.chatId);
   const activeGraphTargetRef = useRef(graphTarget);
   // One request id per logical continuation, kept until the server has answered
   // it, so a retry after a lost response replays the episode already created.
@@ -2060,6 +2062,8 @@ export default function App() {
         chatId: route.chatId,
         graphTarget: nextTarget,
       });
+      // A route that names a chat opens it; any other entry shows the board.
+      setAgentsBoard(!route.chatId);
       if (
         route.projectId !== activeId ||
         !sameGraphTarget(nextTarget, activeGraphTargetRef.current)
@@ -2687,6 +2691,7 @@ export default function App() {
   };
 
   const openChats = (preferredChatId?: string | null) => {
+    setAgentsBoard(preferredChatId == null);
     const nextChatId =
       preferredChatId ??
       chatEntryConversationId(conversations, activityTask, unreadChatIds, selectedChatId);
@@ -2695,6 +2700,11 @@ export default function App() {
     clearNodeSelections();
     changeView("chats");
   };
+
+  // Leaving Agents resets it to the board, so only a link that names a chat skips it.
+  useEffect(() => {
+    if (view !== "chats") setAgentsBoard(true);
+  }, [view]);
 
   useEffect(() => {
     if (
@@ -2761,10 +2771,23 @@ export default function App() {
   }, [apiBase, graphPath, isActiveGraph, projectId, refreshChatSummaries, tasks]);
 
   useEffect(() => {
-    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
+    const visibleChatId = visibleUnreadChatId(
+      view,
+      selectedChatId,
+      selectedExperimentChatId,
+      agentsBoard,
+    );
     markVisibleChatRead(tasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
-  }, [chatReads, markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
+  }, [
+    agentsBoard,
+    chatReads,
+    markVisibleChatRead,
+    selectedChatId,
+    selectedExperimentChatId,
+    tasks,
+    view,
+  ]);
 
   useEffect(() => {
     if (!projectId || !hasActiveTasks) return;
@@ -4811,7 +4834,12 @@ export default function App() {
                 paperUnsynced={paper.sync_state !== "synced"}
                 onChange={changeView}
               />
-              <Artifacts key={project.id} projectId={project.id} />
+              <Artifacts
+                key={project.id}
+                projectId={project.id}
+                nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
+                onOpenNode={openNodeById}
+              />
             </div>
           )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}
@@ -4943,6 +4971,8 @@ export default function App() {
               project={project}
               conversations={conversations}
               selectedChatId={selectedChatId}
+              board={agentsBoard}
+              onBoardChange={setAgentsBoard}
               nodes={presentedGraph.nodes}
               experimentEntries={experimentLoops}
               graphTarget={graphTarget}

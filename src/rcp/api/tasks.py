@@ -1134,7 +1134,9 @@ def _validated_task_request(
             "session_id": None,
         }
     )
-    if not request.message or not request.message.strip() or not request.chat_id:
+    # Artifact comments are a turn's text by themselves; admission writes them in.
+    commented = request.artifact_context is not None and request.artifact_context.selections
+    if not request.chat_id or not (commented or (request.message and request.message.strip())):
         raise ValueError("Chat requires a chat_id and message")
     if chat_scope == "node":
         if not request.node_id:

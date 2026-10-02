@@ -11,8 +11,12 @@ const server = await createServer({
 });
 after(() => server.close());
 
-const { visibleChatTranscriptTarget, transcriptAbsenceIsExpected, experimentChatFreshnessToken } =
-  await server.ssrLoadModule("/src/hooks/useChatState.ts");
+const {
+  visibleChatTranscriptTarget,
+  transcriptAbsenceIsExpected,
+  experimentChatFreshnessToken,
+  visibleUnreadChatId,
+} = await server.ssrLoadModule("/src/hooks/useChatState.ts");
 const { ApiError } = await server.ssrLoadModule("/src/api.ts");
 const { MAIN_GRAPH } = await server.ssrLoadModule("/src/graphTarget.ts");
 
@@ -146,4 +150,9 @@ test("no selected Experiment chat needs no freshness signal", () => {
 
 test("a cross-graph chat with no progress yet still yields a stable token", () => {
   assert.equal(experimentChatFreshnessToken("experiment-chat", null, BRANCH, MAIN_GRAPH), "||");
+});
+
+test("the Agents board shows no transcript, so it marks no chat read", () => {
+  assert.equal(visibleUnreadChatId("chats", "chat-1", null, true), null);
+  assert.equal(visibleUnreadChatId("chats", "chat-1", null, false), "chat-1");
 });

@@ -184,8 +184,11 @@ display choices shared by every member; a pin belongs to the member who made it
 which returns the acting user's pins);
 a blank name returns the derived one. Rename edits the title in place on the
 card. An Archived filter appears when any exist, counts every archived chat
-including unloaded pages, and offers Restore. Transcripts and tasks are never
-changed or deleted.
+including unloaded pages, and offers Restore. A revisit keeps the last loaded
+display set until its reload answers, so archived chats never flash back into
+the list. Card metadata shows a provider's monochrome logo (Claude in its brand
+orange) when RCP ships one in `web/public/providers`, otherwise its label.
+Transcripts and tasks are never changed or deleted.
 
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity
@@ -222,6 +225,23 @@ turn's prompt, provider, model, effort, and repositories; every word must match.
 Chips filter to All or Working. Above the conversation, a header
 names the title, provider, model, effort, repository, and chat scope; a failed or stopped turn adds a banner
 with the backend label and Resume or Retry when the task offers it.
+
+The Agents tab opens on a **board**; a link that names a chat (Ask, a source-chat
+link, or a chat route) opens that chat instead, and the list's board icon returns
+to the board. The board has four columns: **Needs you** (New reply, Failed,
+Stopped), **Working**, **Done**, and **Archived**. Each card shows the provider
+logo, with a spinner ring while the agent works, the title, a provider · model ·
+effort · task-type line, and its state or age with Retry or Resume when offered.
+Clicking a card opens its chat with the list folded and the composer focused.
+Leaving Agents for another view resets it to the board. A mouse drag reorders
+cards within a column, and that order is the viewer's own, kept in browser
+storage per project; pins still lead their column. Dropping on Archived archives
+the chat, and dragging out of Archived restores it. A drop on another state
+column is refused, because the run decides the state, and a working agent cannot
+be archived. A branch episode card opens in Runs and does not move. Touch scrolls
+the board rather than dragging, so archiving there goes through the card's menu;
+Alt+Up and Alt+Down reorder a focused card from the keyboard. The board's
+columns go to two at 920px or less and to one at 560px or less.
 
 At viewport widths of 560px or less, Agents uses a single column. The conversation
 list starts closed behind an **Agents** disclosure above the conversation and

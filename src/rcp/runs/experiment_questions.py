@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from rcp.runs.questions import reconcile_question_receipt
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
+from rcp.storage.question_models import question_followup_operation_id
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
 
 
-def reconcile_experiment_question_answers(tasks: BackgroundAgentTasks) -> dict[str, str]:
-    """Settlement/startup/API seam; refusals stay inspectable and questions stay unclaimed."""
+def reconcile_experiment_question_answers(
+    tasks: BackgroundAgentTasks, *, project_id: str | None = None
+) -> dict[str, str]:
+    """Settlement/startup/API seam; refusals stay inspectable and questions stay unclaimed.
+
+    Settlement and the answer API pass their project; startup passes none to sweep all.
+    """
     store = tasks.store
     results: dict[str, str] = {}
-    for question in store.list_questions(owner_kind="episode"):
+    for question in store.questions_needing_experiment_reconciliation(project_id=project_id):
         origin = question.origin
         episode = store.episode(origin.owner_id)
         if episode is None or episode.mode != "experiment_loop":
@@ -86,7 +91,9 @@ def reconcile_experiment_question_answers(tasks: BackgroundAgentTasks) -> dict[s
                     )
             now = store.now()
             record = AgentTaskRecord(
-                operation_id=uuid.uuid4().hex,
+                operation_id=question_followup_operation_id(
+                    question.question_id, question.answer_revision
+                ),
                 project_id=origin.project_id,
                 episode_id=episode.episode_id,
                 kind="node_chat",

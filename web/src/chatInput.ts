@@ -69,14 +69,13 @@ export function assembleChatTurn(
   annotations: ReadonlyArray<Pick<StagedChatAnnotation, "selectedText" | "comment" | "artifact">>,
 ): string {
   const parts = [message.trim()];
-  // Artifact comments are numbered in order, as the prompt lists what each covers.
-  let selection = 0;
+  // Artifact comments travel as the turn's artifact selections; the server writes
+  // them into the turn in the one shape every artifact route uses.
   for (const annotation of annotations) {
     const selectedText = annotation.selectedText.trim();
     const comment = annotation.comment.trim();
-    if (!selectedText || !comment) continue;
-    const about = annotation.artifact ? `Selection ${++selection}: ${selectedText}` : selectedText;
-    parts.push(`${about}\ncomment: ${comment}`);
+    if (annotation.artifact || !selectedText || !comment) continue;
+    parts.push(`${selectedText}\ncomment: ${comment}`);
   }
   return parts.filter(Boolean).join("\n\n");
 }

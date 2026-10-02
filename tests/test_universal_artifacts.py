@@ -149,7 +149,7 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
             assert not projected["can_open"]
         else:
             assert content.status_code == viewer.status_code == 200
-            assert ('id="pending"' in viewer.text) is commentable
+            assert ('id="composer"' in viewer.text) is commentable
             if projected["view"] in {"markdown", "text"}:
                 assert "<script" not in content.text and "<img" not in content.text
                 assert "href=" not in content.text and "&lt;script&gt;" in content.text

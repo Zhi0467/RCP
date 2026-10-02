@@ -95,8 +95,10 @@ export function visibleUnreadChatId(
   view: AppView,
   selectedChatId: string | null,
   experimentChatId: string | null,
+  agentsBoard = false,
 ): string | null {
-  if (view === "chats") return selectedChatId;
+  // The Agents board shows no transcript, so it reads no chat.
+  if (view === "chats") return agentsBoard ? null : selectedChatId;
   if (view === "execution") return experimentChatId;
   return null;
 }
