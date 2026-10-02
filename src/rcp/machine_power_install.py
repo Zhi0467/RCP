@@ -175,7 +175,7 @@ class MachinePowerInstaller:
             if "-128" in error:
                 self.cancelled = True
                 return False
-            for code in ("foreign_file", "other_account", "clear_failed"):
+            for code in ("foreign_file", "other_account", "clear_failed", "owner_busy"):
                 if code in error:
                     raise InstallError(code)
             raise InstallError("admin_failed")
@@ -222,17 +222,44 @@ if [ -e {directory} ]; then
     [ -f {q(str(paths.directory / "owner.lock"))} ] || fail foreign_file
 fi
 publish() {{
-    staged=$(bounded /usr/bin/mktemp "$2.rcp.XXXXXX")
+    staged=$(bounded /usr/bin/mktemp "$work/publish.XXXXXX")
     bounded /bin/cp "$1" "$staged"
-    bounded /usr/sbin/chown root:wheel "$staged"
+    bounded /usr/sbin/chown -h root:wheel "$staged"
     bounded /bin/chmod "$3" "$staged"
-    bounded /bin/mv -f "$staged" "$2"
+    [ ! -L "$2" ] && [ ! -d "$2" ] || fail foreign_file
+    bounded /bin/mv -fh "$staged" "$2"
 }}
 """
+        if not uninstall:
+            parent = q(str(paths.directory.parent))
+            lock_path = q(str(paths.directory / "owner.lock"))
+            script += f"""bounded /usr/sbin/visudo -cf "$work/sudoers"
+[ ! -L {parent} ] || fail foreign_file
+if [ ! -e {parent} ]; then
+    bounded /bin/mkdir -m 755 {parent} || [ -d {parent} ] || fail foreign_file
+fi
+[ ! -L {parent} ] && [ -d {parent} ] || fail foreign_file
+[ "$(bounded /usr/bin/stat -f %u {parent})" = 0 ] || fail foreign_file
+bounded /bin/chmod -h 755 {parent}
+[ "$(bounded /usr/bin/stat -f %Lp {parent})" = 755 ] || fail foreign_file
+[ ! -L {directory} ] || fail foreign_file
+if [ ! -e {directory} ]; then
+    bounded /bin/mkdir -m 755 "$work/{paths.directory.name}"
+    bounded /bin/cp "$work/lock" "$work/{paths.directory.name}/owner.lock"
+    bounded /bin/chmod 644 "$work/{paths.directory.name}/owner.lock"
+    bounded /usr/sbin/chown -h {self.uid} "$work/{paths.directory.name}" "$work/{paths.directory.name}/owner.lock"
+    [ ! -L {directory} ] || fail foreign_file
+    bounded /bin/mv -nh "$work/{paths.directory.name}" {parent}
+fi
+check_file {lock_path} "$work/lock"
+[ -f {lock_path} ] || fail foreign_file
+[ ! -L {directory} ] || fail foreign_file
+bounded /usr/sbin/chown -h {self.uid} {directory}
+[ ! -L {lock_path} ] || fail foreign_file
+bounded /usr/sbin/chown -h {self.uid} {lock_path}
+"""
         if rendezvous is not None:
-            script += f"""approved=$(bounded /usr/bin/mktemp /private/tmp/rcp-approved.XXXXXX)
-bounded /bin/chmod 644 "$approved"
-bounded /bin/mv "$approved" {q(str(rendezvous / "approved"))}
+            script += f"""publish "$work/lock" {q(str(rendezvous / "approved"))} 644
 attempt=0
 while [ ! -f {q(str(rendezvous / "ready"))} ]; do
     [ ! -f {q(str(rendezvous / "abort"))} ] || fail owner_busy
@@ -240,19 +267,13 @@ while [ ! -f {q(str(rendezvous / "ready"))} ]; do
     attempt=$((attempt + 1))
     bounded /bin/sleep 1
 done
+check_file {q(str(paths.directory / "owner.lock"))} "$work/lock"
+check_file {sudoers} "$work/sudoers"
+check_file {daemon} "$work/daemon"
+check_file {q(str(paths.directory / "enrollment"))} "$work/enrollment"
 """
         if not uninstall:
-            script += f"""bounded /usr/sbin/visudo -cf "$work/sudoers"
-if [ ! -d {directory} ]; then
-    bounded /bin/mkdir -p {q(str(paths.directory.parent))}
-    staged=$(bounded /usr/bin/mktemp -d {q(str(paths.directory) + ".XXXXXX")})
-    bounded /bin/cp "$work/lock" "$staged/owner.lock"
-    bounded /bin/chmod 644 "$staged/owner.lock"
-    bounded /usr/sbin/chown -R {self.uid} "$staged"
-    bounded /bin/chmod 755 "$staged"
-    bounded /bin/mv "$staged" {directory}
-fi
-bounded /usr/sbin/chown {self.uid} {directory} {q(str(paths.directory / "owner.lock"))}
+            script += f"""[ ! -L {q(str(paths.directory / "installed-ready"))} ] || fail foreign_file
 bounded /bin/rm -f {q(str(paths.directory / "installed-ready"))}
 publish "$work/enrollment" {q(str(paths.directory / "enrollment"))} 644
 bounded /bin/mkdir -p {q(str(paths.sudoers.parent))}
@@ -279,6 +300,7 @@ done
 """
         if uninstall:
             script += f"""bounded /bin/launchctl bootout system/{LABEL}
+[ ! -L {sudoers} ] && [ ! -L {daemon} ] || fail foreign_file
 bounded /bin/rm -f {sudoers} {daemon}
 """
             # Only the directory and its immutable lock inode remain.
@@ -292,7 +314,8 @@ bounded /bin/rm -f {sudoers} {daemon}
                 "enrollment",
                 "installed-ready",
             ):
-                script += f"bounded /bin/rm -f {q(str(paths.directory / name))}\n"
+                target = q(str(paths.directory / name))
+                script += f"[ ! -L {target} ] || fail foreign_file\nbounded /bin/rm -f {target}\n"
         else:
             script += (
                 f'publish "$work/enrollment" {q(str(paths.directory / "installed-ready"))} 644\n'
@@ -312,7 +335,9 @@ bounded /bin/rm -f {sudoers} {daemon}
 
         def acquire() -> None:
             nonlocal lock
-            if self.paths.directory.exists():
+            if not self.paths.directory.exists():
+                raise InstallError("owner_busy")
+            if lock is None:
                 lock_path = self.paths.directory / "owner.lock"
                 fd = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW)
                 lock = os.fdopen(fd, "r")
@@ -322,43 +347,42 @@ bounded /bin/rm -f {sudoers} {daemon}
                     raise InstallError("owner_busy") from exc
 
         try:
-            if uninstall:
-                with tempfile.TemporaryDirectory(prefix="rcp-power-authorize-") as temporary:
-                    rendezvous = Path(temporary)
-                    done = threading.Event()
-                    outcome: list[bool | BaseException] = []
-
-                    def authorize() -> None:
-                        try:
-                            outcome.append(self._admin(self._script(True, rendezvous)))
-                        except BaseException as exc:
-                            outcome.append(exc)
-                        finally:
-                            done.set()
-
-                    threading.Thread(target=authorize, daemon=True).start()
-                    deadline = time.monotonic() + MACHINE_POWER_ADMIN_TIMEOUT_SECONDS
-                    try:
-                        while not done.is_set() and not (rendezvous / "approved").exists():
-                            if time.monotonic() >= deadline:
-                                raise InstallError("admin_failed")
-                            done.wait(0.02)
-                        if (rendezvous / "approved").exists():
-                            if before_remove is not None:
-                                before_remove()
-                            acquire()
-                            (rendezvous / "ready").touch()
-                        if not done.wait(max(0, deadline - time.monotonic())):
-                            raise InstallError("admin_failed")
-                    except BaseException:
-                        (rendezvous / "abort").touch()
-                        raise
-                    if isinstance(outcome[0], BaseException):
-                        raise outcome[0]
-                    accepted = outcome[0]
-            else:
+            if not uninstall and self.paths.directory.exists():
                 acquire()
-                accepted = self._admin(self._script(False))
+            with tempfile.TemporaryDirectory(prefix="rcp-power-authorize-") as temporary:
+                rendezvous = Path(temporary)
+                done = threading.Event()
+                outcome: list[bool | BaseException] = []
+
+                def authorize() -> None:
+                    try:
+                        outcome.append(self._admin(self._script(uninstall, rendezvous)))
+                    except BaseException as exc:
+                        outcome.append(exc)
+                    finally:
+                        done.set()
+
+                threading.Thread(target=authorize, daemon=True).start()
+                deadline = time.monotonic() + MACHINE_POWER_ADMIN_TIMEOUT_SECONDS
+                try:
+                    while not done.is_set() and not (rendezvous / "approved").exists():
+                        if time.monotonic() >= deadline:
+                            raise InstallError("admin_failed")
+                        done.wait(0.02)
+                    if (rendezvous / "approved").exists():
+                        if uninstall and before_remove is not None:
+                            before_remove()
+                        if lock is None:
+                            acquire()
+                        (rendezvous / "ready").touch()
+                    if not done.wait(max(0, deadline - time.monotonic())):
+                        raise InstallError("admin_failed")
+                except BaseException:
+                    (rendezvous / "abort").touch()
+                    raise
+                if isinstance(outcome[0], BaseException):
+                    raise outcome[0]
+                accepted = outcome[0]
             if not accepted:
                 return status
             return self.status()

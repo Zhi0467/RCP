@@ -224,7 +224,6 @@ class MachinePowerController:
         self._external = False
         self._lid_active = False
         self._running = False
-        self._result_generation = None
         self._release_cause = None
         with store.connection() as connection:
             connection.execute(
@@ -241,6 +240,7 @@ class MachinePowerController:
             "last_release": None,
             "cleanup_failure": None,
             "battery_blocked": False,
+            "result_generation": None,
         }
         if row:
             self._state.update(json.loads(row[0]))
@@ -393,7 +393,15 @@ class MachinePowerController:
     def stop(self):
         self._stop.set()
         with self._lock:
-            if self._running or self._idle is not None or self._watchdog is not None:
+            if (
+                self._running
+                or self._idle is not None
+                or self._watchdog is not None
+                or (
+                    self.platform == "macos"
+                    and read_record(self.directory / "activation").get("set") == "1"
+                )
+            ):
                 self._running = False
                 try:
                     self._release("shutdown")
@@ -456,6 +464,17 @@ class MachinePowerController:
             return False
         self._owner = fd
         self._external = False
+        # The old executor has released ownership; consume its durable outcome
+        # before allocating a generation or deciding whether re-arming is safe.
+        records = [
+            read_record(self.directory / name) for name in ("activation", "result", "revoked")
+        ]
+        previous_generation = self._generation
+        self._generation = int(records[1].get("generation", 0))
+        self._consume_result()
+        self._generation = max(
+            previous_generation, *(int(record.get("generation", 0)) for record in records)
+        )
         return True
 
     def _start_watchdog(self, *, recover=False):
@@ -465,7 +484,6 @@ class MachinePowerController:
             max(self._generation, int(old.get("generation", 0)), int(revoked.get("generation", 0)))
             + 1
         )
-        self._result_generation = None
         self._identity = self.identity_reader()
         source = Path(__file__).with_name("machine_power_watchdog.sh")
         script = self.directory / source.name
@@ -549,11 +567,10 @@ class MachinePowerController:
         generation = str(self._generation)
         if result.get("generation") != generation or result.get("complete") != "1":
             return False
-        if self._result_generation == generation:
+        if self._state["result_generation"] == generation:
             return True
-        self._result_generation = generation
         cause = result.get("cause")
-        if cause in {"heartbeat_stale", "watchdog_lost", "reading_failed"}:
+        if cause:
             self._record_release(cause)
         # Both failures remain independently recorded in the durable watchdog
         # result. The single API warning prioritizes the failed clear remedy.
@@ -562,6 +579,8 @@ class MachinePowerController:
                 "clear_failed" if result.get("clear_failed") == "1" else "sleep_failed"
             )
         self._lid_active = False
+        self._state["result_generation"] = generation
+        self._save_best_effort()
         return True
 
     def _cleanup_failed(self, kind):
@@ -605,13 +624,22 @@ class MachinePowerController:
             self._record_release(cause)  # Best effort, before any cleanup.
         # Publish off before waiting for the idle assertion to terminate.
         try:
+            if (
+                self._watchdog is None
+                and self.installer.status().install_problem in {None, "partial"}
+                and self._acquire()
+            ):
+                if read_record(self.directory / "activation").get("set") == "1":
+                    self._start_watchdog(recover=True)
+                else:
+                    self._close_owner()
             if self._watchdog is not None:
-                if (
-                    self._watchdog.poll() is not None
-                    and self._desired == "on"
-                    and not self._consume_result()
-                ):
-                    self._replace_lost_watchdog()
+                if self._watchdog.poll() is not None:
+                    complete = self._consume_result()
+                    if read_record(self.directory / "activation").get("set") == "1" or (
+                        self._desired == "on" and not complete
+                    ):
+                        self._replace_lost_watchdog()
                 if self._watchdog is not None:
                     self._heartbeat("off", cause)
         finally:
@@ -637,7 +665,8 @@ class MachinePowerController:
         complete = self._consume_result()
         if self._watchdog is not None and self._watchdog.poll() is not None:
             was_on = self._desired == "on"
-            if was_on and not complete:
+            owned = read_record(self.directory / "activation").get("set") == "1"
+            if owned or (was_on and not complete):
                 self._record_release("watchdog_lost")
                 self._replace_lost_watchdog()
                 self._release("watchdog_lost")
@@ -687,16 +716,19 @@ class MachinePowerController:
         installation = self.installer.status()
         installed = installation.installed
         if self._watchdog is None:
+            can_recover = installation.install_problem in {None, "partial"}
+            if can_recover and not self._acquire():
+                return
             activation = read_record(self.directory / "activation")
             owned = activation.get("set") == "1"
             self._external = readings.get("flag", False) and not owned
             # Recover a previously owned flag even with partial installation or
             # failed safety inputs. The replacement executor receives only off.
-            can_recover = installation.install_problem in {None, "partial"}
-            if owned and can_recover and self._acquire():
+            if owned and can_recover:
                 self._start_watchdog(recover=True)
                 self._release(cause or "watchdog_lost")
                 return
+            self._close_owner()
         # A failed reading only blocks lid mode. The idle hold is an ordinary
         # assertion that macOS still overrides at low battery, and a desktop Mac
         # has no lid to read.
@@ -721,6 +753,9 @@ class MachinePowerController:
                 self._lid_active = False
             return
         if not installed or self._external or not self._acquire():
+            return
+        if self._state["latched"]:
+            self._close_owner()
             return
         if self._watchdog is None:
             self._start_watchdog()

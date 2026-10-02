@@ -554,8 +554,11 @@ def test_armed_watchers_alone_are_not_demand(demand_inputs):
     assert power.demand_snapshot(demand_inputs.store, demand_inputs.background) == []
 
 
-def test_shutdown_replaces_dead_watchdog_to_release(machine):
+@pytest.mark.parametrize("off_published", [False, True])
+def test_shutdown_replaces_dead_watchdog_to_release(machine, off_published):
     machine.activate()
+    if off_published:
+        machine.controller._release("disabled")
     machine.controller._watchdog.returncode = -9
     machine.controller.stop()
     heartbeat = power.read_record(machine.root / "heartbeat")
@@ -725,3 +728,39 @@ def test_admin_clear_failure_uses_persisted_cleanup_warning(machine, action):
         "kind": "clear_failed",
         "command": "sudo pmset -a disablesleep 0",
     }
+
+
+@pytest.mark.parametrize("failure", ["sleep_failed", "clear_failed", "thermal"])
+def test_restart_consumes_previous_executor_result_before_rearming(machine, failure):
+    machine.activate()
+    machine.controller._release("thermal" if failure == "thermal" else "shutdown")
+    machine.execute(clear_failed=failure == "clear_failed", sleep_failed=failure == "sleep_failed")
+    # Simulate backend death without consuming the completed executor result.
+    machine.controller._close_owner()
+    machine.controller = machine.new_controller()
+    machine.controller.safety_pass()
+    status = machine.controller.status()
+    assert status["latched"] == ("thermal" if failure == "thermal" else "cleanup_failure")
+    assert power.read_record(machine.root / "heartbeat")["desired"] == "off"
+    if failure == "clear_failed":
+        assert power.read_record(machine.root / "heartbeat")["generation"] == "2"
+        machine.execute()
+        machine.controller.safety_pass()
+    assert (
+        status["cleanup_failure"] is None
+        if failure == "thermal"
+        else status["cleanup_failure"]["kind"] == failure
+    )
+    machine.controller.update({"lid_mode": True})
+    machine.controller.stop()
+    machine.controller = machine.new_controller()
+    machine.controller.safety_pass()
+    assert machine.controller.status()["latched"] is None
+
+
+def test_shutdown_recovers_previous_owned_activation_without_a_safety_pass(machine):
+    power.write_record(machine.root / "activation", {"generation": 8, "set": 1})
+    machine.flag = True
+    machine.controller.stop()
+    assert machine.flag is False
+    assert power.read_record(machine.root / "heartbeat")["cause"] == "shutdown"

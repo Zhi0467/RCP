@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createServer } from "vite";
 import { machinePowerWarnings, showMachinePowerCard } from "../src/machinePower.ts";
 import {
   installMachinePower,
@@ -63,4 +64,64 @@ test("machine power requests use the contract routes and return backend status",
     ["/api/machine-power/install", "POST", null],
     ["/api/machine-power/uninstall", "POST", null],
   ]);
+});
+
+test("Settings polling observes activation and a later latch, then stops on cleanup", async (t) => {
+  const server = await createServer({
+    root: new URL("..", import.meta.url).pathname,
+    configFile: false,
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false },
+    optimizeDeps: { noDiscovery: true },
+  });
+  let scheduled = null;
+  let data = status;
+  const received = [];
+  const errors = [];
+  t.mock.method(globalThis, "fetch", async () => Response.json(data));
+  const previousWindow = globalThis.window;
+  globalThis.window = {
+    setTimeout(callback, delay) {
+      scheduled = { callback, delay };
+      return 1;
+    },
+    clearTimeout() {
+      scheduled = null;
+    },
+  };
+  try {
+    const { startMachinePowerPolling } = await server.ssrLoadModule(
+      "/src/hooks/useMachinePower.ts",
+    );
+    const { EXPERIMENT_BOARD_POLL_DELAY_MS } = await server.ssrLoadModule(
+      "/src/hooks/useProjectTabs.ts",
+    );
+    const stop = startMachinePowerPolling(
+      (next) => received.push(next),
+      (error) => errors.push(error),
+      true,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(scheduled.delay, EXPERIMENT_BOARD_POLL_DELAY_MS);
+    assert.equal(received.at(-1).lid_mode.active, false);
+    data = { ...status, lid_mode: { enabled: true, active: true } };
+    scheduled.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.at(-1).lid_mode.active, true);
+    data = { ...status, latched: "thermal" };
+    scheduled.callback();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.at(-1).latched, "thermal");
+    // An in-flight read must not update state or reschedule after unmount.
+    scheduled.callback();
+    stop();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(scheduled, null);
+    assert.equal(received.length, 3);
+    assert.deepEqual(errors, []);
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+    await server.close();
+  }
 });

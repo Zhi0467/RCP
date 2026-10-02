@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import os
+import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -193,3 +197,94 @@ def test_never_clears_or_adopts_unowned_flag(watchdog, fresh_heartbeat):
     assert watchdog.finish() == (1 if fresh_heartbeat else 0)
     assert watchdog.calls() == []
     assert (watchdog.root / "flag").read_text() == "1\n"
+
+
+def test_watchdog_keeps_machine_lock_after_backend_death_until_cleanup(watchdog):
+    root = watchdog.root
+    gate = root / "allow_clear"
+    os.mkfifo(gate)
+    gate_fd = os.open(gate, os.O_RDWR | os.O_NONBLOCK)
+    pmset = root / "pmset"
+    pmset.write_text(
+        pmset.read_text().replace(
+            'echo clear >> "$FAKE_STATE/calls"',
+            'echo clear >> "$FAKE_STATE/calls"\nread release < "$FAKE_STATE/allow_clear"',
+        )
+    )
+    # The sandbox denies /bin/ps; probe the real PID with the shell builtin.
+    (root / "ps").write_text(
+        '#!/bin/sh\nkill -0 "$2" 2>/dev/null || exit 1\ncat "$FAKE_STATE/start"\n'
+    )
+    backend = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            """
+import fcntl
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+from rcp.machine_power import spawn_command
+
+root = Path(sys.argv[1])
+fd = os.open(root / 'owner.lock', os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+pid = os.getpid()
+start = (root / 'start').read_text().strip()
+(root / 'heartbeat').write_text(
+    f'generation=1\\npid={pid}\\nstart={start}\\ndesired=on\\nat={int(time.time())}\\n'
+)
+spawn_command(['/bin/sh', sys.argv[2], str(root), '1', '0.05', '60', '30'], pass_fds=(fd,))
+signal.pause()
+""",
+            str(root),
+            str(SCRIPT),
+        ],
+        env=watchdog.env,
+    )
+    contender_fd = None
+    watchdog_pid = None
+    released = False
+    try:
+        wait_until(lambda: (root / "ack").exists())
+        ack = dict(line.split("=", 1) for line in (root / "ack").read_text().splitlines())
+        watchdog_pid = int(ack["watchdog_pid"])
+        wait_until(lambda: "on" in watchdog.calls())
+        contender_fd = os.open(root / "owner.lock", os.O_RDWR)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(contender_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        backend.kill()
+        assert backend.wait(timeout=5) == -signal.SIGKILL
+        wait_until(lambda: "clear" in watchdog.calls())
+        assert (root / "flag").read_text().strip() == "1"
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(contender_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(gate_fd, b"release\n")
+
+        def acquire_after_cleanup():
+            try:
+                fcntl.flock(contender_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            return True
+
+        wait_until(acquire_after_cleanup)
+        released = True
+        assert (root / "flag").read_text().strip() == "0"
+        result = (root / "result").read_text()
+        assert "cause=heartbeat_stale" in result
+        assert "complete=1" in result
+        assert "clear_failed=0" in result
+    finally:
+        if backend.poll() is None:
+            backend.kill()
+            backend.wait(timeout=5)
+        os.write(gate_fd, b"release\n")
+        os.close(gate_fd)
+        if watchdog_pid is not None and not released:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(watchdog_pid, signal.SIGKILL)
+        if contender_fd is not None:
+            os.close(contender_fd)

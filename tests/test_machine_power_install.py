@@ -3,7 +3,9 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
 import subprocess
+import sys
 import threading
 
 import pytest
@@ -19,8 +21,11 @@ from rcp.machine_power_install import (
 
 @pytest.fixture
 def installer(tmp_path):
-    paths = InstallPaths(tmp_path / "machine", tmp_path / "sudoers", tmp_path / "daemon")
+    paths = InstallPaths(tmp_path / "RCP" / "machine", tmp_path / "sudoers", tmp_path / "daemon")
     pmset = tmp_path / "pmset"
+    stat = tmp_path / "stat"
+    stat.write_text('#!/bin/sh\nif [ "$2" = %u ]; then echo 0; else /usr/bin/stat "$@"; fi\n')
+    stat.chmod(0o700)
     pmset.write_text("#!/bin/sh\necho ' SleepDisabled 0'\n")
     pmset.chmod(0o700)
 
@@ -33,6 +38,7 @@ def installer(tmp_path):
         # replaced. Nothing can reach host power settings or system directories.
         for command in ("/usr/sbin/chown", "/usr/sbin/visudo", "/bin/launchctl"):
             script = script.replace(command, "/usr/bin/true")
+        script = script.replace("/usr/bin/stat", str(stat))
         script = script.replace("/usr/bin/pmset", str(pmset))
         # Keep content embedded in sudoers and plist canonical; only execution
         # lines use the fake pmset executable.
@@ -85,6 +91,7 @@ def test_partial_install_repair(installer, missing):
 
 @pytest.mark.parametrize("name", ["sudoers", "daemon", "directory"])
 def test_foreign_file_refused(installer, name):
+    getattr(installer.paths, name).parent.mkdir(parents=True, exist_ok=True)
     getattr(installer.paths, name).write_text("foreign")
     assert installer.status().install_problem == "foreign_file"
     with pytest.raises(InstallError, match="foreign_file"):
@@ -150,7 +157,7 @@ def test_admin_revalidates_foreign_file_after_prompt(installer):
 
 
 def test_failed_clear_keeps_installation_for_repair(installer):
-    fake_pmset = installer.paths.directory.parent / "pmset"
+    fake_pmset = installer.paths.sudoers.parent / "pmset"
     fake_pmset.write_text("#!/bin/sh\necho 'SleepDisabled 1'\n")
     with pytest.raises(InstallError, match="clear_failed"):
         installer.install()
@@ -218,3 +225,71 @@ def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
         release.set()
         assert finished.wait(1)
     assert installer.status().installed
+
+
+def test_fresh_install_parent_is_traversable(installer):
+    assert not installer.paths.directory.parent.exists()
+    assert installer.install().installed
+    assert installer.paths.directory.parent.stat().st_mode & 0o777 == 0o755
+
+
+def test_repair_lock_symlink_swap_does_not_modify_target(installer, tmp_path):
+    installer.install()
+    target = tmp_path / "protected"
+    target.write_text("protected")
+    target.chmod(0o600)
+    lock = installer.paths.directory / "owner.lock"
+    original = installer.run
+
+    def run(argv, timeout):
+        script = json.loads(
+            argv[2].removeprefix("do shell script ").removesuffix(" with administrator privileges")
+        )
+        # Swap after provenance validation, immediately before the ownership
+        # operation. The fake ownership command rejects any following chown.
+        ownership = f"bounded /usr/sbin/chown -h {installer.uid} {shlex.quote(str(lock))}"
+        attack = (
+            f"/bin/rm {shlex.quote(str(lock))}\n"
+            f"/bin/ln -s {shlex.quote(str(target))} {shlex.quote(str(lock))}\n"
+        )
+        script = script.replace(ownership, attack + ownership)
+        fake_chown = tmp_path / "chown"
+        fake_chown.write_text('#!/bin/sh\n[ "$1" = -h ] || exit 99\n/usr/bin/true\n')
+        fake_chown.chmod(0o700)
+        script = script.replace("/usr/sbin/chown", str(fake_chown))
+        return original(
+            [*argv[:2], f"do shell script {json.dumps(script)} with administrator privileges"],
+            timeout,
+        )
+
+    installer.run = run
+    with pytest.raises(InstallError, match="foreign_file"):
+        installer.install()
+    assert target.read_text() == "protected"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_first_install_holds_machine_lock_before_loading_daemon(installer, tmp_path):
+    probe = tmp_path / "launchctl"
+    observed = tmp_path / "excluded"
+    probe.write_text(
+        f"#!{sys.executable}\n"
+        "import fcntl\n"
+        "from pathlib import Path\n"
+        f"with Path({str(installer.paths.directory / 'owner.lock')!r}).open() as lock:\n"
+        "    try:\n"
+        "        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    except BlockingIOError:\n"
+        f"        Path({str(observed)!r}).touch()\n"
+        "    else:\n"
+        "        raise SystemExit(99)\n"
+    )
+    probe.chmod(0o700)
+    original = installer.run
+
+    def run(argv, timeout):
+        return original([*argv[:2], argv[2].replace("/bin/launchctl", str(probe))], timeout)
+
+    installer.run = run
+    assert installer.install().installed
+    assert observed.exists()
