@@ -194,10 +194,12 @@ class QuestionStoreMixin:
                 AND (? IS NULL OR project_id=?) AND client_receipt_revision IS NULL
                 AND (followup_operation_id IS NULL OR EXISTS (
                     SELECT 1 FROM graph_runs WHERE operation_id=followup_operation_id
-                    AND status='queued'
+                    AND status IN ('queued','succeeded')
                 )) ORDER BY created_at,question_id""",
                 (project_id, project_id),
             ).fetchall()
+        # A succeeded follow-up stays until its receipt is replayed, in case the process
+        # stopped between its settlement and the receipt.
         return [_question_record(row) for row in rows]
 
     def mark_question_answer_projected(self, question_id: str, answer_revision: int) -> None:
