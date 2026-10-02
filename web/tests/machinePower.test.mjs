@@ -61,8 +61,8 @@ test("machine power requests use the contract routes and return backend status",
     ["/api/machine-power", "GET", null],
     ["/api/machine-power", "PUT", { idle_hold: false }],
     ["/api/machine-power", "PUT", { lid_mode: true }],
-    ["/api/machine-power/install", "POST", {}],
-    ["/api/machine-power/uninstall", "POST", {}],
+    ["/api/machine-power/install", "POST", null],
+    ["/api/machine-power/uninstall", "POST", null],
   ]);
 });
 

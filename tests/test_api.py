@@ -500,6 +500,31 @@ def test_remote_stage_sweep_starts_after_health_is_available(
             release.set()
 
 
+@pytest.mark.parametrize(
+    ("headers", "content", "refused"),
+    [
+        ({}, b"", True),
+        ({"content-type": "application/x-www-form-urlencoded"}, b"a=1", True),
+        ({"content-type": "text/plain"}, b"{}", True),
+        ({"content-type": "multipart/form-data; boundary=x"}, b"--x--", True),
+        ({"content-type": "application/json"}, b"{}", False),
+        ({"content-type": "application/octet-stream"}, b"proof", False),
+    ],
+)
+def test_personal_post_refuses_requests_a_cross_site_page_can_send(
+    app, headers, content, refused
+) -> None:
+    """A page can POST to the loopback port without a preflight only with a simple type."""
+
+    response = TestClient(app).post("/api/no-such-route", headers=headers, content=content)
+    if refused:
+        assert response.status_code == 415
+        assert response.json()["detail"]["code"] == "personal_simple_request_refused"
+    else:
+        # Past the guard, routing answers; the route does not exist.
+        assert response.status_code in {404, 405}
+
+
 def test_stale_instance_guard_rejects_mutation_before_side_effect(app) -> None:
     client = TestClient(app)
     project_id = app.state.default_project_id
@@ -1588,7 +1613,7 @@ def test_seed_can_pause_while_waiting_for_canonical_owner(app, monkeypatch) -> N
     operation_id = started.json()["operation_id"]
     assert lock_waiting.wait(timeout=2)
 
-    paused_request = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
+    paused_request = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause", json={})
 
     assert paused_request.status_code == 202
     paused = _wait_for_status(client, project_id, operation_id, {"paused"})
@@ -1796,7 +1821,7 @@ def test_legacy_run_with_caller_session_cannot_resume(app) -> None:
     )
 
     response = TestClient(app).post(
-        f"/api/projects/{project_id}/tasks/{legacy.operation_id}/resume"
+        f"/api/projects/{project_id}/tasks/{legacy.operation_id}/resume", json={}
     )
 
     assert response.status_code == 409
@@ -2495,7 +2520,7 @@ def test_background_seed_can_pause_inspect_and_resume(app) -> None:
     operation_id = started.json()["operation_id"]
     _wait_for_status(client, project_id, operation_id, {"running"})
 
-    pause = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
+    pause = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause", json={})
 
     assert pause.status_code == 202
     paused = _wait_for_status(client, project_id, operation_id, {"paused"})
@@ -2513,7 +2538,7 @@ def test_background_seed_can_pause_inspect_and_resume(app) -> None:
         yield _event_frame(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = resumed_stream
-    resumed = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/resume")
+    resumed = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/resume", json={})
 
     assert resumed.status_code == 202
     resumed_id = resumed.json()["operation_id"]
@@ -3259,7 +3284,9 @@ def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, mon
     paused = _wait_for_run(client, project_id, started.json()["operation_id"])
     assert paused["status"] == "paused"
 
-    resumed = client.post(f"/api/projects/{project_id}/tasks/{paused['operation_id']}/resume")
+    resumed = client.post(
+        f"/api/projects/{project_id}/tasks/{paused['operation_id']}/resume", json={}
+    )
     completed = _wait_for_run(client, project_id, resumed.json()["operation_id"])
 
     assert completed["status"] == "succeeded"
@@ -3677,7 +3704,7 @@ def test_chat_artifacts_are_bounded_sandboxed_and_independent(
     assert html_url in legacy_preview.text
     assert client.head(legacy_preview_url).content == b""
 
-    kept = client.post(f"{base}/{by_name['preview.html']['artifact_id']}/keep")
+    kept = client.post(f"{base}/{by_name['preview.html']['artifact_id']}/keep", json={})
     assert kept.status_code == 200
     store = app.state.background_tasks.store
     artifact_id = by_name["preview.html"]["artifact_id"]
@@ -4435,7 +4462,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
     operation_id = started.json()["operation_id"]
     _wait_for_status(client, app.state.default_project_id, operation_id, {"running"})
     paused_response = client.post(
-        f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}/pause"
+        f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}/pause", json={}
     )
 
     assert paused_response.status_code == 202
@@ -4450,7 +4477,7 @@ def test_paused_paper_coach_resumes_from_task_checkpoint_before_session_record(
     assert service.paper.sessions() == []
 
     resumed_response = client.post(
-        f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}/resume"
+        f"/api/projects/{app.state.default_project_id}/tasks/{operation_id}/resume", json={}
     )
 
     assert resumed_response.status_code == 202
@@ -4864,14 +4891,16 @@ def test_resumed_chat_patch_is_applied_to_live_current_state(app, tmp_path) -> N
     _wait_for_status(client, project_id, operation_id, {"running"})
     original = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
     assert original["request"]["mode"] == "work"
-    client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
+    client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause", json={})
     _wait_for_status(client, project_id, operation_id, {"paused"})
     assert not any(path.name == "conversations" for path in launcher.read_dirs[0])
     assert [item.name for item in (launcher.workspaces[0] / "turns").iterdir()] == [operation_id]
 
     # The human works on the graph while the turn is paused.
     append_fixture_patch(service, refresh_patch("rq/landed-while-paused"))
-    resumed_response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/resume")
+    resumed_response = client.post(
+        f"/api/projects/{project_id}/tasks/{operation_id}/resume", json={}
+    )
 
     assert resumed_response.status_code == 202
     resumed = _wait_for_run(client, project_id, resumed_response.json()["operation_id"])
@@ -4929,7 +4958,7 @@ def test_retried_chat_gets_a_new_artifact_scope_in_the_same_conversation_stage(
     )
     failed = _wait_for_run(client, project_id, started.json()["operation_id"])
     retried_response = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry"
+        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
     )
     retried = _wait_for_run(client, project_id, retried_response.json()["operation_id"])
 
@@ -6095,7 +6124,7 @@ def test_background_work_can_pause_while_waiting_for_canonical_state(
     active = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
     assert active["status"] == "running"
     assert active["phase"] == "waiting"
-    paused_request = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause")
+    paused_request = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause", json={})
 
     assert paused_request.status_code == 202
     paused = _wait_for_status(client, project_id, operation_id, {"paused"})
@@ -6166,7 +6195,7 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
         lambda _record: False,
     )
     unowned = client.post(
-        f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update"
+        f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update", json={}
     )
     assert unowned.status_code == 409
     still_repairable = client.get(
@@ -6181,11 +6210,11 @@ def test_background_work_rejection_succeeds_and_manual_repair_is_idempotent(
     append_fixture_patch(service, refresh_patch("rq/landed-before-manual-repair"))
 
     repaired_response = client.post(
-        f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update"
+        f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update", json={}
     )
     assert repaired_response.status_code == 202
     duplicate = client.post(
-        f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update"
+        f"/api/projects/{project_id}/tasks/{parent['operation_id']}/repair-graph-update", json={}
     )
     assert duplicate.status_code == 409
     repaired = _wait_for_run(client, project_id, repaired_response.json()["operation_id"])
@@ -6277,7 +6306,7 @@ def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     revision = service.history.state().revision
 
     applied = client.post(
-        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
     )
     assert applied.status_code == 200, applied.text
     body = applied.json()
@@ -6288,7 +6317,7 @@ def test_unreachable_work_apply_is_unavailable_and_apply_again_applies_once(
     assert store.agent_task_patch_output(operation_id) is None
 
     repeated = client.post(
-        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
     )
     assert repeated.status_code == 409
     assert service.history.state().revision == revision + 1
@@ -6327,7 +6356,7 @@ def test_apply_again_records_an_unknown_commit_that_landed_without_appending_twi
 
     monkeypatch.setattr(service.history, "load_patches", arm_materialization_failure)
     unconfirmed = client.post(
-        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
     )
     assert unconfirmed.status_code == 200, unconfirmed.text
     update = unconfirmed.json()["result"]["graph_update"]
@@ -6335,7 +6364,7 @@ def test_apply_again_records_an_unknown_commit_that_landed_without_appending_twi
     assert unconfirmed.json()["can_apply_again"] is True
 
     recorded = client.post(
-        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
     )
     assert recorded.status_code == 200, recorded.text
     update = recorded.json()["result"]["graph_update"]
@@ -6389,7 +6418,7 @@ def test_apply_again_rechecks_for_a_later_applied_turn_under_the_run_lock(
 
     monkeypatch.setattr(store, "later_chat_turn_may_have_committed", not_yet)
     refused = client.post(
-        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
     )
     assert refused.status_code == 409
     assert service.history.state().revision == revision
@@ -6420,7 +6449,7 @@ def test_apply_again_failing_before_the_history_check_keeps_commit_certainty(
     monkeypatch.setattr(service.history.workspace, failing, unreachable)
     for _attempt in range(2):
         failed = client.post(
-            f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+            f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
         )
         assert failed.status_code == 200, failed.text
         update = failed.json()["result"]["graph_update"]
@@ -6477,7 +6506,7 @@ def test_apply_again_refuses_after_a_later_turn_that_committed_or_may_have(
         is False
     )
     refused = client.post(
-        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
     )
     assert refused.status_code == 409
     assert service.history.state().revision == revision
@@ -6516,7 +6545,7 @@ def test_apply_again_records_a_landed_unknown_commit_after_a_later_applied_turn(
     revision = service.history.state().revision
 
     recorded = client.post(
-        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again"
+        f"/api/projects/{project_id}/tasks/{operation_id}/apply-graph-update-again", json={}
     )
     assert recorded.status_code == 200, recorded.text
     update = recorded.json()["result"]["graph_update"]
@@ -7348,7 +7377,9 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     monkeypatch.setattr("rcp.api.app.start_watcher_notification", unexpected_admission)
 
     for endpoint, operation_id in operation_ids.items():
-        response = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/{endpoint}")
+        response = client.post(
+            f"/api/projects/{project_id}/tasks/{operation_id}/{endpoint}", json={}
+        )
         assert response.status_code == 409
         assert "no longer exists" in response.json()["detail"]
 

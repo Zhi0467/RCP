@@ -141,7 +141,7 @@ def test_completed_deletion_refuses_cached_paper_writer(manifest, tmp_path) -> N
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     client = TestClient(app)
-    assert client.post(f"/api/projects/{project_id}/paper/create").status_code == 200
+    assert client.post(f"/api/projects/{project_id}/paper/create", json={}).status_code == 200
 
     deleted = client.delete(f"/api/projects/{project_id}")
     response = client.put(

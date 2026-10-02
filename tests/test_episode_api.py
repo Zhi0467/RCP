@@ -432,7 +432,7 @@ def test_episode_list_start_and_stop_use_only_the_canonical_surface(manifest, tm
         )
         assert legacy_body.status_code == 422
 
-        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode_id}/stop")
+        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode_id}/stop", json={})
         assert stopped.status_code == 200
         assert stopped.json()["status"] == "stopped"
         assert stopped.json()["ending"] == "stopped"
@@ -487,7 +487,9 @@ def test_stopping_episode_recovery_controls_execute_exact_allocation(
             status=status,
             stage=stage,
         )
-        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        stopped = client.post(
+            f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop", json={}
+        )
         assert stopped.status_code == 200, stopped.text
         projected_root = next(
             task for task in stopped.json()["tasks"] if task["operation_id"] == root.operation_id
@@ -495,7 +497,9 @@ def test_stopping_episode_recovery_controls_execute_exact_allocation(
         assert projected_root[f"can_{action}"] is True
         assert projected_root["can_pause"] is False
 
-        recovered = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}")
+        recovered = client.post(
+            f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}", json={}
+        )
         assert recovered.status_code == 202, recovered.text
         child_id = recovered.json()["operation_id"]
         child = wait_for_task(store, child_id, expect="succeeded")
@@ -551,10 +555,14 @@ def test_stopping_episode_remote_outage_preserves_recovery(
             stage=stage,
             stage_host="worker.example",
         )
-        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        stopped = client.post(
+            f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop", json={}
+        )
         assert stopped.status_code == 200, stopped.text
 
-        unavailable = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}")
+        unavailable = client.post(
+            f"/api/projects/{project_id}/tasks/{root.operation_id}/{action}", json={}
+        )
 
     assert unavailable.status_code == 503, unavailable.text
     assert unavailable.json() == {
@@ -619,11 +627,15 @@ def test_stopping_episode_unusable_checkpoint_is_abandoned_and_settled(
                 "provider_terminal_error",
                 {"classification": "session_limit"},
             )
-        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        stopped = client.post(
+            f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop", json={}
+        )
         assert stopped.status_code == 200, stopped.text
         assert stopped.json()["status"] == "stopping"
 
-        refused = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/retry")
+        refused = client.post(
+            f"/api/projects/{project_id}/tasks/{root.operation_id}/retry", json={}
+        )
 
     assert refused.status_code == 409, refused.text
     assert "cannot start a fresh provider session" in refused.json()["detail"]
@@ -690,10 +702,14 @@ def test_stopping_episode_known_failure_precedes_remote_retry_probes(
             unreachable_remote_stage,
         )
         monkeypatch.setattr(service.launcher, "readiness", unreachable_readiness)
-        stopped = client.post(f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop")
+        stopped = client.post(
+            f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop", json={}
+        )
         assert stopped.status_code == 200, stopped.text
 
-        refused = client.post(f"/api/projects/{project_id}/tasks/{root.operation_id}/retry")
+        refused = client.post(
+            f"/api/projects/{project_id}/tasks/{root.operation_id}/retry", json={}
+        )
 
     assert refused.status_code == 409, refused.text
     assert "native provider session reached its limit" in refused.json()["detail"]
@@ -745,9 +761,9 @@ def test_retry_stop_during_missing_remote_stage_probe_abandons_and_settles(
         stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                retry = executor.submit(client.post, retry_url)
+                retry = executor.submit(client.post, retry_url, json={})
                 assert probe_started.wait(timeout=2)
-                stopped = client.post(stop_url)
+                stopped = client.post(stop_url, json={})
                 assert stopped.status_code == 200, stopped.text
                 assert stopped.json()["status"] == "stopping"
                 release_probe.set()
@@ -817,9 +833,9 @@ def test_clean_retry_stop_during_final_admission_abandons_and_settles(
         stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                retry = executor.submit(client.post, retry_url)
+                retry = executor.submit(client.post, retry_url, json={})
                 assert admission_started.wait(timeout=2)
-                stopped = client.post(stop_url)
+                stopped = client.post(stop_url, json={})
                 assert stopped.status_code == 200, stopped.text
                 assert stopped.json()["status"] == "stopping"
                 release_admission.set()
@@ -862,16 +878,16 @@ def test_episode_pause_endpoint_obeys_the_atomic_stop_ordering(
         pause_url = f"/api/projects/{project_id}/tasks/{root.operation_id}/pause"
         stop_url = f"/api/projects/{project_id}/episodes/{episode.episode_id}/stop"
         if order == "stop_then_pause":
-            stopped = client.post(stop_url)
-            paused = client.post(pause_url)
+            stopped = client.post(stop_url, json={})
+            paused = client.post(pause_url, json={})
             assert stopped.status_code == 200, stopped.text
             assert paused.status_code == 409, paused.text
             assert "parent episode is stopping or ended" in paused.json()["detail"]
             task = store.agent_task(root.operation_id)
             assert task is not None and task.status == "queued"
         else:
-            paused = client.post(pause_url)
-            stopped = client.post(stop_url)
+            paused = client.post(pause_url, json={})
+            stopped = client.post(stop_url, json={})
             assert paused.status_code == 202, paused.text
             assert paused.json()["status"] == "pausing"
             assert stopped.status_code == 200, stopped.text
@@ -1080,7 +1096,7 @@ def test_report_save_is_retired_without_repository_writes(manifest, tmp_path) ->
     with TestClient(app) as client:
         assert (
             client.post(
-                f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save"
+                f"/api/projects/{project_id}/episodes/{episode.episode_id}/report/save", json={}
             ).status_code
             == 405
         )

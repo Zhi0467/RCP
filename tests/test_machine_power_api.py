@@ -122,7 +122,7 @@ def test_cancelled_admin_prompt_preserves_status(tmp_path, mac_power, action):
         before = client.get("/api/machine-power").json()
         # A cross-site HTML form cannot send JSON, so it never reaches the prompt.
         form = client.post("/api/machine-power/" + action, data={"x": "1"})
-        assert form.status_code == 422
+        assert form.status_code == 415
         getattr(mac_power, action).assert_not_called()
         response = client.post("/api/machine-power/" + action, json={})
         assert response.status_code == 200

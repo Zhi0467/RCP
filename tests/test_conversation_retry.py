@@ -486,7 +486,7 @@ def test_same_provider_work_retry_applies_semantically_valid_patch_to_live_state
 
     append_fixture_patch(service, refresh_patch("rq/landed-before-work-retry"))
     retried_response = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry"
+        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
     )
     assert retried_response.status_code == 202
     retried = wait_for_task_response(client, project_id, retried_response.json()["operation_id"])
@@ -723,7 +723,7 @@ def test_recovery_delivers_current_guidance_in_the_retained_session(
 
         monkeypatch.setattr(PromptFactory, factory_name, staticmethod(updated_contract))
         response = client.post(
-            f"/api/projects/{project_id}/tasks/{first['operation_id']}/{recovery}"
+            f"/api/projects/{project_id}/tasks/{first['operation_id']}/{recovery}", json={}
         )
         assert response.status_code == 202
         completed = wait_for_task_response(

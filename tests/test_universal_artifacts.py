@@ -170,7 +170,7 @@ def test_routes_capabilities_and_server_context_gate(tmp_path, manifest, name, d
                 json=request,
             )
             assert response.status_code == 422
-        kept = client.post(base + "/keep")
+        kept = client.post(base + "/keep", json={})
         assert kept.status_code == 200
         saved = client.get(f"/api/projects/{task.project_id}/artifacts").json()[0]
         assert saved["view"] == projected["view"]

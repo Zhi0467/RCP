@@ -287,7 +287,7 @@ def test_branch_chat_recovery_uses_original_graph_target(manifest, tmp_path, mon
     assert previous.status == "paused", previous.error
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.mark_episode_stop_skipped(episode.episode_id)
-    recovered = client.post(f"{base}/tasks/{previous.operation_id}/{action}")
+    recovered = client.post(f"{base}/tasks/{previous.operation_id}/{action}", json={})
     assert recovered.status_code == 202, recovered.json()
     task = wait_for_task(store, recovered.json()["operation_id"])
     assert task.status == "succeeded", task.error
@@ -321,7 +321,7 @@ def test_branch_chat_patch_repair_does_not_apply_to_main(manifest, tmp_path, mon
     assert started.status_code == 202, started.json()
     previous = wait_for_task(store, started.json()["operation_id"])
     assert previous.result["graph_update"]["repairable"], previous.result
-    repaired = client.post(f"{base}/tasks/{previous.operation_id}/repair-graph-update")
+    repaired = client.post(f"{base}/tasks/{previous.operation_id}/repair-graph-update", json={})
     assert repaired.status_code == 202, repaired.json()
     task = wait_for_task(store, repaired.json()["operation_id"])
     assert task.status == "succeeded", task.error
@@ -394,7 +394,7 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
     assert store.auto_research_child_experiments(branch_episode.episode_id) == []
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.mark_episode_stop_skipped(branch_episode.episode_id)
-    recovered = client.post(f"{base}/tasks/{previous.operation_id}/resume")
+    recovered = client.post(f"{base}/tasks/{previous.operation_id}/resume", json={})
     assert recovered.status_code == 202, recovered.json()
     task = wait_for_task(store, recovered.json()["operation_id"])
     assert task.status == "succeeded", task.error

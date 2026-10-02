@@ -2128,6 +2128,40 @@ def create_app(
                             }
                         },
                     )
+        if (
+            space_kind == "personal"
+            and request.method == "POST"
+            and (path == "/api" or path.startswith("/api/"))
+        ):
+            # The personal backend listens on a predictable loopback port with no
+            # session. A cross-site page can send a POST without a CORS preflight
+            # only with a simple content type (PUT, PATCH, and DELETE always
+            # preflight), so refuse those; the bounded chat attachment upload is
+            # the one multipart route, as in a team space.
+            media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+            attachment_upload = (
+                request.method == "POST"
+                and len(path_parts) == 7
+                and path_parts[1:3] == ["api", "projects"]
+                and path_parts[4] == "chats"
+                and path_parts[6] == "attachments"
+            )
+            simple = media_type in {
+                "",
+                "application/x-www-form-urlencoded",
+                "multipart/form-data",
+                "text/plain",
+            }
+            if simple and not (attachment_upload and media_type == "multipart/form-data"):
+                return JSONResponse(
+                    status_code=415,
+                    content={
+                        "detail": {
+                            "code": "personal_simple_request_refused",
+                            "message": "Changes require a JSON request.",
+                        }
+                    },
+                )
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             pinned_instance = request.headers.get("X-RCP-Instance-ID")
             if pinned_instance and pinned_instance != identity.instance_id:

@@ -684,11 +684,11 @@ export function updateMachinePower(body: {
 }
 
 export function installMachinePower(): Promise<MachinePowerStatus> {
-  return api("/api/machine-power/install", { method: "POST", body: "{}" });
+  return api("/api/machine-power/install", { method: "POST" });
 }
 
 export function uninstallMachinePower(): Promise<MachinePowerStatus> {
-  return api("/api/machine-power/uninstall", { method: "POST", body: "{}" });
+  return api("/api/machine-power/uninstall", { method: "POST" });
 }
 
 export function fetchQuestions(apiBase: string, ownerKind: "chat" | "episode", ownerId: string) {

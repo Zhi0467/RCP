@@ -749,7 +749,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
     )
     assert second.status_code == 200, second.text
     refused_cross_project = harness.client.post(
-        f"/api/projects/{second.json()['id']}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{second.json()['id']}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert refused_cross_project.status_code == 404
 
@@ -786,7 +786,7 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
     assert admitted_summary["active_merge_task_id"] == first.operation_id
 
     concurrent = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert concurrent.status_code == 409
     assert _episode_payload(harness)["graph_branch"]["active_merge_task_id"] == first.operation_id
@@ -795,13 +795,13 @@ def test_episode_projection_and_merge_admission_are_exact_and_recover_by_fresh_d
     harness.store.fail_agent_task(first.operation_id, "The merge provider exited early.")
     for action in ("resume", "retry"):
         recovery = harness.client.post(
-            f"/api/projects/{harness.project_id}/tasks/{first.operation_id}/{action}"
+            f"/api/projects/{harness.project_id}/tasks/{first.operation_id}/{action}", json={}
         )
         assert recovery.status_code == 409
         assert "new Merge" in recovery.json()["detail"]
 
     redispatched = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert redispatched.status_code == 202, redispatched.text
     assert len(held) == 1
@@ -838,7 +838,7 @@ def test_merge_refuses_an_active_or_unchanged_branch(
 
     monkeypatch.setattr(workspace, "refresh_if_stale", recorded_refresh)
     refused = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     monkeypatch.undo()
 
@@ -900,7 +900,7 @@ def test_ended_branch_merges_after_a_paused_attempt_is_retired(
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
 
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
 
     assert response.status_code == 202, response.text
@@ -932,7 +932,7 @@ def test_ended_branch_merges_over_an_unresolved_paused_writer(
 
     assert _episode_payload(harness)["graph_branch"]["merge_eligible"] is True
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert response.status_code == 202, response.text
     summary = response.json()["graph_branch"]
@@ -1002,7 +1002,8 @@ def test_merge_requires_a_named_member_without_disclosing_nonmember_projects(
 ) -> None:
     unnamed_app = create_app(str(manifest.path), data_dir=tmp_path / "personal")
     unnamed = TestClient(unnamed_app).post(
-        f"/api/projects/{unnamed_app.state.default_project_id}/episodes/{uuid.uuid4()}/merge"
+        f"/api/projects/{unnamed_app.state.default_project_id}/episodes/{uuid.uuid4()}/merge",
+        json={},
     )
     assert unnamed.status_code == 428
     assert unnamed.json()["detail"]["code"] == "identity_name_required"
@@ -1030,8 +1031,12 @@ def test_merge_requires_a_named_member_without_disclosing_nonmember_projects(
     project_id = str(created["id"])
 
     acting[0] = outsider.user_id
-    nonmember = team_client.post(f"/api/projects/{project_id}/episodes/{uuid.uuid4()}/merge")
-    unknown = team_client.post(f"/api/projects/{uuid.uuid4()}/episodes/{uuid.uuid4()}/merge")
+    nonmember = team_client.post(
+        f"/api/projects/{project_id}/episodes/{uuid.uuid4()}/merge", json={}
+    )
+    unknown = team_client.post(
+        f"/api/projects/{uuid.uuid4()}/episodes/{uuid.uuid4()}/merge", json={}
+    )
     assert nonmember.status_code == unknown.status_code == 404
     assert nonmember.json() == unknown.json()
     assert team_app.state.background_tasks.store.agent_tasks(project_id) == []
@@ -1054,7 +1059,7 @@ def test_no_change_merge_writes_a_receipt_without_launching_a_provider(
     main_before = harness.service.history.head_ref()
     budget_before = harness.store.episode_budget_meter(harness.episode.episode_id)
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert response.status_code == 202, response.text
     summary = response.json()["graph_branch"]
@@ -1167,7 +1172,7 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     watcher_id = _create_main_graph_watcher(harness)
     budget_before = harness.store.episode_budget_meter(harness.episode.episode_id)
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert response.status_code == 202, response.text
     summary = response.json()["graph_branch"]
@@ -1261,7 +1266,7 @@ def test_graph_projection_reconciles_a_crashed_commit_and_blocks_duplicate_merge
         "transition_id": appended.transition.transition_id,
     }
     duplicate = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert duplicate.status_code == 409
     assert not any(

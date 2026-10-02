@@ -332,7 +332,9 @@ def test_acceptance_episode_restart_retry_reuses_the_successful_spawn(
         # read inside the lifespan rather than immediately after create_app.
         interrupted = restarted_store.agent_task(root_operation_id)
         assert interrupted is not None and interrupted.status == "interrupted"
-        retried = client.post(f"/api/projects/{project_id}/tasks/{root_operation_id}/retry")
+        retried = client.post(
+            f"/api/projects/{project_id}/tasks/{root_operation_id}/retry", json={}
+        )
         assert retried.status_code == 202, retried.text
         retry_operation_id = retried.json()["operation_id"]
         episode = _wait_for_episode(
@@ -600,7 +602,7 @@ def test_acceptance_episode_stop_is_the_only_ending_without_a_report(
         assert root is not None and root.status == "running"
 
         try:
-            stopped = client.post(f"/api/projects/{project_id}/episodes/{episode_id}/stop")
+            stopped = client.post(f"/api/projects/{project_id}/episodes/{episode_id}/stop", json={})
             assert stopped.status_code == 200, stopped.text
             assert stopped.json()["status"] == "stopping"
             assert stopped.json()["stop_requested_at"] is not None

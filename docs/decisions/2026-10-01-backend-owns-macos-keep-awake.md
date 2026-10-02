@@ -29,7 +29,8 @@ Confirmed by the human 2026-10-01.
   runs `pmset sleepnow`.
 - **The flag survives a reboot**, so a backend crash followed by a reboot
   would leave the Mac never sleeping. The boot LaunchDaemon clears it before
-  login.
+  login. Verified on Apple Silicon, macOS 26.5.2, which also showed that
+  `pmset sleepnow` needs no root, so the sudoers rule stays at two commands.
 - **Coarse demand.** The precise version needed eligibility checks beside six
   launch owners. Over-holding costs battery down to the floor. Under-holding
   breaks the overnight run.

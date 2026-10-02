@@ -1288,7 +1288,7 @@ def test_trusted_principal_resolver_remains_a_supported_team_authentication_path
     assert client.get("/api/identity").json()["user"]["user_id"] == first.user_id
     selected[0] = second.user_id
     assert client.get("/api/identity").json()["user"]["user_id"] == second.user_id
-    assert client.post("/api/team/invitations").status_code == 200
+    assert client.post("/api/team/invitations", json={}).status_code == 200
 
 
 def test_personal_space_keeps_its_local_owner_without_team_authentication(tmp_path) -> None:
