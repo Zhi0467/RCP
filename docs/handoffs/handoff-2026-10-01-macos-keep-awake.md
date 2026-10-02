@@ -8,6 +8,11 @@ current-behavior docs. A served-app check on disposable data showed the card,
 the opt-in dialog, and a real read-only status. Remaining: the packaged
 checks below, listed step by step in `docs/desktop.md` under "Keep-awake
 checks". No admin install has run on real hardware yet.
+
+Known gap, accepted for this PR: only the backend holds `owner.lock` while the
+root install or uninstall script runs. If the backend dies mid-uninstall,
+another backend could activate before the script removes the sudoers rule.
+Closing it means the root script takes the lock itself.
 Issue: #228.
 
 Close this handoff when all of these hold on the packaged candidate, on
