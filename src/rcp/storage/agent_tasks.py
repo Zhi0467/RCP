@@ -2845,6 +2845,26 @@ class AgentTaskStoreMixin:
             receipts.append(AgentTaskReceiptRecord.model_validate(data))
         return receipts
 
+    def agent_task_receipts_by_category(
+        self, operation_id: str, category: str
+    ) -> list[AgentTaskReceiptRecord]:
+        """Read durable internal receipts without the task display limit."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM graph_run_receipts
+                WHERE operation_id = ? AND category = ?
+                ORDER BY receipt_id ASC
+                """,
+                (operation_id, category),
+            ).fetchall()
+        receipts = []
+        for row in rows:
+            data = dict(row)
+            data["payload"] = json.loads(data.pop("payload_json"))
+            receipts.append(AgentTaskReceiptRecord.model_validate(data))
+        return receipts
+
     def agent_task_artifact_discoveries(
         self, operation_ids: Sequence[str]
     ) -> dict[str, AgentTaskReceiptRecord]:

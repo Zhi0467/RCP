@@ -157,13 +157,17 @@ def test_failed_insert_rolls_back_answer_claim(tmp_path, monkeypatch):
 
 
 def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer(
-    manifest, tmp_path
+    manifest, tmp_path, monkeypatch
 ):
     import json
     from types import SimpleNamespace
     from uuid import uuid4
 
-    from rcp.runs.chat import _append_chat_exchange, project_chat_question_answer
+    from rcp.runs.chat import (
+        _append_chat_exchange,
+        project_chat_question_answer,
+        reconcile_chat_question_answers,
+    )
     from tests.helpers import create_named_app
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "app-data")
@@ -185,7 +189,28 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         )
     question = store.get_question(question.question_id)
     project_chat_question_answer(service, store, question)
-    project_chat_question_answer(service, AppStore(store.path), question)
+    assert store.get_question(question.question_id).answer_projected_revision == 1
+
+    def unexpected_publication(*args, **kwargs):
+        raise AssertionError("already projected answer opened a workspace transaction")
+
+    # A second settlement still retries admission, without reopening publication.
+    with monkeypatch.context() as patch:
+        patch.setattr(service.history.workspace, "transaction", unexpected_publication)
+        with store.connection() as connection:
+            connection.execute("UPDATE graph_runs SET status='running' WHERE operation_id='origin'")
+        statuses = reconcile_chat_question_answers(AppStore(store.path), None, lambda _: service)
+        assert statuses == {question.question_id: "question_origin_unsettled"}
+        project_chat_question_answer(service, AppStore(store.path), question)
+    store.complete_agent_task("origin", applied_revision=None, result={})
+
+    # Simulate publication succeeding before the SQLite marker was committed.
+    with store.connection() as connection:
+        connection.execute("UPDATE questions SET answer_projected_revision=0")
+    with monkeypatch.context() as patch:
+        patch.setattr(service.history.workspace, "publish", unexpected_publication)
+        project_chat_question_answer(service, AppStore(store.path), question)
+    assert store.get_question(question.question_id).answer_projected_revision == 1
     followup = store.admit_chat_question_followup(question.question_id)
     _append_chat_exchange(
         service,
@@ -195,6 +220,11 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         None,
         execution=SimpleNamespace(store=store, operation_id=followup.operation_id),
     )
+    store.mark_agent_task_running(followup.operation_id)
+    store.complete_agent_task(followup.operation_id, applied_revision=None, result={})
+    with monkeypatch.context() as patch:
+        patch.setattr(service.history.workspace, "transaction", unexpected_publication)
+        assert reconcile_chat_question_answers(AppStore(store.path), None, lambda _: service) == {}
     transcript = service.chat_transcript(chat_id)
     assert [(item.role, item.text) for item in transcript.messages] == [
         ("user", "Use route A"),

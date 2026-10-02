@@ -142,6 +142,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (32, "artifact_live_policy_v1"),
         (33, "questions_v1"),
         (34, "question_notifications_v1"),
+        (35, "question_answer_projection_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -3687,3 +3688,20 @@ def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
         assert connection.execute(
             "SELECT json_extract(request_json, '$.graph_isolation') FROM graph_runs ORDER BY rowid"
         ).fetchall() == [(1,), (None,)]
+
+
+def test_question_projection_migration_preserves_existing_answers(tmp_path):
+    from tests.test_chat_question_followup import _answered
+
+    store = AppStore(tmp_path / "questions.sqlite3")
+    question = _answered(store)
+    with store.connection() as connection:
+        connection.execute("ALTER TABLE questions DROP COLUMN answer_projected_revision")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=35")
+    reopened = AppStore(store.path)
+    assert reopened.get_question(question.question_id).answer == question.answer
+    assert reopened.get_question(question.question_id).answer_projected_revision == 0
+    reopened.mark_question_answer_projected(question.question_id, question.answer_revision)
+    with reopened.connection() as connection:
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=35")
+    assert AppStore(store.path).get_question(question.question_id).answer_projected_revision == 1

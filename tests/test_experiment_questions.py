@@ -300,8 +300,8 @@ def test_continuation_keeps_human_prompt_and_claimed_answer_distinct(
         None,
         execution=SimpleNamespace(store=store, operation_id=continued.operation_id),
     )
-    assert reconcile()[question.question_id] == "projected"
-    assert reconcile()[question.question_id] == "projected"
+    assert reconcile() == ({question.question_id: "projected"} if projection_failed else {})
+    assert reconcile() == {}
     path = service.chat_path(chat_id, chat_scope=request.chat_scope, node_id=request.node_id)
     messages = [json.loads(line) for line in path.read_text().splitlines()]
     human_messages = [item for item in messages if item["role"] == "user"]

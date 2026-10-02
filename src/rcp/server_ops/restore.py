@@ -45,6 +45,11 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Durable human-answer chat projection revisions, fresh and upgraded in place.
+        "05024a3725beb284ccb5cf2b05b5e71d075db571ed1b38fcf427e4865e557cf7",
+        "f2c94ee3b39dab4cc48086634075ccbe10635afe1043399173cbebf8260e6bfa",
+        "5fbfe10a8f0306361623f31bf9cf45d54c772d27e84e1d49b957673f720b722b",
+        "d5c06cc45a54dcc3817b5075148039ece21a9b84f65b98f95fce8463d5faef2d",
         # Human questions and their notification receipts, fresh and upgraded in place.
         "2add10d7e7cde73f1c655f240a5679cda9b18834644c8fc5b56f25ab431be72d",
         "0c08dcf1d945ccab8daad804ab586bb946b193824eae805b28ebe3470e764322",

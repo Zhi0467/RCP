@@ -9,6 +9,7 @@ from rcp.agents import AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.background import AgentTaskExecution
 from rcp.core.models import AuthorizedHuman
+from rcp.limits import AGENT_TASK_RECEIPT_LIST_LIMIT
 from rcp.runs.questions import record_work_question_receipts, work_command_handler
 from rcp.runs.tasks.work import _work_execution_instructions
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -84,6 +85,36 @@ def test_work_live_answer_receipt_requires_successful_settlement(tmp_path):
     assert record.client_receipt_revision == 1
     assert record.client_receipt_request_id == "d" * 32
     assert record.followup_operation_id is None
+
+
+def test_question_receipts_beyond_display_cap_are_replayed(tmp_path):
+    execution, human = work_execution(tmp_path)
+    store = execution.store
+    handler = work_command_handler(execution, None)
+    request = ask_request()
+    question_id = handler(request, identity()).result["question_id"]
+    store.answer_question(question_id, answer="Use A", resolved_by=human)
+    for index in range(AGENT_TASK_RECEIPT_LIST_LIMIT + 1):
+        store.record_agent_task_receipt(
+            "turn", "compute_command_result", {"command_id": str(index)}, tier="diagnostic"
+        )
+    offered = handler(request, identity())
+    assert offered.status == "ok"
+    token = offered.result["receipt_token"]
+    assert handler(request, identity()).result["receipt_token"] == token
+    acknowledged = ask_request(request_id="f" * 32, receipt_token=token)
+    assert handler(acknowledged, identity()).status == "ok"
+    assert handler(acknowledged, identity()).status == "ok"
+    assert len(store.agent_task_receipts("turn")) == AGENT_TASK_RECEIPT_LIST_LIMIT
+    assert not any(
+        receipt.category.startswith("question_answer_")
+        for receipt in store.agent_task_receipts("turn")
+    )
+    assert len(store.agent_task_receipts_by_category("turn", "question_answer_offered")) == 1
+    assert len(store.agent_task_receipts_by_category("turn", "question_answer_acknowledged")) == 1
+    store.complete_agent_task("turn", applied_revision=None, result={})
+    record_work_question_receipts(execution)
+    assert store.get_question(question_id).client_receipt_revision == 1
 
 
 def test_answer_not_returned_before_turn_end_remains_eligible(tmp_path):

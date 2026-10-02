@@ -165,6 +165,34 @@ class QuestionStoreMixin:
             ).fetchall()
         return [_question_record(row) for row in rows]
 
+    def questions_needing_chat_reconciliation(
+        self, *, project_id: str | None = None
+    ) -> list[QuestionRecord]:
+        """Pending projections plus unreceived chat answers needing admission/dispatch."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM questions WHERE state='answered'
+                AND (? IS NULL OR project_id=?)
+                AND (answer_projected_revision < answer_revision OR (
+                    owner_kind='chat' AND client_receipt_revision IS NULL
+                    AND (followup_operation_id IS NULL OR EXISTS (
+                        SELECT 1 FROM graph_runs WHERE operation_id=followup_operation_id
+                        AND status='queued'
+                    ))
+                )) ORDER BY created_at,question_id""",
+                (project_id, project_id),
+            ).fetchall()
+        return [_question_record(row) for row in rows]
+
+    def mark_question_answer_projected(self, question_id: str, answer_revision: int) -> None:
+        """Advance after canonical publication or discovery of its stable message id."""
+        with self.connection() as connection:
+            connection.execute(
+                """UPDATE questions SET answer_projected_revision=?
+                WHERE question_id=? AND answer_revision=? AND answer_projected_revision<?""",
+                (answer_revision, question_id, answer_revision, answer_revision),
+            )
+
     def answer_question(
         self,
         question_id: str,

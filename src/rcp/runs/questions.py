@@ -146,9 +146,9 @@ def record_settled_question_receipts(store: AppStore, operation_id: str) -> None
     task = store.agent_task(operation_id)
     if task is None or task.status != "succeeded":
         return
-    for receipt in store.agent_task_receipts(operation_id):
-        if receipt.category != "question_answer_acknowledged":
-            continue
+    for receipt in store.agent_task_receipts_by_category(
+        operation_id, "question_answer_acknowledged"
+    ):
         payload = receipt.payload
         received = store.record_question_receipt(
             payload["question_id"],
@@ -253,13 +253,13 @@ class WorkCommandHandler:
             if response.status == "ok" and response.result.get("state") == "answered":
                 question = execution.store.get_question(response.result["question_id"])
                 assert question is not None
-                receipts = execution.store.agent_task_receipts(execution.operation_id)
                 offered = next(
                     (
                         item.payload
-                        for item in receipts
-                        if item.category == "question_answer_offered"
-                        and item.payload.get("question_id") == question.question_id
+                        for item in execution.store.agent_task_receipts_by_category(
+                            execution.operation_id, "question_answer_offered"
+                        )
+                        if item.payload.get("question_id") == question.question_id
                         and item.payload.get("answer_revision") == question.answer_revision
                         and item.payload.get("receipt_token")
                     ),
@@ -271,9 +271,10 @@ class WorkCommandHandler:
                     ):
                         return refuse("question_receipt_mismatch")
                     if not any(
-                        item.category == "question_answer_acknowledged"
-                        and item.payload.get("receipt_token") == request.receipt_token
-                        for item in receipts
+                        item.payload.get("receipt_token") == request.receipt_token
+                        for item in execution.store.agent_task_receipts_by_category(
+                            execution.operation_id, "question_answer_acknowledged"
+                        )
                     ):
                         execution.store.record_agent_task_receipt(
                             execution.operation_id,

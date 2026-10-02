@@ -1812,6 +1812,9 @@ def project_chat_question_answer(
     service: ProjectService, store: AppStore, question: QuestionRecord
 ) -> None:
     """Retry canonical projection from SQLite; the stable id makes replay harmless."""
+    current = store.get_question(question.question_id)
+    if current is not None and current.answer_projected_revision >= question.answer_revision:
+        return
     task = store.agent_task(question.origin.operation_id)
     if task is None:
         raise ValueError("question_origin_missing")
@@ -1845,6 +1848,7 @@ def project_chat_question_answer(
                 }
             ],
         )
+    store.mark_question_answer_projected(question.question_id, question.answer_revision)
     service.invalidate_source_index()
 
 
@@ -1857,14 +1861,12 @@ def reconcile_chat_question_answers(
 ) -> dict[str, str]:
     """Answer/API, settlement and startup entry; never invoked by provider output.
 
-    The question itself is the durable projection outbox. Replaying every answer
-    repairs a crash between SQLite admission and canonical history publication.
+    The question itself is the durable projection outbox. Pending revisions repair
+    crashes between SQLite admission and canonical history publication.
     Deferred or unusable origins remain unclaimed with a returned reason.
     """
     statuses = {}
-    for question in store.list_questions(project_id=project_id):
-        if question.state != "answered":
-            continue
+    for question in store.questions_needing_chat_reconciliation(project_id=project_id):
         origin_task = store.agent_task(question.origin.operation_id)
         if origin_task is not None and origin_task.kind not in {"node_chat", "project_chat"}:
             continue
@@ -1874,10 +1876,11 @@ def reconcile_chat_question_answers(
             reconcile_question_receipt(store, question.question_id)
             question = store.get_question(question.question_id)
             assert question is not None
-            service = project_service(question.origin.project_id).for_graph_target(
-                question.origin.graph_target
-            )
-            project_chat_question_answer(service, store, question)
+            if question.answer_projected_revision < question.answer_revision:
+                service = project_service(question.origin.project_id).for_graph_target(
+                    question.origin.graph_target
+                )
+                project_chat_question_answer(service, store, question)
             if question.origin.owner_kind != "chat":
                 # Experiment's owner admits its paid invocation after projection.
                 statuses[question.question_id] = "projected"
@@ -2059,6 +2062,8 @@ def _append_chat_records(
                     if not item.get("operationId")
                     or (item.get("operationId"), item.get("role")) not in recorded
                 ]
+            if not records:
+                return
             with path.open("a", encoding="utf-8") as handle:
                 for record in records:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")

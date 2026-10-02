@@ -88,8 +88,9 @@ class ExperimentStoreMixin:
         acknowledged = (
             {
                 (receipt.payload.get("question_id"), receipt.payload.get("answer_revision"))
-                for receipt in self.agent_task_receipts(operation_id)
-                if receipt.category == "question_answer_acknowledged"
+                for receipt in self.agent_task_receipts_by_category(
+                    operation_id, "question_answer_acknowledged"
+                )
             }
             if operation_id
             else set()

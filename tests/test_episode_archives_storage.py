@@ -291,6 +291,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "artifact_live_policy_v1",
         "questions_v1",
         "question_notifications_v1",
+        "question_answer_projection_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

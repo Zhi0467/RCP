@@ -65,6 +65,7 @@ class QuestionRecord(BaseModel):
     resolved_by: AuthorizedHuman | None = None
     resolved_at: str | None = None
     answer_revision: int = 0
+    answer_projected_revision: int = 0
     client_receipt_revision: int | None = None
     client_receipt_operation_id: str | None = None
     client_receipt_request_id: str | None = None
