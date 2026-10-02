@@ -579,6 +579,15 @@ def test_in_place_edit_turn_lists_and_serves_the_published_artifact(manifest, tm
     assert data == b"<p>edited</p>"
 
 
+def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
+    # Descriptor sizes are positive or unknown; an emptied artifact must not fail the turn.
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    (directory / source.name).write_bytes(b"")
+    artifacts = _finalize(app, request, execution, directory)
+    assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
+    assert execution.store.read_artifact_bytes(source.artifact_id) == b""
+
+
 @pytest.mark.asyncio
 async def test_mismatched_native_session_never_publishes(manifest, tmp_path):
     app, request, execution, source, _workspace = _setup(manifest, tmp_path)

@@ -1050,7 +1050,7 @@ def stage_artifact_context(
         artifact_id=artifact.artifact_id,
         name=artifact.source_name,
         media_type=artifact.media_type,
-        size_bytes=len(data),
+        size_bytes=len(data) or None,
     )
     if not supports_comments(descriptor.media_type):
         raise ValueError("The artifact type does not support comments.")
@@ -1296,7 +1296,7 @@ def finalize_artifact_edit(
         if task is None:
             raise ValueError("The artifact edit task is unavailable.") from None
         descriptor = descriptor_for(
-            artifact_scope_id, edit.source_name, media_type=media_type, size_bytes=len(data)
+            artifact_scope_id, edit.source_name, media_type=media_type, size_bytes=len(data) or None
         )
         now = execution.store.now()
         execution.store.create_artifact(
@@ -1337,7 +1337,7 @@ def finalize_artifact_edit(
         artifact_id=edit.artifact_id,
         name=edit.source_name,
         media_type=media_type,
-        size_bytes=len(data),
+        size_bytes=len(data) or None,
     )
     execution.store.record_agent_task_receipt(
         edit.operation_id,
