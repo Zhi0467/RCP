@@ -361,7 +361,10 @@ class MachinePowerController:
                 with self._lock:
                     if self.installer.cancelled:
                         return before
+                    # Uninstall verified the flag clear, so its latches are moot.
                     self._state["lid_mode"] = False
+                    self._state["latched"] = None
+                    self._state["cleanup_failure"] = None
                     self._save_best_effort()
                     return self.status()
             except InstallError as exc:

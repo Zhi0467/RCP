@@ -515,7 +515,7 @@ both holds and never sleeps an open Mac. pmset omits the `SleepDisabled` line
 until the flag has been set once since boot; RCP reads that as off.
 
 **Re-arm.** Thermal and cleanup failures latch lid mode off until the human
-re-enables it, and the latch survives restarts. A battery release re-arms on AC
+re-enables it, and the latch survives restarts. A successful uninstall clears it. A battery release re-arms on AC
 power. If the flag cannot be cleared, the space home page shows
 `sudo pmset -a disablesleep 0`; if the flag cleared but the closed Mac did not
 sleep, it shows `pmset sleepnow`. A removed sudoers rule can strand the flag;

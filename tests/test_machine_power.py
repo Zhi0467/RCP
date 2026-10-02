@@ -440,9 +440,11 @@ def test_cancel_preserves_active_status_preferences_and_heartbeat(machine, actio
 
 def test_uninstall_quiesces_then_disables_preference(machine):
     machine.activate()
+    machine.controller._state["latched"] = "thermal"
     result = machine.controller.uninstall()
     assert result["installed"] is False
     assert result["lid_mode"] == {"enabled": False, "active": False}
+    assert result["latched"] is None
     assert machine.controller._owner is None
     assert power.read_record(machine.root / "heartbeat")["desired"] == "off"
 
