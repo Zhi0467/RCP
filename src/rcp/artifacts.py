@@ -438,9 +438,12 @@ window.addEventListener('message',(event)=>{
         + f'<iframe id="artifact" sandbox="allow-scripts" srcdoc="{html.escape(artifact, quote=True)}">'
         "</iframe>" + result_view_script
     )
+    # The srcdoc artifact inherits this policy too, so it must admit the inline images
+    # the artifact's own policy allows.
     wrapper_csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+        "img-src data: blob:; frame-src 'self'; base-uri 'none'; form-action 'none'; "
+        "object-src 'none'"
     )
     return document, wrapper_csp
 

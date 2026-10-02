@@ -83,7 +83,7 @@ def test_html_selection_addon_is_explicit() -> None:
 
 def test_html_preview_keeps_only_inline_image_sources() -> None:
     inline = "data:image/png;base64,iVBORw0KGgo="
-    document, _ = html_preview_document(
+    document, wrapper_csp = html_preview_document(
         f"<img src=' {inline}'><img src='http://example.test/a.png'>"
         "<script src='data:text/javascript,alert(1)'></script>".encode()
     )
@@ -91,3 +91,6 @@ def test_html_preview_keeps_only_inline_image_sources() -> None:
     artifact = Elements(srcdoc or "").tags
     assert [attrs.get("src") for tag, attrs in artifact if tag == "img"] == [f" {inline}", None]
     assert all("src" not in attrs for tag, attrs in artifact if tag == "script")
+    # The srcdoc frame inherits the wrapper policy, so it must admit the same sources.
+    directives = dict(part.strip().split(" ", 1) for part in wrapper_csp.split(";"))
+    assert set(directives["img-src"].split()) == {"data:", "blob:"}
