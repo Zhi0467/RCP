@@ -213,3 +213,11 @@ def test_disabling_drops_hold_even_when_demand_read_fails(machine):
     machine.controller.demand_reader = Mock(side_effect=RuntimeError("store busy"))
     machine.controller.update({"idle_hold": False})
     assert machine.holds[0].returncode is not None
+
+
+def test_failed_preference_write_changes_nothing_live(machine, monkeypatch):
+    machine.controller.safety_pass()
+    monkeypatch.setattr(machine.store, "connection", Mock(side_effect=OSError("disk full")))
+    with pytest.raises(OSError):
+        machine.controller.update({"idle_hold": False})
+    assert machine.controller.status()["idle_hold"] == {"enabled": True, "active": True}

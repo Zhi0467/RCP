@@ -128,17 +128,19 @@ class MachinePowerController:
     def update(self, preferences: dict) -> dict:
         if set(preferences) != {"idle_hold"} or type(preferences["idle_hold"]) is not bool:
             raise ValueError("invalid machine power preferences")
+        enabled = preferences["idle_hold"]
         with self._lock:
-            self._enabled = preferences["idle_hold"]
-            if not self._enabled:
-                # Turning it off never waits on a demand read.
-                self._drop()
+            # Persist first, so a failed write changes nothing live.
             with self.store.connection() as connection:
                 connection.execute(
                     "INSERT INTO machine_power_state VALUES (1,?) "
                     "ON CONFLICT(singleton) DO UPDATE SET value=excluded.value",
-                    (json.dumps({"idle_hold": self._enabled}),),
+                    (json.dumps({"idle_hold": enabled}),),
                 )
+            self._enabled = enabled
+            if not enabled:
+                # Turning it off never waits on a demand read.
+                self._drop()
         if self._thread is not None:
             self.safety_pass()
         return self.status()
