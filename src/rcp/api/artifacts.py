@@ -368,6 +368,7 @@ class ArtifactViewerState(BaseModel):
     can_undo: bool
     live: Literal["live", "finished"] | None
     editing_operation_id: str | None
+    edit_failure: str | None = None
     can_comment: bool
     comment_unavailable_reason: str | None
     fresh_session_required: bool
@@ -456,6 +457,7 @@ def stored_artifact_state(
         can_undo=can_undo,
         live=live,
         editing_operation_id=editing,
+        edit_failure=store.artifact_edit_failure(project_id, artifact_id),
         can_comment=can_comment,
         comment_unavailable_reason=reason,
         fresh_session_required=fresh,

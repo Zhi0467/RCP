@@ -251,7 +251,9 @@ and at startup, an unreceived chat answer admits at most one Work follow-up, tra
 with task insertion, pinned to the asking turn's native session, authority, write
 scope and target. Occupied or paused sessions defer admission; unusable bindings
 remain visible. Each answer is projected once as a human chat message through
-StateWorkspace using its question id and answer revision. An answer projected while
+StateWorkspace using its question id and answer revision. Its follow-up turn's id
+derives from the same pair, so the projected answer names that turn before it is
+admitted and a queued follow-up never repeats it. An answer projected while
 the asking turn still runs first reserves that turn's prompt at its creation time, as
 a live steer does, so the answer never precedes the prompt. Settlement and the answer
 route reconcile only their project's unreceived answers; startup sweeps every

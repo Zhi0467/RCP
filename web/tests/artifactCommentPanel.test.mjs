@@ -48,6 +48,7 @@ function shell() {
   const messages = [];
   const saved = new Map();
   let canComment = true;
+  let editFailure = null;
   let status = 200;
   let sendStatus = 409;
   let timerId = 0;
@@ -96,7 +97,7 @@ function shell() {
         status: code,
         json: async () =>
           url === "/state"
-            ? { can_comment: canComment, fresh_session_required: false }
+            ? { can_comment: canComment, fresh_session_required: false, edit_failure: editFailure }
             : {
                 detail: { code: "fresh_session_required", message: "Start a fresh session" },
                 operation_id: "edit",
@@ -111,6 +112,9 @@ function shell() {
     saved,
     setCanComment: (value) => {
       canComment = value;
+    },
+    setEditFailure: (value) => {
+      editFailure = value;
     },
     listeners,
     requests,
@@ -168,6 +172,10 @@ test("Edit now and Send post one comment list, and resubmit only with fresh-sess
     assert.equal(options.credentials, "same-origin");
   }
   assert.deepEqual(JSON.parse([...app.saved.values()].at(-1)).comments, []);
+  // The edit settles later; its failure reaches the floating window's notice.
+  app.setEditFailure("Provider is not signed in");
+  await app.tick();
+  assert.ok(app.elements.notice.textContent.includes("Provider is not signed in"));
   assert.deepEqual(JSON.parse(JSON.stringify(app.messages)), [
     [
       {

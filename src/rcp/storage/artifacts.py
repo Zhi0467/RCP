@@ -288,6 +288,19 @@ class ArtifactStoreMixin:
             ).fetchone()
         return row[0] if row else None
 
+    def artifact_edit_failure(self, project_id: str, artifact_id: str) -> str | None:
+        """Why the latest edit of this artifact failed, while no later edit replaced it."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT status, error, status_message FROM graph_runs WHERE project_id = ? "
+                "AND json_extract(request_json, '$.artifact_edit.artifact_id') = ? "
+                "ORDER BY created_at DESC, operation_id DESC LIMIT 1",
+                (project_id, artifact_id),
+            ).fetchone()
+        if row is None or row[0] not in {"failed", "interrupted"}:
+            return None
+        return row[1] or row[2] or row[0]
+
     def protected_edit_artifact_ids(self) -> frozenset[str]:
         with self.connection() as connection:
             rows = connection.execute(

@@ -86,7 +86,7 @@ from rcp.storage import (
 from rcp.storage.artifact_models import ArtifactOperationConflict
 from rcp.storage.artifacts import ArtifactByteLimitError
 from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
-from rcp.storage.question_models import QuestionRecord
+from rcp.storage.question_models import QuestionRecord, question_followup_operation_id
 from rcp.transport import (
     RemoteRunStage,
     RunStageMailbox,
@@ -1872,7 +1872,11 @@ def project_chat_question_answer(
                     "executionMachine": request.run_on,
                     "cwd": str(service.manifest.research_dir.parent),
                     "timestamp": question.resolved_at,
-                    "operationId": question.followup_operation_id,
+                    # The follow-up this answer starts, if one is ever admitted.
+                    "operationId": question.followup_operation_id
+                    or question_followup_operation_id(
+                        question.question_id, question.answer_revision
+                    ),
                     "mode": "work",
                     "trigger": "human",
                     "type": "user",

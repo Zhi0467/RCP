@@ -273,7 +273,9 @@ server's reason and keeps the comments filed. Success clears them and notifies
 the containing RCP panel of the admitted edit operation. When admission requires
 an explicit fresh session, both actions say so and supply the fresh-session
 flag. An unavailable origin never prevents viewing; its reason appears beside
-the disabled actions. The shell paints with the containing app's theme and
+the disabled actions. An edit that fails after its send succeeded reports why in
+the same notice, from the viewer state's `edit_failure`, until a later edit
+replaces it. The shell paints with the containing app's theme and
 color mode and follows a change live; opened on its own, it uses the remembered
 appearance.
 

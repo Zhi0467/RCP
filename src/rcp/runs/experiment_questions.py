@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from rcp.runs.questions import reconcile_question_receipt
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
+from rcp.storage.question_models import question_followup_operation_id
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -91,7 +91,9 @@ def reconcile_experiment_question_answers(
                     )
             now = store.now()
             record = AgentTaskRecord(
-                operation_id=uuid.uuid4().hex,
+                operation_id=question_followup_operation_id(
+                    question.question_id, question.answer_revision
+                ),
                 project_id=origin.project_id,
                 episode_id=episode.episode_id,
                 kind="node_chat",

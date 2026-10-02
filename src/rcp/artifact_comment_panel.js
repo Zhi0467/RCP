@@ -255,7 +255,11 @@ async function refreshState() {
       throw new Error("Comment availability could not be loaded.");
     }
     viewerState = await response.json();
-    notice.textContent = sendError || viewerState.comment_unavailable_reason || "";
+    // A failed edit settles after the send succeeded, so the shell learns it here.
+    const failure = viewerState.edit_failure
+      ? `The last edit did not finish: ${viewerState.edit_failure}`
+      : "";
+    notice.textContent = sendError || failure || viewerState.comment_unavailable_reason || "";
   } catch (error) {
     viewerState = null;
     notice.textContent = sendError || error.message;

@@ -245,9 +245,9 @@ class AgentTaskStoreMixin:
     def admit_chat_question_followup(self, question_id: str) -> AgentTaskRecord | None:
         """Claim and insert atomically; unresolved remote liveness still defers."""
         from rcp.service import RunRequest
+        from rcp.storage.question_models import question_followup_operation_id
         from rcp.storage.questions import _question_record
 
-        operation_id = uuid.uuid4().hex
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -256,6 +256,7 @@ class AgentTaskStoreMixin:
             if row is None:
                 raise KeyError(question_id)
             question = _question_record(row)
+            operation_id = question_followup_operation_id(question_id, question.answer_revision)
             if (
                 question.state != "answered"
                 or question.client_receipt_revision is not None

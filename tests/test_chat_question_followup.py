@@ -219,6 +219,10 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         project_chat_question_answer(service, AppStore(store.path), question)
     assert store.get_question(question.question_id).answer_projected_revision == 1
     followup = store.admit_chat_question_followup(question.question_id)
+    # Projected before admission, the answer already names its follow-up's turn,
+    # so the queued follow-up is not shown a second time from its request.
+    (answer,) = service.chat_transcript(chat_id).messages
+    assert answer.operation_id == followup.operation_id
     _append_chat_exchange(
         service,
         RunRequest.model_validate(followup.request),
