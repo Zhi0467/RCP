@@ -102,45 +102,19 @@ for any of them.
 
 ## Keep-awake checks
 
-Keep-awake changes machine-wide power state, so a disposable `RCP_DATA_DIR`
-does not isolate it. Run these on the packaged candidate, on a Mac you can
-leave on a desk. Behavior is in
+The idle hold is a machine-wide power assertion, so a disposable
+`RCP_DATA_DIR` does not isolate it. Behavior is in
 [the server spec](specs/server-and-machine-operations.md#keeping-a-mac-awake).
-
-Inspect the state at any point:
-
-```bash
-pmset -g | grep SleepDisabled
-```
+With work running, the assertion is listed:
 
 ```bash
 pmset -g assertions | grep caffeinate
 ```
 
-```bash
-ls -l /etc/sudoers.d/rcp-keep-awake /Library/LaunchDaemons/org.rcp.keep-awake-reset.plist
-```
-
-1. **Install.** In Space Settings, tick **Lid-closed mode**, read the dialog,
-   and press **Install**. Cancel the admin prompt once: nothing changes. Then
-   approve it: the three paths exist, and the flag reads 0.
-2. **Overnight.** Start an Auto-research episode that waits on a compute job.
-   Close the lid overnight. In the morning, the episode has advanced through
-   the watcher wake, the continuation, and a Patch apply.
-3. **Faults.** With lid mode active, `kill -9` the backend worker, then repeat
-   with `kill -STOP`. Within about a minute the flag reads 0 and a closed Mac
-   sleeps. Kill the watchdog: the next pass replaces it or releases.
-4. **Reboot.** With the flag set by RCP, restart. After login the flag reads 0.
-5. **Battery.** Unplug and let it reach 20%: lid mode releases and a closed
-   Mac sleeps. Plug in: it re-arms.
-6. **Uninstall.** Press **Uninstall**: the flag reads 0, and the sudoers file
-   and LaunchDaemon are gone.
-
-To clear the flag by hand:
-
-```bash
-sudo pmset -a disablesleep 0
-```
+1. **Lock screen.** Start an episode or task, lock the screen, and wait past
+   the display and system sleep timers. Unlock: `pmset -g log` shows no sleep
+   in between, and the work kept advancing.
+2. **Work ends.** When nothing is running, the assertion is gone.
 
 ### Linux laptops
 

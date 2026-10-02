@@ -281,9 +281,6 @@ test("an open space landing refreshes login notices with its Runs poll", async (
       return route.fulfill({ json: states });
     });
     await page.route("**/api/team/connections", (route) => route.fulfill({ json: [] }));
-    await page.route("**/api/machine-power", (route) =>
-      route.fulfill({ json: { platform: "linux", supported: false } }),
-    );
     const firstLoad = page.waitForResponse("**/api/providers/logins");
     await page.goto(
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/appearance.html`,

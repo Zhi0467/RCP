@@ -1735,8 +1735,7 @@ def create_app(
                 # This is the one ordinary startup sequence. Normal startup calls
                 # it immediately; a cutover candidate calls it after the shared
                 # effect fence opens. Recovery must precede every other owner.
-                # Keep the Mac awake before any recovery owner relaunches work;
-                # recovery can outlast the previous watchdog's heartbeat.
+                # Hold the Mac awake before any recovery owner relaunches work.
                 if machine_power is not None:
                     machine_power.start()
                     app.state.machine_power_started = True

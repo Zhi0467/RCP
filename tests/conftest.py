@@ -219,6 +219,6 @@ def isolated_machine_power(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "rcp.api.app.MachinePowerController",
         lambda *args, **kwargs: MachinePowerController(
-            *args, platform="linux", run=refuse_command, spawn=refuse_command, **kwargs
+            *args, platform="linux", spawn=refuse_command, **kwargs
         ),
     )

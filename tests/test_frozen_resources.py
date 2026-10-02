@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import runpy
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
@@ -50,22 +48,3 @@ def test_inventory_checks_nested_sources_and_assets(tmp_path: Path, fault: str |
             validate_resources(bundle)
     else:
         validate_resources(bundle)
-
-
-@pytest.mark.parametrize("present", [True, False])
-def test_runtime_hook_requires_watchdog(tmp_path, monkeypatch, present):
-    package = tmp_path / "rcp"
-    package.mkdir()
-    source = package / "placeholder.py"
-    source.write_text("# package data\n")
-    if present:
-        (package / "machine_power_watchdog.sh").write_text("#!/bin/sh\n")
-    manifest = resource_manifest([(str(package), "rcp")])
-    (package / MANIFEST_NAME).write_text(json.dumps(manifest))
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-    hook = Path(__file__).parents[1] / "packaging/hooks/validate_frozen_resources.py"
-    if present:
-        runpy.run_path(str(hook))
-    else:
-        with pytest.raises(RuntimeError, match="machine_power_watchdog.sh"):
-            runpy.run_path(str(hook))
