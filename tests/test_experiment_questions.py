@@ -214,6 +214,86 @@ def test_continuation_claims_answer_in_first_snapshot_at_ceiling(tmp_path, chang
     assert store.episode(continued_id).invocations_used == 1
 
 
+@pytest.mark.parametrize("projection_failed", [False, True])
+def test_continuation_keeps_human_prompt_and_claimed_answer_distinct(
+    manifest, tmp_path, monkeypatch, projection_failed
+):
+    from rcp.runs.chat import _append_chat_exchange, reconcile_chat_question_answers
+    from tests.helpers import create_named_app
+
+    service = create_named_app(str(manifest.path), data_dir=tmp_path / "app-data").state.service
+    store, episode_id, question, _ = _ready_answer(tmp_path, ceiling=1)
+    chat_id = str(uuid.uuid4())
+    origin = store.agent_task(question.origin.operation_id)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=? WHERE operation_id=?",
+            (json.dumps({**origin.request, "chat_id": chat_id}), origin.operation_id),
+        )
+    store.end_episode_without_report(episode_id, ending="exhausted")
+    continued_id = str(uuid.uuid4())
+    continued = _task(
+        store,
+        "continued-root",
+        continued_id,
+        ceiling=1,
+        session_id="native-session",
+        stage_root="/tmp/exact-experiment-stage",
+    )
+    continued = continued.model_copy(update={"request": {**continued.request, "chat_id": chat_id}})
+    store.create_experiment_episode_with_invocation(
+        continued,
+        continues_episode_id=episode_id,
+        continuation_request_id=str(uuid.uuid4()),
+    )
+    assert store.get_question(question.question_id).followup_operation_id == continued.operation_id
+    snapshot = question_snapshot(
+        store,
+        project_id="project",
+        owner_kind="episode",
+        owner_ids=store.experiment_question_owner_ids(continued_id),
+        operation_id=continued.operation_id,
+    )
+    assert json.loads(snapshot.text)["questions"][0]["answer"] == "Accuracy"
+
+    def reconcile():
+        return reconcile_chat_question_answers(store, None, lambda _project: service)
+
+    def fail_projection(*args, **kwargs):
+        raise OSError("projection unavailable")
+
+    with monkeypatch.context() as patch:
+        if projection_failed:
+            patch.setattr("rcp.runs.chat._append_chat_records", fail_projection)
+        assert reconcile()[question.question_id] == (
+            "projection unavailable" if projection_failed else "projected"
+        )
+    request = RunRequest.model_validate(continued.request)
+    _append_chat_exchange(
+        service,
+        request,
+        "Continuing with accuracy",
+        "native-session",
+        None,
+        execution=SimpleNamespace(store=store, operation_id=continued.operation_id),
+    )
+    assert reconcile()[question.question_id] == "projected"
+    assert reconcile()[question.question_id] == "projected"
+    path = service.chat_path(chat_id, chat_scope=request.chat_scope, node_id=request.node_id)
+    messages = [json.loads(line) for line in path.read_text().splitlines()]
+    human_messages = [item for item in messages if item["role"] == "user"]
+    assert sorted(item["text"] for item in human_messages) == sorted([request.message, "Accuracy"])
+    prompt = next(item for item in human_messages if item["text"] == request.message)
+    answer = next(item for item in human_messages if item["text"] == "Accuracy")
+    assert prompt["operationId"] == continued.operation_id
+    assert answer["questionId"] == question.question_id
+    assert answer["uuid"] == str(
+        uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:question:{question.question_id}:answer:1")
+    )
+    assert prompt["uuid"] != answer["uuid"]
+    assert store.episode(continued_id).invocations_used == 1
+
+
 def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_path):
     store, episode_id, question, _ = _ready_answer(tmp_path)
     launches = []

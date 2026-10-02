@@ -40,6 +40,12 @@ binding checks. Matching answers reach invocation 1's snapshot even at ceiling 1
 unprovable or changed bindings leave the answered card read-only. The real-provider
 close criteria below remain open.
 
+Fix round 3 preserves the human-started continuation's prompt identity when it
+claims a reopened answer. The answer stays in invocation 1's snapshot and keeps
+its separate stable chat identity, including when projection needs reconciliation.
+The regression covers prior successful and failed answer projection. The
+real-provider close criteria below remain open.
+
 Close this handoff when all of these hold:
 
 - a Work chat turn asks, the human answers on the card within one client call,

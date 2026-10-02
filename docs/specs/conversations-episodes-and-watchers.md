@@ -688,6 +688,9 @@ without changing origin provenance; ended episodes withdraw their cards. In the
 continuation's creation transaction, unreceived, unclaimed answers are claimed by
 invocation 1 when its binding passes the answer-wake origin checks. Its first
 question snapshot carries those answers without spending another invocation.
+The human-started continuation keeps its own prompt text and message identity;
+claimed answers retain their separate, stable question-answer message identities
+and ordinary projection retries.
 If the saved origin authority or matching execution binding cannot be proved,
 the answered card remains read-only.
 Missing or malformed

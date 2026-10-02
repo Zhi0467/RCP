@@ -1940,7 +1940,8 @@ def _append_chat_exchange(
         if request.trigger != "watcher":
             question = (
                 execution.store.question_for_followup(execution.operation_id)
-                if execution is not None
+                # Experiment roots may claim answers alongside their human prompt.
+                if execution is not None and request.trigger == "human"
                 else None
             )
             records.append(
@@ -2048,7 +2049,9 @@ def _append_chat_records(
                 recorded = {
                     (item.get("operationId"), item.get("role"))
                     for item in existing
-                    if item.get("role") in {"user", "assistant"} and item.get("steering") is None
+                    if item.get("role") in {"user", "assistant"}
+                    and item.get("steering") is None
+                    and item.get("questionId") is None
                 }
                 records = [
                     item
