@@ -251,10 +251,11 @@ signal.pause()
     watchdog_pid = None
     released = False
     try:
-        wait_until(lambda: (root / "ack").exists())
+        # A loaded CI runner can take several seconds to reach the first "on".
+        wait_until(lambda: (root / "ack").exists(), timeout=30)
         ack = dict(line.split("=", 1) for line in (root / "ack").read_text().splitlines())
         watchdog_pid = int(ack["watchdog_pid"])
-        wait_until(lambda: "on" in watchdog.calls())
+        wait_until(lambda: "on" in watchdog.calls(), timeout=30)
         contender_fd = os.open(root / "owner.lock", os.O_RDWR)
         with pytest.raises(BlockingIOError):
             fcntl.flock(contender_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

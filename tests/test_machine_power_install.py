@@ -239,6 +239,16 @@ def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
 
 
 @macos_tools
+def test_approved_script_gets_its_own_window(installer, monkeypatch, tmp_path):
+    """Work after approval is not bounded by what is left of the prompt's window."""
+
+    monkeypatch.setattr("rcp.machine_power_install.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 2)
+    # The post-approval flag check outlasts the whole 2 s prompt window.
+    (tmp_path / "pmset").write_text("#!/bin/sh\nsleep 2.2\necho ' SleepDisabled 0'\n")
+    assert installer.install().installed
+
+
+@macos_tools
 def test_fresh_install_parent_is_traversable(installer):
     assert not installer.paths.directory.parent.exists()
     assert installer.install().installed

@@ -166,7 +166,9 @@ class MachinePowerInstaller:
         apple_script = f"do shell script {json.dumps(script)} with administrator privileges"
         try:
             result = self.run(
-                ["/usr/bin/osascript", "-e", apple_script], MACHINE_POWER_ADMIN_TIMEOUT_SECONDS
+                # The prompt and the approved script each get one admin window.
+                ["/usr/bin/osascript", "-e", apple_script],
+                2 * MACHINE_POWER_ADMIN_TIMEOUT_SECONDS,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise InstallError("admin_failed") from exc
@@ -375,6 +377,9 @@ bounded /bin/rm -f {sudoers} {daemon}
                         if lock is None:
                             acquire()
                         (rendezvous / "ready").touch()
+                        # The approved script gets its own window, and the runner's
+                        # own bound covers both, so it has settled before we return.
+                        deadline = time.monotonic() + 2 * MACHINE_POWER_ADMIN_TIMEOUT_SECONDS
                     if not done.wait(max(0, deadline - time.monotonic())):
                         raise InstallError("admin_failed")
                 except BaseException:
