@@ -8,7 +8,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from rcp.limits import LIVE_ARTIFACT_MAX_NEEDS, LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS
+from rcp.limits import (
+    LIVE_ARTIFACT_MAX_NEEDS,
+    LIVE_ARTIFACT_MAX_PATTERN_CHARS,
+    LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS,
+)
 
 
 class LiveModel(BaseModel):
@@ -66,7 +70,8 @@ class FilesNeed(LiveModel):
     )
     dir: str = Field(description=FileNeed.model_fields["path"].description)
     pattern: str = Field(
-        description=f"Relative /-separated filename pattern, at most {LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS} segments. Each segment is literal or uses fnmatch *, ?, or [...] globs; no **, parent traversal, empty, or dot segments."
+        max_length=LIVE_ARTIFACT_MAX_PATTERN_CHARS,
+        description=f"Relative /-separated filename pattern, at most {LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS} segments and {LIVE_ARTIFACT_MAX_PATTERN_CHARS} characters. Each segment is literal or uses fnmatch *, ?, or [...] globs; no **, parent traversal, empty, or dot segments.",
     )
     read: Literal["tail", "whole"] = Field(description=FileNeed.model_fields["read"].description)
     format: Literal["jsonl", "csv", "text"] = Field(

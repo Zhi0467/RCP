@@ -5,7 +5,11 @@ import re
 
 import pytest
 
-from rcp.limits import LIVE_ARTIFACT_MAX_NEEDS, LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS
+from rcp.limits import (
+    LIVE_ARTIFACT_MAX_NEEDS,
+    LIVE_ARTIFACT_MAX_PATTERN_CHARS,
+    LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS,
+)
 from rcp.live_artifacts import (
     LiveTag,
     parse_live_tag,
@@ -93,6 +97,7 @@ def test_invalid_tags_fail_closed(html: str) -> None:
         "a/",
         "",
         "a/" * LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS + "x",
+        "x" * (LIVE_ARTIFACT_MAX_PATTERN_CHARS + 1),
     ],
 )
 def test_folder_patterns_refuse_unbounded_or_unsafe_paths(pattern):
