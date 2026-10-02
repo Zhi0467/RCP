@@ -653,7 +653,7 @@ export function ChatsWorkspace({
                                     label={latest.provider_label}
                                   />
                                   {agentMeta(status, conversation.kind) &&
-                                    ` · ${agentMeta(status, conversation.kind)}`}
+                                    `${latest.provider_label || latest.request.provider ? " · " : ""}${agentMeta(status, conversation.kind)}`}
                                 </>
                               ) : (
                                 "\u00a0"
