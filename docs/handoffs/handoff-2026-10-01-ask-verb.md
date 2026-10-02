@@ -34,6 +34,12 @@ retains the resolved `ask` offer in Work/Experiment mailbox checkpoints so resum
 cannot add question authority to a validation-only turn. The close criteria below
 remain open.
 
+Fix round 2 claims reopened, undelivered Experiment answers in the continuation's
+creation transaction for its first invocation, using the answer-wake origin
+binding checks. Matching answers reach invocation 1's snapshot even at ceiling 1;
+unprovable or changed bindings leave the answered card read-only. The real-provider
+close criteria below remain open.
+
 Close this handoff when all of these hold:
 
 - a Work chat turn asks, the human answers on the card within one client call,

@@ -684,7 +684,12 @@ or undelivered answer belonging to that human-started episode. A question never
 excuses unwatched compute. An answer wake spends one normal Experiment invocation
 and preserves the session, scope, target, Stop fence and ceiling; exhaustion needs
 human reauthorization. Continuation episodes reopen their predecessor's questions
-without changing origin provenance; ended episodes withdraw their cards.
+without changing origin provenance; ended episodes withdraw their cards. In the
+continuation's creation transaction, unreceived, unclaimed answers are claimed by
+invocation 1 when its binding passes the answer-wake origin checks. Its first
+question snapshot carries those answers without spending another invocation.
+If the saved origin authority or matching execution binding cannot be proved,
+the answered card remains read-only.
 Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.

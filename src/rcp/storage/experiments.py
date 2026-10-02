@@ -36,6 +36,8 @@ from rcp.storage.models import (
     _experiment_pinned_value,
     _optional_str,
 )
+from rcp.storage.question_models import QuestionOrigin
+from rcp.storage.questions import _question_record
 
 if TYPE_CHECKING:
     from rcp.watchers import ExperimentWatchSpec, WatcherBinding
@@ -43,6 +45,29 @@ if TYPE_CHECKING:
 
 class ExperimentStoreMixin:
     """Bounded Experiment episodes and their loop runtime projection."""
+
+    @staticmethod
+    def _experiment_question_binding_matches(
+        record: AgentTaskRecord, origin: QuestionOrigin, original: AgentTaskRecord
+    ) -> bool:
+        # Admission has no newly resolved write-scope fingerprint yet. As with
+        # answer wakes, prove the saved authority and its execution inputs.
+        return (
+            record.project_id == origin.project_id
+            and record.native_session_id == origin.native_session_id
+            and record.request.get("provider") == origin.provider
+            and record.stage_root == origin.stage_root
+            and (record.stage_host or "") == (origin.stage_host or "")
+            and record.graph_target == origin.graph_target
+            and original.write_scope_fingerprint == origin.write_scope_fingerprint
+            and original.dispatch_authority is not None
+            and original.dispatch_authority.task_contract == origin.capability
+            and original.request.get("mode") == "work"
+            and all(
+                record.request.get(key) == original.request.get(key)
+                for key in ("provider", "run_on", "run_truth_scope", "mode")
+            )
+        )
 
     def experiment_question_owner_ids(self, episode_id: str) -> list[str]:
         """Follow continuation provenance without moving immutable question origins."""
@@ -99,12 +124,6 @@ class ExperimentStoreMixin:
             or record.parent_operation_id is not None
             or record.request.get("patch_kind") != "experiment_loop"
             or record.request.get("trigger") != "watcher"
-            or record.project_id != origin.project_id
-            or record.native_session_id != origin.native_session_id
-            or record.request.get("provider") != origin.provider
-            or record.stage_root != origin.stage_root
-            or (record.stage_host or "") != (origin.stage_host or "")
-            or record.graph_target != origin.graph_target
             or origin.owner_id not in self.experiment_question_owner_ids(record.episode_id or "")
         ):
             raise ValueError("Experiment answer changed its origin binding")
@@ -152,16 +171,7 @@ class ExperimentStoreMixin:
             if asking is None or asking["status"] not in {"succeeded", "failed"}:
                 return None
             original = self._agent_task_record(asking)
-            if (
-                original.write_scope_fingerprint != origin.write_scope_fingerprint
-                or original.dispatch_authority is None
-                or original.dispatch_authority.task_contract != origin.capability
-                or original.request.get("mode") != "work"
-                or any(
-                    record.request.get(key) != original.request.get(key)
-                    for key in ("provider", "run_on", "run_truth_scope", "mode")
-                )
-            ):
+            if not self._experiment_question_binding_matches(record, origin, original):
                 raise ValueError("Experiment question origin authority is unavailable")
             if self._has_resumable_paused_chat_task(
                 connection, origin.project_id, original.kind, original.request.get("chat_id")
@@ -362,15 +372,46 @@ class ExperimentStoreMixin:
                     )
                 self._insert_episode(connection, started)
                 if continues_episode_id is not None:
-                    connection.execute(
+                    reopened = connection.execute(
                         """WITH RECURSIVE owners(episode_id) AS (
                             SELECT ? UNION ALL SELECT e.continues_episode_id FROM episodes e
                             JOIN owners o ON e.episode_id=o.episode_id
                             WHERE e.continues_episode_id IS NOT NULL
                         ) UPDATE questions SET withdrawn_readonly=0
-                        WHERE owner_kind='episode' AND owner_id IN (SELECT episode_id FROM owners)""",
+                        WHERE owner_kind='episode' AND owner_id IN (SELECT episode_id FROM owners)
+                        RETURNING *""",
                         (continues_episode_id,),
-                    )
+                    ).fetchall()
+                    for question_row in reopened:
+                        question = _question_record(question_row)
+                        if (
+                            question.state != "answered"
+                            or question.client_receipt_revision is not None
+                            or question.followup_operation_id is not None
+                        ):
+                            continue
+                        asking = connection.execute(
+                            "SELECT * FROM graph_runs WHERE operation_id=?",
+                            (question.origin.operation_id,),
+                        ).fetchone()
+                        if (
+                            asking is None
+                            or asking["status"] not in {"succeeded", "failed"}
+                            or not self._experiment_question_binding_matches(
+                                record, question.origin, self._agent_task_record(asking)
+                            )
+                        ):
+                            connection.execute(
+                                "UPDATE questions SET withdrawn_readonly=1 WHERE question_id=?",
+                                (question.question_id,),
+                            )
+                            continue
+                        self.claim_question_followup(
+                            connection,
+                            question.question_id,
+                            answer_revision=question.answer_revision,
+                            operation_id=record.operation_id,
+                        )
                 connection.execute(
                     """
                     INSERT INTO experiment_episode_state (episode_id, created_at, updated_at)

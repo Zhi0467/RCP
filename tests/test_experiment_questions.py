@@ -9,6 +9,7 @@ import pytest
 
 from rcp.core.transition_models import GraphTargetRef
 from rcp.runs.experiment_questions import reconcile_experiment_question_answers
+from rcp.runs.question_snapshots import question_snapshot
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AppStore, EpisodeInvocationCeilingReached
 from rcp.storage.question_models import QuestionOrigin
@@ -150,6 +151,67 @@ def test_continuation_reopens_predecessor_question_without_moving_origin(tmp_pat
     assert store.experiment_question_owner_ids(continued_id) == [continued_id, episode_id]
     store.request_episode_stop(continued_id)
     assert store.get_question(question.question_id).withdrawn_readonly
+
+
+@pytest.mark.parametrize(
+    "changed_binding",
+    [None, "provider", "run_on", "run_truth_scope", "session", "stage", "origin_authority"],
+)
+def test_continuation_claims_answer_in_first_snapshot_at_ceiling(tmp_path, changed_binding):
+    store, episode_id, question, _ = _ready_answer(tmp_path, ceiling=1)
+    store.end_episode_without_report(episode_id, ending="exhausted")
+    assert store.get_question(question.question_id).withdrawn_readonly
+    continued_id = str(uuid.uuid4())
+    continued = _task(
+        store,
+        "continued-root",
+        continued_id,
+        ceiling=1,
+        session_id="native-session",
+        stage_root="/tmp/exact-experiment-stage",
+    )
+    if changed_binding in {"provider", "run_on", "run_truth_scope"}:
+        value = ["repo-b"] if changed_binding == "run_truth_scope" else "changed"
+        continued = continued.model_copy(
+            update={"request": {**continued.request, changed_binding: value}}
+        )
+    elif changed_binding == "session":
+        continued = continued.model_copy(update={"native_session_id": "another-session"})
+    elif changed_binding == "stage":
+        continued = continued.model_copy(update={"stage_root": None})
+    elif changed_binding == "origin_authority":
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET dispatch_authority_json=NULL WHERE operation_id=?",
+                (question.origin.operation_id,),
+            )
+    store.create_experiment_episode_with_invocation(
+        continued,
+        continues_episode_id=episode_id,
+        continuation_request_id=str(uuid.uuid4()),
+    )
+    reopened = store.get_question(question.question_id)
+    snapshot = question_snapshot(
+        store,
+        project_id="project",
+        owner_kind="episode",
+        owner_ids=store.experiment_question_owner_ids(continued_id),
+        operation_id=continued.operation_id,
+    )
+    entries = json.loads(snapshot.text)["questions"]
+    if changed_binding is None:
+        assert not reopened.withdrawn_readonly
+        assert reopened.followup_operation_id == continued.operation_id
+        assert [(entry["question_id"], entry["answer"]) for entry in entries] == [
+            (question.question_id, "Accuracy")
+        ]
+    else:
+        assert reopened.withdrawn_readonly
+        assert reopened.followup_operation_id is None
+        assert entries == []
+    assert reopened.origin == question.origin
+    assert reopened.client_receipt_revision is None
+    assert store.episode(continued_id).invocations_used == 1
 
 
 def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_path):
