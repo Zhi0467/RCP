@@ -330,7 +330,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     )
     task_count = len(store.agent_tasks(project_id, include_hidden=True))
     for path in control_paths:
-        response = client.post(path)
+        response = client.post(path, json={})
         assert response.status_code == 409
         assert "retained as history" in response.json()["detail"]
     assert len(store.agent_tasks(project_id, include_hidden=True)) == task_count
@@ -367,7 +367,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     assert viewer.status_code == 200
     assert 'id="keep"' not in viewer.text
     assert 'id="box"' not in viewer.text
-    assert client.post(f"{kept_base}/keep").status_code == 409
+    assert client.post(f"{kept_base}/keep", json={}).status_code == 409
 
     monkeypatch.setattr(
         "rcp.artifact_import.read_local_regular_file",
@@ -383,7 +383,7 @@ def test_history_only_fence_preserves_history_and_removes_every_continuation(
     if retained_temporary:
         assert download.content == b"<p>temporary</p>"
     assert client.get(f"{temporary_base}/viewer").status_code == expected_status
-    assert client.post(f"{temporary_base}/keep").status_code == 409
+    assert client.post(f"{temporary_base}/keep", json={}).status_code == 409
     context_response = client.post(
         f"/api/projects/{project_id}/tasks/project_chat",
         json={

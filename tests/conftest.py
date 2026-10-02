@@ -206,3 +206,19 @@ default_reasoning = "medium"
 def disabled_release_checks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test apps never contact GitHub; transport tests opt in against loopback."""
     monkeypatch.setenv("RCP_UPDATE_CHECK", "off")
+
+
+@pytest.fixture(autouse=True)
+def isolated_machine_power(monkeypatch: pytest.MonkeyPatch) -> None:
+    """App tests never inspect or alter the host machine's real power state."""
+    from rcp.machine_power import MachinePowerController
+
+    def refuse_command(*args, **kwargs):
+        raise AssertionError("App tests must inject machine power commands")
+
+    monkeypatch.setattr(
+        "rcp.api.app.MachinePowerController",
+        lambda *args, **kwargs: MachinePowerController(
+            *args, platform="linux", run=refuse_command, spawn=refuse_command, **kwargs
+        ),
+    )

@@ -79,11 +79,11 @@ def test_compute_check_rechecks_one_machine_on_request(compute_api, monkeypatch)
     monkeypatch.setattr(
         "rcp.api.project_state.refresh_compute_probes", probe_module.refresh_compute_probes
     )
-    response = client.post(f"{url}/machines/laptop/compute/check")
+    response = client.post(f"{url}/machines/laptop/compute/check", json={})
     assert response.status_code == 200, response.text
     assert calls == [("laptop", "helper")]
     assert response.json()["scheduler"] is None and response.json()["helper"]["ready"]
-    assert client.post(f"{url}/machines/missing/compute/check").status_code == 422
+    assert client.post(f"{url}/machines/missing/compute/check", json={}).status_code == 422
 
 
 def test_machine_compute_settings_write_invalidate_and_preserve_omitted(compute_api, manifest):

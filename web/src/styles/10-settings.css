@@ -35,6 +35,13 @@
   margin: 0;
   padding: 20px 24px;
 }
+.project-delete-dialog > ul {
+  font-size: var(--type-xs);
+  line-height: 1.65;
+  margin: 0;
+  list-style: disc;
+  padding: 20px 24px 20px 42px;
+}
 .project-delete-dialog code {
   background: var(--paper);
   border: 1px solid var(--line);
@@ -3420,4 +3427,34 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .setup-machine-choice > span {
   font-size: var(--type-2xs);
   font-weight: 700;
+}
+
+.machine-power-controls,
+.machine-power-warning {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.machine-power-controls {
+  padding: 16px 20px 0;
+}
+.machine-power-controls .settings-repository {
+  flex: 1 1 180px;
+}
+.machine-power-status {
+  color: var(--muted);
+  font-size: var(--type-xs);
+  margin: 0;
+  padding: 12px 20px 18px;
+}
+.machine-power-warning {
+  padding: 16px;
+  border: 1px solid var(--mustard);
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: var(--walnut);
+}
+.machine-power-warning code {
+  overflow-wrap: anywhere;
 }

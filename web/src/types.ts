@@ -3245,6 +3245,37 @@ export interface UpdateNotice {
   update_command: string | null;
 }
 
+export type MachinePowerPlatform = "macos" | "linux" | "other";
+export type MachinePowerInstallProblem =
+  "not_installed" | "partial" | "other_account" | "foreign_file";
+export type MachinePowerDemandReason = "episode" | "task" | "runtime" | "retry";
+export type MachinePowerLatch = "thermal" | "cleanup_failure";
+export type MachinePowerReleaseCause =
+  | "demand_gone"
+  | "battery_floor"
+  | "thermal"
+  | "reading_failed"
+  | "watchdog_lost"
+  | "heartbeat_stale"
+  | "disabled"
+  | "shutdown";
+export type MachinePowerCleanupKind = "clear_failed" | "sleep_failed";
+
+export interface MachinePowerStatus {
+  platform: MachinePowerPlatform;
+  supported: boolean;
+  installed: boolean;
+  install_problem: MachinePowerInstallProblem | null;
+  idle_hold: { enabled: boolean; active: boolean };
+  lid_mode: { enabled: boolean; active: boolean };
+  demand: boolean;
+  demand_reasons: MachinePowerDemandReason[];
+  latched: MachinePowerLatch | null;
+  last_release: { cause: MachinePowerReleaseCause; at: string } | null;
+  cleanup_failure: { kind: MachinePowerCleanupKind; command: string } | null;
+  external_owner: boolean;
+}
+
 export interface AgentQuestion {
   question_id: string;
   owner_kind: "chat" | "episode";

@@ -1132,16 +1132,19 @@ def test_branch_modified_child_experiment_uses_exact_target_across_index_and_sto
         assert entry["node"]["current_summary"] == "Visible only on the episode branch."
         assert entry["control"]["episode_id"] == child.episode_id
 
-        ambiguous_stop = client.post(f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop")
+        ambiguous_stop = client.post(
+            f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop", json={}
+        )
         assert ambiguous_stop.status_code == 404
         exact_stop = client.post(
             f"/api/projects/{project_id}/experiments/exp%2Flaunched/stop",
             params={"episode_id": child.episode_id},
+            json={},
         )
         assert exact_stop.status_code == 200
         assert exact_stop.json()["episode_id"] == child.episode_id
         exact_episode_stop = client.post(
-            f"/api/projects/{project_id}/episodes/{child.episode_id}/stop"
+            f"/api/projects/{project_id}/episodes/{child.episode_id}/stop", json={}
         )
         assert exact_episode_stop.status_code == 200
         assert exact_episode_stop.json()["episode_id"] == child.episode_id
@@ -1283,8 +1286,9 @@ def test_exact_experiment_stop_routes_share_the_named_human_gate(manifest, tmp_p
             client.post(
                 f"/api/projects/{project_id}/experiments/exp%2Fbranch-created/stop",
                 params={"episode_id": episode_id},
+                json={},
             ),
-            client.post(f"/api/projects/{project_id}/episodes/{episode_id}/stop"),
+            client.post(f"/api/projects/{project_id}/episodes/{episode_id}/stop", json={}),
         ]
 
     for response in responses:
@@ -1330,6 +1334,7 @@ def test_terminal_exact_experiment_stop_is_a_conflict_instead_of_a_server_error(
         response = client.post(
             f"/api/projects/{child.project_id}/experiments/exp%2Fterminal-stop/stop",
             params={"episode_id": child.episode_id},
+            json={},
         )
 
     assert response.status_code == 409

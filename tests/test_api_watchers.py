@@ -63,7 +63,9 @@ def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path:
     listed = client.get(f"/api/projects/{project_id}/watchers")
     assert listed.status_code == 200
     assert listed.json()[0]["can_check_now"] is True
-    response = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/check")
+    response = client.post(
+        f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/check", json={}
+    )
 
     assert response.status_code == 200
     assert calls == [
@@ -114,11 +116,17 @@ def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
     client = TestClient(app)
 
     missing_project = client.post(
-        f"/api/projects/{uuid.uuid4()}/watchers/{active.watcher_id}/check"
+        f"/api/projects/{uuid.uuid4()}/watchers/{active.watcher_id}/check", json={}
     )
-    missing_watcher = client.post(f"/api/projects/{project_id}/watchers/missing-api-watcher/check")
-    active_response = client.post(f"/api/projects/{project_id}/watchers/{active.watcher_id}/check")
-    graph_response = client.post(f"/api/projects/{project_id}/watchers/{graph.watcher_id}/check")
+    missing_watcher = client.post(
+        f"/api/projects/{project_id}/watchers/missing-api-watcher/check", json={}
+    )
+    active_response = client.post(
+        f"/api/projects/{project_id}/watchers/{active.watcher_id}/check", json={}
+    )
+    graph_response = client.post(
+        f"/api/projects/{project_id}/watchers/{graph.watcher_id}/check", json={}
+    )
 
     assert missing_project.status_code == 404
     assert missing_watcher.status_code == 404
@@ -127,7 +135,9 @@ def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
     assert graph_response.status_code == 409
     assert "external watcher" in graph_response.json()["detail"]
     for watcher in (active, graph):
-        no_action = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/cancel")
+        no_action = client.post(
+            f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/cancel", json={}
+        )
         assert no_action.status_code == 409
         assert "no cancel command" in no_action.json()["detail"]
 
@@ -165,7 +175,7 @@ def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path
     assert listed_payload[0]["status"] == "active"
     assert listed_payload[0]["can_check_now"] is False
 
-    stopped = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/stop")
+    stopped = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/stop", json={})
     assert stopped.status_code == 200
     stopped_payload = stopped.json()
     assert isinstance(stopped_payload, dict)
@@ -212,16 +222,16 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
     )
     url = f"/api/projects/{project_id}/watchers"
     for watcher_id in ("missing", "other"):
-        assert client.post(f"{url}/{watcher_id}/cancel").status_code == 404
+        assert client.post(f"{url}/{watcher_id}/cancel", json={}).status_code == 404
     assert calls == []
     assert client.get(url).json()[0]["can_cancel"] is True
-    response = client.post(f"{url}/{watcher.watcher_id}/cancel")
+    response = client.post(f"{url}/{watcher.watcher_id}/cancel", json={})
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["cancel_requested_by"] == store.local_owner.user_id
     assert payload["cancel_requested_at"] and payload["cancel_error"] is None
     assert payload["status"] == "active" and payload["can_cancel"] is False
-    assert client.post(f"{url}/{watcher.watcher_id}/cancel").json() == payload
+    assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).json() == payload
     assert calls == [("scancel 331", "rcp@cluster", "/tmp")]
 
     def refuse_identity(_request):
@@ -231,11 +241,11 @@ def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
         scoped.setattr(
             app.state.services.identity_access, "require_patch_capable_identity", refuse_identity
         )
-        assert client.post(f"{url}/{watcher.watcher_id}/cancel").status_code == 403
+        assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).status_code == 403
 
     def refuse_project(_project_id):
         raise ValueError("Project is being removed.")
 
     monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_project)
-    assert client.post(f"{url}/{watcher.watcher_id}/cancel").status_code == 409
+    assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).status_code == 409
     assert calls == [("scancel 331", "rcp@cluster", "/tmp")]

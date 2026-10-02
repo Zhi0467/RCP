@@ -495,7 +495,9 @@ class _Loop:
         return stored
 
     def stop(self) -> dict[str, object]:
-        response = self.client.post(f"/api/projects/{self.project_id}/experiments/{NODE_PATH}/stop")
+        response = self.client.post(
+            f"/api/projects/{self.project_id}/experiments/{NODE_PATH}/stop", json={}
+        )
         assert response.status_code == 200, response.text
         return response.json()
 
@@ -1049,7 +1051,7 @@ def test_control_state_exposes_the_operational_block_without_the_session_id(loop
 def test_stop_on_a_node_that_is_not_an_experiment_is_not_found(loop, tmp_path) -> None:
 
     response = loop.client.post(
-        f"/api/projects/{loop.project_id}/experiments/rq%2Flearning-after-shift/stop"
+        f"/api/projects/{loop.project_id}/experiments/rq%2Flearning-after-shift/stop", json={}
     )
 
     assert response.status_code == 404
@@ -1060,7 +1062,7 @@ def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(loop, tmp_pa
     loop.arm_watcher("still-running")
 
     response = loop.client.post(
-        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/watchers/stop"
+        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/watchers/stop", json={}
     )
 
     assert response.status_code == 409, response.text
@@ -2548,7 +2550,9 @@ def test_human_stops_a_watcher_left_live_by_an_ended_episode(manifest, tmp_path)
     row = next(item for item in listed.json() if item["watcher_id"] == "exhausted-watcher")
     assert row["can_stop_watching"] is True
 
-    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/exhausted-watcher/stop")
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/watchers/exhausted-watcher/stop", json={}
+    )
 
     assert response.status_code == 200, response.text
     assert response.json()["can_stop_watching"] is False
@@ -2573,7 +2577,9 @@ def test_live_episode_still_routes_watcher_stop_through_stop_loop(loop, tmp_path
     row = next(item for item in listed.json() if item["watcher_id"] == "live-watcher")
     assert row["can_stop_watching"] is False
 
-    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/live-watcher/stop")
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/watchers/live-watcher/stop", json={}
+    )
 
     assert response.status_code == 409
     assert "Use Stop loop" in response.json()["detail"]
@@ -2635,7 +2641,9 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     assert blocked["can_start"] is False
     assert blocked["recommendation"] == "open_report"
 
-    stopped = loop.client.post(f"/api/projects/{loop.project_id}/watchers/detached-observer/stop")
+    stopped = loop.client.post(
+        f"/api/projects/{loop.project_id}/watchers/detached-observer/stop", json={}
+    )
     assert stopped.status_code == 200, stopped.text
 
     resumable = loop.control()
@@ -2760,7 +2768,9 @@ def test_a_completion_that_lands_before_the_stop_arrives_is_refused(manifest, tm
     # The job lands while the human is still looking at that row.
     loop.store.record_watcher_check("finishes-first", status="completed", exit_code=0, error=None)
 
-    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/finishes-first/stop")
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/watchers/finishes-first/stop", json={}
+    )
 
     assert response.status_code == 409, response.text
     retained = loop.store.watcher("finishes-first")
@@ -2798,7 +2808,9 @@ def test_a_grouped_observer_is_not_retired_on_its_own(manifest, tmp_path) -> Non
     assert rows["array-member-2"]["can_stop_watching"] is False
 
     # The projection is the offer, not the gate: storage refuses the request too.
-    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/array-member-1/stop")
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/watchers/array-member-1/stop", json={}
+    )
 
     assert response.status_code == 422, response.text
     assert "retired with its group" in response.json()["detail"]
@@ -2925,7 +2937,9 @@ def test_a_graph_condition_is_not_offered_a_stop(manifest, tmp_path) -> None:
     assert row["can_stop_watching"] is False
     assert row["can_cancel"] is False
 
-    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/graph-condition/stop")
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/watchers/graph-condition/stop", json={}
+    )
 
     assert response.status_code == 422, response.text
     assert "not an observed job to retire" in response.json()["detail"]
@@ -2978,7 +2992,9 @@ def test_an_ordinary_graph_condition_keeps_its_retirement(manifest, tmp_path) ->
     )
     assert row["can_stop_watching"] is True
 
-    response = loop.client.post(f"/api/projects/{loop.project_id}/watchers/chat-condition/stop")
+    response = loop.client.post(
+        f"/api/projects/{loop.project_id}/watchers/chat-condition/stop", json={}
+    )
 
     assert response.status_code == 200, response.text
     assert loop.store.watcher("chat-condition").status == "stopped"

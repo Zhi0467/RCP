@@ -270,7 +270,7 @@ def test_team_delete_removes_invitation_transfer_and_provisioning_history(
 
     assert deleted.status_code == 200, deleted.text
     acting[0] = invitee.user_id
-    refused = client.post(f"/api/project-invitations/{invitation_id}/accept")
+    refused = client.post(f"/api/project-invitations/{invitation_id}/accept", json={})
     assert refused.status_code == 404
     with store.connection() as connection:
         table_names = [

@@ -1414,7 +1414,9 @@ def test_explicit_provider_resolve_discovers_then_persists(manifest, tmp_path) -
 
     app.state.catalog.launcher.readiness = readiness
 
-    response = client.post(f"/api/projects/{project_id}/machines/laptop/providers/codex/resolve")
+    response = client.post(
+        f"/api/projects/{project_id}/machines/laptop/providers/codex/resolve", json={}
+    )
 
     assert response.status_code == 200
     assert calls == [None, "/opt/new-agent/codex"]

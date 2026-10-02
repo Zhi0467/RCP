@@ -76,6 +76,18 @@ def test_a_pair_that_stops_behaving_as_named_turns_detection_off() -> None:
     assert streak.seconds_until_automatic_launch() == 0
 
 
+def test_clocks_that_start_apart_still_detect_sleep() -> None:
+    """Apple Silicon can boot with the sleep-counting clock a few seconds behind."""
+
+    clocks = _Clocks()
+    clocks.counts -= 5
+    streak = AwakeStreak(MAC[0], clocks.read, MAC[1])
+    assert streak.seconds_until_automatic_launch() == 0
+    clocks.asleep(900)
+    clocks.awake(1)
+    assert streak.seconds_until_automatic_launch() == AUTOMATIC_LAUNCH_AWAKE_SECONDS
+
+
 @pytest.mark.skipif(
     not sys.platform.startswith(("darwin", "linux")), reason="no sleep clock pair is named here"
 )

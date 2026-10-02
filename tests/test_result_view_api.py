@@ -36,6 +36,9 @@ def test_legacy_urls_use_artifact_storage_and_routes(manifest, tmp_path):
         assert content.status_code == 200
         assert "Retained result" in content.text
         assert 'sandbox="allow-scripts"' in content.text
-        assert client.post(f"{base}/result-views/{artifact.artifact_id}/keep").status_code == 200
+        assert (
+            client.post(f"{base}/result-views/{artifact.artifact_id}/keep", json={}).status_code
+            == 200
+        )
         assert store.artifact(artifact.artifact_id).kept_at is not None
         assert not (manifest.path.parent / "artifacts").exists()

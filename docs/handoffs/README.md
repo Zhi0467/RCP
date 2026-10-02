@@ -1,5 +1,7 @@
 # Active implementation handoffs
 
+- [Keep RCP running with the lid closed on a Mac](handoff-2026-10-01-macos-keep-awake.md)
+  — implemented 2026-10-01 on its PR; the packaged-candidate checks remain.
 - [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
   — design settled 2026-10-01; implementation in progress on its PR.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)

@@ -159,7 +159,7 @@ def _merge(harness, monkeypatch, *ops, expect: str = "succeeded"):
     )
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert response.status_code == 202, response.text
     summary = response.json()["graph_branch"]
