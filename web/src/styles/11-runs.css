@@ -346,6 +346,7 @@
 .campaign-run-list {
   display: grid;
   gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
 }
 .campaign-run {
   --campaign-tone: var(--cobalt);
@@ -995,6 +996,10 @@
   .campaign-run-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+  /* In a column the 220px basis would become height. */
+  .campaign-run-health {
+    flex: none;
   }
   .campaign-report-actions,
   .campaign-reauthorize {
