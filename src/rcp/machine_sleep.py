@@ -14,6 +14,10 @@ names its pair here rather than trusting `time.monotonic()` to keep one
 meaning. A platform with no known pair, or a pair that stops behaving as
 named, has no sleep detection, and launches there are never held.
 
+Only growth of the difference means sleep. The two clocks need not start
+together: on Apple Silicon they can sit a few seconds apart from boot, so the
+starting difference is a baseline, not a reading to validate.
+
 A sleep is seen at the first reading after it, so the awake streak starts at
 that reading, never earlier than the true wake.
 """
@@ -121,17 +125,10 @@ def _resolve_clocks(
         return None
     counts, skips = ids
     try:
-        slept = read_clock(counts) - read_clock(skips)
+        read_clock(counts)
+        read_clock(skips)
     except OSError as exc:
         logger.info("Sleep clocks are unreadable (%s); automatic launches are never held.", exc)
-        return None
-    if slept < -SLEEP_DETECTION_TOLERANCE_SECONDS:
-        logger.warning(
-            "%s reads behind %s, so they do not count sleep as named; automatic launches "
-            "are never held.",
-            names[0],
-            names[1],
-        )
         return None
     return counts, skips
 
