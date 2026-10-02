@@ -221,6 +221,18 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
         b"<p>original</p>" if undo else b"<p>edited</p>"
     )
     assert store.read_artifact_bytes(edited.artifact_id) == b"<p>edited</p>"
+    from rcp.api.tasks import _read_agent_artifact_bytes
+
+    store.complete_agent_task(
+        "edit",
+        applied_revision=None,
+        result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
+    )
+    for artifact in artifacts:
+        _, data = _read_agent_artifact_bytes(
+            store, app.state.default_project_id, "edit", artifact.artifact_id, "download"
+        )
+        assert data == store.read_artifact_bytes(artifact.artifact_id)
 
 
 @pytest.mark.parametrize("failure", ["error", "session", "no_result"])

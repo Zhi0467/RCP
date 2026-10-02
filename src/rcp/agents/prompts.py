@@ -59,7 +59,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 15
+CHAT_MASTER_CONTEXT_VERSION = 16
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -659,7 +659,7 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v2"
+DISCUSS_POLICY_VERSION = "discuss-v3"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
 WORK_POLICY_VERSION = "work-v4"
 

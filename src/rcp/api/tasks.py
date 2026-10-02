@@ -1020,7 +1020,8 @@ def _read_agent_artifact_bytes(
     """Read bounded source bytes without applying viewer-specific media validation."""
     record = store.agent_task(operation_id)
     # An in-place edit lists the artifact it published, which its origin turn's scope owns.
-    # A revoking edit runs as its own `artifact_edit` task and serves only that artifact.
+    # A revoking edit runs as its own `artifact_edit` task whose other outputs share the
+    # server-recorded staging scope.
     edit = record.request.get("artifact_edit") if record is not None else None
     edited = isinstance(edit, dict) and edit.get("artifact_id") == artifact_id
     if (
@@ -1028,7 +1029,7 @@ def _read_agent_artifact_bytes(
         or record.project_id != project_id
         or not (
             record.kind in {"node_chat", "project_chat"}
-            or (record.kind == "artifact_edit" and edited)
+            or (record.kind == "artifact_edit" and isinstance(edit, dict))
         )
     ):
         raise HTTPException(status_code=404, detail="Agent task not found")
@@ -1046,13 +1047,12 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    if (
-        not edited
-        and scoped_artifact_id(
-            _logical_chat_turn_operation_id(store, record.operation_id), descriptor.name
-        )
-        != descriptor.artifact_id
-    ):
+    scope_id = (
+        edit["staged_scope_id"]
+        if record.kind == "artifact_edit"
+        else _logical_chat_turn_operation_id(store, record.operation_id)
+    )
+    if not edited and scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
         raise ValueError("artifact descriptor does not match its task scope")
     stored = store.artifact(artifact_id)
     if stored is None or stored.project_id != project_id:
