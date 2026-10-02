@@ -30,6 +30,14 @@ class PowerPreferences(BaseModel):
     lid_mode: StrictBool | None = None
 
 
+class AdminRequest(BaseModel):
+    """An empty JSON object. Requiring a JSON body keeps a cross-site HTML form,
+    which cannot send `application/json` without a CORS preflight, from
+    triggering an administrator prompt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 @router.get("/api/machine-power")
 def machine_power(controller: Controller) -> dict[str, object]:
     return controller.status()
@@ -41,7 +49,7 @@ def update_machine_power(body: PowerPreferences, controller: Controller) -> dict
 
 
 @router.post("/api/machine-power/install")
-def install_machine_power(controller: Controller) -> dict[str, object]:
+def install_machine_power(_: AdminRequest, controller: Controller) -> dict[str, object]:
     try:
         return controller.install()
     except InstallError as exc:
@@ -49,7 +57,7 @@ def install_machine_power(controller: Controller) -> dict[str, object]:
 
 
 @router.post("/api/machine-power/uninstall")
-def uninstall_machine_power(controller: Controller) -> dict[str, object]:
+def uninstall_machine_power(_: AdminRequest, controller: Controller) -> dict[str, object]:
     try:
         return controller.uninstall()
     except InstallError as exc:

@@ -682,9 +682,9 @@ export function updateMachinePower(body: {
 }
 
 export function installMachinePower(): Promise<MachinePowerStatus> {
-  return api("/api/machine-power/install", { method: "POST" });
+  return api("/api/machine-power/install", { method: "POST", body: "{}" });
 }
 
 export function uninstallMachinePower(): Promise<MachinePowerStatus> {
-  return api("/api/machine-power/uninstall", { method: "POST" });
+  return api("/api/machine-power/uninstall", { method: "POST", body: "{}" });
 }

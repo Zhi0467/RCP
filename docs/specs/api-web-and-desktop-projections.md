@@ -982,7 +982,8 @@ hold** toggle, a **Lid-closed mode** toggle that opens the opt-in dialog and
 install when not installed, **Uninstall**, and one status line (mode, demand
 reasons, last release, latch, external owner, install problem). `PUT` changes
 `idle_hold` and `lid_mode`; enabling `lid_mode` clears a latch. Install and
-uninstall are `POST`s; a cancelled admin prompt returns 200 with the unchanged
+uninstall are `POST`s with an empty JSON object, so a cross-site form cannot
+raise the admin prompt; a cancelled prompt returns 200 with the unchanged
 status. The space landing shows a warning only while lid mode is latched off
 or a cleanup failed, with the exact command and a copy button.
 
