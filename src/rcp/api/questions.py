@@ -124,7 +124,7 @@ def answer_question(
 ) -> QuestionResponse:
     human = identity_access.require_patch_capable_identity(request)
     with project_write_admission(project_id, request):
-        previous = _question_for_http(store, project_id, question_id)
+        _question_for_http(store, project_id, question_id)
         try:
             question = store.answer_question(
                 question_id, answer=body.answer, choices=body.choices, resolved_by=human
@@ -133,27 +133,26 @@ def answer_question(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # The admission lock serializes the transition check with its commit.
-        # Owners recover delivery from durable resolutions if this process dies.
-        if _can_answer(previous):
-            try:
-                episode = (
-                    store.episode(question.origin.owner_id)
-                    if question.origin.owner_kind == "episode"
-                    else None
-                )
-                if episode is not None and episode.mode == "auto_research":
-                    mail = record_auto_research_question_answer(store, question_id)
-                    if mail is not None:
-                        deliver_pending_auto_research_mail(
-                            request.app.state.background_tasks,
-                            episode_id=mail.episode_id,
-                            recipient_task_id=mail.recipient_task_id,
-                        )
-                else:
-                    request.app.state.reconcile_question_answers(project_id)
-            except Exception:
-                logger.exception("Question %s committed; immediate delivery failed", question_id)
+        # Retry delivery even when the answer was already committed: an earlier
+        # owner call may have failed. Owner delivery is independently idempotent.
+        try:
+            episode = (
+                store.episode(question.origin.owner_id)
+                if question.origin.owner_kind == "episode"
+                else None
+            )
+            if episode is not None and episode.mode == "auto_research":
+                mail = record_auto_research_question_answer(store, question_id)
+                if mail is not None:
+                    deliver_pending_auto_research_mail(
+                        request.app.state.background_tasks,
+                        episode_id=mail.episode_id,
+                        recipient_task_id=mail.recipient_task_id,
+                    )
+            else:
+                request.app.state.reconcile_question_answers(project_id)
+        except Exception:
+            logger.exception("Question %s committed; immediate delivery failed", question_id)
     return _serialize(store, store.get_question(question_id) or question)
 
 

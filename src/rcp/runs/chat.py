@@ -2033,7 +2033,13 @@ def _append_chat_records(
                 existing_ids = {
                     json.loads(line).get("uuid") for line in path.read_text().split("\n") if line
                 }
-                records = [item for item in records if item.get("uuid") not in existing_ids]
+                # Steering appends receipt snapshots under the original message
+                # UUID; the transcript reader folds them and validates identity.
+                records = [
+                    item
+                    for item in records
+                    if item.get("steering") is not None or item.get("uuid") not in existing_ids
+                ]
             if reserve_prompt and path.exists():
                 # A live steer may already have recorded this attempt's original
                 # human prompt, or finalization may be resuming after appending

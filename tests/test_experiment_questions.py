@@ -250,6 +250,13 @@ def test_human_experiment_serves_ask_and_continuation_reuses_question_key(tmp_pa
         operation_id="continued-root",
         request_id=answered_request.request_id,
     )
+    acknowledged = work_command_handler(continuation, None)(
+        ask_request(request_id="f" * 32, receipt_token=answered.result["receipt_token"]),
+        CommandTurnIdentity(
+            episode_id=continued_id, task_id="continued-root", turn_id="two", authority="broker"
+        ),
+    )
+    assert acknowledged.status == "ok"
     store.complete_agent_task("continued-root", applied_revision=None, result={})
     assert not store.record_question_continuation_receipt(
         question_id, answer_revision=1, operation_id="continued-root", request_id="not-offered"
@@ -311,21 +318,22 @@ def test_orchestrator_child_experiment_refuses_ask(tmp_path):
     assert store.list_questions() == []
 
 
-def test_offered_live_answer_cannot_justify_empty_handoff_after_receipt(tmp_path):
+@pytest.mark.parametrize("acknowledged", [False, True])
+def test_only_acknowledged_answer_removes_experiment_continuation(tmp_path, acknowledged):
     store, episode_id, question, _ = _ready_answer(tmp_path)
     assert store.experiment_has_question_continuation(
         "project", episode_id, operation_id="loop-root"
     )
     store.record_agent_task_receipt(
         "loop-root",
-        "question_answer_offered",
+        "question_answer_acknowledged" if acknowledged else "question_answer_offered",
         {
             "question_id": question.question_id,
             "answer_revision": 1,
             "request_id": "answered",
         },
     )
-    assert not store.experiment_has_question_continuation(
+    assert store.experiment_has_question_continuation(
         "project", episode_id, operation_id="loop-root"
-    )
+    ) is (not acknowledged)
     assert store.get_question(question.question_id).client_receipt_revision is None

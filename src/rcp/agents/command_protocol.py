@@ -276,6 +276,7 @@ class AskResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    receipt_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     state: Literal["pending", "answered", "dismissed", "parked"]
     question_id: str = Field(min_length=1)
     answer: str | None = Field(default=None, max_length=ASK_ANSWER_MAX_LENGTH)
@@ -380,6 +381,7 @@ class LaunchCommandRequest(_CommandRequest):
 
 
 class AskCommandRequest(_CommandRequest):
+    receipt_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     idempotency_key: str = Field(min_length=1, max_length=200)
     verb: Literal["ask"]
     arguments: AskArguments

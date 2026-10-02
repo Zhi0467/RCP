@@ -244,10 +244,10 @@ Work and Experiments cannot ask directly.
 
 A call waits for the bounded client interval; repeating identical arguments keeps
 waiting, while ending the turn parks the question. An answered response counts as
-received only after the receiving task settles successfully on the original
-native session and authority binding. Failed or disconnected
-turns retain delivery eligibility. After full settlement and at startup, an
-unreceived chat answer admits at most one Work follow-up, transactionally claimed
+received only after the client acknowledges its response token and the receiving
+task settles successfully on the original native session and authority binding.
+Failed or disconnected turns retain delivery eligibility. After full settlement
+and at startup, an unreceived chat answer admits at most one Work follow-up, transactionally claimed
 with task insertion, pinned to the asking turn's native session, authority, write
 scope and target. Occupied or paused sessions defer admission; unusable bindings
 remain visible. Each answer is projected once as a human chat message through

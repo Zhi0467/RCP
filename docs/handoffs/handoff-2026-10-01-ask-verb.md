@@ -25,6 +25,14 @@ API calls `app.state.reconcile_question_answers(project_id)` for chat and
 Experiment owners and `record_auto_research_question_answer(store, question_id)`
 then ordinary mail delivery for orchestrator questions; dismissal never
 dispatches mail. Live broker socket checks need an unrestricted test host.
+Fix round 1 implements scalar Web refresh signals, exact-answer retry delivery,
+and client-token acknowledgement before successful settlement can confirm receipt.
+Missing acknowledgement retains follow-up eligibility on both command transports;
+legacy offered-only receipts are insufficient. Item 4 restores append-only steering
+receipt snapshots, records the four question routes in the frozen inventory, and
+retains the resolved `ask` offer in Work/Experiment mailbox checkpoints so resume
+cannot add question authority to a validation-only turn. The close criteria below
+remain open.
 
 Close this handoff when all of these hold:
 

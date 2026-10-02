@@ -273,7 +273,7 @@ class QuestionStoreMixin:
             rows = connection.execute(
                 """SELECT DISTINCT receipt.operation_id FROM graph_run_receipts AS receipt
                 JOIN graph_runs AS task ON task.operation_id=receipt.operation_id
-                WHERE receipt.category='question_answer_offered' AND task.status='succeeded'
+                WHERE receipt.category='question_answer_acknowledged' AND task.status='succeeded'
                 AND json_extract(receipt.payload_json,'$.question_id')=?""",
                 (question_id,),
             ).fetchall()
@@ -289,8 +289,8 @@ class QuestionStoreMixin:
     ) -> bool:
         """Receipt an inherited answer only with a successful, identically bound receiver.
 
-        The server's offered-answer receipt proves which response this settled turn
-        followed. Question provenance stays immutable; delivery names the actual receiver.
+        The client's acknowledgement proves which response this settled turn
+        consumed. Question provenance stays immutable; delivery names the actual receiver.
         """
         if not request_id:
             raise ValueError("client receipt requires a transport request id")
@@ -353,15 +353,15 @@ class QuestionStoreMixin:
                     episode_id = episode["continues_episode_id"]
                 if episode_id != origin.owner_id:
                     return False
-            offered = connection.execute(
+            acknowledged = connection.execute(
                 """SELECT 1 FROM graph_run_receipts
-                WHERE operation_id=? AND category='question_answer_offered'
+                WHERE operation_id=? AND category='question_answer_acknowledged'
                 AND json_extract(payload_json,'$.question_id')=?
                 AND json_extract(payload_json,'$.answer_revision')=?
                 AND json_extract(payload_json,'$.request_id')=? LIMIT 1""",
                 (operation_id, question_id, answer_revision, request_id),
             ).fetchone()
-            if offered is None:
+            if acknowledged is None:
                 return False
             return (
                 connection.execute(

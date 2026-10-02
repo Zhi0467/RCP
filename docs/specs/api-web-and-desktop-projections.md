@@ -264,11 +264,13 @@ asking turn has settled, and orchestrator questions, project as `parked`.
 `answer` text and `choices`; the store validates both and records the
 authenticated human. An exact retry is idempotent; a conflicting resolution or
 a withdrawn question returns 409. The endpoint enforces the store's resolution
-rules independently of the displayed offer. After committing a new answer it
-calls the chat/Experiment answer reconciler, or records orchestrator answer mail
-and invokes ordinary mail delivery. Durable reconciliation recovers an
-interrupted delivery. Answer input cannot change the original capability,
-scope, graph target, or mode. The strict request rejects additional fields.
+rules independently of the displayed offer. Both a new answer and an exact retry
+call the idempotent chat/Experiment answer reconciler, or record orchestrator
+answer mail and invoke ordinary mail delivery. Immediate delivery failures are
+logged with the question id and exception; the committed answer remains a
+successful response. An exact retry or durable reconciliation retries delivery.
+Answer input cannot change the original capability, scope, graph target, or mode.
+The strict request rejects additional fields.
 `POST .../questions/{question_id}/dismiss` accepts an empty object, resolves the
 card only, and never wakes an owner.
 

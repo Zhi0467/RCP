@@ -65,6 +65,17 @@ def test_work_live_answer_receipt_requires_successful_settlement(tmp_path):
     execution.store.answer_question(question_id, answer="Use A", resolved_by=human)
     answered = handler(request.model_copy(update={"request_id": "d" * 32}), identity())
     assert answered.result["answer"] == "Use A"
+    wrong_receipt = handler(ask_request(request_id="e" * 32, receipt_token="0" * 64), identity())
+    assert wrong_receipt.status == "invalid"
+    assert not any(
+        receipt.category == "question_answer_acknowledged"
+        for receipt in execution.store.agent_task_receipts("turn")
+    )
+    acknowledged = handler(
+        ask_request(request_id="f" * 32, receipt_token=answered.result["receipt_token"]),
+        identity(),
+    )
+    assert acknowledged.status == "ok"
     record_work_question_receipts(execution)
     assert execution.store.get_question(question_id).client_receipt_revision is None
     execution.store.complete_agent_task("turn", applied_revision=None, result={})

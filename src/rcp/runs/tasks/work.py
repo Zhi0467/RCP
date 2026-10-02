@@ -2795,15 +2795,16 @@ def _start_work_validator_mailbox(
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
 ) -> _WorkValidatorMailboxLifecycle:
+    command_handler = _work_command_handler(execution, compute_commands)
     return start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
-        command_handler=_work_command_handler(execution, compute_commands),
+        command_handler=command_handler,
         serve=serve_patch_validation_mailbox,
-        resume_context=_work_mailbox_context(run_truth_scope, compute_commands).model_dump(
-            mode="json"
-        ),
+        resume_context=_work_mailbox_context(
+            run_truth_scope, compute_commands, ask_allowed="ask" in command_handler.allowed_verbs
+        ).model_dump(mode="json"),
         validate=lambda text: _validate_work_patch_live(
             service,
             text,
@@ -2814,21 +2815,26 @@ def _start_work_validator_mailbox(
 
 
 class _WorkMailboxContext(BaseModel):
-    """Launch-time validation and compute scope retained with the turn secret."""
+    """Launch-time command policy and scope retained with the turn secret."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run_truth_scope: list[str]
+    ask_allowed: bool = False
     write_scope: ProjectWriteScope | None = None
     episode_id: str | None = None
     manifest: Manifest | None = None
 
 
 def _work_mailbox_context(
-    run_truth_scope: list[str], compute_commands: WorkComputeCommands | None
+    run_truth_scope: list[str],
+    compute_commands: WorkComputeCommands | None,
+    *,
+    ask_allowed: bool = False,
 ) -> _WorkMailboxContext:
     return _WorkMailboxContext(
         run_truth_scope=run_truth_scope,
+        ask_allowed=ask_allowed,
         write_scope=compute_commands.write_scope if compute_commands is not None else None,
         episode_id=compute_commands.episode_id if compute_commands is not None else None,
         manifest=compute_commands.manifest if compute_commands is not None else None,
@@ -2858,7 +2864,11 @@ def _resume_work_compute_commands(
 
 
 def _resume_work_command_handler(execution: AgentTaskExecution, context: _WorkMailboxContext):
-    return _work_command_handler(execution, _resume_work_compute_commands(execution, context))
+    compute_commands = _resume_work_compute_commands(execution, context)
+    if not context.ask_allowed:
+        return compute_commands
+    handler = _work_command_handler(execution, compute_commands)
+    return handler if handler.allowed_verbs != {"validate"} else None
 
 
 def resume_work_command_mailbox(

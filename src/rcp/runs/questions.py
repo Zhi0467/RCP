@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -130,12 +131,12 @@ def work_question_origin(execution: AgentTaskExecution) -> QuestionOrigin:
 
 
 def record_work_question_receipts(execution: AgentTaskExecution) -> None:
-    """Successful full settlement following an answered response is our receipt rule.
+    """Client acknowledgement plus successful full settlement confirms receipt.
 
-    A handler response alone is never receipt. Persist offered revisions so recovery
-    can apply the same rule, but only a successful settled task confirms them. Failed,
-    paused, or disconnected turns deliberately retain follow-up eligibility. This
-    favors retained input when transport consumption cannot be established.
+    The client echoes a token only after consuming the answered response. An offered
+    response or successful task alone is insufficient. Missing acknowledgements,
+    failed, paused, or disconnected turns retain follow-up eligibility; recovery
+    applies the same rule from durable acknowledgement receipts.
     """
     record_settled_question_receipts(execution.store, execution.operation_id)
 
@@ -146,7 +147,7 @@ def record_settled_question_receipts(store: AppStore, operation_id: str) -> None
     if task is None or task.status != "succeeded":
         return
     for receipt in store.agent_task_receipts(operation_id):
-        if receipt.category != "question_answer_offered":
+        if receipt.category != "question_answer_acknowledged":
             continue
         payload = receipt.payload
         received = store.record_question_receipt(
@@ -252,24 +253,48 @@ class WorkCommandHandler:
             if response.status == "ok" and response.result.get("state") == "answered":
                 question = execution.store.get_question(response.result["question_id"])
                 assert question is not None
-                offered = execution.store.agent_task_receipts(execution.operation_id)
-                if any(
-                    item.category == "question_answer_offered"
-                    and item.payload.get("question_id") == question.question_id
-                    and item.payload.get("answer_revision") == question.answer_revision
-                    for item in offered
-                ):
-                    return response
-                execution.store.record_agent_task_receipt(
-                    execution.operation_id,
-                    "question_answer_offered",
-                    {
+                receipts = execution.store.agent_task_receipts(execution.operation_id)
+                offered = next(
+                    (
+                        item.payload
+                        for item in receipts
+                        if item.category == "question_answer_offered"
+                        and item.payload.get("question_id") == question.question_id
+                        and item.payload.get("answer_revision") == question.answer_revision
+                        and item.payload.get("receipt_token")
+                    ),
+                    None,
+                )
+                if request.receipt_token is not None:
+                    if offered is None or not secrets.compare_digest(
+                        request.receipt_token, offered["receipt_token"]
+                    ):
+                        return refuse("question_receipt_mismatch")
+                    if not any(
+                        item.category == "question_answer_acknowledged"
+                        and item.payload.get("receipt_token") == request.receipt_token
+                        for item in receipts
+                    ):
+                        execution.store.record_agent_task_receipt(
+                            execution.operation_id,
+                            "question_answer_acknowledged",
+                            offered,
+                            tier="diagnostic",
+                        )
+                if offered is None:
+                    offered = {
                         "question_id": question.question_id,
                         "answer_revision": question.answer_revision,
                         "request_id": request.request_id,
-                    },
-                    tier="diagnostic",
-                )
+                        "receipt_token": secrets.token_hex(32),
+                    }
+                    execution.store.record_agent_task_receipt(
+                        execution.operation_id,
+                        "question_answer_offered",
+                        offered,
+                        tier="diagnostic",
+                    )
+                response.result["receipt_token"] = offered["receipt_token"]
             return response
         if self.compute_commands is not None:
             return self.compute_commands(request, identity)

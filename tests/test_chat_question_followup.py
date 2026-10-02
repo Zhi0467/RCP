@@ -237,40 +237,62 @@ def test_followup_defers_without_claim_while_original_binding_is_held(tmp_path, 
     assert store.get_question(question.question_id).followup_operation_id is None
 
 
-def test_restart_reconciliation_recovers_successful_receipt_before_admitting(tmp_path, monkeypatch):
+@pytest.mark.parametrize("delivered", [False, True])
+def test_restart_reconciliation_requires_client_acknowledgement(tmp_path, monkeypatch, delivered):
     from types import SimpleNamespace
 
+    from rcp.agents import AgentProcessControl
+    from rcp.agents.command_mailbox import CommandTurnIdentity
+    from rcp.background import AgentTaskExecution
     from rcp.runs.chat import reconcile_chat_question_answers
+    from rcp.runs.questions import work_command_handler
+
+    from .test_ask_protocol import ask_request
 
     store = AppStore(tmp_path / "store.sqlite3")
     question = _answered(store)
-    store.record_agent_task_receipt(
-        "origin",
-        "question_answer_offered",
-        {
-            "question_id": question.question_id,
-            "answer_revision": question.answer_revision,
-            "request_id": "answered-response",
-        },
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status='running' WHERE operation_id='origin'")
+    handler = work_command_handler(
+        AgentTaskExecution(operation_id="origin", store=store, control=AgentProcessControl()),
+        None,
     )
+    identity = CommandTurnIdentity(
+        episode_id=None, task_id="origin", turn_id="origin", authority="broker"
+    )
+    request = ask_request(arguments={"question": "Which route?"})
+    offered = handler(request, identity)
+    assert offered.result["state"] == "answered"
+    if delivered:
+        acknowledgement = handler(
+            request.model_copy(
+                update={"request_id": "d" * 32, "receipt_token": offered.result["receipt_token"]}
+            ),
+            identity,
+        )
+        assert acknowledgement.status == "ok"
+    store.complete_agent_task("origin", applied_revision=None, result={})
     projections = []
     monkeypatch.setattr(
         "rcp.runs.chat.project_chat_question_answer",
         lambda service, store, question: projections.append(question.question_id),
     )
-
-    def unexpected_launch(operation_id):
-        pytest.fail(f"Receipt recovery should not launch {operation_id}")
-
+    launches = []
     statuses = reconcile_chat_question_answers(
         AppStore(store.path),
-        SimpleNamespace(launch_admitted=unexpected_launch),
+        SimpleNamespace(launch_admitted=launches.append),
         lambda _: SimpleNamespace(for_graph_target=lambda target: None),
     )
-    assert statuses == {question.question_id: "received"}
+    assert statuses == {question.question_id: "received" if delivered else "admitted"}
     assert projections == [question.question_id]
-    assert store.get_question(question.question_id).client_receipt_revision == 1
-    assert store.get_question(question.question_id).followup_operation_id is None
+    resolved = store.get_question(question.question_id)
+    assert resolved.client_receipt_revision == (1 if delivered else None)
+    if delivered:
+        assert launches == []
+        assert resolved.followup_operation_id is None
+    else:
+        assert resolved.followup_operation_id is not None
+        assert launches == [resolved.followup_operation_id]
 
 
 def test_restart_preserves_claimed_question_task_before_first_dispatch(tmp_path, monkeypatch):

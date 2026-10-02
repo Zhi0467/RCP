@@ -60,11 +60,11 @@ class ExperimentStoreMixin:
     ) -> bool:
         # Successful settlement will receipt these live answers. They cannot also
         # justify an otherwise empty handoff and leave a running episode stranded.
-        offered = (
+        acknowledged = (
             {
                 (receipt.payload.get("question_id"), receipt.payload.get("answer_revision"))
                 for receipt in self.agent_task_receipts(operation_id)
-                if receipt.category == "question_answer_offered"
+                if receipt.category == "question_answer_acknowledged"
             }
             if operation_id
             else set()
@@ -77,7 +77,7 @@ class ExperimentStoreMixin:
                     q.state == "answered"
                     and q.client_receipt_revision is None
                     and q.followup_operation_id is None
-                    and (q.question_id, q.answer_revision) not in offered
+                    and (q.question_id, q.answer_revision) not in acknowledged
                 )
             )
             for owner in self.experiment_question_owner_ids(episode_id)

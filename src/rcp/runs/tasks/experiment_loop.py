@@ -3080,14 +3080,19 @@ def _start_work_validator_mailbox(
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> _WorkValidatorMailboxLifecycle:
+    command_handler = _work_command_handler(execution, compute_commands)
     return start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
-        command_handler=_work_command_handler(execution, compute_commands),
+        command_handler=command_handler,
         serve=serve_patch_validation_mailbox,
         resume_context=_ExperimentMailboxContext(
-            **_work_mailbox_context(run_truth_scope, compute_commands).model_dump(),
+            **_work_mailbox_context(
+                run_truth_scope,
+                compute_commands,
+                ask_allowed="ask" in command_handler.allowed_verbs,
+            ).model_dump(),
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
         ).model_dump(mode="json"),

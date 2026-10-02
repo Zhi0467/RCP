@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import uuid
+from contextlib import redirect_stdout
 
 COMMAND_ASK_POLL_SECONDS = None  # Injected from limits.py when staged.
 
@@ -432,7 +433,7 @@ def _handle_response(response, verb, request_id):
         verb == "ask"
         and response.get("status") == "ok"
         and isinstance(response.get("result"), dict)
-        and response["result"].get("state") == "pending"
+        and response["result"].get("state") in {"pending", "answered"}
     ):
         return response
     _print_json(_display_response(response, verb))
@@ -520,6 +521,39 @@ def _run(namespace):
         )
         if not isinstance(response, dict):
             return response
+        if response["result"].get("state") == "answered":
+            receipt_token = response["result"].get("receipt_token")
+            # A second authenticated request proves consumption on either
+            # transport, including SSH. Its diagnostics must not replace or
+            # duplicate the human answer on stdout. Never extend the deadline.
+            if (
+                isinstance(receipt_token, str)
+                and _TOKEN.fullmatch(receipt_token)
+                and time.monotonic() < deadline
+            ):
+                with redirect_stdout(sys.stderr):
+                    try:
+                        _run_round(
+                            namespace,
+                            workspace,
+                            mailbox_id,
+                            token,
+                            verb,
+                            key,
+                            arguments,
+                            broker if namespace.broker is not None else None,
+                            deadline,
+                            receipt_token=receipt_token,
+                        )
+                    except (ClientInputError, OSError) as exc:
+                        _client_failure(
+                            verb,
+                            "unavailable",
+                            f"Question acknowledgement failed: {exc}",
+                            "unknown",
+                        )
+            _print_json(_display_response(response, verb))
+            return OK
         remaining = deadline - time.monotonic()
         if remaining > 0:
             time.sleep(min(COMMAND_ASK_POLL_SECONDS, remaining))
@@ -532,7 +566,19 @@ def _run(namespace):
             return OK
 
 
-def _run_round(namespace, workspace, mailbox_id, token, verb, key, arguments, broker, deadline):
+def _run_round(
+    namespace,
+    workspace,
+    mailbox_id,
+    token,
+    verb,
+    key,
+    arguments,
+    broker,
+    deadline,
+    *,
+    receipt_token=None,
+):
     request_id = uuid.uuid4().hex
     closed = _closed_response(workspace, mailbox_id, request_id)
     if closed is not None:
@@ -547,6 +593,8 @@ def _run_round(namespace, workspace, mailbox_id, token, verb, key, arguments, br
         "idempotency_key": key,
         "arguments": arguments,
     }
+    if receipt_token is not None:
+        request["receipt_token"] = receipt_token
     request_content = _encoded_request(request)
     if namespace.broker is not None:
         return _run_brokered(namespace, broker, request_content, request_id, deadline)
@@ -679,6 +727,8 @@ def _display_response(response, verb):
     result = response.get("result")
     if not isinstance(result, dict):
         result = {}
+    if verb == "ask":
+        result = {key: value for key, value in result.items() if key != "receipt_token"}
     return {
         "status": response["status"],
         "message": message,

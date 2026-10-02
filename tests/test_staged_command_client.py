@@ -2012,7 +2012,7 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         seen.append(request)
         result = {"state": "pending" if len(seen) == 1 else state, "question_id": "question"}
         if result["state"] == "answered":
-            result.update(answer="Use A", choices=["A"])
+            result.update(answer="Use A", choices=["A"], receipt_token="f" * 64)
         return CommandResponse(request_id=request.request_id, status="ok", result=result)
 
     stop = asyncio.Event()
@@ -2048,7 +2048,13 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
     assert result["state"] == state
     if state == "answered":
         assert result["answer"] == "Use A" and result["choices"] == ["A"]
-    assert len(seen) == 2
+    assert len(seen) == (3 if state == "answered" else 2)
+    if state == "answered":
+        assert seen[2].receipt_token == "f" * 64
+        assert seen[2].request_id not in {seen[0].request_id, seen[1].request_id}
+        assert seen[2].arguments == seen[1].arguments
+    assert seen[0].receipt_token is None
+    assert seen[1].receipt_token is None
     assert seen[0].request_id != seen[1].request_id
     assert seen[0].idempotency_key == seen[1].idempotency_key == "choice"
     assert seen[0].arguments == seen[1].arguments
@@ -2082,6 +2088,11 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
                 "result": {
                     "state": "pending" if len(requests) == 1 else state,
                     "question_id": "question",
+                    **(
+                        {"receipt_token": "f" * 64}
+                        if state == "answered" and len(requests) > 1
+                        else {}
+                    ),
                 },
             },
             "ask",
@@ -2107,10 +2118,14 @@ def test_ask_polling_uses_one_outer_deadline(tmp_path, monkeypatch, capsys, stat
         ]
     )
     assert code == 0
-    assert elapsed[0] == (1 if state == "pending" else 0.6)
-    assert len(requests) == 2
+    assert elapsed[0] <= 1
+    if state == "pending":
+        assert elapsed[0] == 1
+    assert len(requests) == (3 if state == "answered" else 2)
+    if state == "answered":
+        assert requests[2][0]["receipt_token"] == "f" * 64
     assert {deadline for _, deadline in requests} == {1}
-    assert len({request["request_id"] for request, _ in requests}) == 2
+    assert len({request["request_id"] for request, _ in requests}) == len(requests)
     assert json.loads(capsys.readouterr().out)["result"] == {
         "state": state,
         "question_id": "question",
@@ -2260,3 +2275,74 @@ async def test_ask_broker_refreshes_state_after_an_undelivered_pending(
     assert [request.request_id for request in seen] == [f"{number:032x}" for number in (1, 2)]
     assert seen[0].idempotency_key == seen[1].idempotency_key == "once"
     assert seen[0].arguments == seen[1].arguments
+
+
+@pytest.mark.parametrize("delivered,ack_failed", [(False, False), (True, False), (True, True)])
+def test_file_client_acknowledges_only_consumed_answer(
+    tmp_path, monkeypatch, capsys, delivered, ack_failed
+):
+    from rcp.agents import staged_command_client as client
+
+    mailbox_id = "a" * 32
+    credential = tmp_path / "credential.json"
+    credential.write_text(json.dumps({"version": 1, "mailbox_id": mailbox_id, "token": "b" * 64}))
+    requests = []
+    write = client._atomic_request
+
+    def respond(path, content):
+        write(path, content)
+        request = json.loads(content)
+        requests.append(request)
+        if delivered:
+            response = {
+                "request_id": request["request_id"],
+                "status": "ok",
+                "result": {
+                    "state": "answered",
+                    "question_id": "q",
+                    "answer": "Use A",
+                    "receipt_token": "c" * 64,
+                },
+            }
+            write(path.replace(".request.json", ".response.json"), json.dumps(response).encode())
+
+    closed_response = client._closed_response
+
+    def check_closed(*args):
+        if ack_failed and requests:
+            raise OSError("acknowledgement transport unavailable")
+        return closed_response(*args)
+
+    monkeypatch.setattr(client, "_closed_response", check_closed)
+    monkeypatch.setattr(client, "_atomic_request", respond)
+    code = client.main(
+        [
+            "--credential",
+            str(credential),
+            "--timeout",
+            "0.1",
+            "--workspace",
+            str(tmp_path),
+            "ask",
+            "--key",
+            "choice",
+            "--question",
+            "Which path?",
+        ]
+    )
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert len(requests) == (2 if delivered and not ack_failed else 1)
+    assert "receipt_token" not in requests[0]
+    if delivered:
+        assert code == 0
+        assert output["result"] == {"state": "answered", "question_id": "q", "answer": "Use A"}
+        if ack_failed:
+            assert json.loads(captured.err)["status"] == "unavailable"
+        else:
+            assert requests[1]["receipt_token"] == "c" * 64
+            assert requests[1]["request_id"] != requests[0]["request_id"]
+            assert requests[1]["arguments"] == requests[0]["arguments"]
+    else:
+        assert code == 2
+        assert output["result"]["delivery"] == "unknown"

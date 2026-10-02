@@ -648,6 +648,17 @@ call or end the turn. Transport failures retain their separate `delivery`
 semantics. Only human-started Work chat turns, human-started Experiment episodes,
 and the Auto-research orchestrator authorize `ask`, each from its handler's
 resolved allowed verbs; Discuss, workers, and child Work or Experiments refuse it.
+For a live Work or Experiment answer, the response carries a server-generated
+receipt token persisted against that turn, question, and answer revision. Only
+after parsing the complete `answered` response does the client echo that token
+in a fresh authenticated `ask` request with the same key and arguments. This uses
+the same file-mailbox or broker path on local and SSH stages, stays within the
+original deadline, and keeps acknowledgement diagnostics on stderr. Receipt
+requires both this durable acknowledgement and successful task settlement.
+Producing a response, publishing its file, or sending bytes on a socket alone
+never suppresses follow-up. Missing or ambiguous acknowledgement retains the
+answer for follow-up, including after restart; a duplicate is preferable to loss.
+The receipt token is transport metadata and omitted from the agent's stdout.
 Answer delivery for each owner is described in
 [conversations, episodes, and watchers](conversations-episodes-and-watchers.md)
 and [Auto-research](auto-research-and-branch-merge.md).
@@ -679,7 +690,10 @@ Before settlement the owner fences new requests and drains admitted work. Backen
 shutdown suspends detached owners, preserving their private restart checkpoints.
 Startup restores the same mailbox id, token, budget reservations, and completed
 responses before checking provider liveness. Concrete owners restore their exact
-launch-time policy; no new credential or authority is issued. Checkpoints use the
+launch-time policy; no new credential or authority is issued. Work and Experiment
+checkpoints retain whether the resolved launch handler offered `ask`; restoration
+requires both that saved offer and current owner authorization. Older checkpoints
+without the offer remain validation/compute-only. Checkpoints use the
 existing private provider-credential storage protections and backup exclusion.
 
 Mailbox listing, request reading, handling, and response publication retry

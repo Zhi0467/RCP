@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 from fastapi.testclient import TestClient
@@ -53,7 +53,7 @@ def test_list_answer_retry_conflict_and_dismiss(questions_api):
         responses = list(pool.map(lambda _: client.post(url, json={"choices": ["a"]}), range(2)))
     assert [r.status_code for r in responses] == [200, 200]
     assert responses[0].json() == responses[1].json()
-    app.state.reconcile_question_answers.assert_called_once_with(project_id)
+    assert app.state.reconcile_question_answers.call_args_list == [call(project_id)] * 2
     answer = responses[0].json()
     assert answer["chosen_choices"] == ["a"]
     assert answer["resolved_by"]["user_id"] == store.local_owner.user_id
@@ -64,7 +64,7 @@ def test_list_answer_retry_conflict_and_dismiss(questions_api):
     dismiss_url = f"{base}/questions/{dismissed.question_id}/dismiss"
     assert client.post(dismiss_url, json={}).json()["state"] == "dismissed"
     assert client.post(dismiss_url, json={}).status_code == 200
-    app.state.reconcile_question_answers.assert_called_once()
+    assert app.state.reconcile_question_answers.call_args_list == [call(project_id)] * 2
 
 
 @pytest.mark.parametrize("field", ["capability", "scope", "target", "mode", "resolved_by"])
@@ -142,7 +142,7 @@ def test_nonmember_and_cross_project_refused(questions_api, monkeypatch):
         )
 
 
-def test_orchestrator_answer_records_mail_then_delivers_once(questions_api, monkeypatch):
+def test_orchestrator_answer_retry_records_and_delivers_mail(questions_api, monkeypatch):
     from types import SimpleNamespace
 
     from rcp.api import questions
@@ -171,24 +171,29 @@ def test_orchestrator_answer_records_mail_then_delivers_once(questions_api, monk
             ).status_code
             == 200
         )
-    assert calls == [
+    expected_delivery = [
         ("record", question.question_id),
         ("deliver", {"episode_id": "auto", "recipient_task_id": "root"}),
     ]
+    assert calls == expected_delivery * 2
     app.state.reconcile_question_answers.assert_not_called()
 
 
-def test_delivery_failure_retains_committed_answer(questions_api, caplog):
+def test_delivery_failure_retains_answer_and_exact_retry_delivers(questions_api, caplog):
     app, client, store, project_id = questions_api
     question = _question(store, project_id)
-    app.state.reconcile_question_answers.side_effect = OSError("delivery unavailable")
+    app.state.reconcile_question_answers.side_effect = [OSError("delivery unavailable"), None]
     url = f"/api/projects/{project_id}/questions/{question.question_id}/answer"
     first = client.post(url, json={"answer": "a"})
     assert first.status_code == 200
     assert store.get_question(question.question_id).state == "answered"
-    assert any(record.exc_info for record in caplog.records)
+    assert any(
+        record.name == "rcp.api.questions" and record.levelname == "ERROR" and record.exc_info
+        for record in caplog.records
+    )
     assert client.post(url, json={"answer": "a"}).json() == first.json()
-    app.state.reconcile_question_answers.assert_called_once()
+    assert app.state.reconcile_question_answers.call_args_list == [call(project_id)] * 2
+    assert store.get_question(question.question_id).answer_revision == 1
 
 
 def test_answer_launch_keeps_origin_binding(questions_api, monkeypatch):
@@ -219,8 +224,8 @@ def test_answer_launch_keeps_origin_binding(questions_api, monkeypatch):
 
     def reconcile(_project_id):
         admitted = store.admit_chat_question_followup(question.question_id)
-        assert admitted is not None
-        background.launch_admitted(admitted.operation_id)
+        if admitted is not None:
+            background.launch_admitted(admitted.operation_id)
 
     app.state.reconcile_question_answers = reconcile
     url = f"/api/projects/{project_id}/questions/{question.question_id}/answer"

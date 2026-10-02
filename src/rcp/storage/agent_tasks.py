@@ -104,6 +104,7 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "remote_provider_started",
     "remote_provider_stopped",
     "question_answer_offered",
+    "question_answer_acknowledged",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
