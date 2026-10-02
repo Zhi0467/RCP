@@ -1064,7 +1064,7 @@ export function NodeChat({
       return;
     }
     if (
-      !text ||
+      !(text || artifactContext) ||
       attachmentsUnready ||
       relatedActive ||
       pausedAttempt ||
@@ -2001,7 +2001,7 @@ export function NodeChat({
               <button
                 className="icon-button primary chat-send-button"
                 disabled={
-                  !assembleChatTurn(message, annotations) ||
+                  !(assembleChatTurn(message, annotations) || artifactContext) ||
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask

@@ -1,7 +1,9 @@
 import {
   ChevronDown,
   Circle,
+  GitBranch,
   Ellipsis,
+  KanbanSquare,
   LoaderCircle,
   MessageCircle,
   PanelLeft,
@@ -13,14 +15,27 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_LIST_SECTIONS,
+  CONVERSATION_AGENT_GROUPS,
   agentGroupItems,
   branchEpisodeAgentRows,
   conversationAgentStatus,
   groupConversationAgents,
+  type BranchEpisodeAgentRow,
   type ChatConversation,
   type AgentListSection,
+  type ConversationAgentRow,
   type ConversationAgentStatus,
 } from "../chatWorkspace";
+import {
+  AGENT_BOARD_COLUMNS,
+  agentBoardColumn,
+  orderAgentBoardCards,
+  readAgentBoardOrder,
+  saveAgentBoardColumn,
+  writeAgentBoardOrder,
+  type AgentBoardColumn,
+  type AgentBoardDrop,
+} from "../agentBoard";
 import type { GlossaryIndex } from "../glossary";
 import {
   CHAT_LIST_DEFAULT_WIDTH,
@@ -44,6 +59,8 @@ import type {
   StartAgentTask,
   WatcherRecord,
 } from "../types";
+import { AgentBoard, type AgentBoardCard } from "../components/AgentBoard";
+import { ProviderMark, hasProviderLogo } from "../components/ProviderMark";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../api";
 import { NodeChat } from "../components/NodeChat";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
@@ -52,6 +69,9 @@ interface Props {
   project: ProjectSnapshot;
   conversations: ChatConversation[];
   selectedChatId: string | null;
+  /** The board of every agent, shown on entry from the Agents tab; a card opens its chat. */
+  board: boolean;
+  onBoardChange: (board: boolean) => void;
   nodes: Record<string, GraphNode>;
   /** The Experiment index; episodes on another graph branch get their own rows. */
   experimentEntries: ExperimentLoopIndexEntry[];
@@ -116,6 +136,9 @@ function readChatListCollapsed(projectId: string): boolean {
 type AgentFilter = "all" | "working" | "archived";
 
 const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {}, pinned: [] };
+// The last display set per project survives tab switches, so archived chats
+// never flash back into the list while a revisit reloads it.
+const cachedDisplays = new Map<string, ChatDisplay>();
 
 const GROUP_LABELS: Record<AgentListSection, string> = {
   pinned: "Pinned",
@@ -152,14 +175,19 @@ function sinceLabel(timestamp: string | null | undefined, now: number): string {
   return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function agentMeta(status: ConversationAgentStatus): string {
+/** Everything after the provider, which renders as its own mark: model, effort,
+ *  task type, then what the latest turn needs. */
+function agentMeta(status: ConversationAgentStatus, kind: ChatConversation["kind"]): string {
   const latest = status.latest;
   if (!latest) return "";
-  const parts: (string | null | undefined)[] = [latest.provider_label];
+  const parts: (string | null | undefined)[] = [
+    latest.request.model,
+    latest.request.reasoning,
+    kind === "project_chat" ? "Project chat" : "Node chat",
+  ];
   if (status.state === "working") {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
-    parts.push(latest.request.run_truth_scope?.join(", "));
     if (status.state === "failed" && latest.can_retry) parts.push("Retry");
     if (status.state === "stopped") {
       if (latest.can_resume) parts.push("Resume");
@@ -169,10 +197,154 @@ function agentMeta(status: ConversationAgentStatus): string {
   return parts.filter(Boolean).join(" · ");
 }
 
+/** A board card's provider line: provider, model, effort, task type. */
+function agentCardMeta(
+  status: ConversationAgentStatus,
+  kind: ChatConversation["kind"],
+  fallbackProvider: string | undefined,
+): string {
+  const latest = status.latest;
+  return [
+    latest?.provider_label ?? fallbackProvider,
+    latest?.request.model,
+    latest?.request.reasoning,
+    kind === "project_chat" ? "Project chat" : "Node chat",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** A board card's state line: what the agent is doing, or since when it is idle. */
+function agentCardState(status: ConversationAgentStatus, since: string): string {
+  const latest = status.latest;
+  if (!latest) return "Draft";
+  if (status.state === "working")
+    return [latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`]
+      .filter(Boolean)
+      .join(" · ");
+  if (status.state === "failed") return "Failed";
+  if (status.state === "stopped") return "Stopped";
+  if (status.unread) return "New reply";
+  return since;
+}
+
+function AgentRename({ title, onDone }: { title: string; onDone: (title: string | null) => void }) {
+  return (
+    <form
+      className="agent-row-rename"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const value = new FormData(event.currentTarget).get("title");
+        onDone(typeof value === "string" ? value.trim() : "");
+      }}
+    >
+      {/* Blank returns the chat to its derived name. */}
+      <input
+        name="title"
+        aria-label="Agent name"
+        autoFocus
+        defaultValue={title}
+        onFocus={(event) => event.currentTarget.select()}
+        onBlur={(event) => event.currentTarget.form?.requestSubmit()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onDone(null);
+        }}
+      />
+    </form>
+  );
+}
+
+interface AgentMenuProps {
+  title: string;
+  open: boolean;
+  draft: boolean;
+  archived: boolean;
+  pinned: boolean;
+  working: boolean;
+  onToggle: () => void;
+  onRemove: () => void;
+  onRename: () => void;
+  onPin: () => void;
+  onArchive: () => void;
+}
+
+function AgentMenu({
+  title,
+  open,
+  draft,
+  archived,
+  pinned,
+  working,
+  onToggle,
+  onRemove,
+  onRename,
+  onPin,
+  onArchive,
+}: AgentMenuProps) {
+  return (
+    <div className="agent-row-menu">
+      <button
+        type="button"
+        className="agent-row-menu-button"
+        aria-label={`More actions for ${title}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={onToggle}
+      >
+        <Ellipsis size={14} />
+      </button>
+      {open && (
+        <div className="agent-row-menu-list" role="menu">
+          {draft ? (
+            <button type="button" role="menuitem" onClick={onRemove}>
+              Remove
+            </button>
+          ) : (
+            <>
+              <button type="button" role="menuitem" onClick={onRename}>
+                Rename
+              </button>
+              {!archived && (
+                <button type="button" role="menuitem" onClick={onPin}>
+                  {pinned ? "Unpin" : "Pin"}
+                </button>
+              )}
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!archived && working}
+                title={!archived && working ? "Archive after this agent finishes" : undefined}
+                onClick={onArchive}
+              >
+                {archived ? "Restore" : "Archive"}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type BoardCard = AgentBoardCard &
+  (
+    | { kind: "chat"; conversation: ChatConversation; status: ConversationAgentStatus }
+    | { kind: "branch"; row: BranchEpisodeAgentRow }
+  );
+
+const BOARD_LABELS: Record<AgentBoardColumn, string> = {
+  needs_you: "Needs you",
+  working: "Working",
+  done: "Done",
+  archived: "Archived",
+};
+
 export function ChatsWorkspace({
   project,
   conversations: storedConversations,
   selectedChatId,
+  board,
+  onBoardChange,
   nodes,
   experimentEntries,
   graphTarget,
@@ -212,7 +384,13 @@ export function ChatsWorkspace({
   );
   const workspace = useRef<HTMLElement>(null);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
-  const [display, setDisplay] = useState<ChatDisplay>(EMPTY_CHAT_DISPLAY);
+  const [display, setDisplayState] = useState<ChatDisplay>(
+    () => cachedDisplays.get(apiBase) ?? EMPTY_CHAT_DISPLAY,
+  );
+  const setDisplay = (next: ChatDisplay) => {
+    cachedDisplays.set(apiBase, next);
+    setDisplayState(next);
+  };
   const archivedChatIds = useMemo(() => new Set(display.archived), [display.archived]);
   // A human-given name replaces the derived one everywhere in this workspace.
   const conversations = useMemo(
@@ -271,7 +449,7 @@ export function ChatsWorkspace({
   useEffect(() => {
     let current = true;
     const request = ++displayRequest.current;
-    setDisplay(EMPTY_CHAT_DISPLAY);
+    setDisplayState(cachedDisplays.get(apiBase) ?? EMPTY_CHAT_DISPLAY);
     loadChatDisplay(apiBase)
       .then((response) => {
         if (current && displayRequest.current === request) setDisplay(response);
@@ -329,6 +507,124 @@ export function ChatsWorkspace({
     setRenamingChatId(null);
     return updateDisplay(() => setChatTitle(apiBase, chatId, title));
   };
+  const finishRename = (conversation: ChatConversation, title: string | null) => {
+    if (title === null || title === conversation.title) setRenamingChatId(null);
+    else void rename(conversation.chatId, title);
+  };
+  const removeDraft = (chatId: string) => {
+    setMenuChatId(null);
+    onRemoveDraft(chatId);
+    // Move the selection off the removed draft so the shown chat is the one that loads.
+    const next = conversations.find((item) => item.chatId !== chatId);
+    if (selected?.chatId === chatId && next) onSelect(next.chatId);
+  };
+  const agentMenu = (
+    conversation: ChatConversation,
+    status: ConversationAgentStatus,
+    archived: boolean,
+  ) => (
+    <AgentMenu
+      title={conversation.title}
+      open={menuChatId === conversation.chatId}
+      draft={conversation.tasks.length === 0 && !conversation.updatedAt}
+      archived={archived}
+      pinned={pinnedChatIds.has(conversation.chatId)}
+      working={status.state === "working"}
+      onToggle={() =>
+        setMenuChatId(menuChatId === conversation.chatId ? null : conversation.chatId)
+      }
+      onRemove={() => removeDraft(conversation.chatId)}
+      onRename={() => {
+        setMenuChatId(null);
+        setRenamingChatId(conversation.chatId);
+      }}
+      onPin={() => void pin(conversation.chatId, !pinnedChatIds.has(conversation.chatId))}
+      onArchive={() => void archive(conversation.chatId, !archived)}
+    />
+  );
+
+  const [boardOrder, setBoardOrder] = useState(() => readAgentBoardOrder(project.id));
+  useEffect(() => setBoardOrder(readAgentBoardOrder(project.id)), [project.id]);
+  // Built only while the board shows; the list view never reads it.
+  const boardColumns = !board
+    ? null
+    : (() => {
+        const columns: Record<AgentBoardColumn, BoardCard[]> = {
+          needs_you: [],
+          working: [],
+          done: [],
+          archived: [],
+        };
+        const chatCard = (row: ConversationAgentRow, column: AgentBoardColumn): BoardCard => ({
+          kind: "chat",
+          id: row.conversation.chatId,
+          title: row.conversation.title,
+          column,
+          working: row.status.state === "working",
+          conversation: row.conversation,
+          status: row.status,
+        });
+        for (const group of CONVERSATION_AGENT_GROUPS) {
+          const column = agentBoardColumn(group);
+          const branches = group === "new_reply" ? [] : branchRows[group];
+          for (const item of agentGroupItems(activeGroups[group], branches))
+            columns[column].push(
+              item.kind === "chat"
+                ? chatCard(item.row, column)
+                : {
+                    kind: "branch",
+                    id: `episode:${item.row.episodeId}`,
+                    title: item.row.title,
+                    column,
+                    working: item.row.group === "working",
+                    href: item.row.href,
+                    row: item.row,
+                  },
+            );
+        }
+        const archivedGroups = groupConversationAgents(
+          conversations.filter((conversation) => archivedChatIds.has(conversation.chatId)),
+          unreadChatIds,
+          query,
+        );
+        for (const group of CONVERSATION_AGENT_GROUPS)
+          for (const row of archivedGroups[group]) columns.archived.push(chatCard(row, "archived"));
+        for (const column of AGENT_BOARD_COLUMNS)
+          columns[column] = orderAgentBoardCards(
+            columns[column],
+            (card) => card.id,
+            boardOrder,
+            column === "archived" ? [] : display.pinned,
+          );
+        return columns;
+      })();
+  const focusComposer = useRef(false);
+  const openCard = (card: BoardCard) => {
+    if (card.kind !== "chat") return;
+    onSelect(card.id);
+    // The board already did the list's job, so the chat opens with the list folded.
+    setListCollapsed(true);
+    focusComposer.current = true;
+    onBoardChange(false);
+  };
+  useEffect(() => {
+    if (board || !focusComposer.current) return;
+    focusComposer.current = false;
+    const frame = window.requestAnimationFrame(() =>
+      workspace.current
+        ?.querySelector<HTMLTextAreaElement>('.conversation-surface textarea[aria-label="Message"]')
+        ?.focus(),
+    );
+    return () => window.cancelAnimationFrame(frame);
+  }, [board, selected?.chatId]);
+  const dropCard = (card: BoardCard, drop: AgentBoardDrop, columnIds: string[]) => {
+    if (card.kind !== "chat") return;
+    const ordered = saveAgentBoardColumn(boardOrder, columnIds);
+    setBoardOrder(ordered);
+    writeAgentBoardOrder(project.id, ordered);
+    if (drop === "archive") void archive(card.id, true);
+    if (drop === "restore") void archive(card.id, false);
+  };
 
   useEffect(() => {
     setListWidth(readChatListWidth(project.id));
@@ -382,7 +678,8 @@ export function ChatsWorkspace({
     });
     observer.observe(element);
     return () => observer.disconnect();
-  }, [project.id, narrow]);
+    // The board and the chat view are different elements behind one ref.
+  }, [project.id, narrow, board]);
 
   const selectedStatus = selected ? conversationAgentStatus(selected, unreadChatIds) : null;
   const selectedLatest = selectedStatus?.latest ?? null;
@@ -434,6 +731,135 @@ export function ChatsWorkspace({
       </>
     ) : null;
 
+  const renderBoardCard = (card: BoardCard) => {
+    if (card.kind === "branch")
+      return (
+        <>
+          <div className="agent-card-top">
+            <span className="agent-card-avatar" data-working={card.working || undefined}>
+              <GitBranch size={15} aria-hidden="true" />
+            </span>
+            <strong className="agent-card-title">
+              <span className="agent-branch-pill">Branch</span>
+              {card.title}
+            </strong>
+          </div>
+          <span className="agent-card-meta">Experiment episode · opens in Runs</span>
+          <div className="agent-card-foot">
+            <span className="agent-card-state">
+              {card.working ? "Working" : sinceLabel(card.row.updatedAt, now)}
+            </span>
+          </div>
+        </>
+      );
+    const { conversation, status } = card;
+    const latest = status.latest;
+    const provider =
+      latest?.request.provider ?? project.agent_profiles?.[conversation.kind]?.provider ?? "";
+    const providerLabel =
+      latest?.provider_label ?? project.providers?.[provider]?.label ?? provider;
+    const renaming = renamingChatId === conversation.chatId;
+    const action =
+      needsHuman(status) && latest
+        ? latest.can_resume
+          ? { label: "Resume", run: () => onResumeTask(latest) }
+          : latest.can_retry
+            ? { label: "Retry", run: () => onRetryTask(latest) }
+            : null
+        : null;
+    return (
+      <>
+        <div className="agent-card-top">
+          <span
+            className="agent-card-avatar"
+            data-working={card.working || undefined}
+            aria-hidden="true"
+          >
+            {hasProviderLogo(provider) ? (
+              <ProviderMark provider={provider} label={providerLabel} />
+            ) : (
+              providerLabel.slice(0, 1).toUpperCase()
+            )}
+          </span>
+          {renaming ? (
+            <AgentRename
+              title={conversation.title}
+              onDone={(title) => finishRename(conversation, title)}
+            />
+          ) : (
+            <strong className="agent-card-title">
+              {pinnedChatIds.has(conversation.chatId) && card.column !== "archived" && (
+                <Pin className="agent-group-icon" size={12} aria-label="Pinned" />
+              )}
+              {status.unread && <span className="agent-new-pill">New</span>}
+              {conversation.title}
+            </strong>
+          )}
+          {!renaming && agentMenu(conversation, status, card.column === "archived")}
+        </div>
+        <span className="agent-card-meta">
+          {agentCardMeta(status, conversation.kind, providerLabel)}
+        </span>
+        <div className="agent-card-foot">
+          <span className="agent-card-state" data-state={status.state}>
+            {agentCardState(
+              status,
+              sinceLabel(latest?.last_activity_at ?? conversation.updatedAt ?? null, now),
+            )}
+          </span>
+          {action && (
+            <button className="button compact" type="button" onClick={action.run}>
+              {action.label}
+            </button>
+          )}
+        </div>
+      </>
+    );
+  };
+
+  if (boardColumns)
+    return (
+      <section className="agents-board-view" ref={workspace} aria-label="Agents board">
+        <header className="agents-board-head">
+          <h2>Agents</h2>
+          <label className="agent-list-search">
+            <Search size={13} aria-hidden="true" />
+            <input
+              type="search"
+              aria-label="Search agents"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+        </header>
+        {archiveError && (
+          <p className="agent-list-error" role="alert">
+            {archiveError}
+          </p>
+        )}
+        <AgentBoard
+          columns={boardColumns}
+          labels={BOARD_LABELS}
+          renderCard={renderBoardCard}
+          onOpen={openCard}
+          onDrop={dropCard}
+        />
+        {hasMore && (
+          <footer className="conversation-list-more">
+            <button
+              className="button primary compact"
+              type="button"
+              disabled={loadingMore}
+              onClick={onLoadMore}
+            >
+              {loadingMore && <LoaderCircle className="spin" size={12} />}
+              Load more
+            </button>
+          </footer>
+        )}
+      </section>
+    );
+
   return (
     <section
       className="chats-workspace"
@@ -476,6 +902,15 @@ export function ChatsWorkspace({
               type="button"
             >
               <PanelLeft size={15} />
+            </button>
+            <button
+              aria-label="Show the agents board"
+              className="conversation-list-fold"
+              onClick={() => onBoardChange(true)}
+              title="Show the agents board"
+              type="button"
+            >
+              <KanbanSquare size={15} />
             </button>
             <label className="agent-list-search">
               <Search size={13} aria-hidden="true" />
@@ -576,7 +1011,6 @@ export function ChatsWorkspace({
                   const selectedConversation = conversation.chatId === selected?.chatId;
                   const unread = status.unread;
                   const latest = status.latest;
-                  const draft = conversation.tasks.length === 0 && !conversation.updatedAt;
                   const archived = archivedChatIds.has(conversation.chatId);
                   const menuOpen = menuChatId === conversation.chatId;
                   return (
@@ -585,29 +1019,10 @@ export function ChatsWorkspace({
                       key={conversation.chatId}
                     >
                       {renamingChatId === conversation.chatId ? (
-                        <form
-                          className="agent-row-rename"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            const value = new FormData(event.currentTarget).get("title");
-                            const title = typeof value === "string" ? value.trim() : "";
-                            if (title === conversation.title) setRenamingChatId(null);
-                            else void rename(conversation.chatId, title);
-                          }}
-                        >
-                          {/* Blank returns the chat to its derived name. */}
-                          <input
-                            name="title"
-                            aria-label="Agent name"
-                            autoFocus
-                            defaultValue={conversation.title}
-                            onFocus={(event) => event.currentTarget.select()}
-                            onBlur={(event) => event.currentTarget.form?.requestSubmit()}
-                            onKeyDown={(event) => {
-                              if (event.key === "Escape") setRenamingChatId(null);
-                            }}
-                          />
-                        </form>
+                        <AgentRename
+                          title={conversation.title}
+                          onDone={(title) => finishRename(conversation, title)}
+                        />
                       ) : (
                         <button
                           type="button"
@@ -630,7 +1045,20 @@ export function ChatsWorkspace({
                               {unread && <span className="agent-new-pill">New</span>}
                               {conversation.title}
                             </span>
-                            <span className="agent-row-meta">{agentMeta(status) || "\u00a0"}</span>
+                            <span className="agent-row-meta">
+                              {latest ? (
+                                <>
+                                  <ProviderMark
+                                    provider={latest.request.provider ?? ""}
+                                    label={latest.provider_label}
+                                  />
+                                  {agentMeta(status, conversation.kind) &&
+                                    `${latest.provider_label || latest.request.provider ? " · " : ""}${agentMeta(status, conversation.kind)}`}
+                                </>
+                              ) : (
+                                "\u00a0"
+                              )}
+                            </span>
                           </span>
                           <time>
                             {status.state === "working"
@@ -642,83 +1070,8 @@ export function ChatsWorkspace({
                           </time>
                         </button>
                       )}
-                      {renamingChatId !== conversation.chatId && (
-                        <div className="agent-row-menu">
-                          <button
-                            type="button"
-                            className="agent-row-menu-button"
-                            aria-label={`More actions for ${conversation.title}`}
-                            aria-haspopup="menu"
-                            aria-expanded={menuOpen}
-                            onClick={() => setMenuChatId(menuOpen ? null : conversation.chatId)}
-                          >
-                            <Ellipsis size={14} />
-                          </button>
-                          {menuOpen && (
-                            <div className="agent-row-menu-list" role="menu">
-                              {draft ? (
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  onClick={() => {
-                                    setMenuChatId(null);
-                                    onRemoveDraft(conversation.chatId);
-                                    // Move the selection off the removed draft so the
-                                    // shown chat is the one that loads.
-                                    const next = conversations.find(
-                                      (item) => item.chatId !== conversation.chatId,
-                                    );
-                                    if (selected?.chatId === conversation.chatId && next)
-                                      onSelect(next.chatId);
-                                  }}
-                                >
-                                  Remove
-                                </button>
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    onClick={() => {
-                                      setMenuChatId(null);
-                                      setRenamingChatId(conversation.chatId);
-                                    }}
-                                  >
-                                    Rename
-                                  </button>
-                                  {!archived && (
-                                    <button
-                                      type="button"
-                                      role="menuitem"
-                                      onClick={() =>
-                                        void pin(
-                                          conversation.chatId,
-                                          !pinnedChatIds.has(conversation.chatId),
-                                        )
-                                      }
-                                    >
-                                      {pinnedChatIds.has(conversation.chatId) ? "Unpin" : "Pin"}
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    disabled={!archived && status.state === "working"}
-                                    title={
-                                      !archived && status.state === "working"
-                                        ? "Archive after this agent finishes"
-                                        : undefined
-                                    }
-                                    onClick={() => void archive(conversation.chatId, !archived)}
-                                  >
-                                    {archived ? "Restore" : "Archive"}
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      {renamingChatId !== conversation.chatId &&
+                        agentMenu(conversation, status, archived)}
                     </div>
                   );
                 })}

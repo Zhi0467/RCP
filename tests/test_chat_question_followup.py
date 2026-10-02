@@ -156,18 +156,10 @@ def test_failed_insert_rolls_back_answer_claim(tmp_path, monkeypatch):
     assert store.get_question(question.question_id).followup_operation_id is None
 
 
-def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer(
-    manifest, tmp_path, monkeypatch
-):
+def _project_chat_question(manifest, tmp_path):
     import json
-    from types import SimpleNamespace
     from uuid import uuid4
 
-    from rcp.runs.chat import (
-        _append_chat_exchange,
-        project_chat_question_answer,
-        reconcile_chat_question_answers,
-    )
     from tests.helpers import create_named_app
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "app-data")
@@ -177,6 +169,7 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
     chat_id = str(uuid4())
     task = store.agent_task("origin")
     request = {**task.request, "chat_id": chat_id, "chat_scope": "project", "node_id": None}
+    request["message"] = "Pick a route"
     origin = question.origin.model_copy(update={"owner_id": chat_id})
     with store.connection() as connection:
         connection.execute(
@@ -187,7 +180,21 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
             "UPDATE questions SET owner_id=?,origin_json=? WHERE question_id=?",
             (chat_id, origin.model_dump_json(), question.question_id),
         )
-    question = store.get_question(question.question_id)
+    return service, store, store.get_question(question.question_id), chat_id
+
+
+def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer(
+    manifest, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from rcp.runs.chat import (
+        _append_chat_exchange,
+        project_chat_question_answer,
+        reconcile_chat_question_answers,
+    )
+
+    service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
     project_chat_question_answer(service, store, question)
     assert store.get_question(question.question_id).answer_projected_revision == 1
 
@@ -212,6 +219,11 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         project_chat_question_answer(service, AppStore(store.path), question)
     assert store.get_question(question.question_id).answer_projected_revision == 1
     followup = store.admit_chat_question_followup(question.question_id)
+    # Projected before admission, the answer already names its follow-up's turn,
+    # so the queued follow-up is not shown a second time from its request.
+    prompt, answer = service.chat_transcript(chat_id).messages
+    assert prompt.operation_id == "origin"
+    assert answer.operation_id == followup.operation_id
     _append_chat_exchange(
         service,
         RunRequest.model_validate(followup.request),
@@ -227,9 +239,49 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
         assert reconcile_chat_question_answers(AppStore(store.path), None, lambda _: service) == {}
     transcript = service.chat_transcript(chat_id)
     assert [(item.role, item.text) for item in transcript.messages] == [
+        ("user", "Pick a route"),
         ("user", "Use route A"),
         ("assistant", "Understood"),
     ]
+
+
+def test_unclaimed_episode_answer_names_no_followup(manifest, tmp_path):
+    from rcp.runs.chat import project_chat_question_answer
+
+    service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
+    # A continuation may claim an Experiment answer under its own id, so none is guessed.
+    origin = question.origin.model_copy(update={"owner_kind": "episode"})
+    project_chat_question_answer(service, store, question.model_copy(update={"origin": origin}))
+    (answer,) = service.chat_transcript(chat_id).messages
+    assert answer.operation_id is None
+
+
+@pytest.mark.parametrize("status", ["running", "paused", "interrupted", "failed", "succeeded"])
+def test_answer_follows_its_asking_prompt(manifest, tmp_path, status):
+    from types import SimpleNamespace
+
+    from rcp.runs.chat import _append_chat_exchange, project_chat_question_answer
+
+    service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
+    with store.connection() as connection:
+        connection.execute("UPDATE graph_runs SET status=? WHERE operation_id='origin'", (status,))
+    project_chat_question_answer(service, store, question)
+    project_chat_question_answer(service, AppStore(store.path), question)
+    request = RunRequest.model_validate(store.agent_task("origin").request)
+    _append_chat_exchange(
+        service,
+        request,
+        "Done",
+        "origin-session",
+        None,
+        execution=SimpleNamespace(store=store, operation_id="origin"),
+    )
+    messages = service.chat_transcript(chat_id).messages
+    expected = [("user", request.message), ("user", "Use route A"), ("assistant", "Done")]
+    assert [(item.role, item.text) for item in messages] == expected
+    by_time = sorted(messages, key=lambda item: item.timestamp)
+    assert [(item.role, item.text) for item in by_time] == expected
+    assert store.get_question(question.question_id).answer_projected_revision == 1
 
 
 @pytest.mark.parametrize("state", ["occupied", "paused", "remote_unresolved"])

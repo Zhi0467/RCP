@@ -332,6 +332,24 @@ def test_reconcile_restarts_claimed_queued_answer_without_spending_twice(tmp_pat
     assert store.episode(episode_id).invocations_used == 2
 
 
+def test_settlement_reconcile_scans_only_live_answers_in_its_project(tmp_path):
+    store, _, question, _ = _ready_answer(tmp_path)
+    launches = []
+    tasks = SimpleNamespace(store=store, launch_admitted=launches.append)
+    assert reconcile_experiment_question_answers(tasks, project_id="other-project") == {}
+    assert launches == []
+    project_id = question.origin.project_id
+    claimed = reconcile_experiment_question_answers(tasks, project_id=project_id)
+    assert launches == [claimed[question.question_id]]
+    store.mark_agent_task_running(launches[0])
+    assert store.questions_needing_experiment_reconciliation(project_id=project_id) == []
+    assert reconcile_experiment_question_answers(tasks) == {}
+    # A succeeded follow-up whose receipt was never recorded is swept again to replay it.
+    store.complete_agent_task(launches[0], applied_revision=None, result={})
+    (pending,) = store.questions_needing_experiment_reconciliation()
+    assert pending.question_id == question.question_id
+
+
 def test_experiment_answer_cannot_change_origin_scope(tmp_path):
     store, _, question, record = _ready_answer(tmp_path)
     changed = record.model_copy(

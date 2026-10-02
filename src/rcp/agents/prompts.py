@@ -523,12 +523,12 @@ def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[
         # A box from the viewer before elements were named: its position was measured
         # on the viewer area, so only its sampled text says what it covered.
         labels = _one_line(selection.get("labels", ""))
-        return [f"  Selection {index}, boxed area" + (f" covering: {labels}" if labels else "")]
+        return [f"  Comment {index}, boxed area" + (f" covering: {labels}" if labels else "")]
     assert isinstance(elements, list)
     if html:
         if not elements:
-            return [f"  Selection {index}, boxed area with no element inside"]
-        lines = [f"  Selection {index}, boxed area covering:"]
+            return [f"  Comment {index}, boxed area with no element inside"]
+        lines = [f"  Comment {index}, boxed area covering:"]
         for element in elements:
             described = f"`{element['path']}`"
             label = _one_line(element.get("label", ""))
@@ -541,7 +541,7 @@ def _box_lines(index: int, selection: dict[str, object], *, html: bool) -> list[
                 described += f" (the box covers {_region(element['region'])} of it)"
             lines.append(f"    {described}")
         return lines
-    where = f"  Selection {index}, boxed region {_region(selection['rect'])} of the image"
+    where = f"  Comment {index}, boxed region {_region(selection['rect'])} of the image"
     crop = selection.get("crop_path")
     if not isinstance(crop, str):
         return [where]
@@ -573,11 +573,16 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
             lines.append(f"- {described}: `{item['path']}`")
             continue
         lines.append(f"- Artifact {described}, the copy the human viewed: `{item['path']}`")
-        lines.append(f"  Edit this file in place, keeping its name: `{item['path']}`")
+        lines.append(
+            "  The human's message holds their comments on it, numbered as anchored below. "
+            "Edit this file in place, keeping its name, when a comment needs a change."
+        )
+        if item.get("edit_now"):
+            lines.append("  The human asked for that in-place edit now, in this turn.")
         selections = item.get("selections")
         for index, selection in enumerate(selections if isinstance(selections, list) else [], 1):
             if selection.get("kind") == "text":
-                lines.append(f"  Selection {index}, text: {_one_line(selection.get('text', ''))}")
+                lines.append(f"  Comment {index}, on text: {_one_line(selection.get('text', ''))}")
                 around = _one_line(selection.get("surrounding_text", ""))
                 if around:
                     lines.append(f"    Around it: {around}")

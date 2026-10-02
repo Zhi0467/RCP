@@ -2254,6 +2254,7 @@ export interface ArtifactViewerState {
   live: "live" | "finished" | null;
   /** The operation of an admitted edit that has not published yet. */
   editing_operation_id: string | null;
+  edit_failure?: string | null;
   can_comment: boolean;
   /** Why Send is unavailable right now, such as a session held by another launch. */
   comment_unavailable_reason: string | null;
@@ -3131,6 +3132,7 @@ export interface ProjectArtifact {
   episode_id: string | null;
   episode_mode: EpisodeMode | null;
   source_chat_href: string | null;
+  source_node_id: string | null;
   viewer_url: string | null;
   view: ArtifactView;
   available: boolean;

@@ -304,6 +304,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert saved["path"] is None
         assert saved["can_open"] is True
         assert saved["episode_mode"] is None
+        assert saved["source_node_id"] is None
         chat_url, chat_params = _source_chat_url(project_id, saved["source_chat_href"])
         assert client.get(chat_url, params=chat_params).status_code == 200
         assert client.get(saved["viewer_url"]).status_code == 200
@@ -321,6 +322,7 @@ def test_inventory_reopens_old_saved_output_and_archived_episode_report(manifest
         assert retained_report["created_at"] == report.created_at
         assert retained_report["source_chat_href"] is None
         assert retained_report["episode_mode"] == "auto_research"
+        assert retained_report["source_node_id"] is None
         assert store.project_episode_report_summaries(str(uuid.uuid4())) == []
         assert retained_report["name"] == "Compaction fidelity passes retrieval checks"
         assert client.get(retained_report["viewer_url"]).status_code == 200
@@ -584,6 +586,7 @@ def test_kept_artifact_retains_episode_type_and_its_artifact_viewer(manifest, tm
     entries = client.get(f"/api/projects/{project_id}/artifacts").json()
     entry = next(item for item in entries if item["operation_id"] == task.operation_id)
     assert entry["episode_mode"] == "experiment_loop"
+    assert entry["source_node_id"] == "exp/bounded-loop"
     assert entry["kind"] == "artifact"
     assert entry["episode_id"] is None
     assert "/tasks/" in entry["viewer_url"]

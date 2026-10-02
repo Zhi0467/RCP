@@ -54,6 +54,31 @@ _KEEP_HANDLER_JS = (
 )
 
 
+# The shell paints with the app's own theme tokens, in both modes. Aqua is the
+# app's default theme, so a shell that cannot learn the choice starts there.
+_THEME_TOKENS_CSS = """:root{--paper:#e5e8ec;--panel:#f1f3f5;--field:#e9edf1;--ink:#303944;--muted:#5b6673;--rule:#bec7d0;--accent:#386792;--accent-ink:#fff;--radius:8px;--ui:"Helvetica Neue",Helvetica,Arial,sans-serif;--shadow:1px 14px 30px rgb(61 77 96/22%),0 2px 5px rgb(61 77 96/12%);--raised:inset 1px 1px 0 rgb(255 255 255/92%),2px 2px 5px rgb(61 77 96/16%);color-scheme:light}
+:root[data-color-mode="dark"]{--paper:#282e36;--panel:#343c46;--field:#29313a;--ink:#e5ebf2;--muted:#afbccc;--rule:#485360;--accent:#8bbbe8;--accent-ink:#1c2936;--shadow:0 14px 30px rgb(0 0 0/45%);--raised:inset 1px 1px 0 rgb(204 224 244/20%),2px 2px 5px rgb(0 0 0/35%);color-scheme:dark}
+:root[data-theme="classic"]{--paper:#f7f0e3;--panel:#fffdf7;--field:#fffdf7;--ink:#2b251f;--muted:#6b6258;--rule:#d8ccbb;--accent:#873b30;--accent-ink:#fff;--radius:4px;--ui:"Avenir Next",Avenir,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--shadow:0 18px 52px rgb(65 46 29/14%);--raised:none;color-scheme:light}
+:root[data-theme="classic"][data-color-mode="dark"]{--paper:#191512;--panel:#24201b;--field:#221d19;--ink:#ece3d5;--muted:#a99e8e;--rule:#3a332c;--accent:#d97b68;--accent-ink:#191512;--shadow:0 18px 52px rgb(0 0 0/55%);color-scheme:dark}"""
+
+# Mirror the containing app's theme and mode, live; a shell opened on its own reads
+# the remembered appearance. Same-origin reads only: the app frames its own shell.
+_THEME_SYNC_JS = """const root=document.documentElement;
+const dark=window.matchMedia?.('(prefers-color-scheme: dark)');
+function applyTheme(){
+  let theme=null,scheme=null;
+  try{const app=window.parent!==window?window.parent.document.documentElement:null;
+    if(app){theme=app.dataset.theme||null;scheme=app.dataset.colorMode||null;}}catch{}
+  if(!theme){try{const saved=JSON.parse(localStorage.getItem('rcp:appearance')||'null');
+    theme=saved?.theme||null;scheme=saved?.mode||null;}catch{}}
+  root.dataset.theme=theme==='classic'?'classic':'aqua';
+  root.dataset.colorMode=['dark','light'].includes(scheme)?scheme:dark?.matches?'dark':'light';
+}
+applyTheme();
+dark?.addEventListener?.('change',applyTheme);
+try{if(window.parent!==window)new MutationObserver(applyTheme).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:['data-theme','data-color-mode']});}catch{}"""
+
+
 def artifact_viewer_document(
     descriptor: AgentArtifactDescriptor,
     *,
@@ -104,19 +129,19 @@ def artifact_viewer_document(
     rows = "48px minmax(0,1fr)" if header else "minmax(0,1fr)"
     script_markup = "".join(f"<script>(()=>{{{script}}})();</script>" for script in scripts)
     document = f"""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title><style>
-:root{{--paper:#f4f1e8;--ink:#211f1a;--muted:#736f65;--rule:#c9c3b5;--accent:#a94f31;--panel:#fbfaf5}}
-*{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}}
+<title>{title}</title><script>(()=>{{{_THEME_SYNC_JS}}})();</script><style>
+{_THEME_TOKENS_CSS}
+*{{box-sizing:border-box}}html,body{{margin:0;height:100%;background:var(--paper);color:var(--ink);font:14px/1.45 var(--ui)}}
 body{{display:grid;grid-template-rows:{rows}}}header{{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--rule);background:var(--panel)}}
 .spacer{{flex:1}}
-button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:2px;font:inherit;cursor:pointer}}button:disabled{{opacity:.45;cursor:default}}
+button{{border:1px solid var(--rule);background:transparent;color:var(--ink);padding:6px 10px;border-radius:var(--radius);font:inherit;cursor:pointer;box-shadow:var(--raised)}}button:disabled{{opacity:.45;cursor:default}}
 main{{display:grid;min-height:0}}.canvas{{position:relative;min-width:0;min-height:0;background:white}}
 iframe{{display:block;border:0;width:100%;height:100%}}.canvas>img{{display:block;width:100%;height:100%;object-fit:contain}}
 {panel.style if panel else ""}</style></head><body>
 {header}<main><div class="canvas">{preview}</div>{panel.markup if panel else ""}</main>{script_markup}</body></html>"""
-    csp = "default-src 'none'; "
+    csp = "default-src 'none'; script-src 'unsafe-inline'; "
     if scripts:
-        csp += "script-src 'unsafe-inline'; connect-src 'self'; "
+        csp += "connect-src 'self'; "
     csp += "style-src 'unsafe-inline'; frame-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'"
     return document, csp
 

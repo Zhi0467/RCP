@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -85,3 +86,14 @@ class QuestionRecord(BaseModel):
         if self.multiple and not self.choices:
             raise ValueError("multiple requires choices")
         return self
+
+
+def question_followup_operation_id(question_id: str, answer_revision: int) -> str:
+    """The follow-up turn one answer starts, known before that turn is admitted.
+
+    The projected answer message names it as its turn, so a queued follow-up is
+    already in chat history instead of showing its prompt a second time.
+    """
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL, f"rcp:question:{question_id}:followup:{answer_revision}"
+    ).hex

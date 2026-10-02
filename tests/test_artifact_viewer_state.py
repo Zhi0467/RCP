@@ -171,9 +171,10 @@ def test_state_edit_operation_tracks_task_lifecycle(viewer_app, status, active):
         status=status,
         request={"artifact_edit": {"artifact_id": artifact.artifact_id}},
     )
-    assert _state(client, artifact)["editing_operation_id"] == (
-        edit.operation_id if active else None
-    )
+    state = _state(client, artifact)
+    assert state["editing_operation_id"] == (edit.operation_id if active else None)
+    # A failure that settles after the send succeeded still reaches the viewer.
+    assert (state["edit_failure"] is not None) == (status in {"failed", "interrupted"})
 
 
 @pytest.mark.parametrize("name,data", [("paper.pdf", b"%PDF-1.7\n"), ("data.bin", b"\x00\xff")])

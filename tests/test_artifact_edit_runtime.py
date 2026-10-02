@@ -283,7 +283,7 @@ def test_comment_route_refuses_busy_session_but_undo_remains_available(manifest,
     )
     client = TestClient(app)
     path = f"/api/projects/{app.state.default_project_id}/artifacts/{source.artifact_id}"
-    refused = client.post(path + "/comments", json={"message": "Change this chart"})
+    refused = client.post(path + "/comments", json={"comments": [{"text": "Change this chart"}]})
     assert refused.status_code == 409
     undone = client.post(path + "/undo", json={})
     assert undone.status_code == 200

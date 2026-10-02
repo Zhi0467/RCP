@@ -1411,9 +1411,9 @@ that version. Invalid declarations expose their stored reason as static data.
 The authenticated artifact shell pins both HTML and live reads to one version,
 polls while visible, and relays through the existing private artifact channel.
 The agent frame remains opaque with its existing CSP and sandbox restrictions.
-The shell is frameable only by its own RCP origin. Its comment box posts message,
-selections, and an explicit fresh-session flag to the existing comments route.
-A conflict preserves the draft; success sends `rcp-artifact-edit-started` protocol
+The shell is frameable only by its own RCP origin. It posts one `comments` list,
+each `{text, selection?}`, with `edit_now` and an explicit fresh-session flag to
+the existing comments route. A conflict keeps the comments filed; success sends `rcp-artifact-edit-started` protocol
 version 1 to the same-origin parent with the artifact and operation ids.
 
 ### Artifact viewer and run inventory
