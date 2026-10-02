@@ -1949,9 +1949,6 @@ def create_app(
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await release_task
-            if machine_power is not None and app.state.machine_power_started:
-                app.state.machine_power_started = False
-                await asyncio.to_thread(machine_power.stop)
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
@@ -1980,7 +1977,13 @@ def create_app(
             await asyncio.to_thread(notification_sender.stop)
             if phone_listener is not None:
                 await asyncio.to_thread(phone_listener.stop)
-            background_tasks.shutdown()
+            try:
+                background_tasks.shutdown()
+            finally:
+                # Hold the Mac awake until workers have drained.
+                if machine_power is not None and app.state.machine_power_started:
+                    app.state.machine_power_started = False
+                    await asyncio.to_thread(machine_power.stop)
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
             # Source reload workers share metadata owned by the outer supervisor,

@@ -130,6 +130,9 @@ class MachinePowerController:
             raise ValueError("invalid machine power preferences")
         with self._lock:
             self._enabled = preferences["idle_hold"]
+            if not self._enabled:
+                # Turning it off never waits on a demand read.
+                self._drop()
             with self.store.connection() as connection:
                 connection.execute(
                     "INSERT INTO machine_power_state VALUES (1,?) "

@@ -206,3 +206,10 @@ def test_failed_spawn_is_retried_next_pass(machine):
     machine.controller.spawn = spawn
     machine.controller.safety_pass()
     assert machine.controller.status()["idle_hold"]["active"] is True
+
+
+def test_disabling_drops_hold_even_when_demand_read_fails(machine):
+    machine.controller.safety_pass()
+    machine.controller.demand_reader = Mock(side_effect=RuntimeError("store busy"))
+    machine.controller.update({"idle_hold": False})
+    assert machine.holds[0].returncode is not None
