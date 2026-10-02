@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,6 +15,9 @@ from rcp.limits import MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
 from rcp.machine_power_install import InstallError, InstallStatus
 from rcp.storage import AppStore
 from tests.helpers import wait_for_entry, wait_until
+
+# The real watchdog relies on macOS `ps -o lstart` and process-group behavior.
+macos_tools = pytest.mark.skipif(sys.platform != "darwin", reason="macOS BSD tools")
 
 BATTERY = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=123)\t75%; discharging; 3:20 remaining present: true\n"
 AC = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=123)\t75%; charging; 1:20 remaining present: true\n"
@@ -583,6 +587,7 @@ def test_surviving_watchdog_commands_prevent_replacement(machine):
     machine.group_alive = False
 
 
+@macos_tools
 def test_controller_and_real_watchdog_release_and_retire_crashed_group(tmp_path):
     from tests.test_machine_power_watchdog import START, Watchdog
 

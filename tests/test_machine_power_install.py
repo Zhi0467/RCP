@@ -18,6 +18,9 @@ from rcp.machine_power_install import (
     _sudoers,
 )
 
+# The admin script runs only on macOS and uses BSD tools (`stat -f`, `mv -h`).
+macos_tools = pytest.mark.skipif(sys.platform != "darwin", reason="macOS BSD tools")
+
 
 @pytest.fixture
 def installer(tmp_path):
@@ -52,6 +55,7 @@ def installer(tmp_path):
     return MachinePowerInstaller(run=run, paths=paths, account="tester", uid=os.getuid())
 
 
+@macos_tools
 def test_install_uninstall_reuses_lock_and_directory(installer):
     assert installer.status().install_problem == "not_installed"
     assert installer.install().installed
@@ -75,6 +79,7 @@ def test_install_uninstall_reuses_lock_and_directory(installer):
     assert lock.stat().st_ino == inode
 
 
+@macos_tools
 @pytest.mark.parametrize("missing", ["sudoers", "daemon", "directory"])
 def test_partial_install_repair(installer, missing):
     installer.install()
@@ -108,6 +113,7 @@ def test_other_account_refused(installer):
         installer.install()
 
 
+@macos_tools
 @pytest.mark.parametrize("operation", ["install", "uninstall"])
 def test_cancel_preserves_status_and_skips_callback(installer, operation):
     installer.install()
@@ -126,6 +132,7 @@ def test_cancel_preserves_status_and_skips_callback(installer, operation):
     assert not called
 
 
+@macos_tools
 def test_active_owner_refuses_install(installer):
     installer.install()
     with (installer.paths.directory / "owner.lock").open("a") as lock:
@@ -156,6 +163,7 @@ def test_admin_revalidates_foreign_file_after_prompt(installer):
     assert installer.paths.sudoers.read_text() == "foreign"
 
 
+@macos_tools
 def test_failed_clear_keeps_installation_for_repair(installer):
     fake_pmset = installer.paths.sudoers.parent / "pmset"
     fake_pmset.write_text("#!/bin/sh\necho 'SleepDisabled 1'\n")
@@ -181,6 +189,7 @@ def test_visudo_failure_does_not_publish(installer):
     assert not installer.paths.directory.exists()
 
 
+@macos_tools
 def test_reinstall_from_another_account_after_uninstall(installer):
     installer.install()
     lock_inode = (installer.paths.directory / "owner.lock").stat().st_ino
@@ -192,6 +201,7 @@ def test_reinstall_from_another_account_after_uninstall(installer):
     assert (installer.paths.directory / "owner.lock").stat().st_ino == lock_inode
 
 
+@macos_tools
 def test_interrupted_enrollment_and_ready_are_repairable(installer):
     installer.install()
     (installer.paths.directory / "enrollment").unlink()
@@ -206,6 +216,7 @@ def test_cancel_fresh_install_creates_no_machine_files(installer):
     assert not installer.paths.directory.exists()
 
 
+@macos_tools
 def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
     installer.install()
     release = threading.Event()
@@ -227,12 +238,14 @@ def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
     assert installer.status().installed
 
 
+@macos_tools
 def test_fresh_install_parent_is_traversable(installer):
     assert not installer.paths.directory.parent.exists()
     assert installer.install().installed
     assert installer.paths.directory.parent.stat().st_mode & 0o777 == 0o755
 
 
+@macos_tools
 def test_repair_lock_symlink_swap_does_not_modify_target(installer, tmp_path):
     installer.install()
     target = tmp_path / "protected"
@@ -269,6 +282,7 @@ def test_repair_lock_symlink_swap_does_not_modify_target(installer, tmp_path):
     assert target.stat().st_mode & 0o777 == 0o600
 
 
+@macos_tools
 def test_first_install_holds_machine_lock_before_loading_daemon(installer, tmp_path):
     probe = tmp_path / "launchctl"
     observed = tmp_path / "excluded"
