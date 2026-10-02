@@ -752,8 +752,9 @@ class MachinePowerController:
             return
         if self._state["idle_hold"] and self._reasons:
             if self._idle is None or self._idle.poll() is not None:
-                pid, _ = self.identity_reader()
-                self._idle = self.spawn(["/usr/bin/caffeinate", "-i", "-w", str(pid)])
+                # Only the watchdog needs the full identity; a failing ps must
+                # not block the ordinary hold.
+                self._idle = self.spawn(["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())])
         else:
             self._drop_idle()
         if cause:

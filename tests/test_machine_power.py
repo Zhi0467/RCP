@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -205,7 +206,7 @@ def machine(tmp_path):
 
 def test_idle_hold_is_worker_bound_and_lid_hold_requires_ack(machine):
     machine.activate()
-    assert machine.children[0][0] == ["/usr/bin/caffeinate", "-i", "-w", "123"]
+    assert machine.children[0][0] == ["/usr/bin/caffeinate", "-i", "-w", str(os.getpid())]
     assert machine.children[1][0][0] == "/bin/sh"
     heartbeat = power.read_record(machine.root / "heartbeat")
     assert heartbeat["pid"] == "123"
@@ -214,6 +215,12 @@ def test_idle_hold_is_worker_bound_and_lid_hold_requires_ack(machine):
     assert (machine.root / "machine_power_watchdog.sh").read_bytes() == Path(
         power.__file__
     ).with_name("machine_power_watchdog.sh").read_bytes()
+
+
+def test_idle_hold_does_not_need_the_watchdog_identity(machine):
+    machine.controller.identity_reader = Mock(side_effect=RuntimeError("ps failed"))
+    machine.controller.safety_pass()
+    assert machine.controller.status()["idle_hold"]["active"] is True
 
 
 def test_no_ack_never_requests_on(machine):
