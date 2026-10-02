@@ -1913,6 +1913,9 @@ def create_app(
                 await start_deferred_runtime()
             except BaseException:
                 await terminals.close()
+                if machine_power is not None and app.state.machine_power_started:
+                    app.state.machine_power_started = False
+                    await asyncio.to_thread(machine_power.stop)
                 raise
         try:
             if fenced_startup:

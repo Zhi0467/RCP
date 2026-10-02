@@ -197,3 +197,12 @@ def test_retry_timer_demand(demand_inputs):
 def test_armed_watchers_alone_are_not_demand(demand_inputs):
     demand_inputs.store.watchers = Mock(side_effect=AssertionError("watchers are not demand"))
     assert power.demand_snapshot(demand_inputs.store, demand_inputs.background) == []
+
+
+def test_failed_spawn_is_retried_next_pass(machine):
+    spawn = machine.controller.spawn
+    machine.controller.spawn = Mock(side_effect=OSError("no processes"))
+    machine.controller.safety_pass()
+    machine.controller.spawn = spawn
+    machine.controller.safety_pass()
+    assert machine.controller.status()["idle_hold"]["active"] is True

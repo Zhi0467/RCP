@@ -173,7 +173,11 @@ class MachinePowerController:
                 return
             if self._enabled and reasons:
                 if not self._held():
-                    self._hold = self.spawn(self.command(os.getpid()))
+                    try:
+                        self._hold = self.spawn(self.command(os.getpid()))
+                    except OSError:
+                        # The next pass retries; the thread must outlive this.
+                        logger.exception("Could not start the keep-awake hold")
             else:
                 self._drop()
 

@@ -114,3 +114,16 @@ def test_power_follows_deferred_startup_and_precedes_worker_shutdown(tmp_path, m
         assert app.state.startup_effect_runtime_event.wait(timeout=5)
         assert order == ["start"]
     assert order == ["start", "off", "workers"]
+
+
+def test_failed_startup_stops_power(tmp_path, monkeypatch):
+    controller = Mock()
+    monkeypatch.setattr("rcp.api.app.MachinePowerController", lambda *a, **kw: controller)
+    app = create_app(data_dir=tmp_path)
+    monkeypatch.setattr(
+        app.state.background_tasks, "recover_at_startup", Mock(side_effect=RuntimeError("boom"))
+    )
+    with pytest.raises(RuntimeError, match="boom"), TestClient(app):
+        pass
+    controller.start.assert_called_once()
+    controller.stop.assert_called_once()
