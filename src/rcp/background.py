@@ -550,11 +550,27 @@ class BackgroundAgentTasks:
         from rcp.runs.experiment_admission import proven_reserved_experiment_branch_roots
 
         reserved_experiments = proven_reserved_experiment_branch_roots(self)
+        # Question admission claims and task insertion commit together. A crash
+        # before dispatch leaves a paid/claimed queued turn, not a lost worker.
+        # Preserve only proven-unstarted turns; ambiguous live providers remain
+        # under the ordinary interruption and remote-liveness owner.
+        question_followups = []
+        for question in self.store.list_questions():
+            if question.followup_operation_id is None:
+                continue
+            task = self.store.agent_task(question.followup_operation_id)
+            if (
+                task is not None
+                and task.status == "queued"
+                and self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
+            ):
+                question_followups.append(task.operation_id)
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
                 *[item.operation_id for item in preserved_dispatches],
                 *[task.operation_id for _episode, task, _request in reserved_roots],
                 *[task.operation_id for _episode, task in reserved_experiments],
+                *question_followups,
             }
         )
         self._discard_orphan_mailbox_checkpoints()

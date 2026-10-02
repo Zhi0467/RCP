@@ -123,6 +123,9 @@ def reconcile_pending_auto_research_mail(
 ) -> list[str]:
     """Retry the existing paid mail wake once for every pending canonical actor."""
 
+    from rcp.runs.auto_research_questions import reconcile_auto_research_question_answers
+
+    reconcile_auto_research_question_answers(background.store)
     started = _reconcile_committed_auto_research_wakes(
         background,
         episode_id=episode_id,

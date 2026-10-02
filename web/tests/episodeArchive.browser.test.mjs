@@ -315,6 +315,10 @@ test("active and unresolved episodes archive without stopping work and restore a
         await route.fulfill({ json: item });
         return;
       }
+      if (/\/episodes\/[^/]+\/questions$/.test(url.pathname)) {
+        await route.fulfill({ json: [] });
+        return;
+      }
       const timelineMatch = url.pathname.match(/\/episodes\/([^/]+)\/timeline$/);
       if (timelineMatch) {
         // Turn history moved to the typed timeline; this journey exercises cards.

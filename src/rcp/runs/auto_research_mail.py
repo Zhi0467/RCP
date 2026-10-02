@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
+    AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH,
     AUTO_RESEARCH_MAIL_MAX_BYTES,
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
 )
@@ -33,7 +34,7 @@ class AutoResearchMailMessage(BaseModel):
     authorized_by: AuthorizedHuman | None = None
     recipient_task_id: str = Field(min_length=1)
     control_node_id: str | None = Field(default=None, min_length=1)
-    body: str = Field(min_length=1, max_length=16_000)
+    body: str = Field(min_length=1, max_length=AUTO_RESEARCH_MAIL_BODY_MAX_LENGTH)
     created_at: str = Field(min_length=1)
     delivered_at: str = Field(min_length=1)
     delivery_operation_id: str = Field(min_length=1)

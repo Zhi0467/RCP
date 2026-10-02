@@ -35,10 +35,11 @@ def execution_instructions():
     return "test-client launch --scope example --output /stage/launch-receipt.json"
 
 
-def test_work_compute_handoff_preserves_the_resolved_execution_instructions(execution_instructions):
-    contract = _work_contract(
-        watch_path="/stage/watch.json", execution_instructions=execution_instructions
-    )
+@pytest.mark.parametrize("watch_path", [None, "/stage/watch.json"])
+def test_work_compute_handoff_preserves_the_resolved_execution_instructions(
+    execution_instructions, watch_path
+):
+    contract = _work_contract(watch_path=watch_path, execution_instructions=execution_instructions)
     assert execution_instructions in contract
 
 
@@ -901,3 +902,89 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
             if parameter.default is inspect.Parameter.empty
         }
         assert PROVIDER_NATIVE_SUBAGENT_LIFETIME in builder(**arguments), builder.__name__
+
+
+@pytest.mark.parametrize("actor", ["orchestrator", "retry", "worker"])
+def test_auto_research_ask_contract_is_only_in_orchestrator_bootstraps(monkeypatch, actor):
+    from rcp.agents import auto_research_prompt as auto
+
+    calls = []
+
+    def capture_ask_contract(return_rule):
+        calls.append(return_rule)
+        return "<shared-ask-contract>"
+
+    monkeypatch.setattr(auto, "ask_contract", capture_ask_contract)
+    arguments = dict(
+        graph_path="/stage/graph.json",
+        research_path="/stage/research.md",
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        command_client="test-command-client",
+        write_scope=_work_write_scope(),
+    )
+    if actor == "retry":
+        contract = auto.auto_research_orchestrator_continuation_contract(
+            **arguments,
+            original_contract_path="/stage/original.md",
+            mode="retry",
+            retry_diagnostics_path="/stage/diagnostics.json",
+        )
+    elif actor == "worker":
+        contract = auto.auto_research_worker_task_contract(
+            **arguments,
+            project_name="Example",
+            seat_node_type="Experiment",
+            seat_node_id="exp/example",
+            seat_difficulty="standard",
+            instruction_path="/stage/instruction.md",
+            reply_key="worker-reply",
+        )
+    else:
+        contract = auto.auto_research_orchestrator_task_contract(
+            **arguments, project_name="Example"
+        )
+    assert len(calls) == (0 if actor == "worker" else 1)
+    assert ("<shared-ask-contract>" in contract) == (actor != "worker")
+    assert ("ask --key <key> --question <text>" in contract) == (actor != "worker")
+
+
+def test_auto_research_ask_rendering_follows_resolved_verbs(monkeypatch):
+    from rcp.agents import auto_research_prompt as auto
+    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+
+    assert "ask" in auto_research_allowed_verbs("orchestrator")
+    assert "ask" not in auto_research_allowed_verbs("worker")
+    monkeypatch.setattr(auto, "auto_research_allowed_verbs", lambda _role: ("validate",))
+    assert "validate patch.json" in auto._command_invocations("test-command-client")
+    assert "ask --key" not in auto._command_invocations("test-command-client")
+    assert auto._orchestrator_ask_contract() == ""
+
+
+@pytest.mark.parametrize("actor", ["orchestrator", "worker"])
+def test_auto_research_stable_values_capture_allowed_verbs_and_ask_limits(actor):
+    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+    from rcp.agents.auto_research_prompt import auto_research_prompt_values
+    from rcp.limits import ASK_CHOICE_MAX_COUNT, ASK_CHOICE_MAX_LENGTH, ASK_QUESTION_MAX_LENGTH
+
+    allowed = auto_research_allowed_verbs(actor)
+    values = auto_research_prompt_values(
+        graph_path="/stage/graph.json",
+        research_path="/stage/research.md",
+        repositories=[],
+        patch_path="/stage/patch.json",
+        output_schema_path="/stage/schema.json",
+        command_client="test-command-client",
+        write_scope=_work_write_scope(),
+        allowed_verbs=allowed,
+    )
+    assert values["allowed_verbs"] == list(allowed)
+    if actor == "orchestrator":
+        assert values["ask_limits"] == {
+            "question_max_length": ASK_QUESTION_MAX_LENGTH,
+            "choice_max_count": ASK_CHOICE_MAX_COUNT,
+            "choice_max_length": ASK_CHOICE_MAX_LENGTH,
+        }
+    else:
+        assert "ask_limits" not in values

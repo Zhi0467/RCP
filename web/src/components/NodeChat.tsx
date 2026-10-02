@@ -1,3 +1,6 @@
+import { QuestionCard } from "./QuestionCard";
+import { useQuestions } from "../hooks/useQuestions";
+import { questionIsOpen, questionTranscript } from "../questions";
 import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import {
@@ -257,6 +260,12 @@ export function NodeChat({
     () => relatedChatTasks(tasks, surface, node?.id, chatId),
     [chatId, node?.id, surface, tasks],
   );
+  const questionApiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const questionFreshness = relatedTasks
+    .map((task) => `${task.operation_id}:${task.status}:${task.updated_at}`)
+    .sort()
+    .join("\0");
+  const questionState = useQuestions(questionApiBase, "chat", chatId, questionFreshness);
   const [steeringMessages, setSteeringMessages] = useState<{
     chatId: string;
     messages: ChatMessage[];
@@ -1427,7 +1436,17 @@ export function NodeChat({
         onScroll={handleChatScroll}
         ref={chatLinesRef}
       >
-        {transcript.map((line) => {
+        {questionTranscript(transcript, questionState.questions).map((entry) => {
+          if (entry.kind === "question")
+            return (
+              <QuestionCard
+                key={entry.question.question_id}
+                question={entry.question}
+                apiBase={questionApiBase}
+                onResolved={questionState.refresh}
+              />
+            );
+          const line = entry.line;
           const messageId = line.lineId;
           const task = relatedTasks.find((candidate) => candidate.operation_id === line.taskId);
           const activeLineTask = task && !line.steering && isActiveTask(task) ? task : null;
@@ -1689,6 +1708,20 @@ export function NodeChat({
           );
         })}
         {submitError && <div className="node-chat-line error">{submitError}</div>}
+      </div>
+      <div className="chat-open-questions">
+        {questionState.error && <div role="alert">{questionState.error}</div>}
+        {questionState.questions
+          .filter((question) => questionIsOpen(question) && !question.withdrawn_readonly)
+          .map((question) => (
+            <QuestionCard
+              key={question.question_id}
+              question={question}
+              apiBase={questionApiBase}
+              onResolved={questionState.refresh}
+              continueWork={question.state === "parked" && !relatedActive}
+            />
+          ))}
       </div>
       {!readOnly && (
         <div

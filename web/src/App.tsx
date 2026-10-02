@@ -1598,6 +1598,7 @@ export default function App() {
         if (!tabIsOpen()) return;
         if (isActiveProject(requestedProjectId)) {
           if (!sameGraphTarget(requestedTarget, activeGraphTargetRef.current)) return;
+          window.dispatchEvent(new CustomEvent("rcp:refresh-questions", { detail: base }));
           if (
             canonicalRevisionNeedsReload(
               observedRevision,

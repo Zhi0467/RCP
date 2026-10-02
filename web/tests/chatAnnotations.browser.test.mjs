@@ -38,6 +38,7 @@ test("a wide annotation composer stays interactive inside a keyboard-shrunken vi
       window.shrinkTestVisualViewport = (height, offsetTop) => viewport.shrink(height, offsetTop);
     });
 
+    await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
     const comment = page.getByRole("button", { name: "Comment on this answer" });
     await comment.waitFor({ state: "visible" });
@@ -128,6 +129,7 @@ test("a pointer selection opens the composer even when the pointer is released o
     assert.ok(address && typeof address === "object");
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 844, height: 520 } });
+    await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
     const answer = page.locator(".chat-annotatable-answer");
     await answer.waitFor({ state: "visible" });

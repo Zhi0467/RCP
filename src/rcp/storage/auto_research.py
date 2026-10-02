@@ -2286,6 +2286,87 @@ class AutoResearchStoreMixin:
         assert stored is not None
         return stored
 
+    def readdress_auto_research_question_answer(
+        self, question_id: str
+    ) -> AutoResearchMessageRecord | None:
+        """Carry only undelivered question answers to their running continuation.
+
+        Ordinary mail stays on its source episode. Question origins and the human
+        sender remain unchanged; wake admission still owns delivery and budget.
+        """
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            question = connection.execute(
+                "SELECT * FROM questions WHERE question_id=?", (question_id,)
+            ).fetchone()
+            if question is None:
+                raise KeyError(question_id)
+            if question["owner_kind"] != "episode" or question["state"] != "answered":
+                return None
+            message_id = f"question:{question_id}:answer:{question['answer_revision']}"
+            row = connection.execute(
+                "SELECT * FROM auto_research_messages WHERE message_id=?", (message_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            message = self._auto_research_message_record(row)
+            if (
+                message.sender_role != "human"
+                or message.sender_task_id is not None
+                or message.authorized_by is None
+                or message.authorized_by.model_dump() != json.loads(question["resolved_by_json"])
+            ):
+                raise ValueError("question answer mail must retain its human resolver")
+            if message.delivered_at is not None or message.delivery_operation_id is not None:
+                return message
+            episode = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id=?", (question["owner_id"],)
+            ).fetchone()
+            chain = {}
+            while episode is not None:
+                episode_id = str(episode["episode_id"])
+                if (
+                    episode_id in chain
+                    or episode["project_id"] != question["project_id"]
+                    or episode["mode"] != "auto_research"
+                ):
+                    raise ValueError("question answer mail requires its original episode chain")
+                chain[episode_id] = episode
+                continuation = connection.execute(
+                    "SELECT * FROM episodes WHERE continues_episode_id=?", (episode_id,)
+                ).fetchone()
+                if continuation is None:
+                    break
+                episode = continuation
+            source = chain.get(message.episode_id)
+            if source is None or message.recipient_task_id != source["root_operation_id"]:
+                raise ValueError("question answer mail is outside its original orchestrator chain")
+            if (
+                question["withdrawn_readonly"]
+                or episode["status"] != "running"
+                or episode["ending"] is not None
+                or episode["stop_requested_at"] is not None
+                or episode["root_operation_id"] is None
+            ):
+                return message
+            recipient = connection.execute(
+                """SELECT 1 FROM auto_research_invocations
+                WHERE episode_id=? AND operation_id=? AND role='orchestrator'
+                AND actor_operation_id=?""",
+                (episode["episode_id"], episode["root_operation_id"], episode["root_operation_id"]),
+            ).fetchone()
+            if recipient is None:
+                raise ValueError("the continuation has no canonical orchestrator recipient")
+            connection.execute(
+                """UPDATE auto_research_messages SET episode_id=?,recipient_task_id=?
+                WHERE message_id=? AND delivered_at IS NULL AND delivery_operation_id IS NULL""",
+                (episode["episode_id"], episode["root_operation_id"], message_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM auto_research_messages WHERE message_id=?", (message_id,)
+            ).fetchone()
+            return self._auto_research_message_record(updated)
+
     def auto_research_message(self, message_id: str) -> AutoResearchMessageRecord | None:
         with self.connection() as connection:
             row = connection.execute(

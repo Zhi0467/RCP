@@ -99,6 +99,10 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.question_snapshots import (
+    question_snapshot,
+    question_snapshot_part,
+)
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
     provider_turn_request,
@@ -157,18 +161,20 @@ from rcp.runs.tasks.work import (
     _rejected_graph_update_for_repair,
     _resolve_work_execution,
     _ResolvedWorkExecution,
-    _resume_work_compute_commands,
+    _resume_work_command_handler,
     _retained_primary_answer,
     _RetryDeliverableBaseline,
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
     _StagedWorkInputs,
     _watcher_continuation,
+    _work_command_handler,
     _work_execution_instructions,
     _work_finalization_context,
     _work_graph_repairable,
     _work_mailbox_context,
     _work_patch_proposal_ids,
+    _work_turn_command_handler,
     _WorkMailboxContext,
     _WorkValidatorMailboxLifecycle,
     _write_recorded_patch,
@@ -722,7 +728,10 @@ def _experiment_values(
         artifacts=str(staged.artifact_directory),
     )
     compute = turn.compute_commands
-    execution: dict[str, object] = {"watcher_host": turn.execution_host}
+    execution: dict[str, object] = {
+        "watcher_host": turn.execution_host,
+        "allowed_verbs": sorted(_work_turn_command_handler(turn).allowed_verbs),
+    }
     if compute is not None:
         values["commands"]["launch"] = turn.patch_inputs.validator_staged.client_command(
             *_LAUNCH_EXAMPLE_ARGS
@@ -889,13 +898,43 @@ def _session_start_contract(
                 )
                 if started_key not in {None, key}:
                     return None
-                return durable.content, recorded_master_values(execution.store, task.operation_id)
+                # New launches carry a fresh question part alongside the standing
+                # contract. Recovery must not promote that operational input into
+                # the master; older tasks have only the original full contract.
+                master_content = execution.store.agent_task_contract(
+                    task.operation_id, SESSION_MASTER_ROLE
+                )
+                return (
+                    master_content if master_content is not None else durable.content,
+                    recorded_master_values(execution.store, task.operation_id),
+                )
     return None
 
 
 def _report_rebootstrap_pending(turn: WorkTurn) -> bool:
     assert turn.execution is not None and turn.request.session_id
     return report_rebootstrap_pending(turn.execution, turn.request.session_id)
+
+
+def _question_snapshot_part(turn: WorkTurn) -> str:
+    turn.question_snapshot = None
+    if turn.execution is None or "ask" not in _work_turn_command_handler(turn).allowed_verbs:
+        return ""
+    task = turn.execution.store.agent_task(turn.execution.operation_id)
+    assert task is not None
+    turn.question_snapshot = question_snapshot(
+        turn.execution.store,
+        project_id=task.project_id,
+        owner_kind="episode",
+        owner_ids=turn.execution.store.experiment_question_owner_ids(
+            turn.request.control_episode_id or ""
+        ),
+        operation_id=turn.execution.operation_id,
+        write_scope_fingerprint=turn.write_scope.fingerprint,
+    )
+    return question_snapshot_part(
+        turn.question_snapshot, local_stage=turn.local_stage, remote_stage=turn.remote_stage
+    )
 
 
 def _record_continuation_prompt(
@@ -917,6 +956,9 @@ def _record_continuation_prompt(
 
     if report_ended:
         master = replace(master, after_report=True)
+    question_part = _question_snapshot_part(turn)
+    if question_part:
+        parts = [*parts, question_part]
     prompt = compose(classify(phase), parts=parts, master=master, delta=delta)
     contract_path = record_inline_prompt(
         turn.execution,
@@ -1054,6 +1096,8 @@ def _compose_wake_prompt(
         or not prepared.watcher_state_path
     ):
         raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
+    if turn.continuation == "message_wake":
+        return _compose_human_turn_prompt(turn, staged, prepared, retry_diagnostics_path=None)
     parts = experiment_loop_wake_message(
         focused_experiment_id=turn.request.control_node_id,
         invocation=turn.request.control_invocation,
@@ -1168,6 +1212,14 @@ def _experiment_start_contract(
     )
     if invoked:
         contract += invoked_provider_skill_section(turn.request.resolved_provider_skills)
+    if "ask" in _work_turn_command_handler(turn).allowed_verbs:
+        contract += (
+            "\nA durably open question or an undelivered answer is a continuation source: "
+            "park without inventing a Blocker or Proposal. Every running compute job still "
+            "requires its real watcher. A parked answer spends one normally admitted "
+            "Experiment invocation, retaining this session, target, scope and Stop fence. "
+            "At the ceiling, further work requires human reauthorization.\n"
+        )
     return contract
 
 
@@ -1191,11 +1243,13 @@ def _compose_fresh_prompt(
         invoked=True,
         retry_diagnostics_path=retry_diagnostics_path,
     )
+    question_part = _question_snapshot_part(turn)
+    launch_contract = contract + ("\n\n" + question_part if question_part else "")
     contract_path, prompt = _stage_task_contract(
         turn.local_stage,
         turn.remote_stage,
         f"task-{staged.token}-{'base' if turn.retry_attempt else 'initial'}.md",
-        contract,
+        launch_contract,
         execution=turn.execution,
         role="work_retry_base" if turn.retry_attempt else "work",
     )
@@ -1211,11 +1265,30 @@ def _compose_fresh_prompt(
             ),
             values,
         )
+    master_path = _stage_or_reuse_task_input(
+        turn.local_stage,
+        turn.remote_stage,
+        session_master_label(_EXPERIMENT_MASTER_LABEL, contract),
+        contract,
+    )
     return _ComposedExperimentPrompt(
         contract_path=contract_path,
         prompt=prompt,
-        base_contract_path=contract_path,
+        base_contract_path=master_path,
         values=values,
+    )
+
+
+def _has_question_continuation(turn: WorkTurn | WorkFinalizationContext) -> bool:
+    """Questions are operational continuation sources, never graph authority."""
+    return bool(
+        turn.execution is not None
+        and turn.request.control_episode_id
+        and turn.execution.store.experiment_has_question_continuation(
+            turn.execution.store.agent_task(turn.execution.operation_id).project_id,
+            turn.request.control_episode_id,
+            operation_id=turn.execution.operation_id,
+        )
     )
 
 
@@ -1341,7 +1414,7 @@ async def _validate_watch_deliverable(
                 {item.check_command for item in handoff.observers},
             )
         settled.loop_watch_text = watch_text
-        if handoff.is_empty:
+        if handoff.is_empty and not _has_question_continuation(turn):
             exit_patch_text = _read_chat_patch(turn.workspace, turn.remote_stage)
             if (
                 not turn.request.control_node_id
@@ -1780,13 +1853,17 @@ async def _apply_experiment_loop_turn(
             # A correction round that produced nothing new leaves this None so
             # its own diagnostic reaches the agent instead of being overwritten.
             if final_patch_text is not None:
-                if settled.loop_watch_empty and (
-                    not turn.request.control_node_id
-                    or experiment_loop_semantic_ending(
-                        final_patch_text,
-                        turn.request.control_node_id,
+                if (
+                    settled.loop_watch_empty
+                    and not _has_question_continuation(turn)
+                    and (
+                        not turn.request.control_node_id
+                        or experiment_loop_semantic_ending(
+                            final_patch_text,
+                            turn.request.control_node_id,
+                        )
+                        is None
                     )
-                    is None
                 ):
                     final_failure = _DeliverableFailure(
                         "A watch.json with both lists empty requires this Patch to retain an "
@@ -3003,14 +3080,19 @@ def _start_work_validator_mailbox(
     control_node_id: str | None,
     control_decision_bundle: list[ExperimentDecisionPin],
 ) -> _WorkValidatorMailboxLifecycle:
+    command_handler = _work_command_handler(execution, compute_commands)
     return start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
-        command_handler=compute_commands,
+        command_handler=command_handler,
         serve=serve_patch_validation_mailbox,
         resume_context=_ExperimentMailboxContext(
-            **_work_mailbox_context(run_truth_scope, compute_commands).model_dump(),
+            **_work_mailbox_context(
+                run_truth_scope,
+                compute_commands,
+                ask_allowed="ask" in command_handler.allowed_verbs,
+            ).model_dump(),
             control_node_id=control_node_id,
             control_decision_bundle=control_decision_bundle,
         ).model_dump(mode="json"),
@@ -3039,7 +3121,7 @@ def resume_experiment_command_mailbox(
     context = _ExperimentMailboxContext.model_validate(saved)
     return restore_work_validator_mailbox(
         execution,
-        command_handler=_resume_work_compute_commands(execution, context),
+        command_handler=_resume_work_command_handler(execution, context),
         validate=lambda text: _validate_work_patch_live(
             service(),
             text,

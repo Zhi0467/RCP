@@ -28,6 +28,9 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.route("**/api/projects/project/chats/*/worktree**", (route) =>
         route.fulfill({ json: { show_chooser: false, binding: null, integration_options: [] } }),
       );
+      await page.route("**/api/projects/*/chats/*/questions", (route) =>
+        route.fulfill({ json: [] }),
+      );
       await page.route("**/api/projects/*/chat-display", (route) =>
         route.fulfill({ json: { archived: [], titles: {}, pinned: [] } }),
       );

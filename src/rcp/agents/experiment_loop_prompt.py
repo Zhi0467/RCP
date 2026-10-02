@@ -24,7 +24,7 @@ from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v2"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v3"
 
 # The contract names the fields enforcement actually admits, so the two cannot
 # drift apart into a human-written allowlist beside the real one.
@@ -99,7 +99,8 @@ list. For example: `{"external":[],"graph":[{"node_id":"blk/foo","status_in":["r
   commands, paths, or groups. A status already true is ready immediately; `proposal_resolved` waits
   for an approval, rejection, or withdrawal committed after the watcher is armed.
 - If both lists are empty, the Patch must record this Experiment's completion with `next_action`
-  null, or a permitted Decision, Hypothesis Proposal, or same-Patch Blocker pause. The same guard
+  null, or a permitted Decision, Hypothesis Proposal, or same-Patch Blocker pause, unless
+  a durably open question or an undelivered answer supplies the continuation. The same guard
   applies when retirement-only output leaves no live observer. If useful synchronous work remains
   without that pause, continue it now. Watch only real external or canonical conditions.
 These rules replace older watcher-format and exit rules.
@@ -116,7 +117,8 @@ cause a new external side effect.
   older RCP policy: if the live check reports only retired schema-envelope or bookkeeping fields,
   remove only those and check again. An old diagnostic alone is no reason to delete a semantic
   operation. Keep every unaffected operation. If both watcher lists are empty, keep the Patch's
-  success, Decision, Hypothesis Proposal, or same-Patch Blocker exit. Reply only that the Patch was
+  success, Decision, Hypothesis Proposal, or same-Patch Blocker exit, unless a durable
+  question supplies continuation. Reply only that the Patch was
   rewritten.
 - Watcher correction: rewrite the watcher file, and the Patch only to make an explicit exit valid.
   Inspect authoritative scheduler, process, job, result, log, and canonical graph state as needed,
@@ -344,7 +346,7 @@ Watcher handoff protocol:
   A missing file or any other top-level shape is invalid. Leave both lists empty only after
   authoritative inspection confirms that nothing from this Experiment remains to watch and the
   same Patch explicitly records success, queues a Decision, creates a Hypothesis Proposal, or
-  creates a same-Patch Blocker.
+  creates a same-Patch Blocker, or a durable question supplies continuation.
 {_EXTERNAL_WATCHER_FORMS}
 - Each observer may also add one non-blank `group` label.
   Observers sharing a label form one immutable group of at least two newly armed observers;
@@ -391,7 +393,8 @@ Watcher handoff protocol:
 
 Graph reflection and authority:
 - A Patch is optional only when at least one external observer or graph condition continues the
-  loop. If both `{watch_path}` lists are empty, the Patch must explicitly record success or an
+  loop, or a durably open question or undelivered answer supplies continuation. Otherwise, if
+  both `{watch_path}` lists are empty, the Patch must explicitly record success or an
   authority pause through a queued Decision, Hypothesis Proposal, or same-Patch Blocker. RCP rejects
   the two files as one handoff when that pairing is absent.
 - Before finishing the turn, judge the resulting Patch and both watcher lists together. If nothing

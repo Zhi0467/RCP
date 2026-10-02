@@ -10,10 +10,12 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.command_protocol import (
     MUTATING_COMMAND_VERBS,
     ApplyArguments,
     ApplyCommandRequest,
+    AskCommandRequest,
     CommandRequest,
     CommandResponse,
     EpisodeArguments,
@@ -890,6 +892,9 @@ class AutoResearchCommandDispatcher:
         context = self._context(operation_id)
         if request.mailbox_id == "":  # already schema-validated; keeps the binding explicit here
             raise AutoResearchCommandInvalid("The Auto-research command mailbox is missing.")
+
+        if isinstance(request, AskCommandRequest):
+            return self._dispatch_ask(context, request)
 
         planned_worker_id = (
             auto_research_planned_effect_id(
@@ -1805,20 +1810,15 @@ class AutoResearchCommandDispatcher:
             )
         return expected_effect_id
 
-    def _execute(
-        self,
-        context: AutoResearchCommandContext,
-        request: CommandRequest,
-        *,
-        planned_worker_id: str | None,
-        planned_message_id: str | None,
-        planned_watcher_id: str | None,
-        planned_apply_id: str | None,
-        planned_resume_operation_id: str | None,
-        planned_episode_effect_id: str | None,
-        planned_inbox_effect_id: str | None,
-        planned_finish_effect_id: str | None,
-    ) -> AutoResearchCommandEffectResult:
+    def _check_admission(
+        self, context: AutoResearchCommandContext, request: CommandRequest
+    ) -> None:
+        if request.verb not in auto_research_allowed_verbs(context.request.role):
+            raise AutoResearchCommandInvalid(
+                "Only the Auto-research orchestrator may issue mutating staged commands."
+                if context.request.role == "worker" and request.verb in MUTATING_COMMAND_VERBS
+                else f"Auto-research {context.request.role} does not authorize {request.verb}."
+            )
         retrospective_worker_reply = request.verb == "message" and context.request.role == "worker"
         if request.verb in MUTATING_COMMAND_VERBS and not retrospective_worker_reply:
             episode = self.store.episode(context.episode.episode_id)
@@ -1834,6 +1834,75 @@ class AutoResearchCommandDispatcher:
                 raise AutoResearchCommandUnavailable(
                     "The Auto-research episode is no longer accepting mutating commands."
                 )
+
+    def _dispatch_ask(
+        self, context: AutoResearchCommandContext, request: AskCommandRequest
+    ) -> CommandResponse:
+        # The question's owner+key is the durable effect identity. Never replay a
+        # command-ledger result: the human may have resolved it since the last call.
+        from rcp.runs.auto_research_questions import orchestrator_question_origin
+        from rcp.runs.questions import handle_ask
+
+        invocation = self.store.start_agent_command(
+            operation_id=context.task.operation_id,
+            command_id=self._unused_command_id(request.request_id),
+            episode_id=context.episode.episode_id,
+            verb="ask",
+            idempotency_key=None,
+            payload={"request_id": request.request_id, "question_key": request.idempotency_key},
+        )
+        try:
+            self._check_admission(context, request)
+            _, role = self._canonical_command_actor(context)
+            if role != "orchestrator":
+                raise AutoResearchCommandInvalid("Only the orchestrator may ask the human.")
+            response = handle_ask(
+                self.store, request, orchestrator_question_origin(context), parked=True
+            )
+            question_id = response.result.get("question_id")
+            if question_id is not None and self.store.withdraw_episode_question_if_ended(
+                question_id
+            ):
+                raise AutoResearchCommandUnavailable(
+                    "The Auto-research episode ended while recording the question."
+                )
+            # Answers can exceed the command audit ledger's byte cap. The
+            # question store owns their text; the audit records only identity/state.
+            self._finish(
+                invocation.command_id,
+                request.request_id,
+                AutoResearchCommandEffectResult(
+                    status=response.status,
+                    message=response.message,
+                    result={
+                        key: value
+                        for key, value in response.result.items()
+                        if key in {"question_id", "state"}
+                    },
+                ),
+            )
+            return response
+        except AutoResearchCommandInvalid as exc:
+            outcome = AutoResearchCommandEffectResult(status="invalid", message=str(exc))
+        except AutoResearchCommandUnavailable as exc:
+            outcome = AutoResearchCommandEffectResult(status="unavailable", message=str(exc))
+        return self._finish(invocation.command_id, request.request_id, outcome)
+
+    def _execute(
+        self,
+        context: AutoResearchCommandContext,
+        request: CommandRequest,
+        *,
+        planned_worker_id: str | None,
+        planned_message_id: str | None,
+        planned_watcher_id: str | None,
+        planned_apply_id: str | None,
+        planned_resume_operation_id: str | None,
+        planned_episode_effect_id: str | None,
+        planned_inbox_effect_id: str | None,
+        planned_finish_effect_id: str | None,
+    ) -> AutoResearchCommandEffectResult:
+        self._check_admission(context, request)
         if request.verb == "validate":
             return self.effects.validate(context, request.arguments)
         if request.verb == "status":

@@ -4,19 +4,27 @@ from __future__ import annotations
 
 from typing import Literal
 
+from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+from rcp.agents.command_protocol import CommandVerb
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.prompts import (
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
+    ask_contract,
     selected_skill_section,
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
-from rcp.limits import AUTO_RESEARCH_APPLY_MAX_PER_TURN
+from rcp.limits import (
+    ASK_CHOICE_MAX_COUNT,
+    ASK_CHOICE_MAX_LENGTH,
+    ASK_QUESTION_MAX_LENGTH,
+    AUTO_RESEARCH_APPLY_MAX_PER_TURN,
+)
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v2"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v3"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -56,29 +64,50 @@ def _optional_pointer(label: str, path: str | None) -> str:
 def _command_invocations(command_client: str) -> str:
     """Refresh the complete callable surface and its turn-bound command prefix."""
 
+    invocations: dict[CommandVerb, tuple[str, ...]] = {
+        "validate": ("validate patch.json",),
+        "apply": ("apply --key <key> patch.json",),
+        "status": ("status [--worker-id <worker-id> | --episode-id <episode-id>]",),
+        "spawn": ("spawn --key <key> --seat-node <node-id> --instruction-file <filename>",),
+        "pause": ("pause --key <key> <worker-id>",),
+        "resume": ("resume --key <key> <worker-id>",),
+        "stop": ("stop --key <key> <worker-id>",),
+        "message": ("message --key <key> --recipient <worker-id> <body>",),
+        "watch_graph": ("watch-graph --key <key> --condition-json <json> --reason <text>",),
+        "episode": (
+            "episode --key <key> --kick-off-experiment --node <node-id> "
+            "[--goal-file <filename>] [--invocation-limit <positive-int>]",
+            "episode --key <key> --stop <episode-id>",
+            "episode --key <key> --resume <episode-id>",
+        ),
+        "inbox": ("inbox --key <key> --harvest", "inbox --key <key> --clear"),
+        "finish": ("finish --key <key>",),
+        "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
+    }
+    commands = "\n".join(
+        f"  - `{invocation}`"
+        for verb in auto_research_allowed_verbs("orchestrator")
+        for invocation in invocations[verb]
+    )
     return f"""Staged command client:
 - Command prefix: `{command_client}`
 - Exact invocations, all prefixed by that command:
-  - `validate patch.json`
-  - `apply --key <key> patch.json`
-  - `status [--worker-id <worker-id> | --episode-id <episode-id>]`
-  - `spawn --key <key> --seat-node <node-id> --instruction-file <filename>`
-  - `pause --key <key> <worker-id>`
-  - `resume --key <key> <worker-id>`
-  - `stop --key <key> <worker-id>`
-  - `message --key <key> --recipient <worker-id> <body>`
-  - `watch-graph --key <key> --condition-json <json> --reason <text>`
-  - `episode --key <key> --kick-off-experiment --node <node-id> [--goal-file <filename>] [--invocation-limit <positive-int>]`
-  - `episode --key <key> --stop <episode-id>`
-  - `episode --key <key> --resume <episode-id>`
-  - `inbox --key <key> --harvest`
-  - `inbox --key <key> --clear`
-  - `finish --key <key>`
+{commands}
   Each response is one JSON object. Treat its `status` and structured `result` as the authoritative
   disposition; `message` is the concise explanation. Use returned stable worker and episode ids in
   later calls. `status` also reports the child registry, lifecycle counts, and the shared Experiment
   allowance as total, used, and remaining.
 """
+
+
+def _orchestrator_ask_contract() -> str:
+    if "ask" not in auto_research_allowed_verbs("orchestrator"):
+        return ""
+    return ask_contract(
+        "- Ask returns `parked` immediately. End this turn; the episode and workers continue. "
+        "Open questions appear on later wakes. Answers arrive as human mail; an answer wake "
+        "spends one invocation like other mail wakes. Dismissal never wakes you."
+    )
 
 
 def _orchestration_progress() -> str:
@@ -257,6 +286,7 @@ def auto_research_prompt_values(
     write_scope: ProjectWriteScope,
     skill_pointers: list[dict[str, object]] | None = None,
     reply_key: str | None = None,
+    allowed_verbs: tuple[CommandVerb, ...] | None = None,
 ) -> dict[str, object]:
     """The values an actor's master states that can differ on a later launch.
 
@@ -290,6 +320,14 @@ def auto_research_prompt_values(
             for item in skill_pointers or []
         },
     }
+    if allowed_verbs is not None:
+        values["allowed_verbs"] = list(allowed_verbs)
+        if "ask" in allowed_verbs:
+            values["ask_limits"] = {
+                "question_max_length": ASK_QUESTION_MAX_LENGTH,
+                "choice_max_count": ASK_CHOICE_MAX_COUNT,
+                "choice_max_length": ASK_CHOICE_MAX_LENGTH,
+            }
     if reply_key is not None:
         values["reply_key"] = reply_key
     return values
@@ -348,6 +386,7 @@ Worker coordination:
   graph condition and let RCP wake the saved session. Do not poll or keep a turn open to wait.
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client)}
+{_orchestrator_ask_contract()}
 {_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
 {_later_launches()}
 {REPLY_STYLE}
@@ -481,6 +520,7 @@ for this continuation.
 {REPEATED_RULES_NOTE}
 {graph_rules(edits=True, ontology_extensions=ontology_extensions)}
 {_packages(skill_pointers)}{_command_invocations(command_client)}
+{_orchestrator_ask_contract()}
 The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
 the saved allocation; if RCP returns `resume_unavailable`, use the named fresh replacement command
 with a new key. Other completed effects retain their original idempotency keys: retry an unknown

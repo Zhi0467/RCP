@@ -1,3 +1,4 @@
+import { EpisodeQuestions } from "./EpisodeQuestions";
 import { graphViewHash } from "../graphTarget";
 import {
   ChevronDown,
@@ -423,6 +424,12 @@ export function AutoResearchEpisodeCard({
               />
             </section>
           )}
+
+          <EpisodeQuestions
+            apiBase={apiBase}
+            episodeId={episode.episode_id}
+            freshness={`${episode.updated_at}:${episode.status}`}
+          />
 
           {episode.starting_instruction && (
             <div className="campaign-starting-instruction">
