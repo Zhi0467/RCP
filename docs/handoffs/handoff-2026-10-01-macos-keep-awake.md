@@ -2,7 +2,12 @@
 
 Date: 2026-10-01
 Status: design settled with the human on 2026-10-01, after two xhigh design
-reviews. Implementation starts in this PR. Nothing is implemented yet.
+reviews. Implemented on this PR the same day: the backend controller,
+watchdog, installer, API, the This Mac card, the home-page warning, and the
+current-behavior docs. A served-app check on disposable data showed the card,
+the opt-in dialog, and a real read-only status. Remaining: the packaged
+checks below, listed step by step in `docs/desktop.md` under "Keep-awake
+checks". No admin install has run on real hardware yet.
 Issue: #228.
 
 Close this handoff when all of these hold on the packaged candidate, on
@@ -170,7 +175,9 @@ It releases lid mode when:
 - a reading fails, times out, or cannot be parsed;
 - demand is gone.
 
-A safety release also drops the idle hold. A demand-gone release drops both
+A battery or thermal release also drops the idle hold. A failed reading
+releases lid mode only: the idle hold follows demand, and a desktop Mac has no
+lid to read. A demand-gone release drops both
 holds and does not run `sleepnow` with the lid open. Finishing work never
 sleeps an open Mac.
 

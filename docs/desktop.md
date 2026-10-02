@@ -100,6 +100,56 @@ errors. Native window, Quit, artifact, packaged-environment, update, and text-sc
 behavior are verified through the desktop itself; a browser check does not stand in
 for any of them.
 
+## Keep-awake checks
+
+Keep-awake changes machine-wide power state, so a disposable `RCP_DATA_DIR`
+does not isolate it. Run these on the packaged candidate, on a Mac you can
+leave on a desk. Behavior is in
+[the server spec](specs/server-and-machine-operations.md#keeping-a-mac-awake).
+
+Inspect the state at any point:
+
+```bash
+pmset -g | grep SleepDisabled
+```
+
+```bash
+pmset -g assertions | grep caffeinate
+```
+
+```bash
+ls -l /etc/sudoers.d/rcp-keep-awake /Library/LaunchDaemons/org.rcp.keep-awake-reset.plist
+```
+
+1. **Install.** In Space Settings, tick **Lid-closed mode**, read the dialog,
+   and press **Install**. Cancel the admin prompt once: nothing changes. Then
+   approve it: the three paths exist, and the flag reads 0.
+2. **Overnight.** Start an Auto-research episode that waits on a compute job.
+   Close the lid overnight. In the morning, the episode has advanced through
+   the watcher wake, the continuation, and a Patch apply.
+3. **Faults.** With lid mode active, `kill -9` the backend worker, then repeat
+   with `kill -STOP`. Within about a minute the flag reads 0 and a closed Mac
+   sleeps. Kill the watchdog: the next pass replaces it or releases.
+4. **Reboot.** With the flag set by RCP, restart. After login the flag reads 0.
+5. **Battery.** Unplug and let it reach 20%: lid mode releases and a closed
+   Mac sleeps. Plug in: it re-arms.
+6. **Uninstall.** Press **Uninstall**: the flag reads 0, and the sudoers file
+   and LaunchDaemon are gone.
+
+To clear the flag by hand:
+
+```bash
+sudo pmset -a disablesleep 0
+```
+
+### Linux laptops
+
+RCP does not change Linux power settings. To keep a Linux laptop running with
+the lid closed, set `HandleLidSwitch=ignore` and
+`HandleLidSwitchExternalPower=ignore` in `/etc/systemd/logind.conf`, then
+restart `systemd-logind`. To stop idle sleep while RCP runs, start it under
+`systemd-inhibit --what=idle:sleep`.
+
 ## Artifact viewer checks
 
 Artifacts, episode reports, and repository-file previews open in the panel inside

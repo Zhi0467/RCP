@@ -1,7 +1,7 @@
 # Active implementation handoffs
 
 - [Keep RCP running with the lid closed on a Mac](handoff-2026-10-01-macos-keep-awake.md)
-  — design settled 2026-10-01; implementation starts on its PR.
+  — implemented 2026-10-01 on its PR; the packaged-candidate checks remain.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
   — implemented 2026-09-30 on the same PR; served-app, desktop, and real-data checks remain.
 - [Push notifications to the Mac and the phone](handoff-2026-09-28-push-notifications.md)

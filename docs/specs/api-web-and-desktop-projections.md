@@ -976,6 +976,16 @@ publishes `report_is_current` alongside its owning episode id. Runs renders
 **Previous episode report** when false and **Open report** when true, so an older
 retrospective is not presented as the current episode's report.
 
+In a personal space on macOS, Space Settings also carries a **This Mac** card
+(`ThisMac` in `SpaceSettings.tsx`) from `GET /api/machine-power`: an **Idle
+hold** toggle, a **Lid-closed mode** toggle that opens the opt-in dialog and
+install when not installed, **Uninstall**, and one status line (mode, demand
+reasons, last release, latch, external owner, install problem). `PUT` changes
+`idle_hold` and `lid_mode`; enabling `lid_mode` clears a latch. Install and
+uninstall are `POST`s; a cancelled admin prompt returns 200 with the unchanged
+status. The space landing shows a warning only while lid mode is latched off
+or a cleanup failed, with the exact command and a copy button.
+
 Episode cards lead with the owning Experiment name or Auto-research identity;
 their start time is secondary metadata and is never prefixed with a redundant
 `Episode` label. A completed type group names the mode once rather than repeating

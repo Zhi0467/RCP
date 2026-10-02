@@ -454,6 +454,66 @@ returns a replacement before invalidating the old token. This slice does not let
 mint or impersonate a member credential; with the required two-member lab,
 ordinary loss recovery is re-invitation by the other enrolled member.
 
+## Keeping a Mac awake
+
+A personal-space backend on macOS can keep its Mac awake while it has work.
+`src/rcp/machine_power.py` owns the policy; the desktop shell only shows it.
+The [decision record](../decisions/2026-10-01-backend-owns-macos-keep-awake.md)
+explains the tradeoffs. A team space has no controller, and the API returns 404.
+On any platform but macOS, the API reports `supported: false`.
+
+There are two modes:
+
+- **Idle hold**, on by default. While there is demand, the backend runs
+  `caffeinate -i -w <worker pid>`. It needs no root and ends with the worker.
+- **Lid-closed mode**, opt-in. While there is demand, the kernel
+  `SleepDisabled` flag is set. It needs the one-time install below.
+
+**Demand** is coarse. There is demand while a locally owned episode has health
+`starting`, `active`, `recovering`, `stopping`, or `wrapping_up` (not
+`wrapping_up` blocked on sign-in); a task is running, pausing, or queued and
+not refused for sign-in; the background runtime is not idle; or a transport
+retry is scheduled. Ended episodes, human-only waits, and armed watchers alone
+are not demand. The 30 s wake gate in `machine_sleep.py` is unchanged.
+
+**Install** is one admin prompt (`osascript ... with administrator
+privileges`). It writes `/etc/sudoers.d/rcp-keep-awake`, granting the enrolled
+account exactly `/usr/bin/pmset -a disablesleep 0` and `1`; a root
+`RunAtLoad` LaunchDaemon that clears the flag at every boot; and the
+machine-wide directory `/Library/Application Support/RCP/keep-awake/`. The
+sudoers file is checked with `visudo -cf`. Files RCP did not write are refused,
+as is a second macOS account. Uninstall clears and verifies the flag, then
+removes everything but the directory and its `owner.lock`.
+
+**One owner per Mac** holds an advisory lock on `owner.lock`. A flag that is set
+without an RCP activation record is reported as `external_owner` and never
+cleared or adopted.
+
+**The watchdog is the only process that runs `pmset -a disablesleep`.** It is
+`src/rcp/machine_power_watchdog.sh`, copied into the machine-wide directory and
+spawned detached. A safety pass every 10 s writes a heartbeat (generation,
+worker pid and start time, desired state). The watchdog keeps the flag set while
+the heartbeat says `on`, is fresh, and names a live process. Otherwise it
+clears the flag, reads it back, and runs `pmset sleepnow` unless the lid is
+known to be open. After a stale or mismatched heartbeat it revokes that
+generation and exits, so a resumed backend cannot re-arm it.
+
+**Safety.** Each pass reads battery, thermal state, lid, and flag. With the
+flag set, the kernel refuses its own low-battery and thermal sleep, so RCP
+releases at 20% or less on battery and on any thermal warning; both also drop
+the idle hold. A reading that fails releases lid mode only. Ending demand drops
+both holds and never sleeps an open Mac. pmset omits the `SleepDisabled` line
+until the flag has been set once since boot; RCP reads that as off.
+
+**Re-arm.** Thermal and cleanup failures latch lid mode off until the human
+re-enables it, and the latch survives restarts. A battery release re-arms on AC
+power. If the flag cannot be cleared, the space home page shows
+`sudo pmset -a disablesleep 0`. A removed sudoers rule can strand the flag;
+that is accepted.
+
+Preferences and latches live in the data directory's SQLite
+`machine_power_state` row, not in project manifests.
+
 ## Release selection, deployment, and automatic recovery
 
 The separately versioned `supervisor/` distribution imports no RCP modules and
