@@ -26,6 +26,7 @@ from rcp.storage.models import (
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentEpisodeRecord,
+    ExperimentEpisodeUnwakeable,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
     StoredWatcherRecord,
@@ -1198,6 +1199,8 @@ class ExperimentStoreMixin:
                 else desired
             )
             self._insert_watcher(connection, persisted)
+        if resource is not None and not records:
+            self._reject_unwakeable_maintained_episode(connection, binding, stop_ids)
         stored_rows = []
         if watcher_ids:
             placeholders = ",".join("?" for _ in watcher_ids)
@@ -1207,6 +1210,49 @@ class ExperimentStoreMixin:
             ).fetchall()
         stored_by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows}
         return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    def _reject_unwakeable_maintained_episode(
+        self,
+        connection: sqlite3.Connection,
+        binding: WatcherBinding,
+        stop_ids: list[str],
+    ) -> None:
+        """Refuse a Work edit that retires the last way the running loop can wake.
+
+        Only the episode's own turn may leave it without watchers, and only with an
+        explicit exit that ends the episode. A Work turn is never that turn, so its
+        edit must leave a wake. The check reads the same runtime the Runs card
+        projects, after this transaction's stops, and the refusal states that
+        runtime so a generic correction can act on it.
+        """
+
+        control_node_id = binding.continuation.control_node_id
+        assert control_node_id is not None
+        runtime = self._project_experiment_loop_runtimes(
+            binding.project_id,
+            {control_node_id},
+            graph_target=binding.graph_target,
+            _connection=connection,
+        ).get(control_node_id)
+        if runtime is not None and (
+            runtime.task_active
+            or runtime.detached_work_active
+            or runtime.watcher_completion_pending
+        ):
+            return
+        invocations = (
+            f"{runtime.invocations_used} of {runtime.invocation_ceiling} invocations used"
+            if runtime is not None
+            else "invocation use unknown"
+        )
+        raise ExperimentEpisodeUnwakeable(
+            f"Experiment episode {binding.continuation.control_episode_id} on "
+            f"{control_node_id} is still running ({invocations}) with no pending turn. "
+            f"This file stops {', '.join(stop_ids)} and arms nothing, which would leave it "
+            "0 watchers, so nothing could wake it again. This Work turn cannot end the "
+            "episode. Drop a stop item so that watcher can still wake the loop, or arm an "
+            "observer for replacement work that is already running."
+        )
 
     @staticmethod
     def _experiment_observer_identity(

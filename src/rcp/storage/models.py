@@ -3084,6 +3084,10 @@ class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
 
 
+class ExperimentEpisodeUnwakeable(ValueError):
+    """A watcher maintenance edit would leave a running episode nothing to wake it."""
+
+
 class WatcherStopRequest(BaseModel):
     """An Experiment agent's narrow request to retire one staged observer."""
 
@@ -3703,6 +3707,7 @@ __all__ = [
     "AutoResearchSpaceRunTaskState",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
+    "ExperimentEpisodeUnwakeable",
     "ExperimentEpisodeProjectionSnapshot",
     "ExperimentControlProjectionSnapshot",
     "ExperimentLoopRuntime",
