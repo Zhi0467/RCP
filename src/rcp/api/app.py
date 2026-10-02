@@ -59,6 +59,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
+from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
@@ -97,6 +98,7 @@ from rcp.limits import (
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
 from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
+from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
@@ -1063,6 +1065,13 @@ def create_app(
         recorded_stream=background_recorded_task_stream,
         resume_command_mailbox=background_resume_command_mailbox,
     )
+    machine_power = (
+        MachinePowerController(
+            store, demand_reader=lambda: demand_snapshot(store, background_tasks)
+        )
+        if space_kind == "personal"
+        else None
+    )
     if control_server is not None:
         member_removal_coordinator = MemberRemovalCoordinator(
             store,
@@ -1866,6 +1875,8 @@ def create_app(
                     control_server.start()
                     control_started = True
                 release_check.start()
+                if machine_power is not None:
+                    machine_power.start()
                 runtime_started = True
                 app.state.startup_effect_runtime_started = True
                 startup_effect_runtime_event.set()
@@ -1908,15 +1919,17 @@ def create_app(
                 app.state.startup_effect_release_task = release_task
             yield
         finally:
+            if release_task is not None and not release_task.done():
+                release_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await release_task
+            if machine_power is not None and runtime_started:
+                await asyncio.to_thread(machine_power.stop)
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
             # the replacement window.
             fence_canonical_lock_waits()
-            if release_task is not None and not release_task.done():
-                release_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await release_task
             if control_started and control_server is not None:
                 control_server.stop()
             for task in startup_maintenance:
@@ -1959,6 +1972,7 @@ def create_app(
     app.state.service = default_service
     app.state.data_dir = app_data
     app.state.background_tasks = background_tasks
+    app.state.machine_power = machine_power
     app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
     app.state.watcher_poller = watcher_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
@@ -2187,6 +2201,7 @@ def create_app(
     app.include_router(update_notice_router)
     app.include_router(team_router)
     app.include_router(notifications_router)
+    app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
     app.include_router(project_provisioning_router)

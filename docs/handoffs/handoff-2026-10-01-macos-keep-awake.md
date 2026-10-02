@@ -238,8 +238,8 @@ Machine-local, outside project manifests and transferable research data:
 body as `GET`.
 
 `POST /api/machine-power/install` and `POST /api/machine-power/uninstall`
-run the admin prompt and return the same body. A cancelled prompt returns 409
-with code `admin_cancelled`.
+run the admin prompt and return the same body. A cancelled prompt is not an
+error: it returns 200 with the unchanged status.
 
 The endpoints exist only in a personal space. A team space returns 404.
 
