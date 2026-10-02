@@ -243,14 +243,15 @@ def test_projection_retries_once_and_followup_exchange_does_not_duplicate_answer
     ]
 
 
-def test_answer_during_running_turn_follows_its_prompt(manifest, tmp_path):
+@pytest.mark.parametrize("status", ["running", "paused", "interrupted"])
+def test_answer_during_unsettled_turn_follows_its_prompt(manifest, tmp_path, status):
     from types import SimpleNamespace
 
     from rcp.runs.chat import _append_chat_exchange, project_chat_question_answer
 
     service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
     with store.connection() as connection:
-        connection.execute("UPDATE graph_runs SET status='running' WHERE operation_id='origin'")
+        connection.execute("UPDATE graph_runs SET status=? WHERE operation_id='origin'", (status,))
     project_chat_question_answer(service, store, question)
     project_chat_question_answer(service, AppStore(store.path), question)
     request = RunRequest.model_validate(store.agent_task("origin").request)

@@ -1053,7 +1053,7 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
     assert viewer.status_code == 200
     # Reports use the same comment shell and admission checks as other artifacts.
     assert "rcp-artifact-context" not in viewer.text
-    assert 'id="pending"' in viewer.text
+    assert 'id="composer"' in viewer.text
     assert 'id="message"' in viewer.text
     assert "rcp-artifact-selection-enable" in viewer.text
     assert 'id="keep"' not in viewer.text

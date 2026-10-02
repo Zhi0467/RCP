@@ -15,6 +15,7 @@ from rcp.limits import (
     ARTIFACT_CROP_MAX_PIXELS,
     ARTIFACT_CROP_MAX_SIDE,
     ARTIFACT_VIEWER_STATE_REFRESH_MS,
+    STEERING_MESSAGE_MAX_CHARS,
 )
 
 COMMENTABLE_MEDIA_TYPES = frozenset(
@@ -120,6 +121,7 @@ def comment_panel(config: dict[str, object]) -> ViewerPanel:
     config = {
         **config,
         "maxSelections": ARTIFACT_CONTEXT_MAX_SELECTIONS,
+        "maxChars": STEERING_MESSAGE_MAX_CHARS,
         "stateRefreshMs": ARTIFACT_VIEWER_STATE_REFRESH_MS,
         "selectionEnabled": config.get("mediaType") in COMMENTABLE_MEDIA_TYPES,
         "stateUrl": base_url + "/state",

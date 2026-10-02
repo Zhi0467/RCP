@@ -254,7 +254,7 @@ remain visible. Each answer is projected once as a human chat message through
 StateWorkspace using its question id and answer revision. Its follow-up turn's id
 derives from the same pair, so the projected answer names that turn before it is
 admitted and a queued follow-up never repeats it. An answer projected while
-the asking turn still runs first reserves that turn's prompt at its creation time, as
+the asking turn is unsettled (running, paused, or interrupted) first reserves that turn's prompt at its creation time, as
 a live steer does, so the answer never precedes the prompt. Settlement and the answer
 route reconcile only their project's unreceived answers; startup sweeps every
 project. A durable projected-revision

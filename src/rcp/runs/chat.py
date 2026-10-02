@@ -1810,6 +1810,9 @@ def _question_answer_message_id(question: QuestionRecord) -> str:
     )
 
 
+_UNSETTLED_TURN_STATUSES = ACTIVE_AGENT_TASK_STATUSES | {"paused", "interrupted"}
+
+
 def project_chat_question_answer(
     service: ProjectService, store: AppStore, question: QuestionRecord
 ) -> None:
@@ -1823,9 +1826,10 @@ def project_chat_question_answer(
     request = RunRequest.model_validate(task.request)
     path = _chat_path(service, request)
     with service.history.workspace.transaction():
-        if task.status in ACTIVE_AGENT_TASK_STATUSES and request.trigger != "watcher":
-            # The exchange arrives only on settlement. Reserve the asking turn's
-            # prompt first, as a live steer does, so the answer cannot precede it.
+        if task.status in _UNSETTLED_TURN_STATUSES and request.trigger != "watcher":
+            # The exchange arrives only on settlement, which a paused or interrupted
+            # turn still reaches once resumed. Reserve the asking turn's prompt first,
+            # as a live steer does, so the answer cannot precede it.
             _append_chat_records(
                 service,
                 path,

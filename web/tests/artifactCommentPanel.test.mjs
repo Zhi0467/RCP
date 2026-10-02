@@ -52,6 +52,7 @@ function shell() {
   let status = 200;
   let sendStatus = 409;
   let timerId = 0;
+  let confirmComment = null;
   const context = {
     config: {
       projectId: "p",
@@ -80,7 +81,10 @@ function shell() {
       getItem: (key) => saved.get(key),
       setItem: (key, value) => saved.set(key, value),
     },
-    installSelectionConfirmation: () => () => {},
+    installSelectionConfirmation: (_composer, confirm) => {
+      confirmComment = confirm;
+      return () => {};
+    },
     setTimeout(handler) {
       timers.set(++timerId, handler);
       return timerId;
@@ -117,6 +121,7 @@ function shell() {
       editFailure = value;
     },
     listeners,
+    addComment: (selection) => confirmComment(selection),
     requests,
     timers,
     setStatus: (value) => {
@@ -161,17 +166,22 @@ test("Edit now and Send post one comment list, and resubmit only with fresh-sess
   await app.tick(); // A stale availability projection must not undo the explicit offer.
   app.setSendStatus(200);
   send.listeners.click();
+  // A comment added while that send is in flight is kept, not dropped with the sent ones.
+  message.value = "Also relabel the axis";
+  app.addComment({ kind: "whole" });
   await settle();
   const second = JSON.parse(posts()[1].options.body);
   assert.equal(second.fresh_session, true);
   assert.equal(second.edit_now, false);
   assert.equal(second.comments.length, 1);
-  assert.equal(send.disabled, true);
+  assert.equal(send.disabled, false);
   for (const { options } of posts()) {
     assert.equal(options.method, "POST");
     assert.equal(options.credentials, "same-origin");
   }
-  assert.deepEqual(JSON.parse([...app.saved.values()].at(-1)).comments, []);
+  assert.deepEqual(JSON.parse([...app.saved.values()].at(-1)).comments, [
+    { text: "Also relabel the axis", selection: null },
+  ]);
   // The edit settles later; its failure reaches the floating window's notice.
   app.setEditFailure("Provider is not signed in");
   await app.tick();

@@ -55,7 +55,6 @@ const bounded = (value, limit) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, limit);
-const anchoredCount = () => comments.filter((comment) => comment.selection).length;
 function saveComments() {
   try {
     localStorage.setItem(draftKey, JSON.stringify({ comments, draft: message.value }));
@@ -121,11 +120,17 @@ function addComment(selection) {
   const text = message.value.trim();
   if (!text) return false;
   const anchor = selection && selection.kind !== "whole" ? selection : null;
-  if (anchor && anchoredCount() >= config.maxSelections) {
-    notice.textContent = `A prompt can include at most ${config.maxSelections} selections.`;
+  const comment = { text: text.slice(0, 2048), selection: anchor };
+  // The server refuses a list past these limits, so the list never grows past them.
+  if (comments.length >= config.maxSelections) {
+    notice.textContent = `A prompt can include at most ${config.maxSelections} comments.`;
     return false;
   }
-  comments.push({ text: text.slice(0, 2048), selection: anchor });
+  if (comments.reduce((total, { text }) => total + text.length, comment.text.length) > config.maxChars) {
+    notice.textContent = "These comments are too long to send together. Send or remove some first.";
+    return false;
+  }
+  comments.push(comment);
   message.value = "";
   current = null;
   saveComments();
@@ -273,13 +278,15 @@ async function postComments(now) {
   sendError = "";
   sending = true;
   updateSend();
+  // A comment added while this send is in flight stays in the list.
+  const sent = comments.slice();
   try {
     const response = await fetch(config.commentsUrl, {
       method: "POST",
       credentials: "same-origin",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({
-        comments: comments.map(({ text, selection }) => ({ text, selection })),
+        comments: sent.map(({ text, selection }) => ({ text, selection })),
         edit_now: now,
         fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required,
       }),
@@ -292,9 +299,9 @@ async function postComments(now) {
         result.detail?.message || "Comment could not be sent.");
     }
     freshSessionRequired = false;
-    comments.length = 0;
+    for (const comment of sent) comments.splice(comments.indexOf(comment), 1);
     saveComments();
-    tray.open = false;
+    tray.open = comments.length > 0 && tray.open;
     render();
     window.parent.postMessage({type: "rcp-artifact-edit-started", version: 1,
       artifact_id: config.artifactId, operation_id: result.operation_id}, location.origin);
