@@ -1039,8 +1039,16 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
-    scope_id = _logical_chat_turn_operation_id(store, record.operation_id)
-    if scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
+    # An in-place edit lists the artifact it published, which its origin turn's scope owns.
+    edit = record.request.get("artifact_edit")
+    edited = isinstance(edit, dict) and edit.get("artifact_id") == descriptor.artifact_id
+    if (
+        not edited
+        and scoped_artifact_id(
+            _logical_chat_turn_operation_id(store, record.operation_id), descriptor.name
+        )
+        != descriptor.artifact_id
+    ):
         raise ValueError("artifact descriptor does not match its task scope")
     stored = store.artifact(artifact_id)
     if stored is None or stored.project_id != project_id:

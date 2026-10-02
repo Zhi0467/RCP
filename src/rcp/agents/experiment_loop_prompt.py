@@ -24,7 +24,7 @@ from rcp.core.validation.experiment_loop import PINNED_DECISION_BALLOT_FIELDS
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v3"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v4"
 
 # The contract names the fields enforcement actually admits, so the two cannot
 # drift apart into a human-written allowlist beside the real one.
@@ -417,7 +417,8 @@ Graph reflection and authority:
   `repositories_read` honestly; do not advance the ingestion watermark.
 - Write `change_summary` as one ordinary-language sentence per meaningful graph change. Name
   reader-facing concepts rather than ids or operation names. The Markdown reply and Patch are
-  independent: report operational truth without claiming RCP accepted the Patch.
+  independent: report operational truth, and do not state whether RCP applied the Patch; RCP
+  shows that beside the reply.
 
 {_patch_validator_rules(validator_command)}
 {_EXPERIMENT_HANDOFF_CORRECTIONS}

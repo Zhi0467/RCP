@@ -693,7 +693,7 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
         frozenset({"experiment"}),
         frozenset({"hypothesis"}),
         "seam",
-        description="The Experiment can tell whether the claim holds: its expected outcomes differ depending on whether the claim is true. Evidence it produces connects back to each Hypothesis it tests with `supports`, `weakens`, `refutes`, or `inconclusive`. An Experiment that serves only a Decision or Blocker needs no `tests` edge.",
+        description="The Experiment can tell whether the claim holds: its expected outcomes differ depending on whether the claim is true. Evidence it produces usually connects back to a Hypothesis it tests with `supports`, `weakens`, `refutes`, or `inconclusive`, but only when the result really bears on that claim; a side finding or readiness check needs no such edge. An Experiment that serves only a Decision or Blocker needs no `tests` edge.",
     ),
     "produces": RelationSpec(
         frozenset({"experiment"}),

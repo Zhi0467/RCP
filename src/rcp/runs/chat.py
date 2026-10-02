@@ -1331,13 +1331,24 @@ def finalize_artifact_edit(
         )
         return [*artifacts, descriptor]
     resolve_artifact_live_version(execution.store, service, edit.artifact_id, version.version_id)
+    # The reply cites this turn's staged copy, so the turn lists the artifact it published.
+    descriptor = AgentArtifactDescriptor(
+        artifact_id=edit.artifact_id,
+        name=edit.source_name,
+        media_type=media_type,
+        size_bytes=len(data),
+    )
     execution.store.record_agent_task_receipt(
         edit.operation_id,
         "artifact_edit_published",
-        {"artifact_id": edit.artifact_id, "version_id": version.version_id},
+        {
+            "artifact_id": edit.artifact_id,
+            "version_id": version.version_id,
+            "descriptor": descriptor.model_dump(mode="json"),
+        },
         tier="summary",
     )
-    return artifacts
+    return [*artifacts, descriptor]
 
 
 def artifact_omissions(receipt: AgentTaskReceiptRecord) -> dict[str, int | bool]:

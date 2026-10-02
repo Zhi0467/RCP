@@ -28,13 +28,15 @@ Evidence -supports|weakens|refutes|inconclusive-> Hypothesis
 ```
 
 The loop closes when the Evidence an Experiment produced bears back on the Hypothesis it tested.
+Not every produced Evidence does; some results answer other questions.
 
 Flag:
 - a Hypothesis with no question it serves;
 - a Hypothesis that only answers its question yes or no;
 - an Experiment that `tests` a Hypothesis but whose design cannot tell the outcomes apart;
-- produced Evidence with no edge back to the tested Hypothesis, even when the result settled nothing
-  (`inconclusive` is the honest edge then);
+- produced Evidence that bears on the tested Hypothesis but has no edge back to it (`inconclusive`
+  when the result settled nothing). A side finding or readiness check that does not bear on the
+  claim needs no edge; `inconclusive` is never a placeholder;
 - a completed Experiment that tests a Hypothesis but produced no Evidence;
 - a Hypothesis `status` change that no Evidence edge explains.
 

@@ -615,8 +615,9 @@ def _patch_validator_rules(validator_command: str) -> str:
   Patch is invalid: read the returned diagnostics, correct the same file, and check again. Exit 2
   means RCP is unavailable or the bounded self-check limit was reached; do not treat it as a
   semantic error or loop on it.
-- Messages printed with exit 0 are warnings, usually a missing or doubtful connection. Fix each one,
-  or say in the reply why it stands.
+- Messages printed with exit 0 are advice to double-check, usually a possibly missing connection.
+  Add a link only when the relation is real; never add one to clear a warning. Leaving advice
+  unaddressed is fine, and the reply does not need to mention it.
 - Each check reads live graph state. A check is advisory until Apply revalidates under the append
   lock, so run it after your final Patch edit before declaring the task complete.
 """
@@ -660,7 +661,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v2"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v3"
+WORK_POLICY_VERSION = "work-v4"
 
 
 class PromptFactory:
@@ -879,7 +880,7 @@ Turn protocol:
 """)
 
     # Bumped when the Seed and Refresh task contract's stable policy prose changes.
-    GRAPH_TASK_POLICY_VERSION = "ingestion-v1"
+    GRAPH_TASK_POLICY_VERSION = "ingestion-v2"
 
     @staticmethod
     def graph_task_contract(
@@ -1245,7 +1246,8 @@ Graph Patch (optional):
   the only graph-change channel RCP reads. Record `repositories_read` honestly.
 - Write `change_summary` as one plain sentence per graph change, naming concepts by title (never ids,
   operation names, or counts) and stating only what the Patch records.
-- Describe the graph change in the reply without claiming RCP accepted it.
+- Describe the graph change in the reply. RCP shows whether it applied beside the reply, so do not
+  state whether RCP applied, accepted, or has yet to apply it.
 
 {validator_rules}
 
@@ -1416,8 +1418,9 @@ Work graph-correction instruction:
 - Exit 0 means the Patch validates against current canonical state. Exit 1 means the Patch is
   invalid and should be corrected. Exit 2 means RCP is unavailable or the bounded self-check limit
   was reached; do not treat it as a semantic error or loop on it.
-- Messages printed with exit 0 are warnings, usually a missing or doubtful connection. Fix each one,
-  or say in the reply why it stands.
+- Messages printed with exit 0 are advice to double-check, usually a possibly missing connection.
+  Add a link only when the relation is real; never add one to clear a warning. Leaving advice
+  unaddressed is fine, and the reply does not need to mention it.
 - The check is advisory until Apply revalidates under the append lock.'''
                 if validator_command
                 else ""

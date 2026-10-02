@@ -229,6 +229,12 @@ def list_local_regular_files(directory: Path) -> list[tuple[str, int]]:
         os.close(directory_fd)
 
 
+def _is_inline_image(value: str | None) -> bool:
+    """Match image sources the artifact CSP already allows (``img-src data: blob:``)."""
+    lowered = (value or "").strip().casefold()
+    return lowered.startswith(("data:image/", "blob:"))
+
+
 class _ArtifactHTMLSanitizer(HTMLParser):
     """Neutralize browser capabilities while preserving inline presentation and scripts."""
 
@@ -258,6 +264,9 @@ class _ArtifactHTMLSanitizer(HTMLParser):
         rendered: list[tuple[str, str | None]] = []
         for name, value in attrs:
             lowered = name.casefold()
+            if tag == "img" and lowered == "src" and _is_inline_image(value):
+                rendered.append((name, value))
+                continue
             if (
                 lowered in self._request_attributes
                 or lowered in {"download", "target"}

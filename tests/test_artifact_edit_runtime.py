@@ -214,15 +214,13 @@ async def test_revoking_edit_uses_recorded_workspace_and_publishes_cas(
     assert not (workspace / "patch.json").exists()
     assert store.agent_task_contract("edit", "session_master") is None
     artifacts = [event.artifact for event in events if event.event == "artifact"]
-    assert {artifact.name for artifact in artifacts} == (
-        {"extra.txt", "chart.html"} if undo else {"extra.txt"}
-    )
+    assert {artifact.name for artifact in artifacts} == {"extra.txt", "chart.html"}
+    edited = next(artifact for artifact in artifacts if artifact.name == "chart.html")
+    assert (edited.artifact_id == source.artifact_id) is not undo
     assert store.read_artifact_bytes(source.artifact_id) == (
         b"<p>original</p>" if undo else b"<p>edited</p>"
     )
-    if undo:
-        edited = next(artifact for artifact in artifacts if artifact.name == "chart.html")
-        assert store.read_artifact_bytes(edited.artifact_id) == b"<p>edited</p>"
+    assert store.read_artifact_bytes(edited.artifact_id) == b"<p>edited</p>"
 
 
 @pytest.mark.parametrize("failure", ["error", "session", "no_result"])
@@ -546,6 +544,30 @@ def test_live_resolution_failure_does_not_record_publish_completion(
     assert execution.store.read_artifact_bytes(published_id) == b"<p>edited</p>"
     assert execution.store.artifact(published_id).current_version == published_version
     assert execution.store.artifact_versions(published_id) == versions
+
+
+def test_in_place_edit_turn_lists_and_serves_the_published_artifact(manifest, tmp_path):
+    from rcp.api.tasks import _read_agent_artifact_bytes
+
+    app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
+    (directory / source.name).write_bytes(b"<p>edited</p>")
+    artifacts = _finalize(app, request, execution, directory)
+    assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
+    assert _finalize(app, request, execution, directory) == artifacts
+    store = execution.store
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET kind = 'project_chat' WHERE operation_id = 'edit'"
+        )
+    store.complete_agent_task(
+        "edit",
+        applied_revision=None,
+        result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
+    )
+    _, data = _read_agent_artifact_bytes(
+        store, app.state.default_project_id, "edit", source.artifact_id, "download"
+    )
+    assert data == b"<p>edited</p>"
 
 
 @pytest.mark.asyncio
