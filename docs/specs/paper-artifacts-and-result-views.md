@@ -184,7 +184,11 @@ Temporary outputs remain in their originating chats until kept.
 
 Reports appear as soon as their immutable bytes are captured. Cards show the
 artifact title and a **Source chat** link
-when its originating conversation is available. Outputs originating in an
+when its originating conversation is available. An output from a graph node
+(its Experiment's node, else its node chat) also links that node by title when
+the presented graph holds it; the link opens the node's detail in place. Actions
+sit at each card's right end. A revisit shows the last loaded list at once and
+refreshes it in place. Outputs originating in an
 episode also carry one compact **Experiment** or **Auto-research** tag. Ordinary
 chat artifacts have no episode tag. The listing retains episode
 identity, creation time, and saved path in its data without displaying repeated

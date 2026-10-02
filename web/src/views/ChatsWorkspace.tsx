@@ -44,6 +44,7 @@ import type {
   StartAgentTask,
   WatcherRecord,
 } from "../types";
+import { ProviderMark } from "../components/ProviderMark";
 import { loadChatDisplay, setChatArchived, setChatPinned, setChatTitle } from "../api";
 import { NodeChat } from "../components/NodeChat";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
@@ -116,6 +117,9 @@ function readChatListCollapsed(projectId: string): boolean {
 type AgentFilter = "all" | "working" | "archived";
 
 const EMPTY_CHAT_DISPLAY: ChatDisplay = { archived: [], titles: {}, pinned: [] };
+// The last display set per project survives tab switches, so archived chats
+// never flash back into the list while a revisit reloads it.
+const cachedDisplays = new Map<string, ChatDisplay>();
 
 const GROUP_LABELS: Record<AgentListSection, string> = {
   pinned: "Pinned",
@@ -152,10 +156,11 @@ function sinceLabel(timestamp: string | null | undefined, now: number): string {
   return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** Everything after the provider, which renders as its own mark. */
 function agentMeta(status: ConversationAgentStatus): string {
   const latest = status.latest;
   if (!latest) return "";
-  const parts: (string | null | undefined)[] = [latest.provider_label];
+  const parts: (string | null | undefined)[] = [];
   if (status.state === "working") {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
@@ -212,7 +217,13 @@ export function ChatsWorkspace({
   );
   const workspace = useRef<HTMLElement>(null);
   const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
-  const [display, setDisplay] = useState<ChatDisplay>(EMPTY_CHAT_DISPLAY);
+  const [display, setDisplayState] = useState<ChatDisplay>(
+    () => cachedDisplays.get(apiBase) ?? EMPTY_CHAT_DISPLAY,
+  );
+  const setDisplay = (next: ChatDisplay) => {
+    cachedDisplays.set(apiBase, next);
+    setDisplayState(next);
+  };
   const archivedChatIds = useMemo(() => new Set(display.archived), [display.archived]);
   // A human-given name replaces the derived one everywhere in this workspace.
   const conversations = useMemo(
@@ -271,7 +282,7 @@ export function ChatsWorkspace({
   useEffect(() => {
     let current = true;
     const request = ++displayRequest.current;
-    setDisplay(EMPTY_CHAT_DISPLAY);
+    setDisplayState(cachedDisplays.get(apiBase) ?? EMPTY_CHAT_DISPLAY);
     loadChatDisplay(apiBase)
       .then((response) => {
         if (current && displayRequest.current === request) setDisplay(response);
@@ -630,7 +641,19 @@ export function ChatsWorkspace({
                               {unread && <span className="agent-new-pill">New</span>}
                               {conversation.title}
                             </span>
-                            <span className="agent-row-meta">{agentMeta(status) || "\u00a0"}</span>
+                            <span className="agent-row-meta">
+                              {latest ? (
+                                <>
+                                  <ProviderMark
+                                    provider={latest.request.provider ?? ""}
+                                    label={latest.provider_label}
+                                  />
+                                  {agentMeta(status) && ` · ${agentMeta(status)}`}
+                                </>
+                              ) : (
+                                "\u00a0"
+                              )}
+                            </span>
                           </span>
                           <time>
                             {status.state === "working"

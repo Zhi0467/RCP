@@ -1202,6 +1202,18 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .agent-row-meta {
   color: var(--muted);
 }
+.provider-mark {
+  background: currentColor;
+  display: inline-block;
+  height: 1.15em;
+  -webkit-mask: var(--provider-logo) center / contain no-repeat;
+  mask: var(--provider-logo) center / contain no-repeat;
+  vertical-align: -0.2em;
+  width: 1.15em;
+}
+.provider-mark[data-provider="claude"] {
+  background: #d97757;
+}
 .conversation-list [role="option"] time {
   color: var(--muted);
   font-size: var(--type-2xs);

@@ -184,8 +184,11 @@ display choices shared by every member; a pin belongs to the member who made it
 which returns the acting user's pins);
 a blank name returns the derived one. Rename edits the title in place on the
 card. An Archived filter appears when any exist, counts every archived chat
-including unloaded pages, and offers Restore. Transcripts and tasks are never
-changed or deleted.
+including unloaded pages, and offers Restore. A revisit keeps the last loaded
+display set until its reload answers, so archived chats never flash back into
+the list. Card metadata shows a provider's monochrome logo (Claude in its brand
+orange) when RCP ships one in `web/public/providers`, otherwise its label.
+Transcripts and tasks are never changed or deleted.
 
 Chat uses one wide readable column. A human request is a quiet paper card;
 assistant prose is unboxed. Current task activity folds behind a muted Activity
