@@ -317,3 +317,15 @@ def test_first_install_holds_machine_lock_before_loading_daemon(installer, tmp_p
     installer.run = run
     assert installer.install().installed
     assert observed.exists()
+
+
+@macos_tools
+def test_uninstall_clears_only_after_removing_the_rule(installer):
+    """Once the backend's lock lapses, a later owner may set the flag while the rule exists."""
+    assert installer.install().installed
+    fake_pmset = installer.paths.sudoers.parent / "pmset"
+    fake_pmset.write_text(
+        f"#!/bin/sh\nif [ -e {installer.paths.sudoers} ]; then echo ' SleepDisabled 1'; "
+        "else echo ' SleepDisabled 0'; fi\n"
+    )
+    assert installer.uninstall().install_problem == "not_installed"

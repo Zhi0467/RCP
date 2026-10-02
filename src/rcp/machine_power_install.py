@@ -281,6 +281,12 @@ publish "$work/enrollment" {q(str(paths.directory / "enrollment"))} 644
 bounded /bin/mkdir -p {q(str(paths.sudoers.parent))}
 publish "$work/sudoers" {sudoers} 440
 """
+        if uninstall:
+            # Remove the rule before clearing. The backend's lock may lapse
+            # here, and no later owner can then set the flag again.
+            script += f"""[ ! -L {sudoers} ] || fail foreign_file
+bounded /bin/rm -f {sudoers}
+"""
         # RunAtLoad is asynchronous; bounded polling proves that it cleared.
         script += f"""publish "$work/daemon" {daemon} 644
 bounded /bin/launchctl bootout system/{LABEL} >/dev/null 2>&1 || true
@@ -302,8 +308,8 @@ done
 """
         if uninstall:
             script += f"""bounded /bin/launchctl bootout system/{LABEL}
-[ ! -L {sudoers} ] && [ ! -L {daemon} ] || fail foreign_file
-bounded /bin/rm -f {sudoers} {daemon}
+[ ! -L {daemon} ] || fail foreign_file
+bounded /bin/rm -f {daemon}
 """
             # Only the directory and its immutable lock inode remain.
             for name in (

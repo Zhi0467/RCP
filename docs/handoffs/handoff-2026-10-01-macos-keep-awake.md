@@ -27,10 +27,3 @@ checks". Close this handoff when all of these hold:
 
 CI runs on Linux, so the tests that drive the real admin script and the real
 crashed watchdog run only on a Mac.
-
-## Known gap
-
-Only the backend holds `owner.lock` while the root install or uninstall script
-runs. If the backend dies mid-uninstall, another backend could activate before
-the script removes the sudoers rule. Closing it means the root script takes the
-lock itself.
