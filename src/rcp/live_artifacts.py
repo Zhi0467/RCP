@@ -8,7 +8,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from rcp.limits import LIVE_ARTIFACT_MAX_NEEDS
+from rcp.limits import LIVE_ARTIFACT_MAX_NEEDS, LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS
 
 
 class LiveModel(BaseModel):
@@ -38,7 +38,7 @@ class FileNeed(LiveModel):
         default="file", description="Read a regular file on the execution host."
     )
     path: str = Field(
-        description="Absolute path inside a registered project repository or this artifact's own ready conversation/episode worktree, on its execution host."
+        description="Absolute path inside a registered project repository listed in this prompt or this artifact's own ready conversation/episode worktree, on its execution host. RCP run stages (conversation workspace, turn folders, artifact folders) are not readable."
     )
     read: Literal["tail", "whole"] = Field(
         description="Read the bounded tail or bounded whole file."
@@ -59,7 +59,43 @@ class FileNeed(LiveModel):
         return value
 
 
-LiveNeed = Annotated[JobNeed | NodeNeed | EpisodeNeed | FileNeed, Field(discriminator="kind")]
+class FilesNeed(LiveModel):
+    kind: Literal["files"] = Field(
+        default="files",
+        description="Read matching regular files in a folder on the execution host.",
+    )
+    dir: str = Field(description=FileNeed.model_fields["path"].description)
+    pattern: str = Field(
+        description=f"Relative /-separated filename pattern, at most {LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS} segments. Each segment is literal or uses fnmatch *, ?, or [...] globs; no **, parent traversal, empty, or dot segments."
+    )
+    read: Literal["tail", "whole"] = Field(description=FileNeed.model_fields["read"].description)
+    format: Literal["jsonl", "csv", "text"] = Field(
+        description=FileNeed.model_fields["format"].description
+    )
+
+    @field_validator("dir")
+    @classmethod
+    def absolute_directory(cls, value: str) -> str:
+        return FileNeed.absolute_path(value)
+
+    @field_validator("pattern")
+    @classmethod
+    def relative_pattern(cls, value: str) -> str:
+        parts = value.split("/")
+        if (
+            "\x00" in value
+            or "\\" in value
+            or "**" in value
+            or len(parts) > LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS
+            or any(part in {"", ".", ".."} for part in parts)
+        ):
+            raise ValueError("pattern must have bounded relative segments without traversal or **")
+        return value
+
+
+LiveNeed = Annotated[
+    JobNeed | NodeNeed | EpisodeNeed | FileNeed | FilesNeed, Field(discriminator="kind")
+]
 
 
 class LiveTag(LiveModel):
@@ -81,7 +117,9 @@ class ResolvedLiveNeed(LiveModel):
     )
     episode_id: str | None = Field(default=None, description="The artifact's bound episode id.")
     host: str | None = Field(default=None, description="Execution host; null means local.")
-    root: str | None = Field(default=None, description="Readable root that admitted this file.")
+    root: str | None = Field(
+        default=None, description="Readable root that admitted this file or folder."
+    )
 
 
 class ResolvedLiveVersion(LiveModel):
@@ -152,7 +190,9 @@ class EpisodeSnapshot(LiveSnapshot):
 
 class FileSnapshot(LiveSnapshot):
     kind: Literal["file"] = Field(default="file", description="File snapshot.")
-    path: str = Field(description="The declared absolute file path.")
+    path: str = Field(
+        description="The declared absolute file path, or path relative to dir in a folder snapshot."
+    )
     rows: list[Any] = Field(
         default_factory=list,
         description="JSON values, CSV records as arrays, or text lines, in file order.",
@@ -162,8 +202,21 @@ class FileSnapshot(LiveSnapshot):
     )
 
 
+class FilesSnapshot(LiveSnapshot):
+    kind: Literal["files"] = Field(default="files", description="Folder snapshot.")
+    dir: str = Field(description="The declared absolute folder path.")
+    files: list[FileSnapshot] = Field(
+        default_factory=list,
+        description="Matched files sorted by relative path, each with rows, truncated, and error. An existing folder with no matches is an empty successful snapshot.",
+    )
+    truncated: bool = Field(
+        default=False, description="True when a file, row, or byte cap omitted content."
+    )
+
+
 Snapshot = Annotated[
-    JobSnapshot | NodeSnapshot | EpisodeSnapshot | FileSnapshot, Field(discriminator="kind")
+    JobSnapshot | NodeSnapshot | EpisodeSnapshot | FileSnapshot | FilesSnapshot,
+    Field(discriminator="kind"),
 ]
 
 
@@ -173,7 +226,7 @@ class LiveDataMessage(LiveModel):
     )
     version: Literal[1] = Field(default=1, description="Snapshot protocol version.")
     snapshots: list[Snapshot] = Field(
-        description="Snapshots in declaration order, identified by kind and key, id, or path."
+        description="Snapshots in declaration order, identified by kind and key, id, path, or dir."
     )
     static: bool = Field(
         default=False,
@@ -192,6 +245,7 @@ NEED_SNAPSHOT_MODELS = (
     (NodeNeed, NodeSnapshot),
     (EpisodeNeed, EpisodeSnapshot),
     (FileNeed, FileSnapshot),
+    (FilesNeed, FilesSnapshot),
 )
 
 

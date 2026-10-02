@@ -1004,6 +1004,41 @@ finally:
             raise ValueError("live artifact source exceeds byte limit")
         return result.stdout
 
+    def read_live_files(
+        self,
+        directory: str,
+        pattern: str,
+        *,
+        max_files: int,
+        max_total_bytes: int,
+        max_bytes: int,
+        tail: bool = False,
+    ) -> dict:
+        """List and read a bounded folder source in one SSH invocation."""
+        script = (Path(__file__).parent.parent / "regular_file_reader.py").read_text(
+            encoding="utf-8"
+        )
+        result = self._ssh_bytes(
+            [
+                "python3",
+                "-c",
+                script,
+                "files",
+                directory,
+                pattern,
+                str(max_files),
+                str(max_total_bytes),
+                str(max_bytes),
+                "tail" if tail else "whole",
+            ]
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not read live artifact folder source")
+        try:
+            return json.loads(result.stdout)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise StateUnavailable("remote live artifact folder result was invalid") from exc
+
     def read_artifact_bytes(self, scope_id: str, name: str, *, max_bytes: int) -> bytes:
         """Read one bounded direct regular child over SSH without making a local copy."""
         if self.root is None:

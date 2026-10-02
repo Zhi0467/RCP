@@ -6,6 +6,7 @@ existing version, never a path, host, graph target, or new need.
 
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import json
@@ -18,8 +19,10 @@ from rcp.limits import (
     LIVE_ARTIFACT_LOG_TAIL_LINES,
     LIVE_ARTIFACT_MAX_BYTES,
     LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS,
+    LIVE_ARTIFACT_MAX_FILES,
     LIVE_ARTIFACT_MAX_RETRY_SECONDS,
     LIVE_ARTIFACT_MAX_ROWS,
+    LIVE_ARTIFACT_MAX_TOTAL_BYTES,
     LIVE_ARTIFACT_REFRESH_SECONDS,
     LIVE_ARTIFACT_RETRY_SECONDS,
     LIVE_ARTIFACT_SSH_REFRESH_SECONDS,
@@ -27,6 +30,7 @@ from rcp.limits import (
 from rcp.live_artifacts import (
     EpisodeSnapshot,
     FileSnapshot,
+    FilesSnapshot,
     JobSnapshot,
     LiveDataMessage,
     LiveEvidence,
@@ -35,6 +39,7 @@ from rcp.live_artifacts import (
     ResolvedLiveVersion,
     parse_live_tag,
 )
+from rcp.regular_file_reader import read_local_regular_files
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 logger = logging.getLogger(__name__)
@@ -213,7 +218,13 @@ def resolve_artifact_live_version(
                     binding.episode_id = episode.episode_id
                 else:
                     binding.host = task.stage_host or None
-                    binding.root = _file_root(store, service, task, binding.host, need.path)
+                    binding.root = _file_root(
+                        store,
+                        service,
+                        task,
+                        binding.host,
+                        need.dir if need.kind == "files" else need.path,
+                    )
                 resolved.needs.append(binding)
         except (ValueError, KeyError, OSError, StateUnavailable) as exc:
             resolved.needs = []
@@ -243,6 +254,10 @@ def _read(host, path, *, tail):
 def _file_snapshot(binding, *, final=False):
     need = binding.need
     text, truncated = _read(binding.host, need.path, tail=need.read == "tail")
+    return _decode_file(need, need.path, text, truncated, final=final)
+
+
+def _decode_file(need, path, text, truncated, *, final=False):
     byte_truncated = truncated
     if text and not text.endswith("\n"):
         discard_last = need.format == "csv" and not final
@@ -268,7 +283,45 @@ def _file_snapshot(binding, *, final=False):
         rows = text.splitlines()
     truncated = truncated or len(rows) > LIVE_ARTIFACT_MAX_ROWS
     rows = rows[-LIVE_ARTIFACT_MAX_ROWS:] if need.read == "tail" else rows[:LIVE_ARTIFACT_MAX_ROWS]
-    return FileSnapshot(path=need.path, rows=rows, truncated=truncated)
+    return FileSnapshot(path=path, rows=rows, truncated=truncated)
+
+
+def _files_snapshot(binding, *, final=False):
+    need = binding.need
+    limits = dict(
+        max_files=LIVE_ARTIFACT_MAX_FILES,
+        max_total_bytes=LIVE_ARTIFACT_MAX_TOTAL_BYTES,
+        max_bytes=LIVE_ARTIFACT_MAX_BYTES,
+        tail=need.read == "tail",
+    )
+    result = (
+        RemoteRunStage(binding.host).read_live_files(need.dir, need.pattern, **limits)
+        if binding.host
+        else read_local_regular_files(Path(need.dir), need.pattern, **limits)
+    )
+    files = []
+    for item in result["files"]:
+        try:
+            if item.get("error"):
+                raise ValueError(item["error"])
+            snapshot = _decode_file(
+                need,
+                item["path"],
+                base64.b64decode(item["data"]).decode("utf-8"),
+                item["truncated"],
+                final=final,
+            )
+        except (ValueError, UnicodeError, csv.Error) as exc:
+            snapshot = FileSnapshot(path=item["path"], error=str(exc), truncated=item["truncated"])
+        files.append(snapshot)
+    return FilesSnapshot(
+        dir=need.dir,
+        files=files,
+        truncated=result["truncated"] or any(item.truncated for item in files),
+        error="Some matched files could not be read."
+        if any(item.error for item in files)
+        else None,
+    )
 
 
 def _validate_read(store, service, artifact, version):
@@ -283,9 +336,16 @@ def _validate_read(store, service, artifact, version):
     graph_history = _graph_history(service, task)
     for binding in live.needs:
         need = binding.need
-        if need.kind == "file" and (
+        if need.kind in {"file", "files"} and (
             binding.host != live.execution_host
-            or binding.root != _file_root(store, service, task, binding.host, need.path)
+            or binding.root
+            != _file_root(
+                store,
+                service,
+                task,
+                binding.host,
+                need.dir if need.kind == "files" else need.path,
+            )
         ):
             raise ValueError("The live file's readable root changed.")
         if need.kind == "node" and binding.graph_branch_id != live.graph_branch_id:
@@ -314,6 +374,8 @@ def _snapshot(store, service, artifact, version, *, final=False):
         try:
             if need.kind == "file":
                 snapshot = _file_snapshot(binding, final=final)
+            elif need.kind == "files":
+                snapshot = _files_snapshot(binding, final=final)
             elif need.kind == "job":
                 job = store.compute_job(binding.job_id)
                 log, _ = _read(job.execution_host, job.log_path, tail=True)
@@ -364,12 +426,15 @@ def _snapshot(store, service, artifact, version, *, final=False):
             # empty successful final capture.
             cls = {
                 "file": FileSnapshot,
+                "files": FilesSnapshot,
                 "job": JobSnapshot,
                 "node": NodeSnapshot,
                 "episode": EpisodeSnapshot,
             }[need.kind]
             identity = {
-                key: getattr(need, key) for key in ("path", "key", "id") if hasattr(need, key)
+                key: getattr(need, key)
+                for key in ("path", "dir", "key", "id")
+                if hasattr(need, key)
             }
             snapshot = cls(**identity, error=str(exc))
         snapshots.append(snapshot)

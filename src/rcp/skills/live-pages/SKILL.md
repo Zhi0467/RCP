@@ -2,8 +2,8 @@
 id: live-pages
 kind: skill
 label: Live pages
-version: 1.0.0
-description: Build self-contained HTML artifacts that redraw from bounded job, node, episode, and file snapshots delivered by RCP.
+version: 1.1.0
+description: Build self-contained HTML artifacts that redraw from bounded job, node, episode, file, and folder snapshots delivered by RCP.
 dependencies:
 ---
 
@@ -15,12 +15,14 @@ permission. Put the page in the turn's named artifact directory and use only
 sources admitted by the current contract. An episode report is never live.
 
 Declare one `rcp-live` JSON script. Use the exact helper launch key; a path is
-absolute on the artifact's execution host and inside the project's readable
-roots. Node ids refer to the artifact's own graph target. RCP binds declarations
-once per version. Invalid declarations leave a static page with a viewer notice.
+absolute on the artifact's execution host and inside a registered project
+repository listed in the prompt or this artifact's own ready conversation/episode
+worktree. RCP run stages (conversation workspace, turn folders, artifact folders)
+are not readable. Node ids refer to the artifact's own graph target. RCP binds
+declarations once per version. Invalid declarations leave a static page with a viewer notice.
 
 The viewer relays `rcp-live-data` messages. Read `event.data.snapshots` in declaration
-order; each entry also carries its kind and source key, id, or path. Do not fetch
+order; each entry also carries its kind and source key, id, path, or dir. Do not fetch
 RCP endpoints. Inline scripts and drawing need no external libraries. Render
 unavailable reads explicitly, and retain the last successful display while a
 source has an error. A truncated file is a bounded window, not the entire run.
@@ -57,38 +59,43 @@ addEventListener('message', ({data}) => {
 
 ## Sweep grid
 
-Declare each metrics file explicitly: globs are unsupported. This example reads
-small summary CSV files with `config,score` columns. CSV snapshots contain arrays,
-including the header when reading the whole file. Prefer JSONL for large tails:
-CSV byte tails beyond the read cap are unavailable because a clipped multiline
-record cannot be decoded reliably. Add the actual job needs
-when the grid should receive a saved final snapshot after those jobs end.
-Node/file-only pages keep refreshing while visible and never become final.
+Use one folder source for an 8-arm by 10-task grid. Create the run folder before
+viewing the page; later batches may create their task files after the page binds.
+This example displays each status JSON as text, so it also handles pretty-printed
+JSON. Replace the root with an admitted repository or ready worktree path.
+Patterns match one directory segment at a time; recursive `**` is unsupported.
+Add actual job needs if the grid should save a final snapshot when those jobs
+end. Pages watching only nodes, files, and folders keep refreshing while visible.
 
 ```html
-<!doctype html><title>Sweep scores</title>
-<script type="application/json" id="rcp-live">{"version":1,"needs":[{"kind":"file","path":"/project/runs/sweep/a.csv","read":"whole","format":"csv"},{"kind":"file","path":"/project/runs/sweep/b.csv","read":"whole","format":"csv"}]}</script>
-<table><thead><tr><th>Configuration</th><th>Score</th></tr></thead><tbody id="grid"></tbody></table>
+<!doctype html><title>Evaluation grid</title>
+<script type="application/json" id="rcp-live">{"version":1,"needs":[{"kind":"files","dir":"/project/runs/evaluation","pattern":"*/task-*/status.json","read":"whole","format":"text"}]}</script>
+<p id="state">Waiting for task files</p>
+<table><thead><tr><th>Arm / task</th><th>Status</th></tr></thead><tbody id="grid"></tbody></table>
 <script>
 addEventListener('message', ({data}) => {
   if (data?.kind !== 'rcp-live-data') return;
+  const source = data.snapshots[0];
+  document.getElementById('state').textContent = source.error ||
+    `${source.files.length} task files${source.truncated ? '; partial data' : ''}`;
+  if (source.error && !source.files.length) return;
   const grid = document.getElementById('grid');
   grid.replaceChildren();
-  for (const source of data.snapshots) {
-    const rows = source.error ? [[source.path, source.error]] : source.rows.slice(1);
-    for (const row of rows) {
-      const tr = grid.insertRow();
-      tr.insertCell().textContent = row[0];
-      tr.insertCell().textContent = row[1];
-    }
-    if (source.truncated) {
-      const cell = grid.insertRow().insertCell();
-      cell.textContent = `${source.path}: partial data`;
-    }
+  for (const file of source.files) {
+    const row = grid.insertRow();
+    row.insertCell().textContent = file.path;
+    row.insertCell().textContent = file.error ||
+      `${file.rows.join('\n')}${file.truncated ? ' (partial)' : ''}`;
   }
 });
 </script>
 ```
+
+An empty folder means no observations yet. A folder or per-file error means
+unavailable, never zero. JSONL snapshots decode each line; CSV snapshots contain
+arrays, including the header for whole reads. Prefer JSONL for large tails:
+CSV byte tails beyond the read cap are unavailable because clipped multiline
+records cannot be decoded reliably.
 
 ## Episode progress
 
