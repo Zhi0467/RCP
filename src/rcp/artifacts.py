@@ -229,6 +229,12 @@ def list_local_regular_files(directory: Path) -> list[tuple[str, int]]:
         os.close(directory_fd)
 
 
+def _is_inline_image(value: str | None) -> bool:
+    """Match image sources the artifact CSP already allows (``img-src data: blob:``)."""
+    lowered = (value or "").strip().casefold()
+    return lowered.startswith(("data:image/", "blob:"))
+
+
 class _ArtifactHTMLSanitizer(HTMLParser):
     """Neutralize browser capabilities while preserving inline presentation and scripts."""
 
@@ -258,6 +264,9 @@ class _ArtifactHTMLSanitizer(HTMLParser):
         rendered: list[tuple[str, str | None]] = []
         for name, value in attrs:
             lowered = name.casefold()
+            if tag == "img" and lowered == "src" and _is_inline_image(value):
+                rendered.append((name, value))
+                continue
             if (
                 lowered in self._request_attributes
                 or lowered in {"download", "target"}
@@ -429,9 +438,12 @@ window.addEventListener('message',(event)=>{
         + f'<iframe id="artifact" sandbox="allow-scripts" srcdoc="{html.escape(artifact, quote=True)}">'
         "</iframe>" + result_view_script
     )
+    # The srcdoc artifact inherits this policy too, so it must admit the inline images
+    # the artifact's own policy allows.
     wrapper_csp = (
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-        "frame-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
+        "img-src data: blob:; frame-src 'self'; base-uri 'none'; form-action 'none'; "
+        "object-src 'none'"
     )
     return document, wrapper_csp
 

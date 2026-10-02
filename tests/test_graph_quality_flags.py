@@ -54,7 +54,7 @@ def test_internal_evidence_without_experiment_is_advisory_and_applies() -> None:
     patch = _patch({"op": "create_nodes", "nodes": [_evidence()]})
     assert {flag.code for flag in _flags(state, patch)} == {
         "internal-evidence-without-experiment",
-        "isolated-operational-node",
+        "isolated-node",
     }
     assert "ev/result" in apply_valid_patch(state, patch).nodes
     assert state.nodes == {}
@@ -83,8 +83,7 @@ def test_later_edge_and_title_edit_use_the_complete_candidate() -> None:
     )
     flags = _flags(_state(), patch)
     assert [(flag.code, flag.related_node_ids) for flag in flags] == [
-        ("isolated-operational-node", ["exp/unrelated"]),
-        ("evidence-bears-on-nothing", ["ev/result"]),
+        ("isolated-node", ["exp/unrelated"]),
     ]
 
 
@@ -100,60 +99,30 @@ def test_later_edge_and_title_edit_use_the_complete_candidate() -> None:
             "title": "Problem",
             "description": "Missing input.",
         },
+        {"id": "rq/new", "type": "research_question", "title": "Question", "question": "Why?"},
+        {"id": "hyp/new", "type": "hypothesis", "title": "Claim", "statement": "A causes B."},
     ],
 )
-def test_new_operational_nodes_receive_isolation_advice(node: dict) -> None:
+def test_new_unconnected_nodes_of_every_type_receive_isolation_advice(node: dict) -> None:
     flags = _flags(_state(), _patch({"op": "create_nodes", "nodes": [node]}))
-    assert any(flag.code == "isolated-operational-node" for flag in flags)
+    assert any(flag.code == "isolated-node" for flag in flags)
 
 
-def test_new_beliefs_are_not_flagged_as_isolated_but_a_hypothesis_needs_its_question() -> None:
-    question = {
-        "id": "rq/new",
-        "type": "research_question",
-        "title": "Question",
-        "question": "Why?",
-    }
-    claim = {"id": "hyp/new", "type": "hypothesis", "title": "Claim", "statement": "A causes B."}
-    assert not _flags(_state(), _patch({"op": "create_nodes", "nodes": [question]}))
-    orphan = _flags(_state(), _patch({"op": "create_nodes", "nodes": [claim]}))
-    assert [flag.code for flag in orphan] == ["hypothesis-without-question"]
-    answered = _patch(
-        {"op": "create_nodes", "nodes": [question, claim]},
+def test_a_connected_node_needs_no_particular_link() -> None:
+    # Evidence need not bear on what its Experiment tests, nor a Hypothesis answer a
+    # question: any real connection ends the advice, so no edge is invented to clear it.
+    claim = {"id": "hyp/claim", "type": "hypothesis", "title": "Claim", "statement": "A causes B."}
+    patch = _patch(
+        {"op": "create_nodes", "nodes": [claim, _experiment(), _evidence()]},
         {
             "op": "create_edges",
-            "edges": [{"source": "rq/new", "target": "hyp/new", "relation": "has_hypothesis"}],
+            "edges": [
+                {"source": "exp/source", "target": "hyp/claim", "relation": "tests"},
+                {"source": "exp/source", "target": "ev/result", "relation": "produces"},
+            ],
         },
     )
-    assert not _flags(_state(), answered)
-
-
-def test_produced_evidence_must_bear_on_the_hypothesis_its_experiment_tests() -> None:
-    claim = {"id": "hyp/claim", "type": "hypothesis", "title": "Claim", "statement": "A causes B."}
-    question = {"id": "rq/q", "type": "research_question", "title": "Question", "question": "Why?"}
-    edges = [
-        {"source": "rq/q", "target": "hyp/claim", "relation": "has_hypothesis"},
-        {"source": "exp/source", "target": "hyp/claim", "relation": "tests"},
-        {"source": "exp/source", "target": "ev/result", "relation": "produces"},
-    ]
-    unlinked = _patch(
-        {"op": "create_nodes", "nodes": [question, claim, _experiment(), _evidence()]},
-        {"op": "create_edges", "edges": edges},
-    )
-    assert [(flag.code, flag.related_node_ids) for flag in _flags(_state(), unlinked)] == [
-        ("evidence-not-linked-to-tested-hypothesis", ["ev/result", "hyp/claim"])
-    ]
-    back_edge = {
-        "source": "ev/result",
-        "target": "hyp/claim",
-        "relation": "inconclusive",
-        "assessment": {"relevance": "direct", "weight": "limited", "qualifications": []},
-    }
-    linked = _patch(
-        {"op": "create_nodes", "nodes": [question, claim, _experiment(), _evidence()]},
-        {"op": "create_edges", "edges": [*edges, back_edge]},
-    )
-    assert not _flags(_state(), linked)
+    assert not _flags(_state(), patch)
 
 
 def test_old_issues_do_not_repeat_even_when_unrelated_fields_change() -> None:
@@ -195,8 +164,8 @@ def test_removing_last_edge_introduces_provenance_and_isolation_issues() -> None
     flags = _flags(state, _patch({"op": "remove_edges", "edge_ids": ["edge/produces"]}))
     assert {(flag.code, tuple(flag.related_node_ids)) for flag in flags} == {
         ("internal-evidence-without-experiment", ("ev/result",)),
-        ("isolated-operational-node", ("ev/result",)),
-        ("isolated-operational-node", ("exp/source",)),
+        ("isolated-node", ("ev/result",)),
+        ("isolated-node", ("exp/source",)),
     }
 
 
@@ -287,10 +256,10 @@ def test_human_batch_advice_describes_final_atomic_graph(manifest, connect: bool
     assert len(committed) == 1
     messages = committed[0].admission_messages
     if connect:
-        assert [message.code for message in messages] == ["evidence-bears-on-nothing"]
+        assert messages == []
     else:
         assert {message.code for message in messages} == {
-            "isolated-operational-node",
+            "isolated-node",
             "internal-evidence-without-experiment",
         }
         assert len(messages) == 3

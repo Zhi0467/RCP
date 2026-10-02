@@ -341,9 +341,7 @@ def test_preview_and_sync_publish_same_final_quality_flags_without_preview_write
     assert messages[: len(previous)] == previous
     new = messages[len(previous) :]
     assert {message["code"] for message in new} == (
-        {"evidence-bears-on-nothing"}
-        if connect
-        else {"isolated-operational-node", "internal-evidence-without-experiment"}
+        set() if connect else {"isolated-node", "internal-evidence-without-experiment"}
     )
     synced = client.post(base, json=request)
     assert synced.status_code == 200, synced.text
