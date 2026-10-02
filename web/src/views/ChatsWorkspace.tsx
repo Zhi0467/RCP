@@ -156,15 +156,19 @@ function sinceLabel(timestamp: string | null | undefined, now: number): string {
   return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-/** Everything after the provider, which renders as its own mark. */
-function agentMeta(status: ConversationAgentStatus): string {
+/** Everything after the provider, which renders as its own mark: model, effort,
+ *  task type, then what the latest turn needs. */
+function agentMeta(status: ConversationAgentStatus, kind: ChatConversation["kind"]): string {
   const latest = status.latest;
   if (!latest) return "";
-  const parts: (string | null | undefined)[] = [];
+  const parts: (string | null | undefined)[] = [
+    latest.request.model,
+    latest.request.reasoning,
+    kind === "project_chat" ? "Project chat" : "Node chat",
+  ];
   if (status.state === "working") {
     parts.push(latest.phase, `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
   } else {
-    parts.push(latest.request.run_truth_scope?.join(", "));
     if (status.state === "failed" && latest.can_retry) parts.push("Retry");
     if (status.state === "stopped") {
       if (latest.can_resume) parts.push("Resume");
@@ -648,7 +652,8 @@ export function ChatsWorkspace({
                                     provider={latest.request.provider ?? ""}
                                     label={latest.provider_label}
                                   />
-                                  {agentMeta(status) && ` · ${agentMeta(status)}`}
+                                  {agentMeta(status, conversation.kind) &&
+                                    ` · ${agentMeta(status, conversation.kind)}`}
                                 </>
                               ) : (
                                 "\u00a0"
