@@ -7,6 +7,10 @@ const PROVIDER_LOGOS: Record<string, string> = {
   opencode: "/providers/opencode.svg",
 };
 
+export function hasProviderLogo(provider: string): boolean {
+  return provider in PROVIDER_LOGOS;
+}
+
 /** A provider's logo when RCP ships one, otherwise its label as text. */
 export function ProviderMark({ provider, label }: { provider: string; label: string }) {
   const logo = PROVIDER_LOGOS[provider];

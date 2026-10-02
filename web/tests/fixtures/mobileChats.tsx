@@ -65,6 +65,8 @@ function Fixture() {
         project={project}
         conversations={conversations}
         selectedChatId={selected}
+        board={false}
+        onBoardChange={() => {}}
         nodes={{}}
         experimentEntries={[]}
         graphTarget={{ kind: "main" }}

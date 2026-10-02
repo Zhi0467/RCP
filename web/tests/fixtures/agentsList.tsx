@@ -39,9 +39,11 @@ const turn = (chatId: string, provider: string, label: string) =>
     operation_id: `turn-${chatId}`,
     project_id: "project",
     kind: "project_chat",
-    status: "succeeded",
-    settled: true,
-    finished: true,
+    status: chatId === "Working chat" ? "running" : "succeeded",
+    active: chatId === "Working chat",
+    settled: chatId !== "Working chat",
+    finished: chatId !== "Working chat",
+    elapsed_seconds: 120,
     request: { chat_id: chatId, provider },
     provider_label: label,
     created_at: "2026-10-01T00:00:00Z",
@@ -51,6 +53,7 @@ const conversations: ChatConversation[] = [
   ["Claude chat", "claude", "Claude"],
   ["Codex chat", "codex", "Codex"],
   ["Archived chat", "custom", "Custom agent"],
+  ["Working chat", "claude", "Claude"],
 ].map(([title, provider, label]) => ({
   chatId: title,
   title,
@@ -77,12 +80,15 @@ const chatTranscripts = new Map<string, ChatTranscript>(
 
 function Fixture() {
   const [selected, setSelected] = useState(conversations[0].chatId);
+  const [board, setBoard] = useState(new URLSearchParams(location.search).has("board"));
   return (
     <main style={{ height: "100vh" }}>
       <ChatsWorkspace
         project={project}
         conversations={conversations}
         selectedChatId={selected}
+        board={board}
+        onBoardChange={setBoard}
         nodes={{}}
         experimentEntries={[]}
         graphTarget={{ kind: "main" }}

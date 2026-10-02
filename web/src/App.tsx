@@ -860,6 +860,8 @@ export default function App() {
     chatId: initialRoute.project.chatId,
     graphTarget: initialRoute.graphTarget,
   }));
+  // The Agents tab opens the board; anything that names a chat opens that chat.
+  const [agentsBoard, setAgentsBoard] = useState(!initialRoute.project.chatId);
   const activeGraphTargetRef = useRef(graphTarget);
   // One request id per logical continuation, kept until the server has answered
   // it, so a retry after a lost response replays the episode already created.
@@ -2060,6 +2062,7 @@ export default function App() {
         chatId: route.chatId,
         graphTarget: nextTarget,
       });
+      if (route.chatId) setAgentsBoard(false);
       if (
         route.projectId !== activeId ||
         !sameGraphTarget(nextTarget, activeGraphTargetRef.current)
@@ -2687,6 +2690,7 @@ export default function App() {
   };
 
   const openChats = (preferredChatId?: string | null) => {
+    setAgentsBoard(preferredChatId == null);
     const nextChatId =
       preferredChatId ??
       chatEntryConversationId(conversations, activityTask, unreadChatIds, selectedChatId);
@@ -4948,6 +4952,8 @@ export default function App() {
               project={project}
               conversations={conversations}
               selectedChatId={selectedChatId}
+              board={agentsBoard}
+              onBoardChange={setAgentsBoard}
               nodes={presentedGraph.nodes}
               experimentEntries={experimentLoops}
               graphTarget={graphTarget}
