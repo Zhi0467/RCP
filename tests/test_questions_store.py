@@ -230,7 +230,7 @@ def test_migration_upgrades_existing_database_and_preserves_existing_rows(store)
         connection.execute("DROP TABLE questions")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=33")
     migrated = AppStore(store.path)
-    assert migrated.storage_schema_ledger_head() == 34
+    assert migrated.storage_schema_ledger_head() == AppStore.storage_schema_registry_head()
     assert migrated.list_questions() == []
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT * FROM space_identity").fetchall() == identity
