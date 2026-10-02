@@ -2,6 +2,7 @@ import type {
   AgentQuestion,
   AnswerQuestionRequest,
   UpdateNotice,
+  MachinePowerStatus,
   Machine,
   ExternalWatcherRecord,
   ChatAttachmentDescriptor,
@@ -669,6 +670,14 @@ export function verifyProviderLogin(
     method: "POST",
     body: JSON.stringify({ host }),
   });
+}
+
+export function loadMachinePower(): Promise<MachinePowerStatus> {
+  return api("/api/machine-power");
+}
+
+export function updateMachinePower(body: { idle_hold: boolean }): Promise<MachinePowerStatus> {
+  return api("/api/machine-power", { method: "PUT", body: JSON.stringify(body) });
 }
 
 export function fetchQuestions(apiBase: string, ownerKind: "chat" | "episode", ownerId: string) {

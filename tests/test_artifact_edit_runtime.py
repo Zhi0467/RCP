@@ -275,11 +275,11 @@ def test_comment_route_refuses_busy_session_but_undo_remains_available(manifest,
     path = f"/api/projects/{app.state.default_project_id}/artifacts/{source.artifact_id}"
     refused = client.post(path + "/comments", json={"comments": [{"text": "Change this chart"}]})
     assert refused.status_code == 409
-    undone = client.post(path + "/undo")
+    undone = client.post(path + "/undo", json={})
     assert undone.status_code == 200
     assert execution.store.read_artifact_bytes(source.artifact_id) == b"<p>original</p>"
     assert execution.store.agent_task(execution.operation_id).status == "running"
-    original = client.post(path + "/undo")
+    original = client.post(path + "/undo", json={})
     assert original.status_code == 409
 
 

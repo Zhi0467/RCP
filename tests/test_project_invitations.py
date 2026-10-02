@@ -59,7 +59,7 @@ def test_accepting_an_invitation_grants_project_membership(manifest, tmp_path) -
 
     acting[0] = invitee.user_id
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
-    accepted = client.post(f"/api/project-invitations/{invitation_id}/accept")
+    accepted = client.post(f"/api/project-invitations/{invitation_id}/accept", json={})
 
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["response"] == "accepted"
@@ -86,7 +86,7 @@ def test_accepting_issues_no_token_and_does_not_change_space_membership(manifest
     _invite(client, project_id, invitee.user_id)
     acting[0] = invitee.user_id
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
-    body = client.post(f"/api/project-invitations/{invitation_id}/accept").json()
+    body = client.post(f"/api/project-invitations/{invitation_id}/accept", json={}).json()
 
     assert tokens_and_users() == before
     # The record itself carries no secret of any kind.
@@ -111,7 +111,7 @@ def test_every_project_member_may_invite_another_space_member(manifest, tmp_path
 
     acting[0] = second.user_id
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
-    client.post(f"/api/project-invitations/{invitation_id}/accept")
+    client.post(f"/api/project-invitations/{invitation_id}/accept", json={})
 
     # The newly seated member invites, with no elevated role anywhere.
     assert _invite(client, project_id, third.user_id).status_code == 201
@@ -151,7 +151,7 @@ def test_declining_leaves_no_membership_and_no_residual_access(manifest, tmp_pat
 
     acting[0] = invitee.user_id
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
-    declined = client.post(f"/api/project-invitations/{invitation_id}/decline")
+    declined = client.post(f"/api/project-invitations/{invitation_id}/decline", json={})
 
     assert declined.status_code == 200
     assert declined.json()["response"] == "declined"
@@ -160,7 +160,9 @@ def test_declining_leaves_no_membership_and_no_residual_access(manifest, tmp_pat
     assert client.get(f"/api/projects/{project_id}").status_code == 404
     assert client.get("/api/project-invitations").json() == []
     # A declined invitation cannot be answered again into acceptance.
-    assert client.post(f"/api/project-invitations/{invitation_id}/accept").status_code == 409
+    assert (
+        client.post(f"/api/project-invitations/{invitation_id}/accept", json={}).status_code == 409
+    )
     assert not store.is_project_member(project_id, invitee.user_id)
 
 
@@ -194,10 +196,10 @@ def test_leaving_removes_read_dispatch_and_apply(manifest, tmp_path) -> None:
 
     acting[0] = leaver.user_id
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
-    client.post(f"/api/project-invitations/{invitation_id}/accept")
+    client.post(f"/api/project-invitations/{invitation_id}/accept", json={})
     assert client.get(f"/api/projects/{project_id}").status_code == 200
 
-    left = client.post(f"/api/projects/{project_id}/leave")
+    left = client.post(f"/api/projects/{project_id}/leave", json={})
 
     assert left.status_code == 204
     assert not store.is_project_member(project_id, leaver.user_id)
@@ -213,7 +215,7 @@ def test_the_only_member_cannot_leave_the_project(manifest, tmp_path) -> None:
     project_id = _create_project(client, tmp_path / "repo")
     assert len(store.project_members(project_id)) == 1
 
-    refused = client.post(f"/api/projects/{project_id}/leave")
+    refused = client.post(f"/api/projects/{project_id}/leave", json={})
 
     assert refused.status_code == 409
     assert "only member" in refused.json()["detail"]
@@ -318,7 +320,7 @@ def _seat_second_member(client, acting, project_id: str, invitee_id: str) -> Non
     was = acting[0]
     acting[0] = invitee_id
     invitation_id = client.get("/api/project-invitations").json()[0]["invitation_id"]
-    client.post(f"/api/project-invitations/{invitation_id}/accept")
+    client.post(f"/api/project-invitations/{invitation_id}/accept", json={})
     acting[0] = was
 
 
@@ -360,7 +362,7 @@ def test_leaving_through_the_route_fences_and_survives_a_restart(manifest, tmp_p
     episode = _running_auto_research_episode(store, project_id, authorizer)
 
     acting[0] = leaver.user_id
-    assert client.post(f"/api/projects/{project_id}/leave").status_code == 204
+    assert client.post(f"/api/projects/{project_id}/leave", json={}).status_code == 204
 
     reopened = AppStore(store.path)
     survived = reopened.episode(episode.episode_id)
@@ -476,7 +478,7 @@ def test_membership_lost_between_dispatch_and_apply_is_refused_at_apply(manifest
     assert history.project_membership_check(project_id, leaver.user_id)
 
     acting[0] = leaver.user_id
-    assert client.post(f"/api/projects/{project_id}/leave").status_code == 204
+    assert client.post(f"/api/projects/{project_id}/leave", json={}).status_code == 204
 
     # ...and refused at Apply, which reads membership live under the append lock.
     assert not history.project_membership_check(project_id, leaver.user_id)

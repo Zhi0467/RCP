@@ -2076,6 +2076,14 @@ class AgentTaskStoreMixin:
     def all_project_agent_tasks(self, project_id: str) -> list[AgentTaskRecord]:
         """Return the complete typed task set for durable project capture."""
 
+        return self._project_agent_tasks(project_id, active_only=False)
+
+    def active_project_agent_tasks(self, project_id: str) -> list[AgentTaskRecord]:
+        """Return only queued, running, and pausing tasks, without the history scan."""
+
+        return self._project_agent_tasks(project_id, active_only=True)
+
+    def _project_agent_tasks(self, project_id: str, *, active_only: bool) -> list[AgentTaskRecord]:
         try:
             canonical_project_id = _canonical_uuid4(
                 project_id,
@@ -2083,9 +2091,11 @@ class AgentTaskStoreMixin:
             )
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
+        # A literal predicate, so SQLite can use the (project_id, status) index.
+        active = "AND status IN ('queued', 'running', 'pausing')" if active_only else ""
         with self.connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT graph_runs.*,
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
@@ -2096,7 +2106,7 @@ class AgentTaskStoreMixin:
                              )
                        ) AS recovery_abandoned
                 FROM graph_runs
-                WHERE project_id = ?
+                WHERE project_id = ? {active}
                 ORDER BY created_at, operation_id
                 """,
                 (canonical_project_id,),

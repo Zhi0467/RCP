@@ -147,7 +147,7 @@ def test_merge_provenance_uses_current_project_membership(
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
 
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     clean_invalid = removed_from_main and operation["op"] == "create_nodes"
     assert response.status_code == (409 if clean_invalid else 202), response.text
@@ -224,7 +224,7 @@ def test_merge_fails_closed_when_main_membership_changes_after_dispatch(
     else:
         monkeypatch.setattr(harness.app.state.launcher, "stream", remove_repository_during_turn)
     response = harness.client.post(
-        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+        f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge", json={}
     )
     assert response.status_code == 202, response.text
     # A preflight refusal can settle before the response projection is returned.

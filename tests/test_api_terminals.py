@@ -749,7 +749,7 @@ def test_remote_projection_probes_once_per_machine_and_refreshes(tmp_path, remot
         remote_probe.return_value = TerminalProbe(
             None, "authentication_failed", "Permission denied (publickey)."
         )
-        refreshed = client.post(f"{path}/probe")
+        refreshed = client.post(f"{path}/probe", json={})
         assert refreshed.status_code == 200, refreshed.text
         assert all(item["probe_state"] == "pending" for item in refreshed.json()[1:])
         client.portal.call(app.state.services.terminals.probes.ensure, machine)

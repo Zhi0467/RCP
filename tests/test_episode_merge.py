@@ -170,7 +170,7 @@ def test_cleanup_failure_keeps_delivery_and_retries(manifest, tmp_path, monkeypa
 
     monkeypatch.setattr(merge, "_git", fail_branch_delete)
     route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}"
-    assert harness.client.post(route + "/merge").status_code == 409
+    assert harness.client.post(route + "/merge", json={}).status_code == 409
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     assert state.delivered_source_commit
     assert state.merge_attempt.phase == "cleanup"
@@ -503,7 +503,8 @@ def test_code_conflict_runs_one_code_merge_task(manifest, tmp_path, monkeypatch,
         assert Path(binding.worktree_path).exists()
         # The next Merge releases the failed attempt and starts a fresh one.
         again = harness.client.post(
-            f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
+            f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge",
+            json={},
         )
         assert again.status_code == 202, again.text
         retried = harness.store.episode_isolation_state(
@@ -610,7 +611,7 @@ def test_confirmed_unfinished_jobs_go_to_the_code_merge_agent(manifest, tmp_path
     monkeypatch.setattr(harness.app.state.launcher, "stream", stream)
     route = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
     # Merge pauses on the unfinished job instead of refusing it.
-    paused = harness.client.post(route)
+    paused = harness.client.post(route, json={})
     assert paused.status_code == 409
     assert paused.json()["detail"]["code"] == "unfinished_jobs_confirmation_required"
     assert [job["id"] for job in paused.json()["detail"]["jobs"]] == ["w"]
@@ -632,7 +633,7 @@ def test_confirmed_unfinished_jobs_go_to_the_code_merge_agent(manifest, tmp_path
             (harness.store.now(),),
         )
     # Once the job finished, Merge again removes what the first Merge kept.
-    assert harness.client.post(route).status_code == 202
+    assert harness.client.post(route, json={}).status_code == 202
     assert not Path(binding.worktree_path).exists()
 
 
@@ -643,7 +644,9 @@ def test_code_only_conflict_runs_one_code_merge_turn(manifest, tmp_path, monkeyp
     revision = harness.service.history.state().revision
     turns = []
     monkeypatch.setattr(harness.app.state.launcher, "stream", _merge_turn(harness, shared, turns))
-    response = harness.client.post(f"/api/projects/{harness.project_id}/episodes/{owner_id}/merge")
+    response = harness.client.post(
+        f"/api/projects/{harness.project_id}/episodes/{owner_id}/merge", json={}
+    )
     assert response.status_code == 202, response.text
     state = harness.store.episode_isolation_state(harness.project_id, owner_id)
     wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="succeeded")
@@ -707,13 +710,13 @@ def test_merge_task_failing_after_its_receipt_completes_on_the_next_merge(
 
     monkeypatch.setattr(task_module, "complete_graph_merge", crash)
     url = f"/api/projects/{harness.project_id}/episodes/{harness.episode.episode_id}/merge"
-    assert harness.client.post(url).status_code == 202
+    assert harness.client.post(url, json={}).status_code == 202
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     wait_for_task(harness.store, state.merge_attempt.graph_task_id, expect="failed")
     assert len(harness.branch.merge_receipts()) == 1
 
     # The next Merge finishes the delivered attempt instead of dropping its cleanup.
-    assert harness.client.post(url).status_code == 202
+    assert harness.client.post(url, json={}).status_code == 202
     state = harness.store.episode_isolation_state(harness.project_id, harness.episode.episode_id)
     assert (state.merge_attempt.phase, state.merge_reservation) == ("done", None)
     assert not Path(binding.worktree_path).exists()

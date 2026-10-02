@@ -59,6 +59,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
+from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
@@ -98,6 +99,7 @@ from rcp.limits import (
     TEAM_PUBLIC_AUTH_REQUEST_MAX_BYTES,
 )
 from rcp.live_artifact_runtime import reconcile_artifact_live_snapshots
+from rcp.machine_power import MachinePowerController, demand_snapshot
 from rcp.notifications import NotificationSender
 from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache, fill_space_machines
@@ -1064,6 +1066,13 @@ def create_app(
         recorded_stream=background_recorded_task_stream,
         resume_command_mailbox=background_resume_command_mailbox,
     )
+    machine_power = (
+        MachinePowerController(
+            store, demand_reader=lambda: demand_snapshot(store, background_tasks)
+        )
+        if space_kind == "personal"
+        else None
+    )
     if control_server is not None:
         member_removal_coordinator = MemberRemovalCoordinator(
             store,
@@ -1728,6 +1737,10 @@ def create_app(
                 # This is the one ordinary startup sequence. Normal startup calls
                 # it immediately; a cutover candidate calls it after the shared
                 # effect fence opens. Recovery must precede every other owner.
+                # Hold the Mac awake before any recovery owner relaunches work.
+                if machine_power is not None:
+                    machine_power.start()
+                    app.state.machine_power_started = True
                 await terminals.start()
                 background_tasks.recover_at_startup()
                 from rcp.runs.episodes.merge import reconcile_episode_merge
@@ -1902,6 +1915,9 @@ def create_app(
                 await start_deferred_runtime()
             except BaseException:
                 await terminals.close()
+                if machine_power is not None and app.state.machine_power_started:
+                    app.state.machine_power_started = False
+                    await asyncio.to_thread(machine_power.stop)
                 raise
         try:
             if fenced_startup:
@@ -1931,15 +1947,15 @@ def create_app(
                 app.state.startup_effect_release_task = release_task
             yield
         finally:
+            if release_task is not None and not release_task.done():
+                release_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await release_task
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
             # otherwise outlive uvicorn's grace and hold the instance lock past
             # the replacement window.
             fence_canonical_lock_waits()
-            if release_task is not None and not release_task.done():
-                release_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await release_task
             if control_started and control_server is not None:
                 control_server.stop()
             for task in startup_maintenance:
@@ -1963,7 +1979,13 @@ def create_app(
             await asyncio.to_thread(notification_sender.stop)
             if phone_listener is not None:
                 await asyncio.to_thread(phone_listener.stop)
-            background_tasks.shutdown()
+            try:
+                background_tasks.shutdown()
+            finally:
+                # Hold the Mac awake until workers have drained.
+                if machine_power is not None and app.state.machine_power_started:
+                    app.state.machine_power_started = False
+                    await asyncio.to_thread(machine_power.stop)
             # A PyInstaller one-file backend runs under a bootloader supervisor
             # whose signal exit can skip the CLI context manager's ``finally``.
             # Source reload workers share metadata owned by the outer supervisor,
@@ -1982,6 +2004,8 @@ def create_app(
     app.state.service = default_service
     app.state.data_dir = app_data
     app.state.background_tasks = background_tasks
+    app.state.machine_power = machine_power
+    app.state.machine_power_started = False
     app.state.reconcile_question_answers = reconcile_question_answers
     app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
     app.state.watcher_poller = watcher_poller
@@ -2116,6 +2140,40 @@ def create_app(
                             }
                         },
                     )
+        if (
+            space_kind == "personal"
+            and request.method == "POST"
+            and (path == "/api" or path.startswith("/api/"))
+        ):
+            # The personal backend listens on a predictable loopback port with no
+            # session. A cross-site page can send a POST without a CORS preflight
+            # only with a simple content type (PUT, PATCH, and DELETE always
+            # preflight), so refuse those; the bounded chat attachment upload is
+            # the one multipart route, as in a team space.
+            media_type = request.headers.get("content-type", "").partition(";")[0].strip().lower()
+            attachment_upload = (
+                request.method == "POST"
+                and len(path_parts) == 7
+                and path_parts[1:3] == ["api", "projects"]
+                and path_parts[4] == "chats"
+                and path_parts[6] == "attachments"
+            )
+            simple = media_type in {
+                "",
+                "application/x-www-form-urlencoded",
+                "multipart/form-data",
+                "text/plain",
+            }
+            if simple and not (attachment_upload and media_type == "multipart/form-data"):
+                return JSONResponse(
+                    status_code=415,
+                    content={
+                        "detail": {
+                            "code": "personal_simple_request_refused",
+                            "message": "Changes require a JSON request.",
+                        }
+                    },
+                )
         if request.method not in {"GET", "HEAD", "OPTIONS"}:
             pinned_instance = request.headers.get("X-RCP-Instance-ID")
             if pinned_instance and pinned_instance != identity.instance_id:
@@ -2211,6 +2269,7 @@ def create_app(
     app.include_router(update_notice_router)
     app.include_router(team_router)
     app.include_router(notifications_router)
+    app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
     app.include_router(project_provisioning_router)
