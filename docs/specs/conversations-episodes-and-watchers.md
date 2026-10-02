@@ -43,6 +43,14 @@ observed. Episodes created after that baseline notify on their first eligible
 observation, including one that has already ended between passes. Ending during
 downtime therefore remains observable on restart.
 
+Questions use the same `episode_needs_action` (Needs you) preference for chats
+and episodes. A durable creation event per question id produces one push, even
+when another question already holds an episode in `needs_action`. Chat questions
+link to their chat; episode questions link to their episode. Delivery checks
+recognize question items independently of episode health. A health transition
+whose cause is that question does not send a second push. Dismissal, later wakes,
+and reauthorization produce no new question event.
+
 ## Discuss and Work turns
 
 Discuss and Work are explicit per-turn modes in one conversation. Submit time
@@ -227,6 +235,28 @@ depends on its original working directory. Each logical turn owns one exact
 cleared fail-closed before a new turn that could misattribute them. A committed
 native chat-session context retains that stage, including its immutable master
 context, even while no turn is active.
+
+Human-started Work chats and Experiment invocations may use the staged `ask`
+command for missing information. The human answers on the question card; the
+composer remains steering. Answers are human input, never approval or changes to
+capability, write roots, graph target, or budget. Discuss and Auto-research child
+Work and Experiments cannot ask directly.
+
+A call waits for the bounded client interval; repeating identical arguments keeps
+waiting, while ending the turn parks the question. An answered response counts as
+received only after the client acknowledges its response token and the receiving
+task settles successfully on the original native session and authority binding.
+Failed or disconnected turns retain delivery eligibility. After full settlement
+and at startup, an unreceived chat answer admits at most one Work follow-up, transactionally claimed
+with task insertion, pinned to the asking turn's native session, authority, write
+scope and target. Occupied or paused sessions defer admission; unusable bindings
+remain visible. Each answer is projected once as a human chat message through
+StateWorkspace using its question id and answer revision. A durable projected-revision
+marker retires successful projections from reconciliation; stable-id replay repairs
+a missing marker without republishing. Deferred follow-up admission remains retryable
+after projection succeeds. Question offer and acknowledgement reads query operation
+and category independently of the receipt display cap. Fresh question snapshots
+come from operational records, never displayed chat history.
 
 While an ordinary human-triggered Discuss or Work turn runs, the human may send
 plain text to it through the ordinary composer: while the watched attempt can
@@ -653,7 +683,21 @@ arming is unchanged. Observing one
 job through genuinely different commands cannot be told apart mechanically, so
 the staged watcher state is what every surface that arms an Experiment observer
 reconciles against first. An empty final watcher declaration is
-legal only with a success, Proposal, or Blocker Patch exit. Missing or malformed
+legal with a success, Proposal, or Blocker Patch exit, or an open human question
+or undelivered answer belonging to that human-started episode. A question never
+excuses unwatched compute. An answer wake spends one normal Experiment invocation
+and preserves the session, scope, target, Stop fence and ceiling; exhaustion needs
+human reauthorization. Continuation episodes reopen their predecessor's questions
+without changing origin provenance; ended episodes withdraw their cards. In the
+continuation's creation transaction, unreceived, unclaimed answers are claimed by
+invocation 1 when its binding passes the answer-wake origin checks. Its first
+question snapshot carries those answers without spending another invocation.
+The human-started continuation keeps its own prompt text and message identity;
+claimed answers retain their separate, stable question-answer message identities
+and ordinary projection retries.
+If the saved origin authority or matching execution binding cannot be proved,
+the answered card remains read-only.
+Missing or malformed
 handoff enters same-session correction without spending another unit and may not
 repeat operational work.
 
@@ -682,6 +726,16 @@ Origin chat, provider, path, or maintenance machine grants no authority.
 Maintenance uses its own Work task/session, spends no Experiment invocation,
 does not create an attempt, and never replaces the episode's native-session
 binding. Stop, watcher claim, and competing maintenance have one atomic winner.
+
+A Work turn is not an episode turn, even on the episode's own session, so its
+maintenance cannot end the episode. A file that stops watchers and arms none is
+refused when, after its stops, the episode has no pending turn, no live watcher,
+and no undelivered completion. The refusal rolls back. Its diagnostic states
+that episode state and enters the ordinary maintenance correction round. The
+agent either drops a stop, so that watcher still wakes the loop, or arms an
+observer for replacement work it already launched. Completion and authority
+pauses remain the episode turn's Patch exits, recorded when a watcher wakes it,
+and a human **Stop loop** remains the other way to end the loop.
 
 ## Live artifact reconciliation
 

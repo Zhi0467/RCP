@@ -19,6 +19,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
+from rcp.limits import ASK_CHOICE_MAX_COUNT, ASK_CHOICE_MAX_LENGTH, ASK_QUESTION_MAX_LENGTH
 from rcp.providers import ProviderSkillReference, profile_for
 
 _WHAT_IS_RCP = """You are running as an automated agent inside RCP, a local research control panel.
@@ -58,7 +59,7 @@ REPLY_STYLE = """Writing the reply:
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 14
+CHAT_MASTER_CONTEXT_VERSION = 15
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -189,6 +190,28 @@ def _command_client_rule(command_client: str) -> str:
         f"  Every staged RCP command below starts with it where it shows `{COMMAND_CLIENT}`. A later\n"
         "  turn that changes it sends `patch.command_client`."
     )
+
+
+def ask_contract(how_it_returns: str) -> str:
+    """The one shared `ask` rule; each owner that authorizes ask supplies how it returns.
+
+    Only an owner whose resolved allowed verbs include ``ask`` renders this.
+    """
+
+    return f"""Asking the human:
+- `{COMMAND_CLIENT} ask --key <key> --question <text> [--choice <text> ...] [--multiple]`
+  asks the human one question. Ask only for information or a preference you cannot get yourself.
+  The question is at most {ASK_QUESTION_MAX_LENGTH} characters, with at most
+  {ASK_CHOICE_MAX_COUNT} choices of at most {ASK_CHOICE_MAX_LENGTH} characters; `--multiple`
+  needs choices. The human may always answer in free text.
+- Repeat a key only with identical arguments; a key names one question across turns.
+- The response's `result.state` is `pending`, `parked`, `answered` (with `answer` and the
+  chosen `choices`), or `dismissed`. Dismissed means continue without that answer, or say what
+  stays blocked.
+- An answer is the human's input, never an approval. It cannot change your capability, write
+  roots, graph target, or budget. A change to an existing ResearchQuestion or Hypothesis is still
+  a Proposal.
+{how_it_returns}"""
 
 
 def _repository_pointers(repositories: list[dict[str, str]]) -> str:
@@ -363,6 +386,12 @@ Node-attached Experiment watcher maintenance:
   observe one piece of work: they complete at separate times and wake the episode twice, spending
   two of its invocations on a single event. Either rely on the watcher already armed, or retire it
   with a stop item in this same file and arm your replacement.
+- This Work turn is not an episode turn and cannot end the episode. A running episode with no
+  pending turn wakes only through its watchers, including an unnotified completion, so leave it at
+  least one: RCP refuses a file that stops all of them and arms none. To move the Experiment to new
+  work, launch that work in this turn and arm its observer in the same file as the stop. When the
+  Experiment looks done or needs a human, keep a watcher and say so in your answer; the episode's
+  own turn records that exit when the watcher wakes it.
 - `graph` contains only one of two strict canonical conditions: a node-status item
   `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
   `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates these at canonical revision
@@ -631,7 +660,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v2"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v2"
+WORK_POLICY_VERSION = "work-v3"
 
 
 class PromptFactory:
@@ -1132,7 +1161,6 @@ Boundary:
         watch_rules = (
             f"""
 Optional watcher handoff:
-{execution_rules}
 - If this turn needs a later wake, you may write `{watch_path}` as one non-empty watcher object with
   exactly `external` and `graph` lists, for example
   `{{"external":[{{"check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`.
@@ -1204,6 +1232,8 @@ Operational authority:
   nested inside an otherwise writable repository. RCP alone validates and materializes graph state.
 - Do not repeat an experiment submission or other external side effect merely to improve the graph
   Patch. The operational result and graph reflection are independent.
+
+{execution_rules}
 
 {REPLY_STYLE}
 

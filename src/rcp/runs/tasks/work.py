@@ -37,6 +37,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.prompts import (
     COMMAND_CLIENT,
     WORK_POLICY_VERSION,
+    ask_contract,
     chat_master_contract_key,
     invoked_package_pointers,
 )
@@ -52,6 +53,7 @@ from rcp.core.models import Patch
 from rcp.core.operations import CreateProposalsOperation
 from rcp.history import ReplayHalted
 from rcp.limits import (
+    COMMAND_CLIENT_WAIT_SECONDS,
     PATCH_CORRECTION_MAX_ROUNDS,
     PATCH_SELF_CHECK_TIMEOUT_SECONDS,
 )
@@ -93,6 +95,8 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
+from rcp.runs.questions import WorkCommandHandler
+from rcp.runs.questions import work_command_handler as _work_command_handler
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
     attach_retained_stage,
@@ -149,6 +153,7 @@ from rcp.runs.tasks.work_turn_runtime import (
     apply_work_patch,
     failed_graph_update,
     load_work_mailbox_context,
+    prepare_work_question_snapshot,
     read_correction_patch,
     restore_work_validator_mailbox,
     settle_graph_repair_patch,
@@ -253,6 +258,7 @@ def _prepare_work_chat_prompt(
     attachment_pointers: list[dict[str, object]],
     launch_instructions: str,
     ontology_extensions: bool,
+    question_part: str = "",
 ) -> tuple[str, str]:
     """Prepare the provisional session baseline behind one Work-local seam."""
 
@@ -284,14 +290,37 @@ def _prepare_work_chat_prompt(
         attachments=attachment_pointers,
         launch_instructions=launch_instructions if first_work_turn else None,
     )
+    if question_part:
+        prompt += "\n\n" + question_part
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
+
+
+def _work_turn_command_handler(turn: WorkTurn) -> WorkCommandHandler:
+    """Render the very handler resolved for this launch, including its verb set."""
+    lifecycle = getattr(turn, "validator_lifecycle", None)
+    handler = getattr(lifecycle, "command_handler", None)
+    if isinstance(handler, WorkCommandHandler):
+        return handler
+    # Child owners retain their separate dispatcher; this resolves no ask for them.
+    return _work_command_handler(turn.execution, turn.compute_commands)
 
 
 def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> str:
     """The launch instructions, naming the helper relative to ``client`` when given."""
 
+    handler = _work_turn_command_handler(turn)
+    instructions = []
+    if "ask" in handler.allowed_verbs:
+        instructions.append(
+            ask_contract(
+                f"- A call waits up to {COMMAND_CLIENT_WAIT_SECONDS} seconds. After pending, repeat "
+                "the exact call to keep waiting when a quick answer is likely; otherwise end this "
+                "turn and the question parks. The human answers on its question card; composer "
+                "messages are separate steering."
+            )
+        )
     if turn.compute_commands is None:
-        return ""
+        return "\n\n".join(instructions)
     arguments = (
         "launch",
         "--key",
@@ -306,7 +335,8 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
         if client is not None
         else turn.patch_inputs.validator_staged.client_command(*arguments)
     )
-    return turn.compute_commands.execution_instructions(command)
+    instructions.append(turn.compute_commands.execution_instructions(command))
+    return "\n\n".join(instructions)
 
 
 def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
@@ -317,6 +347,7 @@ def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
     manager = JOB_MANAGERS.get(machine.compute.job_manager) if machine.compute else None
     helper = commands.helper_backend if commands is not None else None
     values: dict[str, object] = {
+        "allowed_verbs": sorted(_work_turn_command_handler(turn).allowed_verbs),
         "write_roots": list(turn.write_scope.writable_roots),
         "denied_paths": list(turn.write_scope.protected_write_paths),
         "helper_owner": helper.id if helper is not None else None,
@@ -968,7 +999,9 @@ def _work_continuation(
         force_bootstrap=force_bootstrap,
     )
     delta = changed_since_master(replace(master, bootstrap=False), values)
-    return compose(node, parts=[part], master=master, delta=delta)
+    question_part = prepare_work_question_snapshot(turn)
+    parts = [part, question_part] if question_part else [part]
+    return compose(node, parts=parts, master=master, delta=delta)
 
 
 def _compose_work_recovery_prompt(
@@ -1067,9 +1100,22 @@ def _compose_fresh_prompt(
         contract_path = _stage_work_contract(
             turn, staged, retry_diagnostics_path=retry_diagnostics_path, values=values
         )
+        prompt = PromptFactory.launch_prompt(contract_path)
+        question_part = prepare_work_question_snapshot(turn)
+        launch_path = contract_path
+        if question_part:
+            prompt += "\n\n" + question_part
+            launch_path = record_inline_prompt(
+                turn.execution,
+                local_stage=turn.local_stage,
+                remote_stage=turn.remote_stage,
+                label=f"task-{staged.token}-question-launch.md",
+                role="work_question_launch",
+                prompt=prompt,
+            )
         return _ComposedWorkPrompt(
-            contract_path=contract_path,
-            prompt=PromptFactory.launch_prompt(contract_path),
+            contract_path=launch_path,
+            prompt=prompt,
             base_contract_path=contract_path,
             render_master=lambda: _work_contract_text(turn, staged),
             prompt_values=values,
@@ -1087,6 +1133,7 @@ def _compose_fresh_prompt(
         skill_pointers=staged.skill_pointers,
         attachment_pointers=staged.attachment_pointers,
         ontology_extensions=turn.context.ontology_extensions,
+        question_part=prepare_work_question_snapshot(turn),
     )
     return _ComposedWorkPrompt(
         contract_path=contract_path,
@@ -2358,8 +2405,13 @@ async def stream_work_run(
         turn, staged = await _stage_work_turn(service, resolved, data_dir, execution)
         patch_inputs = turn.patch_inputs
         validator_lifecycle = turn.validator_lifecycle
+        question_followup = bool(
+            execution is not None
+            and execution.store.question_for_followup(execution.operation_id) is not None
+        )
+        required_session_id = turn.request.session_id if turn.waking or question_followup else None
         if turn.execution_host:
-            _record_work_finalization_context(turn, staged)
+            _record_work_finalization_context(turn, staged, required_session_id=required_session_id)
         resuming = turn.resuming
         await _prepare_work_prompt_context(turn, staged)
         if resuming:
@@ -2405,7 +2457,7 @@ async def stream_work_run(
             contract_path,
             staged,
             None,
-            required_session_id=turn.request.session_id if turn.waking else None,
+            required_session_id=required_session_id,
             supervise_remote=bool(turn.execution_host),
         )
     ) as stream:
@@ -2743,15 +2795,16 @@ def _start_work_validator_mailbox(
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
 ) -> _WorkValidatorMailboxLifecycle:
+    command_handler = _work_command_handler(execution, compute_commands)
     return start_work_validator_mailbox(
         staged,
         execution=execution,
         budget=budget,
-        command_handler=compute_commands,
+        command_handler=command_handler,
         serve=serve_patch_validation_mailbox,
-        resume_context=_work_mailbox_context(run_truth_scope, compute_commands).model_dump(
-            mode="json"
-        ),
+        resume_context=_work_mailbox_context(
+            run_truth_scope, compute_commands, ask_allowed="ask" in command_handler.allowed_verbs
+        ).model_dump(mode="json"),
         validate=lambda text: _validate_work_patch_live(
             service,
             text,
@@ -2762,21 +2815,26 @@ def _start_work_validator_mailbox(
 
 
 class _WorkMailboxContext(BaseModel):
-    """Launch-time validation and compute scope retained with the turn secret."""
+    """Launch-time command policy and scope retained with the turn secret."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     run_truth_scope: list[str]
+    ask_allowed: bool = False
     write_scope: ProjectWriteScope | None = None
     episode_id: str | None = None
     manifest: Manifest | None = None
 
 
 def _work_mailbox_context(
-    run_truth_scope: list[str], compute_commands: WorkComputeCommands | None
+    run_truth_scope: list[str],
+    compute_commands: WorkComputeCommands | None,
+    *,
+    ask_allowed: bool = False,
 ) -> _WorkMailboxContext:
     return _WorkMailboxContext(
         run_truth_scope=run_truth_scope,
+        ask_allowed=ask_allowed,
         write_scope=compute_commands.write_scope if compute_commands is not None else None,
         episode_id=compute_commands.episode_id if compute_commands is not None else None,
         manifest=compute_commands.manifest if compute_commands is not None else None,
@@ -2805,6 +2863,14 @@ def _resume_work_compute_commands(
     return WorkComputeCommands(execution, context.manifest, scope, stage, context.episode_id)
 
 
+def _resume_work_command_handler(execution: AgentTaskExecution, context: _WorkMailboxContext):
+    compute_commands = _resume_work_compute_commands(execution, context)
+    if not context.ask_allowed:
+        return compute_commands
+    handler = _work_command_handler(execution, compute_commands)
+    return handler if handler.allowed_verbs != {"validate"} else None
+
+
 def resume_work_command_mailbox(
     service: Callable[[], ProjectService], execution: AgentTaskExecution
 ) -> _WorkValidatorMailboxLifecycle | None:
@@ -2814,7 +2880,7 @@ def resume_work_command_mailbox(
     context = _WorkMailboxContext.model_validate(saved)
     return restore_work_validator_mailbox(
         execution,
-        command_handler=_resume_work_compute_commands(execution, context),
+        command_handler=_resume_work_command_handler(execution, context),
         validate=lambda text: _validate_work_patch_live(
             service(),
             text,

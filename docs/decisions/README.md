@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Agents ask the human through the command channel](2026-10-01-agents-ask-through-the-command-channel.md)
+  records why an agent asks with a staged command verb instead of the
+  providers' own ask tools or an RCP MCP server, and why an answer is never
+  authority.
+
 - [Artifacts are RCP-owned and edited in place](2026-09-29-artifacts-are-rcp-owned-and-edited-in-place.md)
   records why artifact bytes and versions live in RCP storage instead of the
   repository, why an edit needs no Accept step, why a comment turn follows its

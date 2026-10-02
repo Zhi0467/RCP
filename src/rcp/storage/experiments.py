@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
-from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
+from rcp.limits import EPISODE_RECEIPT_MAX_BYTES, QUESTION_SNAPSHOT_MAX_RECORDS
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
@@ -26,6 +26,7 @@ from rcp.storage.models import (
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentEpisodeRecord,
+    ExperimentEpisodeUnwakeable,
     ExperimentLoopRuntime,
     ExperimentWatcherResourceRecord,
     StoredWatcherRecord,
@@ -36,6 +37,8 @@ from rcp.storage.models import (
     _experiment_pinned_value,
     _optional_str,
 )
+from rcp.storage.question_models import QuestionOrigin
+from rcp.storage.questions import _question_record
 
 if TYPE_CHECKING:
     from rcp.watchers import ExperimentWatchSpec, WatcherBinding
@@ -43,6 +46,169 @@ if TYPE_CHECKING:
 
 class ExperimentStoreMixin:
     """Bounded Experiment episodes and their loop runtime projection."""
+
+    @staticmethod
+    def _experiment_question_binding_matches(
+        record: AgentTaskRecord, origin: QuestionOrigin, original: AgentTaskRecord
+    ) -> bool:
+        # Admission has no newly resolved write-scope fingerprint yet. As with
+        # answer wakes, prove the saved authority and its execution inputs.
+        return (
+            record.project_id == origin.project_id
+            and record.native_session_id == origin.native_session_id
+            and record.request.get("provider") == origin.provider
+            and record.stage_root == origin.stage_root
+            and (record.stage_host or "") == (origin.stage_host or "")
+            and record.graph_target == origin.graph_target
+            and original.write_scope_fingerprint == origin.write_scope_fingerprint
+            and original.dispatch_authority is not None
+            and original.dispatch_authority.task_contract == origin.capability
+            and original.request.get("mode") == "work"
+            and all(
+                record.request.get(key) == original.request.get(key)
+                for key in ("provider", "run_on", "run_truth_scope", "mode")
+            )
+        )
+
+    def experiment_question_owner_ids(self, episode_id: str) -> list[str]:
+        """Follow continuation provenance without moving immutable question origins."""
+        owners: list[str] = []
+        while episode_id and episode_id not in owners:
+            episode = self.episode(episode_id)
+            if episode is None or episode.mode != "experiment_loop":
+                break
+            owners.append(episode_id)
+            episode_id = episode.continues_episode_id or ""
+        return owners
+
+    def experiment_has_question_continuation(
+        self, project_id: str, episode_id: str, *, operation_id: str | None = None
+    ) -> bool:
+        # Successful settlement will receipt these live answers. They cannot also
+        # justify an otherwise empty handoff and leave a running episode stranded.
+        acknowledged = (
+            {
+                (receipt.payload.get("question_id"), receipt.payload.get("answer_revision"))
+                for receipt in self.agent_task_receipts_by_category(
+                    operation_id, "question_answer_acknowledged"
+                )
+            }
+            if operation_id
+            else set()
+        )
+        return any(
+            not q.withdrawn_readonly
+            and (
+                q.state == "pending"
+                or (
+                    q.state == "answered"
+                    and q.client_receipt_revision is None
+                    and q.followup_operation_id is None
+                    and (q.question_id, q.answer_revision) not in acknowledged
+                )
+            )
+            for owner in self.experiment_question_owner_ids(episode_id)
+            for q in self.list_questions(
+                project_id=project_id, owner_kind="episode", owner_id=owner
+            )
+        )
+
+    def create_experiment_question_invocation(
+        self, record: AgentTaskRecord, *, question_id: str, answer_revision: int
+    ) -> AgentTaskRecord | None:
+        """Claim an answer and spend one normal Experiment invocation atomically."""
+        question = self.get_question(question_id)
+        if question is None or question.origin.owner_kind != "episode":
+            raise ValueError("Experiment answer has no episode question")
+        origin = question.origin
+        if (
+            record.status != "queued"
+            or record.parent_operation_id is not None
+            or record.request.get("patch_kind") != "experiment_loop"
+            or record.request.get("trigger") != "watcher"
+            or origin.owner_id not in self.experiment_question_owner_ids(record.episode_id or "")
+        ):
+            raise ValueError("Experiment answer changed its origin binding")
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                "SELECT state,answer_revision,client_receipt_revision,followup_operation_id,"
+                "withdrawn_readonly FROM questions WHERE question_id=?",
+                (question_id,),
+            ).fetchone()
+            if (
+                current is None
+                or current["state"] != "answered"
+                or current["answer_revision"] != answer_revision
+                or current["client_receipt_revision"] is not None
+                or current["followup_operation_id"] is not None
+                or current["withdrawn_readonly"]
+            ):
+                return None
+            row = connection.execute(
+                "SELECT * FROM episodes WHERE episode_id=?", (record.episode_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Experiment answer lost its episode")
+            episode = self._episode_record(row)
+            if (
+                episode.status != "running"
+                or episode.ending is not None
+                or episode.stop_requested_at is not None
+                or self._experiment_has_ending_receipt(connection, episode.episode_id)
+            ):
+                return None
+            if episode.invocations_used >= episode.invocation_ceiling:
+                raise EpisodeInvocationCeilingReached("the episode requires human reauthorization")
+            if record.request.get("control_invocation") != episode.invocations_used + 1:
+                raise ValueError("Experiment answer invocation is out of sequence")
+            if connection.execute(
+                "SELECT 1 FROM auto_research_child_experiments WHERE child_episode_id=?",
+                (episode.episode_id,),
+            ).fetchone():
+                raise ValueError("An orchestrator child cannot receive human questions")
+            asking = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (origin.operation_id,)
+            ).fetchone()
+            if asking is None or asking["status"] not in {"succeeded", "failed"}:
+                return None
+            original = self._agent_task_record(asking)
+            if not self._experiment_question_binding_matches(record, origin, original):
+                raise ValueError("Experiment question origin authority is unavailable")
+            if self._has_resumable_paused_chat_task(
+                connection, origin.project_id, original.kind, original.request.get("chat_id")
+            ):
+                return None
+            if origin.stage_host and self._unresolved_remote_provider_passes(
+                connection, origin.stage_host, origin.stage_root
+            ):
+                return None
+            self._require_project_accepts_new_work(connection, origin.project_id)
+            if self._has_active_chat_overlap(connection, record):
+                return None
+            self._validate_experiment_wake_binding(connection, record)
+            if not self.claim_question_followup(
+                connection,
+                question_id,
+                answer_revision=answer_revision,
+                operation_id=record.operation_id,
+            ):
+                return None
+            self._insert_agent_task(connection, record, continuation_cause="message_wake")
+            connection.execute(
+                "INSERT INTO episode_invocations (episode_id,operation_id,invocation_number,created_at) VALUES (?,?,?,?)",
+                (
+                    episode.episode_id,
+                    record.operation_id,
+                    episode.invocations_used + 1,
+                    record.created_at,
+                ),
+            )
+            connection.execute(
+                "UPDATE episodes SET invocations_used=invocations_used+1,updated_at=? WHERE episode_id=?",
+                (record.created_at, episode.episode_id),
+            )
+        return self.agent_task(record.operation_id)
 
     @staticmethod
     def _experiment_episode_row(
@@ -207,6 +373,54 @@ class ExperimentStoreMixin:
                         admission_id=auto_research_admission_id,
                     )
                 self._insert_episode(connection, started)
+                if continues_episode_id is not None:
+                    reopened = connection.execute(
+                        """WITH RECURSIVE owners(episode_id) AS (
+                            SELECT ? UNION ALL SELECT e.continues_episode_id FROM episodes e
+                            JOIN owners o ON e.episode_id=o.episode_id
+                            WHERE e.continues_episode_id IS NOT NULL
+                        ) UPDATE questions SET withdrawn_readonly=0
+                        WHERE owner_kind='episode' AND owner_id IN (SELECT episode_id FROM owners)
+                        RETURNING *""",
+                        (continues_episode_id,),
+                    ).fetchall()
+                    claimable = []
+                    for question_row in reopened:
+                        question = _question_record(question_row)
+                        if (
+                            question.state != "answered"
+                            or question.client_receipt_revision is not None
+                            or question.followup_operation_id is not None
+                        ):
+                            continue
+                        asking = connection.execute(
+                            "SELECT * FROM graph_runs WHERE operation_id=?",
+                            (question.origin.operation_id,),
+                        ).fetchone()
+                        if (
+                            asking is None
+                            or asking["status"] not in {"succeeded", "failed"}
+                            or not self._experiment_question_binding_matches(
+                                record, question.origin, self._agent_task_record(asking)
+                            )
+                        ):
+                            connection.execute(
+                                "UPDATE questions SET withdrawn_readonly=1 WHERE question_id=?",
+                                (question.question_id,),
+                            )
+                            continue
+                        claimable.append(question)
+                    # Claim only what this invocation's snapshot carries: claimed answers
+                    # sort first there, by the same key, under the same cap. The rest stay
+                    # unclaimed for later answer wakes.
+                    claimable.sort(key=lambda item: (item.created_at, item.question_id))
+                    for question in claimable[:QUESTION_SNAPSHOT_MAX_RECORDS]:
+                        self.claim_question_followup(
+                            connection,
+                            question.question_id,
+                            answer_revision=question.answer_revision,
+                            operation_id=record.operation_id,
+                        )
                 connection.execute(
                     """
                     INSERT INTO experiment_episode_state (episode_id, created_at, updated_at)
@@ -1198,6 +1412,8 @@ class ExperimentStoreMixin:
                 else desired
             )
             self._insert_watcher(connection, persisted)
+        if resource is not None and not records:
+            self._reject_unwakeable_maintained_episode(connection, binding, stop_ids)
         stored_rows = []
         if watcher_ids:
             placeholders = ",".join("?" for _ in watcher_ids)
@@ -1207,6 +1423,49 @@ class ExperimentStoreMixin:
             ).fetchall()
         stored_by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows}
         return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
+
+    def _reject_unwakeable_maintained_episode(
+        self,
+        connection: sqlite3.Connection,
+        binding: WatcherBinding,
+        stop_ids: list[str],
+    ) -> None:
+        """Refuse a Work edit that retires the last way the running loop can wake.
+
+        Only the episode's own turn may leave it without watchers, and only with an
+        explicit exit that ends the episode. A Work turn is never that turn, so its
+        edit must leave a wake. The check reads the same runtime the Runs card
+        projects, after this transaction's stops, and the refusal states that
+        runtime so a generic correction can act on it.
+        """
+
+        control_node_id = binding.continuation.control_node_id
+        assert control_node_id is not None
+        runtime = self._project_experiment_loop_runtimes(
+            binding.project_id,
+            {control_node_id},
+            graph_target=binding.graph_target,
+            _connection=connection,
+        ).get(control_node_id)
+        if runtime is not None and (
+            runtime.task_active
+            or runtime.detached_work_active
+            or runtime.watcher_completion_pending
+        ):
+            return
+        invocations = (
+            f"{runtime.invocations_used} of {runtime.invocation_ceiling} invocations used"
+            if runtime is not None
+            else "invocation use unknown"
+        )
+        raise ExperimentEpisodeUnwakeable(
+            f"Experiment episode {binding.continuation.control_episode_id} on "
+            f"{control_node_id} is still running ({invocations}) with no pending turn. "
+            f"This file stops {', '.join(stop_ids)} and arms nothing, which would leave it "
+            "0 watchers, so nothing could wake it again. This Work turn cannot end the "
+            "episode. Drop a stop item so that watcher can still wake the loop, or arm an "
+            "observer for replacement work that is already running."
+        )
 
     @staticmethod
     def _experiment_observer_identity(

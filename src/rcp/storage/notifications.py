@@ -66,7 +66,40 @@ def migrate_notifications(connection: sqlite3.Connection) -> None:
         connection.execute(statement)
 
 
+def migrate_question_notifications(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS notification_question_events "
+        "(question_id TEXT PRIMARY KEY REFERENCES questions(question_id), observed_at TEXT NOT NULL)"
+    )
+
+
 class NotificationStoreMixin:
+    def unobserved_notification_questions(self, project_id: str) -> list[str]:
+        with self.connection() as connection:
+            return [
+                row[0]
+                for row in connection.execute(
+                    "SELECT q.question_id FROM questions q LEFT JOIN notification_question_events e "
+                    "ON e.question_id=q.question_id WHERE q.project_id=? AND e.question_id IS NULL "
+                    "ORDER BY q.created_at,q.question_id",
+                    (project_id,),
+                )
+            ]
+
+    def observe_notification_question(
+        self, question_id: str, notification: dict[str, Any] | None
+    ) -> bool:
+        """Consume creation once, even without subscribers or after receipt expiry."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            inserted = connection.execute(
+                "INSERT OR IGNORE INTO notification_question_events VALUES (?,?)",
+                (question_id, self.now()),
+            ).rowcount
+            if inserted and notification is not None:
+                self.enqueue_notification(connection, **notification)
+            return bool(inserted)
+
     def notification_preferences(self, project_id: str, user_id: str) -> dict[str, bool]:
         with self.connection() as connection:
             return self._notification_preferences(connection, project_id, user_id)

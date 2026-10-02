@@ -1,4 +1,6 @@
 import type {
+  AgentQuestion,
+  AnswerQuestionRequest,
   UpdateNotice,
   MachinePowerStatus,
   Machine,
@@ -687,4 +689,24 @@ export function installMachinePower(): Promise<MachinePowerStatus> {
 
 export function uninstallMachinePower(): Promise<MachinePowerStatus> {
   return api("/api/machine-power/uninstall", { method: "POST", body: "{}" });
+}
+
+export function fetchQuestions(apiBase: string, ownerKind: "chat" | "episode", ownerId: string) {
+  return api<AgentQuestion[]>(
+    `${apiBase}/${ownerKind === "chat" ? "chats" : "episodes"}/${encodeURIComponent(ownerId)}/questions`,
+  );
+}
+
+export function answerQuestion(apiBase: string, questionId: string, body: AnswerQuestionRequest) {
+  return api<AgentQuestion>(`${apiBase}/questions/${encodeURIComponent(questionId)}/answer`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function dismissQuestion(apiBase: string, questionId: string) {
+  return api<AgentQuestion>(`${apiBase}/questions/${encodeURIComponent(questionId)}/dismiss`, {
+    method: "POST",
+    body: "{}",
+  });
 }

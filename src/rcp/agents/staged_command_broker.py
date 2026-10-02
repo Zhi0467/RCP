@@ -1,5 +1,7 @@
 """Stdlib-only command broker staged beside one provider invocation."""
 
+from __future__ import annotations
+
 import argparse
 import ctypes
 import hashlib
@@ -44,6 +46,9 @@ class _KeyedCommand:
 
 
 def _keyed_signature(value):
+    # A question key identifies durable input, not a cached transport result.
+    if value.get("verb") == "ask":
+        return None
     key = value.get("idempotency_key")
     if not isinstance(key, str):
         return None

@@ -18,6 +18,7 @@ import rcp.storage.base as storage_base_module
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.compute_jobs.models import ComputeBackendProbe
 from rcp.core.models import DISPLAY_NAME_MAX_LENGTH, AuthorizedHuman
+from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES, AGENT_TASK_RECEIPT_RETENTION_COUNTS
 from rcp.providers import ProviderUsage
 from rcp.service import RunRequest, resolve_dispatch_authority
@@ -35,6 +36,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.command_mailbox import CommandMailboxStore
+from rcp.storage.question_models import QuestionOrigin
 
 from .helpers import NON_UUID4
 from .storage_helpers import downgrade_artifacts
@@ -138,6 +140,9 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (30, "artifact_storage_v1"),
         (31, "artifact_imports_v1"),
         (32, "artifact_live_policy_v1"),
+        (33, "questions_v1"),
+        (34, "question_notifications_v1"),
+        (35, "question_answer_projection_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -1955,6 +1960,24 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
     assert owner is not None
     store.seat_project_member("delete-me", owner.user_id)
     store.seat_project_member("keep-me", owner.user_id)
+    for project_id in ("delete-me", "keep-me"):
+        question = store.create_or_get_question(
+            origin=QuestionOrigin(
+                owner_kind="chat",
+                project_id=project_id,
+                owner_id=f"{project_id}-chat",
+                operation_id=f"{project_id}-operation",
+                provider="codex",
+                native_session_id="session",
+                stage_root="/stage",
+                capability="work_auto",
+                write_scope_fingerprint="a" * 64,
+                graph_target=GraphTargetRef(),
+            ),
+            key="key",
+            question="Which metric?",
+        )
+        store.observe_notification_question(question.question_id, None)
 
     for operation_id in ("delete-run", "keep-run"):
         store.record_agent_task_event(operation_id, "event")
@@ -2021,6 +2044,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "notification_graph_markers": 0,
         "notification_episode_observations": 0,
         "notification_project_baselines": 0,
+        "notification_question_events": 1,
+        "questions": 1,
         "chat_pins": 0,
         "conversation_worktrees": 0,
         "episode_isolations": 0,
@@ -3663,3 +3688,20 @@ def test_episode_isolation_migration_retains_existing_graph_targets() -> None:
         assert connection.execute(
             "SELECT json_extract(request_json, '$.graph_isolation') FROM graph_runs ORDER BY rowid"
         ).fetchall() == [(1,), (None,)]
+
+
+def test_question_projection_migration_preserves_existing_answers(tmp_path):
+    from tests.test_chat_question_followup import _answered
+
+    store = AppStore(tmp_path / "questions.sqlite3")
+    question = _answered(store)
+    with store.connection() as connection:
+        connection.execute("ALTER TABLE questions DROP COLUMN answer_projected_revision")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=35")
+    reopened = AppStore(store.path)
+    assert reopened.get_question(question.question_id).answer == question.answer
+    assert reopened.get_question(question.question_id).answer_projected_revision == 0
+    reopened.mark_question_answer_projected(question.question_id, question.answer_revision)
+    with reopened.connection() as connection:
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=35")
+    assert AppStore(store.path).get_question(question.question_id).answer_projected_revision == 1

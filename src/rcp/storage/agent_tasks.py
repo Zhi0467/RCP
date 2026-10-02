@@ -82,6 +82,7 @@ from rcp.storage.models import (
     _required_timestamp,
     _retention_reference_time,
 )
+from rcp.storage.question_models import QuestionRecord
 
 # Ordered Apply history is a contiguous latest tail. The singular projection
 # retains the detailed latest result; history entries are concise so task JSON
@@ -102,6 +103,8 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "compute_command_result",
     "remote_provider_started",
     "remote_provider_stopped",
+    "question_answer_offered",
+    "question_answer_acknowledged",
 )
 _PROTECTED_AGENT_TASK_RECEIPT_PLACEHOLDERS = ", ".join(
     "?" for _category in _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES
@@ -238,6 +241,139 @@ class AgentTaskStoreMixin:
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    def admit_chat_question_followup(self, question_id: str) -> AgentTaskRecord | None:
+        """Claim and insert atomically; unresolved remote liveness still defers."""
+        from rcp.service import RunRequest
+        from rcp.storage.questions import _question_record
+
+        operation_id = uuid.uuid4().hex
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM questions WHERE question_id=?", (question_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(question_id)
+            question = _question_record(row)
+            if (
+                question.state != "answered"
+                or question.client_receipt_revision is not None
+                or question.followup_operation_id is not None
+                or question.withdrawn_readonly
+            ):
+                return None
+            origin = question.origin
+            if origin.owner_kind != "chat":
+                raise ValueError("question_owner_not_chat")
+            row = connection.execute(
+                "SELECT * FROM graph_runs WHERE operation_id=?", (origin.operation_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError("question_origin_missing")
+            task = self._agent_task_record(row)
+            if task.status not in {"succeeded", "failed"}:
+                raise AgentTaskAdmissionConflict("question_origin_unsettled")
+            if (
+                task.history_only
+                or task.authorized_by is None
+                or task.kind not in {"node_chat", "project_chat"}
+                or task.episode_id is not None
+                or task.project_id != origin.project_id
+                or task.request.get("chat_id") != origin.owner_id
+                or task.request.get("provider") != origin.provider
+                or task.native_session_id != origin.native_session_id
+                or task.stage_root != origin.stage_root
+                or (task.stage_host or "") != (origin.stage_host or "")
+                or task.graph_target != origin.graph_target
+                or task.write_scope_fingerprint != origin.write_scope_fingerprint
+                or task.dispatch_authority is None
+                or task.dispatch_authority.task_contract != origin.capability
+                or task.request.get("mode") != "work"
+                or task.request.get("patch_kind", "work") != "work"
+                or classify_terminal_error(task.error or "") == "stale_session"
+            ):
+                raise ValueError("question_origin_binding_unavailable")
+            if self._has_resumable_paused_chat_task(
+                connection, origin.project_id, task.kind, origin.owner_id
+            ):
+                raise AgentTaskAdmissionConflict("question_session_paused")
+            if origin.stage_host and self._unresolved_remote_provider_passes(
+                connection, origin.stage_host, origin.stage_root
+            ):
+                raise AgentTaskAdmissionConflict("question_provider_liveness_unresolved")
+            unavailable = connection.execute(
+                """SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND (
+                category IN ('experiment_recovery_abandoned', 'auto_research_recovery_abandoned')
+                OR (category='provider_terminal_error'
+                    AND json_extract(payload_json,'$.classification')='stale_session')
+                OR (category='continuation_context_unavailable'
+                    AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
+                (origin.operation_id,),
+            ).fetchone()
+            if unavailable is not None:
+                raise ValueError("question_origin_session_unavailable")
+            self._require_project_accepts_new_work(connection, origin.project_id)
+            request = RunRequest.model_validate(task.request).model_copy(
+                update={
+                    "session_id": origin.native_session_id,
+                    "message": question.answer or "\n".join(question.chosen_choices),
+                    "trigger": "human",
+                    "attachments": [],
+                    "attachment_batch_id": None,
+                    "attachment_set_id": None,
+                    "attachment_client_id": None,
+                    "watcher_ids": [],
+                }
+            )
+            now = self.now()
+            followup = AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=origin.project_id,
+                kind=task.kind,
+                status="queued",
+                request=request.model_dump(mode="json"),
+                created_at=now,
+                updated_at=now,
+                status_message="Queued question answer",
+                native_session_id=origin.native_session_id,
+                stage_host=origin.stage_host,
+                stage_root=origin.stage_root,
+                graph_target=origin.graph_target,
+                authorized_by=task.authorized_by,
+                dispatch_authority=task.dispatch_authority,
+                runtime_id=task.runtime_id,
+            )
+            if self._has_active_chat_overlap(connection, followup):
+                raise AgentTaskAdmissionConflict("question_session_occupied")
+            if not self.claim_question_followup(
+                connection,
+                question_id,
+                answer_revision=question.answer_revision,
+                operation_id=operation_id,
+            ):
+                return None
+            # This cause bypasses latest-session selection; ordinary admission
+            # still checks current project, graph, session and stage constraints.
+            self._insert_agent_task(connection, followup, continuation_cause="message_wake")
+        return self.agent_task(operation_id)
+
+    def question_for_followup(self, operation_id: str) -> QuestionRecord | None:
+        """Keep an answer's binding through recovery children as well as its first turn."""
+        from rcp.storage.questions import _question_record
+
+        with self.connection() as connection:
+            row = connection.execute(
+                """WITH RECURSIVE lineage(operation_id) AS (
+                    SELECT ? UNION SELECT run.parent_operation_id FROM graph_runs AS run
+                    JOIN lineage ON run.operation_id=lineage.operation_id
+                    WHERE run.parent_operation_id IS NOT NULL
+                ) SELECT question.* FROM questions AS question
+                JOIN lineage ON question.followup_operation_id=lineage.operation_id
+                LIMIT 1""",
+                (operation_id,),
+            ).fetchone()
+        return _question_record(row) if row is not None else None
 
     def create_artifact_edit_task(
         self, record: AgentTaskRecord, *, continuation_cause: str = "fresh"
@@ -2701,6 +2837,26 @@ class AgentTaskStoreMixin:
                 LIMIT ?
                 """,
                 (operation_id, max(1, min(limit, AGENT_TASK_RECEIPT_LIST_LIMIT))),
+            ).fetchall()
+        receipts = []
+        for row in rows:
+            data = dict(row)
+            data["payload"] = json.loads(data.pop("payload_json"))
+            receipts.append(AgentTaskReceiptRecord.model_validate(data))
+        return receipts
+
+    def agent_task_receipts_by_category(
+        self, operation_id: str, category: str
+    ) -> list[AgentTaskReceiptRecord]:
+        """Read durable internal receipts without the task display limit."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM graph_run_receipts
+                WHERE operation_id = ? AND category = ?
+                ORDER BY receipt_id ASC
+                """,
+                (operation_id, category),
             ).fetchall()
         receipts = []
         for row in rows:

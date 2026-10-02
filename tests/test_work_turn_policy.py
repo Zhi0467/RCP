@@ -163,3 +163,48 @@ def test_resumed_compute_mailbox_keeps_the_launch_scope(manifest, tmp_path) -> N
     execution.write_scope_fingerprint = "changed"
     with pytest.raises(ValueError, match="scope"):
         _resume_work_compute_commands(execution, _WorkMailboxContext.model_validate(saved))
+
+
+@pytest.mark.parametrize("owner", ["work", "experiment_loop"])
+@pytest.mark.parametrize("ask_allowed,mode", [(True, "work"), (True, "discuss"), (False, "work")])
+def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
+    tmp_path, monkeypatch, owner, ask_allowed, mode
+):
+    from rcp.runs.tasks import experiment_loop, work
+
+    from .test_work_questions import work_execution
+
+    execution, _ = work_execution(tmp_path)
+    module = work if owner == "work" else experiment_loop
+    policy = {} if owner == "work" else {"control_node_id": "exp", "control_decision_bundle": []}
+    saved = {}
+    monkeypatch.setattr(
+        module, "start_work_validator_mailbox", lambda _staged, **kwargs: saved.update(kwargs)
+    )
+    module._start_work_validator_mailbox(
+        None, None, execution=execution, budget=None, run_truth_scope=[], **policy
+    )
+    assert "ask" in saved["command_handler"].allowed_verbs
+    context_model = (
+        work._WorkMailboxContext if owner == "work" else experiment_loop._ExperimentMailboxContext
+    )
+    context = context_model.model_validate(saved["resume_context"])
+    assert context.ask_allowed
+    context.ask_allowed = ask_allowed
+    if mode == "discuss":
+        from rcp.service import RunRequest, resolve_dispatch_authority
+
+        authority = resolve_dispatch_authority(
+            "project_chat",
+            RunRequest(chat_scope="project", chat_id="chat", mode="discuss", message="Discuss"),
+        )
+        with execution.store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET dispatch_authority_json=? WHERE operation_id='turn'",
+                (authority.model_dump_json(),),
+            )
+    restored = work._resume_work_command_handler(execution, context)
+    if ask_allowed and mode == "work":
+        assert restored is not None and "ask" in restored.allowed_verbs
+    else:
+        assert restored is None

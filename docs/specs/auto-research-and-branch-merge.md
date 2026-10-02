@@ -263,6 +263,32 @@ admissions remain. A waiting child contributes a `waiting_work` blocker with
 action `stop --key <key> <worker_id>`. Finish never performs cleanup as a side
 effect of saying finish.
 
+## Orchestrator questions
+
+Only the orchestrator may call keyed `ask`; workers mail the orchestrator.
+The server captures the question's episode, operation, native session, stage,
+write scope, and graph target. Repeating an identical owner/key reads its current
+state. `ask` returns `parked` immediately and the orchestrator ends its turn;
+the episode remains running and workers continue. Open questions add a
+`needs_action` health overlay without changing admission or persisted status.
+
+A human answer creates one hearsay-only human mail item per question/revision.
+Normal mail admission wakes the orchestrator and spends one invocation, deferring
+when its session is busy. The mail identifies the question and carries its full
+answer and selected choices, including when the orchestrator harvests it during
+an existing turn. Reconciliation repairs a resolution interrupted before mail
+insertion. No answer grants approval,
+graph authority, write scope, or additional budget.
+
+Every orchestrator launch stages a fresh bounded question snapshot from the
+question store, including open questions, undelivered dismissals, and answers
+claimed by that wake. It never reads chat transcripts. A successful provider turn
+acknowledges the staged dismissals; a failed launch leaves them pending. Dismissal
+never sends mail or wakes an agent. Episode endings withdraw cards read-only;
+continuations reopen ancestor cards while preserving their original binding.
+Root and session-start Retry contracts share the resolved `ask` command surface;
+workers remain excluded.
+
 ## Completion, Stop, and report
 
 Normal completion requires an explicit idempotent `finish`. A settled child, an
@@ -291,7 +317,9 @@ chain root's id as its `branch_id`; every chain member's graph target names that
 branch, and a branch resolves to the newest member of its chain wherever the
 current writer matters. Child Experiment routes still pending or running move to
 the continuation, so their endings reach the resumed orchestrator; child Work
-routes, notices, mail, and watchers stay on the source. The continuation's first
+routes, notices, ordinary mail, and watchers stay on the source. Undelivered
+question-answer mail follows the reopened question to the continuation
+orchestrator; already delivered answers are not sent again. The continuation's first
 turn is a `lifecycle_wake` that claims a `reauthorized` notice naming the source
 and the new ceiling. The source episode is otherwise untouched: its ending,
 receipt, report, attempts, watchers, and notices stay as they were. A

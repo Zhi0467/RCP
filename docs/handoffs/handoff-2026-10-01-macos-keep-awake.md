@@ -95,7 +95,9 @@ enrolled. A half-finished install is detected and repaired by the next
 install.
 
 Uninstall is also one admin prompt. It clears the flag, verifies it, then
-removes all three.
+removes the sudoers rule, the LaunchDaemon, and the directory's state files
+and watchdog copy. The directory and its `owner.lock` stay, so the lock inode
+is never replaced; a later install reuses them.
 
 The opt-in dialog says:
 

@@ -31,6 +31,13 @@ from rcp.storage.notifications import NotificationStoreMixin
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.provider_logins import ProviderLoginStoreMixin
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
+from rcp.storage.question_models import (
+    QuestionArgumentConflict,
+    QuestionOrigin,
+    QuestionRecord,
+    QuestionStateConflict,
+)
+from rcp.storage.questions import QuestionStoreMixin
 from rcp.storage.restore_detachment import RestoreDetachmentStoreMixin
 from rcp.storage.rows import RowMappingMixin
 from rcp.storage.space_machines import SpaceMachineStoreMixin
@@ -40,6 +47,7 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    QuestionStoreMixin,
     NotificationStoreMixin,
     SpaceMachineStoreMixin,
     ProviderLoginStoreMixin,
@@ -72,6 +80,10 @@ class AppStore(
 __all__ = [
     *_model_names,
     "AppStore",
+    "QuestionArgumentConflict",
+    "QuestionOrigin",
+    "QuestionRecord",
+    "QuestionStateConflict",
     "Artifact",
     "ArtifactFile",
     "ArtifactVersion",

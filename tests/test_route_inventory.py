@@ -149,6 +149,9 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/projects/{project_id}/experiments/{node_id:path}/stop"),
     (("GET",), "/api/projects/{project_id}/chats"),
     (("GET",), "/api/projects/{project_id}/chats/{chat_id}"),
+    (("GET",), "/api/projects/{project_id}/chats/{chat_id}/questions"),
+    (("POST",), "/api/projects/{project_id}/questions/{question_id}/answer"),
+    (("POST",), "/api/projects/{project_id}/questions/{question_id}/dismiss"),
     (("GET",), "/api/projects/{project_id}/chats/{chat_id}/worktree"),
     (("DELETE",), "/api/projects/{project_id}/chats/{chat_id}/worktree"),
     (("GET",), "/api/projects/{project_id}/episodes"),
@@ -159,6 +162,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/merge-preview"),
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/cleanup"),
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/continue"),
+    (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/questions"),
     (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/messages"),
     (("POST",), "/api/projects/{project_id}/episodes/{episode_id}/messages"),
     (("HEAD",), "/api/projects/{project_id}/episodes/{episode_id}/report/content"),
@@ -252,13 +256,13 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 193
-    assert len(_FROZEN_ROUTE_INVENTORY) == 193
+    assert len(entries) == 197
+    assert len(_FROZEN_ROUTE_INVENTORY) == 197
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 189
+    assert sum(isinstance(route, APIRoute) for route in routes) == 193
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

@@ -61,7 +61,7 @@ EpisodeHealth = Literal[
     "stopped",
     "failed",
 ]
-EpisodeBlockedReason = Literal["sign_in", "reauthorize", "repeated_failure"]
+EpisodeBlockedReason = Literal["sign_in", "reauthorize", "repeated_failure", "question"]
 EpisodeRecommendationKind = Literal[
     "continue",
     "wait",
@@ -84,6 +84,7 @@ class EpisodeHealthInput:
     control_task_id: str | None
     recovery: _RecoveryProjection | None
     report_login_blocked: bool = False
+    has_open_questions: bool = False
 
 
 def project_episode_health(
@@ -105,6 +106,7 @@ def project_episode_health(
             control_task_id=item.control_task_id,
             recovery=item.recovery,
             report_login_blocked=item.report_login_blocked,
+            has_open_questions=item.has_open_questions,
         )
         for item in inputs
     }
@@ -137,6 +139,7 @@ def _episode_projection(
     control_task_id: str | None,
     recovery: _RecoveryProjection | None,
     report_login_blocked: bool = False,
+    has_open_questions: bool = False,
 ) -> tuple[
     EpisodeHealth,
     EpisodeRecommendationKind,
@@ -172,6 +175,8 @@ def _episode_projection(
     live_turn = any(item.status in {"queued", "running", "pausing"} for item in tasks)
     if (episode.stop_requested_at is not None or episode.status == "stopping") and live_turn:
         return "stopping", "wait", None, None
+    if episode.status == "running" and has_open_questions:
+        return "needs_action", "review", None, "question"
     if recovery is not None and recovery.status == "pending":
         return "recovering", "wait", None, None
     # A retry that failed the way its predecessor did stopped the ladder. RCP
@@ -326,9 +331,25 @@ def load_episode_health(
             is not None
         )
         inputs.append(
-            EpisodeHealthInput(episode.episode_id, episode, tasks, control_id, recovery, blocked)
+            EpisodeHealthInput(
+                episode.episode_id,
+                episode,
+                tasks,
+                control_id,
+                recovery,
+                blocked,
+                episode_has_open_questions(store, episode.project_id, episode.episode_id),
+            )
         )
     return project_episode_health(inputs)
+
+
+def episode_has_open_questions(store: AppStore, project_id: str, episode_id: str) -> bool:
+    """Include inherited cards without changing their immutable owner binding."""
+    return any(
+        question.state == "pending" and not question.withdrawn_readonly
+        for question in store.episode_questions(project_id, episode_id)
+    )
 
 
 def _episode_task_controls(

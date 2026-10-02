@@ -9,6 +9,13 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from rcp.compute_jobs.models import ComputeLaunchRequest
+from rcp.limits import (
+    ASK_ANSWER_MAX_LENGTH,
+    ASK_CHOICE_MAX_COUNT,
+    ASK_CHOICE_MAX_LENGTH,
+    ASK_QUESTION_MAX_LENGTH,
+    COMMAND_ASK_POLL_SECONDS,
+)
 from rcp.storage import GraphCondition
 
 COMMAND_PROTOCOL_VERSION = 1
@@ -30,6 +37,7 @@ CommandVerb = Literal[
     "inbox",
     "finish",
     "launch",
+    "ask",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -44,6 +52,7 @@ MutatingCommandVerb = Literal[
     "inbox",
     "finish",
     "launch",
+    "ask",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -59,6 +68,7 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "inbox",
         "finish",
         "launch",
+        "ask",
     }
 )
 
@@ -239,6 +249,51 @@ class LaunchArguments(ComputeLaunchRequest):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class AskArguments(BaseModel):
+    """One keyed human question; omitted options have one canonical identity."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    question: str = Field(min_length=1, max_length=ASK_QUESTION_MAX_LENGTH)
+    choices: list[Annotated[str, Field(min_length=1, max_length=ASK_CHOICE_MAX_LENGTH)]] = Field(
+        default_factory=list, max_length=ASK_CHOICE_MAX_COUNT
+    )
+    multiple: bool = False
+
+    @model_validator(mode="after")
+    def valid_choices(self) -> AskArguments:
+        if not self.question.strip() or any(not choice.strip() for choice in self.choices):
+            raise ValueError("question and choices must not be blank")
+        if len(set(self.choices)) != len(self.choices):
+            raise ValueError("choices must be distinct")
+        if self.multiple and not self.choices:
+            raise ValueError("multiple requires choices")
+        return self
+
+
+class AskResult(BaseModel):
+    """Question state is independent of the command envelope and transport delivery."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    receipt_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    state: Literal["pending", "answered", "dismissed", "parked"]
+    question_id: str = Field(min_length=1)
+    answer: str | None = Field(default=None, max_length=ASK_ANSWER_MAX_LENGTH)
+    choices: list[Annotated[str, Field(min_length=1, max_length=ASK_CHOICE_MAX_LENGTH)]] = Field(
+        default_factory=list, max_length=ASK_CHOICE_MAX_COUNT
+    )
+
+    @model_validator(mode="after")
+    def resolution_matches_state(self) -> AskResult:
+        if self.state == "answered":
+            if self.answer is None:
+                raise ValueError("answered requires answer text")
+        elif self.answer is not None or self.choices:
+            raise ValueError("only answered questions carry a resolution")
+        return self
+
+
 class _CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -325,6 +380,13 @@ class LaunchCommandRequest(_CommandRequest):
     arguments: LaunchArguments
 
 
+class AskCommandRequest(_CommandRequest):
+    receipt_token: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    verb: Literal["ask"]
+    arguments: AskArguments
+
+
 CommandRequest: TypeAlias = Annotated[
     ValidateCommandRequest
     | ApplyCommandRequest
@@ -338,7 +400,8 @@ CommandRequest: TypeAlias = Annotated[
     | EpisodeCommandRequest
     | InboxCommandRequest
     | FinishCommandRequest
-    | LaunchCommandRequest,
+    | LaunchCommandRequest
+    | AskCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)
@@ -382,11 +445,15 @@ def command_requires_idempotency_key(verb: CommandVerb) -> bool:
 def staged_command_client_source() -> str:
     """Load the one tested stdlib client source shipped to local or SSH stages."""
 
-    return (
+    source = (
         importlib.resources.files("rcp.agents")
         .joinpath("staged_command_client.py")
         .read_text(encoding="utf-8")
     )
+    marker = "COMMAND_ASK_POLL_SECONDS = None"
+    if source.count(marker) != 1:
+        raise RuntimeError("staged command client lost its poll-limit marker")
+    return source.replace(marker, f"COMMAND_ASK_POLL_SECONDS = {COMMAND_ASK_POLL_SECONDS!r}")
 
 
 @lru_cache(maxsize=1)

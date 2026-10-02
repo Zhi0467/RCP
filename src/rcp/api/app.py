@@ -65,6 +65,7 @@ from rcp.api.paper import router as paper_router
 from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
 from rcp.api.provider_login import router as provider_login_router
+from rcp.api.questions import router as questions_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
 from rcp.api.space_machines import router as space_machines_router
@@ -1229,16 +1230,35 @@ def create_app(
     request_startup_sweep = watcher_delivery.request_startup_sweep
     retry_graph_wakes_after_poll = watcher_delivery.retry_graph_wakes_after_poll
 
+    def reconcile_question_answers(project_id: str | None = None) -> dict[str, str]:
+        from rcp.runs.chat import reconcile_chat_question_answers
+        from rcp.runs.experiment_questions import reconcile_experiment_question_answers
+
+        statuses = reconcile_chat_question_answers(
+            store,
+            background_tasks,
+            lambda identity: _project_service(catalog, identity),
+            project_id=project_id,
+        )
+        statuses.update(reconcile_experiment_question_answers(background_tasks))
+        return statuses
+
     def after_task_settled(
         project_id: str,
         kind: AgentTaskKind,
         request: AgentTaskRequest,
         execution: AgentTaskExecution,
     ) -> None:
+        from rcp.runs.questions import record_work_question_receipts
+
         # `finally`, because the Auto-research half ran even when the generic
         # half raised while the engine owned both. It keeps its own diagnostic
         # and still lets the generic failure reach the engine's receipt.
         try:
+            settled = store.agent_task(execution.operation_id)
+            if settled is not None and settled.status == "succeeded":
+                record_work_question_receipts(execution)
+            reconcile_question_answers(project_id)
             watcher_delivery.evaluate_graph_conditions_after_task(
                 project_id,
                 kind,
@@ -1827,6 +1847,7 @@ def create_app(
                                 source="startup",
                             )
                 await asyncio.to_thread(reconcile_auto_research_recovery_pass)
+                await asyncio.to_thread(reconcile_question_answers)
                 if member_removal_coordinator is not None:
                     await asyncio.to_thread(member_removal_coordinator.reconcile_pending)
                 protected_roots = _protected_run_stage_roots(store, "")
@@ -1973,6 +1994,7 @@ def create_app(
     app.state.data_dir = app_data
     app.state.background_tasks = background_tasks
     app.state.machine_power = machine_power
+    app.state.reconcile_question_answers = reconcile_question_answers
     app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
     app.state.watcher_poller = watcher_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
@@ -2209,6 +2231,7 @@ def create_app(
     app.include_router(episode_router)
     app.include_router(experiments_router)
     app.include_router(chats_router)
+    app.include_router(questions_router)
     app.include_router(history_router)
     app.include_router(paper_router)
     app.include_router(result_views_router)

@@ -29,7 +29,8 @@ from rcp.storage.models import (
     _stored_space_kind,
     normalize_space_name,
 )
-from rcp.storage.notifications import migrate_notifications
+from rcp.storage.notifications import migrate_notifications, migrate_question_notifications
+from rcp.storage.questions import migrate_questions
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -71,6 +72,9 @@ class AppStoreBase:
         (30, "artifact_storage_v1"),
         (31, "artifact_imports_v1"),
         (32, "artifact_live_policy_v1"),
+        (33, "questions_v1"),
+        (34, "question_notifications_v1"),
+        (35, "question_answer_projection_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -656,11 +660,34 @@ class AppStoreBase:
             name="artifact_live_policy_v1",
             migration=self._migrate_artifact_live_policy,
         )
+        self._run_storage_schema_migration(
+            connection, version=33, name="questions_v1", migration=migrate_questions
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=34,
+            name="question_notifications_v1",
+            migration=migrate_question_notifications,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=35,
+            name="question_answer_projection_v1",
+            migration=self._migrate_question_answer_projection,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_question_answer_projection(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(questions)")}
+        if "answer_projected_revision" not in columns:
+            connection.execute(
+                "ALTER TABLE questions ADD COLUMN answer_projected_revision INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _migrate_legacy_startup_schema(
         self,
