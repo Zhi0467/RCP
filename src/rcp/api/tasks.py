@@ -1047,9 +1047,10 @@ def _read_agent_artifact_bytes(
             status_code=410 if action in {"open", "download"} else 409,
             detail=projected.unavailable_reason or f"Artifact {action} unavailable",
         )
+    # Mirrors the turn's staging: an edit binding fixes the scope, even across a Retry.
     scope_id = (
         edit["staged_scope_id"]
-        if record.kind == "artifact_edit"
+        if isinstance(edit, dict)
         else _logical_chat_turn_operation_id(store, record.operation_id)
     )
     if not edited and scoped_artifact_id(scope_id, descriptor.name) != descriptor.artifact_id:
