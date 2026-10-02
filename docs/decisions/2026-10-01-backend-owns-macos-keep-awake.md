@@ -41,7 +41,7 @@ Confirmed by the human 2026-10-01.
   included. The sudoers rule names a user, not an app.
 - **A removed sudoers rule can strand the flag.** If something deletes it while
   the flag is set, RCP cannot clear it. The home page shows the exact command.
-- **A reboot clears a flag the user set themselves.**
+- **A reboot, install, or uninstall clears a flag the user set themselves.**
 - **The Mac may stay awake longer than needed** when demand over-counts, until
   the battery floor.
 - **No guarantee beyond orchestration.** Wi-Fi, provider sign-in, SSH, and

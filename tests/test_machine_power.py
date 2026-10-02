@@ -299,7 +299,8 @@ def test_cleanup_failure_latches_and_records_remedy(machine, clear_failed, sleep
     machine.controller.safety_pass()
     status = machine.controller.status()
     assert status["latched"] == "cleanup_failure"
-    assert status["cleanup_failure"] == {"kind": kind, "command": "sudo pmset -a disablesleep 0"}
+    command = "pmset sleepnow" if kind == "sleep_failed" else "sudo pmset -a disablesleep 0"
+    assert status["cleanup_failure"] == {"kind": kind, "command": command}
     machine.controller.stop()
     other = machine.new_controller()
     assert other.status()["cleanup_failure"] == status["cleanup_failure"]

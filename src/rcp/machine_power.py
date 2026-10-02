@@ -597,7 +597,11 @@ class MachinePowerController:
         self._state["latched"] = "cleanup_failure"
         self._state["cleanup_failure"] = {
             "kind": kind,
-            "command": "sudo pmset -a disablesleep 0",
+            # A cleared flag does not sleep a closed Mac, so a failed sleep
+            # needs its own remedy.
+            "command": "pmset sleepnow"
+            if kind == "sleep_failed"
+            else "sudo pmset -a disablesleep 0",
         }
         self._save_best_effort()
 

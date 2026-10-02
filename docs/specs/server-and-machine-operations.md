@@ -493,8 +493,9 @@ as is a second macOS account. Uninstall clears and verifies the flag, then
 removes everything but the directory and its `owner.lock`.
 
 **One owner per Mac** holds an advisory lock on `owner.lock`. A flag that is set
-without an RCP activation record is reported as `external_owner` and never
-cleared or adopted.
+without an RCP activation record is reported as `external_owner`; the
+controller never clears or adopts it. Install and uninstall reload the boot
+daemon, which clears it, as a reboot does.
 
 **The watchdog is the only process that runs `pmset -a disablesleep`.** It is
 `src/rcp/machine_power_watchdog.sh`, copied into the machine-wide directory and
@@ -515,7 +516,8 @@ until the flag has been set once since boot; RCP reads that as off.
 **Re-arm.** Thermal and cleanup failures latch lid mode off until the human
 re-enables it, and the latch survives restarts. A battery release re-arms on AC
 power. If the flag cannot be cleared, the space home page shows
-`sudo pmset -a disablesleep 0`. A removed sudoers rule can strand the flag;
+`sudo pmset -a disablesleep 0`; if the flag cleared but the closed Mac did not
+sleep, it shows `pmset sleepnow`. A removed sudoers rule can strand the flag;
 that is accepted.
 
 Preferences and latches live in the data directory's SQLite
