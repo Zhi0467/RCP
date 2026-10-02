@@ -290,7 +290,7 @@ def test_viewer_sends_comments_through_stored_artifact_route() -> None:
     assert "/api/projects/project/artifacts/0123456789abcdef01234567/comments" in document
     assert "frame-ancestors 'self'" in csp
     assert 'id="state"' not in document
-    assert "mode" not in document
+    assert "mode:" not in document and '"mode"' not in document
     assert "fetch(config.keepUrl" in document
     assert "right - left < 4" in document
     assert 'id="composer"' in document

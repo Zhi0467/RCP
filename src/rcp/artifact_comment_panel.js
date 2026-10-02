@@ -66,6 +66,7 @@ function saveComments() {
 function render() {
   items.replaceChildren();
   count.textContent = String(comments.length);
+  count.hidden = comments.length === 0;
   comments.forEach((comment, index) => {
     const card = document.createElement("section");
     card.className = "selection";

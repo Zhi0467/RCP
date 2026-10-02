@@ -259,8 +259,9 @@ shell opts in through the private preview bridge. A text or area selection opens
 a floating comment window over the artifact; Cancel or Escape discards it.
 Dragging from a figure or blank space selects an area, while starting on text
 preserves ordinary highlighting. The window offers **Add comment**, which files
-the comment in a folded Comments tray, and **Edit now**, which adds it and sends
-every filed comment at once. The tray lists filed comments with Remove, offers a
+the comment, and **Edit now**, which adds it and sends every filed comment at
+once. Filed comments stay behind one corner comment icon with a count badge;
+clicking it opens the tray, which lists them with Remove, offers a
 comment on the whole artifact (the only kind for types without selection
 gestures), and a one-off **Send to original chat** for everything filed. These
 are prompt inputs, never graph annotations.
@@ -272,7 +273,9 @@ server's reason and keeps the comments filed. Success clears them and notifies
 the containing RCP panel of the admitted edit operation. When admission requires
 an explicit fresh session, both actions say so and supply the fresh-session
 flag. An unavailable origin never prevents viewing; its reason appears beside
-the disabled actions.
+the disabled actions. The shell paints with the containing app's theme and
+color mode and follows a change live; opened on its own, it uses the remembered
+appearance.
 
 RCP carries selected text with limited surrounding text. A box on HTML names
 up to eight elements it covers the way a reader of the source finds them: a CSS
