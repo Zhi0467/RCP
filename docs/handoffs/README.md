@@ -1,5 +1,7 @@
 # Active implementation handoffs
 
+- [Project references in chat](handoff-2026-10-02-project-references.md)
+  — design drafted 2026-10-02; implementation not started.
 - [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
   — design settled 2026-10-01; implementation in progress on its PR.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
