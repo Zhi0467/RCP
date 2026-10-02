@@ -761,14 +761,16 @@ class MachinePowerController:
             self._release(cause, keep_idle=True)
             return
 
-        if not self._state["lid_mode"] or self._state["latched"]:
+        # A broken installation may have lost the boot reset, so it releases now
+        # rather than when the heartbeat goes stale.
+        if not self._state["lid_mode"] or self._state["latched"] or not installed:
             if self._watchdog is not None:
                 if self._desired == "on":
                     self._record_release("disabled")
                 self._heartbeat("off", "disabled")
                 self._lid_active = False
             return
-        if not installed or self._external or not self._acquire():
+        if self._external or not self._acquire():
             return
         if self._state["latched"]:
             self._close_owner()

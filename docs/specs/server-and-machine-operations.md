@@ -509,7 +509,8 @@ generation and exits, so a resumed backend cannot re-arm it.
 **Safety.** Each pass reads battery, thermal state, lid, and flag. With the
 flag set, the kernel refuses its own low-battery and thermal sleep, so RCP
 releases at 20% or less on battery and on any thermal warning; both also drop
-the idle hold. A reading that fails releases lid mode only. Ending demand drops
+the idle hold. A reading that fails, or an installation that is no longer
+complete, releases lid mode only. Ending demand drops
 both holds and never sleeps an open Mac. pmset omits the `SleepDisabled` line
 until the flag has been set once since boot; RCP reads that as off.
 

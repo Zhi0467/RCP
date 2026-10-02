@@ -254,6 +254,13 @@ def test_demand_gone_releases_both_holds(machine):
     assert machine.controller.status()["idle_hold"]["active"] is False
 
 
+def test_broken_installation_releases_immediately(machine):
+    machine.activate()
+    machine.installed = False
+    machine.controller.safety_pass()
+    assert power.read_record(machine.root / "heartbeat")["desired"] == "off"
+
+
 def test_battery_floor_stays_released_until_ac_then_rearms(machine):
     machine.activate()
     machine.outputs["batt"] = BATTERY.replace("75%", "20%")
