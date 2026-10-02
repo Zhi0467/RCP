@@ -4811,7 +4811,12 @@ export default function App() {
                 paperUnsynced={paper.sync_state !== "synced"}
                 onChange={changeView}
               />
-              <Artifacts key={project.id} projectId={project.id} />
+              <Artifacts
+                key={project.id}
+                projectId={project.id}
+                nodeTitle={(nodeId) => presentedGraph.nodes[nodeId]?.title ?? null}
+                onOpenNode={openNodeById}
+              />
             </div>
           )}
           {view === "terminals" && <Terminals key={project.id} projectId={project.id} />}

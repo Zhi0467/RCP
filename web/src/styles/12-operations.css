@@ -606,6 +606,8 @@
 }
 
 .artifact-entry > div {
+  /* Fill the row so every action button stays at its right end. */
+  flex: 1;
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -619,6 +621,15 @@
 .artifact-entry-download {
   position: relative;
   z-index: 1;
+}
+
+.artifact-entry-node {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: start;
 }
 
 .artifact-entry-chat {

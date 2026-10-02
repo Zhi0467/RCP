@@ -55,6 +55,7 @@ class SavedArtifactResponse(BaseModel):
     episode_id: str | None = None
     episode_mode: EpisodeMode | None = None
     source_chat_href: str | None = None
+    source_node_id: str | None = None
     viewer_url: str | None
     view: ArtifactView
     available: bool
@@ -67,6 +68,19 @@ class SavedArtifactResponse(BaseModel):
 def _task_artifact_episode_id(task: AgentTaskRecord) -> str | None:
     edit = task.request.get("artifact_edit")
     return edit.get("episode_id") if isinstance(edit, dict) else task.episode_id
+
+
+def _source_node_id(
+    store: AppStore, project_id: str, task: AgentTaskRecord | None, episode_id: str | None
+) -> str | None:
+    """The graph node an artifact came from: its Experiment's node, else its node chat."""
+    episode = store.episode(episode_id) if episode_id else None
+    if episode is not None and episode.project_id == project_id and episode.control_node_id:
+        return episode.control_node_id
+    if task is None or task.project_id != project_id:
+        return None
+    node_id = task.request.get("node_id")
+    return node_id if isinstance(node_id, str) and node_id else None
 
 
 def _episode_runs_query(
@@ -246,6 +260,7 @@ def saved_artifacts(
                     artifact_id=artifact.artifact_id,
                     episode_mode=episode_mode,
                     source_chat_href=chat_origins.get(task.operation_id),
+                    source_node_id=_source_node_id(store, project_id, task, episode_id),
                     viewer_url=f"{artifact_url}/viewer" if projected.can_open else None,
                     view=projected.view,
                     available=projected.available,
@@ -278,6 +293,7 @@ def saved_artifacts(
                 episode_id=report.episode_id,
                 episode_mode=report.mode,
                 source_chat_href=chat_origins.get(origin.operation_id) if origin else None,
+                source_node_id=_source_node_id(store, project_id, origin, report.episode_id),
                 viewer_url=f"{artifact_url}/viewer",
             )
         )
@@ -301,6 +317,14 @@ def saved_artifacts(
                 artifact_id=artifact.artifact_id,
                 operation_id=artifact.origin_operation_id,
                 episode_id=artifact.episode_id,
+                source_node_id=_source_node_id(
+                    store,
+                    project_id,
+                    store.agent_task(artifact.origin_operation_id)
+                    if artifact.origin_operation_id
+                    else None,
+                    artifact.episode_id,
+                ),
                 viewer_url=f"{artifact_url}/viewer" if view not in {"file", "pdf"} else None,
                 view=view,
                 available=True,
