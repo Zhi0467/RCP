@@ -2570,8 +2570,21 @@ details[open] > .view-disclosure-summary > svg:last-child {
 
 @media (max-width: 560px) {
   .project-header {
-    height: 56px;
-    padding: 0 8px;
+    flex-wrap: wrap;
+    gap: 6px 0;
+    height: auto;
+    min-height: 56px;
+    padding: 6px 8px;
+  }
+  /* The actions fill the first row, so the dock wraps onto its own, as on
+     the landing page. */
+  .project-header-navigation {
+    display: contents;
+  }
+  .project-header-navigation > .project-dock {
+    flex-basis: 100%;
+    max-width: none;
+    order: 3;
   }
   .project-header .brand-lockup {
     gap: 5px;
