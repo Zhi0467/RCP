@@ -86,16 +86,22 @@ flag_is() {
 
 lid_is_open() {
     lid=$(bounded "$ioreg" -r -k AppleClamshellState) || return 1
+    # Open only when every reported row says No, as parse_lid requires.
+    open=1
     while read -r line; do
         # ioreg prefixes properties with tree glyphs: `  |   "AppleClamshellState" = No`.
         case "$line" in *'"AppleClamshellState"'*) ;; *) continue ;; esac
         prefix=${line%%'"AppleClamshellState"'*}
         case "$prefix" in *[!' |']*) continue ;; esac
-        [ "${line#"$prefix"}" = '"AppleClamshellState" = No' ] && return 0
+        if [ "${line#"$prefix"}" = '"AppleClamshellState" = No' ]; then
+            [ "$open" = 1 ] && open=0
+        else
+            open=2
+        fi
     done <<LID
 $lid
 LID
-    return 1
+    [ "$open" = 0 ]
 }
 
 release() {

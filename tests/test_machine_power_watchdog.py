@@ -148,7 +148,10 @@ def test_invalid_heartbeat_revokes_and_cannot_rearm(watchdog, failure):
     assert watchdog.calls() == ["on", "clear"]
 
 
-@pytest.mark.parametrize("lid", ["No", "Yes", "Nope", "timeout"])
+# The last case is two ioreg rows that disagree; only a unanimous No is open.
+@pytest.mark.parametrize(
+    "lid", ["No", "Yes", "Nope", "timeout", 'No\n  |   "AppleClamshellState" = Yes']
+)
 def test_release_sleeps_only_closed_or_unknown_lid(watchdog, lid):
     watchdog.write("lid", lid)
     if lid == "timeout":
