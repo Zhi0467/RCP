@@ -2770,10 +2770,23 @@ export default function App() {
   }, [apiBase, graphPath, isActiveGraph, projectId, refreshChatSummaries, tasks]);
 
   useEffect(() => {
-    const visibleChatId = visibleUnreadChatId(view, selectedChatId, selectedExperimentChatId);
+    const visibleChatId = visibleUnreadChatId(
+      view,
+      selectedChatId,
+      selectedExperimentChatId,
+      agentsBoard,
+    );
     markVisibleChatRead(tasks, visibleChatId);
     // chatReads is a dependency so a chat already open when the markers load is marked.
-  }, [chatReads, markVisibleChatRead, selectedChatId, selectedExperimentChatId, tasks, view]);
+  }, [
+    agentsBoard,
+    chatReads,
+    markVisibleChatRead,
+    selectedChatId,
+    selectedExperimentChatId,
+    tasks,
+    view,
+  ]);
 
   useEffect(() => {
     if (!projectId || !hasActiveTasks) return;

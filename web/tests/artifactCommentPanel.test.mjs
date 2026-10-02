@@ -8,7 +8,7 @@ const script = readFileSync(
   "utf8",
 );
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-function shell() {
+function shell(stored = new Map()) {
   const element = () => ({
     value: "",
     hidden: false,
@@ -46,13 +46,14 @@ function shell() {
   const timers = new Map();
   const requests = [];
   const messages = [];
-  const saved = new Map();
+  const saved = stored;
   let canComment = true;
   let editFailure = null;
   let status = 200;
   let sendStatus = 409;
   let timerId = 0;
   let confirmComment = null;
+  const offered = [];
   const context = {
     config: {
       projectId: "p",
@@ -83,7 +84,7 @@ function shell() {
     },
     installSelectionConfirmation: (_composer, confirm) => {
       confirmComment = confirm;
-      return () => {};
+      return (selection) => offered.push(selection);
     },
     setTimeout(handler) {
       timers.set(++timerId, handler);
@@ -122,6 +123,7 @@ function shell() {
     },
     listeners,
     addComment: (selection) => confirmComment(selection),
+    offered,
     requests,
     timers,
     setStatus: (value) => {
@@ -219,4 +221,24 @@ test("shell stops permanent state failures until Retry and keeps polling transie
       assert.equal(app.timers.size, 1);
     }
   }
+});
+
+test("a reopened viewer offers the unsent comment on its own selection, and Cancel drops it", async () => {
+  const selection = { kind: "text", text: "Figure 2", surrounding_text: "", comment: "" };
+  const stored = new Map([
+    [
+      "rcp:artifact-selections:p:a",
+      JSON.stringify({ comments: [], draft: { text: "Relabel", selection } }),
+    ],
+  ]);
+  const app = shell(stored);
+  await settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(app.offered.at(-1))), selection);
+  assert.equal(app.elements.message.value, "Relabel");
+  app.elements.composer.child.listeners.click();
+  assert.equal(app.elements.message.value, "");
+  assert.deepEqual(JSON.parse(stored.get("rcp:artifact-selections:p:a")).draft, {
+    text: "",
+    selection: null,
+  });
 });

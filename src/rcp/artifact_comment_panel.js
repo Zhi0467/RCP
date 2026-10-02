@@ -57,7 +57,11 @@ const bounded = (value, limit) =>
     .slice(0, limit);
 function saveComments() {
   try {
-    localStorage.setItem(draftKey, JSON.stringify({ comments, draft: message.value }));
+    // The comment being written keeps its anchor, so a reopened viewer offers it again.
+    localStorage.setItem(
+      draftKey,
+      JSON.stringify({ comments, draft: { text: message.value, selection: current } }),
+    );
   } catch {
     notice.textContent = "Comments could not be saved. Keep this preview open and try again.";
   }
@@ -91,6 +95,7 @@ function render() {
   });
   updateSend();
 }
+let restoredSelection = null;
 try {
   const saved = JSON.parse(localStorage.getItem(draftKey) || "null");
   // Drafts saved before comments were one object held selections and a message.
@@ -109,7 +114,9 @@ try {
       .filter((comment) => typeof comment?.text === "string" && comment.text.trim())
       .slice(0, config.maxSelections),
   );
-  message.value = typeof saved?.draft === "string" ? saved.draft : "";
+  const draft = typeof saved?.draft === "string" ? { text: saved.draft } : saved?.draft;
+  message.value = typeof draft?.text === "string" ? draft.text : "";
+  restoredSelection = draft?.selection && typeof draft.selection === "object" ? draft.selection : null;
   render();
 } catch {
   comments.length = 0;
@@ -151,11 +158,16 @@ function offerSelection(selection) {
   current = selection;
   offerComposer(selection);
   if (selection) message.focus();
+  saveComments();
   updateSend();
 }
+if (restoredSelection && message.value.trim()) offerSelection(restoredSelection);
 general.addEventListener("click", () => offerSelection({ kind: "whole" }));
+// Cancel drops the comment being written, so its text never lands on the next selection.
 const dropCurrent = () => {
   current = null;
+  message.value = "";
+  saveComments();
   updateSend();
 };
 document.getElementById("composer").querySelector("[data-cancel]").addEventListener("click", dropCurrent);

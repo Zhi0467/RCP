@@ -1122,8 +1122,15 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .agent-row:hover .agent-row-menu-button,
 .agent-row:focus-within .agent-row-menu-button,
-.agent-row.menu-open .agent-row-menu-button {
+.agent-row.menu-open .agent-row-menu-button,
+.agent-card:hover .agent-row-menu-button,
+.agent-card:focus-within .agent-row-menu-button,
+.agent-card .agent-row-menu-button[aria-expanded="true"] {
   opacity: 1;
+}
+/* An open card menu draws over the cards below it. */
+.agent-card:has(.agent-row-menu-list) {
+  z-index: 3;
 }
 .agent-row:hover [role="option"] time,
 .agent-row:focus-within [role="option"] time,

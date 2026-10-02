@@ -103,6 +103,10 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
         .evaluateAll((cards) => cards.map((c) => c.dataset.cardId));
     await column("archived").getByText("Archived chat").waitFor();
 
+    // A card's menu shows on hover, so Rename, Pin, and Archive are reachable.
+    const menu = card("Claude chat").getByRole("button", { name: "More actions for Claude chat" });
+    await card("Claude chat").hover();
+    assert.equal(await menu.evaluate((button) => getComputedStyle(button).opacity), "1");
     // Only the working agent's logo carries the spinner ring.
     assert.equal(await column("working").locator(".agent-card-avatar[data-working]").count(), 1);
     assert.equal(await column("done").locator(".agent-card-avatar[data-working]").count(), 0);
