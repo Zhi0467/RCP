@@ -184,6 +184,22 @@ class QuestionStoreMixin:
             ).fetchall()
         return [_question_record(row) for row in rows]
 
+    def questions_needing_experiment_reconciliation(
+        self, *, project_id: str | None = None
+    ) -> list[QuestionRecord]:
+        """Unreceived episode answers that may still need receipt, admission, or dispatch."""
+        with self.connection() as connection:
+            rows = connection.execute(
+                """SELECT * FROM questions WHERE owner_kind='episode' AND state='answered'
+                AND (? IS NULL OR project_id=?) AND client_receipt_revision IS NULL
+                AND (followup_operation_id IS NULL OR EXISTS (
+                    SELECT 1 FROM graph_runs WHERE operation_id=followup_operation_id
+                    AND status='queued'
+                )) ORDER BY created_at,question_id""",
+                (project_id, project_id),
+            ).fetchall()
+        return [_question_record(row) for row in rows]
+
     def mark_question_answer_projected(self, question_id: str, answer_revision: int) -> None:
         """Advance after canonical publication or discovery of its stable message id."""
         with self.connection() as connection:

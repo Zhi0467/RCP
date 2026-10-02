@@ -13,11 +13,16 @@ if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
 
 
-def reconcile_experiment_question_answers(tasks: BackgroundAgentTasks) -> dict[str, str]:
-    """Settlement/startup/API seam; refusals stay inspectable and questions stay unclaimed."""
+def reconcile_experiment_question_answers(
+    tasks: BackgroundAgentTasks, *, project_id: str | None = None
+) -> dict[str, str]:
+    """Settlement/startup/API seam; refusals stay inspectable and questions stay unclaimed.
+
+    Settlement and the answer API pass their project; startup passes none to sweep all.
+    """
     store = tasks.store
     results: dict[str, str] = {}
-    for question in store.list_questions(owner_kind="episode"):
+    for question in store.questions_needing_experiment_reconciliation(project_id=project_id):
         origin = question.origin
         episode = store.episode(origin.owner_id)
         if episode is None or episode.mode != "experiment_loop":

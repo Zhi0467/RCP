@@ -1231,7 +1231,9 @@ def create_app(
             lambda identity: _project_service(catalog, identity),
             project_id=project_id,
         )
-        statuses.update(reconcile_experiment_question_answers(background_tasks))
+        statuses.update(
+            reconcile_experiment_question_answers(background_tasks, project_id=project_id)
+        )
         return statuses
 
     def after_task_settled(

@@ -85,6 +85,7 @@ from rcp.storage import (
 )
 from rcp.storage.artifact_models import ArtifactOperationConflict
 from rcp.storage.artifacts import ArtifactByteLimitError
+from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 from rcp.storage.question_models import QuestionRecord
 from rcp.transport import (
     RemoteRunStage,
@@ -1819,10 +1820,44 @@ def project_chat_question_answer(
     if task is None:
         raise ValueError("question_origin_missing")
     request = RunRequest.model_validate(task.request)
+    path = _chat_path(service, request)
     with service.history.workspace.transaction():
+        if task.status in ACTIVE_AGENT_TASK_STATUSES and request.trigger != "watcher":
+            # The exchange arrives only on settlement. Reserve the asking turn's
+            # prompt first, as a live steer does, so the answer cannot precede it.
+            _append_chat_records(
+                service,
+                path,
+                [
+                    {
+                        "uuid": str(uuid.uuid4()),
+                        "sessionId": request.chat_id,
+                        "nativeSessionId": question.origin.native_session_id,
+                        "nodeId": request.node_id,
+                        "chatScope": request.chat_scope,
+                        "provider": request.provider,
+                        "model": request.model or "provider-default",
+                        "reasoning": request.reasoning,
+                        "executionMachine": request.run_on,
+                        "cwd": str(service.manifest.research_dir.parent),
+                        "timestamp": task.created_at,
+                        "operationId": task.operation_id,
+                        "mode": request.mode,
+                        "trigger": request.trigger,
+                        "activeComputeIds": request.active_compute_ids,
+                        "type": "user",
+                        "role": "user",
+                        "text": request.message,
+                        "attachments": [
+                            item.model_dump(mode="json") for item in request.attachments
+                        ],
+                    }
+                ],
+                reserve_prompt=True,
+            )
         _append_chat_records(
             service,
-            _chat_path(service, request),
+            path,
             [
                 {
                     "uuid": _question_answer_message_id(question),

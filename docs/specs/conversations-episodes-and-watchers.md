@@ -251,7 +251,11 @@ and at startup, an unreceived chat answer admits at most one Work follow-up, tra
 with task insertion, pinned to the asking turn's native session, authority, write
 scope and target. Occupied or paused sessions defer admission; unusable bindings
 remain visible. Each answer is projected once as a human chat message through
-StateWorkspace using its question id and answer revision. A durable projected-revision
+StateWorkspace using its question id and answer revision. An answer projected while
+the asking turn still runs first reserves that turn's prompt at its creation time, as
+a live steer does, so the answer never precedes the prompt. Settlement and the answer
+route reconcile only their project's unreceived answers; startup sweeps every
+project. A durable projected-revision
 marker retires successful projections from reconciliation; stable-id replay repairs
 a missing marker without republishing. Deferred follow-up admission remains retryable
 after projection succeeds. Question offer and acknowledgement reads query operation
