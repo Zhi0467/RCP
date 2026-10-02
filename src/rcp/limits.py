@@ -485,6 +485,8 @@ LIVE_ARTIFACT_MAX_CAPTURE_ATTEMPTS = 8
 # State transfer capability negotiation and one complete snapshot transfer.
 STATE_TRANSFER_PROBE_TIMEOUT_SECONDS = 15
 STATE_TRANSFER_TIMEOUT_SECONDS = 120
+# One run stage's queued inputs, which can include a provider-history inventory.
+RUN_STAGE_INPUT_TRANSFER_TIMEOUT_SECONDS = 180
 # A transfer that dies mid-stream is retried this many times in all, with capped
 # backoff; each retry re-sends the same bytes to the same destination.
 STATE_TRANSFER_ATTEMPTS = 3

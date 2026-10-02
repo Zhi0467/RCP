@@ -113,6 +113,10 @@ def run_experiment(
         if not supplied.chat_id:
             raise ValueError("Run requires a chat_id")
         uuid.UUID(supplied.chat_id)
+        # A fresh Run is its own conversation; joining an existing chat would
+        # file the episode inside that chat's history.
+        if store.chat_graph_target(project_id, supplied.chat_id) is not None:
+            raise ValueError("Run requires a new chat_id; this conversation already has turns.")
         episode_id = str(uuid.uuid4())
         creates_branch = supplied.graph_isolation and target.kind == "main"
         pending_group = (

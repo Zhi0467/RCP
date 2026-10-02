@@ -1,3 +1,5 @@
+import { experimentBoardHref, experimentBoardRouteToken } from "./experimentBoard.ts";
+import { sameGraphTarget } from "./graphTarget.ts";
 import type {
   AgentRunConfig,
   AgentTask,
@@ -8,6 +10,8 @@ import type {
   ChatReads,
   ChatSummary,
   ConversationMode,
+  ExperimentLoopIndexEntry,
+  GraphTargetRef,
   SkillDefaults,
   StartAgentTask,
   WorktreeIntegrationOption,
@@ -382,6 +386,95 @@ export function groupConversationAgents(
       (pinOrder.get(right.conversation.chatId) ?? 0),
   );
   return groups;
+}
+
+/**
+ * An Experiment episode on a graph branch other than the viewed one. Its chat
+ * and tasks belong to that branch, so the row links to the episode in Runs.
+ */
+export interface BranchEpisodeAgentRow {
+  episodeId: string;
+  title: string;
+  group: Exclude<ConversationAgentGroup, "new_reply">;
+  href: string;
+  updatedAt: string;
+}
+
+/**
+ * Rows for human-started Experiment episodes on another graph branch, from the
+ * Experiment index Runs itself reads, so every row opens a card that exists and
+ * carries the title from the episode's own graph. An Auto-research child is
+ * reached through its parent episode instead.
+ */
+export function branchEpisodeAgentRows(
+  entries: ExperimentLoopIndexEntry[],
+  viewedTarget: GraphTargetRef,
+  projectId: string,
+  query = "",
+): Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> {
+  const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  const groups: Record<BranchEpisodeAgentRow["group"], BranchEpisodeAgentRow[]> = {
+    failed: [],
+    stopped: [],
+    working: [],
+    done: [],
+  };
+  for (const entry of entries) {
+    const { episode } = entry;
+    if (
+      entry.project_id !== projectId ||
+      entry.graph_target.kind !== "branch" ||
+      entry.parent_episode_id !== null ||
+      episode.archived ||
+      sameGraphTarget(entry.graph_target, viewedTarget)
+    ) {
+      continue;
+    }
+    const title = entry.node.title;
+    if (terms.length) {
+      const text = `${title}\n${entry.node.id}\nbranch`.toLocaleLowerCase();
+      if (!terms.every((term) => text.includes(term))) continue;
+    }
+    // A failed episode still writing its report is running, as Runs shows it.
+    const group =
+      episode.run_section === "running"
+        ? "working"
+        : episode.ending === "failed"
+          ? "failed"
+          : episode.run_section === "actionable"
+            ? "stopped"
+            : "done";
+    groups[group].push({
+      episodeId: episode.episode_id,
+      title,
+      group,
+      href: experimentBoardHref(projectId, experimentBoardRouteToken(entry)),
+      updatedAt: episode.ended_at ?? episode.updated_at,
+    });
+  }
+  for (const rows of Object.values(groups)) {
+    rows.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  }
+  return groups;
+}
+
+export type AgentGroupItem =
+  { kind: "chat"; row: ConversationAgentRow } | { kind: "branch"; row: BranchEpisodeAgentRow };
+
+/** One status group's chats and branch episodes together, newest first; an unsent draft leads. */
+export function agentGroupItems(
+  chats: ConversationAgentRow[],
+  branches: BranchEpisodeAgentRow[],
+): AgentGroupItem[] {
+  const items: AgentGroupItem[] = chats.map((row) => ({ kind: "chat", row }));
+  if (!branches.length) return items;
+  const at = (item: AgentGroupItem) =>
+    Date.parse(
+      (item.kind === "chat" ? item.row.conversation.updatedAt : item.row.updatedAt) || "9999-01-01",
+    );
+  return [...items, ...branches.map((row) => ({ kind: "branch" as const, row }))].sort(
+    (left, right) => at(right) - at(left),
+  );
 }
 
 /** A draft nobody has sent a turn in; opening a new chat reuses it. */

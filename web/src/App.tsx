@@ -438,8 +438,8 @@ const ExecutionView = lazy(() =>
 const ScientificView = lazy(() =>
   import("./views/GraphViews").then((module) => ({ default: module.ScientificView })),
 );
-const PaperWorkspace = lazy(() =>
-  import("./views/PaperWorkspace").then((module) => ({ default: module.PaperWorkspace })),
+const LoadedPaperWorkspace = lazy(() =>
+  import("./views/PaperWorkspace").then((module) => ({ default: module.LoadedPaperWorkspace })),
 );
 const ProjectSettings = lazy(() =>
   import("./views/ProjectSettings").then((module) => ({ default: module.ProjectSettings })),
@@ -1940,7 +1940,11 @@ export default function App() {
         return;
       }
       try {
-        await Promise.all([refreshProjectExperimentLoops(projectId), refreshProviderLogins()]);
+        // Agents reads only the index; provider logins belong to the Runs view.
+        await Promise.all([
+          refreshProjectExperimentLoops(projectId),
+          ...(view === "execution" ? [refreshProviderLogins()] : []),
+        ]);
       } catch (error) {
         if (!stopped) {
           reportErrorNotice(
@@ -3294,7 +3298,9 @@ export default function App() {
       const finishTaskStart = beginTaskStart();
       if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
       try {
-        const chatId = ensureConversation(conversations, "node_chat", node, project.name);
+        // A fresh Run is its own conversation. Reusing the node's newest chat
+        // would file the episode inside a human's finished Work chat.
+        const chatId = window.crypto.randomUUID();
         const profile = project.agent_profiles.node_chat;
         const task = await api<AgentTask>(
           graphPath(`${apiBase}/experiments/${encodeURIComponent(node.id)}/run`),
@@ -3345,8 +3351,6 @@ export default function App() {
       graphTarget,
       isActiveGraph,
       beginTaskStart,
-      conversations,
-      ensureConversation,
       experimentStartRequiresSync,
       mutationsDisabled,
       project,
@@ -4880,11 +4884,10 @@ export default function App() {
                 paperUnsynced={paper.sync_state !== "synced"}
                 onChange={changeView}
               />
-              <PaperWorkspace
+              <LoadedPaperWorkspace
                 key={project.id}
                 apiBase={apiBase}
                 project={project}
-                initialPaper={paper}
                 tasks={projectTasks}
                 onStartTask={startAgentTask}
                 onPaperChange={updatePaper}
@@ -4940,6 +4943,8 @@ export default function App() {
               conversations={conversations}
               selectedChatId={selectedChatId}
               nodes={presentedGraph.nodes}
+              experimentEntries={experimentLoops}
+              graphTarget={graphTarget}
               glossaryIndex={glossaryIndex}
               runScope={runScope}
               tasks={tasks}

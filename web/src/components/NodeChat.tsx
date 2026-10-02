@@ -1451,44 +1451,48 @@ export function NodeChat({
                 <span className="chat-turn-trigger watcher">Watcher</span>
               )}
               {line.role === "agent" ? (
-                line.text && (
-                  <>
-                    <div className="chat-markdown chat-annotatable-answer">
-                      <MarkdownAnswer
-                        text={line.text}
-                        nodes={nodes}
-                        glossaryIndex={glossaryIndex}
-                        onOpenNode={onOpenNode}
-                        onOpenRepositoryFileLink={(href) =>
-                          void openRepositoryFile(messageId, line.taskId, href)
-                        }
-                      />
-                    </div>
-                    {/* Outside the annotatable wrapper: a selection clamp or the
+                line.running ? (
+                  activeLineTask && <InlineTaskProgress task={activeLineTask} />
+                ) : (
+                  line.text && (
+                    <>
+                      <div className="chat-markdown chat-annotatable-answer">
+                        <MarkdownAnswer
+                          text={line.text}
+                          nodes={nodes}
+                          glossaryIndex={glossaryIndex}
+                          onOpenNode={onOpenNode}
+                          onOpenRepositoryFileLink={(href) =>
+                            void openRepositoryFile(messageId, line.taskId, href)
+                          }
+                        />
+                      </div>
+                      {/* Outside the annotatable wrapper: a selection clamp or the
                         keyboard flow must never stage this diagnostic as answer text. */}
-                    {repositoryFileErrors.get(messageId) && (
-                      <strong className="chat-repository-file-error" role="alert">
-                        {repositoryFileErrors.get(messageId)}
-                      </strong>
-                    )}
-                    {!readOnly && (
-                      <button
-                        className="chat-answer-annotation-button"
-                        type="button"
-                        aria-label="Comment on this answer"
-                        disabled={submitting}
-                        onClick={(event) => {
-                          const answer =
-                            event.currentTarget.parentElement?.querySelector<HTMLElement>(
-                              ".chat-annotatable-answer",
-                            );
-                          if (answer) openKeyboardAnnotationComposer(answer, event.currentTarget);
-                        }}
-                      >
-                        <MessageCirclePlus size={12} /> Comment
-                      </button>
-                    )}
-                  </>
+                      {repositoryFileErrors.get(messageId) && (
+                        <strong className="chat-repository-file-error" role="alert">
+                          {repositoryFileErrors.get(messageId)}
+                        </strong>
+                      )}
+                      {!readOnly && (
+                        <button
+                          className="chat-answer-annotation-button"
+                          type="button"
+                          aria-label="Comment on this answer"
+                          disabled={submitting}
+                          onClick={(event) => {
+                            const answer =
+                              event.currentTarget.parentElement?.querySelector<HTMLElement>(
+                                ".chat-annotatable-answer",
+                              );
+                            if (answer) openKeyboardAnnotationComposer(answer, event.currentTarget);
+                          }}
+                        >
+                          <MessageCirclePlus size={12} /> Comment
+                        </button>
+                      )}
+                    </>
+                  )
                 )
               ) : line.role === "human" ? (
                 <>

@@ -12,7 +12,13 @@ from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.service import RunRequest
 from rcp.storage import AppStore
-from rcp.transport import RemoteRunStage, StateMissing, StateUnavailable, StateUnreachable
+from rcp.transport import (
+    RemoteRunStage,
+    StateMissing,
+    StateUnavailable,
+    StateUnreachable,
+    state_transfer,
+)
 
 from .test_remote_provider_receipts import _store
 
@@ -182,6 +188,12 @@ def test_only_a_spawned_rsync_exit_255_names_a_lost_link(
     """A local rsync that cannot start is given the failed code the commit
     script needs to clean up, but that code is RCP's own, not ssh's."""
 
+    monkeypatch.setattr(
+        state_transfer,
+        "get_engine",
+        lambda _host: state_transfer.TransferEngine("rsync", "rsync", "3.2.7", "3.2.7"),
+    )
+    monkeypatch.setattr(state_transfer.time, "sleep", lambda _seconds: None)
     stage = RemoteRunStage(HOST)
     stage.root = PurePosixPath("/tmp/rcp-run.test")
     (stage._pending_input_root() / "notes.md").write_text("inputs")

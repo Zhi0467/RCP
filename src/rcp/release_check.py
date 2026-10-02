@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ConfigDict
 from rcp import limits
 from rcp.source_checkout import source_checkout_root
 
+_LOG = logging.getLogger(__name__)
 REPOSITORY = "Zhi0467/RCP"
 API_BASE = f"https://api.github.com/repos/{REPOSITORY}/releases"
 _VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", re.ASCII)
@@ -45,6 +47,8 @@ class UpdateNotice(BaseModel):
     latest_version: str | None = None
     checked_at: datetime | None = None
     last_success_at: datetime | None = None
+    #: Why the last lookup failed, in a few safe words; cleared by a success.
+    failure_reason: str | None = None
     companion_ready: bool = False
     download_url: str | None = None
     source_checkout: bool = False
@@ -103,6 +107,26 @@ async def _metadata(client: httpx.AsyncClient, url: str) -> dict:
 
 class _UnknownVersion(ValueError):
     pass
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """A short reason safe to show and log: no response body, headers, or URL query."""
+
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        if (
+            response.status_code in (403, 429)
+            and response.headers.get("x-ratelimit-remaining") == "0"
+        ):
+            return f"GitHub rate limit reached (HTTP {response.status_code})"
+        return f"GitHub answered HTTP {response.status_code}"
+    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+        return f"no answer from GitHub within {limits.RELEASE_CHECK_DEADLINE_SECONDS} s"
+    detail = (str(exc).splitlines() or [""])[0][:200] or type(exc).__name__
+    if isinstance(exc, httpx.TransportError | OSError):
+        return f"could not reach GitHub: {detail}"
+    # Our own validation messages, or a JSON decode error position.
+    return detail
 
 
 def _stable(data: dict) -> tuple[str, str]:
@@ -232,11 +256,14 @@ class ReleaseCheck:
         try:
             version, commit, ready = asyncio.run(self._lookup(companion))
         except (httpx.HTTPError, OSError, ValueError, TimeoutError, KeyError) as exc:
+            reason = _failure_reason(exc)
+            _LOG.warning("Release check failed (%s): %s", type(exc).__name__, reason)
             with self._lock:
                 self._notice = self._notice.model_copy(
                     update={
                         "status": "unknown" if isinstance(exc, _UnknownVersion) else "failed",
                         "checked_at": checked,
+                        "failure_reason": reason,
                     }
                 )
         else:
@@ -250,6 +277,7 @@ class ReleaseCheck:
                         "latest_version": version,
                         "checked_at": checked,
                         "last_success_at": datetime.now(UTC),
+                        "failure_reason": None,
                         "companion_ready": ready,
                         "source_at_release": at_release,
                         "download_url": f"https://github.com/{REPOSITORY}/releases/tag/desktop-v{version}"

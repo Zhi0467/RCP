@@ -40,7 +40,7 @@ and `sys.executable`, which starts RCP's own Python runtime.
 | `ps` | desktop / execution host / team server | `transport/remote_terminate_provider.py` | Process pid, parent, group and command inspection | No independent probe today | Cannot confirm provider process ownership/stopping; no inferred successful stop |
 | `python3` | execution host | `transport/state.py`, `transport/state_transfer.py`, `transport/run_stage.py`, `agents/launcher.py`, `compute_jobs/files.py`, `sources/indexer.py`, `terminals/probe.py`, `server_ops/backup_checkout.py` | Python >=3.9 standard library for shipped helpers | Used in discovery and helper execution; no explicit version gate today | Remote operation fails when interpreter/helper is unavailable |
 | `rm` | execution host | `transport/run_stage.py` | `-f` staged handoff cleanup | No probe today | Stage cleanup reports failure; no silent success |
-| `rsync` | desktop / execution host / team server | `transport/state_transfer.py`, `transport/state.py`, `transport/run_stage.py`, `sources/indexer.py` | Three state transfers: protocol >=29 and support for `-a`, `--delete`, `--exclude`, `-R` over `-e ssh` at both ends; GNU rsync and stock macOS openrsync qualify; other owners retain existing flags | State owner passes the required flags before `--version` and parses GNU/openrsync output for local PATH candidates and remote rsync; other owners have no contract probe today | Three state transfers use visible tar fallback; run-stage inputs, backup, restore, kept artifacts/result views and source index: rsync required; no fallback yet |
+| `rsync` | desktop / execution host / team server | `transport/state_transfer.py`, `transport/state.py`, `transport/run_stage.py`, `sources/indexer.py` | Three state transfers and run-stage inputs: protocol >=29 and support for `-a`, `--delete`, `--exclude`, `-R` over `-e ssh` at both ends; GNU rsync and stock macOS openrsync qualify; other owners retain existing flags | State owner passes the required flags before `--version` and parses GNU/openrsync output for local PATH candidates and remote rsync; other owners have no contract probe today | Three state transfers and run-stage inputs use visible tar fallback; backup, restore, kept artifacts/result views and source index: rsync required, no fallback yet. Every owner retries a dropped stream |
 | `runuser` | team server | `server_ops/install.py`, `server_ops/git_credentials.py`, `server_ops/backup_config.py` | Run argv under the exact service account | PATH existence at install; no independent feature/version probe | Refuse affected account operation |
 | `sh` | desktop / execution host / team server | `transport/state.py`, `compute_jobs/backends/launchd.py`, `compute_jobs/backends/systemd_user.py`, `server_ops/provider_update.py` | POSIX command shell for history probe, job wrappers and installer | No independent probe today | Owning command/launch fails |
 | `ssh` | desktop / execution host / team server | `transport/ssh.py`, `transport/remote_compute_probe.py`, `server_ops/git_credentials.py`, `server_ops/install.py`, `server_ops/doctor.py` | OpenSSH batch transport, connection/keepalive options, multiplexing and strict host-key mode where requested | Install PATH/`-V`; doctor checks OpenSSH version prefix; remote readiness executes the route; no general version gate | Remote operation unavailable on transport failure; no alternative transport |
@@ -64,7 +64,10 @@ path, and probes again after exit 127 or a reported protocol mismatch. SSH exit
 255, timeouts and process-start errors are unavailable-host outcomes, not contract
 failures: they are neither cached nor warned, and the next call probes again.
 Local candidates retain backend PATH order. Only `_sync_remote_tree`,
-`_publish`, and `_publish_committed_history` use this engine selection. The tar
+`_publish`, `_publish_committed_history`, and the run-stage input upload
+(`RemoteRunStage.finalize_inputs`) use this engine selection. Every rsync owner,
+including the ones without engine selection, retries a dropped stream through
+`state_transfer.run_rsync`. The tar
 engine verifies the complete archive and extraction before applying it to the
 existing mirror, and pushes exactly the listed paths to the existing remote
 stage. Pulls publish new or changed files through temporary siblings and
@@ -204,7 +207,9 @@ while its last check is under 10 minutes old and otherwise makes one bounded
 lookup first, so opening a space never shows a status hours old; a reader
 that arrives while a lookup runs takes the cache instead of waiting, and the
 team Settings refresh uses a 1-minute bound and hands its result to the update
-notice. A failed lookup still records its check time. A team
+notice. A failed lookup still records its check time, logs a warning, and keeps
+a short reason (an HTTP status, a timeout, or a connection error, never a
+response body) that Settings shows; the next successful lookup clears it. A team
 space compares the installed release from the selected receipt, reports
 `pinned` for a pinned server, and never lets a failed check change the doctor's
 install-integrity `source_state`; `rcp server doctor` makes one live lookup of

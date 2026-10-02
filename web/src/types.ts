@@ -3237,6 +3237,7 @@ export interface UpdateNotice {
   latest_version: string | null;
   checked_at: string | null;
   last_success_at: string | null;
+  failure_reason: string | null;
   companion_ready: boolean;
   download_url: string | null;
   source_checkout: boolean;

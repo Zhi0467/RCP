@@ -1964,54 +1964,66 @@ class ProjectCatalog:
         self._stamp_snapshot_identity(snapshot, project_id)
         _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
-            if self._is_deleting(project_id):
-                raise KeyError(project_id)
-            record = self.store.project(project_id)
-            if record is None:
-                raise KeyError(project_id)
-            if not _valid_display_snapshot(project_id, snapshot):
-                raise ValueError("Project display snapshot is invalid")
-            if generation < 1 or generation > self._snapshot_generations.get(project_id, 0):
-                raise ValueError("Project display snapshot generation is invalid")
-            cached = self._cached_snapshot_locked(project_id)
-            persisted_revisions = [
-                revision
-                for revision in (
-                    record.revision,
-                    int(cached["revision"]) if cached is not None else None,
-                )
-                if revision is not None
-            ]
-            candidate_revision = int(snapshot["revision"])
-            if patch_log_head is _PATCH_LOG_HEAD_UNSET:
-                patch_log_head = (
-                    self._cached_snapshot_patch_heads.get(project_id)
-                    if cached is not None and int(cached["revision"]) == candidate_revision
-                    else _display_patch_log_head(snapshot)
-                )
-            if not _valid_patch_log_head(patch_log_head):
-                raise ValueError("Project display snapshot patch-log head is invalid")
-            if persisted_revisions:
-                persisted_revision = max(persisted_revisions)
-                if candidate_revision < persisted_revision:
-                    return False
-                if (
-                    candidate_revision == persisted_revision
-                    and generation < self._committed_snapshot_generations.get(project_id, 0)
-                ):
-                    return False
-            assert patch_log_head is None or isinstance(patch_log_head, int)
-            self._candidate_snapshot_patch_heads[project_id] = patch_log_head
-            try:
-                self._write_cached_snapshot_locked(project_id, snapshot)
-            finally:
-                self._candidate_snapshot_patch_heads.pop(project_id, None)
-            self._committed_snapshot_generations[project_id] = max(
-                generation,
-                self._committed_snapshot_generations.get(project_id, 0),
+            return self._commit_cached_snapshot_locked(
+                project_id, snapshot, generation=generation, patch_log_head=patch_log_head
             )
-            self.update_summary(project_id, snapshot)
-            return True
+
+    def _commit_cached_snapshot_locked(
+        self,
+        project_id: str,
+        snapshot: dict[str, object],
+        *,
+        generation: int,
+        patch_log_head: int | None | object = _PATCH_LOG_HEAD_UNSET,
+    ) -> bool:
+        if self._is_deleting(project_id):
+            raise KeyError(project_id)
+        record = self.store.project(project_id)
+        if record is None:
+            raise KeyError(project_id)
+        if not _valid_display_snapshot(project_id, snapshot):
+            raise ValueError("Project display snapshot is invalid")
+        if generation < 1 or generation > self._snapshot_generations.get(project_id, 0):
+            raise ValueError("Project display snapshot generation is invalid")
+        cached = self._cached_snapshot_locked(project_id)
+        persisted_revisions = [
+            revision
+            for revision in (
+                record.revision,
+                int(cached["revision"]) if cached is not None else None,
+            )
+            if revision is not None
+        ]
+        candidate_revision = int(snapshot["revision"])
+        if patch_log_head is _PATCH_LOG_HEAD_UNSET:
+            patch_log_head = (
+                self._cached_snapshot_patch_heads.get(project_id)
+                if cached is not None and int(cached["revision"]) == candidate_revision
+                else _display_patch_log_head(snapshot)
+            )
+        if not _valid_patch_log_head(patch_log_head):
+            raise ValueError("Project display snapshot patch-log head is invalid")
+        if persisted_revisions:
+            persisted_revision = max(persisted_revisions)
+            if candidate_revision < persisted_revision:
+                return False
+            if (
+                candidate_revision == persisted_revision
+                and generation < self._committed_snapshot_generations.get(project_id, 0)
+            ):
+                return False
+        assert patch_log_head is None or isinstance(patch_log_head, int)
+        self._candidate_snapshot_patch_heads[project_id] = patch_log_head
+        try:
+            self._write_cached_snapshot_locked(project_id, snapshot)
+        finally:
+            self._candidate_snapshot_patch_heads.pop(project_id, None)
+        self._committed_snapshot_generations[project_id] = max(
+            generation,
+            self._committed_snapshot_generations.get(project_id, 0),
+        )
+        self.update_summary(project_id, snapshot)
+        return True
 
     def update_cached_snapshot_freshness(
         self,
@@ -2020,18 +2032,48 @@ class ProjectCatalog:
     ) -> bool:
         """Version one freshness-only cache update through the normal guards."""
 
+        return self._update_cached_snapshot_field(
+            project_id, "snapshot_freshness", lambda: freshness
+        )
+
+    def update_cached_snapshot_paper(
+        self, project_id: str, read_paper: Callable[[], PaperSnapshot]
+    ) -> bool:
+        """Keep the display snapshot's Paper current after a create or save.
+
+        Graph refreshes reuse the cached Paper, so without this a restart opens
+        Paper from the state it had before the introduction existed. The Paper
+        is read under the snapshot lock, so of two overlapping saves the later
+        cache update always holds the newer Paper.
+        """
+
+        return self._update_cached_snapshot_field(
+            project_id, "paper", lambda: read_paper().model_dump(mode="json")
+        )
+
+    def _update_cached_snapshot_field(
+        self, project_id: str, key: str, read_value: Callable[[], object]
+    ) -> bool:
+        """Read, version, and commit one field under one hold of the snapshot lock.
+
+        Holding it across the read is what keeps a concurrent field update from
+        committing its own stale copy of this field after this one.
+        """
+
         project_id = self._canonical_project_id(project_id)
-        current = self.cached_snapshot(project_id)
-        if current is None:
-            return False
-        if current.get("snapshot_freshness") == freshness:
-            return True
-        generation = self.reserve_cached_snapshot_generation(project_id)
-        snapshot = self.cached_snapshot(project_id)
-        if snapshot is None:
-            return False
-        snapshot["snapshot_freshness"] = freshness
-        return self.commit_cached_snapshot(project_id, snapshot, generation=generation)
+        with self._snapshot_lock(project_id):
+            if self._is_deleting(project_id) or self.store.project(project_id) is None:
+                raise KeyError(project_id)
+            snapshot = self._cached_snapshot_locked(project_id)
+            if snapshot is None:
+                return False
+            value = read_value()
+            if snapshot.get(key) == value:
+                return True
+            snapshot[key] = value
+            generation = self._snapshot_generations.get(project_id, 0) + 1
+            self._snapshot_generations[project_id] = generation
+            return self._commit_cached_snapshot_locked(project_id, snapshot, generation=generation)
 
     def reserve_cached_snapshot_generation(self, project_id: str) -> int:
         """Reserve construction order for one future display snapshot candidate."""

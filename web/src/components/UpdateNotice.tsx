@@ -101,6 +101,12 @@ export function ReleaseCheckRow({
           )}
         </dd>
       </div>
+      {notice?.failure_reason ? (
+        <div className="server-commit-row">
+          <dt>Check failed</dt>
+          <dd>{notice.failure_reason}</dd>
+        </div>
+      ) : null}
     </dl>
   );
 }

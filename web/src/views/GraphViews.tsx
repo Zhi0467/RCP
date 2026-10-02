@@ -1439,11 +1439,10 @@ export function ExecutionView({
                 <details
                   className="episode-type-group"
                   open={
-                    group.episodes.some(
-                      (episode) => episode.episode_id === selectedAutoResearchEpisodeId,
-                    ) || undefined
+                    group.episodes.some((episode) => episode.episode_id === requestedEpisodeId) ||
+                    undefined
                   }
-                  key={`${group.mode}:${selectedAutoResearchEpisodeId ?? ""}`}
+                  key={`${group.mode}:${requestedEpisodeId ?? ""}`}
                 >
                   <summary>
                     <strong>{group.title}</strong>

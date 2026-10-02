@@ -13,6 +13,8 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AGENT_LIST_SECTIONS,
+  agentGroupItems,
+  branchEpisodeAgentRows,
   conversationAgentStatus,
   groupConversationAgents,
   type ChatConversation,
@@ -34,7 +36,9 @@ import type {
   AgentTask,
   ChatDisplay,
   ChatTranscript,
+  ExperimentLoopIndexEntry,
   GraphNode,
+  GraphTargetRef,
   GraphUpdateRecovery,
   ProjectSnapshot,
   StartAgentTask,
@@ -49,6 +53,9 @@ interface Props {
   conversations: ChatConversation[];
   selectedChatId: string | null;
   nodes: Record<string, GraphNode>;
+  /** The Experiment index; episodes on another graph branch get their own rows. */
+  experimentEntries: ExperimentLoopIndexEntry[];
+  graphTarget: GraphTargetRef;
   glossaryIndex: GlossaryIndex;
   runScope: string[];
   tasks: AgentTask[];
@@ -167,6 +174,8 @@ export function ChatsWorkspace({
   conversations: storedConversations,
   selectedChatId,
   nodes,
+  experimentEntries,
+  graphTarget,
   glossaryIndex,
   runScope,
   tasks,
@@ -238,6 +247,11 @@ export function ChatsWorkspace({
     unreadChatIds,
     query,
   );
+  // Archive and pins belong to chats; a branch episode is archived from Runs, so
+  // it counts toward All and Working but is not drawn in the Archived view.
+  const branchRows = branchEpisodeAgentRows(experimentEntries, graphTarget, project.id, query);
+  const branchRowsIn = (group: AgentListSection) =>
+    showingArchived || group === "pinned" || group === "new_reply" ? [] : branchRows[group];
   const pinnedChatIds = new Set(display.pinned);
   useEffect(() => {
     onEnsureListed?.(display.pinned);
@@ -482,8 +496,9 @@ export function ChatsWorkspace({
                 value === "archived"
                   ? archivedCount
                   : value === "all"
-                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0)
-                    : activeGroups[value].length;
+                    ? Object.values(activeGroups).reduce((total, rows) => total + rows.length, 0) +
+                      Object.values(branchRows).reduce((total, rows) => total + rows.length, 0)
+                    : activeGroups[value].length + branchRows[value].length;
               return (
                 <button
                   type="button"
@@ -510,7 +525,7 @@ export function ChatsWorkspace({
         )}
         <div role="listbox" aria-label="Conversations">
           {visibleGroups.map((group) =>
-            groups[group].length === 0 ? null : (
+            groups[group].length + branchRowsIn(group).length === 0 ? null : (
               <div
                 className="agent-group"
                 role="group"
@@ -523,9 +538,41 @@ export function ChatsWorkspace({
                     <AgentGroupIcon group={group} />
                     {GROUP_LABELS[group]}
                   </span>
-                  <span>{groups[group].length}</span>
+                  <span>{groups[group].length + branchRowsIn(group).length}</span>
                 </div>
-                {groups[group].map(({ conversation, status }) => {
+                {agentGroupItems(groups[group], branchRowsIn(group)).map((item) => {
+                  if (item.kind === "branch") {
+                    const row = item.row;
+                    return (
+                      <div className="agent-row" key={`episode:${row.episodeId}`}>
+                        <a
+                          role="option"
+                          aria-selected={false}
+                          aria-label={`${row.title}, Experiment episode on a graph branch`}
+                          data-state={row.group}
+                          href={row.href}
+                          title={row.title}
+                          onClick={() => {
+                            if (narrow) setMobileListOpen(false);
+                          }}
+                        >
+                          <span className="agent-row-body">
+                            <span className="agent-row-title">
+                              <span className="agent-branch-pill">Branch</span>
+                              {row.title}
+                            </span>
+                            <span className="agent-row-meta">
+                              Experiment episode · opens in Runs
+                            </span>
+                          </span>
+                          <time>
+                            {row.group === "working" ? "live" : sinceLabel(row.updatedAt, now)}
+                          </time>
+                        </a>
+                      </div>
+                    );
+                  }
+                  const { conversation, status } = item.row;
                   const selectedConversation = conversation.chatId === selected?.chatId;
                   const unread = status.unread;
                   const latest = status.latest;
