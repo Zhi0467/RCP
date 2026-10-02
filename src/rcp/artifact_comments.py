@@ -15,7 +15,6 @@ from rcp.limits import (
     ARTIFACT_CROP_MAX_PIXELS,
     ARTIFACT_CROP_MAX_SIDE,
     ARTIFACT_VIEWER_STATE_REFRESH_MS,
-    STEERING_MESSAGE_MAX_CHARS,
 )
 
 COMMENTABLE_MEDIA_TYPES = frozenset(
@@ -126,19 +125,24 @@ def comment_panel(config: dict[str, object]) -> ViewerPanel:
         "stateUrl": base_url + "/state",
         "commentsUrl": base_url + "/comments",
     }
-    selection_hidden = "" if config["selectionEnabled"] else " hidden"
+    hint_hidden = "" if config["selectionEnabled"] else " hidden"
     encoded = json.dumps(config, ensure_ascii=False).replace("<", "\\u003c")
+    # One floating window: the composer for the comment being written, and a folded
+    # tray of added comments. Every comment is the same object and one send route.
     return ViewerPanel(
-        markup=f'<aside><div id="selection-controls"{selection_hidden}><h2>Selections</h2><section id="pending" aria-label="Confirm selection" hidden><div class="excerpt"></div><button data-confirm type="button">Comment</button> <button data-cancel type="button">Cancel</button></section><div id="empty" class="empty">Select text or drag an area, then choose Comment.</div><div id="items"></div></div><label for="message">Comment</label><textarea id="message" maxlength="{STEERING_MESSAGE_MAX_CHARS}"></textarea><button id="add" class="add" type="button" disabled>Send</button><div id="notice" class="notice" role="status"></div></aside>',
-        style="""main{grid-template-columns:minmax(0,1fr) 300px}.canvas{border-right:1px solid var(--rule)}#boxLayer{position:absolute;cursor:crosshair}aside{padding:14px;overflow:auto;background:var(--panel)}
-aside h2{margin:0 0 12px;font:600 12px/1.2 ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}#pending{border:1px solid var(--accent);padding:12px;margin-bottom:12px}#pending button{margin-top:10px}#pending [data-confirm]{background:var(--accent);color:white;border-color:var(--accent)}
-.empty{color:var(--muted);font-family:Georgia,serif;font-style:italic}#pending:not([hidden]) + #empty{display:none}.selection{border-top:1px solid var(--rule);padding:12px 0}
-.selection b{display:block;margin-bottom:5px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
-.selection .remove{float:right;padding:2px 6px;font-size:11px}
-.excerpt{max-height:90px;overflow:auto;font-family:Georgia,serif;font-size:13px}
-textarea{width:100%;min-height:62px;margin-top:8px;resize:vertical;border:1px solid var(--rule);background:white;padding:8px;color:var(--ink);font:13px/1.4 Georgia,serif}
-.add{width:100%;margin-top:12px;background:var(--ink);color:var(--paper);border-color:var(--ink)}.add:hover{background:var(--accent);color:white}
-.notice{margin-top:10px;color:var(--accent);font-size:12px}@media(max-width:760px){main{grid-template-columns:1fr;grid-template-rows:minmax(360px,1fr) auto}.canvas{border-right:0;border-bottom:1px solid var(--rule)}aside{max-height:42vh}}
+        markup=f'<aside class="comment-float" aria-label="Comments"><section id="composer" class="composer" role="dialog" aria-label="Comment" hidden><div class="excerpt"></div><textarea id="message" maxlength="2048" placeholder="Comment" aria-label="Comment"></textarea><div class="actions"><button data-cancel type="button">Cancel</button><button data-confirm id="queue" type="button" disabled>Add comment</button><button id="editNow" class="primary" type="button" disabled>Edit now</button></div></section><details id="tray" class="tray"><summary>Comments <span id="count">0</span></summary><p id="hint" class="empty"{hint_hidden}>Select text or drag an area to comment.</p><div id="items"></div><div class="actions"><button id="general" type="button">Comment on the whole artifact</button><button id="send" class="primary" type="button" disabled>Send to original chat</button></div></details><div id="notice" class="notice" role="status"></div></aside>',
+        style="""main{grid-template-columns:minmax(0,1fr)}#boxLayer{position:absolute;cursor:crosshair}
+.comment-float{position:fixed;right:16px;bottom:16px;z-index:5;display:grid;gap:8px;width:min(340px,calc(100vw - 32px));max-height:calc(100vh - 32px)}
+.composer,.tray{background:var(--panel);border:1px solid var(--rule);border-radius:8px;box-shadow:0 10px 28px rgb(0 0 0/.18);padding:12px;overflow:auto}
+.tray{padding:8px 12px}.tray summary{cursor:pointer;font:600 12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.tray[open] summary{margin-bottom:8px}.actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;margin-top:10px}
+.primary{background:var(--accent);color:white;border-color:var(--accent)}.primary:disabled{opacity:.5}
+.empty{margin:0 0 8px;color:var(--muted);font-family:Georgia,serif;font-style:italic;font-size:13px}
+.selection{border-top:1px solid var(--rule);padding:8px 0}.selection b{display:block;margin-bottom:4px;color:var(--accent);font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+.selection p{margin:4px 0 0;font:13px/1.4 Georgia,serif}.selection .remove{float:right;padding:2px 6px;font-size:11px}
+.excerpt{max-height:72px;overflow:auto;font-family:Georgia,serif;font-size:13px;color:var(--muted)}
+textarea{width:100%;min-height:72px;margin-top:8px;resize:vertical;border:1px solid var(--rule);background:white;padding:8px;color:var(--ink);font:13px/1.4 Georgia,serif;box-sizing:border-box}
+.notice{color:var(--accent);font-size:12px;text-align:right}.notice:empty{display:none}
 """,
         script=_selection_script() + "\nconst config=" + encoded + ";\n" + _comment_panel_script(),
     )

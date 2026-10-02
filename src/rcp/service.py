@@ -856,6 +856,8 @@ class ArtifactContextRequest(BaseModel):
     artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
     episode_id: str | None = None
     fresh_session: bool = False
+    # Set by the viewer's Edit now: the one prompt branch asking for the edit this turn.
+    edit_now: bool = False
     selections: list[ArtifactSelection] = Field(
         default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
     )

@@ -1126,6 +1126,7 @@ def stage_artifact_context(
         "sha256": base_sha256,
         "source_operation_id": origin.operation_id,
         "source_artifact_id": descriptor.artifact_id,
+        "edit_now": context.edit_now,
         "selections": [
             {
                 **item.model_dump(mode="json"),

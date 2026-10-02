@@ -363,8 +363,9 @@ function installSelectionConfirmation(container, confirm, clearSelection) {
   return offer;
 }
 
-// One short line for a selection, shared by the viewer rail and the chat draft.
+// One short line for a selection, shared by the viewer's comments and the chat draft.
 function describeSelection(selection) {
+  if (selection.kind === "whole") return "Whole artifact";
   if (selection.kind === "text") return `"${selection.text}"`;
   const elements = selection.elements;
   if (!elements) return selection.labels || "Boxed area";

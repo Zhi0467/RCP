@@ -9,7 +9,12 @@ from pathlib import Path
 
 from rcp.artifact_comments import supports_comments
 from rcp.runs.session_master import SESSION_MASTER_ROLE, session_master_label
-from rcp.service import ArtifactEditAdmission, ProjectService, RunRequest
+from rcp.service import (
+    ArtifactContextRequest,
+    ArtifactEditAdmission,
+    ProjectService,
+    RunRequest,
+)
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, Artifact
 from rcp.transport import RemoteRunStage
 
@@ -132,6 +137,30 @@ def artifact_reply_origin(
     raise AgentTaskAdmissionConflict("The artifact's reply thread is unavailable.")
 
 
+def artifact_comment_message(message: str | None, context: ArtifactContextRequest) -> str:
+    """The human's turn text: any free text, then each anchored comment by its number.
+
+    The prompt's artifact item anchors the same numbers, so every route that comments
+    on an artifact (viewer or chat) reaches the agent in one shape.
+    """
+    if any(not selection.comment.strip() for selection in context.selections):
+        raise ValueError("Every artifact comment needs text.")
+    composed = "\n\n".join(
+        part
+        for part in [
+            (message or "").strip(),
+            *(
+                f"Comment {index}: {selection.comment.strip()}"
+                for index, selection in enumerate(context.selections, 1)
+            ),
+        ]
+        if part
+    )
+    if not composed:
+        raise ValueError("The artifact comment is empty.")
+    return composed
+
+
 def admit_artifact_edit(
     store: AppStore, service: ProjectService, project_id: str, request: RunRequest
 ) -> RunRequest:
@@ -202,6 +231,7 @@ def admit_artifact_edit(
             fresh_session=fresh,
         )
     updates = {
+        "message": artifact_comment_message(request.message, context),
         "artifact_edit": edit,
         "mode": "discuss",
         "patch_kind": "work",

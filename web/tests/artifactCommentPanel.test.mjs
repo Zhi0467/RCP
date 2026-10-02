@@ -18,12 +18,29 @@ function shell() {
       this.listeners[name] = handler;
     },
     replaceChildren() {},
+    append() {},
+    focus() {},
+    setAttribute() {},
+    querySelector() {
+      return this.child ?? (this.child = element());
+    },
     after(child) {
       this.afterElement = child;
     },
   });
   const elements = Object.fromEntries(
-    ["items", "empty", "add", "notice", "message", "pending"].map((id) => [id, element()]),
+    [
+      "items",
+      "count",
+      "tray",
+      "queue",
+      "editNow",
+      "send",
+      "general",
+      "notice",
+      "message",
+      "composer",
+    ].map((id) => [id, element()]),
   );
   const listeners = {};
   const timers = new Map();
@@ -112,34 +129,45 @@ function shell() {
   };
 }
 
-test("shell preserves a conflicted draft and resubmits only with explicit fresh-session consent", async () => {
+test("Edit now and Send post one comment list, and resubmit only with fresh-session consent", async () => {
   const app = shell();
   await settle();
-  assert.equal(app.elements.add.disabled, true);
-  app.elements.message.value = "Update the plot";
-  app.elements.message.listeners.input();
-  assert.equal(app.elements.add.disabled, false);
-  await app.elements.add.listeners.click();
-  assert.equal(JSON.parse(app.requests.at(-1).options.body).fresh_session, false);
-  assert.equal(app.elements.message.value, "Update the plot");
+  const { general, message, editNow, send } = app.elements;
+  assert.equal(editNow.disabled, true);
+  assert.equal(send.disabled, true);
+  general.listeners.click();
+  message.value = "Update the plot";
+  message.listeners.input();
+  assert.equal(editNow.disabled, false);
+  editNow.listeners.click();
+  await settle();
+  const posts = () => app.requests.filter((request) => request.url === "/comments");
+  assert.deepEqual(JSON.parse(posts()[0].options.body), {
+    comments: [{ text: "Update the plot", selection: null }],
+    edit_now: true,
+    fresh_session: false,
+  });
+  // The refused comment stays queued for the tray's one-off send.
   assert.equal(app.messages.length, 0);
+  assert.equal(send.disabled, false);
   app.setCanComment(false);
   await app.tick();
-  assert.equal(app.elements.add.disabled, true);
+  assert.equal(send.disabled, true);
   app.setCanComment(true);
   await app.tick(); // A stale availability projection must not undo the explicit offer.
-  assert.equal(app.elements.add.disabled, false);
   app.setSendStatus(200);
-  await app.elements.add.listeners.click();
-  const posts = app.requests.filter((request) => request.url === "/comments");
-  assert.equal(JSON.parse(posts[1].options.body).fresh_session, true);
-  assert.equal(app.elements.message.value, "");
-  assert.equal(app.elements.add.disabled, true);
-  for (const { options } of posts) {
+  send.listeners.click();
+  await settle();
+  const second = JSON.parse(posts()[1].options.body);
+  assert.equal(second.fresh_session, true);
+  assert.equal(second.edit_now, false);
+  assert.equal(second.comments.length, 1);
+  assert.equal(send.disabled, true);
+  for (const { options } of posts()) {
     assert.equal(options.method, "POST");
     assert.equal(options.credentials, "same-origin");
   }
-  assert.equal(JSON.parse([...app.saved.values()][0]).message, "");
+  assert.deepEqual(JSON.parse([...app.saved.values()].at(-1)).comments, []);
   assert.deepEqual(JSON.parse(JSON.stringify(app.messages)), [
     [
       {

@@ -668,14 +668,23 @@ def download_stored_artifact(
     )
 
 
+class ArtifactComment(BaseModel):
+    """One comment: its text, anchored to a selection or to the whole artifact."""
+
+    model_config = {"extra": "forbid"}
+
+    text: str = Field(min_length=1, max_length=2048)
+    selection: ArtifactSelection | None = None
+
+
 class ArtifactCommentBody(BaseModel):
     model_config = {"extra": "forbid"}
 
-    message: str
-    fresh_session: bool = False
-    selections: list[ArtifactSelection] = Field(
-        default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    comments: list[ArtifactComment] = Field(
+        min_length=1, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
     )
+    edit_now: bool = False
+    fresh_session: bool = False
 
 
 @router.post(
@@ -697,8 +706,16 @@ def comment_artifact(
     artifact = store.artifact(artifact_id)
     if artifact is None or artifact.project_id != project_id:
         raise HTTPException(status_code=404, detail="Artifact not found")
-    if not body.message.strip() or len(body.message) > STEERING_MESSAGE_MAX_CHARS:
-        raise HTTPException(status_code=422, detail="The artifact comment is empty or too long.")
+    if any(not comment.text.strip() for comment in body.comments):
+        raise HTTPException(status_code=422, detail="Every artifact comment needs text.")
+    general = "\n\n".join(c.text.strip() for c in body.comments if c.selection is None)
+    selections = [
+        c.selection.model_copy(update={"comment": c.text.strip()})
+        for c in body.comments
+        if c.selection is not None
+    ]
+    if len(general) + sum(len(s.comment) for s in selections) > STEERING_MESSAGE_MAX_CHARS:
+        raise HTTPException(status_code=422, detail="The artifact comments are too long.")
     author = identity_access.require_patch_capable_identity(request)
     origin = store.agent_task(artifact.origin_operation_id or "")
     if origin is None:
@@ -710,21 +727,13 @@ def comment_artifact(
             service,
             project_id,
             RunRequest(
-                message="\n\n".join(
-                    [
-                        body.message,
-                        *(
-                            f"Selection {index}: {selection.comment}"
-                            for index, selection in enumerate(body.selections, 1)
-                            if selection.comment
-                        ),
-                    ]
-                ),
+                message=general,
                 artifact_context=ArtifactContextRequest(
                     operation_id=origin.operation_id,
                     artifact_id=artifact_id,
                     fresh_session=body.fresh_session,
-                    selections=body.selections,
+                    edit_now=body.edit_now,
+                    selections=selections,
                 ),
             ),
         )

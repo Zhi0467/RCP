@@ -18,10 +18,18 @@ if (boxLayer) {
   window.addEventListener("pagehide", () => { observer.disconnect(); boxLayer.remove(); }, {once:true});
 }
 const items = document.getElementById("items"),
-  empty = document.getElementById("empty"),
-  add = document.getElementById("add"),
+  count = document.getElementById("count"),
+  tray = document.getElementById("tray"),
+  queue = document.getElementById("queue"),
+  editNow = document.getElementById("editNow"),
+  send = document.getElementById("send"),
+  general = document.getElementById("general"),
   notice = document.getElementById("notice");
 const message = document.getElementById("message");
+// Every comment is one object: its text, and the selection it is anchored to (or
+// none, for the whole artifact). Edit now and Send post the same list.
+const comments = [];
+let current = null;
 let viewerState = null;
 let sending = false;
 let sendError = "";
@@ -47,78 +55,107 @@ const bounded = (value, limit) =>
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, limit);
-function saveSelections() {
+const anchoredCount = () => comments.filter((comment) => comment.selection).length;
+function saveComments() {
   try {
-    localStorage.setItem(draftKey, JSON.stringify({ selections, message: message.value }));
+    localStorage.setItem(draftKey, JSON.stringify({ comments, draft: message.value }));
   } catch {
     notice.textContent = "Comments could not be saved. Keep this preview open and try again.";
   }
 }
 function render() {
   items.replaceChildren();
-  empty.hidden = selections.length > 0;
-  updateSend();
-  selections.forEach((selection, index) => {
+  count.textContent = String(comments.length);
+  comments.forEach((comment, index) => {
     const card = document.createElement("section");
     card.className = "selection";
     const label = document.createElement("b");
-    label.textContent = `${index + 1} · ${selection.kind}`;
+    label.textContent = `${index + 1} · ${comment.selection ? comment.selection.kind : "whole artifact"}`;
     const excerpt = document.createElement("div");
     excerpt.className = "excerpt";
-    excerpt.textContent = describeSelection(selection);
-    const comment = document.createElement("textarea");
-    comment.placeholder = "Comment or question";
-    comment.maxLength = 2048;
-    comment.value = selection.comment || "";
-    comment.addEventListener("input", () => {
-      selection.comment = comment.value.slice(0, 2048);
-      saveSelections();
-    });
+    excerpt.textContent = comment.selection ? describeSelection(comment.selection) : "";
+    const text = document.createElement("p");
+    text.textContent = comment.text;
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "remove";
     remove.textContent = "Remove";
-    remove.setAttribute("aria-label", `Remove selection ${index + 1}`);
+    remove.setAttribute("aria-label", `Remove comment ${index + 1}`);
     remove.addEventListener("click", () => {
-      selections.splice(index, 1);
-      saveSelections();
+      comments.splice(index, 1);
+      saveComments();
       render();
     });
-    card.append(remove, label, excerpt, comment);
+    card.append(remove, label, excerpt, text);
     items.append(card);
   });
+  updateSend();
 }
 try {
   const saved = JSON.parse(localStorage.getItem(draftKey) || "null");
-  if (saved && Array.isArray(saved.selections)) {
-    selections.push(...saved.selections.slice(0, config.maxSelections));
-    render();
-    message.value = typeof saved.message === "string" ? saved.message : "";
-  }
+  // Drafts saved before comments were one object held selections and a message.
+  const restored = Array.isArray(saved?.comments)
+    ? saved.comments
+    : [
+        ...(Array.isArray(saved?.selections) ? saved.selections : [])
+          .filter((selection) => selection?.comment)
+          .map(({ comment, ...selection }) => ({ text: comment, selection })),
+        ...(typeof saved?.message === "string" && saved.message.trim()
+          ? [{ text: saved.message, selection: null }]
+          : []),
+      ];
+  comments.push(
+    ...restored
+      .filter((comment) => typeof comment?.text === "string" && comment.text.trim())
+      .slice(0, config.maxSelections),
+  );
+  message.value = typeof saved?.draft === "string" ? saved.draft : "";
+  render();
 } catch {
-  selections.length = 0;
+  comments.length = 0;
   render();
   notice.textContent = "Saved comments could not be restored.";
 }
-function appendSelection(selection) {
-  if (selections.length >= config.maxSelections) {
+function addComment(selection) {
+  const text = message.value.trim();
+  if (!text) return false;
+  const anchor = selection && selection.kind !== "whole" ? selection : null;
+  if (anchor && anchoredCount() >= config.maxSelections) {
     notice.textContent = `A prompt can include at most ${config.maxSelections} selections.`;
-    return;
+    return false;
   }
-  selections.push(selection);
-  saveSelections();
+  comments.push({ text: text.slice(0, 2048), selection: anchor });
+  message.value = "";
+  current = null;
+  saveComments();
   render();
-  items.lastElementChild?.querySelector("textarea")?.focus();
+  return true;
 }
 let clearImageSelection = null;
-const offerSelection = installSelectionConfirmation(
-  document.getElementById("pending"),
-  appendSelection,
-  () => {
-    if (frame) frame.contentWindow?.postMessage({ type: "rcp-artifact-selection-clear" }, "*");
-    else clearImageSelection?.();
-  },
+const clearSelection = () => {
+  if (frame) frame.contentWindow?.postMessage({ type: "rcp-artifact-selection-clear" }, "*");
+  else clearImageSelection?.();
+};
+const offerComposer = installSelectionConfirmation(
+  document.getElementById("composer"),
+  addComment,
+  clearSelection,
 );
+function offerSelection(selection) {
+  current = selection;
+  offerComposer(selection);
+  if (selection) message.focus();
+  updateSend();
+}
+general.addEventListener("click", () => offerSelection({ kind: "whole" }));
+const dropCurrent = () => {
+  current = null;
+  updateSend();
+};
+document.getElementById("composer").querySelector("[data-cancel]").addEventListener("click", dropCurrent);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") dropCurrent();
+});
 window.addEventListener("message", (event) => {
   if (!config.selectionEnabled || !frame || event.source !== frame.contentWindow) return;
   const value = event.data;
@@ -196,8 +233,14 @@ if (boxLayer)
     offerSelection(mapped ? { ...mapped, comment: "" } : null);
   });
 function updateSend() {
-  add.disabled = sending || !viewerState?.can_comment || !message.value.trim();
-  add.textContent = (freshSessionRequired || viewerState?.fresh_session_required) ? "Edit in a new session" : "Send";
+  const fresh = freshSessionRequired || viewerState?.fresh_session_required;
+  const blocked = sending || !viewerState?.can_comment;
+  const writing = Boolean(current && message.value.trim());
+  queue.disabled = !writing;
+  editNow.disabled = blocked || !writing;
+  send.disabled = blocked || comments.length === 0;
+  editNow.textContent = fresh ? "Edit now in a new session" : "Edit now";
+  send.textContent = fresh ? "Send in a new session" : "Send to original chat";
 }
 async function refreshState() {
   if (stateLoading || stopped || permanentStateError || document.hidden) return;
@@ -220,9 +263,8 @@ async function refreshState() {
   }
   updateSend();
 }
-message.addEventListener("input", () => { sendError = ""; saveSelections(); updateSend(); });
-add.addEventListener("click", async () => {
-  if (add.disabled) return;
+message.addEventListener("input", () => { sendError = ""; saveComments(); updateSend(); });
+async function postComments(now) {
   sendError = "";
   sending = true;
   updateSend();
@@ -231,8 +273,11 @@ add.addEventListener("click", async () => {
       method: "POST",
       credentials: "same-origin",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({message: message.value, selections,
-        fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required}),
+      body: JSON.stringify({
+        comments: comments.map(({ text, selection }) => ({ text, selection })),
+        edit_now: now,
+        fresh_session: freshSessionRequired || !!viewerState?.fresh_session_required,
+      }),
     });
     const result = await response.json();
     if (!response.ok) {
@@ -242,10 +287,9 @@ add.addEventListener("click", async () => {
         result.detail?.message || "Comment could not be sent.");
     }
     freshSessionRequired = false;
-    selections.length = 0;
-    message.value = "";
-    saveSelections();
-    offerSelection(null);
+    comments.length = 0;
+    saveComments();
+    tray.open = false;
     render();
     window.parent.postMessage({type: "rcp-artifact-edit-started", version: 1,
       artifact_id: config.artifactId, operation_id: result.operation_id}, location.origin);
@@ -257,6 +301,16 @@ add.addEventListener("click", async () => {
     sending = false;
     updateSend();
   }
+}
+// Edit now adds the comment being written to the list, then asks for the edit at once.
+editNow.addEventListener("click", () => {
+  if (editNow.disabled || !addComment(current)) return;
+  clearSelection();
+  offerComposer(null);
+  void postComments(true);
+});
+send.addEventListener("click", () => {
+  if (!send.disabled) void postComments(false);
 });
 window.addEventListener("focus", refreshState);
 async function pollState() {

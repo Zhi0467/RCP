@@ -253,21 +253,26 @@ shows accepts an edit comment, including Markdown, text, data, and code; these
 other types accept comments without selections. PDF and download-only files
 refuse editing.
 
-HTML selection gestures activate when the surrounding confirmation shell opts
-in through the private preview bridge. Text and area selections remain pending
-until the human chooses Comment; Cancel or Escape discards the pending selection.
+Every comment is one object: its text and the selection it anchors to, or none
+for the whole artifact. HTML selection gestures activate when the surrounding
+shell opts in through the private preview bridge. A text or area selection opens
+a floating comment window over the artifact; Cancel or Escape discards it.
 Dragging from a figure or blank space selects an area, while starting on text
-preserves ordinary highlighting. Each confirmed selection can carry a comment
-and can be removed. These are prompt inputs, never graph annotations.
+preserves ordinary highlighting. The window offers **Add comment**, which files
+the comment in a folded Comments tray, and **Edit now**, which adds it and sends
+every filed comment at once. The tray lists filed comments with Remove, offers a
+comment on the whole artifact (the only kind for types without selection
+gestures), and a one-off **Send to original chat** for everything filed. These
+are prompt inputs, never graph annotations.
 
-The shell saves the comment and selections per artifact in the current browser
-profile. Send posts them directly to the stored artifact's comments endpoint.
-A 409 displays the server's reason and preserves the draft. Success clears it
-and notifies the containing RCP panel of the admitted edit operation. No chat
-draft participates in sending.
-When admission requires an explicit fresh session, the action reads Edit in a
-new session and supplies the fresh-session flag. An unavailable origin never
-prevents viewing; its reason appears beside the disabled action.
+The shell saves filed comments and the unsent draft per artifact in the current
+browser profile. Both actions post the same comment list to the stored
+artifact's comments endpoint; Edit now also sets `edit_now`. A 409 displays the
+server's reason and keeps the comments filed. Success clears them and notifies
+the containing RCP panel of the admitted edit operation. When admission requires
+an explicit fresh session, both actions say so and supply the fresh-session
+flag. An unavailable origin never prevents viewing; its reason appears beside
+the disabled actions.
 
 RCP carries selected text with limited surrounding text. A box on HTML names
 up to eight elements it covers the way a reader of the source finds them: a CSS
@@ -281,10 +286,12 @@ cropped from its first frame and the prompt says so; SVG and an image over the
 crop pixel bound travel as positions only. A box saved by the viewer before
 elements were named measured the viewer area, so it is described by its old
 sampled text and never cropped. A turn
-carries at most 50 annotations. On send, each artifact annotation adds
-`Selection N: <what it covers>` and its comment to the human message, numbered in
-order, and the prompt lists the same numbers with what each selection covers; no
-markup is added. The selection payload, comments, and final
+carries at most 50 annotations. The viewer and a chat draft reach the agent in
+one shape: admission writes the human message as any free text followed by
+`Comment N: <text>` for each anchored comment, and the prompt's artifact item
+lists the same numbers with what each covers, saying the file may be edited in
+place when a comment needs it. `edit_now` adds one line asking for that edit in
+this turn; nothing else differs between the routes. No markup is added. The selection payload, comments, and final
 question are bounded and treated as untrusted input.
 
 ### Editing and versions
