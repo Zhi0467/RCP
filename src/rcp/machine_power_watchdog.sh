@@ -26,8 +26,11 @@ case "$generation" in ''|*[!0-9]*) exit 2 ;; esac
 bounded() {
     "$@" &
     child=$!
+    # The timer never writes. A TERM that lands before $sleeper is set orphans
+    # its sleep, which must not hold a caller's $(...) pipe open.
     (
-        trap 'kill "$sleeper" 2>/dev/null; exit 0' TERM INT
+        sleeper=
+        trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null; exit 0' TERM INT
         sleep "$command_timeout" &
         sleeper=$!
         wait "$sleeper"
@@ -37,7 +40,7 @@ bounded() {
         sleeper=$!
         wait "$sleeper"
         kill -KILL "$child" 2>/dev/null
-    ) &
+    ) >/dev/null 2>&1 &
     timer=$!
     wait "$child"
     result=$?
