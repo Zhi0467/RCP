@@ -295,9 +295,11 @@ clear=false
 attempt=0
 while [ "$attempt" -lt {MACHINE_POWER_COMMAND_TIMEOUT_SECONDS} ]; do
     bounded /usr/bin/pmset -g > "$work/flag" || fail clear_failed
-    # pmset omits the line until the flag has been set once since boot.
-    if bounded /usr/bin/grep -Eq '^[[:space:]]*SleepDisabled[[:space:]]+0([[:space:]]|$)' "$work/flag" ||
-        ! bounded /usr/bin/grep -Eq '^[[:space:]]*SleepDisabled[[:space:]]' "$work/flag"; then
+    # Same reading as parse_flag: pmset omits the line until the flag has been
+    # set once since boot, which counts as off only under the settings header.
+    if bounded /usr/bin/grep -Eq '^[[:space:]]*(SleepDisabled|disablesleep)[[:space:]]+0[[:space:]]*$' "$work/flag" ||
+        {{ ! bounded /usr/bin/grep -Eq '^[[:space:]]*(SleepDisabled|disablesleep)[[:space:]]' "$work/flag" &&
+            bounded /usr/bin/grep -q 'System-wide power settings:' "$work/flag"; }}; then
         clear=true
         break
     fi

@@ -2090,9 +2090,11 @@ class AgentTaskStoreMixin:
             )
         except RuntimeError as exc:
             raise ValueError(str(exc)) from exc
+        # A literal predicate, so SQLite can use the (project_id, status) index.
+        active = "AND status IN ('queued', 'running', 'pausing')" if active_only else ""
         with self.connection() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT graph_runs.*,
                        EXISTS (
                            SELECT 1 FROM graph_run_receipts AS receipt
@@ -2103,11 +2105,10 @@ class AgentTaskStoreMixin:
                              )
                        ) AS recovery_abandoned
                 FROM graph_runs
-                WHERE project_id = ?
-                  AND (? = 0 OR status IN ('queued', 'running', 'pausing'))
+                WHERE project_id = ? {active}
                 ORDER BY created_at, operation_id
                 """,
-                (canonical_project_id, int(active_only)),
+                (canonical_project_id,),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 

@@ -1737,6 +1737,11 @@ def create_app(
                 # effect fence opens. Recovery must precede every other owner.
                 await terminals.start()
                 background_tasks.recover_at_startup()
+                # Keep the Mac awake before any recovery owner relaunches work;
+                # the scans below can outlast the previous watchdog's heartbeat.
+                if machine_power is not None:
+                    machine_power.start()
+                    app.state.machine_power_started = True
                 from rcp.runs.episodes.merge import reconcile_episode_merge
 
                 for project in store.projects():
@@ -1896,8 +1901,6 @@ def create_app(
                     control_server.start()
                     control_started = True
                 release_check.start()
-                if machine_power is not None:
-                    machine_power.start()
                 runtime_started = True
                 app.state.startup_effect_runtime_started = True
                 startup_effect_runtime_event.set()
@@ -1944,7 +1947,8 @@ def create_app(
                 release_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await release_task
-            if machine_power is not None and runtime_started:
+            if machine_power is not None and app.state.machine_power_started:
+                app.state.machine_power_started = False
                 await asyncio.to_thread(machine_power.stop)
             live_artifact_shutdown.set()
             # Request threads blocked behind a contended canonical lock would
@@ -1994,6 +1998,7 @@ def create_app(
     app.state.data_dir = app_data
     app.state.background_tasks = background_tasks
     app.state.machine_power = machine_power
+    app.state.machine_power_started = False
     app.state.reconcile_question_answers = reconcile_question_answers
     app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
     app.state.watcher_poller = watcher_poller

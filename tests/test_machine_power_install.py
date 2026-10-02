@@ -329,3 +329,23 @@ def test_uninstall_clears_only_after_removing_the_rule(installer):
         "else echo ' SleepDisabled 0'; fi\n"
     )
     assert installer.uninstall().install_problem == "not_installed"
+
+
+@macos_tools
+@pytest.mark.parametrize(
+    "output,cleared",
+    [
+        ("System-wide power settings:\\n", True),
+        (" disablesleep 0\\n", True),
+        ("truncated\\n", False),
+        (" disablesleep 1\\n", False),
+    ],
+)
+def test_clear_check_reads_the_flag_like_the_controller(installer, output, cleared):
+    fake_pmset = installer.paths.sudoers.parent / "pmset"
+    fake_pmset.write_text(f"#!/bin/sh\nprintf '{output}'\n")
+    if cleared:
+        assert installer.install().installed
+    else:
+        with pytest.raises(InstallError, match="clear_failed"):
+            installer.install()
