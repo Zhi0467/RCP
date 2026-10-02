@@ -2075,6 +2075,14 @@ class AgentTaskStoreMixin:
     def all_project_agent_tasks(self, project_id: str) -> list[AgentTaskRecord]:
         """Return the complete typed task set for durable project capture."""
 
+        return self._project_agent_tasks(project_id, active_only=False)
+
+    def active_project_agent_tasks(self, project_id: str) -> list[AgentTaskRecord]:
+        """Return only queued, running, and pausing tasks, without the history scan."""
+
+        return self._project_agent_tasks(project_id, active_only=True)
+
+    def _project_agent_tasks(self, project_id: str, *, active_only: bool) -> list[AgentTaskRecord]:
         try:
             canonical_project_id = _canonical_uuid4(
                 project_id,
@@ -2096,9 +2104,10 @@ class AgentTaskStoreMixin:
                        ) AS recovery_abandoned
                 FROM graph_runs
                 WHERE project_id = ?
+                  AND (? = 0 OR status IN ('queued', 'running', 'pausing'))
                 ORDER BY created_at, operation_id
                 """,
-                (canonical_project_id,),
+                (canonical_project_id, int(active_only)),
             ).fetchall()
         return [self._agent_task_record(row) for row in rows]
 

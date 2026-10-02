@@ -128,7 +128,7 @@ def demand_snapshot(store, background) -> list[str]:
         reasons.append("episode")
     credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
     for project in projects if store.has_any_active_agent_task() else ():
-        for task in store.all_project_agent_tasks(project.project_id):
+        for task in store.active_project_agent_tasks(project.project_id):
             if task.status in {"running", "pausing"}:
                 reasons.append("task")
                 break

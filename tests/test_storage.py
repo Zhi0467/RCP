@@ -3705,3 +3705,18 @@ def test_question_projection_migration_preserves_existing_answers(tmp_path):
     with reopened.connection() as connection:
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=35")
     assert AppStore(store.path).get_question(question.question_id).answer_projected_revision == 1
+
+
+def test_active_project_agent_tasks_skip_finished_history(tmp_path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    project_id = str(uuid.uuid4())
+    for operation_id, status in (("done", "succeeded"), ("live", "running")):
+        _create_experiment_runtime_fixture(
+            store,
+            project_id=project_id,
+            control_node_id=f"exp/{operation_id}",
+            operation_id=operation_id,
+            status=status,
+        )
+    assert [task.operation_id for task in store.active_project_agent_tasks(project_id)] == ["live"]
+    assert len(store.all_project_agent_tasks(project_id)) == 2
