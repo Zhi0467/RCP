@@ -486,7 +486,6 @@ def demand_inputs(tmp_path, monkeypatch):
         projects=lambda: [project],
         live_episodes=lambda _: [episode],
         active_project_agent_tasks=lambda _: tasks,
-        has_any_active_agent_task=lambda: bool(tasks),
     )
     background = SimpleNamespace(
         runtime_is_idle=lambda: True,
@@ -694,6 +693,15 @@ def test_partial_install_still_releases_previously_owned_flag(machine):
     heartbeat = power.read_record(machine.root / "heartbeat")
     assert heartbeat["desired"] == "off"
     assert heartbeat["generation"] == "5"
+
+
+def test_other_account_installation_keeps_the_idle_hold(machine):
+    activation = machine.root / "activation"
+    power.write_record(activation, {"generation": 1, "set": 1})
+    activation.chmod(0)
+    machine.installer.status = lambda: InstallStatus(False, "other_account")
+    machine.controller.safety_pass()
+    assert machine.controller.status()["idle_hold"]["active"] is True
 
 
 def test_external_flag_is_reported_without_installation(machine):

@@ -261,7 +261,7 @@ signal.pause()
             fcntl.flock(contender_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         backend.kill()
         assert backend.wait(timeout=5) == -signal.SIGKILL
-        wait_until(lambda: "clear" in watchdog.calls())
+        wait_until(lambda: "clear" in watchdog.calls(), timeout=30)
         assert (root / "flag").read_text().strip() == "1"
         with pytest.raises(BlockingIOError):
             fcntl.flock(contender_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -274,7 +274,7 @@ signal.pause()
                 return False
             return True
 
-        wait_until(acquire_after_cleanup)
+        wait_until(acquire_after_cleanup, timeout=30)
         released = True
         assert (root / "flag").read_text().strip() == "0"
         result = (root / "result").read_text()

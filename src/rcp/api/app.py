@@ -1735,13 +1735,13 @@ def create_app(
                 # This is the one ordinary startup sequence. Normal startup calls
                 # it immediately; a cutover candidate calls it after the shared
                 # effect fence opens. Recovery must precede every other owner.
-                await terminals.start()
-                background_tasks.recover_at_startup()
                 # Keep the Mac awake before any recovery owner relaunches work;
-                # the scans below can outlast the previous watchdog's heartbeat.
+                # recovery can outlast the previous watchdog's heartbeat.
                 if machine_power is not None:
                     machine_power.start()
                     app.state.machine_power_started = True
+                await terminals.start()
+                background_tasks.recover_at_startup()
                 from rcp.runs.episodes.merge import reconcile_episode_merge
 
                 for project in store.projects():

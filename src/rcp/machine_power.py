@@ -126,7 +126,7 @@ def demand_snapshot(store, background) -> list[str]:
     ):
         reasons.append("episode")
     credentials = ProviderCredentialStore.for_data_dir(store.path.parent)
-    for project in projects if store.has_any_active_agent_task() else ():
+    for project in projects:
         for task in store.active_project_agent_tasks(project.project_id):
             if task.status in {"running", "pausing"}:
                 reasons.append("task")
@@ -732,7 +732,10 @@ class MachinePowerController:
 
         installation = self.installer.status()
         installed = installation.installed
-        if self._watchdog is None:
+        # Another account's installation files are not ours to read; only the
+        # idle hold below applies.
+        trusted = installation.install_problem not in {"other_account", "foreign_file"}
+        if self._watchdog is None and trusted:
             can_recover = installation.install_problem in {None, "partial"}
             # Another backend owning lid mode gates only recovery and lid mode;
             # this backend's idle hold still follows its own demand below.
