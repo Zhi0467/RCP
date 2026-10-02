@@ -40,7 +40,7 @@ class Watchdog:
                 *) exit 2 ;;
             esac""",
             "ioreg": '''[ ! -f "$FAKE_STATE/fail_lid" ] || exit 1
-                printf '    "AppleClamshellState" = %s\\n' "$(cat "$FAKE_STATE/lid")"''',
+                printf '  |   "AppleClamshellState" = %s\\n' "$(cat "$FAKE_STATE/lid")"''',
             "ps": '''[ ! -f "$FAKE_STATE/dead" ] || exit 1
                 if [ -f "$FAKE_STATE/hang_ps" ]; then exec sleep 60; fi
                 cat "$FAKE_STATE/start"''',

@@ -422,7 +422,7 @@ class MachinePowerController:
             os.close(self._owner)
             self._owner = None
 
-    def _wait_watchdog(self) -> bool:
+    def _wait_watchdog(self, *, recover: bool = True) -> bool:
         if self._watchdog:
             try:
                 self._watchdog.wait(
@@ -432,8 +432,15 @@ class MachinePowerController:
             except subprocess.TimeoutExpired:
                 # Keep the cleanup executor alive, with its inherited lock.
                 return False
-            self._consume_result()
+            complete = self._consume_result()
             self._watchdog = None
+            # It died after `off` was published but before clearing: recover
+            # the owned flag before ownership is dropped.
+            owned = read_record(self.directory / "activation").get("set") == "1"
+            if recover and not complete and owned:
+                self._start_watchdog(recover=True)
+                self._heartbeat("off", "shutdown")
+                return self._wait_watchdog(recover=False)
         self._close_owner()
         return True
 
@@ -470,6 +477,9 @@ class MachinePowerController:
             read_record(self.directory / name) for name in ("activation", "result", "revoked")
         ]
         previous_generation = self._generation
+        if not records[1]:
+            # Uninstall removes every record, so a reinstall restarts numbering.
+            self._state["result_generation"] = None
         self._generation = int(records[1].get("generation", 0))
         self._consume_result()
         self._generation = max(
@@ -649,7 +659,8 @@ class MachinePowerController:
 
     def safety_pass(self):
         with self._lock:
-            if self.platform != "macos":
+            # A pass queued behind stop() must not re-arm after shutdown cleanup.
+            if self.platform != "macos" or (self._stop.is_set() and not self._running):
                 return
             try:
                 self._pass()
