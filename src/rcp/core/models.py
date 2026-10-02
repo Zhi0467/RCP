@@ -681,7 +681,7 @@ RELATION_SPEC: dict[BaseRelation, RelationSpec] = {
         frozenset({"evidence"}),
         frozenset({"hypothesis"}),
         "epistemic",
-        description="The Evidence bears on the claim but settles nothing either way. Use it rather than leaving Evidence from an Experiment that tests the claim unconnected to it.",
+        description="The Evidence bears on the claim but settles nothing either way. Use it only when the result really concerns the claim; it is never a placeholder for Evidence that does not.",
     ),
     "contradicts": RelationSpec(
         frozenset({"evidence", "hypothesis"}),
