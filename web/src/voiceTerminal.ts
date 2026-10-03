@@ -124,6 +124,12 @@ export async function terminalRepository(
   );
   const repository = repositories.find((item) => item.repository_id === repositoryId);
   if (!repository) throw new Error(`${repositoryId} is not a terminal repository here.`);
+  // Refuse a known-impossible run before the card asks for a tap.
+  if (!repository.eligible) {
+    throw new Error(
+      repository.unavailable_reason || `${repositoryId} cannot open a terminal right now.`,
+    );
+  }
   return repository;
 }
 

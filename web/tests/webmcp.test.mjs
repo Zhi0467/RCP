@@ -2058,14 +2058,22 @@ function evalToolDefinitions(state) {
   ];
 }
 
-function terminalDoubles(output = "", openSessions = []) {
+function terminalDoubles(output = "", openSessions = [], repository = {}) {
   const requests = [];
   const sockets = [];
   const bytes = (text) => new TextEncoder().encode(text).buffer;
   const fetchJson = async (path, init) => {
     requests.push([init?.method ?? "GET", path, init?.body]);
     if (path.endsWith("/repositories")) {
-      return [{ repository_id: "code", machine_id: "local", backend_name: null, eligible: true }];
+      return [
+        {
+          repository_id: "code",
+          machine_id: "local",
+          backend_name: null,
+          eligible: true,
+          ...repository,
+        },
+      ];
     }
     return init?.method === "POST" ? { session_id: "s1", repository_id: "code" } : openSessions;
   };
@@ -2216,17 +2224,20 @@ test("a command still running when the window ends leaves its shell open", async
   );
 });
 
-test("a terminal voice did not start is refused before anything is typed", async () => {
-  const { requests, sockets, deps } = terminalDoubles("", [
-    { session_id: "member-shell", repository_id: "code", state: "live" },
-  ]);
-  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
-  await assert.rejects(run.execute({ repository_id: "code", command: "ls" }));
-  assert.equal(
-    requests.some(([method]) => method === "POST"),
-    false,
-  );
-  assert.deepEqual(sockets, []);
+test("an open or unavailable terminal is refused before anything is typed", async () => {
+  const doubles = [
+    terminalDoubles("", [{ session_id: "member-shell", repository_id: "code", state: "live" }]),
+    terminalDoubles("", [], { eligible: false, unavailable_reason: "No terminal backend." }),
+  ];
+  for (const { requests, sockets, deps } of doubles) {
+    const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+    await assert.rejects(run.execute({ repository_id: "code", command: "ls" }));
+    assert.equal(
+      requests.some(([method]) => method === "POST"),
+      false,
+    );
+    assert.deepEqual(sockets, []);
+  }
 });
 
 test("a multi-line or control-character command is refused before anything opens", async () => {
