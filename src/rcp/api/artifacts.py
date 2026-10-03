@@ -27,6 +27,7 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon, supports
 from rcp.artifact_views import artifact_content, artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
 from rcp.background import BackgroundAgentTasks
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.artifact_edit_admission import (
@@ -653,7 +654,16 @@ def keep_stored_artifact(
     store: Annotated[AppStore, Depends(get_store)],
     identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
 ):
-    human = identity_access.require_patch_capable_identity(request)
+    # Keep needs no history snapshot; a named member is recorded on a closed
+    # consolidation row, and an unnamed one keeps the artifact unrecorded.
+    user = identity_access.acting_user(request)
+    human = (
+        AuthorizedHuman(
+            space_id=store.space_id, user_id=user.user_id, display_name=user.display_name
+        )
+        if user.display_name and user.display_name.strip()
+        else None
+    )
     _stored_artifact(store, project_id, artifact_id)
     return store.keep_artifact(artifact_id, resolved_by=human)
 

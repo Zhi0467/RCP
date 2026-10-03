@@ -1,5 +1,5 @@
 import { NotebookPen, UserRound } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   addLesson,
   deleteLesson,
@@ -17,7 +17,11 @@ interface Props {
 
 /** The project's operational lessons: members list, add, edit, and delete them. */
 export function ProjectLessons({ apiBase, writesDisabled }: Props) {
-  const [lessons, setLessons] = useState<Lesson[] | null>(null);
+  // Keyed by project so a response for the previous project never shows here.
+  const [loaded, setLoaded] = useState<{ apiBase: string; lessons: Lesson[] } | null>(null);
+  const lessons = loaded?.apiBase === apiBase ? loaded.lessons : null;
+  const currentApiBase = useRef(apiBase);
+  currentApiBase.current = apiBase;
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState<{ lessonId: string; text: string } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -25,7 +29,8 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    setLessons((await loadLessons(apiBase)).lessons);
+    const { lessons } = await loadLessons(apiBase);
+    if (currentApiBase.current === apiBase) setLoaded({ apiBase, lessons });
   }, [apiBase]);
 
   useEffect(() => {

@@ -224,10 +224,18 @@ def test_report_settlement_serializes_with_version_publication(setup, monkeypatc
     ) == (0 if action == "settle" else 1)
 
 
-@pytest.mark.parametrize("viewer", [False, True])
-def test_keeping_report_closes_inbox_from_either_route(setup, viewer):
+@pytest.mark.parametrize("route", ["inbox", "viewer", "unnamed_viewer"])
+def test_keeping_report_closes_inbox_from_either_route(setup, route):
     client, store, project = setup
     run = _report(store, project)
+    viewer = route != "inbox"
+    if route == "unnamed_viewer":
+        # Keep writes no history, so a member without a display name may keep.
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE space_users SET display_name=NULL WHERE user_id=?",
+                (store.local_owner.user_id,),
+            )
     artifact_base = f"/api/projects/{project}/artifacts"
     state = client.get(artifact_base + "/report/state").json()
     assert state["can_keep"] and store.artifact("report").kept_at is None
@@ -239,7 +247,11 @@ def test_keeping_report_closes_inbox_from_either_route(setup, viewer):
     )
     assert client.post(url, json={}).status_code == 200
     assert store.consolidation_run(run.run_id).state == "kept"
-    assert store.consolidation_run(run.run_id).resolved_by.user_id == store.local_owner.user_id
+    resolved_by = store.consolidation_run(run.run_id).resolved_by
+    if route == "unnamed_viewer":
+        assert resolved_by is None
+    else:
+        assert resolved_by.user_id == store.local_owner.user_id
     assert store.artifact("report").kept_at
     assert not client.get(artifact_base + "/report/state").json()["can_keep"]
     assert [item["artifact_id"] for item in client.get(artifact_base).json()] == ["report"]
