@@ -367,7 +367,7 @@ export function DetailDrawer({
             </div>
           </div>
           <div className="window-actions">
-            {projectId && !stagedNewNode && (
+            {projectId && !stagedNewNode && !historical && (
               <CopyReferenceButton
                 projectId={projectId}
                 graphTarget={graphTarget}

@@ -52,6 +52,16 @@ def resolve_project_references(
                     artifact = store.artifact(selector.artifact_id)
                     if artifact is None or artifact.project_id != project_id:
                         raise ValueError("Project reference artifact is unavailable.")
+                    # The same lifetime rule as the artifact routes' _stored_artifact.
+                    if (
+                        artifact.expires_at is not None
+                        and artifact.expires_at <= store.now()
+                        and artifact.artifact_id
+                        not in (
+                            store.protected_edit_artifact_ids() | store.legacy_artifact_import_ids()
+                        )
+                    ):
+                        raise ValueError("Project reference artifact has expired.")
                     # Stored versions may exceed the turn caps; check sizes before reading.
                     size = next(
                         version.size_bytes

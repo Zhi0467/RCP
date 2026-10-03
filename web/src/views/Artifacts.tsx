@@ -172,7 +172,7 @@ export function Artifacts({
                       <ExternalLink size={14} /> Open
                     </button>
                   )}
-                {entry.artifact_id && (
+                {entry.artifact_id && entry.available && (
                   <CopyReferenceButton
                     projectId={projectId}
                     graphTarget={graphTargetFromHash(entry.source_chat_href ?? "")}

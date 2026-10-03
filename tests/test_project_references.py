@@ -94,3 +94,30 @@ def test_oversized_artifact_is_refused_before_its_bytes_are_read(branch_services
     monkeypatch.setattr(store, "read_artifact_bytes", lambda *_: pytest.fail("bytes read"))
     with pytest.raises(ValueError):
         _resolve(branch_services, [selector])
+
+
+def test_expired_artifact_is_refused(branch_services):
+    from datetime import datetime, timedelta
+
+    from rcp.attachments import ArtifactReferenceSelector
+    from rcp.storage import Artifact
+
+    store = branch_services[0].paper.store
+    artifact = store.create_artifact(
+        Artifact(
+            artifact_id="d" * 24,
+            project_id="project",
+            supplier="turn",
+            supplier_id="origin",
+            source_name="old.txt",
+            media_type="text/plain",
+            created_at=store.now(),
+            expires_at=(datetime.fromisoformat(store.now()) - timedelta(seconds=1)).isoformat(),
+        ),
+        data=b"stale",
+    )
+    with pytest.raises(ValueError):
+        _resolve(
+            branch_services,
+            [ArtifactReferenceSelector(kind="artifact", artifact_id=artifact.artifact_id)],
+        )
