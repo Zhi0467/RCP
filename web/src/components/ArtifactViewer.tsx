@@ -239,7 +239,7 @@ export function ArtifactViewer() {
           </span>
         )}
         {state && <span>v{state.version_number}</span>}
-        {target.kind === "artifact" && (
+        {target.kind === "artifact" && state && !error && (
           <CopyReferenceButton
             projectId={target.projectId}
             graphTarget={

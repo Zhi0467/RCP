@@ -95,7 +95,7 @@ def resolve_project_references(
                 continue
             service = catalog.open(project_id)
             if selector.kind == "paper":
-                content = service.paper.read_canonical_reference()
+                content = service.paper.read_canonical_reference(CHAT_ATTACHMENT_MAX_FILE_BYTES)
                 resolved.append(
                     ResolvedProjectReference(
                         filename="introduction.md",

@@ -145,12 +145,14 @@ class PaperService:
         self.project_id = project_id or manifest.name
         self.canonical_path = self.workspace.root / "paper" / "introduction.md"
 
-    def read_canonical_reference(self) -> bytes:
+    def read_canonical_reference(self, max_bytes: int) -> bytes:
         """Read saved Paper only, with a confirmed remote refresh and no draft fallback."""
 
         with self.workspace.snapshot_lock:
             if self.workspace.remote and not self.workspace.refresh():
                 raise StateUnavailable("The canonical Paper could not be refreshed.")
+            if self.canonical_path.stat().st_size > max_bytes:
+                raise ValueError("The canonical Paper exceeds the attachment file-size limit.")
             return self.canonical_path.read_bytes()
 
     def snapshot(self) -> PaperSnapshot:

@@ -67,6 +67,12 @@ def test_paper_reference_reads_saved_canonical_after_confirmed_refresh(
     assert refreshes == [True]
     assert item.content == b"Fresh canonical paper\r\n"
     assert item.reference.version == hashlib.sha256(item.content).hexdigest()
+    monkeypatch.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
+    monkeypatch.setattr(paper.canonical_path.__class__, "read_bytes", lambda _: pytest.fail("read"))
+    with pytest.raises(ValueError):
+        _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
+    monkeypatch.undo()
+    monkeypatch.setattr(paper.workspace, "remote", True)
     monkeypatch.setattr(paper.workspace, "refresh", lambda: False)
     with pytest.raises(ValueError):
         _resolve(branch_services, [PaperReferenceSelector(kind="paper")])

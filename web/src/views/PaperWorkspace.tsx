@@ -512,11 +512,13 @@ export function PaperWorkspace({
       <div className="paper-editor-column">
         <header className="paper-toolbar">
           <div className="paper-view-controls">
-            <CopyReferenceButton
-              projectId={project.id}
-              graphTarget={graphTarget}
-              reference={{ kind: "paper" }}
-            />
+            {paper.canonical_available && paper.canonical_hash && (
+              <CopyReferenceButton
+                projectId={project.id}
+                graphTarget={graphTarget}
+                reference={{ kind: "paper" }}
+              />
+            )}
             <div className="paper-view-toggle" role="group" aria-label="Paper view">
               {(["write", "preview"] as const).map((view) => (
                 <button
