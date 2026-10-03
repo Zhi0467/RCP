@@ -8,11 +8,13 @@ export function CopyReferenceButton({
   graphTarget,
   reference,
   className = "icon-button",
+  showLabel = false,
 }: {
   projectId: string;
   graphTarget: GraphTargetRef;
   reference: ProjectReferenceSelector;
   className?: string;
+  showLabel?: boolean;
 }) {
   const [notice, setNotice] = useState<string | null>(null);
   return (
@@ -31,7 +33,8 @@ export function CopyReferenceButton({
           }
         }}
       >
-        <Copy size={16} />
+        <Copy size={showLabel ? 14 : 16} />
+        {showLabel && " Copy reference"}
       </button>
       {notice && <span role="alert">{notice}</span>}
     </>

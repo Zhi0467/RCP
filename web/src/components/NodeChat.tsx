@@ -24,6 +24,7 @@ import {
   Download,
   ExternalLink,
   File,
+  FolderOpen,
   History,
   Inbox,
   LoaderCircle,
@@ -36,6 +37,7 @@ import {
   RadioTower,
   RotateCcw,
   Send,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -1184,6 +1186,7 @@ export function NodeChat({
       skills.reset();
       setAttachments([]);
       setReferences([]);
+      setReferencePickerOpen(false);
       setAnnotations([]);
       setAnnotationsOpen(false);
       removeSessionStorage(annotationsKey);
@@ -1612,23 +1615,29 @@ export function NodeChat({
                       {line.steering.reason && <span>{line.steering.reason}</span>}
                     </div>
                   )}
+                  {line.attachments?.some((attachment) => attachment.reference) && (
+                    <div className="chat-input-references">
+                      {line.attachments.map((attachment) =>
+                        attachment.reference ? (
+                          <ReferenceChip
+                            key={attachment.attachment_id}
+                            projectId={project.id}
+                            reference={{
+                              ...sourceReference(attachment.reference),
+                              label: attachment.name,
+                            }}
+                            version={
+                              attachment.reference.graph_head
+                                ? `r${attachment.reference.graph_head.revision}`
+                                : attachment.reference.version?.slice(0, 7)
+                            }
+                          />
+                        ) : null,
+                      )}
+                    </div>
+                  )}
                   {line.attachments?.map((attachment) => {
-                    if (attachment.reference)
-                      return (
-                        <ReferenceChip
-                          key={attachment.attachment_id}
-                          projectId={project.id}
-                          reference={{
-                            ...sourceReference(attachment.reference),
-                            label: attachment.name,
-                          }}
-                          version={
-                            attachment.reference.graph_head
-                              ? `r${attachment.reference.graph_head.revision}`
-                              : (attachment.reference.version ?? undefined)
-                          }
-                        />
-                      );
+                    if (attachment.reference) return null;
                     const expired = Date.parse(attachment.expires_at) <= expiryClock;
                     return (
                       <div
@@ -1947,15 +1956,6 @@ export function NodeChat({
               ))}
             </div>
           )}
-          {referencePickerOpen && (
-            <ProjectReferencePicker
-              projectId={project.id}
-              target={project.graph_target ?? MAIN_GRAPH}
-              nodes={project.graph?.nodes ?? {}}
-              onPick={addReference}
-              onClose={() => setReferencePickerOpen(false)}
-            />
-          )}
           {attachments.length > 0 && (
             <div className="chat-attachment-chips" aria-label="Files for this turn">
               {attachments.map((item) => (
@@ -2043,44 +2043,63 @@ export function NodeChat({
           />
           <div className="chat-send">
             <div className="chat-composer-tools">
-              <button
-                className="icon-button chat-add-file"
-                type="button"
-                aria-label="Add input"
-                aria-expanded={addMenuOpen}
-                disabled={
-                  attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
-                  attachmentsPreparing ||
-                  submitting ||
-                  awaitingSteerReceipt
-                }
-                onClick={() => setAddMenuOpen((open) => !open)}
-              >
-                <Plus size={16} />
-              </button>
-              {addMenuOpen && (
-                <div className="chat-add-menu">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddMenuOpen(false);
-                      attachmentInputRef.current?.click();
-                    }}
-                  >
-                    Upload file
-                  </button>
-                  <button
-                    type="button"
-                    disabled={Boolean(artifactContext)}
-                    onClick={() => {
-                      setAddMenuOpen(false);
-                      setReferencePickerOpen(true);
-                    }}
-                  >
-                    From project…
-                  </button>
-                </div>
-              )}
+              <div className="chat-add-picker">
+                <button
+                  className="icon-button chat-add-file"
+                  type="button"
+                  aria-label="Add input"
+                  aria-expanded={addMenuOpen}
+                  disabled={
+                    attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
+                    attachmentsPreparing ||
+                    submitting ||
+                    awaitingSteerReceipt
+                  }
+                  onClick={() => {
+                    setReferencePickerOpen(false);
+                    setAddMenuOpen((open) => !open);
+                  }}
+                >
+                  <Plus size={16} />
+                </button>
+                {addMenuOpen && (
+                  <div className="chat-add-menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        attachmentInputRef.current?.click();
+                      }}
+                    >
+                      <Upload size={14} />
+                      Upload file
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={Boolean(artifactContext)}
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setReferencePickerOpen(true);
+                      }}
+                    >
+                      <FolderOpen size={14} />
+                      From project…
+                    </button>
+                  </div>
+                )}
+                {referencePickerOpen && (
+                  <ProjectReferencePicker
+                    projectId={project.id}
+                    target={project.graph_target ?? MAIN_GRAPH}
+                    nodes={project.graph?.nodes ?? {}}
+                    selectedKeys={new Set(references.map((item) => referenceKey(item.selector)))}
+                    onPick={addReference}
+                    onClose={() => setReferencePickerOpen(false)}
+                  />
+                )}
+              </div>
               {!artifactContext && (
                 <>
                   <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">

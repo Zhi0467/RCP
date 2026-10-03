@@ -1,6 +1,7 @@
 import { parseProjectHash } from "../experimentBoard";
 import { graphTargetFromHash } from "../graphTarget";
 import { setReferenceDrag } from "../projectReferences";
+import { CopyReferenceButton } from "../components/CopyReferenceButton";
 import { useEffect, useState, type MouseEvent } from "react";
 import {
   Download,
@@ -171,6 +172,15 @@ export function Artifacts({
                       <ExternalLink size={14} /> Open
                     </button>
                   )}
+                {entry.artifact_id && (
+                  <CopyReferenceButton
+                    projectId={projectId}
+                    graphTarget={graphTargetFromHash(entry.source_chat_href ?? "")}
+                    reference={{ kind: "artifact", artifact_id: entry.artifact_id }}
+                    className="button compact secondary artifact-entry-copy"
+                    showLabel
+                  />
+                )}
                 {entry.can_download && entry.download_url && entry.artifact_id && (
                   <StoredArtifactDownload
                     projectId={projectId}
