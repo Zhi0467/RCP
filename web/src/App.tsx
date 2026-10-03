@@ -276,6 +276,8 @@ import {
   webMcpSurface,
 } from "./webmcp";
 import { publishToolSurface } from "./toolCatalog";
+import { useVoiceAgent, type VoicePageState } from "./hooks/useVoiceAgent";
+import { VoiceButton, VoicePanel } from "./components/VoicePanel";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
 import {
@@ -3406,12 +3408,12 @@ export default function App() {
     [startExperiment],
   );
   const startWebMcpExperiment = useCallback(
-    async (node: GraphNode): Promise<AgentTask> => {
+    async (node: GraphNode, invocationCeiling?: number): Promise<AgentTask> => {
       if (!project) throw new Error("No RCP project is open.");
       const pendingProjectId = project.id;
       setWebMcpExperimentStartProjectId(pendingProjectId);
       try {
-        return await startExperiment(node);
+        return await startExperiment(node, invocationCeiling);
       } finally {
         setWebMcpExperimentStartProjectId((current) =>
           current === pendingProjectId ? null : current,
@@ -3950,6 +3952,22 @@ export default function App() {
       webMcpProject,
     ],
   );
+  // The voice agent acts through the same surface and identity gate as WebMCP.
+  const voicePageRef = useRef<VoicePageState>({
+    project: null,
+    tasks: [],
+    conversationSource: webMcpConversationSource,
+  });
+  voicePageRef.current = {
+    project: webMcpProject,
+    tasks,
+    conversationSource: webMcpConversationSource,
+  };
+  const voice = useVoiceAgent({
+    ready: backendSessionReady,
+    spaceId: verifiedHealth?.space_id ?? null,
+    page: voicePageRef,
+  });
   useEffect(() => {
     publishToolSurface(
       webMcpProject ? "project" : projectIndexWebMcpAvailable ? "project-index" : null,
@@ -3993,6 +4011,7 @@ export default function App() {
   };
 
   const exitTeamSpace = () => {
+    voice.end("space");
     void returnDesktopToPersonal().catch((error) => {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     });
@@ -4185,6 +4204,9 @@ export default function App() {
   const acceptanceAgentSurface = (
     <AcceptanceAgentIndicator agentMode={verifiedHealth?.agent_mode} />
   );
+  const voiceSurface = (
+    <VoicePanel voice={voice} onOpenSettings={() => setSpaceSettingsOpen(true)} />
+  );
   const setupRoute: ProjectSetupRoute = setupOpen
     ? parseProjectSetupRoute(window.location.hash)
     : { kind: "none" };
@@ -4284,6 +4306,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </>
     );
   if (!projectId)
@@ -4314,6 +4337,7 @@ export default function App() {
           onRequestIdentityName={requestActorName}
           onExitTeamSpace={desktop ? exitTeamSpace : undefined}
           onOpenSpaceSettings={() => setSpaceSettingsOpen(true)}
+          voiceControl={<VoiceButton voice={voice} className="landing-space-settings" />}
           textScale={desktop ? { value: textScale, onChange: changeAppTextScale } : undefined}
         />
         {notice && (
@@ -4325,6 +4349,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </>
     );
   if (project?.id && project.id !== projectId)
@@ -4441,6 +4466,7 @@ export default function App() {
   return (
     <div className="app-shell overview-shell">
       {acceptanceAgentSurface}
+      {voiceSurface}
       {!projectHeaderCollapsed && (
         <header className={`project-header${draftChangeCount > 0 ? " has-draft" : ""}`}>
           <div className="project-header-navigation">
@@ -4581,6 +4607,7 @@ export default function App() {
               >
                 <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={15} />
               </button>
+              <VoiceButton voice={voice} className="icon-button" />
               <button
                 className="icon-button space-settings-control"
                 aria-label="Space settings"

@@ -1,0 +1,190 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createIdentityGate, createVoiceExecutor, voiceCommentary } from "../src/voiceExecutor.ts";
+import { openVoiceSession } from "../src/voiceSession.ts";
+
+const TOOLS = [
+  { name: "rcp_get_project_overview", confirm: () => false, readOnly: true },
+  { name: "rcp_send_conversation_message", confirm: (args) => args.mode === "work" },
+  { name: "rcp_start_experiment", confirm: () => true },
+];
+
+function harness({ mode = "tap", confirmations = [], pins = null, failWith = null } = {}) {
+  const runs = [];
+  const asked = [];
+  const gate = createIdentityGate();
+  let pinCalls = 0;
+  const executor = createVoiceExecutor({
+    gate,
+    catalog: () => TOOLS.map(({ name, confirm }) => ({ name, confirm })),
+    resolve: (name) => {
+      const tool = TOOLS.find((candidate) => candidate.name === name);
+      return {
+        ok: true,
+        definition: {
+          name,
+          annotations: { readOnlyHint: Boolean(tool?.readOnly) },
+          execute: async (args) => {
+            runs.push({ name, args });
+            if (failWith) throw failWith;
+            return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] };
+          },
+        },
+      };
+    },
+    confirmMode: () => mode,
+    pin: async (name, args) => {
+      const budget = pins ? pins[pinCalls] : 4;
+      pinCalls += 1;
+      return {
+        tool: name,
+        project_id: "p",
+        arguments: { ...args, invocation_ceiling: budget },
+        budget,
+      };
+    },
+    requestConfirmation: async (pin) => {
+      asked.push(pin);
+      return confirmations.shift() ?? false;
+    },
+  });
+  return { executor, runs, asked, gate };
+}
+
+const call = (call_id, name, args = {}) => ({ call_id, name, arguments: JSON.stringify(args) });
+const code = (output) => JSON.parse(output).code;
+
+test("a name outside the catalog never runs", async () => {
+  const { executor, runs } = harness();
+  assert.equal(code(await executor.run(call("c1", "rcp_delete_project"))), "unknown_tool");
+  assert.equal(runs.length, 0);
+});
+
+test("tap mode runs a confirm call only after Confirm, with the pinned arguments", async () => {
+  const declined = harness({ confirmations: [false] });
+  assert.equal(
+    code(await declined.executor.run(call("c1", "rcp_start_experiment", { experiment_id: "e" }))),
+    "not_confirmed",
+  );
+  assert.equal(declined.runs.length, 0);
+
+  const confirmed = harness({ confirmations: [true] });
+  await confirmed.executor.run(call("c1", "rcp_start_experiment", { experiment_id: "e" }));
+  assert.equal(confirmed.asked.length, 1);
+  assert.deepEqual(confirmed.runs, [
+    { name: "rcp_start_experiment", args: { experiment_id: "e", invocation_ceiling: 4 } },
+  ]);
+});
+
+test("Confirm refuses when a pinned value changed", async () => {
+  const { executor, runs } = harness({ confirmations: [true], pins: [4, 9] });
+  assert.equal(
+    code(await executor.run(call("c1", "rcp_start_experiment", { experiment_id: "e" }))),
+    "changed",
+  );
+  assert.equal(runs.length, 0);
+});
+
+test("without confirming, a confirm call runs at once", async () => {
+  const { executor, runs, asked } = harness({ mode: "none" });
+  await executor.run(call("c1", "rcp_send_conversation_message", { message: "m", mode: "work" }));
+  assert.equal(asked.length, 0);
+  assert.equal(runs.length, 1);
+});
+
+test("Discuss Send and reads never wait, even in tap mode", async () => {
+  const { executor, runs, asked } = harness();
+  await executor.run(
+    call("c1", "rcp_send_conversation_message", { message: "m", mode: "discuss" }),
+  );
+  await executor.run(call("c2", "rcp_get_project_overview"));
+  assert.equal(asked.length, 0);
+  assert.equal(runs.length, 2);
+});
+
+test("a repeated call_id or an identical unknown-outcome repeat does not run again", async () => {
+  const { executor, runs } = harness({ mode: "none", failWith: new TypeError("dropped") });
+  const args = { message: "m", mode: "work" };
+  assert.equal(
+    code(await executor.run(call("c1", "rcp_send_conversation_message", args))),
+    "unknown_outcome",
+  );
+  assert.equal(await executor.run(call("c1", "rcp_send_conversation_message", args)), null);
+  assert.equal(
+    code(await executor.run(call("c2", "rcp_send_conversation_message", args))),
+    "unknown_outcome",
+  );
+  assert.equal(runs.length, 1);
+});
+
+function fakeTransport() {
+  const sent = [];
+  const state = { peerClosed: false, released: false };
+  const channel = {
+    readyState: "open",
+    send: (text) => sent.push(JSON.parse(text)),
+    close() {
+      this.readyState = "closed";
+    },
+  };
+  const deps = {
+    claim: () => ({
+      holder: "voice",
+      open: async () => ({ getTracks: () => [] }),
+      release: () => {
+        state.released = true;
+      },
+    }),
+    createPeer: () => ({
+      addTrack() {},
+      createDataChannel: () => channel,
+      createOffer: async () => ({ type: "offer", sdp: "offer" }),
+      setLocalDescription: async () => {},
+      setRemoteDescription: async () => {},
+      close: () => {
+        state.peerClosed = true;
+      },
+    }),
+    requestSession: async () => ({
+      sdp_answer: "answer",
+      limits: {
+        idle_seconds: 60,
+        hard_cap_seconds: 60,
+        confirm_timeout_seconds: 5,
+        commentary_max_chars: 200,
+      },
+    }),
+    playRemote: () => () => {},
+  };
+  return { deps, sent, state };
+}
+
+test("identity loss ends the session and refuses the next call, including a cached read", async () => {
+  const { executor, runs, gate } = harness();
+  const transport = fakeTransport();
+  const ended = [];
+  await openVoiceSession(
+    [],
+    { onTranscript() {}, onFunctionCall() {}, onEnded: (reason) => ended.push(reason) },
+    gate,
+    transport.deps,
+  );
+  gate.lose();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(ended, ["identity"]);
+  assert.ok(transport.sent.some((event) => event.type === "session.close"));
+  assert.ok(transport.state.peerClosed && transport.state.released);
+  assert.equal(code(await executor.run(call("c1", "rcp_get_project_overview"))), "identity");
+  assert.equal(runs.length, 0);
+});
+
+test("completion commentary depends only on kind, project name, and status", () => {
+  const spoken = voiceCommentary("experiment", "Alpha", "finished", 200);
+  assert.equal(voiceCommentary("experiment", "Alpha", "finished", 200), spoken);
+  assert.notEqual(voiceCommentary("auto_research", "Alpha", "finished", 200), spoken);
+  assert.notEqual(voiceCommentary("experiment", "Beta", "finished", 200), spoken);
+  assert.notEqual(voiceCommentary("experiment", "Alpha", "needs_you", 200), spoken);
+  assert.equal(voiceCommentary.length, 4);
+  assert.ok(voiceCommentary("experiment", "A".repeat(500), "finished", 80).length <= 80);
+});

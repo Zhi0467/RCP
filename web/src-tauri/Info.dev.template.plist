@@ -20,7 +20,7 @@
   <key>RCPDevUvExecutable</key>
   <string>generated-at-build-time</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>RCP uses the microphone only while you dictate a chat draft.</string>
+  <string>RCP uses the microphone only while you dictate a chat draft or a voice session you opened is running.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>RCP does not retain dictated audio. SpeechAnalyzer recognizes speech on your Mac. The older recognizer, used on older macOS versions, for unsupported languages, or in builds without SpeechAnalyzer, may send audio to Apple.</string>
 </dict>
