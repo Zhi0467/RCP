@@ -76,6 +76,7 @@ from rcp.api.tasks import router as tasks_router
 from rcp.api.team import router as team_router
 from rcp.api.terminals import router as terminals_router
 from rcp.api.update_notice import router as update_notice_router
+from rcp.api.voice import router as voice_router
 from rcp.api.watchers import router as watchers_router
 from rcp.artifact_import import import_project_artifacts
 from rcp.attachments import ChatAttachmentStore
@@ -2279,6 +2280,7 @@ def create_app(
 
     app.include_router(provider_login_router)
     app.include_router(service_connections_router)
+    app.include_router(voice_router)
     app.include_router(space_machines_router)
     app.include_router(health_router)
     app.include_router(server_status_router)

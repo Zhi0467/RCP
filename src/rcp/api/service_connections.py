@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict
 
 from rcp import limits
 from rcp.api.dependencies import get_identity_access, get_store
-from rcp.service_connections import ConnectionError, ServiceConnections
-from rcp.transcription import FORMATS, ConnectRequest, check_connection, transcribe
+from rcp.service_connections import ConnectionError, PurposesRequest, ServiceConnections
+from rcp.transcription import FORMATS, ConnectRequest, check_connection, check_purposes, transcribe
 
 
 class ServiceConnectionRoute(APIRoute):
@@ -91,6 +91,16 @@ def select(request: Request, body: SelectionRequest):
     return connections(request).select(body.dictation)
 
 
+@router.put("/{connection_id}/purposes")
+async def update_purposes(request: Request, connection_id: str, body: PurposesRequest):
+    store = connections(request)
+    with transcription_slot(store):
+        previous, key = store.credentials(connection_id)
+        added = [purpose for purpose in body.purposes if purpose not in previous["purposes"]]
+        checked = await check_purposes({**previous, "purposes": body.purposes}, key, added)
+        return store.update_purposes(previous, checked)
+
+
 async def read_audio(request: Request, formats: list[str]) -> tuple[bytes, str]:
     mime = request.headers.get("content-type", "")
     if mime not in FORMATS or mime not in formats:
@@ -123,9 +133,13 @@ async def transcribe_audio(request: Request, connection_id: str):
     store = connections(request)
     with transcription_slot(store):
         connection, key = store.credentials(connection_id)
-        audio, mime = await read_audio(request, connection["formats"])
+        if "transcription" not in connection["purposes"]:
+            raise ConnectionError("transcription_not_enabled", 409)
+        audio, mime = await read_audio(request, connection.get("formats", []))
         # Recheck after a potentially slow upload, including Disconnect and removal.
         connection, key = store.credentials(connection_id)
+        if "transcription" not in connection["purposes"]:
+            raise ConnectionError("transcription_not_enabled", 409)
         text = await transcribe(connection, key, audio, mime)
         store.credentials(connection_id)
         return {"text": text}
