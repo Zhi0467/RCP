@@ -36,6 +36,8 @@ A service connection is not a provider login. It does not use
   separates members in the product, not on the machine. Members are already
   trusted with that account (see the
   [member terminal decision](2026-09-19-a-member-terminal-inherits-the-work-trust-boundary.md)).
+  Agent turns run as that account too, and RCP's protected paths fence writes,
+  not reads, so a Work or Discuss agent could read the keys.
 - **Audio passes through the RCP server.** On a team space, the team server
   sees each segment in memory. A direct client-to-service path would avoid that,
   but would need client-held keys or short-lived service tokens per service.
