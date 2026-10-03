@@ -1451,6 +1451,7 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     )
     cleared = client.delete(f"/api/projects/{project_id}/caches")
     assert cleared.status_code == 200
+    assert cleared.json()["project_page_rebuilt"] is True
     assert cleared.json()["remote_sources"]["count"] == 0
     assert cleared.json()["session_slices"]["count"] == 0
     assert not cached.exists()
@@ -1491,6 +1492,8 @@ def test_cache_metrics_and_clear_endpoint_respect_active_task_boundary(manifest,
     store.fail_agent_task("this-project-cache-reader", "finished for test")
     all_cleared = client.delete(f"/api/projects/{project_id}/caches/all")
     assert all_cleared.status_code == 200
+    # project-b is a bare record with no manifest: its page is reported, not rebuilt.
+    assert all_cleared.json()["project_pages_not_rebuilt"] == ["project-b"]
     assert all_cleared.json()["remote_sources"]["count"] == 0
     assert all_cleared.json()["remote_sources"]["bytes"] == 0
     assert all_cleared.json()["session_slices"]["count"] == 0

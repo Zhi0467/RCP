@@ -1671,6 +1671,31 @@ test("conversation Send fails before dispatch for ambiguous targets, busy state,
   );
 });
 
+test("conversation Send refuses supplied references before invoking any callback", async () => {
+  const project = projectFixture();
+  const calls = [];
+  const callback = () => {
+    calls.push("invoked");
+    throw new Error("callback must not run");
+  };
+  for (const references of [[], [{ kind: "paper" }], null, undefined]) {
+    for (const chat_id of [undefined, "chat-1"]) {
+      await assert.rejects(
+        sendProjectConversationMessage(
+          project,
+          [],
+          { message: "Read the reference.", mode: "discuss", chat_id, references },
+          callback,
+          false,
+          callback,
+          callback,
+        ),
+      );
+    }
+  }
+  assert.equal(calls.length, 0);
+});
+
 test("the one Send tool exposes only semantic target, mode, message, and skill inputs", () => {
   const project = projectFixture();
   const tools = projectConversationSendToolDefinitions(

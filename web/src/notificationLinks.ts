@@ -9,7 +9,8 @@ import {
 } from "./experimentBoard";
 import type { Episode, ExperimentLoopIndexEntry } from "./types";
 
-export type NotificationItemKind = "proposal" | "decision" | "blocker" | "episode";
+export type NotificationItemKind =
+  "proposal" | "decision" | "blocker" | "episode" | "artifact" | "node" | "paper";
 
 export interface NotificationLink {
   projectId: string;
@@ -19,11 +20,20 @@ export interface NotificationLink {
 }
 
 const LINK_PATTERN =
-  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode)\/([^/?#]+)$/;
+  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode|artifact|node|paper)\/([^/?#]+)$/;
+
+export function buildNotificationLink(link: NotificationLink): string {
+  const segment = (value: string) =>
+    encodeURIComponent(value).replace(
+      /[.!'()*]/g,
+      (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+  return `#/projects/${segment(link.projectId)}/targets/${segment(link.target)}/${segment(link.kind)}/${segment(link.itemId)}`;
+}
 
 export function parseNotificationLink(hash: string): NotificationLink | null {
-  const match = LINK_PATTERN.exec(hash);
-  if (!match) return null;
+  const match = LINK_PATTERN.exec(hash.slice(hash.indexOf("#")));
+  if (!match || (match[3] === "paper" && match[4] !== "introduction")) return null;
   try {
     return {
       projectId: decodeURIComponent(match[1]),

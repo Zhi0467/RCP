@@ -487,6 +487,13 @@ Remote-source copies, derived session slices, and display caches are project
 owned, bounded, and never canonical truth. Clearing the open project's cache
 affects only that project and is blocked only by its active readers.
 
+Clearing deletes remote-source copies and session slices but rebuilds the display
+snapshot from current state, because that snapshot is also the offline copy. A
+rebuild that fails keeps the previous copy, and the clear result names it. The
+official skill catalog is never served from a cache: every project snapshot
+carries the running release's catalog, and skill-default fields the manifest
+leaves unset carry the running release's defaults.
+
 In a personal space, clearing every project's rebuildable cache is a separate
 app-wide danger action with an explicit warning and is blocked while any project
 has an active reader. A team space exposes only the project-owned action because

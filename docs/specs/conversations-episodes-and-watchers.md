@@ -313,6 +313,21 @@ Attachment bytes, hashes, and paths never become canonical chat or graph data.
 Chat history retains only display metadata and expiry. Files are untrusted
 temporary context and cannot be the sole durable provenance for Evidence.
 
+A turn may also carry project references: a stored artifact (episode reports
+included), a graph node on its source target, or the saved paper introduction.
+The human adds them by drag, by pasting a copied reference link, or from the
+composer's project picker. Accepted node and project chat admission, in Discuss
+or Work, reads each source through its owner and copies the bytes into the
+turn's attachment batch, with the source frozen on the descriptor. Staging,
+remote transfer, and recovery use only that retained copy, so a later edit or
+deletion does not change the turn. A missing source rejects the turn. References
+share the attachment count and size caps. They are read-only context. They add
+no read or write root on RCP storage and no graph authority, and a node from
+another target does not change the chat's target. The prompt lists them apart
+from uploads, never as editable artifact comments. Steering, Experiment runs,
+episode start, continue, and mail, seed, refresh, paper coach, merge, and
+artifact edits refuse them, and question and watcher follow-ups clear them.
+
 An assistant answer also supports temporary selection comments for the next
 human turn. Pointer-selecting answer text opens a comment composer beside the
 selection when the pointer lifts, wherever it lifts; a sweep that overshoots the
@@ -327,7 +342,7 @@ send until completed or removed. On send, each contributes only its copied
 selected text followed by `comment: <comment>` to the ordinary human message.
 Artifact comments are not chat annotations. They are sent from the artifact
 viewer; see [paper-artifacts-and-result-views.md](paper-artifacts-and-result-views.md).
-There are no message references, source identifiers, offsets, durable
+Annotations carry no message references, source identifiers, offsets, durable
 annotation records, or graph authority. Staging clears when the turn is accepted
 and otherwise remains a client-side draft for that chat.
 

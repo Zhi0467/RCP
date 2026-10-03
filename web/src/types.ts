@@ -2029,6 +2029,7 @@ export interface AgentTaskRequest {
   attachment_set_id?: string | null;
   attachment_client_id?: string | null;
   attachments?: ChatAttachmentDescriptor[];
+  references?: ProjectReferenceSelector[];
   session_id?: string | null;
   mode?: ConversationMode;
   artifact_context?: ArtifactContextRequest | null;
@@ -2771,6 +2772,22 @@ export interface ChatAttachmentDescriptor {
   media_type: string;
   size: number;
   expires_at: string;
+  /** Set when RCP copied this file from a project reference rather than an upload. */
+  reference?: ProjectReferenceSource | null;
+}
+
+/** A human's pointer to project data; the server copies it into the turn. */
+export type ProjectReferenceSelector =
+  | { kind: "artifact"; artifact_id: string }
+  | { kind: "node"; node_id: string; branch_id: string | null }
+  | { kind: "paper" };
+
+/** What a retained reference copy was taken from, frozen at admission. */
+export interface ProjectReferenceSource {
+  kind: ProjectReferenceSelector["kind"];
+  source_id: string;
+  version: string | null;
+  graph_head: GraphHeadRef | null;
 }
 
 export interface ChatTranscript extends ChatSummary {
@@ -2921,6 +2938,15 @@ export interface CacheMetric {
 export interface ProjectCacheMetrics {
   remote_sources: CacheMetric;
   session_slices: CacheMetric;
+}
+
+/** Clearing rebuilds the project page instead of deleting it; it doubles as the offline copy. */
+export interface ProjectCacheClearResult extends ProjectCacheMetrics {
+  project_page_rebuilt: boolean;
+}
+
+export interface AllProjectCacheClearResult extends ProjectCacheMetrics {
+  project_pages_not_rebuilt: string[];
 }
 
 export interface ProjectCard {

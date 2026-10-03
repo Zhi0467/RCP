@@ -618,9 +618,24 @@
   flex-shrink: 0;
 }
 
-.artifact-entry-download {
+.artifact-entry-download,
+.artifact-entry-copy {
   position: relative;
   z-index: 1;
+}
+
+/* On a phone the name takes its own line and the actions wrap below it. */
+@media (max-width: 560px) {
+  .artifact-entry {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .artifact-entry > div {
+    flex-basis: 100%;
+  }
+  .artifact-entry-copy .copy-reference-label {
+    display: none;
+  }
 }
 
 .artifact-entry-node {

@@ -1568,6 +1568,9 @@ export async function sendProjectConversationMessage(
   createConversation: CreateWebMcpConversation,
   startTurn: StartWebMcpConversationTurn,
 ): Promise<Record<string, unknown>> {
+  if (Object.prototype.hasOwnProperty.call(input, "references")) {
+    throw new Error("Project references are not supported by WebMCP Send.");
+  }
   const message = requiredStringInput(input, "message").trim();
   if (message.length > 2_000) throw new Error("message must contain at most 2000 characters.");
   const mode = requiredStringInput(input, "mode");

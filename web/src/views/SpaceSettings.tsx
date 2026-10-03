@@ -156,9 +156,18 @@ function ClearAllCaches({
     setClearing(true);
     setStatus(null);
     try {
-      onCleared(projectId, await clearAllProjectCaches(projectId));
+      const result = await clearAllProjectCaches(projectId);
+      onCleared(projectId, result);
       setOpen(false);
-      setStatus({ kind: "saved", text: "All project caches cleared." });
+      const kept = result.project_pages_not_rebuilt;
+      setStatus(
+        kept.length === 0
+          ? { kind: "saved", text: "All project caches cleared." }
+          : {
+              kind: "error",
+              text: `All project caches cleared. These project pages could not be rebuilt and keep their previous copy: ${kept.join(", ")}.`,
+            },
+      );
     } catch (failure) {
       setStatus({ kind: "error", text: errorMessage(failure) });
     } finally {

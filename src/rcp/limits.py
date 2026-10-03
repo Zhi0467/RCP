@@ -166,6 +166,7 @@ AUTO_RESEARCH_LIFECYCLE_MAX_BYTES = 256 * 1024
 AUTO_RESEARCH_CHILD_EXPERIMENTS_PER_INVOCATION = 5
 # Temporary human-provided chat inputs. Keep these independent from output artifact
 # limits even while their initial bounds happen to be the same.
+PROJECT_REFERENCE_NODE_MAX_BYTES = 256 * 1024
 CHAT_ATTACHMENT_MAX_COUNT = 8
 CHAT_ATTACHMENT_MAX_FILE_BYTES = 16 * 1024 * 1024
 CHAT_ATTACHMENT_MAX_TOTAL_BYTES = 32 * 1024 * 1024

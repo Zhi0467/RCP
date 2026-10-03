@@ -430,7 +430,9 @@ repository file or a file written in the turn's artifact directory.
 
 Human input attachments and agent output artifacts have separate contracts.
 Input bytes are claimed for one turn and never offered for later download;
-output artifacts are discovered after a task in its exact directory. Neither is
+output artifacts are discovered after a task in its exact directory. A project
+reference to an artifact or the paper is an input: the turn gets a read-only
+copy taken at admission, and the stored artifact is unchanged. Neither is
 canonical graph provenance. Keep changes an output artifact's storage lifecycle,
 not its authority or type.
 
