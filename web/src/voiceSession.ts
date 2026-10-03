@@ -9,6 +9,8 @@ import type { VoiceLimits, VoiceSessionResponse } from "./types";
 
 /** How long `end` waits for `session.closed` before dropping the transport. */
 const VOICE_CLOSE_WAIT_MS = 2_000;
+/** How long setup waits for ICE gathering, as in OpenAI's WebRTC sequence. */
+const VOICE_ICE_GATHER_WAIT_MS = 10_000;
 
 export type VoiceEndReason =
   "member" | "idle" | "hard_cap" | "hidden" | "identity" | "space" | "connection" | "upstream";
@@ -67,6 +69,30 @@ export function delegatedFunctionCall(event: unknown): VoiceFunctionCall | null 
   return { call_id: callId, name, arguments: typeof args === "string" ? args : "{}" };
 }
 
+/** OpenAI's WebRTC sequence sends the offer only once ICE gathering is complete. */
+function iceGathered(pc: RTCPeerConnection, signal: AbortSignal): Promise<void> {
+  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const done = (error?: Error) => {
+      clearTimeout(timer);
+      pc.removeEventListener("icegatheringstatechange", onState);
+      signal.removeEventListener("abort", onAbort);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onState = () => {
+      if (pc.iceGatheringState === "complete") done();
+    };
+    const onAbort = () => done(new DOMException("Voice ended while connecting.", "AbortError"));
+    const timer = setTimeout(
+      () => done(new Error("Voice could not finish gathering network candidates.")),
+      VOICE_ICE_GATHER_WAIT_MS,
+    );
+    pc.addEventListener("icegatheringstatechange", onState);
+    signal.addEventListener("abort", onAbort);
+  });
+}
+
 /** Identity loss, even while the offer is in flight, ends the session at once. */
 export async function openVoiceSession(
   tools: unknown[],
@@ -98,11 +124,14 @@ export async function openVoiceSession(
       audio.stop = (deps.playRemote ?? playRemoteAudio)(event.streams[0]);
     };
     const channel = pc.createDataChannel("oai-events");
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    await pc.setLocalDescription(await pc.createOffer());
     checkSetup();
+    await iceGathered(pc, setup.signal);
+    // The local description, unlike the bare offer, carries the gathered candidates.
+    const sdp = pc.localDescription?.sdp;
+    if (!sdp) throw new Error("Voice has no local session description.");
     const answer = await (deps.requestSession ?? createVoiceSession)(
-      { sdp_offer: offer.sdp ?? "", tools },
+      { sdp_offer: sdp, tools },
       setup.signal,
     );
     checkSetup();
@@ -192,6 +221,8 @@ function startSession(
       event.type === "session.output_transcript.delta" &&
       typeof event.delta === "string"
     ) {
+      // The assistant speaking is activity too; idle must not cut off a long answer.
+      noteActivity();
       events.onTranscript("agent", event.delta);
     } else if (event.type === "session.closed") {
       markClosed();

@@ -148,7 +148,7 @@ test("a repeated call_id or an identical unknown-outcome repeat does not run aga
 
 function fakeTransport() {
   const sent = [];
-  const state = { peerClosed: false, released: false };
+  const state = { peerClosed: false, released: false, offers: [] };
   const channel = {
     readyState: "open",
     send: (text) => sent.push(JSON.parse(text)),
@@ -165,24 +165,44 @@ function fakeTransport() {
       },
     }),
     createPeer: () => ({
+      iceGatheringState: "new",
+      localDescription: null,
+      listeners: {},
       addTrack() {},
       createDataChannel: () => channel,
       createOffer: async () => ({ type: "offer", sdp: "offer" }),
-      setLocalDescription: async () => {},
+      async setLocalDescription(description) {
+        this.localDescription = description;
+        this.iceGatheringState = "gathering";
+        setTimeout(() => {
+          this.localDescription = { type: "offer", sdp: "offer with candidates" };
+          this.iceGatheringState = "complete";
+          this.listeners.icegatheringstatechange?.();
+        });
+      },
+      addEventListener(type, listener) {
+        this.listeners[type] = listener;
+      },
+      removeEventListener(type) {
+        delete this.listeners[type];
+      },
       setRemoteDescription: async () => {},
       close: () => {
         state.peerClosed = true;
       },
     }),
-    requestSession: async () => ({
-      sdp_answer: "answer",
-      limits: {
-        idle_seconds: 60,
-        hard_cap_seconds: 60,
-        confirm_timeout_seconds: 5,
-        commentary_max_chars: 200,
-      },
-    }),
+    requestSession: async (body) => {
+      state.offers.push(body.sdp_offer);
+      return {
+        sdp_answer: "answer",
+        limits: {
+          idle_seconds: 60,
+          hard_cap_seconds: 60,
+          confirm_timeout_seconds: 5,
+          commentary_max_chars: 200,
+        },
+      };
+    },
     playRemote: () => () => {},
   };
   return { deps, sent, state };
@@ -205,6 +225,17 @@ test("identity loss ends the session and refuses the next call, including a cach
   assert.ok(transport.state.peerClosed && transport.state.released);
   assert.equal(code(await executor.run(call("c1", "rcp_get_project_overview"))), "identity");
   assert.equal(runs.length, 0);
+});
+
+test("the offer is sent only after ICE gathering, with its candidates", async () => {
+  const transport = fakeTransport();
+  await openVoiceSession(
+    [],
+    { onTranscript() {}, onFunctionCall() {}, onEnded() {} },
+    harness().gate,
+    transport.deps,
+  );
+  assert.deepEqual(transport.state.offers, ["offer with candidates"]);
 });
 
 test("identity loss while connecting aborts the offer and frees the microphone", async () => {
