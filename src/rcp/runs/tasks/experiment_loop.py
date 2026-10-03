@@ -93,6 +93,7 @@ from rcp.runs.experiment_loop import (
     stage_experiment_loop_context,
     validate_experiment_completion,
 )
+from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -959,6 +960,7 @@ def _record_continuation_prompt(
     question_part = _question_snapshot_part(turn)
     if question_part:
         parts = [*parts, question_part]
+    parts = [*parts, stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)]
     prompt = compose(classify(phase), parts=parts, master=master, delta=delta)
     contract_path = record_inline_prompt(
         turn.execution,
@@ -1271,6 +1273,7 @@ def _compose_fresh_prompt(
         session_master_label(_EXPERIMENT_MASTER_LABEL, contract),
         contract,
     )
+    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
     return _ComposedExperimentPrompt(
         contract_path=contract_path,
         prompt=prompt,

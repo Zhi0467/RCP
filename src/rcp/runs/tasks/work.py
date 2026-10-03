@@ -89,6 +89,8 @@ from rcp.runs.experiment_loop import (
     read_experiment_watcher_outputs,
     stage_chat_experiment_watcher_resources,
 )
+from rcp.runs.lesson_commands import lesson_command_usage
+from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -177,6 +179,7 @@ from rcp.storage import (
     ExperimentWatcherResourceRecord,
     WatcherContinuation,
 )
+from rcp.storage.lessons import lesson_edit_authorized
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.watchers import (
     WatcherBinding,
@@ -292,6 +295,7 @@ def _prepare_work_chat_prompt(
     )
     if question_part:
         prompt += "\n\n" + question_part
+    prompt += "\n\n" + stage_lessons_pointer(execution, local_stage, remote_stage)
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
@@ -310,6 +314,15 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
 
     handler = _work_turn_command_handler(turn)
     instructions = []
+    if "lesson" in handler.allowed_verbs:
+        instructions.append(
+            lesson_command_usage(
+                edit_authorized=lesson_edit_authorized(
+                    turn.execution.store, turn.execution.operation_id
+                ),
+                client=client or turn.patch_inputs.validator_staged.client_command(),
+            )
+        )
     if "ask" in handler.allowed_verbs:
         instructions.append(
             ask_contract(
@@ -1004,6 +1017,7 @@ def _work_continuation(
     delta = changed_since_master(replace(master, bootstrap=False), values)
     question_part = prepare_work_question_snapshot(turn)
     parts = [part, question_part] if question_part else [part]
+    parts.append(stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage))
     return compose(node, parts=parts, master=master, delta=delta)
 
 
@@ -1103,7 +1117,11 @@ def _compose_fresh_prompt(
         contract_path = _stage_work_contract(
             turn, staged, retry_diagnostics_path=retry_diagnostics_path, values=values
         )
-        prompt = PromptFactory.launch_prompt(contract_path)
+        prompt = (
+            PromptFactory.launch_prompt(contract_path)
+            + "\n\n"
+            + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
+        )
         question_part = prepare_work_question_snapshot(turn)
         launch_path = contract_path
         if question_part:
@@ -1200,6 +1218,7 @@ def _compose_retry_prompt(
         execution=turn.execution,
         role="work_retry",
     )
+    prompt += "\n\n" + stage_lessons_pointer(turn.execution, turn.local_stage, turn.remote_stage)
     return _ComposedWorkPrompt(
         contract_path=contract_path,
         prompt=prompt,
@@ -2868,9 +2887,9 @@ def _resume_work_compute_commands(
 
 def _resume_work_command_handler(execution: AgentTaskExecution, context: _WorkMailboxContext):
     compute_commands = _resume_work_compute_commands(execution, context)
-    if not context.ask_allowed:
-        return compute_commands
     handler = _work_command_handler(execution, compute_commands)
+    if not context.ask_allowed:
+        handler = WorkCommandHandler(execution, compute_commands, handler.allowed_verbs - {"ask"})
     return handler if handler.allowed_verbs != {"validate"} else None
 
 

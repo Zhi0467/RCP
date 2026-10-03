@@ -89,6 +89,8 @@ TRANSFER_EXCLUDED_PROJECT_TABLES = frozenset(
         "episode_isolations",
         "episode_isolation_states",
         "graph_watcher_reconciliation",
+        "operational_lessons",
+        "lesson_command_receipts",
         "notification_preferences",
         "notification_outbox",
         "notification_graph_markers",

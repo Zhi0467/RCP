@@ -516,3 +516,9 @@ STATE_TRANSFER_STDERR_BYTES = 4096
 
 # How often the keep-awake idle hold re-reads RCP's work.
 MACHINE_POWER_PASS_SECONDS = 10
+
+# Operational lessons are bounded context, independent of graph authority.
+LESSON_TEXT_MAX_CHARS = 600
+LESSONS_PER_PROJECT_MAX = 200
+LESSONS_RENDER_MAX_BYTES = 32 * 1024
+LESSONS_LIST_PAGE_SIZE = 20

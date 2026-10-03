@@ -37,6 +37,7 @@ _SAFE_FILE = re.compile(r"^[A-Za-z0-9._-]+$")
 _MUTATING = frozenset(
     (
         "ask",
+        "lesson",
         "apply",
         "spawn",
         "pause",
@@ -150,6 +151,19 @@ def _parser():
     parser.add_argument("--workspace", required=True)
     subparsers = parser.add_subparsers(dest="verb", required=True)
 
+    lesson = subparsers.add_parser("lesson")
+    lesson_actions = lesson.add_subparsers(dest="lesson_action", required=True)
+    for action in ("add", "list", "update", "delete"):
+        command = lesson_actions.add_parser(action)
+        if action == "list":
+            command.add_argument("--cursor")
+        else:
+            command.add_argument("--key", required=True)
+        if action in ("add", "update"):
+            command.add_argument("--text", required=True)
+        if action in ("update", "delete"):
+            command.add_argument("--id", required=True)
+
     ask = subparsers.add_parser("ask")
     ask.add_argument("--key", required=True)
     ask.add_argument("--question", required=True)
@@ -255,6 +269,18 @@ def _request_arguments(namespace, workspace):
             if len(episode_id) > 200:
                 raise ClientInputError("episode id must be at most 200 characters")
         return verb, None, {"worker_id": worker_id, "episode_id": episode_id}
+    if verb == "lesson":
+        action = namespace.lesson_action
+        arguments = {"action": action}
+        if action == "list":
+            if namespace.cursor is not None:
+                arguments["cursor"] = _nonblank(namespace.cursor, "cursor")
+            return verb, None, arguments
+        if action in ("add", "update"):
+            arguments["text"] = _nonblank(namespace.text, "lesson text")
+        if action in ("update", "delete"):
+            arguments["lesson_id"] = _nonblank(namespace.id, "lesson id")
+        return verb, _nonblank(namespace.key, "idempotency key"), arguments
     key = _nonblank(namespace.key, "idempotency key")
     if verb == "ask":
         if namespace.multiple and not namespace.choice:
@@ -740,6 +766,7 @@ def _requested_verb(argv):
     for argument in argv:
         if argument in (
             "ask",
+            "lesson",
             "validate",
             "apply",
             "status",

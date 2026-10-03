@@ -3566,6 +3566,8 @@ _PROJECT_ID_TABLES = (
     "compute_backend_probes",
     "watchers",
     "graph_watcher_reconciliation",
+    "operational_lessons",
+    "lesson_command_receipts",
     "notification_preferences",
     "notification_outbox",
     "notification_graph_markers",

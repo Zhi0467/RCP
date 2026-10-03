@@ -651,6 +651,8 @@ class ProjectStoreMixin:
                     (project_id,),
                 ).rowcount
                 for table in (
+                    "operational_lessons",
+                    "lesson_command_receipts",
                     "notification_preferences",
                     "notification_outbox",
                     "notification_graph_markers",
@@ -1049,6 +1051,8 @@ class ProjectStoreMixin:
             # Canonical preferences and baselines win conflicts, like the
             # existing membership and watcher markers above/below.
             for table in (
+                "operational_lessons",
+                "lesson_command_receipts",
                 "notification_preferences",
                 "notification_outbox",
                 "notification_graph_markers",

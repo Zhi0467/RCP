@@ -20,6 +20,7 @@ from rcp.storage.artifact_imports import migrate_artifact_imports
 from rcp.storage.artifacts import migrate_artifacts
 from rcp.storage.auto_research import migrate_legacy_auto_research
 from rcp.storage.episodes import migrate_legacy_episodes
+from rcp.storage.lessons import migrate_operational_lessons
 from rcp.storage.models import (
     SpaceKind,
     SpaceUserRecord,
@@ -75,6 +76,7 @@ class AppStoreBase:
         (33, "questions_v1"),
         (34, "question_notifications_v1"),
         (35, "question_answer_projection_v1"),
+        (36, "operational_lessons_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -674,6 +676,12 @@ class AppStoreBase:
             version=35,
             name="question_answer_projection_v1",
             migration=self._migrate_question_answer_projection,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=36,
+            name="operational_lessons_v1",
+            migration=migrate_operational_lessons,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

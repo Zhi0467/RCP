@@ -59,6 +59,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
+from rcp.api.lessons import router as lessons_router
 from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.paper import router as paper_router
@@ -2269,6 +2270,7 @@ def create_app(
     app.include_router(update_notice_router)
     app.include_router(team_router)
     app.include_router(notifications_router)
+    app.include_router(lessons_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)

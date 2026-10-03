@@ -12,7 +12,9 @@ from rcp.agents.command_protocol import (
     AskResult,
     CommandRequest,
     CommandResponse,
+    LessonCommandRequest,
 )
+from rcp.runs.lesson_commands import handle_lesson
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
 
@@ -185,6 +187,15 @@ class WorkCommandHandler:
 
         if request.verb not in self.allowed_verbs:
             return refuse("This Work owner does not authorize that command.")
+        if isinstance(request, LessonCommandRequest):
+            execution = self.execution
+            if (
+                execution is None
+                or identity.authority != "broker"
+                or identity.task_id != execution.operation_id
+            ):
+                return refuse("Lessons require this Work turn's broker authority.")
+            return handle_lesson(execution.store, execution.operation_id, request)
         if isinstance(request, AskCommandRequest):
             execution = self.execution
             if (
@@ -308,6 +319,14 @@ def work_command_handler(
     verbs = {"validate"}
     if compute_commands is not None:
         verbs.update(compute_commands.allowed_verbs)
+    if execution is not None:
+        task = execution.store.agent_task(execution.operation_id)
+        if (
+            task is not None
+            and task.dispatch_authority is not None
+            and task.dispatch_authority.task_contract == "work_auto"
+        ):
+            verbs.add("lesson")
     if work_ask_authorized(execution):
         verbs.add("ask")
     return WorkCommandHandler(execution, compute_commands, frozenset(verbs))

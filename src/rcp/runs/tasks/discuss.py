@@ -57,6 +57,7 @@ from rcp.runs.chat import (
     stage_artifact_context,
 )
 from rcp.runs.experiment_loop import stage_chat_experiment_watcher_resources
+from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import cleanup_patch_validation_mailbox
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
@@ -150,6 +151,7 @@ def _prepare_discuss_chat_prompt(
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
     )
+    prompt += "\n\n" + stage_lessons_pointer(execution, local_stage, remote_stage)
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 
@@ -737,7 +739,10 @@ async def stream_discuss_run(
                     )
                     prompt = compose(
                         node,
-                        parts=[continuation_contract],
+                        parts=[
+                            continuation_contract,
+                            stage_lessons_pointer(execution, local_stage, remote_stage),
+                        ],
                         master=master,
                         delta=changed_since_master(master, current),
                     )
@@ -760,6 +765,7 @@ async def stream_discuss_run(
                         execution=execution,
                         role="discuss_retry_base",
                     )
+                    prompt += "\n\n" + stage_lessons_pointer(execution, local_stage, remote_stage)
                     if execution is not None:
                         record_session_master(
                             execution.store,

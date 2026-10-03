@@ -61,7 +61,9 @@ def _optional_pointer(label: str, path: str | None) -> str:
     return f"- {label}: `{path}`\n" if path else ""
 
 
-def _command_invocations(command_client: str) -> str:
+def _command_invocations(
+    command_client: str, role: Literal["orchestrator", "worker"] = "orchestrator"
+) -> str:
     """Refresh the complete callable surface and its turn-bound command prefix."""
 
     invocations: dict[CommandVerb, tuple[str, ...]] = {
@@ -72,7 +74,11 @@ def _command_invocations(command_client: str) -> str:
         "pause": ("pause --key <key> <worker-id>",),
         "resume": ("resume --key <key> <worker-id>",),
         "stop": ("stop --key <key> <worker-id>",),
-        "message": ("message --key <key> --recipient <worker-id> <body>",),
+        "message": (
+            "message --key <key> --recipient <worker-id> <body>"
+            if role == "orchestrator"
+            else "message --key <reply-key> <body>",
+        ),
         "watch_graph": ("watch-graph --key <key> --condition-json <json> --reason <text>",),
         "episode": (
             "episode --key <key> --kick-off-experiment --node <node-id> "
@@ -83,10 +89,11 @@ def _command_invocations(command_client: str) -> str:
         "inbox": ("inbox --key <key> --harvest", "inbox --key <key> --clear"),
         "finish": ("finish --key <key>",),
         "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
+        "lesson": ("lesson add --key <key> --text <text>",),
     }
     commands = "\n".join(
         f"  - `{invocation}`"
-        for verb in auto_research_allowed_verbs("orchestrator")
+        for verb in auto_research_allowed_verbs(role)
         for invocation in invocations[verb]
     )
     return f"""Staged command client:
@@ -446,6 +453,8 @@ Worker operational boundary:
 - Perform operational work with the supplied repository pointers. Never write canonical
   `.research` state directly, and never repeat a completed external side effect merely to improve
   graph reflection.
+
+{_command_invocations(command_client, "worker")}
 
 Coordination:
 - You cannot spawn, pause, resume, stop, or direct another worker; start an episode; register a

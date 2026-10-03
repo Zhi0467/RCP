@@ -78,6 +78,7 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
 )
+from rcp.runs.lessons import stage_lessons_pointer
 from rcp.runs.patch_validator import command_rejection_recorder
 from rcp.runs.session_master import (
     continuation_session_master,
@@ -1325,6 +1326,7 @@ def _actor_launch_prompt(
     holds none under the current key. The returned master is the one the session now holds.
     """
 
+    fresh_parts = (*fresh_parts, stage_lessons_pointer(execution, local_stage, remote_stage))
     key = master_key(AUTO_RESEARCH_POLICY_VERSION, ontology_extensions=ontology_extensions)
     node = classify(
         LaunchPhase(session_id=session_id, phase=_LAUNCH_PHASES[execution.continuation])
@@ -2000,6 +2002,9 @@ async def _settle_worker_patch(
                 ),
                 master=master,
                 delta=changed_since_master(master, correction_values),
+            )
+            correction_prompt += "\n\n" + stage_lessons_pointer(
+                execution, stage.local, stage.remote
             )
             correction_path = record_inline_prompt(
                 execution,
