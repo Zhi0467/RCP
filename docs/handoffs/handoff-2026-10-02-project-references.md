@@ -1,8 +1,9 @@
 # Project references in chat
 
 Date: 2026-10-02
-Status: design drafted 2026-10-02 after two answered questions. Implementation
-has not started. Nothing below is built yet.
+Status: design settled with the human on 2026-10-02. Revised the same day after
+an xhigh astra design review. Implementation has not started. It ships in the
+same PR as this design.
 
 ## Problem
 
@@ -14,7 +15,7 @@ files from disk, and RCP never shows a path to copy.
 
 The one route that stages an artifact into a turn is the artifact comment
 (`ArtifactContextRequest`). It is bound to the artifact's origin chat and
-session, so it cannot bring a report into any other chat.
+session, and it asks for edits, so it cannot bring a report into any other chat.
 
 Seen live: a project chat asked for "the last auto-research episode report".
 It found an older report only because a copy had been kept in the repository.
@@ -24,130 +25,190 @@ a path they had no way to give.
 ## Settled with the human
 
 - **You attach, the agent reads.** The human puts a reference into the composer.
-  RCP copies that item into the turn. Agents get no new lookup command and no
-  read access to RCP storage. Everything outside a turn's references stays as
-  out of reach as it is today.
+  RCP copies that item into the turn. Agents get no lookup command and no read
+  or write root on RCP storage.
 - **First scope:** artifacts (episode reports are artifacts), graph nodes, and
-  the paper introduction. Runs, episode timelines, and terminal output are out
-  of scope.
+  the saved paper introduction. Runs, timelines, and terminals are out of scope.
+- **One PR** for design and implementation.
 
 ## Design
 
-### One reference shape
+### Selector
 
-A reference is `{kind, id}`, with these kinds:
+The client sends selectors. The server resolves them.
 
-- `artifact`: `artifact_id`. This includes episode reports, which are captured as
-  artifacts with `supplier="episode_ending"`.
-- `node`: the graph node id.
-- `paper`: no id. It means the project's paper introduction.
+- `{kind: "artifact", artifact_id}`. This covers episode reports, which are
+  artifacts with `supplier="episode_ending"`. An artifact keeps its provenance
+  but never adopts its origin episode or session.
+- `{kind: "node", node_id, branch_id}`. `branch_id` is null for main. The node is
+  read from that source target, which can differ from the chat's own target. The
+  chat's graph target and authority never change (invariant 5). A missing branch
+  or node fails closed.
+- `{kind: "paper"}`. The saved, canonical `introduction.md`. Editor drafts are
+  excluded. The paper is project-wide, including in branch chats.
 
-`RunRequest` gains `references: list[ProjectReference]`, capped in `limits.py`.
-The cap is the same 8 used for attachments. It applies to node and project
-chats, in both Discuss and Work.
+`RunRequest.references` holds the selectors. Duplicates are dropped on the
+client and refused on the server.
 
-### Admission resolves, staging copies
+### Limits
 
-The flow matches attachments, so recovery and remote hosts behave the same way.
+References share the attachment caps in `limits.py`. Attachments plus references
+total at most 8 items and 32 MiB per turn, with each item at most 16 MiB. A node
+snapshot is capped at 256 KiB.
 
-1. **Admission** (inside chat task start, next to the attachment claim) checks
-   that each reference exists in this project. It then freezes the current state:
-   the artifact's `current_version`, or the graph revision for a node or the
-   paper. A missing item rejects the turn with a 422. RCP never drops a
-   reference and sends the text alone.
-2. **Staging** copies the frozen bytes into
-   `<stage>/inputs/project-references-v1-<operation_id>/`, read-only, the same
-   way `ChatAttachmentStore.stage` does. A remote stage uses `put_directory`.
-   Task recovery re-stages the same frozen versions.
-   - An artifact copies its stored bytes for that version, under the existing
-     `CHAT_ARTIFACT_MAX_FILE_BYTES` cap.
-   - A node becomes one small JSON file. It holds the node record and its
-     one-hop relations at the frozen revision, in the shape `ChatContext`
-     already builds for a focused node.
-   - The paper copies `introduction.md` at the frozen revision.
-   Every kind is copied, even when the agent could already read the source
-   file. That keeps one code path, works when the state repository is not on the
-   execution host, and pins what the human pointed at.
-3. **Prompt.** The copied folder joins the turn's read dirs, as attachments do.
-   `_attachment_items` gains a "Project references" line per item: kind, display
-   name, version or revision, and path. Every reference renders through the same
-   function, so the prompt describes exactly the files that were staged.
+### Admission retains bytes
 
-A reference is context, not authority (invariant 5). The copies are read-only.
-A referenced artifact is not editable through this route. Editing stays with
-artifact comments and their origin session.
+Artifact versions are pruned and artifacts expire. The paper is saved without
+a graph Patch. So admission copies the bytes. Recording a version number alone
+is not enough.
+
+At accepted chat task admission (`api/tasks.py`, beside the attachment claim):
+
+1. A reference resolver reads each source through its owner:
+   - artifact: `read_artifact_bytes` at `current_version`, under the artifact
+     lock;
+   - paper: `PaperService` through `StateWorkspace`, after a confirmed refresh
+     for a remote state repository, never a cached read presented as current;
+   - node: one coherent snapshot of the source target. It holds the node record
+     and its one-hop relations, in the shape `ContextAssembler` builds for a
+     focused node, plus the full `GraphHeadRef`.
+2. `ChatAttachmentStore` gains a server-created snapshot batch. It stores those
+   bytes with hashes and the same integrity checks, retention, claim, and release
+   as uploads. A failed admission releases it.
+3. The request carries only server-made descriptors: kind, display name, source
+   identity, version or graph head, content hash, size, and media type.
+
+Staging, remote transfer, and recovery read only the retained batch. They never
+resolve a source again. A source changed or deleted after admission does not
+change the turn.
+
+### Staging and prompt
+
+The existing attachment staging copies the batch read-only into the turn's
+`inputs/`. The four launch owners already stage attachments:
+`runs/tasks/discuss.py`, `work.py`, `auto_research_child_work.py`, and
+`experiment_loop.py`. Each consumes the reference pointers there. Mechanical
+staging is shared. Authority policy stays with each owner.
+
+The prompt lists references in their own read-only block. It names kind, display
+name, version or graph head, and path. It never reuses the artifact-comment
+item, which asks for in-place edits. The block renders from the same staged
+pointers used for read dirs.
+
+Work launches with references carry the explicit write deny on artifact storage,
+the same deny that artifact context carries today. File modes are not provider
+enforcement. The existing Work boundary stays as it is.
+
+Invariants held: 4 and 4b (no new capability, no graph authority from
+references), 5 (context is not a write root), 6 (no canonical writes), 9 (failed
+scratch kept), 10 and 10c (stable chat scratch rules unchanged), 10d (no
+transcript rehydration), 10g (episode, session, stage, and Stop fences
+unchanged).
+
+### Routes
+
+Accepted on `/tasks/node_chat` and `/tasks/project_chat`, in Discuss and Work, on
+main and branch targets. That includes ordinary chats about Experiment nodes.
+Resume and Retry reuse the admitted batch.
+
+Refused explicitly, never dropped silently:
+
+- `/steer`
+- Experiment `/run`
+- episode start, continue, and mail
+- seed and refresh
+- paper coach
+- merge
+- artifact-edit requests
+
+Question and watcher follow-ups clear references wherever they clear
+attachments. WebMCP Send stays reference-free, both in its schema and in
+execution.
+
+There is no queueing. While a turn runs, a draft with references stays a draft,
+the same as attachments. It is sent when the human submits the next turn.
 
 ### Transcript
 
-The human turn stores display metadata for each reference: kind, id, name, and
-frozen version. Bytes and paths are not stored, the same as attachments. Each
-reference shows as a chip that opens the item: the artifact viewer, the node in
-Research, or the paper.
+The human turn stores display descriptors: kind, name, source identity, frozen
+version or graph head. Bytes and paths are not stored, the same as attachments.
+A chip opens the current item. Its label shows the frozen version, so the human
+can tell when the item has changed since.
 
-### One link format for copy, paste, and drop
+### Links
 
-Notification links already use one generic form,
-`#/projects/{p}/targets/{t}/{kind}/{id}`, which App resolves into its own route
-(`web/src/notificationLinks.ts`). This design adds the kinds `artifact`, `node`,
-and `paper` to that pattern. The link is both:
+The generic link `#/projects/{p}/targets/{t}/{kind}/{id}` in
+`web/src/notificationLinks.ts` gains the kinds `artifact`, `node`, and `paper`.
+The paper's id is `introduction`. Every segment is encoded. The `targets`
+segment carries the node's source branch. Node links resolve through
+`graphViewHash`, which keeps `branch_id`. A copied link is a full, address-bar-ready URL.
+The composer recognizes the hash part.
 
-- a deep link that opens the item when clicked or pasted into the address bar;
-- the token the composer turns into a reference chip.
-
-Pasting plain text that is a link to the same project becomes a chip. A link to
-another project stays as text. A drag carries the same link as `text/uri-list`.
+Paste turns a link to the same project into a chip. Unrelated pasted text is
+kept. A link to another project stays text. A drag carries the link as both
+`text/uri-list` and `text/plain`.
 
 ### Composer gestures
 
-- **Drag:** rows in Artifacts (files and reports) and the report link on a Runs
-  episode card can be dragged. The composer accepts them next to its existing
-  file drop.
-- **Copy reference:** a button in the artifact viewer's app chrome (not inside
-  the sandboxed frame), in a node's detail panel, and on the paper. It writes the
-  link to the clipboard.
-- **Paste:** the composer recognizes the link, as above.
-- **Pick:** `+` becomes a small menu, "Upload file" and "From project…". The
-  picker searches artifacts, reports, nodes, and the paper with the list
-  endpoints that already exist.
+- **Copy reference**, in trusted app chrome, never inside the sandboxed viewer
+  frame: the artifact viewer, the node detail panel, and the paper. A clipboard
+  failure shows a notice.
+- **Paste**, as above.
+- **Drag** from Artifacts rows and the Runs report link. Tauri's native drop
+  handler can intercept drops in WKWebView, so this needs a live check. If
+  internal drags cannot reach the page there, the desktop app does not offer
+  dragging, and Copy and the picker cover it.
+- **Pick:** `+` becomes "Upload file" and "From project…". The picker reads
+  the committed target snapshot for nodes, `/paper` for the paper, and the
+  artifact inventory for artifacts and reports. That inventory's query is
+  extended to list eligible temporary artifacts too.
 
-Chips sit beside attachment chips and follow the same rules. They can be
-removed. They are kept as a per-chat draft. They count against the reference
-cap. A turn with references cannot be sent as a live steer, which matches
-attachments, so it queues as the next turn.
+Drafts keep chips per project, target, and chat, beside attachments.
 
 ### Not doing
 
-- No lookup verb for agents and no read root on `<data>/artifacts`. The human
-  chose explicit attachment.
-- No live mount. A reference is a snapshot taken at send time.
-- No `@` typing autocomplete for now. The picker covers it. Add it later if
-  wanted.
+- No agent lookup verb, and no read root on `<data>/artifacts`.
+- No live mount. A reference is a copy taken at admission.
+- No `@` autocomplete for now.
 - No references to runs, timelines, or terminals.
 
 ## Contract changes
 
-- Shared: `RunRequest.references` in `src/rcp/service.py`, and `web/src/types.ts`.
-- Spec: replace the "no message references" sentence in
-  `docs/specs/conversations-episodes-and-watchers.md` (human input). The new text
-  should say what references are, and that annotations still carry none. Add
-  the link kinds to `docs/specs/api-web-and-desktop-projections.md`.
+- Shared: `RunRequest.references` and the reference descriptor in
+  `src/rcp/service.py`, mirrored in `web/src/types.ts`.
+- Specs: attachments and human input in
+  `docs/specs/conversations-episodes-and-watchers.md`, which replaces the "no
+  message references" sentence and keeps annotations reference-free; link kinds
+  and the inventory query in `docs/specs/api-web-and-desktop-projections.md`;
+  reference reads in `docs/specs/paper-artifacts-and-result-views.md`.
 
 ## Slices
 
-1. Backend: model, limit, admission freeze, staging for the three kinds,
-   recovery re-stage, prompt line, transcript metadata. Tests cover admission
-   (missing item gives a 422; the frozen version is used), staging (read-only
-   copy; remote `put_directory`), recovery re-stage, and the prompt rendering the
-   staged object.
-2. Web: link kinds and App resolution, composer chips, paste and drop
-   recognition, the `+` menu and picker, Copy reference buttons, draggable
-   Artifacts rows. Node tests cover link parsing and chip draft state. Run
-   `npm --prefix web run build`.
-3. Served-app journey on disposable data with a seeded episode report. Drag the
-   report into a different chat, send in Discuss, and check that the staged copy
-   and prompt line are there and the chip opens the viewer. Repeat with paste and
-   with the picker, for a node and for the paper.
+1. Backend:
+   - selectors, the resolver, and retained snapshot batches in the attachment
+     store;
+   - admission and rollback, and the route guards;
+   - staging in the four launch owners, with the Work write deny;
+   - the prompt block and transcript descriptors.
+
+   Tests: the frozen bytes survive a source change or deletion, recovery
+   re-stages the same batch, refused routes return 422, a node keeps its source
+   branch, and the prompt renders from the staged pointers.
+2. Web:
+   - link kinds and resolution, chips, and drafts;
+   - paste and drop recognition;
+   - the `+` menu and picker;
+   - Copy reference buttons and draggable rows.
+
+   Node tests and `npm --prefix web run build`.
+3. Journeys on disposable data with a seeded episode report:
+   - Discuss and Work, with local and remote stages, and main and branch
+     sources;
+   - a source edited and deleted after send;
+   - a failed transfer;
+   - drag, paste, and picker in a browser and in WKWebView.
 
 ## Close when
 
-Slice 3 holds on a served app, and the specs above describe references.
+Slice 3 holds, and the specs above describe references. Then delete this
+handoff in the same change.
