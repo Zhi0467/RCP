@@ -3,7 +3,14 @@
 Date: 2026-10-02
 Status: design settled with the human on 2026-10-02 (issue #229, part 1), then
 revised the same day after an astra xhigh review and a Claude review.
-Nothing is implemented yet. The standby voice agent (part 2) is a separate
+Implementation started on this PR on 2026-10-02. Done: slice 3 (native:
+SpeechAnalyzer, finish-or-cancel stop, engine reporting, `build.rs` with
+`swiftc`, older-SDK skip, CI Xcode selection and weak-link check) and slice 1
+(backend: storage, both adapters, connect check with recorded clips, routes,
+upload and outbound bounds, backup and transfer exclusion, member removal).
+Remaining: slice 2 (web), the spec updates, and the real-hardware checks below.
+Until slice 2 lands, the web client does not pass `finish`, so native Stop
+fails on this branch. The standby voice agent (part 2) is a separate
 handoff and PR; it reuses this PR's service connections, member settings file,
 and microphone owner.
 
