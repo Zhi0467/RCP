@@ -321,6 +321,7 @@ class AgentTaskStoreMixin:
                     "message": question.answer or "\n".join(question.chosen_choices),
                     "trigger": "human",
                     "attachments": [],
+                    "references": [],
                     "attachment_batch_id": None,
                     "attachment_set_id": None,
                     "attachment_client_id": None,

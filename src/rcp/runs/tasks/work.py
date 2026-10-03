@@ -694,6 +694,10 @@ async def _stage_work_turn(
             service,
             resolved.execution_machine_alias,
         )
+        has_references = any(item.reference is not None for item in request.attachments)
+        if has_references and remote_stage is None:
+            # Scope canonicalization requires even a not-yet-used storage root to exist.
+            (data_dir / "artifacts").mkdir(parents=True, exist_ok=True)
         write_scope = _project_write_scope(
             context,
             service,
@@ -705,11 +709,10 @@ async def _stage_work_turn(
             data_dir=data_dir,
             execution=execution,
             capability="work_auto",
-            additional_protected_write_paths=(
-                list(artifact_context.protected_write_paths)
-                if artifact_context is not None
-                else None
-            ),
+            additional_protected_write_paths=[
+                *(artifact_context.protected_write_paths if artifact_context is not None else ()),
+                *([str(data_dir / "artifacts")] if remote_stage is None and has_references else []),
+            ],
         )
         compute_commands = (
             WorkComputeCommands(

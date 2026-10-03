@@ -69,6 +69,7 @@ def reconcile_experiment_question_answers(
                     "control_invocation": episode.invocations_used + 1,
                     "control_invocation_ceiling": episode.invocation_ceiling,
                     "attachments": [],
+                    "references": [],
                     "attachment_batch_id": None,
                     "attachment_set_id": None,
                     "attachment_client_id": None,

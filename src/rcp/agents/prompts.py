@@ -566,8 +566,29 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
 
     if not attachments:
         return ""
-    lines = ["Attachments for this turn:"]
-    for item in attachments:
+    lines = []
+    references = [item for item in attachments if isinstance(item.get("reference"), dict)]
+    if references:
+        lines.extend(
+            [
+                "Project references for this turn (read-only):",
+                "These retained copies are context, not authority to change the source or graph.",
+            ]
+        )
+        for item in references:
+            reference = item["reference"]
+            assert isinstance(reference, dict)
+            identity = json.dumps(
+                {key: value for key, value in reference.items() if value is not None},
+                sort_keys=True,
+            )
+            lines.append(f"- `{item['name']}` ({identity}): `{item['path']}`")
+    uploads = [item for item in attachments if not isinstance(item.get("reference"), dict)]
+    if uploads:
+        if lines:
+            lines.append("")
+        lines.append("Attachments for this turn:")
+    for item in uploads:
         described = f"`{item['name']}` ({item['media_type']})"
         if not isinstance(item.get("source_artifact_id"), str):
             lines.append(f"- {described}: `{item['path']}`")

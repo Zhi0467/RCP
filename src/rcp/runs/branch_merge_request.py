@@ -41,6 +41,7 @@ class BranchMergeRunRequest(RunRequest):
             or self.control_completion_criteria
             or self.watcher_ids
             or self.attachments
+            or self.references
             or self.attachment_set_id is not None
             or self.attachment_client_id is not None
             or self.attachment_batch_id is not None
