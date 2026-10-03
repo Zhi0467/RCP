@@ -190,6 +190,9 @@ def _agent_task_response(
     chat_sessions: dict[tuple[str, str], str | None] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    consolidation = store.consolidation_run_for_operation(record.operation_id) is not None
+    if consolidation:
+        response.update(can_resume=False, can_retry=False)
     if record.kind in {"node_chat", "project_chat"}:
         chat_id = record.request.get("chat_id")
         session_id = None
@@ -211,7 +214,7 @@ def _agent_task_response(
         # The provider ran without part of what the launch asked for. Exported
         # here so no surface has to read exit receipts to learn it.
         degradation=(degradations or {}).get(record.operation_id),
-        can_apply_again=_can_apply_again(store, record),
+        can_apply_again=not consolidation and _can_apply_again(store, record),
     )
     result = response.get("result")
     stored_artifacts = record.result.get("artifacts") if record.result else None
@@ -220,7 +223,7 @@ def _agent_task_response(
     receipt = (discoveries or {}).get(record.operation_id)
     if receipt is not None:
         result["artifact_omissions"] = artifact_omissions(receipt)
-    if record.history_only:
+    if record.history_only or consolidation:
         graph_update = result.get("graph_update")
         if isinstance(graph_update, dict):
             graph_update["repairable"] = False

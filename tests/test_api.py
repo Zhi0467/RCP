@@ -648,7 +648,7 @@ class ScriptedLauncher:
         self.launch_kwargs.append(kwargs)
         workspace = Path(kwargs["cwd"])
         self.workspaces.append(workspace)
-        master_path = next(re.finditer(r"/[^\n]+\.md", prompt)).group()
+        master_path = next(re.finditer(r"/[^\n]+/inputs/[^\n]+\.md", prompt)).group()
         inputs = Path(master_path).parent
         self.input_snapshots.append(
             {
@@ -2184,6 +2184,9 @@ def test_local_state_repository_is_read_in_place_instead_of_copied(app, manifest
             self.directories.append(label)
             return str(self.root / "inputs" / label)
 
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
+
     stage = RecordingStage()
     staged = _stage_graph_context(context, service, stage, "laptop")
 
@@ -2324,6 +2327,9 @@ def test_remote_context_uses_direct_paths_only_for_its_execution_machine(app, tm
 
         def put_directory(self, _source: Path, label: str) -> str:
             return str(self.root / "inputs" / label)
+
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
 
     remote_repository = context.repositories[0].model_copy(
         update={"machine": "remote-1", "host": "remote.example"}
@@ -5125,6 +5131,10 @@ async def test_remote_chat_resume_attaches_its_validated_saved_stage(
         def __init__(self, host: str) -> None:
             self.host = host
             self.root = None
+            self.workspace_text: dict[str, str] = {}
+
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.workspace_text[name] = content
 
         @property
         def workspace(self):

@@ -181,6 +181,9 @@ def test_remote_graph_context_rebinds_metadata_without_staging_provider_logs(
         def put_directory(self, *_args, **_kwargs):
             raise AssertionError("graph context must not stage directories")
 
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
+
     staged = _stage_graph_context(context, service, NoTransferStage(), "laptop")
 
     assert staged.source_roots == context.source_roots

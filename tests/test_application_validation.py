@@ -540,7 +540,7 @@ def test_overlay_records_the_running_release_expectation_before_candidate_migrat
         candidate_migrator=candidate_appends_a_ledger_row,
     )
 
-    assert migrated == [(len(AppStore._STORAGE_SCHEMA_MIGRATIONS) + 1, "future_candidate_v1")]
+    assert migrated == [(AppStore._STORAGE_SCHEMA_MIGRATIONS[-1][0] + 1, "future_candidate_v1")]
     assert overlay.expected_startup_recovery == StartupRecoveryReadModel(
         active_operation_ids=(),
         stopping_experiment_operation_ids=(),
@@ -554,3 +554,29 @@ def test_overlay_records_the_running_release_expectation_before_candidate_migrat
             "ORDER BY migration_version"
         ).fetchall()
     assert ledger[-1] == migrated[0]
+
+
+def test_consolidation_receipt_bytes_survive_rehearsal(tmp_path):
+    store = AppStore(tmp_path / "source.sqlite3")
+    overlay = tmp_path / "overlay"
+    absent = overlay / "absent"
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO consolidation_apply_receipts(project_id,operation_id,key,sha256,patch_text,source_effect_id,created_at) VALUES(?,?,?,?,?,?,?)",
+            (
+                "project",
+                "operation",
+                "key",
+                hashlib.sha256(b"{}").hexdigest(),
+                "{}",
+                "effect",
+                store.now(),
+            ),
+        )
+        rehearsal_module._rebind_local_stage_paths(connection, absent)
+        rehearsal_module._validate_path_column_inventory(connection)
+        rehearsal_module._validate_rebound_paths(connection, root=overlay, projects=[])
+        receipt = connection.execute(
+            "SELECT patch_text FROM consolidation_apply_receipts"
+        ).fetchone()
+        assert receipt["patch_text"] == "{}"

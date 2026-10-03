@@ -31,6 +31,7 @@ from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.chats import router as chats_router
+from rcp.api.consolidation import router as consolidation_router
 from rcp.api.dependencies import (
     ApiServices,
     HealthComposition,
@@ -59,6 +60,7 @@ from rcp.api.identity import IdentityAccess, TrustedPrincipalResolver
 from rcp.api.identity import mutation_origin_matches as _team_mutation_origin_matches
 from rcp.api.index import membership_router as index_membership_router
 from rcp.api.index import router as index_router
+from rcp.api.lessons import router as lessons_router
 from rcp.api.machine_power import router as machine_power_router
 from rcp.api.notifications import router as notifications_router
 from rcp.api.paper import router as paper_router
@@ -90,6 +92,7 @@ from rcp.build_identity import build_identity
 from rcp.compute_jobs.probe import probe_compute_backend, refresh_compute_probes
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.config import load_manifest
+from rcp.consolidation import ConsolidationPoller
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import PatchRejected, ReplayHalted
@@ -1402,6 +1405,13 @@ def create_app(
         on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
     )
+    consolidation_poller = ConsolidationPoller(
+        store,
+        background_tasks,
+        service_for=catalog.open,
+        admission=background_admission_gate,
+        startup_effect_fence=startup_effect_fence,
+    )
     health_composition = HealthComposition(
         instance_metadata=identity,
         agent_mode=agent_mode,
@@ -1657,6 +1667,7 @@ def create_app(
         """Stop process-owned pollers and wait for already-scheduled async reads."""
 
         watcher_poller.stop()
+        consolidation_poller.stop(timeout=timeout)
         graph_watcher_retry_worker.stop(timeout=timeout)
         notification_sender.stop(timeout=timeout)
         if phone_listener is not None:
@@ -1667,6 +1678,10 @@ def create_app(
             )
         if watcher_poller.is_running() or graph_watcher_retry_worker.is_running():
             raise MaintenanceRefused("Timed out stopping watcher polling at the update boundary.")
+        if consolidation_poller.is_running():
+            raise MaintenanceRefused(
+                "Timed out stopping consolidation polling at the update boundary."
+            )
         loop = runtime_loop[0]
         if loop is None or loop.is_closed():
             raise MaintenanceRefused("The app runtime loop is unavailable at the update boundary.")
@@ -1697,6 +1712,7 @@ def create_app(
     def resume_update_runtime_owners() -> None:
         graph_watcher_retry_worker.start()
         watcher_poller.start()
+        consolidation_poller.start()
         notification_sender.start()
         if phone_listener is not None:
             phone_listener.resume()
@@ -1897,6 +1913,7 @@ def create_app(
                 graph_watcher_retry_worker.start()
                 graph_watcher_retry_worker.signal()
                 watcher_poller.start()
+                consolidation_poller.start()
                 notification_sender.start()
                 if phone_listener is not None:
                     await asyncio.to_thread(phone_listener.resume)
@@ -1977,6 +1994,7 @@ def create_app(
                 logger.exception("Terminal shutdown cleanup failed; startup will retry it.")
             await asyncio.to_thread(release_check.stop)
             watcher_poller.stop()
+            await asyncio.to_thread(consolidation_poller.stop)
             graph_watcher_retry_worker.stop()
             await asyncio.to_thread(notification_sender.stop)
             if phone_listener is not None:
@@ -2011,6 +2029,7 @@ def create_app(
     app.state.reconcile_question_answers = reconcile_question_answers
     app.state.project_reconciliation_tasks = project_display_cache.reconciliation_tasks
     app.state.watcher_poller = watcher_poller
+    app.state.consolidation_poller = consolidation_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
     app.state.notification_sender = notification_sender
     app.state.instance_metadata = identity
@@ -2287,6 +2306,7 @@ def create_app(
     app.include_router(update_notice_router)
     app.include_router(team_router)
     app.include_router(notifications_router)
+    app.include_router(lessons_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)
     app.include_router(index_membership_router)
@@ -2296,6 +2316,7 @@ def create_app(
     app.include_router(experiments_router)
     app.include_router(chats_router)
     app.include_router(questions_router)
+    app.include_router(consolidation_router)
     app.include_router(history_router)
     app.include_router(paper_router)
     app.include_router(result_views_router)

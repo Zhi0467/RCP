@@ -163,7 +163,7 @@ class _ProjectSnapshotDraft:
 
 
 ConversationMode = Literal["discuss", "work"]
-TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher"]
+TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher", "schedule"]
 GraphPatchKind = Literal["work", "experiment_loop"]
 
 

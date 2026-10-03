@@ -30,6 +30,9 @@ class _Stage:
     def list_workspace_files(self):
         return []
 
+    def write_workspace_text(self, name: str, content: str) -> None:
+        self.last_workspace_write = (name, content)
+
 
 async def _consume(store, launcher, tmp_path, *, stage=None, supervise_remote=False):
     outcome = _ProviderOutcome()

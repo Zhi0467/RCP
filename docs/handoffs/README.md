@@ -1,5 +1,7 @@
 # Active implementation handoffs
 
+- [Graph dreaming: nightly consolidation and operational lessons](handoff-2026-10-03-graph-dreaming.md)
+  — design settled 2026-10-02; implementation in progress on its PR.
 - [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
   — design settled 2026-10-01; implementation in progress on its PR.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)

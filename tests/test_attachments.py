@@ -303,6 +303,9 @@ def test_remote_attachment_stage_queues_one_reusable_immutable_directory(tmp_pat
             self.queued.append((source, label, reuse))
             return str(self.root / "inputs" / label)
 
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
+
     remote = RemoteStage()
     pointers = store.stage(
         claimed.attachment_batch_id,

@@ -261,6 +261,9 @@ def test_run_artifacts_includes_workers_child_experiments_and_retained_reports(v
         child_report.artifact_id,
         kept.artifact_id,
     ]
+    # Only an unkept turn artifact offers Keep; an episode report is permanent.
+    assert not _state(client, report)["can_keep"]
+    assert _state(client, child_artifact)["can_keep"]
     assert entries[1]["worker_label"] == "Summarize results"
     assert all(entry["worker_label"] is None for index, entry in enumerate(entries) if index != 1)
     child_response = client.get(f"/api/projects/{project_id}/episodes/{child.episode_id}/artifacts")

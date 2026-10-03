@@ -58,18 +58,19 @@ def test_local_work_workspace_keeps_staged_inputs_outside_the_write_root(tmp_pat
 
 @pytest.mark.parametrize("owner", ["work", "experiment_loop"])
 def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
-    owner, monkeypatch
+    owner, monkeypatch, tmp_path
 ) -> None:
-    from types import SimpleNamespace
-
     from rcp.runs.patch_validator import PatchValidationResult
     from rcp.runs.tasks import experiment_loop, work
+
+    from .test_work_questions import work_execution
 
     module = work if owner == "work" else experiment_loop
     saved = {"run_truth_scope": ["rq-launch"]}
     if owner == "experiment_loop":
         saved.update(control_node_id="experiment-launch", control_decision_bundle=[])
-    execution = SimpleNamespace(operation_id="accepted-turn", continuation="fresh")
+
+    execution, _ = work_execution(tmp_path)
     monkeypatch.setattr(module, "load_work_mailbox_context", lambda _: saved)
     restored = {}
     monkeypatch.setattr(
@@ -99,7 +100,7 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
     )
     resume(open_service, execution)
     assert opened == []
-    assert restored["command_handler"] is None
+    assert restored["command_handler"].allowed_verbs == {"validate", "lesson"}
     assert restored["validate"]("candidate").status == "valid"
     assert opened == [True]
     expected = {"run_truth_scope": ["rq-launch"], "source_operation_id": "accepted-turn"}
@@ -203,8 +204,10 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
                 "UPDATE graph_runs SET dispatch_authority_json=? WHERE operation_id='turn'",
                 (authority.model_dump_json(),),
             )
-    restored = work._resume_work_command_handler(execution, context)
+    restored = work._resume_work_command_handler(execution, context, lambda: None)
     if ask_allowed and mode == "work":
         assert restored is not None and "ask" in restored.allowed_verbs
+    elif mode == "work":
+        assert restored is not None and restored.allowed_verbs == {"validate", "lesson"}
     else:
         assert restored is None

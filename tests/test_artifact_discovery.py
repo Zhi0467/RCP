@@ -183,6 +183,9 @@ def test_remote_discovery_copies_bytes_without_retaining_stage_access(app, tmp_p
             assert (scope_id, name) == (execution.operation_id, "remote.txt")
             return b"remote"
 
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
+
     artifacts = _discover_chat_artifacts(
         execution, execution.operation_id, tmp_path / "absent", RemoteArtifacts()
     )

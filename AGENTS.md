@@ -28,6 +28,7 @@ choosing a source.
 - Chat, Experiment control, or watcher behavior: `docs/specs/conversations-episodes-and-watchers.md`.
 - Scheduler submission, the launch helper, or job watchers: `docs/specs/compute-jobs.md`.
 - Auto-research or graph-branch scope: `docs/specs/auto-research-and-branch-merge.md` and `docs/decisions/2026-09-08-graph-branch-scope-is-reopened.md`.
+- Nightly graph consolidation or operational lessons: `docs/specs/graph-consolidation-and-lessons.md`.
 - Task storage or persisted requests: `docs/specs/projects-spaces-and-operations.md`.
 - API, Web, or native contracts: `docs/specs/api-web-and-desktop-projections.md`; visual design: `docs/specs/interface-and-visual-design.md`.
 - Paper, previews, reports, or artifact viewing: `docs/specs/paper-artifacts-and-result-views.md`.

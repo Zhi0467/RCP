@@ -651,6 +651,8 @@ class ProjectStoreMixin:
                     (project_id,),
                 ).rowcount
                 for table in (
+                    "operational_lessons",
+                    "lesson_command_receipts",
                     "notification_preferences",
                     "notification_outbox",
                     "notification_graph_markers",
@@ -668,6 +670,14 @@ class ProjectStoreMixin:
                     """,
                     (project_id,),
                 ).rowcount
+                for table in (
+                    "consolidation_schedules",
+                    "consolidation_runs",
+                    "consolidation_apply_receipts",
+                ):
+                    counts[table] = connection.execute(
+                        f"DELETE FROM {table} WHERE project_id = ?", (project_id,)
+                    ).rowcount
                 counts["questions"] = connection.execute(
                     "DELETE FROM questions WHERE project_id = ?", (project_id,)
                 ).rowcount
@@ -1049,6 +1059,11 @@ class ProjectStoreMixin:
             # Canonical preferences and baselines win conflicts, like the
             # existing membership and watcher markers above/below.
             for table in (
+                "operational_lessons",
+                "lesson_command_receipts",
+                "consolidation_schedules",
+                "consolidation_runs",
+                "consolidation_apply_receipts",
                 "notification_preferences",
                 "notification_outbox",
                 "notification_graph_markers",

@@ -203,14 +203,7 @@ function openFailure(failure: unknown): VoiceProblem {
   if (failure instanceof MicrophoneBusyError)
     return { code: "microphone_busy", text: failure.message };
   let code: string | null = null;
-  if (failure instanceof ApiError) {
-    try {
-      const detail = JSON.parse(failure.message) as { code?: unknown };
-      code = typeof detail.code === "string" ? detail.code : null;
-    } catch {
-      code = null;
-    }
-  }
+  if (failure instanceof ApiError) code = failure.code ?? null;
   return { code, text: serviceConnectionFailure(failure) ?? errorMessage(failure) };
 }
 

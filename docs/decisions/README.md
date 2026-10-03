@@ -1,5 +1,14 @@
 # Active decision records
 
+- [Nightly graph consolidation writes main](2026-10-03-nightly-consolidation-writes-main.md)
+  records why a member may authorize a scheduled Work turn, why it writes main
+  rather than a branch, why it applies inside the turn, and why its report sits
+  in the Inbox.
+
+- [Operational lessons live outside the graph](2026-10-03-operational-lessons-live-outside-the-graph.md)
+  records why how-to-get-work-done notes are an RCP-owned store instead of graph
+  state or repository instruction files, and why agents receive a pointer.
+
 - [Agents in a member's page act as that member](2026-10-02-agents-in-a-member-page-act-as-that-member.md)
   records why a WebMCP or voice agent running in a member's own page acts as
   that member, why it may send Work and start episodes, why protected judgment

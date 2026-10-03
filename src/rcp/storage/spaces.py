@@ -312,8 +312,10 @@ class SpaceStoreMixin:
                     SELECT 1
                     FROM project_members AS member
                     JOIN projects AS project ON project.project_id = member.project_id
+                    JOIN space_users AS user ON user.user_id = member.user_id
                     WHERE member.project_id = ? AND member.user_id = ?
                       AND project.retired_at IS NULL
+                      AND user.removal_started_at IS NULL AND user.removed_at IS NULL
                     """,
                     (project_id, user_id),
                 ).fetchone()

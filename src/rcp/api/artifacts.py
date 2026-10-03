@@ -27,6 +27,7 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon, supports
 from rcp.artifact_views import artifact_content, artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, ArtifactMediaType, ArtifactView, artifact_view
 from rcp.background import BackgroundAgentTasks
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
 from rcp.runs.artifact_edit_admission import (
@@ -37,7 +38,13 @@ from rcp.runs.artifact_edit_admission import (
     start_artifact_edit,
 )
 from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
-from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, EpisodeMode
+from rcp.storage import (
+    AgentTaskAdmissionConflict,
+    AgentTaskRecord,
+    AppStore,
+    Artifact,
+    EpisodeMode,
+)
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -207,6 +214,11 @@ def _saved_chat_origins(
     return origins
 
 
+def _temporary(artifact: Artifact) -> bool:
+    """An unkept turn artifact; episode reports and kept artifacts are permanent."""
+    return artifact.supplier == "turn" and artifact.kept_at is None
+
+
 @router.get("/api/projects/{project_id}/artifacts", response_model=list[SavedArtifactResponse])
 def saved_artifacts(
     project_id: str,
@@ -304,7 +316,7 @@ def saved_artifacts(
         if (report := store.episode_report(summary.episode_id)) is not None
     )
     for artifact in store.artifacts(project_id):
-        if artifact.artifact_id in represented or artifact.expires_at is not None:
+        if artifact.artifact_id in represented or _temporary(artifact):
             continue
         view = artifact_view(artifact.media_type)
         artifact_url = f"{base}/artifacts/{quote(artifact.artifact_id, safe='')}"
@@ -466,7 +478,7 @@ def stored_artifact_state(
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
         else None,
         download_url=f"{base}/download",
-        can_keep=artifact.expires_at is not None,
+        can_keep=_temporary(artifact),
         expires_at=artifact.expires_at,
     )
 
@@ -577,8 +589,8 @@ def stored_artifact_viewer(
             descriptor,
             content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
-            keep_url=f"{base}/keep" if artifact.expires_at else None,
-            state="temporary" if artifact.expires_at else "kept",
+            keep_url=f"{base}/keep" if _temporary(artifact) else None,
+            state="temporary" if _temporary(artifact) else "kept",
             panel=comment_panel(
                 {
                     "projectId": project_id,
@@ -637,11 +649,23 @@ def stored_artifact_live(
 def keep_stored_artifact(
     project_id: str,
     artifact_id: str,
+    request: Request,
     *,
     store: Annotated[AppStore, Depends(get_store)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
 ):
+    # Keep needs no history snapshot; a named member is recorded on a closed
+    # consolidation row, and an unnamed one keeps the artifact unrecorded.
+    user = identity_access.acting_user(request)
+    human = (
+        AuthorizedHuman(
+            space_id=store.space_id, user_id=user.user_id, display_name=user.display_name
+        )
+        if user.display_name and user.display_name.strip()
+        else None
+    )
     _stored_artifact(store, project_id, artifact_id)
-    return store.keep_artifact(artifact_id)
+    return store.keep_artifact(artifact_id, resolved_by=human)
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/download")

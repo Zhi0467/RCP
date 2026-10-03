@@ -122,6 +122,9 @@ function Fixture() {
           onCacheMetricsChange={(metrics) => publications.push({ kind: "cache", metrics })}
           onRefreshReadiness={async () => undefined}
           spaceKind={teamIdentity ? "team" : "personal"}
+          consolidation={null}
+          consolidationError={null}
+          onConsolidationChanged={() => undefined}
         />
       )}
     </main>

@@ -48,6 +48,12 @@ DispatchPatchKind = Literal["seed", "refresh", "work", "experiment_loop"]
 ProjectMembershipCheck = Callable[[str, str], bool]
 
 
+class AgentAuthorizerDeparted(ValueError):
+    """The live authorizer no longer holds project membership."""
+
+    code = "agent_authorizer_departed"
+
+
 class AgentDispatchScope(BaseModel):
     """The normalized concrete scope captured before an agent task can run."""
 
@@ -265,7 +271,7 @@ def require_apply(
             "authorizer snapshot."
         )
     if not is_project_member(authority.project_id, authority.authorized_by.user_id):
-        raise ValueError(
+        raise AgentAuthorizerDeparted(
             f"Authority refused action 'apply': the authorizer of agent task "
             f"{authority.operation_id!r} is not a member of project "
             f"{authority.project_id!r}."

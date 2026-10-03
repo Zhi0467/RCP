@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import (
+    ApplyCommandRequest,
     AskCommandRequest,
     AskResult,
     CommandRequest,
     CommandResponse,
+    LessonCommandRequest,
 )
+from rcp.runs.lesson_commands import handle_lesson
 from rcp.storage import AppStore
 from rcp.storage.question_models import QuestionArgumentConflict, QuestionOrigin
 
@@ -63,6 +67,10 @@ def handle_ask(
 def work_ask_authorized(execution: AgentTaskExecution | None) -> bool:
     """Concrete human Work owners only; neither capability nor episode id suffices."""
     if execution is None:
+        return False
+    from rcp.runs.consolidation import is_consolidation
+
+    if is_consolidation(execution):
         return False
     store = execution.store
     task = store.agent_task(execution.operation_id)
@@ -178,6 +186,9 @@ class WorkCommandHandler:
     execution: AgentTaskExecution | None
     compute_commands: WorkComputeCommands | None
     allowed_verbs: frozenset[str]
+    consolidation_apply: (
+        Callable[[ApplyCommandRequest, CommandTurnIdentity], CommandResponse] | None
+    ) = None
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
         def refuse(message: str) -> CommandResponse:
@@ -185,6 +196,17 @@ class WorkCommandHandler:
 
         if request.verb not in self.allowed_verbs:
             return refuse("This Work owner does not authorize that command.")
+        if isinstance(request, LessonCommandRequest):
+            execution = self.execution
+            if (
+                execution is None
+                or identity.authority != "broker"
+                or identity.task_id != execution.operation_id
+            ):
+                return refuse("Lessons require this Work turn's broker authority.")
+            return handle_lesson(execution.store, execution.operation_id, request)
+        if isinstance(request, ApplyCommandRequest) and self.consolidation_apply is not None:
+            return self.consolidation_apply(request, identity)
         if isinstance(request, AskCommandRequest):
             execution = self.execution
             if (
@@ -303,11 +325,29 @@ class WorkCommandHandler:
 
 
 def work_command_handler(
-    execution: AgentTaskExecution | None, compute_commands: WorkComputeCommands | None
+    execution: AgentTaskExecution | None,
+    compute_commands: WorkComputeCommands | None,
+    *,
+    consolidation_apply: Callable[[ApplyCommandRequest, CommandTurnIdentity], CommandResponse]
+    | None = None,
 ) -> WorkCommandHandler:
+    from rcp.runs.consolidation import is_consolidation
+
+    if is_consolidation(execution):
+        return WorkCommandHandler(
+            execution, None, frozenset({"validate", "apply", "lesson"}), consolidation_apply
+        )
     verbs = {"validate"}
     if compute_commands is not None:
         verbs.update(compute_commands.allowed_verbs)
+    if execution is not None:
+        task = execution.store.agent_task(execution.operation_id)
+        if (
+            task is not None
+            and task.dispatch_authority is not None
+            and task.dispatch_authority.task_contract == "work_auto"
+        ):
+            verbs.add("lesson")
     if work_ask_authorized(execution):
         verbs.add("ask")
     return WorkCommandHandler(execution, compute_commands, frozenset(verbs))

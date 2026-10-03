@@ -1106,6 +1106,22 @@ class AgentTaskStoreMixin:
             raise ValueError(
                 "This conversation belongs to another graph target and cannot continue here."
             )
+        consolidation = connection.execute(
+            "SELECT run_id FROM consolidation_runs WHERE operation_id = ?",
+            (record.operation_id,),
+        ).fetchone()
+        if consolidation is not None:
+            if self._has_resumable_paused_chat_task(
+                connection, record.project_id, record.kind, chat_id
+            ):
+                raise AgentTaskAdmissionConflict("The consolidation chat has a paused turn.")
+            record = record.model_copy(
+                update={
+                    "request": {**record.request, "session_id": None},
+                    "native_session_id": None,
+                }
+            )
+            return record, {"outcome": "fresh", "reason_code": "consolidation", "session_id": None}
         if (
             record.status == "queued"
             and record.parent_operation_id is None
@@ -2708,6 +2724,7 @@ class AgentTaskStoreMixin:
         A Resume or Retry creates a child operation immediately. Once that child
         exists, the paused parent no longer blocks a later ordinary turn; if the
         child itself pauses, it is independently found by this query.
+        Server-bound consolidation operations are never resumable.
         """
 
         with self.connection() as connection:
@@ -2729,6 +2746,11 @@ class AgentTaskStoreMixin:
                 AND (paused.stage_host IS NULL OR paused.stage_host = ''
                      OR paused.stage_root IS NOT NULL)
                 AND json_extract(paused.request_json, '$.chat_id') = ?
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM consolidation_runs AS consolidation
+                    WHERE consolidation.operation_id = paused.operation_id
+                )
                 AND NOT EXISTS (
                     SELECT 1
                     FROM graph_runs AS child

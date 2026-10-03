@@ -156,6 +156,9 @@ def test_remote_revision_stages_the_stored_copy_without_reading_source_stage(
             assert (source / "remote.html").read_bytes() == source_bytes
             return f"/remote/revision-stage/inputs/{label}"
 
+        def write_workspace_text(self, name: str, content: str) -> None:
+            self.last_workspace_write = (name, content)
+
     execution = AgentTaskExecution(
         operation_id=revision_id,
         store=store,

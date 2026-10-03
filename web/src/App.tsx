@@ -172,6 +172,15 @@ import { useProjectSession } from "./hooks/useProjectSession";
 import { AutoResearchDialog } from "./components/AutoResearchDialog";
 import { AgentTaskInspector } from "./components/AgentTaskInspector";
 import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRail";
+import { ConsolidationInbox } from "./components/ConsolidationInbox";
+import {
+  CONSOLIDATION_SETTINGS_ANCHOR,
+  consolidationAttentionCount,
+  consolidationNeedsRenewal,
+  openConsolidationItems,
+  resolveConsolidationRun,
+} from "./consolidation";
+import { useConsolidation } from "./hooks/useConsolidation";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
@@ -2277,6 +2286,11 @@ export default function App() {
     [watchers],
   );
   const mutationsDisabled = project ? projectGraphMutationsDisabled(project) : false;
+  const {
+    consolidation,
+    error: consolidationError,
+    refresh: refreshConsolidation,
+  } = useConsolidation(apiBase, String(graph.revision));
   const candidateTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
@@ -2389,6 +2403,8 @@ export default function App() {
           link.kind === "node" ? "dag" : link.kind === "paper" ? "paper" : "artifacts",
         );
         if (link.kind !== "paper") setNotificationNode(link);
+      } else if (link.kind === "consolidation") {
+        // A consolidation row or schedule notice lives in the Inbox itself.
       } else if (link.kind === "episode") {
         const [episodes, entries] = await Promise.all([
           loadEpisodes(
@@ -4434,7 +4450,17 @@ export default function App() {
       </div>
     );
 
-  const attentionCount = pendingProposals.length + attentionDecisions.length + openBlockers.length;
+  const openConsolidation = openConsolidationItems(consolidation);
+  const needsConsolidationRenewal = consolidationNeedsRenewal(
+    consolidation?.schedule ?? null,
+    Date.now(),
+  );
+  const consolidationCount = consolidationAttentionCount(
+    openConsolidation,
+    needsConsolidationRenewal,
+  );
+  const attentionCount =
+    pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
@@ -4978,6 +5004,7 @@ export default function App() {
                   proposals={pendingProposals}
                   decisions={attentionDecisions}
                   blockers={openBlockers}
+                  consolidationCount={consolidationCount}
                   onSelectNode={openNode}
                 />
                 <ProposalJudgmentSection
@@ -4992,6 +5019,26 @@ export default function App() {
                       stageProposalDecision(draft, graph, proposal.id, decision),
                     )
                   }
+                />
+                <ConsolidationInbox
+                  items={openConsolidation}
+                  schedule={consolidation?.schedule ?? null}
+                  needsRenewal={needsConsolidationRenewal}
+                  error={consolidationError}
+                  writesDisabled={!consolidation?.can_write}
+                  onOpenReport={(artifactId) => openArtifact({ projectId: project.id, artifactId })}
+                  onResolve={async (runId, action) => {
+                    await resolveConsolidationRun(apiBase, runId, action);
+                    refreshConsolidation();
+                  }}
+                  onOpenSettings={() => {
+                    changeView("settings");
+                    window.requestAnimationFrame(() =>
+                      document
+                        .getElementById(CONSOLIDATION_SETTINGS_ANCHOR)
+                        ?.scrollIntoView({ block: "center" }),
+                    );
+                  }}
                 />
               </div>
               <AttentionRail
@@ -5141,6 +5188,9 @@ export default function App() {
               onRefreshReadiness={refreshReadiness}
               readinessRequest={providerReadinessRequests[project.id]}
               onMovePersonalProjectToTeam={movePersonalProjectToTeam}
+              consolidation={consolidation}
+              consolidationError={consolidationError}
+              onConsolidationChanged={refreshConsolidation}
               onCacheMetricsChange={(cacheMetrics) => {
                 updateProject((current) =>
                   current ? { ...current, cache_metrics: cacheMetrics } : current,
