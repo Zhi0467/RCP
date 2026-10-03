@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import uuid
 from pathlib import Path, PurePosixPath
 
@@ -10,12 +11,15 @@ from fastapi.testclient import TestClient
 
 import rcp.attachments as attachments_module
 from rcp.agents import AgentEvent, PromptFactory
-from rcp.attachments import ChatAttachmentStore
+from rcp.attachments import ChatAttachmentStore, ProjectReferenceSource
+from rcp.project_references import ResolvedProjectReference
 from rcp.runs.tasks.discuss import stream_discuss_run
+from rcp.runs.tasks.work import stream_work_run
 from rcp.service import RunRequest
 
 from .helpers import append_fixture_patch, seed_patch
 from .helpers import create_named_app as create_app
+from .test_api import _chat_task_execution
 
 
 def _ids() -> tuple[str, str, str, str]:
@@ -434,8 +438,9 @@ def test_attachment_claim_rolls_back_when_task_creation_fails(
 
 
 @pytest.mark.asyncio
-async def test_discuss_stages_attachment_as_exact_read_dir_and_persists_metadata(
-    manifest, tmp_path: Path
+@pytest.mark.parametrize("mode", ["discuss", "work"])
+async def test_chat_stages_attachment_as_exact_read_dir_and_persists_metadata(
+    manifest, tmp_path: Path, mode: str
 ) -> None:
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
@@ -462,6 +467,15 @@ async def test_discuss_stages_attachment_as_exact_read_dir_and_persists_metadata
         client_id=client_id,
         attachment_set_id=uploaded.attachment_set_id,
         operation_id=operation_id,
+        reference_files=[
+            ResolvedProjectReference(
+                "report.txt",
+                "Report",
+                "text/plain",
+                b"frozen report",
+                ProjectReferenceSource(kind="paper", source_id="introduction", version="f" * 64),
+            )
+        ],
     )
 
     class Launcher:
@@ -471,12 +485,15 @@ async def test_discuss_stages_attachment_as_exact_read_dir_and_persists_metadata
         async def stream(self, _provider, prompt, **kwargs):
             self.prompt = prompt
             self.read_dirs = [Path(item) for item in kwargs["read_dirs"]]
+            if mode == "work":
+                assert str(data_dir / "artifacts") in kwargs["write_scope"].protected_write_paths
             yield AgentEvent(event="answer", text="Used the temporary context.")
             yield AgentEvent(event="done")
 
     launcher = Launcher()
     request = RunRequest(
         chat_scope="project",
+        mode=mode,
         chat_id=chat_id,
         message="What does it say?",
         run_truth_scope=["repo-a"],
@@ -485,23 +502,48 @@ async def test_discuss_stages_attachment_as_exact_read_dir_and_persists_metadata
     )
     frames = [
         frame
-        async for frame in stream_discuss_run(
+        async for frame in (stream_work_run if mode == "work" else stream_discuss_run)(
             service,
             launcher,  # type: ignore[arg-type]
             request,
             data_dir,
+            execution=_chat_task_execution(app, request, operation_id),
         )
     ]
 
-    assert frames
+    assert frames and all(
+        json.loads(frame.removeprefix("data: "))["event"] != "error" for frame in frames
+    )
     attachment_read_dirs = [
         item for item in launcher.read_dirs if item.name.startswith("chat-attachments-v1-")
     ]
-    assert len(attachment_read_dirs) == 1
+    assert len(attachment_read_dirs) == 1, frames
     staged = [str(path) for path in attachment_read_dirs[0].iterdir()]
-    assert len(staged) == 1 and staged[0] in launcher.prompt
+    assert len(staged) == 2 and all(path in launcher.prompt for path in staged)
     assert attachment_read_dirs[0].parent.name == "inputs"
     transcript = service.chat_transcript(chat_id)
     assert transcript is not None
     assert transcript.messages[0].attachments == claimed.attachments
     assert transcript.messages[1].attachments == []
+
+
+def test_reference_prompt_lists_exact_staged_sources_separately_from_uploads() -> None:
+    from rcp.agents.prompts import _attachment_items
+
+    references = [
+        {"kind": "artifact", "source_id": "a", "version": "v1"},
+        {"kind": "node", "source_id": "n", "graph_head": {"revision": 3}},
+        {"kind": "paper", "source_id": "introduction", "version": "f" * 64},
+    ]
+    items = [
+        {"name": source["source_id"], "reference": source, "path": f"/inputs/ref-{index}"}
+        for index, source in enumerate(references)
+    ]
+    items.append({"name": "upload", "media_type": "text/plain", "path": "/inputs/upload"})
+    blocks = _attachment_items(items).split("\n\n")
+    assert len(blocks) == 2
+    listed = re.findall(r"^- `([^`]+)` \((.+)\): `([^`]+)`$", blocks[0], re.MULTILINE)
+    assert [(name, json.loads(source), path) for name, source, path in listed] == [
+        (item["name"], item["reference"], item["path"]) for item in items[:-1]
+    ]
+    assert "/inputs/upload" in blocks[1] and "/inputs/ref-" not in blocks[1]

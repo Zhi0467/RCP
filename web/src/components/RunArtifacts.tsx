@@ -1,3 +1,6 @@
+import { MAIN_GRAPH } from "../graphTarget";
+import { setReferenceDrag } from "../projectReferences";
+import type { GraphTargetRef } from "../types";
 import { useState } from "react";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../desktopRuntime";
 import { errorMessage } from "../errors";
@@ -8,12 +11,14 @@ import "../styles/runArtifacts.css";
 
 export function RunArtifacts({
   projectId,
+  graphTarget = MAIN_GRAPH,
   artifacts,
   error,
   loading,
   onRetry,
 }: {
   projectId: string;
+  graphTarget?: GraphTargetRef;
   artifacts: readonly RunArtifactEntry[];
   error?: string | null;
   loading?: boolean;
@@ -38,7 +43,16 @@ export function RunArtifacts({
       {artifacts.length > 0 && (
         <ul aria-label="Run artifacts">
           {artifacts.map((artifact) => (
-            <li key={artifact.artifact_id}>
+            <li
+              key={artifact.artifact_id}
+              draggable
+              onDragStart={(event) =>
+                setReferenceDrag(event.dataTransfer, projectId, graphTarget, {
+                  kind: "artifact",
+                  artifact_id: artifact.artifact_id,
+                })
+              }
+            >
               {artifact.view === "file" || (artifact.view === "pdf" && !isDesktopRuntime()) ? (
                 <>
                   <span>{artifact.name}</span>

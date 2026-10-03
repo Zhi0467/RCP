@@ -48,6 +48,7 @@ from rcp.background import AgentTaskRequest, BackgroundAgentTasks
 from rcp.conversation_worktrees import conversation_worktree_recovery_admission
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import STEERING_MESSAGE_MAX_CHARS
+from rcp.project_references import resolve_project_references
 from rcp.projects import ProjectCatalog
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
@@ -288,6 +289,8 @@ def start_agent_task(
     background_tasks: BackgroundTasksDependency,
     branch_id: str | None = None,
 ) -> dict[str, object]:
+    if body.get("references") and kind not in {"node_chat", "project_chat"}:
+        raise HTTPException(status_code=422, detail="Project references require an ordinary chat.")
     if kind in {"auto_research", "branch_merge", "episode_report", "artifact_edit"}:
         raise HTTPException(
             status_code=405,
@@ -341,7 +344,7 @@ def start_agent_task(
                 raise ValueError(
                     "Chat attachments require both attachment_set_id and attachment_client_id."
                 )
-            if request.attachment_set_id and request.attachment_client_id:
+            if request.attachment_set_id or request.references:
                 assert request.chat_id is not None
                 claimed = attachment_store.claim(
                     project_id=project_id,
@@ -349,6 +352,9 @@ def start_agent_task(
                     client_id=request.attachment_client_id,
                     attachment_set_id=request.attachment_set_id,
                     operation_id=operation_id,
+                    reference_files=resolve_project_references(
+                        store, catalog, project_id, request.references
+                    ),
                 )
                 claimed_set = (claimed.attachment_batch_id, operation_id)
                 request = request.model_copy(
@@ -357,6 +363,7 @@ def start_agent_task(
                         "attachment_client_id": None,
                         "attachment_batch_id": claimed.attachment_batch_id,
                         "attachments": claimed.attachments,
+                        "references": [],
                     }
                 )
         try:
@@ -1101,6 +1108,12 @@ def _validated_task_request(
 ) -> AgentTaskRequest:
     if "graph_target" in body or "branch_id" in body:
         raise ValueError("Select the graph target with the branch_id route parameter.")
+    if body.get("references") and (
+        kind not in {"node_chat", "project_chat"}
+        or body.get("artifact_context") is not None
+        or body.get("artifact_edit") is not None
+    ):
+        raise ValueError("Project references require an ordinary chat.")
     if kind == "paper_coach":
         return _resolved_coach_request(service, CoachRequest.model_validate(body))
 
@@ -1110,6 +1123,7 @@ def _validated_task_request(
     client_request.pop("artifact_edit", None)
     client_request.pop("resolved_compute_context", None)
     client_request.pop("worktree_integration_target", None)
+    client_request.pop("attachments", None)
     request = RunRequest.model_validate(client_request).model_copy(
         update={
             "trigger": "human",

@@ -1,3 +1,6 @@
+import { CopyReferenceButton } from "./CopyReferenceButton";
+import { MAIN_GRAPH } from "../graphTarget";
+import type { GraphTargetRef } from "../types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../types";
 import { Check, FlaskConical, MessageCircle, Minus, PencilLine, Trash2, X } from "lucide-react";
@@ -30,6 +33,8 @@ import { ProxyRowsEditor } from "./ProxyRowsEditor";
 import { RelationMap } from "./RelationMap";
 
 interface Props {
+  projectId?: string;
+  graphTarget?: GraphTargetRef;
   node: GraphNode;
   branchChange?: GraphBranchChanges["nodes"][number];
   /** This node's changed fields, as the merge builder classifies them. */
@@ -108,6 +113,8 @@ const originLabels: Record<NonNullable<GraphNode["origin"]>, string> = {
 };
 
 export function DetailDrawer({
+  projectId,
+  graphTarget = MAIN_GRAPH,
   node,
   branchChange,
   mergePaths,
@@ -360,6 +367,17 @@ export function DetailDrawer({
             </div>
           </div>
           <div className="window-actions">
+            {projectId && !stagedNewNode && !historical && (
+              <CopyReferenceButton
+                projectId={projectId}
+                graphTarget={graphTarget}
+                reference={{
+                  kind: "node",
+                  node_id: node.id,
+                  branch_id: graphTarget.kind === "branch" ? graphTarget.branch_id : null,
+                }}
+              />
+            )}
             <button
               className="icon-button"
               aria-label="Dock node window"

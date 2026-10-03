@@ -1,3 +1,19 @@
+import { MAIN_GRAPH } from "../graphTarget";
+import { ProjectReferencePicker } from "./ProjectReferencePicker";
+import { ReferenceChip } from "./ReferenceChip";
+import {
+  MAX_CHAT_ATTACHMENTS,
+  extractReferences,
+  mergeReferences,
+  referenceKey,
+  referenceDraftKey,
+  referenceFallbackLabel,
+  labelArtifactReferences,
+  parseReferenceDraft,
+  unlabeledArtifactIds,
+  sourceReference,
+  type DraftReference,
+} from "../projectReferences";
 import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "../hooks/useQuestions";
 import { questionIsOpen, questionTranscript } from "../questions";
@@ -10,6 +26,7 @@ import {
   Download,
   ExternalLink,
   File,
+  FolderOpen,
   History,
   Inbox,
   LoaderCircle,
@@ -22,6 +39,7 @@ import {
   RadioTower,
   RotateCcw,
   Send,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -115,6 +133,7 @@ import type {
   GraphNode,
   GraphUpdateRecovery,
   GraphUpdateResult,
+  ProjectArtifact,
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
@@ -363,6 +382,34 @@ export function NodeChat({
   const [computeMenuOpen, setComputeMenuOpen] = useState(false);
   const modeRef = useRef(modeState.value);
   const [submitting, setSubmitting] = useState(false);
+  const referencesKey = referenceDraftKey(project.id, project.graph_target ?? MAIN_GRAPH, chatId);
+  const [references, setReferences] = useState<DraftReference[]>(() =>
+    parseReferenceDraft(readStorage(referencesKey)),
+  );
+  const referencesIdentity = useRef(referencesKey);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  useEffect(() => {
+    if (referencesIdentity.current !== referencesKey) {
+      referencesIdentity.current = referencesKey;
+      setReferences(parseReferenceDraft(readStorage(referencesKey)));
+      return;
+    }
+    if (references.length) writeStorage(referencesKey, JSON.stringify(references));
+    else removeStorage(referencesKey);
+  }, [referencesKey, references]);
+  const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
+  useEffect(() => {
+    if (!unlabeledArtifacts) return;
+    const controller = new AbortController();
+    api<ProjectArtifact[]>(`/api/projects/${encodeURIComponent(project.id)}/artifacts`, {
+      signal: controller.signal,
+    })
+      .then((artifacts) => setReferences((current) => labelArtifactReferences(current, artifacts)))
+      // A lookup failure keeps the fallback label; the sent turn shows the server's name.
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [project.id, unlabeledArtifacts]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -733,9 +780,9 @@ export function NodeChat({
     }
     attachmentUploadBusyRef.current = true;
     setSubmitError(null);
-    const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length);
+    const available = Math.max(0, MAX_CHAT_ATTACHMENTS - attachments.length - references.length);
     if (incoming.length > available) {
-      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files.`);
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
     }
     const candidates = incoming.slice(0, available).map<ComposerAttachment>((file) => ({
       localId: crypto.randomUUID(),
@@ -818,6 +865,41 @@ export function NodeChat({
       }
     }
     attachmentUploadBusyRef.current = false;
+  };
+
+  const addReference = (item: DraftReference) => {
+    if (submitting || artifactContext) return;
+    const result = mergeReferences(references, [item], attachments.length);
+    setReferences(result.references);
+    if (result.rejected)
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
+  };
+  const insertReferenceText = (
+    text: string,
+    fileCount = attachments.length,
+    insertPlainText = false,
+  ) => {
+    if (submitting || artifactContext || !text) return false;
+    const target = project.graph_target ?? MAIN_GRAPH;
+    const result = extractReferences(text, project.id, references, fileCount, (selector) =>
+      selector.kind === "node" &&
+      (selector.branch_id ?? null) === (target.kind === "branch" ? target.branch_id : null)
+        ? (project.graph?.nodes[selector.node_id]?.title ?? selector.node_id)
+        : referenceFallbackLabel(selector),
+    );
+    if (result.rejected)
+      setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
+    if (result.text === text && !insertPlainText) return false;
+    setReferences(result.references);
+    const input = textareaRef.current;
+    const start = input?.selectionStart ?? message.length;
+    const end = input?.selectionEnd ?? start;
+    if (dictating) stopDictation(true);
+    updateMessage(message.slice(0, start) + result.text + message.slice(end));
+    requestAnimationFrame(() =>
+      input?.setSelectionRange(start + result.text.length, start + result.text.length),
+    );
+    return true;
   };
 
   const removeAttachment = (item: ComposerAttachment) => {
@@ -1005,7 +1087,15 @@ export function NodeChat({
       return;
     }
     // Files and artifact selections are staged for a new turn; a steer carries text only.
-    if (!text || attachments.length || artifactContext || submitting || !task.steer_turn_id) return;
+    if (
+      !text ||
+      attachments.length ||
+      references.length ||
+      artifactContext ||
+      submitting ||
+      !task.steer_turn_id
+    )
+      return;
     if (dictating) stopDictation(true);
     shouldStickToBottomRef.current = true;
     const request = {
@@ -1066,6 +1156,7 @@ export function NodeChat({
     if (
       !(text || artifactContext) ||
       attachmentsUnready ||
+      (Boolean(artifactContext) && references.length > 0) ||
       relatedActive ||
       pausedAttempt ||
       submitting ||
@@ -1098,6 +1189,7 @@ export function NodeChat({
         mode,
         activeComputeIds: computeState.ids,
         artifactContext,
+        references: references.map((item) => item.selector),
         attachmentSetId: readyAttachments.length ? attachmentSetId : null,
         attachmentClientId: readyAttachments.length ? attachmentClientId : null,
         skills: skills.selection,
@@ -1108,6 +1200,8 @@ export function NodeChat({
       setPendingTurn((current) => (current?.clientId === clientId ? null : current));
       skills.reset();
       setAttachments([]);
+      setReferences([]);
+      setReferencePickerOpen(false);
       setAnnotations([]);
       setAnnotationsOpen(false);
       removeSessionStorage(annotationsKey);
@@ -1536,7 +1630,29 @@ export function NodeChat({
                       {line.steering.reason && <span>{line.steering.reason}</span>}
                     </div>
                   )}
+                  {line.attachments?.some((attachment) => attachment.reference) && (
+                    <div className="chat-input-references">
+                      {line.attachments.map((attachment) =>
+                        attachment.reference ? (
+                          <ReferenceChip
+                            key={attachment.attachment_id}
+                            projectId={project.id}
+                            reference={{
+                              ...sourceReference(attachment.reference),
+                              label: attachment.name,
+                            }}
+                            version={
+                              attachment.reference.graph_head
+                                ? `r${attachment.reference.graph_head.revision}`
+                                : attachment.reference.version?.slice(0, 7)
+                            }
+                          />
+                        ) : null,
+                      )}
+                    </div>
+                  )}
                   {line.attachments?.map((attachment) => {
+                    if (attachment.reference) return null;
                     const expired = Date.parse(attachment.expires_at) <= expiryClock;
                     return (
                       <div
@@ -1728,10 +1844,20 @@ export function NodeChat({
           className={`chat-composer${draggingFiles ? " is-dragging-files" : ""}`}
           data-mode={mode}
           onDragEnter={(event) => {
-            if (event.dataTransfer.types.includes("Files")) setDraggingFiles(true);
+            if (
+              event.dataTransfer.types.some((type) =>
+                ["Files", "text/plain", "text/uri-list"].includes(type),
+              )
+            )
+              setDraggingFiles(true);
           }}
           onDragOver={(event) => {
-            if (!event.dataTransfer.types.includes("Files")) return;
+            if (
+              !event.dataTransfer.types.some((type) =>
+                ["Files", "text/plain", "text/uri-list"].includes(type),
+              )
+            )
+              return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "copy";
           }}
@@ -1741,9 +1867,27 @@ export function NodeChat({
             }
           }}
           onDrop={(event) => {
-            if (!event.dataTransfer.files.length) return;
-            event.preventDefault();
-            void addFiles(Array.from(event.dataTransfer.files));
+            setDraggingFiles(false);
+            const files = Array.from(event.dataTransfer.files);
+            const text =
+              event.dataTransfer.getData("text/uri-list") ||
+              event.dataTransfer.getData("text/plain");
+            if (files.length) {
+              event.preventDefault();
+              void addFiles(files);
+            }
+            if (
+              insertReferenceText(
+                text,
+                attachments.length +
+                  Math.min(
+                    files.length,
+                    MAX_CHAT_ATTACHMENTS - attachments.length - references.length,
+                  ),
+                files.length === 0,
+              )
+            )
+              event.preventDefault();
           }}
         >
           <SkillPicker {...skills.props} />
@@ -1808,6 +1952,25 @@ export function NodeChat({
               </div>
             </section>
           )}
+          {references.length > 0 && (
+            <div className="chat-attachment-chips" aria-label="References for this turn">
+              {references.map((item) => (
+                <ReferenceChip
+                  key={referenceKey(item.selector)}
+                  projectId={project.id}
+                  reference={item}
+                  onRemove={() =>
+                    setReferences((current) =>
+                      current.filter(
+                        (candidate) =>
+                          referenceKey(candidate.selector) !== referenceKey(item.selector),
+                      ),
+                    )
+                  }
+                />
+              ))}
+            </div>
+          )}
           {attachments.length > 0 && (
             <div className="chat-attachment-chips" aria-label="Files for this turn">
               {attachments.map((item) => (
@@ -1862,9 +2025,21 @@ export function NodeChat({
             }}
             onPaste={(event) => {
               const files = Array.from(event.clipboardData.files);
-              if (!files.length) return;
-              event.preventDefault();
-              void addFiles(files);
+              if (files.length) {
+                event.preventDefault();
+                void addFiles(files);
+              }
+              if (
+                insertReferenceText(
+                  event.clipboardData.getData("text/plain"),
+                  attachments.length +
+                    Math.min(
+                      files.length,
+                      MAX_CHAT_ATTACHMENTS - attachments.length - references.length,
+                    ),
+                )
+              )
+                event.preventDefault();
             }}
             onKeyDown={(event) => {
               if (skills.handleKeyDown(event)) return;
@@ -1883,20 +2058,63 @@ export function NodeChat({
           />
           <div className="chat-send">
             <div className="chat-composer-tools">
-              <button
-                className="icon-button chat-add-file"
-                type="button"
-                aria-label="Add files"
-                disabled={
-                  attachments.length >= MAX_CHAT_ATTACHMENTS ||
-                  attachmentsPreparing ||
-                  submitting ||
-                  awaitingSteerReceipt
-                }
-                onClick={() => attachmentInputRef.current?.click()}
-              >
-                <Plus size={16} />
-              </button>
+              <div className="chat-add-picker">
+                <button
+                  className="icon-button chat-add-file"
+                  type="button"
+                  aria-label="Add files"
+                  aria-expanded={addMenuOpen}
+                  disabled={
+                    attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||
+                    attachmentsPreparing ||
+                    submitting ||
+                    awaitingSteerReceipt
+                  }
+                  onClick={() => {
+                    setReferencePickerOpen(false);
+                    setAddMenuOpen((open) => !open);
+                  }}
+                >
+                  <Plus size={16} />
+                </button>
+                {addMenuOpen && (
+                  <div className="chat-add-menu" role="menu">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        attachmentInputRef.current?.click();
+                      }}
+                    >
+                      <Upload size={14} />
+                      Upload file
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={Boolean(artifactContext)}
+                      onClick={() => {
+                        setAddMenuOpen(false);
+                        setReferencePickerOpen(true);
+                      }}
+                    >
+                      <FolderOpen size={14} />
+                      From RCP…
+                    </button>
+                  </div>
+                )}
+                {referencePickerOpen && (
+                  <ProjectReferencePicker
+                    projectId={project.id}
+                    target={project.graph_target ?? MAIN_GRAPH}
+                    nodes={project.graph?.nodes ?? {}}
+                    selectedKeys={new Set(references.map((item) => referenceKey(item.selector)))}
+                    onPick={addReference}
+                    onClose={() => setReferencePickerOpen(false)}
+                  />
+                )}
+              </div>
               {!artifactContext && (
                 <>
                   <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
@@ -2005,8 +2223,9 @@ export function NodeChat({
                   !annotationsComplete ||
                   submitting ||
                   (steeringTask
-                    ? attachments.length > 0 || artifactContext !== null
+                    ? attachments.length > 0 || references.length > 0 || artifactContext !== null
                     : attachmentsUnready ||
+                      (Boolean(artifactContext) && references.length > 0) ||
                       relatedActive ||
                       Boolean(pausedAttempt) ||
                       Boolean(repairingTaskId) ||
@@ -2321,7 +2540,6 @@ const MODE_HINTS: Record<ConversationMode, string> = {
   work: "Work: may edit files in the run's write roots and propose a graph patch.",
 };
 
-const MAX_CHAT_ATTACHMENTS = 8;
 const MAX_CHAT_ATTACHMENT_BYTES = 16 * 1024 * 1024;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 32 * 1024 * 1024;
 const CHAT_ATTACHMENT_CLIENT_KEY = "rcp:chat-attachment-client";

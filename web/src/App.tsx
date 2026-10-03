@@ -2367,8 +2367,18 @@ export default function App() {
       const link = initialLinkPending.current ?? parseNotificationLink(window.location.hash);
       initialLinkPending.current = null;
       if (!link) return;
+      setNotificationNode(null);
+      const sourceTarget: GraphTargetRef =
+        link.target === "main" ? MAIN_GRAPH : { kind: "branch", branch_id: link.target };
       let next = graphNotificationHash(link);
-      if (link.kind === "episode") {
+      if (link.kind === "artifact" || link.kind === "paper" || link.kind === "node") {
+        next = graphViewHash(
+          link.projectId,
+          sourceTarget,
+          link.kind === "node" ? "dag" : link.kind === "paper" ? "paper" : "artifacts",
+        );
+        if (link.kind !== "paper") setNotificationNode(link);
+      } else if (link.kind === "episode") {
         const [episodes, entries] = await Promise.all([
           loadEpisodes(
             `/api/projects/${encodeURIComponent(link.projectId)}`,
@@ -2403,7 +2413,26 @@ export default function App() {
       });
   }, [teamSpace, desktop]);
   useEffect(() => {
-    if (!notificationNode || notificationNode.projectId !== projectId) return;
+    if (!notificationNode || notificationNode.projectId !== projectId || project?.id !== projectId)
+      return;
+    if (notificationNode.kind === "node" || notificationNode.kind === "artifact") {
+      const sourceTarget: GraphTargetRef =
+        notificationNode.target === "main"
+          ? MAIN_GRAPH
+          : { kind: "branch", branch_id: notificationNode.target };
+      // Route state updates before the graph snapshot arrives. Never open a
+      // same-id node from the previous target while that request is pending.
+      if (
+        !sameGraphTarget(graphTarget, sourceTarget) ||
+        !sameGraphTarget(project.graph_target, sourceTarget)
+      )
+        return;
+      if (notificationNode.kind === "artifact") {
+        setNotificationNode(null);
+        openArtifact({ projectId, artifactId: notificationNode.itemId });
+        return;
+      }
+    }
     if (notificationNode.kind === "proposal") {
       // Proposals are not graph nodes: a pending one is shown in the Inbox,
       // and a resolved one reports its outcome.
@@ -2425,7 +2454,16 @@ export default function App() {
     if (!node) return;
     setNotificationNode(null);
     openNode(node);
-  }, [notificationNode, projectId, presentedGraph.nodes, presentedGraph.proposals, openNode]);
+  }, [
+    notificationNode,
+    projectId,
+    project?.id,
+    project?.graph_target,
+    graphTarget,
+    presentedGraph.nodes,
+    presentedGraph.proposals,
+    openNode,
+  ]);
   const openRelatedNode = (sourceSlot: DetailWindowSlot, nodeId: string) => {
     openRelatedGraphNode(sourceSlot, presentedGraph.nodes[nodeId] ?? null);
   };
@@ -4914,6 +4952,7 @@ export default function App() {
                 onChange={changeView}
               />
               <LoadedPaperWorkspace
+                graphTarget={graphTarget}
                 key={project.id}
                 apiBase={apiBase}
                 project={project}
@@ -5037,6 +5076,8 @@ export default function App() {
           <DetailDrawer
             key={`${slot}:${node.id}`}
             node={node}
+            projectId={project.id}
+            graphTarget={graphTarget}
             historical={historical}
             branchChange={project.graph_changes?.nodes.find((change) => change.node_id === node.id)}
             mergePaths={branchMergePaths?.filter(

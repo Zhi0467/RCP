@@ -262,6 +262,7 @@ export function ExperimentRunDetail({
                 className="button primary compact"
                 href={episodeReportHref(control.report_episode_id)}
                 projectId={episode.project_id}
+                graphTarget={episode.graph_target}
                 episodeId={control.report_episode_id}
                 onOpenError={setReportOpenError}
               >
@@ -338,6 +339,7 @@ export function ExperimentRunDetail({
       {episode && (
         <RunArtifacts
           projectId={episode.project_id}
+          graphTarget={episode.graph_target}
           {...runArtifacts}
           onRetry={runArtifacts.reload}
         />

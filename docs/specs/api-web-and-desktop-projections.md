@@ -79,6 +79,8 @@ items younger than 24 hours. Each item carries its stable notification id and
 only a fixed reason code, project name, and hash-route deep link as content.
 Links use `#/projects/{project_id}/targets/{target}/{kind}/{item_id}`, with
 each value URL-escaped; both episode reasons use `episode` as the link kind.
+The same pattern names project references with the kinds `artifact`, `node`,
+and `paper` (item id `introduction`); `target` is the node's source target.
 Graph item age starts at its accepted Patch, and terminal episode age starts
 at its latest lifecycle update, so downtime does not renew the 24-hour TTL.
 `POST /api/notifications/devices/{device_id}/items/{notification_id}` accepts
@@ -107,6 +109,10 @@ resolved or not. A pending Proposal scrolls to its card; a resolved one shows
 its outcome as a notice. An episode opens its exact run when it is still
 listed, else Runs. The link is read
 at module load, so a team sign-in in between still continues to it.
+A reference link opens the current item: an artifact opens its viewer, a node
+opens on its source target, and the paper opens under Artifacts. Copy reference
+writes the full URL. The chat composer turns a same-project reference link into
+a reference chip.
 
 ## Phone push delivery
 
@@ -864,8 +870,8 @@ app; the system PDF action separately requires `view` of `pdf` and
 Conversation Send starts one asynchronous ordinary Discuss or Work turn through
 the same provider profile, native-session, skill, task-admission, and local or
 SSH execution path as the visible composer; it returns the durable task id rather
-than waiting for provider completion. Attachments and compute selection remain
-visible-composer controls. Experiment Start and Stop likewise reuse the existing
+than waiting for provider completion. Attachments, project references, and
+compute selection remain visible-composer controls. Experiment Start and Stop likewise reuse the existing
 backend projections and action owners, including staged-Sync, readiness, budget,
 single-start, exact-episode, and graceful-Stop fences.
 

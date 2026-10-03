@@ -2029,6 +2029,7 @@ export interface AgentTaskRequest {
   attachment_set_id?: string | null;
   attachment_client_id?: string | null;
   attachments?: ChatAttachmentDescriptor[];
+  references?: ProjectReferenceSelector[];
   session_id?: string | null;
   mode?: ConversationMode;
   artifact_context?: ArtifactContextRequest | null;
@@ -2771,6 +2772,22 @@ export interface ChatAttachmentDescriptor {
   media_type: string;
   size: number;
   expires_at: string;
+  /** Set when RCP copied this file from a project reference rather than an upload. */
+  reference?: ProjectReferenceSource | null;
+}
+
+/** A human's pointer to project data; the server copies it into the turn. */
+export type ProjectReferenceSelector =
+  | { kind: "artifact"; artifact_id: string }
+  | { kind: "node"; node_id: string; branch_id: string | null }
+  | { kind: "paper" };
+
+/** What a retained reference copy was taken from, frozen at admission. */
+export interface ProjectReferenceSource {
+  kind: ProjectReferenceSelector["kind"];
+  source_id: string;
+  version: string | null;
+  graph_head: GraphHeadRef | null;
 }
 
 export interface ChatTranscript extends ChatSummary {

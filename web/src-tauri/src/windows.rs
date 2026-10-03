@@ -81,6 +81,10 @@ pub fn create_main(
         .min_inner_size(880.0, 600.0)
         .visible(false)
         .zoom_hotkeys_enabled(false)
+        // Tauri's native drop handler consumes every drag and never hands it to the
+        // page, which kills HTML5 drops (files and project references). RCP reads
+        // drops in the page only.
+        .disable_drag_drop_handler()
         .on_page_load(|window, payload| {
             if payload.url().scheme() != "about" {
                 MAIN_DOCUMENT_STARTED.store(true, Ordering::SeqCst);

@@ -71,6 +71,8 @@ def run_experiment(
     identity_access: IdentityAccessDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
+    if body.get("references"):
+        raise HTTPException(status_code=422, detail="Experiment runs do not accept references.")
     authorized_by = identity_access.require_patch_capable_identity(request)
     project_id = catalog.resolve_project_id(project_id)
     service = get_graph_service(catalog, project_id, branch_id)

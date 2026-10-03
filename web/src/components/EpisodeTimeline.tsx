@@ -55,6 +55,7 @@ const tone = (s: string | null) =>
 export function EpisodeTimeline({
   response: data,
   projectId,
+  graphTarget,
   artifacts = [],
   apiBase,
   episodeId,
@@ -934,6 +935,7 @@ export function EpisodeTimeline({
                           {projectId && selectedActor.kind === "worker" && (
                             <RunArtifacts
                               projectId={projectId}
+                              graphTarget={graphTarget}
                               artifacts={artifactsForOperations(artifacts, [s.task_id])}
                             />
                           )}
@@ -1009,6 +1011,7 @@ export function EpisodeTimeline({
                     {projectId && selectedSpan.kind !== "report" && (
                       <RunArtifacts
                         projectId={projectId}
+                        graphTarget={graphTarget}
                         artifacts={artifactsForOperations(artifacts, [selectedSpan.task_id])}
                       />
                     )}
