@@ -194,7 +194,7 @@ export function voiceWatchFromResult(
   name: string,
   args: Record<string, unknown>,
   output: string,
-  projectName: string,
+  projectName: (projectId: string) => string,
 ): VoiceWatch | null {
   let result: Record<string, unknown>;
   try {
@@ -205,7 +205,7 @@ export function voiceWatchFromResult(
   const projectId = typeof result.project_id === "string" ? result.project_id : null;
   const text = (key: string) => (typeof result[key] === "string" ? (result[key] as string) : null);
   if (!projectId) return null;
-  const base = { project_id: projectId, project_name: projectName, last: null };
+  const base = { project_id: projectId, project_name: projectName(projectId), last: null };
   if (name === "rcp_send_conversation_message" && args.mode === "work" && text("task_id")) {
     return { ...base, kind: "work_turn", record: "task", id: text("task_id")! };
   }

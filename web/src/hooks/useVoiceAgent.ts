@@ -247,6 +247,8 @@ export function useVoiceAgent({
       .catch((failure) => {
         if (gateRef.current === gate) setSettingsError(errorMessage(failure));
       });
+    // Project names as seen when each call was made; the member may navigate mid-call.
+    const projectNames = new Map<string, string>();
     const executor = createVoiceExecutor({
       gate,
       catalog,
@@ -256,7 +258,7 @@ export function useVoiceAgent({
       pin: (name, args) => buildVoicePin(name, args, page.current),
       requestConfirmation,
       onSucceeded: (name, args, output) => {
-        const watch = voiceWatchFromResult(name, args, output, page.current.project?.name ?? "");
+        const watch = voiceWatchFromResult(name, args, output, (id) => projectNames.get(id) ?? "");
         if (watch) watchesRef.current.push(watch);
       },
     });
@@ -268,6 +270,8 @@ export function useVoiceAgent({
           onTranscript: (role, delta) =>
             setTranscript((lines) => appendTranscript(lines, role, delta)),
           onFunctionCall: (call) => {
+            const origin = page.current.project;
+            if (origin) projectNames.set(origin.id, origin.name);
             void executor.run(call).then((output) => {
               if (output !== null) sessionRef.current?.sendFunctionOutput(call.call_id, output);
             });
@@ -304,16 +308,22 @@ export function useVoiceAgent({
   }, [page, requestConfirmation]);
 
   const setConfirmMode = useCallback(async (confirm: VoiceConfirmMode) => {
+    // A response that lands after this session ended, or another member's opened, is dropped.
+    const gate = gateRef.current;
+    const live = () => gate !== null && gateRef.current === gate && gate.ok();
     setSettingsError(null);
     try {
       const current = settingsRef.current ?? (await loadVoiceSettings());
+      if (!live()) return;
       // The choice shows at once; Tap also applies at once, Run without confirming once saved.
       setSettings({ ...current, confirm });
       if (confirm === "tap") settingsRef.current = { ...current, confirm };
       const saved = await saveVoiceSettings({ confirm });
+      if (!live()) return;
       settingsRef.current = saved;
       setSettings(saved);
     } catch (failure) {
+      if (!live()) return;
       setSettings(settingsRef.current);
       setSettingsError(errorMessage(failure));
     }

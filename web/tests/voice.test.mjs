@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createIdentityGate, createVoiceExecutor, voiceCommentary } from "../src/voiceExecutor.ts";
+import {
+  createIdentityGate,
+  createVoiceExecutor,
+  voiceCommentary,
+  voiceWatchFromResult,
+} from "../src/voiceExecutor.ts";
 import { openVoiceSession } from "../src/voiceSession.ts";
 
 const TOOLS = [
@@ -208,6 +213,19 @@ test("after End, a late call never dispatches and the member's reason stands", a
   await closing;
   assert.equal(calls.length, 0);
   assert.deepEqual(ended, ["member"]);
+});
+
+test("a watch is named for the project its result reports, not the open one", () => {
+  const names = new Map([["origin", "Origin"]]);
+  const output = JSON.stringify({ project_id: "origin", episode_id: "e1" });
+  const watch = voiceWatchFromResult(
+    "rcp_authorize_auto_research",
+    {},
+    output,
+    (id) => names.get(id) ?? "",
+  );
+  assert.equal(watch.project_id, "origin");
+  assert.equal(watch.project_name, "Origin");
 });
 
 test("completion commentary depends only on kind, project name, and status", () => {
