@@ -1,8 +1,8 @@
 # Active implementation handoffs
 
 - [Standby voice agent](handoff-2026-10-02-voice-agent.md)
-  — designed 2026-10-02 (issue #229, part 2); slice 1 (shared tool catalog)
-  implemented on its PR; builds on the model-backed dictation PR.
+  — designed 2026-10-02 (issue #229, part 2); slices 1 and 2 implemented on its
+  PR; the voice panel, live probe, and hardware checks remain.
 - [Model-backed dictation](handoff-2026-10-02-model-backed-dictation.md)
   — designed 2026-10-02 (issue #229, part 1); native and backend slices
   implemented on its PR; web slice and hardware checks remain.

@@ -3,7 +3,12 @@
 Date: 2026-10-02
 Status: design settled with the human on 2026-10-02 (issue #229, part 2), then
 revised the same day after an astra xhigh review and a Claude review.
-Nothing is implemented yet. This builds on the model-backed dictation handoff
+Implementation started on this PR on 2026-10-02. Done: slice 1 (shared tool
+catalog, Auto-research authorization and Stop, `rcp_open_view`, stoppable
+Auto-research ids in the overview) and slice 2 (voice purposes, voice settings,
+the stateless session route). Remaining: slice 3 (voice panel and executor),
+the live probe, the spec updates, and the real-hardware checks below. This
+builds on the model-backed dictation handoff
 (part 1, its own PR): it reuses that PR's member service connections, member
 settings file, and microphone owner. A live GPT-Live probe gates the session
 work below.
@@ -97,9 +102,9 @@ Responses model, that model picks tools, and the app executes them.
 **The page owns the session's lifetime.** A frozen page runs no timers, so the
 page does not wait for its own idle timer there: it ends the session on
 `visibilitychange` to hidden, `pagehide`, and `freeze`. On the desktop that
-means hiding or minimizing the window ends voice. If the Live session config
-has a duration limit, the backend sets it to the hard cap as the upstream
-backstop. The probe checks real suspension on iOS Safari and a hidden desktop
+means hiding or minimizing the window ends voice. The Live session config has
+no duration limit (checked against the API reference on 2026-10-02), so the
+page's hard cap and transport loss are the only bounds. The probe checks real suspension on iOS Safari and a hidden desktop
 window, and how fast billing stops after the transport drops. There is no
 sideband: a sideband receives reflected audio, which would break "no audio
 passes through RCP".
