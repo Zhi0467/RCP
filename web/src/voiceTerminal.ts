@@ -79,6 +79,13 @@ export const VOICE_TERMINAL_TOOLS: readonly WebMcpToolSpec[] = [
   RUN_TERMINAL_COMMAND_TOOL,
 ];
 
+/**
+ * Terminal sessions voice started in this page, and whether the shell was at rest
+ * (output went quiet, session alive) after voice's last command. Voice types only into
+ * these, so a confirmed line never joins a half-typed line or feeds a running program.
+ */
+const voiceSessions = new Map<string, boolean>();
+
 function terminalsPath(projectId: string): string {
   return `/api/projects/${encodeURIComponent(projectId)}/terminals`;
 }
@@ -117,6 +124,24 @@ export async function terminalRepository(
   const repository = repositories.find((item) => item.repository_id === repositoryId);
   if (!repository) throw new Error(`${repositoryId} is not a terminal repository here.`);
   return repository;
+}
+
+/** Throws unless the repository has no open terminal, or one voice started and left at rest. */
+export async function assertVoiceMayType(
+  projectId: string,
+  repositoryId: string,
+  fetchJson: VoiceTerminalDeps["fetchJson"],
+): Promise<void> {
+  const open = (await fetchJson<TerminalSession[]>(terminalsPath(projectId))).find(
+    (item) => item.repository_id === repositoryId,
+  );
+  if (open && voiceSessions.get(open.session_id) !== true) {
+    throw new Error(
+      voiceSessions.has(open.session_id)
+        ? "Voice's last command in this terminal may still be running; check the Terminals tab."
+        : "This repository's terminal is already open, and voice types only into a terminal it started. Close it in the Terminals tab, or run the command there.",
+    );
+  }
 }
 
 export async function listProjectTerminals(
@@ -245,20 +270,31 @@ export async function runProjectTerminalCommand(
   const { repository_id, command } = terminalCommandInput(input);
   await terminalRepository(projectId, repository_id, deps.fetchJson);
   const base = terminalsPath(projectId);
+  await assertVoiceMayType(projectId, repository_id, deps.fetchJson);
   const session = await deps.fetchJson<TerminalSession>(base, {
     method: "POST",
     body: JSON.stringify({ repository_id }),
   });
-  const outcome = await collectRun(
-    deps.openSocket(`${base}/${encodeURIComponent(session.session_id)}/ws`),
-    command,
-    deps.timing ?? {
-      quietMs: TERMINAL_QUIET_MS,
-      windowMs: TERMINAL_WINDOW_MS,
-      settleMs: TERMINAL_REPLAY_SETTLE_MS,
-      settleMaxMs: TERMINAL_REPLAY_MAX_MS,
-    },
-  );
+  voiceSessions.set(session.session_id, false);
+  let outcome: RunOutcome;
+  try {
+    outcome = await collectRun(
+      deps.openSocket(`${base}/${encodeURIComponent(session.session_id)}/ws`),
+      command,
+      deps.timing ?? {
+        quietMs: TERMINAL_QUIET_MS,
+        windowMs: TERMINAL_WINDOW_MS,
+        settleMs: TERMINAL_REPLAY_SETTLE_MS,
+        settleMaxMs: TERMINAL_REPLAY_MAX_MS,
+      },
+    );
+  } catch (error) {
+    // Nothing was typed, so the shell is as voice left it.
+    voiceSessions.set(session.session_id, true);
+    throw error;
+  }
+  if (outcome.ended) voiceSessions.delete(session.session_id);
+  else voiceSessions.set(session.session_id, outcome.quiet);
   const output = stripTerminalEscapes(outcome.text);
   return {
     project_id: projectId,

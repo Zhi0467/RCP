@@ -2058,7 +2058,7 @@ function evalToolDefinitions(state) {
   ];
 }
 
-function terminalDoubles(output = "") {
+function terminalDoubles(output = "", openSessions = []) {
   const requests = [];
   const sockets = [];
   const bytes = (text) => new TextEncoder().encode(text).buffer;
@@ -2067,7 +2067,7 @@ function terminalDoubles(output = "") {
     if (path.endsWith("/repositories")) {
       return [{ repository_id: "code", machine_id: "local", backend_name: null, eligible: true }];
     }
-    return init?.method === "POST" ? { session_id: "s1", repository_id: "code" } : [];
+    return init?.method === "POST" ? { session_id: "s1", repository_id: "code" } : openSessions;
   };
   const openSocket = (path) => {
     const socket = {
@@ -2196,6 +2196,19 @@ test("a terminal run types one line after replay and returns stripped, bounded o
   assert.ok(!/[\u001b\u0007]|earlier replay/.test(result.output));
   await assert.rejects(run.execute({ repository_id: "unlisted", command: "ls" }));
   assert.equal(sockets.length, 1);
+});
+
+test("a terminal voice did not start is refused before anything is typed", async () => {
+  const { requests, sockets, deps } = terminalDoubles("", [
+    { session_id: "member-shell", repository_id: "code", state: "live" },
+  ]);
+  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+  await assert.rejects(run.execute({ repository_id: "code", command: "ls" }));
+  assert.equal(
+    requests.some(([method]) => method === "POST"),
+    false,
+  );
+  assert.deepEqual(sockets, []);
 });
 
 test("a multi-line or control-character command is refused before anything opens", async () => {

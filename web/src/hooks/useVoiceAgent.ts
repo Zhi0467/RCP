@@ -32,7 +32,7 @@ import {
   type VoiceEndReason,
   type VoiceSession,
 } from "../voiceSession";
-import { terminalCommandInput, terminalRepository } from "../voiceTerminal";
+import { assertVoiceMayType, terminalCommandInput, terminalRepository } from "../voiceTerminal";
 import { conversationSendTarget, type WebMcpConversationSource } from "../webmcp";
 
 const VOICE_WATCH_POLL_MS = 10_000;
@@ -94,6 +94,8 @@ async function buildVoicePin(
     const input = terminalCommandInput(args);
     // Read at show and Confirm time, so a vanished or changed repository refuses.
     const repository = await terminalRepository(project.id, input.repository_id, api);
+    // A terminal voice may not type into is refused before the card, not after Confirm.
+    await assertVoiceMayType(project.id, input.repository_id, api);
     return {
       ...base,
       arguments: { ...input },
@@ -239,6 +241,11 @@ export function useVoiceAgent({
   const cardRef = useRef<{ settle: (confirmed: boolean) => void } | null>(null);
   const readyRef = useRef(ready);
   readyRef.current = ready;
+  // Confirm-mode writes in click order; `latest` fences every older settings result.
+  const confirmSaves = useRef<{ chain: Promise<unknown>; latest: number }>({
+    chain: Promise.resolve(),
+    latest: 0,
+  });
 
   const end = useCallback((reason: VoiceEndReason = "member", immediate = false) => {
     // An open session keeps this reason and its bounded close, and loses the gate as it
@@ -285,9 +292,12 @@ export function useVoiceAgent({
     settingsRef.current = null;
     setSettings(null);
     setSettingsError(null);
+    const loadSeq = confirmSaves.current.latest;
     void loadVoiceSettings()
       .then((loaded) => {
-        if (gateRef.current !== gate || !gate.ok()) return;
+        // A mode change made while this read was in flight is newer than its answer.
+        if (gateRef.current !== gate || !gate.ok() || confirmSaves.current.latest !== loadSeq)
+          return;
         settingsRef.current = loaded;
         setSettings(loaded);
       })
@@ -363,10 +373,6 @@ export function useVoiceAgent({
     setPhase("open");
   }, [page, requestConfirmation]);
 
-  const confirmSaves = useRef<{ chain: Promise<unknown>; latest: number }>({
-    chain: Promise.resolve(),
-    latest: 0,
-  });
   const setConfirmMode = useCallback(async (confirm: VoiceConfirmMode) => {
     // Saves run in click order, and only the newest click's result applies; a response
     // that lands after this session ended, or another member's opened, is dropped.
@@ -442,16 +448,19 @@ export function useVoiceAgent({
             if (failure instanceof ApiError && [401, 403, 404].includes(failure.status)) drop();
             continue;
           }
-          if (status && status !== watch.last && sessionRef.current === session) {
+          if (status !== watch.last) {
+            // A return to running clears needs-you, so the next request is announced too.
             watch.last = status;
-            session.speak(
-              voiceCommentary(
-                watch.kind,
-                watch.project_name,
-                status,
-                session.limits.commentary_max_chars,
-              ),
-            );
+            if (status && sessionRef.current === session) {
+              session.speak(
+                voiceCommentary(
+                  watch.kind,
+                  watch.project_name,
+                  status,
+                  session.limits.commentary_max_chars,
+                ),
+              );
+            }
           }
           if (status === "finished") drop();
         }

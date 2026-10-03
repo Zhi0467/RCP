@@ -957,9 +957,12 @@ a terminal now, and the open sessions. `rcp_run_terminal_command` takes a
 listed `repository_id` and one `command` line of 1 to 1000 characters with no
 control characters; the tool adds the Enter. Every run shows a card, even when
 the panel is set to **Run without confirming**. The card pins the repository,
-the machine, and the exact command, and Confirm rereads the listing. The run
-opens or reuses that repository's session, waits for the replayed output to
-settle, types the line once, and collects output until it is quiet for 1.5
+the machine, and the exact command, and Confirm rereads the listing. Voice
+types only into a terminal it started in this page, and only after its last
+command there went quiet; an already open terminal is refused before the card,
+so a confirmed line never joins a half-typed line or feeds a running program.
+The run opens that session, waits for the replayed output to settle, types the
+line once, and collects output until it is quiet for 1.5
 seconds or 10 seconds pass. It strips terminal escape codes and returns the
 last 4000 characters as untrusted content, with flags for truncation and for a
 window that ended before output went quiet. A confirmed command has the
