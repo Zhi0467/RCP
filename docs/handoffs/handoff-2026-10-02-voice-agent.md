@@ -89,19 +89,29 @@ Responses model, that model picks tools, and the app executes them.
 5. When the Responses model calls a function, the page's executor receives it
    on the data channel, runs it, and returns `response.item.create`
    (`function_call_output`) then `response.create`.
-6. The page ends the session by closing its peer connection: on the member's
-   click, the idle limit, the hard cap, reload, logout, or leaving the space.
+6. The page ends the session: on the member's click, the idle limit, the hard
+   cap, reload, logout, leaving the space, loss of identity, or the page going
+   hidden. It sends `session.close`, waits a bounded time for the close to
+   finish, then closes the peer connection.
 
-**The page owns the session's lifetime.** If the page crashes or is suspended,
-the WebRTC transport drops, and OpenAI ends the session. The probe measures how
-fast billing stops after transport loss. If the Live session config has a
-duration limit, the backend also sets it to the hard cap. There is no sideband:
-a sideband receives reflected audio, which would break "no audio passes through
-RCP".
+**The page owns the session's lifetime.** A frozen page runs no timers, so the
+page does not wait for its own idle timer there: it ends the session on
+`visibilitychange` to hidden, `pagehide`, and `freeze`. On the desktop that
+means hiding or minimizing the window ends voice. If the Live session config
+has a duration limit, the backend sets it to the hard cap as the upstream
+backstop. The probe checks real suspension on iOS Safari and a hidden desktop
+window, and how fast billing stops after the transport drops. There is no
+sideband: a sideband receives reflected audio, which would break "no audio
+passes through RCP".
 
-A removed member's page loses API access, so every tool call fails, and the
-session ends at the idle limit at the latest. Two tabs can each open their own
-session; each is a deliberate click and its own bill.
+**Identity loss ends it at once.** The voice session follows the same verified
+identity and team-session state that retires WebMCP's surface on a reconnect
+screen. Logout, a revoked session, member removal, or any 401 or 403 on the
+page's polling ends the session immediately. The executor checks that state
+before every call, so reads from the page's cached snapshot stop too.
+
+Two tabs can each open their own session; each is a deliberate click and its
+own bill.
 
 ### The shared tool catalog (slice 1 owns it)
 
@@ -111,9 +121,13 @@ state, and get a registry only when a WebMCP host exists
 Slice 1 adds a host-independent catalog:
 
 - `catalog(): {name, description, inputSchema, confirm}[]`: a fixed list of
-  every tool, independent of page state. `confirm` is a field on the tool's own
-  definition, true for Work Send, Experiment Start, and Auto-research
-  authorization. There is no separate confirmation list.
+  every tool, independent of page state. `confirm(args)` is a predicate on the
+  tool's own definition. Conversation Send returns true only for
+  `mode: "work"`; Experiment Start and Auto-research authorization return true;
+  every other tool returns false. There is no separate confirmation list.
+- `catalogAsFunctionTools()`: the one serializer to the Responses function
+  format, `{type: "function", name, description, parameters}`. It leaves out
+  `confirm` and any other local metadata.
 - `resolve(name)`: the current executable definition built from the latest page
   state, or a refusal that says why (wrong screen, nothing to stop, and so on).
 - WebMCP keeps registering conditionally from the same definitions.
@@ -149,8 +163,11 @@ Slice 1 adds a host-independent catalog:
   episode, through the existing `POST .../episodes/{id}/stop`.
 - **`rcp_open_view({kind, id})`** with kind `node`, `conversation`, `run`,
   `artifact`, or `inbox`. It calls the in-page owners (`openNodeById`,
-  `openChats`, `showExperiment`, `showWebMcpArtifactViewer`, the Inbox view)
-  within the current project and graph target. It never switches project or
+  `openChats`, `showWebMcpArtifactViewer`, the Inbox view) within the current project and
+  graph target. A `run` id is an episode id. It opens through the same exact
+  episode route tokens as `episodeNotificationHash` (an Auto-research route, or
+  the Experiment's board entry), not `showExperiment`, which takes a node id and
+  clears the exact episode. It never switches project or
   branch; only `rcp_open_project` changes project.
 
 ### Speaking first
@@ -169,8 +186,8 @@ drops the id.
 
 `POST /api/voice/sessions`, JSON (keeps the team origin check):
 
-- request `{sdp_offer, tools}`; `tools` is the catalog's schema list, capped in
-  size. The backend forwards it unchanged. If the probe shows the data channel
+- request `{sdp_offer, tools}`; `tools` is `catalogAsFunctionTools()`, capped
+  in size. The backend forwards it unchanged. If the probe shows the data channel
   accepts `session.update` with tools, the page sends them there instead and
   the field goes away.
 - response `{sdp_answer, limits: {idle_seconds, hard_cap_seconds,
@@ -184,14 +201,17 @@ drops the id.
   capabilities; the catalog does.
 
 `GET` and `PUT /api/voice/settings`: `{delegation_model, confirm: "tap" |
-"none"}`, stored in the member's settings file from the dictation PR. A
-restore drops the file, so settings fall back to `gpt-6-luna` and tap.
+"none"}`, stored in the member's settings file from the dictation PR under the
+same per-member lock. A restore drops the file, so settings fall back to
+`gpt-6-luna` and tap.
 
 Service connections gain `purposes`, a subset of `transcription` and `voice`.
 A record without the field means transcription only. Connect takes the
 purposes to enable, and each purpose has its own check: transcription keeps the
 clip check, and voice makes one authenticated request for `gpt-live-1`. So a
-voice-only key can be saved. Voice applies only to the OpenAI preset.
+voice-only key can be saved. Voice applies only to the OpenAI preset, and at
+most one connection has it: enabling voice on a connection moves it off any
+other. That connection pays for every voice session.
 
 ## Native
 
@@ -227,9 +247,11 @@ needs a native rebuild and the desktop checks.
 One test per invariant, no wording assertions:
 
 - the executor refuses a name outside the catalog;
-- in tap mode, a `confirm` tool runs only after Confirm, and Confirm refuses
-  when a pinned value changed; in the other mode it runs at once; reads never
-  wait;
+- in tap mode, a call whose `confirm(args)` is true runs only after Confirm,
+  and Confirm refuses when a pinned value changed; in the other mode it runs at
+  once; a Discuss Send and reads never wait;
+- identity loss ends the session and refuses the next call, including a cached
+  read;
 - a repeated `call_id`, or an identical repeat of an unknown-outcome call,
   does not run again;
 - the Auto-research tool and the button refuse in the same states;
