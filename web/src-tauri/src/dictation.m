@@ -9,10 +9,18 @@ typedef void (*RCPDictationCallback)(const char *session_id,
                                      const char *state,
                                      const char *error);
 
+#ifdef RCP_SPEECH_ANALYZER
+extern int rcp_analyzer_start(const char *, RCPDictationCallback);
+extern void rcp_analyzer_stop(int finish);
+static void analyzerEvent(const char *, const char *, const char *, int, const char *, const char *);
+#endif
+
 @interface RCPDictationController : NSObject
 
 @property(nonatomic, copy, nullable) NSString *sessionID;
 @property(nonatomic) RCPDictationCallback callback;
+@property(nonatomic) BOOL usingAnalyzer;
+@property(nonatomic) BOOL finishing;
 @property(nonatomic, strong, nullable) AVAudioEngine *audioEngine;
 @property(nonatomic, strong, nullable) SFSpeechRecognizer *recognizer;
 @property(nonatomic, strong, nullable) SFSpeechAudioBufferRecognitionRequest *request;
@@ -20,7 +28,10 @@ typedef void (*RCPDictationCallback)(const char *session_id,
 
 + (instancetype)shared;
 - (void)startWithSessionID:(NSString *)sessionID callback:(RCPDictationCallback)callback;
-- (BOOL)stopSessionID:(NSString *)sessionID;
+- (BOOL)stopSessionID:(NSString *)sessionID finish:(BOOL)finish;
+- (void)finishActive;
+- (void)beginRecognitionForSession:(NSString *)sessionID;
+- (BOOL)sessionIsActive:(NSString *)sessionID;
 - (void)stopActive;
 
 @end
@@ -41,6 +52,7 @@ typedef void (*RCPDictationCallback)(const char *session_id,
       [self stopActive];
       self.sessionID = sessionID;
       self.callback = callback;
+      self.finishing = NO;
 
       [SFSpeechRecognizer requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus status) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -61,6 +73,12 @@ typedef void (*RCPDictationCallback)(const char *session_id,
                   [self failSession:sessionID message:@"Microphone permission was not granted."];
                   return;
               }
+#ifdef RCP_SPEECH_ANALYZER
+              self.usingAnalyzer = rcp_analyzer_start(sessionID.UTF8String, analyzerEvent) != 0;
+              if (self.usingAnalyzer) {
+                  return;
+              }
+#endif
               [self beginRecognitionForSession:sessionID];
             });
           }];
@@ -69,23 +87,47 @@ typedef void (*RCPDictationCallback)(const char *session_id,
     });
 }
 
-- (BOOL)stopSessionID:(NSString *)sessionID {
+- (BOOL)stopSessionID:(NSString *)sessionID finish:(BOOL)finish {
     if ([NSThread isMainThread]) {
         if (![self sessionIsActive:sessionID]) {
             return NO;
         }
-        [self stopActive];
+        finish ? [self finishActive] : [self stopActive];
         return YES;
     }
 
     __block BOOL stopped = NO;
     dispatch_sync(dispatch_get_main_queue(), ^{
       if ([self sessionIsActive:sessionID]) {
-          [self stopActive];
+          finish ? [self finishActive] : [self stopActive];
           stopped = YES;
       }
     });
     return stopped;
+}
+
+- (void)finishActive {
+    if (self.sessionID == nil || self.finishing) {
+        return;
+    }
+    self.finishing = YES;
+#ifdef RCP_SPEECH_ANALYZER
+    if (self.usingAnalyzer) {
+        rcp_analyzer_stop(1);
+        return;
+    }
+#endif
+    if (self.request == nil) {
+        if (self.callback != NULL) {
+            self.callback(self.sessionID.UTF8String, "result", "", 1, "", "");
+        }
+        [self stopActive];
+        return;
+    }
+    // Keep the result handler alive until the recognizer delivers its final text.
+    [self.audioEngine stop];
+    [self.request endAudio];
+    [self.task finish];
 }
 
 - (void)stopActive {
@@ -152,11 +194,11 @@ typedef void (*RCPDictationCallback)(const char *session_id,
                                 "",
                                 "");
         }
-        if (error != nil) {
+        if (result.final) {
+            [strongSelf stopActive];
+        } else if (error != nil) {
             NSString *message = error.localizedDescription ?: @"Speech recognition failed.";
             [strongSelf failSession:sessionID message:message];
-        } else if (result.final) {
-            [strongSelf stopActive];
         }
       });
     }];
@@ -182,7 +224,7 @@ typedef void (*RCPDictationCallback)(const char *session_id,
                    dispatch_get_main_queue(), ^{
       RCPDictationController *strongSelf = weakSelf;
       if (strongSelf != nil && [strongSelf sessionIsActive:sessionID]) {
-          [strongSelf stopActive];
+          [strongSelf finishActive];
       }
     });
 }
@@ -217,6 +259,12 @@ typedef void (*RCPDictationCallback)(const char *session_id,
 }
 
 - (void)tearDownRecognition {
+#ifdef RCP_SPEECH_ANALYZER
+    if (self.usingAnalyzer) {
+        rcp_analyzer_stop(0);
+        self.usingAnalyzer = NO;
+    }
+#endif
     if (self.audioEngine != nil) {
         [self.audioEngine stop];
         [self.audioEngine.inputNode removeTapOnBus:0];
@@ -231,6 +279,31 @@ typedef void (*RCPDictationCallback)(const char *session_id,
 
 @end
 
+#ifdef RCP_SPEECH_ANALYZER
+static void analyzerEvent(const char *session, const char *kind, const char *text,
+                          int final, const char *state, const char *error) {
+    RCPDictationController *controller = [RCPDictationController shared];
+    NSString *sessionID = [NSString stringWithUTF8String:session];
+    if (![controller sessionIsActive:sessionID]) {
+        return;
+    }
+    if (strcmp(kind, "fallback") == 0) {
+        controller.usingAnalyzer = NO;
+        [controller beginRecognitionForSession:sessionID];
+        return;
+    }
+    if (controller.callback != NULL) {
+        controller.callback(session, kind, text, final, state, error);
+    }
+    if (strcmp(kind, "state") == 0 &&
+        (strcmp(state, "stopped") == 0 || strcmp(state, "error") == 0)) {
+        controller.usingAnalyzer = NO;
+        controller.sessionID = nil;
+        controller.callback = NULL;
+    }
+}
+#endif
+
 int rcp_dictation_start(const char *session_id, RCPDictationCallback callback) {
     if (session_id == NULL || callback == NULL) {
         return 1;
@@ -243,7 +316,7 @@ int rcp_dictation_start(const char *session_id, RCPDictationCallback callback) {
     return 0;
 }
 
-int rcp_dictation_stop(const char *session_id) {
+int rcp_dictation_stop(const char *session_id, int finish) {
     if (session_id == NULL) {
         return 1;
     }
@@ -251,7 +324,7 @@ int rcp_dictation_stop(const char *session_id) {
     if (sessionID == nil) {
         return 1;
     }
-    return [[RCPDictationController shared] stopSessionID:sessionID] ? 0 : 1;
+    return [[RCPDictationController shared] stopSessionID:sessionID finish:finish != 0] ? 0 : 1;
 }
 
 void rcp_dictation_stop_active(void) {
