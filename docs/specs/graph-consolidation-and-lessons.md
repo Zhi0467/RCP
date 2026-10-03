@@ -9,8 +9,9 @@ A project member enables consolidation in Project settings by choosing a local
 time and time zone. The schedule records that member, the time of the choice,
 and a fresh authorization id, and it expires
 `CONSOLIDATION_AUTHORIZATION_DAYS` later. Choosing again renews it under the
-acting member with a new authorization id; a run already admitted keeps the
-authorization it captured. Any member can turn it off. An expired schedule
+acting member with a new authorization id. A run admitted under the previous
+authorization that has not launched yet ends as a failure; the next occurrence
+runs under the new one. Any member can turn it off. An expired schedule
 starts nothing and stays visible in the settings card until renewed or turned
 off.
 
