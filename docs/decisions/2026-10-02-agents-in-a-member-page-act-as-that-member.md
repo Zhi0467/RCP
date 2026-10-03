@@ -1,7 +1,7 @@
 # Agents in a member's page act as that member
 
-Date: 2026-10-02. Status: active. The work is planned in the
-[voice agent handoff](../handoffs/handoff-2026-10-02-voice-agent.md).
+Date: 2026-10-02. Status: active. Its live voice checks are among
+[the open live checks](../handoffs/README.md).
 
 ## Decision
 

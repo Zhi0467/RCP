@@ -1,8 +1,5 @@
 # Active implementation handoffs
 
-- [Standby voice agent](handoff-2026-10-02-voice-agent.md)
-  — designed 2026-10-02 (issue #229, part 2); all three slices and the specs
-  implemented on its PR; the live probe and hardware checks remain.
 - [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
   — design settled 2026-10-01; implementation in progress on its PR.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
@@ -77,3 +74,12 @@ stands in for it. Run one on disposable data, then delete its line here.
   on-device through SpeechAnalyzer, including the first-use model download;
   `RCP Candidate.app` connects a service (proving the bundled check clips ship)
   and dictates on macOS 13, 14, or 15 through the old recognizer.
+- Standby voice agent: with a real OpenAI key in a rebuilt desktop app (the
+  microphone usage string changed), open a session, ask about a project and
+  hear a correct answer, and have it open a node; by voice, send a Work
+  message, start an Experiment, and authorize Auto-research, once with **Tap to
+  confirm** and once with **Run without confirming**, and hear each one finish,
+  including after moving to another project; gracefully stop a running
+  Experiment and Auto-research episode; run one terminal command; repeat from a
+  team member's phone web app; a forgotten session ends at the idle limit, and
+  closing or suspending the page ends the paid session.
