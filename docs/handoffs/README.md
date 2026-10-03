@@ -2,8 +2,7 @@
 
 - [Standby voice agent](handoff-2026-10-02-voice-agent.md)
   — designed 2026-10-02 (issue #229, part 2); all three slices and the specs
-  implemented on its PR; the live probe, the `AGENTS.md` link, and hardware
-  checks remain.
+  implemented on its PR; the live probe and hardware checks remain.
 - [Model-backed dictation](handoff-2026-10-02-model-backed-dictation.md)
   — implemented 2026-10-02 on its PR; real-hardware and real-service checks
   remain.

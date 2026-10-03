@@ -7,8 +7,8 @@ Implementation started on this PR on 2026-10-02. Done: slice 1 (shared tool
 catalog, Auto-research authorization and Stop, `rcp_open_view`, stoppable
 Auto-research ids in the overview), slice 2 (voice purposes, voice settings,
 the stateless session route), and slice 3 (voice panel and executor, driven
-headless against a fake transport), and the spec updates. Remaining: the
-live probe, the `AGENTS.md` link below, and the real-hardware checks below. This
+headless against a fake transport), and the spec and `AGENTS.md` updates.
+Remaining: the live probe and the real-hardware checks below. This
 builds on the model-backed dictation handoff
 (part 1, its own PR): it reuses that PR's member service connections, member
 settings file, and microphone owner. A live GPT-Live probe gates the session
@@ -270,9 +270,3 @@ One test per invariant, no wording assertions:
 - the session route refuses without a voice-enabled connection, and no response
   contains the key or OpenAI's raw error;
 - completion commentary is built only from kind, project name, and status.
-
-## Docs still to update
-
-- `AGENTS.md`: invariant 3 links the decision record, as invariant 4 links its
-  decisions. This edits agent instructions, so confirm it with the human in
-  the PR.
