@@ -270,6 +270,7 @@ import {
   projectExperimentToolDefinitions,
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
+  providerLoginToolDefinitions,
   projectViewToolDefinitions,
   type WebMcpToolRegistry,
   type WebMcpViewOwners,
@@ -3851,6 +3852,7 @@ export default function App() {
       const project = webMcpProject;
       return [
         ...projectReadToolDefinitions(project, episodes),
+        ...providerLoginToolDefinitions(loadProviderLogins),
         ...projectArtifactToolDefinitions(
           project,
           tasks,

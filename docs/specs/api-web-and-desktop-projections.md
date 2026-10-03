@@ -813,6 +813,7 @@ When the browser host supplies `document.modelContext.registerTool`, RCP
 registers a page-scoped WebMCP surface over its existing application owners. A
 ready project index exposes project listing and exact project navigation. A
 loaded project replaces those tools with project overview and node inspection,
+each provider's sign-in state as Settings shows it,
 in-page navigation, artifact/report listing and visual opening, conversation
 listing, inspection, and Send, bounded Experiment inspection and Start,
 Auto-research authorization, and graceful Stop of an Experiment or
@@ -939,9 +940,9 @@ The page runs each delegated function call through the shared catalog's
 `call_id`, and refuses an identical repeat of a call whose outcome is unknown.
 In `tap` mode, a Work Send, Experiment Start, or Auto-research authorization
 first shows a card that pins the project, graph target, arguments, budget, and
-for a message its mode and provider profile. Confirm rereads page state and
-runs nothing if a pinned value changed; a decline or timeout returns "not
-confirmed".
+for a message its mode and provider profile. The session then speaks one fixed
+line pointing at the card. Confirm rereads page state and runs nothing if a
+pinned value changed; a decline or timeout returns "not confirmed".
 
 The page owns the session's lifetime. It ends the session on End, the idle
 limit, the hard cap, identity or team-session loss, a 401 or 403 on a read,

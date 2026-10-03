@@ -28,6 +28,7 @@ import type {
   GraphNode,
   ProjectCard,
   ProjectSnapshot,
+  ProviderLoginAccount,
   WatcherRecord,
 } from "./types";
 
@@ -677,6 +678,39 @@ const INSPECT_NODE_TOOL: WebMcpToolSpec = {
   annotations: { readOnlyHint: true, untrustedContentHint: true },
   confirm: NEVER_CONFIRM,
 };
+
+const PROVIDER_LOGINS_TOOL: WebMcpToolSpec = {
+  name: "rcp_get_provider_logins",
+  description:
+    "Read whether each agent provider, such as Codex or Claude, is signed in for this RCP space, as Settings shows it. This is RCP's record, not a live check of the credential.",
+  inputSchema: { type: "object", additionalProperties: false },
+  annotations: { readOnlyHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+/** Each provider's sign-in state as Settings shows it; credentials never appear. */
+export function providerLoginsForWebMcp(accounts: ProviderLoginAccount[]): Record<string, unknown> {
+  return {
+    providers: accounts.map((account) => ({
+      provider: account.provider,
+      label: account.label,
+      host: account.host || null,
+      machines: account.machines,
+      state: account.state,
+      detail: account.detail ? compactText(account.detail, 240) : null,
+    })),
+  };
+}
+
+export function providerLoginToolDefinitions(
+  loadLogins: () => Promise<ProviderLoginAccount[]>,
+): WebMcpToolDefinition[] {
+  return [
+    withExecute(PROVIDER_LOGINS_TOOL, async () =>
+      webMcpTextResult(providerLoginsForWebMcp(await loadLogins())),
+    ),
+  ];
+}
 
 export function projectReadToolDefinitions(
   project: ProjectSnapshot,
@@ -2304,6 +2338,7 @@ export function projectViewToolDefinitions(
 /** Every tool of the open-project surface, in catalog order. */
 export const PROJECT_TOOLS: readonly WebMcpToolSpec[] = [
   PROJECT_OVERVIEW_TOOL,
+  PROVIDER_LOGINS_TOOL,
   INSPECT_NODE_TOOL,
   OPEN_VIEW_TOOL,
   LIST_ARTIFACTS_TOOL,

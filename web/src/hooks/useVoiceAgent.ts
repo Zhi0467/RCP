@@ -35,6 +35,7 @@ import { conversationSendTarget, type WebMcpConversationSource } from "../webmcp
 
 const VOICE_WATCH_POLL_MS = 10_000;
 const VOICE_TRANSCRIPT_LINES = 40;
+const VOICE_CARD_PROMPT = "This needs your tap: press Confirm on the card on screen, or Decline.";
 
 /** The open project as the WebMCP surface sees it, read at call and Confirm time. */
 export type VoicePageState = {
@@ -222,6 +223,8 @@ export function useVoiceAgent({
       timer = setTimeout(() => entry.settle(false), seconds * 1000);
       cardRef.current = entry;
       setCard(pin);
+      // The member may be listening, not looking; a fixed line points at the card.
+      sessionRef.current?.speak(VOICE_CARD_PROMPT);
     });
   }, []);
 

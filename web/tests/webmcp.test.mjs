@@ -37,6 +37,7 @@ const {
   projectOverview,
   projectReadToolDefinitions,
   projectViewToolDefinitions,
+  providerLoginToolDefinitions,
   registerWebMcpTools,
   sendProjectConversationMessage,
   startProjectExperiment,
@@ -863,6 +864,27 @@ test("the project read surface registers exactly the two confirmed tools", () =>
   );
   assert.equal(tools[1].inputSchema.additionalProperties, false);
   assert.deepEqual(tools[1].inputSchema.required, ["node_id"]);
+});
+
+test("provider logins report each state and never a credential", async () => {
+  const [tool] = providerLoginToolDefinitions(async () => [
+    {
+      provider: "codex",
+      label: "Codex",
+      host: "",
+      machines: ["laptop"],
+      state: "signed_in",
+      detail: null,
+      token: { pasted_at: "t", pasted_by: "m", verified_at: null, estimated_expiry_at: null },
+      login_command: "codex login",
+    },
+  ]);
+  const result = JSON.parse((await tool.execute({})).content[0].text);
+  assert.deepEqual(
+    result.providers.map((item) => [item.provider, item.state]),
+    [["codex", "signed_in"]],
+  );
+  assert.equal("token" in result.providers[0], false);
 });
 
 const noEpisodeFetch = async () => {
@@ -1999,6 +2021,7 @@ function evalToolDefinitions(state) {
   const { tasks, episodes } = artifactFixtures();
   return [
     ...projectReadToolDefinitions(project),
+    ...providerLoginToolDefinitions(async () => []),
     ...projectArtifactToolDefinitions(project, tasks, episodes, () => true, {
       loadEpisode: async () => null,
       loadTask: async () => null,
