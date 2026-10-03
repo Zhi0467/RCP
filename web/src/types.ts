@@ -3195,6 +3195,41 @@ export interface ProviderResumeSummary {
   checked: number;
 }
 
+export type ServiceConnectionKind = "openai_compatible" | "gemini";
+export type ServiceConnectionPreset = "openai" | "groq" | "custom";
+
+/** One member's own transcription service connection; the key never leaves the backend. */
+export interface ServiceConnection {
+  id: string;
+  kind: ServiceConnectionKind;
+  preset: ServiceConnectionPreset | null;
+  label: string;
+  base_url: string | null;
+  model: string;
+  /** Full MIME strings with codecs that passed the connect check. */
+  formats: string[];
+  verified_at: string | null;
+}
+
+/** The acting member's dictation choice, `"system"` (macOS) or a connection id. */
+export interface ServiceConnections {
+  dictation: string;
+  connections: ServiceConnection[];
+}
+
+export interface ServiceConnectionCreateRequest {
+  kind: ServiceConnectionKind;
+  preset: ServiceConnectionPreset | null;
+  /** Accepted only for the custom preset; the backend owns preset URLs. */
+  base_url: string | null;
+  model: string;
+  key: string;
+}
+
+export interface TranscriptionResult {
+  text: string;
+}
+
 export interface TerminalWorkTurn {
   operation_id: string;
   title: string;

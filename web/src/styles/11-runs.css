@@ -181,21 +181,24 @@
 .provider-login-notice p {
   margin: 0;
 }
-.provider-login-settings > header {
+.provider-login-settings > header,
+.transcription-settings > header {
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: flex;
   gap: 12px;
   padding: 18px 20px;
 }
-.provider-login-settings > header > span {
+.provider-login-settings > header > span,
+.transcription-settings > header > span:first-child {
   align-items: center;
   color: var(--muted);
   display: inline-flex;
   justify-content: center;
   width: 28px;
 }
-.provider-login-settings h2 {
+.provider-login-settings h2,
+.transcription-settings h2 {
   font-family: var(--editorial);
   font-size: var(--type-2xl);
   font-weight: 550;
@@ -293,6 +296,98 @@
   height: 31px;
   min-width: 0;
   padding: 0 8px;
+}
+.transcription-owner {
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font: 650 var(--type-3xs) var(--mono);
+  letter-spacing: 0.06em;
+  margin-left: auto;
+  padding: 2px 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.transcription-picker {
+  display: grid;
+  gap: 6px;
+  padding: 16px 16px 0;
+}
+.transcription-picker > span {
+  color: var(--muted);
+  font: 750 var(--type-2xs) var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.transcription-picker select,
+.transcription-dialog-body select,
+.transcription-dialog-body input {
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+  font: var(--type-xs) var(--mono);
+  height: 34px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  width: 100%;
+}
+.transcription-picker select {
+  max-width: 420px;
+}
+.transcription-dialog {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+  max-height: 100%;
+  overflow-y: auto;
+  width: min(480px, 96vw);
+}
+.transcription-dialog > header {
+  border-bottom: 1px solid var(--line);
+  padding: 20px 22px 15px;
+}
+.transcription-dialog h2 {
+  font-family: var(--editorial);
+  font-size: var(--type-2xl);
+  font-weight: 550;
+  margin: 0;
+}
+.transcription-dialog-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 22px 20px;
+}
+.transcription-dialog-body label {
+  color: var(--ink-soft);
+  display: grid;
+  font-size: var(--type-3xs);
+  font-weight: 650;
+  gap: 6px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.transcription-dialog-body p {
+  color: var(--ink-soft);
+  font-size: var(--type-xs);
+  line-height: 1.55;
+  margin: 0;
+}
+.transcription-dialog-error {
+  background: var(--red-soft);
+  border-top: 1px solid color-mix(in srgb, var(--red) 35%, var(--line));
+  color: var(--red);
+  font-size: var(--type-2xs);
+  line-height: 1.45;
+  padding: 10px 22px;
+}
+.transcription-dialog > footer {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 13px 22px;
 }
 .campaign-run-note {
   border-top: 1px solid var(--line);
