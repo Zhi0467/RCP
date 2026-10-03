@@ -3221,6 +3221,64 @@ export interface ProviderResumeSummary {
   checked: number;
 }
 
+export type ServiceConnectionKind = "openai_compatible" | "gemini";
+export type ServiceConnectionPreset = "openai" | "groq" | "custom";
+export type ServiceConnectionPurpose = "transcription" | "voice";
+
+/** One member's own transcription service connection; the key never leaves the backend. */
+export interface ServiceConnection {
+  id: string;
+  kind: ServiceConnectionKind;
+  preset: ServiceConnectionPreset | null;
+  label: string;
+  base_url: string | null;
+  model: string;
+  /** Full MIME strings with codecs that passed the connect check. */
+  formats: string[];
+  verified_at: string | null;
+  /** At most one connection, an OpenAI preset one, has `voice`. */
+  purposes: ServiceConnectionPurpose[];
+}
+
+/** The acting member's dictation choice, `"system"` (macOS) or a connection id. */
+export interface ServiceConnections {
+  dictation: string;
+  connections: ServiceConnection[];
+}
+
+export interface ServiceConnectionCreateRequest {
+  kind: ServiceConnectionKind;
+  preset: ServiceConnectionPreset | null;
+  /** Accepted only for the custom preset; the backend owns preset URLs. */
+  base_url: string | null;
+  model: string;
+  key: string;
+  purposes: ServiceConnectionPurpose[];
+}
+
+export interface TranscriptionResult {
+  text: string;
+}
+
+/** The acting member's voice settings; a restore falls back to the defaults. */
+export interface VoiceSettings {
+  delegation_model: string;
+  confirm: "tap" | "none";
+}
+
+/** The page enforces these; the backend owns their values. */
+export interface VoiceLimits {
+  idle_seconds: number;
+  hard_cap_seconds: number;
+  confirm_timeout_seconds: number;
+  commentary_max_chars: number;
+}
+
+export interface VoiceSessionResponse {
+  sdp_answer: string;
+  limits: VoiceLimits;
+}
+
 export interface TerminalWorkTurn {
   operation_id: string;
   title: string;

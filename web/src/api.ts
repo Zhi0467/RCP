@@ -31,6 +31,11 @@ import type {
   ProviderSignInStatus,
   ProviderResumeSummary,
   ServerStatus,
+  ServiceConnection,
+  ServiceConnectionCreateRequest,
+  ServiceConnectionPurpose,
+  ServiceConnections,
+  TranscriptionResult,
   SpaceMachine,
   SpaceMachineCreateRequest,
   SpaceMachineUpdateRequest,
@@ -42,15 +47,19 @@ import type {
   TeamDevicePairing,
   TeamDevicePairingStatus,
   TeamSession,
+  VoiceSessionResponse,
+  VoiceSettings,
 } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
 type TransportFailureHandler = () => void;
+type AccessLossHandler = () => void;
 
 let mutationFailureHandler: MutationFailureHandler | null = null;
 let transportFailureHandler: TransportFailureHandler | null = null;
 let identityNameRequiredHandler: IdentityNameRequiredHandler | null = null;
+let accessLossHandler: AccessLossHandler | null = null;
 let pinnedInstanceId: string | null = null;
 
 export const TEAM_SHELL_PROTOCOL_HEADER = "RCP-Team-Shell-Protocol";
@@ -100,6 +109,7 @@ export async function api<T>(
     throw error;
   }
   if (!response.ok) {
+    if (!mutation && (response.status === 401 || response.status === 403)) accessLossHandler?.();
     const body = await readErrorBody(response);
     if (
       mutation &&
@@ -129,6 +139,7 @@ export async function api<T>(
 
 // A body can also be cut off by a dropped transport; a parse error cannot.
 async function readJson<T>(response: Response): Promise<T> {
+  if (response.status === 204) return undefined as T;
   try {
     return (await response.json()) as T;
   } catch (error) {
@@ -147,6 +158,11 @@ export function isMutationRequest(init?: RequestInit): boolean {
 
 export function registerMutationFailureHandler(handler: MutationFailureHandler | null): void {
   mutationFailureHandler = handler;
+}
+
+/** Called whenever a read is refused with 401 or 403: the page lost its identity or access. */
+export function registerAccessLossHandler(handler: AccessLossHandler | null): void {
+  accessLossHandler = handler;
 }
 
 /** Called, without waiting, whenever a request never reached the backend. */
@@ -686,6 +702,70 @@ export function verifyProviderLogin(
   return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
     method: "POST",
     body: JSON.stringify({ host }),
+  });
+}
+
+export function loadServiceConnections(): Promise<ServiceConnections> {
+  return api("/api/service-connections");
+}
+
+export function connectServiceConnection(
+  request: ServiceConnectionCreateRequest,
+): Promise<ServiceConnection> {
+  return api("/api/service-connections", { method: "POST", body: JSON.stringify(request) });
+}
+
+export function disconnectServiceConnection(connectionId: string): Promise<void> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function selectDictationService(dictation: string): Promise<unknown> {
+  return api("/api/service-connections/selection", {
+    method: "PUT",
+    body: JSON.stringify({ dictation }),
+  });
+}
+
+/** Add or remove purposes; RCP checks each newly added one with the stored key. */
+export function setServiceConnectionPurposes(
+  connectionId: string,
+  purposes: ServiceConnectionPurpose[],
+): Promise<ServiceConnection> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/purposes`, {
+    method: "PUT",
+    body: JSON.stringify({ purposes }),
+  });
+}
+
+export function loadVoiceSettings(): Promise<VoiceSettings> {
+  return api("/api/voice/settings");
+}
+
+/** Send only the fields that changed; the backend keeps the rest. */
+export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
+  return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
+}
+
+/** Exchange the page's WebRTC offer; the backend holds the key and keeps no session. */
+export function createVoiceSession(
+  body: { sdp_offer: string; tools: unknown[] },
+  signal?: AbortSignal,
+): Promise<VoiceSessionResponse> {
+  return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });
+}
+
+/** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */
+export function transcribeAudio(
+  connectionId: string,
+  audio: Blob,
+  mimeType: string,
+): Promise<TranscriptionResult> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/transcribe`, {
+    method: "POST",
+    headers: { "Content-Type": mimeType },
+    body: audio,
   });
 }
 

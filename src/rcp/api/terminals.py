@@ -27,7 +27,7 @@ from rcp.limits import (
 )
 from rcp.server_ops.layout import remote_project_deploy_key_relative_path
 from rcp.terminals.git_access import terminal_git_access
-from rcp.terminals.models import DETACHED
+from rcp.terminals.models import DETACHED, TerminalAlreadyOpen
 
 router = APIRouter()
 # 403 and 503 collide under any modulo of the status, so name them.
@@ -40,6 +40,9 @@ _member = Depends(require_project_membership)
 class OpenTerminalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     repository_id: str = Field(min_length=1)
+    # A caller about to type into the shell it gets (the voice agent) needs one no
+    # one else has used; it gets 409 rather than someone's half-typed line.
+    require_new: bool = False
 
 
 class TerminalInput(BaseModel):
@@ -146,6 +149,8 @@ async def open_session(
             # is one its alias still names. Open-or-return-existing: it must
             # not be withheld because a later probe refresh or inventory read
             # failed. Those gate a launch, not handing back what is running.
+            if body.require_new:
+                raise HTTPException(409, "A terminal is already open for this repository.")
             return terminal_session_payload(session, work)
     repository = manifest.repository_map[body.repository_id]
     machine = manifest.machine_map[repository.machine]
@@ -190,7 +195,10 @@ async def open_session(
                 if (card := services.store.space_machine_for(machine.host))
                 else []
             ),
+            require_new=body.require_new,
         )
+    except TerminalAlreadyOpen as exc:
+        raise HTTPException(409, str(exc)) from exc
     except PermissionError as exc:
         # PermissionError is an OSError; catching it second would report a
         # lost membership as a server fault instead of an unknown project.

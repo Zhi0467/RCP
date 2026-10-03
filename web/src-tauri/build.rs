@@ -48,7 +48,12 @@ const COMMANDS: &[&str] = &[
 fn main() {
     embed_source_commit();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        cc::Build::new()
+        let analyzer = build_speech_analyzer();
+        let mut dictation = cc::Build::new();
+        if analyzer {
+            dictation.define("RCP_SPEECH_ANALYZER", None);
+        }
+        dictation
             .file("src/dictation.m")
             .flag("-fobjc-arc")
             .flag("-fblocks")
@@ -77,6 +82,113 @@ fn main() {
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
     )
     .expect("failed to run tauri-build");
+}
+
+// Keep Swift out of older-SDK builds entirely: their Speech module has no analyzer API.
+fn build_speech_analyzer() -> bool {
+    for name in ["SDKROOT", "DEVELOPER_DIR", "RCP_REQUIRE_SPEECH_ANALYZER"] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    println!("cargo:rerun-if-changed=src/dictation.swift");
+    let sdk = std::env::var("SDKROOT").unwrap_or_else(|_| xcrun(&["--show-sdk-path"]));
+    let version = xcrun(&["--sdk", &sdk, "--show-sdk-version"]);
+    let major: u32 = version
+        .split('.')
+        .next()
+        .unwrap()
+        .parse()
+        .expect("SDK version");
+    if major < 26 {
+        assert!(
+            std::env::var("RCP_REQUIRE_SPEECH_ANALYZER").as_deref() != Ok("1"),
+            "SpeechAnalyzer requires macOS SDK 26 or later; found {version}"
+        );
+        println!("cargo:warning=macOS SDK {version}: skipping SpeechAnalyzer; dictation uses the Apple server recognizer");
+        return false;
+    }
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let object = out.join("dictation_swift.o");
+    let swiftc = xcrun(&["--find", "swiftc"]);
+    let libraries = Path::new(&swiftc)
+        .parent()
+        .unwrap()
+        .join("../lib/swift/macosx");
+    let status = Command::new(&swiftc)
+        .args([
+            "-parse-as-library",
+            "-emit-object",
+            "-O",
+            "-swift-version",
+            "5",
+            "-target",
+            "arm64-apple-macos13.0",
+            "-sdk",
+            &sdk,
+            "-module-name",
+            "RCPDictation",
+            "-module-cache-path",
+        ])
+        .arg(out.join("swift-module-cache"))
+        .arg("src/dictation.swift")
+        .arg("-o")
+        .arg(&object)
+        .status()
+        .expect("run swiftc");
+    assert!(status.success(), "Swift dictation compilation failed");
+    cc::Build::new().object(&object).compile("rcp_analyzer");
+    println!("cargo:rustc-link-search=native={}", libraries.display());
+    println!("cargo:rustc-link-search=native={sdk}/usr/lib/swift");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
+    // swiftc normally supplies the compatibility archives at link time. Rust
+    // owns our final link, so supply the toolchain's archives here instead.
+    for entry in std::fs::read_dir(&libraries).expect("Swift libraries") {
+        let path = entry.expect("Swift library").path();
+        let name = path.file_name().unwrap().to_string_lossy();
+        if name.starts_with("libswiftCompatibility") && name.ends_with(".a") {
+            println!("cargo:rustc-link-lib=static={}", &name[3..name.len() - 2]);
+        }
+    }
+    // Override Swift's autolink requests with weak loads. In particular, the
+    // Speech overlay does not exist on macOS 13, even though Speech.framework does.
+    let output = Command::new("xcrun")
+        .args(["otool", "-l"])
+        .arg(&object)
+        .output()
+        .expect("inspect Swift autolinks");
+    assert!(output.status.success(), "could not inspect Swift autolinks");
+    let loads = String::from_utf8(output.stdout).expect("otool output");
+    let mut overlays = std::collections::BTreeSet::new();
+    for line in loads.lines() {
+        if let Some((_, library)) = line.split_once("-lswift") {
+            if !library.starts_with("Compatibility") {
+                overlays.insert(format!("swift{}", library.trim()));
+            }
+        }
+    }
+    assert!(
+        !overlays.is_empty(),
+        "Swift object has no runtime autolinks"
+    );
+    for library in overlays {
+        println!("cargo:rustc-link-arg=-Wl,-weak-l{library}");
+    }
+    true
+}
+
+fn xcrun(args: &[&str]) -> String {
+    let output = Command::new("xcrun")
+        .args(args)
+        .output()
+        .expect("run xcrun");
+    assert!(
+        output.status.success(),
+        "xcrun failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("xcrun output")
+        .trim()
+        .to_string()
 }
 
 fn embed_source_commit() {

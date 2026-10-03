@@ -15,7 +15,9 @@ The project-scoped terminal routes are:
 - `POST /api/projects/{project_id}/terminals/probe`: invalidate this project's
   machine probes and schedule fresh results.
 - `POST /api/projects/{project_id}/terminals` with `repository_id`: open or return
-  the single existing session for that repository and project.
+  the single existing session for that repository and project. With
+  `require_new: true` it returns 409 instead of an existing session, decided
+  under the manager's lock; the voice agent uses it before typing.
 - `DELETE /api/projects/{project_id}/terminals/{session_id}`: end that session.
 - `WS /api/projects/{project_id}/terminals/{session_id}/ws`: binary PTY output,
   JSON `input` (`data`) and `resize` (`cols`, `rows`) messages, and a JSON `ended`
@@ -819,18 +821,40 @@ When the browser host supplies `document.modelContext.registerTool`, RCP
 registers a page-scoped WebMCP surface over its existing application owners. A
 ready project index exposes project listing and exact project navigation. A
 loaded project replaces those tools with project overview and node inspection,
-artifact/report listing and visual opening, conversation listing, inspection,
-and Send, and bounded Experiment inspection, Start, and graceful Stop. Login,
-project setup, loading, and invalid project states expose no tools; the project
-surface waits for the same verified backend identity, actor, and team-session
-state as the index, so a reconnect screen retires it.
+each provider's sign-in state as Settings shows it,
+in-page navigation, artifact/report listing and visual opening, conversation
+listing, inspection, and Send, bounded Experiment inspection and Start,
+Auto-research authorization, and graceful Stop of an Experiment or
+Auto-research episode. In-page navigation opens an exact node, conversation,
+run, or artifact, or a project tab by its visible name. The overview lists the
+configured agent for each role and the ids of stoppable Auto-research
+episodes, which have no Experiment node to inspect. Login, project setup,
+loading, and invalid project states expose no tools; the project surface waits for the same verified backend
+identity, actor, and team-session state as the index, so a reconnect screen
+retires it.
 
-The inventory follows current backend and browser state. Experiment Start and
-Stop are registered only while at least one exact action can succeed or while
-that action's accepted call is returning. Changing state updates stable tool
-proxies without aborting an in-flight call; leaving the surface unregisters its
-tools. Project navigation returns before the index registration is retired, so
-the host does not mistake successful navigation for a stale tool failure.
+The inventory follows current backend and browser state. Experiment Start,
+Auto-research authorization, and Stop are registered only while at least one
+exact action can succeed or while that action's accepted call is returning.
+Changing state updates stable tool proxies without aborting an in-flight call;
+leaving the surface unregisters its tools. Project navigation returns before
+the index registration is retired, so the host does not mistake successful
+navigation for a stale tool failure.
+
+The registered tools come from one host-independent catalog
+(`web/src/toolCatalog.ts`) that works without a WebMCP host. `catalog()` is a
+fixed list of every tool's name, description, input schema, and `confirm(args)`
+predicate, whatever the page state. `confirm` is true only for a Work Send,
+Experiment Start, Auto-research authorization, and a terminal command; it stays
+local, so WebMCP host agents get no RCP confirmation. `catalogAsFunctionTools()`
+is the one serializer to the Responses function format and leaves `confirm` and
+other local markers out. `resolve(name)` returns the executable definition App
+last published from page state, or a refusal that says why: the wrong surface,
+nothing to stop, or the Start or authorization refusal.
+
+The two terminal tools are voice-only. App publishes them for voice, but
+`webMcpHostDefinitions` keeps them out of WebMCP registration. A shell command
+needs the member's tap, and a WebMCP host has no RCP card to show.
 
 Every call accepts exact ids returned by an RCP read tool and revalidates them
 against the current page snapshot before acting. Read results are bounded JSON,
@@ -875,13 +899,96 @@ compute selection remain visible-composer controls. Experiment Start and Stop li
 backend projections and action owners, including staged-Sync, readiness, budget,
 single-start, exact-episode, and graceful-Stop fences.
 
+Auto-research authorization takes the visible form's inputs: an
+`invocation_ceiling` of any integer of at least 1, an optional
+`starting_instruction`, and `code_worktree`. It calls the same start function
+and refusal check as the header button, so the tool and the button refuse in
+the same states. Stop takes an exact `episode_id`. With `experiment_id` it uses
+the Experiment Stop route; without it the episode must be a stoppable
+Auto-research episode, stopped through `POST .../episodes/{id}/stop`.
+
+`rcp_open_view({kind, id})` shows one exact node, conversation, run, or
+artifact viewer, or the Inbox, through the page's own owners. A run id is an
+episode id, opened through the same exact route as an episode notification: its
+Auto-research route or its Experiment's Runs entry. The view stays in the
+current project and graph target. It checks that the page still shows them
+before opening and never switches project or branch; only `rcp_open_project`
+changes project.
+
 WebMCP is not a second API or authority plane. Calls run in the current
 authenticated browser session and receive no capability that the corresponding
 RCP surface lacks. There is no WebMCP tool for Proposal judgment, Decision choice,
 graph editing or Sync, artifact retention or version undo, settings,
-membership, project creation/deletion, or Auto-research authorization. Provider
-answers, artifacts, and tool output still cannot become canonical graph truth;
-only the ordinary typed Patch and human-authority paths can do so.
+membership, or project creation/deletion. Provider answers, artifacts, and tool
+output still cannot become canonical graph truth; only the ordinary typed Patch
+and human-authority paths can do so.
+
+## Voice agent
+
+The voice button opens one GPT-Live session for the member's page; a second
+click ends it. It works in the desktop app, the team browser app, and the team
+phone web app. Audio goes between the page and OpenAI over WebRTC; RCP never
+receives it and keeps no transcript.
+
+`POST /api/voice/sessions` takes `{sdp_offer, tools}`, where `tools` is
+`catalogAsFunctionTools()` with a size cap. The backend reads the member's
+OpenAI preset connection that holds the `voice` purpose, and creates a
+Live session with Responses delegation, `parallel_tool_calls: false`, the
+member's delegation model, and RCP's fixed instructions. It returns
+`{sdp_answer, limits}` and keeps no session state. With no such connection it
+returns `voice_not_connected` (409); an OpenAI failure returns
+`voice_upstream_failed` (502) with a bounded message. `limits` carries
+`idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`, and
+`commentary_max_chars` from `limits.py`, and the page enforces them.
+
+`GET` and `PUT /api/voice/settings` hold `{delegation_model, confirm}` in the
+member's private settings file. `confirm` is `tap` (the default) or `none`. A
+`PUT` changes only the fields it sends. The panel's toggle sets `confirm`. In
+the Dictation and voice card, the **Standby voice agent** section picks the
+connection it **Runs on** (Off, or an OpenAI connection) and sets the
+delegation model. Choosing a connection gives it the `voice` purpose, which
+RCP checks against OpenAI before saving.
+
+The page runs each delegated function call through the shared catalog's
+`resolve`, as the member. It runs one call at a time, ignores a repeated
+`call_id`, and refuses an identical repeat of a call whose outcome is unknown.
+A call the page cannot run now, including a Send its provider is not ready
+for, is refused before any card. The panel transcript shows one line per call
+with its outcome.
+In `tap` mode, a Work Send, Experiment Start, or Auto-research authorization
+first shows a card that pins the project, graph target, arguments, budget, and
+for a message its mode and provider profile. The session then speaks one fixed
+line pointing at the card. Confirm rereads page state and runs nothing if a
+pinned value changed; a decline or timeout returns "not confirmed".
+
+Voice can also use a project terminal. `rcp_list_terminals` reads the open
+project's terminal repositories, the machine each runs on, whether it can open
+a terminal now, and the open sessions. `rcp_run_terminal_command` takes a
+listed `repository_id` and one `command` line of 1 to 1000 characters with no
+control characters; the tool adds the Enter. Every run shows a card, even when
+the panel is set to **Run without confirming**. The card pins the repository,
+the machine, and the exact command, and Confirm rereads the listing. Voice
+never reuses a shell. Each run opens a fresh one with `require_new`, so a
+confirmed line never joins a half-typed line or feeds a running program; when
+the repository already has an open terminal, the run is refused before the
+card, and the server's 409 covers one opened after that check. The run waits
+for the new shell's prompt to settle, types the line once, and reads output
+until the same prompt returns on its own line or 10 seconds pass (with no
+prompt to recognize, until output is quiet for 1.5 seconds). A command that
+finished closes its shell. One still running stays open in the Terminals tab,
+and voice does not type into it again. The result strips terminal escape codes
+and returns the last 4000 characters as untrusted content, with `finished`,
+`still_running`, and truncation flags. A confirmed command has the member's
+full terminal power.
+
+The page owns the session's lifetime. It ends the session on End, the idle
+limit, the hard cap, identity or team-session loss, a 401 or 403 on a read,
+leaving the space, and the page going hidden, frozen, or away. It sends
+`session.close`, waits a bounded time for `session.closed`, then closes the
+peer. After End, it runs no further calls. While open, the session speaks
+first only when a Work turn, Experiment, or Auto-research episode it started
+finishes or needs the member, polling that record through its own project's
+routes; the spoken text is a fixed template with no authored content.
 
 ## Application surfaces
 
@@ -1354,6 +1461,50 @@ A local Codex thread created through RCP's app-server runtime is stored by Codex
 and may therefore appear in the Codex Desktop task list. RCP uses that as an
 inspection surface only. Sidebar ordering, loading, takeover, and concurrency
 remain Codex Desktop behavior rather than RCP product state.
+
+### Dictation
+
+The composer dictates through **macOS** (desktop app only) or one of the
+member's **service connections**, chosen in the member's own Dictation and
+voice card in Space Settings. Network services work on the desktop app, the team
+browser app, and the team phone web app; a personal paired phone stays
+notify-only. A client whose member chose macOS outside the desktop app shows the
+microphone disabled with a pointer to Settings. One microphone owner refuses a
+second holder.
+
+A connection is an OpenAI-compatible server (OpenAI, Groq, or a custom base URL)
+or Gemini. Each member's connections, keys, and selection live in
+`service-connections/<user_id>/` under the data directory, written privately
+and atomically under one per-member lock that rechecks membership. Keys never
+appear in a response, a validation error, or a log. For dictation, Connect
+transcribes two bundled clips recorded from real `MediaRecorder` output
+(WebM/Opus and fragmented MP4/AAC) and saves the connection only if one passes,
+recording the accepted formats. The connect dialog asks an OpenAI key whether
+it is for dictation, the standby voice agent, or both; a voice-only key skips
+the clips and gets the voice check instead. A custom base URL must be `https`, or `http` to loopback.
+
+`POST /api/service-connections/{id}/transcribe` takes one raw audio body of an
+accepted format, bounded by `Content-Length`, the bytes actually received, a
+read deadline, and a per-member concurrency limit, and holds it only in memory.
+Outbound calls skip proxies and redirects and read a size-capped response under
+one deadline; upstream errors are bounded and never echo the key, and a
+transcript that contains the key is discarded with an error rather than
+edited. The team
+middleware admits the two audio types on this route only. On the personal
+loopback server another site's `audio/*` request needs a CORS preflight, which
+the server refuses, and a no-cors request loses its type and gets 415.
+
+The client records with the first accepted format `MediaRecorder` supports,
+pins the connection id when recording starts, and replaces the dictation span
+with the returned text in one step; typing drops a late result. Native
+dictation reports `preparing` while macOS downloads the on-device model and an
+`engine` (`speech_analyzer` or `apple_server`) on `recording`; every result
+carries the whole session text. `desktop_stop_dictation` takes `finish`: Stop
+delivers the final result before `stopped`, invalidation cancels. SpeechAnalyzer
+needs only microphone access; speech recognition permission is requested only
+before the older recognizer. A desktop build without the macOS 26 SDK skips
+SpeechAnalyzer with a warning; release builds require it, and CI fails if any
+macOS 26 Speech symbol or Swift library is a strong import.
 
 ### Update notice
 

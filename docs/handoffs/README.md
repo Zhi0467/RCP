@@ -69,3 +69,19 @@ stands in for it. Run one on disposable data, then delete its line here.
   while it runs.
 - Update notices: a `publish-desktop.yml` rerun after a failed upload; in the
   prebuilt app, the Download button, quit and reopen, and a team connection.
+- Model-backed dictation: dictate through a connected OpenAI or Groq key from
+  the desktop app in a personal space, and from the team browser app and phone
+  web app, each member with their own key; dictate through a Gemini connection
+  from at least one client; on macOS 26 or later, macOS dictation runs
+  on-device through SpeechAnalyzer, including the first-use model download;
+  `RCP Candidate.app` connects a service (proving the bundled check clips ship)
+  and dictates on macOS 13, 14, or 15 through the old recognizer.
+- Standby voice agent: with a real OpenAI key in a rebuilt desktop app (the
+  microphone usage string changed), open a session, ask about a project and
+  hear a correct answer, and have it open a node; by voice, send a Work
+  message, start an Experiment, and authorize Auto-research, once with **Tap to
+  confirm** and once with **Run without confirming**, and hear each one finish,
+  including after moving to another project; gracefully stop a running
+  Experiment and Auto-research episode; run one terminal command; repeat from a
+  team member's phone web app; a forgotten session ends at the idle limit, and
+  closing or suspending the page ends the paid session.

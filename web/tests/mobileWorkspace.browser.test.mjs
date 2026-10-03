@@ -37,6 +37,9 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.route("**/api/projects/fixture/graph-edit-options", (route) =>
         route.fulfill({ json: { node_prefixes: {}, relations: [] } }),
       );
+      await page.route("**/api/service-connections", (route) =>
+        route.fulfill({ json: { dictation: "system", connections: [] } }),
+      );
 
       await page.goto(`${base}/mobileChats.html`);
       const composer = page.getByRole("textbox", { name: "Message", exact: true });

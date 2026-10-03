@@ -32,6 +32,8 @@ jobs:
     name: build unsigned desktop app
     runs-on: macos-15
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      RCP_REQUIRE_SPEECH_ANALYZER: "1"
       TARGET_COMMIT: ${{ inputs.commit }}
       BUILD_NUMBER: ${{ inputs.build }}
       DESKTOP_VERSION: ${{ inputs.version }}
@@ -68,6 +70,29 @@ jobs:
           RCP_UPDATE_PUBKEY=$(cat web/src-tauri/updater.pub)
           export RCP_UPDATE_PUBKEY
           npm --prefix web run desktop:build-signed
+      - name: Verify older-macOS weak imports
+        env:
+          RCP_DESKTOP_BINARY: web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-desktop
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import re
+          import subprocess
+
+          binary = os.environ["RCP_DESKTOP_BINARY"]
+          symbols = subprocess.check_output(["xcrun", "nm", "-m", "-u", binary], text=True)
+          speech = [line for line in symbols.splitlines() if "(from Speech)" in line]
+          legacy = ("_OBJC_CLASS_$_SFSpeechRecognizer ", "_OBJC_CLASS_$_SFSpeechAudioBufferRecognitionRequest ")
+          modern = [line for line in speech if not any(name in line for name in legacy)]
+          assert modern, "No SpeechAnalyzer imports found"
+          strong = [line for line in modern if "weak external" not in line]
+          loads = subprocess.check_output(["xcrun", "otool", "-l", binary], text=True)
+          overlays = [block for block in loads.split("Load command ") if re.search(r"name .*libswift[^/]*\.dylib", block)]
+          assert overlays, "No Swift dylib loads found"
+          strong += [block for block in overlays if "cmd LC_LOAD_WEAK_DYLIB" not in block]
+          assert not strong, "Strong imports break older macOS:\n" + "\n".join(strong)
+          print(f"PASS: {len(modern)} modern Speech imports are weak; {len(overlays)} Swift dylib loads are weak")
+          PYTHON
       - name: Smoke-test the bundled backend
         run: uv run python packaging/smoke-backend.py web/src-tauri/target/release/bundle/macos/RCP.app/Contents/MacOS/rcp-backend
       - name: Verify the updater signature against the signing key
