@@ -170,11 +170,14 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               }}
             >
               <option value="off">Off</option>
+              {/* The agent uses the account, not the connection's transcription model. */}
               {settings.connections
                 .filter((connection) => connection.preset === "openai")
-                .map((connection) => (
+                .map((connection, _index, accounts) => (
                   <option key={connection.id} value={connection.id}>
-                    {connection.label} · {connection.model}
+                    {accounts.length > 1
+                      ? `${connection.label} account, verified ${formatServerTimestamp(connection.verified_at)}`
+                      : `${connection.label} account`}
                   </option>
                 ))}
             </select>
@@ -222,7 +225,10 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                   <strong>{connection.label}</strong>
                   <span>{connection.model}</span>
                   {settings.dictation === connection.id ? (
-                    <span className="provider-path-state ready">In use</span>
+                    <span className="provider-path-state ready">Dictation</span>
+                  ) : null}
+                  {connection.purposes.includes("voice") ? (
+                    <span className="provider-path-state ready">Standby voice agent</span>
                   ) : null}
                 </header>
                 {connection.preset === "custom" && connection.base_url ? (
