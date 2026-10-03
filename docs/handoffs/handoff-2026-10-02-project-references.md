@@ -158,7 +158,9 @@ kept. A link to another project stays text. A drag carries the link as both
   handler can intercept drops in WKWebView, so this needs a live check. If
   internal drags cannot reach the page there, the desktop app does not offer
   dragging, and Copy and the picker cover it.
-- **Pick:** `+` becomes "Upload file" and "From project…". The picker reads
+- **Pick:** `+` becomes "Upload file" and "From RCP…". The picker browses like
+  Finder: folders for Reports, Artifacts, and Nodes, plus the Paper, and a search
+  across all of them. It reads
   the committed target snapshot for nodes, `/paper` for the paper, and the
   saved artifact inventory (`/artifacts`, the Artifacts tab) for artifacts and
   reports. Temporary turn outputs are not listed; they can still be referenced
@@ -195,6 +197,7 @@ Drafts keep chips per project, target, and chat, beside attachments.
    Tests: the frozen bytes survive a source change or deletion, recovery
    re-stages the same batch, refused routes return 422, a node keeps its source
    branch, and the prompt renders from the staged pointers.
+
 2. Web:
    - link kinds and resolution, chips, and drafts;
    - paste and drop recognition;
@@ -202,6 +205,7 @@ Drafts keep chips per project, target, and chat, beside attachments.
    - Copy reference buttons and draggable rows.
 
    Node tests and `npm --prefix web run build`.
+
 3. Journeys on disposable data with a seeded episode report:
    - Discuss and Work, with local and remote stages, and main and branch
      sources;

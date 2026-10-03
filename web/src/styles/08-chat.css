@@ -1540,3 +1540,15 @@
   font: 700 var(--type-4xs) var(--mono);
   text-transform: uppercase;
 }
+.chat-reference-path {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font: 700 var(--type-4xs) var(--mono);
+  padding: 6px 10px;
+  text-transform: uppercase;
+}
+.chat-reference-empty {
+  color: var(--muted);
+  font-size: var(--type-2xs);
+  padding: 9px 10px;
+}

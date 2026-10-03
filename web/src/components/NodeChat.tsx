@@ -2085,7 +2085,7 @@ export function NodeChat({
                       }}
                     >
                       <FolderOpen size={14} />
-                      From project…
+                      From RCP…
                     </button>
                   </div>
                 )}
