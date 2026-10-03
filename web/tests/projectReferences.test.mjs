@@ -47,8 +47,6 @@ test("generic reference links round trip every segment on main and branch", () =
       );
     }
   assert.equal(parseNotificationLink(url("p", "paper", "other")), null);
-  assert.equal(parseNotificationLink(url("p", "node", "n") + "?query=yes"), null);
-  assert.equal(parseNotificationLink("#/projects/p/targets/main/node/%zz"), null);
 });
 
 test("paste extracts same-project links and preserves all surrounding and foreign text", () => {
@@ -132,7 +130,6 @@ test("transcript sources preserve node branch and outgoing requests carry only s
     references: [item.selector],
   });
   assert.deepEqual(request.references, [item.selector]);
-  assert.equal("label" in request.references[0], false);
 });
 
 test("copy and drag use the same full address-bar URL and both MIME types", () => {

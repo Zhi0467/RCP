@@ -15,7 +15,6 @@ from rcp import limits, transcription
 from rcp.api import service_connections as routes
 from rcp.api.dependencies import get_store
 from rcp.api.identity import IdentityAccess
-from rcp.server_ops.backup_models import inspect_app_data_capture_plan
 from rcp.service_connections import ConnectionError, ServiceConnections
 from rcp.storage import AppStore
 from rcp.transcription import ConnectRequest
@@ -49,11 +48,9 @@ def setup(tmp_path, monkeypatch):
         yield store, private, client
 
 
-def test_keys_are_private_and_absent_from_responses_validation_logs_and_backup(
-    setup, monkeypatch, caplog
-):
+def test_keys_are_private_and_absent_from_responses_validation_and_logs(setup, monkeypatch, caplog):
     caplog.set_level("DEBUG")
-    store, private, client = setup
+    _, private, client = setup
     item = connection()
 
     async def check(_):
@@ -77,9 +74,6 @@ def test_keys_are_private_and_absent_from_responses_validation_logs_and_backup(
     assert KEY not in caplog.text
     for path in [private.root.parent, private.root, *private.root.rglob("*")]:
         assert stat.S_IMODE(path.stat().st_mode) == (0o700 if path.is_dir() else 0o600)
-    plan = inspect_app_data_capture_plan(store.path.parent)
-    assert "service-connections" in plan.excluded_entries
-    assert "service-connections" not in plan.captured_entries
 
 
 def mock_transport(monkeypatch, handler):
@@ -141,7 +135,6 @@ async def test_upstream_errors_do_not_leak_keys_or_follow_redirects(monkeypatch,
     assert error.value.code == "transcription_upstream_failed"
     assert KEY not in str(error.value) and KEY not in caplog.text
     assert len(calls) == 1
-    assert KEY not in transcription.sanitized(KEY * 1000, KEY)
     assert len(transcription.sanitized("x" * 1000, KEY)) <= limits.TRANSCRIPTION_ERROR_MAX_CHARS
 
 

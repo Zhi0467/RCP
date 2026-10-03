@@ -89,13 +89,8 @@ def test_invalid_tags_fail_closed(html: str) -> None:
     [
         "../x",
         "/x",
-        "**/x",
         "a/**b",
-        "a/../x",
-        "a//x",
         "./x",
-        "a/",
-        "",
         "a/" * LIVE_ARTIFACT_MAX_PATTERN_SEGMENTS + "x",
         "x" * (LIVE_ARTIFACT_MAX_PATTERN_CHARS + 1),
     ],

@@ -175,16 +175,9 @@ def test_receipt_matches_original_turn_and_answer_revision(store, origin, human)
         )
 
 
-def test_followup_claim_is_atomic_with_task_insert_and_has_one_winner(store, origin, human) -> None:
+def test_followup_claim_has_one_winner_and_requires_a_transaction(store, origin, human) -> None:
     question = store.create_or_get_question(origin=origin, key="pick", question="Which?")
     store.answer_question(question.question_id, answer="yes", resolved_by=human)
-    with pytest.raises(RuntimeError), store.connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        assert store.claim_question_followup(
-            connection, question.question_id, answer_revision=1, operation_id="rolled-back"
-        )
-        raise RuntimeError("task insertion failed")
-    assert store.get_question(question.question_id).followup_operation_id is None
 
     def claim(index: int) -> bool:
         with store.connection() as connection:

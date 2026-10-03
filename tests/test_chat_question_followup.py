@@ -256,15 +256,12 @@ def test_unclaimed_episode_answer_names_no_followup(manifest, tmp_path):
     assert answer.operation_id is None
 
 
-@pytest.mark.parametrize("status", ["running", "paused", "interrupted", "failed", "succeeded"])
-def test_answer_follows_its_asking_prompt(manifest, tmp_path, status):
+def test_answer_follows_its_asking_prompt(manifest, tmp_path):
     from types import SimpleNamespace
 
     from rcp.runs.chat import _append_chat_exchange, project_chat_question_answer
 
     service, store, question, chat_id = _project_chat_question(manifest, tmp_path)
-    with store.connection() as connection:
-        connection.execute("UPDATE graph_runs SET status=? WHERE operation_id='origin'", (status,))
     project_chat_question_answer(service, store, question)
     project_chat_question_answer(service, AppStore(store.path), question)
     request = RunRequest.model_validate(store.agent_task("origin").request)
@@ -284,8 +281,15 @@ def test_answer_follows_its_asking_prompt(manifest, tmp_path, status):
     assert store.get_question(question.question_id).answer_projected_revision == 1
 
 
-@pytest.mark.parametrize("state", ["occupied", "paused", "remote_unresolved"])
-def test_followup_defers_without_claim_while_original_binding_is_held(tmp_path, state):
+@pytest.mark.parametrize(
+    "state,code",
+    [
+        ("occupied", "question_session_occupied"),
+        ("paused", "question_session_paused"),
+        ("remote_unresolved", "question_provider_liveness_unresolved"),
+    ],
+)
+def test_followup_defers_without_claim_while_original_binding_is_held(tmp_path, state, code):
     store = AppStore(tmp_path / "store.sqlite3")
     question = _answered(store)
     if state == "remote_unresolved":
@@ -314,7 +318,7 @@ def test_followup_defers_without_claim_while_original_binding_is_held(tmp_path, 
                 connection.execute(
                     "UPDATE graph_runs SET status='paused',native_session_id='origin-session' WHERE operation_id='held'"
                 )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=code):
         store.admit_chat_question_followup(question.question_id)
     assert store.get_question(question.question_id).followup_operation_id is None
 

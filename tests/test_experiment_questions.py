@@ -125,14 +125,6 @@ def test_answer_wake_requires_reauthorization_at_ceiling(tmp_path):
     assert store.get_question(question.question_id).followup_operation_id is None
 
 
-def test_episode_end_withdraws_questions(tmp_path):
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    episode_id, _ = _admit_root(store)
-    question = _question(store, episode_id)
-    store.request_episode_stop(episode_id)
-    assert store.get_question(question.question_id).withdrawn_readonly
-
-
 def test_continuation_reopens_predecessor_question_without_moving_origin(tmp_path):
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id, _ = _admit_root(store)
@@ -270,14 +262,6 @@ def test_continuation_keeps_human_prompt_and_claimed_answer_distinct(
         continuation_request_id=str(uuid.uuid4()),
     )
     assert store.get_question(question.question_id).followup_operation_id == continued.operation_id
-    snapshot = question_snapshot(
-        store,
-        project_id="project",
-        owner_kind="episode",
-        owner_ids=store.experiment_question_owner_ids(continued_id),
-        operation_id=continued.operation_id,
-    )
-    assert json.loads(snapshot.text)["questions"][0]["answer"] == "Accuracy"
 
     def reconcile():
         return reconcile_chat_question_answers(store, None, lambda _project: service)

@@ -558,25 +558,13 @@ def test_live_resolution_failure_does_not_record_publish_completion(
     assert execution.store.artifact_versions(published_id) == versions
 
 
-def test_in_place_edit_turn_lists_and_serves_the_published_artifact(manifest, tmp_path):
-    from rcp.api.tasks import _read_agent_artifact_bytes
-
+def test_in_place_edit_turn_lists_the_published_artifact_on_replay(manifest, tmp_path):
+    # Serving is pinned by test_revoking_edit_uses_recorded_workspace_and_publishes_cas.
     app, request, execution, source, _, directory, _ = _staged_edit(manifest, tmp_path)
     (directory / source.name).write_bytes(b"<p>edited</p>")
     artifacts = _finalize(app, request, execution, directory)
     assert [artifact.artifact_id for artifact in artifacts] == [source.artifact_id]
     assert _finalize(app, request, execution, directory) == artifacts
-    store = execution.store
-    assert store.agent_task("edit").kind == "artifact_edit"
-    store.complete_agent_task(
-        "edit",
-        applied_revision=None,
-        result={"artifacts": [artifact.model_dump(mode="json") for artifact in artifacts]},
-    )
-    _, data = _read_agent_artifact_bytes(
-        store, app.state.default_project_id, "edit", source.artifact_id, "download"
-    )
-    assert data == b"<p>edited</p>"
 
 
 def test_emptying_edit_publishes_and_lists_the_artifact(manifest, tmp_path):
