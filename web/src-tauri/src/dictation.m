@@ -31,6 +31,7 @@ static void analyzerEvent(const char *, const char *, const char *, int, const c
 - (BOOL)stopSessionID:(NSString *)sessionID finish:(BOOL)finish;
 - (void)finishActive;
 - (void)beginRecognitionForSession:(NSString *)sessionID;
+- (void)authorizeRecognitionForSession:(NSString *)sessionID;
 - (BOOL)sessionIsActive:(NSString *)sessionID;
 - (void)stopActive;
 
@@ -54,37 +55,44 @@ static void analyzerEvent(const char *, const char *, const char *, int, const c
       self.callback = callback;
       self.finishing = NO;
 
-      [SFSpeechRecognizer requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus status) {
+      // SpeechAnalyzer needs only the microphone. The speech recognition
+      // permission covers SFSpeechRecognizer alone, so it is requested only
+      // when dictation falls back to that recognizer.
+      [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+                              completionHandler:^(BOOL granted) {
         dispatch_async(dispatch_get_main_queue(), ^{
           if (![self sessionIsActive:sessionID]) {
               return;
           }
-          if (status != SFSpeechRecognizerAuthorizationStatusAuthorized) {
-              [self failSession:sessionID message:@"Speech recognition permission was not granted."];
+          if (!granted) {
+              [self failSession:sessionID message:@"Microphone permission was not granted."];
               return;
           }
-          [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
-                                  completionHandler:^(BOOL granted) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-              if (![self sessionIsActive:sessionID]) {
-                  return;
-              }
-              if (!granted) {
-                  [self failSession:sessionID message:@"Microphone permission was not granted."];
-                  return;
-              }
 #ifdef RCP_SPEECH_ANALYZER
-              self.usingAnalyzer = rcp_analyzer_start(sessionID.UTF8String, analyzerEvent) != 0;
-              if (self.usingAnalyzer) {
-                  return;
-              }
+          self.usingAnalyzer = rcp_analyzer_start(sessionID.UTF8String, analyzerEvent) != 0;
+          if (self.usingAnalyzer) {
+              return;
+          }
 #endif
-              [self beginRecognitionForSession:sessionID];
-            });
-          }];
+          [self authorizeRecognitionForSession:sessionID];
         });
       }];
     });
+}
+
+- (void)authorizeRecognitionForSession:(NSString *)sessionID {
+    [SFSpeechRecognizer requestAuthorization:^(SFSpeechRecognizerAuthorizationStatus status) {
+      dispatch_async(dispatch_get_main_queue(), ^{
+        if (![self sessionIsActive:sessionID]) {
+            return;
+        }
+        if (status != SFSpeechRecognizerAuthorizationStatusAuthorized) {
+            [self failSession:sessionID message:@"Speech recognition permission was not granted."];
+            return;
+        }
+        [self beginRecognitionForSession:sessionID];
+      });
+    }];
 }
 
 - (BOOL)stopSessionID:(NSString *)sessionID finish:(BOOL)finish {
@@ -289,7 +297,7 @@ static void analyzerEvent(const char *session, const char *kind, const char *tex
     }
     if (strcmp(kind, "fallback") == 0) {
         controller.usingAnalyzer = NO;
-        [controller beginRecognitionForSession:sessionID];
+        [controller authorizeRecognitionForSession:sessionID];
         return;
     }
     if (controller.callback != NULL) {
