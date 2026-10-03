@@ -28,7 +28,7 @@ from rcp.agents import (
     parse_agent_patch_json,
 )
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
-from rcp.attachments import ChatAttachmentDescriptor
+from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import selected_compute_connections
 from rcp.config import (
     AgentExecutionProfile,
@@ -94,6 +94,7 @@ from rcp.limits import (
     ACTIVE_COMPUTE_ID_MAX_COUNT,
     ARTIFACT_CONTEXT_MAX_SELECTIONS,
     BACKUP_INVENTORY_MAX_ENTRIES,
+    CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_PAGE_DEFAULT_LIMIT,
     CHAT_PAGE_MAX_LIMIT,
     CHAT_PREVIEW_MAX_CHARS,
@@ -948,6 +949,11 @@ class RunRequest(BaseModel):
     attachment_client_id: str | None = None
     attachment_batch_id: str | None = None
     attachments: list[ChatAttachmentDescriptor] = Field(default_factory=list)
+    # Human selectors, accepted only on a human chat request. Admission copies each
+    # source into the claimed attachment batch and clears this list.
+    references: list[ProjectReferenceSelector] = Field(
+        default_factory=list, max_length=CHAT_ATTACHMENT_MAX_COUNT
+    )
     active_compute_ids: list[str] = Field(
         default_factory=list,
         max_length=ACTIVE_COMPUTE_ID_MAX_COUNT,

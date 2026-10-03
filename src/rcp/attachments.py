@@ -12,10 +12,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import BinaryIO
+from typing import Annotated, BinaryIO, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import (
     CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_ATTACHMENT_MAX_FILE_BYTES,
@@ -23,6 +24,54 @@ from rcp.limits import (
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.transport import RemoteRunStage
+
+
+class ArtifactReferenceSelector(BaseModel):
+    """A human's pointer to a stored artifact; episode reports are artifacts."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["artifact"]
+    artifact_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+
+
+class NodeReferenceSelector(BaseModel):
+    """A human's pointer to a graph node on its source target (None is main)."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["node"]
+    node_id: str = Field(min_length=1, max_length=256)
+    branch_id: str | None = Field(default=None, min_length=1)
+
+
+class PaperReferenceSelector(BaseModel):
+    """A human's pointer to the project's saved paper introduction."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["paper"]
+
+
+ProjectReferenceSelector = Annotated[
+    ArtifactReferenceSelector | NodeReferenceSelector | PaperReferenceSelector,
+    Field(discriminator="kind"),
+]
+
+
+class ProjectReferenceSource(BaseModel):
+    """What a retained reference copy was taken from, frozen at admission.
+
+    Server-made only. ``version`` is the artifact version id or the paper's
+    content sha256; a node carries its source ``graph_head`` instead.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["artifact", "node", "paper"]
+    source_id: str = Field(min_length=1)
+    version: str | None = None
+    graph_head: GraphHeadRef | None = None
 
 
 class ChatAttachmentDescriptor(BaseModel):
@@ -33,6 +82,8 @@ class ChatAttachmentDescriptor(BaseModel):
     media_type: str
     size: int = Field(ge=0, le=CHAT_ATTACHMENT_MAX_FILE_BYTES)
     expires_at: str
+    # Set when RCP copied this file from a project reference rather than an upload.
+    reference: ProjectReferenceSource | None = None
 
 
 class ChatAttachmentUpload(BaseModel):
