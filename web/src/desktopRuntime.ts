@@ -160,7 +160,10 @@ export interface DictationResultEvent {
 
 export interface DictationStateEvent {
   session_id: string;
-  state: "recording" | "stopped" | "error";
+  /** `preparing` covers the on-device model download before recording. */
+  state: "preparing" | "recording" | "stopped" | "error";
+  /** Reported on `recording`; `apple_server` may send audio to Apple. */
+  engine?: "speech_analyzer" | "apple_server";
   error?: string | null;
 }
 
@@ -676,9 +679,13 @@ export async function startDesktopDictation(sessionId: string): Promise<void> {
   await invokeDesktop("desktop_start_dictation", { sessionId });
 }
 
-export async function stopDesktopDictation(sessionId: string): Promise<void> {
+/** `finish` delivers the final result before `stopped`; otherwise the session is cancelled. */
+export async function stopDesktopDictation(
+  sessionId: string,
+  { finish }: { finish: boolean },
+): Promise<void> {
   if (!isDesktopRuntime()) return;
-  await invokeDesktop("desktop_stop_dictation", { sessionId });
+  await invokeDesktop("desktop_stop_dictation", { sessionId, finish });
 }
 
 /** Whether this Mac posts this space's notifications; it turns on only from its row. */

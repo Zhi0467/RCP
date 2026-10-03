@@ -31,6 +31,10 @@ import type {
   ProviderSignInStatus,
   ProviderResumeSummary,
   ServerStatus,
+  ServiceConnection,
+  ServiceConnectionCreateRequest,
+  ServiceConnections,
+  TranscriptionResult,
   SpaceMachine,
   SpaceMachineCreateRequest,
   SpaceMachineUpdateRequest,
@@ -127,6 +131,7 @@ export async function api<T>(
 
 // A body can also be cut off by a dropped transport; a parse error cannot.
 async function readJson<T>(response: Response): Promise<T> {
+  if (response.status === 204) return undefined as T;
   try {
     return (await response.json()) as T;
   } catch (error) {
@@ -673,6 +678,42 @@ export function verifyProviderLogin(
   return api(`/api/providers/${encodeURIComponent(provider)}/logins/verify`, {
     method: "POST",
     body: JSON.stringify({ host }),
+  });
+}
+
+export function loadServiceConnections(): Promise<ServiceConnections> {
+  return api("/api/service-connections");
+}
+
+export function connectServiceConnection(
+  request: ServiceConnectionCreateRequest,
+): Promise<ServiceConnection> {
+  return api("/api/service-connections", { method: "POST", body: JSON.stringify(request) });
+}
+
+export function disconnectServiceConnection(connectionId: string): Promise<void> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function selectDictationService(dictation: string): Promise<unknown> {
+  return api("/api/service-connections/selection", {
+    method: "PUT",
+    body: JSON.stringify({ dictation }),
+  });
+}
+
+/** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */
+export function transcribeAudio(
+  connectionId: string,
+  audio: Blob,
+  mimeType: string,
+): Promise<TranscriptionResult> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/transcribe`, {
+    method: "POST",
+    headers: { "Content-Type": mimeType },
+    body: audio,
   });
 }
 

@@ -14,6 +14,7 @@ import { showMachinePowerCard } from "../machinePower";
 import { MachineCard } from "../components/MachineCard";
 import { ProviderLogins } from "../components/ProviderLogins";
 import { ServerSettings } from "../components/ServerSettings";
+import { TranscriptionSettings } from "../components/TranscriptionSettings";
 import { ReleaseCheckRow } from "../components/UpdateNotice";
 import { errorMessage } from "../errors";
 import { useSpaceMachines } from "../hooks/useSpaceMachines";
@@ -73,6 +74,7 @@ export function SpaceSettings({
           writesDisabled={writesDisabled}
           onLoginChanged={onLoginChanged}
         />
+        <TranscriptionSettings writesDisabled={writesDisabled} />
         {spaceKind === "personal" && cacheProjectId && (
           <ClearAllCaches
             projectId={cacheProjectId}

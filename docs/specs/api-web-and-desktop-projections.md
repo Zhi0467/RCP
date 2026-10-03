@@ -1355,6 +1355,48 @@ and may therefore appear in the Codex Desktop task list. RCP uses that as an
 inspection surface only. Sidebar ordering, loading, takeover, and concurrency
 remain Codex Desktop behavior rather than RCP product state.
 
+### Dictation
+
+The composer dictates through **macOS** (desktop app only) or one of the
+member's **service connections**, chosen in the member's own Transcription
+card in Space Settings. Network services work on the desktop app, the team
+browser app, and the team phone web app; a personal paired phone stays
+notify-only. A client whose member chose macOS outside the desktop app shows the
+microphone disabled with a pointer to Settings. One microphone owner refuses a
+second holder.
+
+A connection is an OpenAI-compatible server (OpenAI, Groq, or a custom base URL)
+or Gemini. Each member's connections, keys, and selection live in
+`service-connections/<user_id>/` under the data directory, written privately
+and atomically under one per-member lock that rechecks membership. Keys never
+appear in a response, a validation error, or a log. Connect transcribes two
+bundled clips recorded from real `MediaRecorder` output (WebM/Opus and
+fragmented MP4/AAC) and saves the connection only if one passes, recording the
+accepted formats. A custom base URL must be `https`, or `http` to loopback.
+
+`POST /api/service-connections/{id}/transcribe` takes one raw audio body of an
+accepted format, bounded by `Content-Length`, the bytes actually received, a
+read deadline, and a per-member concurrency limit, and holds it only in memory.
+Outbound calls skip proxies and redirects and read a size-capped response under
+one deadline; upstream errors are bounded and never echo the key, and a
+transcript that contains the key is discarded with an error rather than
+edited. The team
+middleware admits the two audio types on this route only. On the personal
+loopback server another site's `audio/*` request needs a CORS preflight, which
+the server refuses, and a no-cors request loses its type and gets 415.
+
+The client records with the first accepted format `MediaRecorder` supports,
+pins the connection id when recording starts, and replaces the dictation span
+with the returned text in one step; typing drops a late result. Native
+dictation reports `preparing` while macOS downloads the on-device model and an
+`engine` (`speech_analyzer` or `apple_server`) on `recording`; every result
+carries the whole session text. `desktop_stop_dictation` takes `finish`: Stop
+delivers the final result before `stopped`, invalidation cancels. SpeechAnalyzer
+needs only microphone access; speech recognition permission is requested only
+before the older recognizer. A desktop build without the macOS 26 SDK skips
+SpeechAnalyzer with a warning; release builds require it, and CI fails if any
+macOS 26 Speech symbol or Swift library is a strong import.
+
 ### Update notice
 
 `GET /api/update-notice` returns the release check, looked up again first when

@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Transcription keys belong to members](2026-10-02-transcription-keys-belong-to-members.md)
+  records why each member connects their own transcription keys, why the
+  backend stores them and calls the service, why they are not provider
+  logins, and what that gives up.
+
 - [Agents ask the human through the command channel](2026-10-01-agents-ask-through-the-command-channel.md)
   records why an agent asks with a staged command verb instead of the
   providers' own ask tools or an RCP MCP server, and why an answer is never

@@ -75,6 +75,7 @@ def test_backup_root_classification_is_an_exact_closed_policy() -> None:
         "project-caches",
         "providers",
         "project-snapshots",
+        "service-connections",
         "rcp-server.json",
         "rcp.lock",
         "rcp.sqlite3-journal",

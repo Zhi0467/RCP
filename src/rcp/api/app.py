@@ -68,6 +68,7 @@ from rcp.api.provider_login import router as provider_login_router
 from rcp.api.questions import router as questions_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
+from rcp.api.service_connections import router as service_connections_router
 from rcp.api.space_machines import router as space_machines_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
@@ -2124,18 +2125,32 @@ def create_app(
                     and path_parts[4] == "chats"
                     and path_parts[6] == "attachments"
                 )
-                allowed_media_type = media_type.lower() == "application/json" or (
-                    attachment_upload and media_type.lower() == "multipart/form-data"
+                transcription_upload = (
+                    request.method == "POST"
+                    and len(path_parts) == 5
+                    and path_parts[1:3] == ["api", "service-connections"]
+                    and path_parts[4] == "transcribe"
+                )
+                allowed_media_type = (
+                    media_type.lower() == "application/json"
+                    or (attachment_upload and media_type.lower() == "multipart/form-data")
+                    or (transcription_upload and media_type.lower() in {"audio/webm", "audio/mp4"})
                 )
                 if not allowed_media_type:
                     return JSONResponse(
                         status_code=415,
                         content={
                             "detail": {
-                                "code": "team_json_required",
+                                "code": (
+                                    "audio_type_unsupported"
+                                    if transcription_upload
+                                    else "team_json_required"
+                                ),
                                 "message": (
-                                    "Authenticated team mutations require JSON, except for "
-                                    "the bounded attachment upload."
+                                    "Unsupported audio type."
+                                    if transcription_upload
+                                    else "Authenticated team mutations require JSON, except for "
+                                    "the bounded attachment and transcription uploads."
                                 ),
                             }
                         },
@@ -2263,6 +2278,7 @@ def create_app(
     app.state.project_membership_dependency = require_project_membership
 
     app.include_router(provider_login_router)
+    app.include_router(service_connections_router)
     app.include_router(space_machines_router)
     app.include_router(health_router)
     app.include_router(server_status_router)

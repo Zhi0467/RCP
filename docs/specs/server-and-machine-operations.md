@@ -445,7 +445,9 @@ Invitation revocation is recorded distinctly from an invitee decline.
 Identity/admission checks reject the member immediately.
 The immutable user row and name remain as a tombstone for historical
 attribution. Existing graceful task/episode owners then stop live authorized
-work; an in-flight provider turn may settle but Apply rechecks membership. Only
+work; an in-flight provider turn may settle but Apply rechecks membership. The
+member's service connections are deleted after the fence commits and again
+before completion, under the lock their writers take. Only
 after no live work remains does the operation mark the member removed. Startup
 and CLI re-entry resume a crash-interrupted removal from its durable fence rather
 than restoring access or forgetting to stop work. This guard avoids stranding
@@ -1554,7 +1556,8 @@ A fresh host remains stopped and needs no dummy team initialization.
 
 It preserves `space_id`, converts captured active work to interrupted, and never
 claims that RCP itself can prove the old authority is offline. Because provider
-homes, the `providers` credential directory, run stages, and provider-native
+homes, the `providers` credential directory, member `service-connections`, run
+stages, and provider-native
 conversation state are excluded, restore
 marks every pre-restore task history-only, clears `writing_sessions` and
 `chat_session_contexts`, and exposes no old native-session id as an executable

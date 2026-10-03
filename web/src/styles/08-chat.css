@@ -1147,11 +1147,19 @@
   border-radius: 10px;
   position: relative;
 }
-.chat-dictation-error {
+.chat-dictation-button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+.chat-dictation-error,
+.chat-dictation-status {
   color: var(--red);
   font-size: var(--type-4xs);
   max-width: 150px;
   text-align: right;
+}
+.chat-dictation-status {
+  color: var(--muted);
 }
 @keyframes dictation-ring {
   from {
