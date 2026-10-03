@@ -178,6 +178,7 @@ def test_purpose_update_checks_only_additions_and_preserves_key(voice_setup, mon
     path = f"/api/service-connections/{item['id']}/purposes"
     for purposes in (["transcription", "voice"], ["transcription", "voice"], ["voice"]):
         assert client.put(path, json={"purposes": purposes}).status_code == 200
+        assert private.credentials(item["id"])[0]["formats"] == item["formats"]
     assert probes == ["voice"]
     assert private.credentials(old["id"])[0]["purposes"] == []
     assert client.put(path, json={"purposes": ["voice", "transcription"]}).status_code == 200
