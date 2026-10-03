@@ -1470,10 +1470,12 @@ A connection is an OpenAI-compatible server (OpenAI, Groq, or a custom base URL)
 or Gemini. Each member's connections, keys, and selection live in
 `service-connections/<user_id>/` under the data directory, written privately
 and atomically under one per-member lock that rechecks membership. Keys never
-appear in a response, a validation error, or a log. Connect transcribes two
-bundled clips recorded from real `MediaRecorder` output (WebM/Opus and
-fragmented MP4/AAC) and saves the connection only if one passes, recording the
-accepted formats. A custom base URL must be `https`, or `http` to loopback.
+appear in a response, a validation error, or a log. For dictation, Connect
+transcribes two bundled clips recorded from real `MediaRecorder` output
+(WebM/Opus and fragmented MP4/AAC) and saves the connection only if one passes,
+recording the accepted formats. The connect dialog asks an OpenAI key whether
+it is for dictation, the standby voice agent, or both; a voice-only key skips
+the clips and gets the voice check instead. A custom base URL must be `https`, or `http` to loopback.
 
 `POST /api/service-connections/{id}/transcribe` takes one raw audio body of an
 accepted format, bounded by `Content-Length`, the bytes actually received, a

@@ -15,12 +15,20 @@ import { errorMessage } from "../errors";
 import type {
   ServiceConnectionKind,
   ServiceConnectionPreset,
+  ServiceConnectionPurpose,
   ServiceConnections,
   VoiceSettings,
 } from "../types";
 import { formatServerTimestamp } from "./ServerSettings";
 
 type ServiceChoice = "openai" | "groq" | "gemini" | "custom";
+
+/** Only an OpenAI key can also run the standby voice agent. */
+const OPENAI_USES: Record<string, { label: string; purposes: ServiceConnectionPurpose[] }> = {
+  dictation: { label: "Dictation", purposes: ["transcription"] },
+  voice: { label: "Standby voice agent", purposes: ["voice"] },
+  both: { label: "Dictation and standby voice agent", purposes: ["transcription", "voice"] },
+};
 
 const SERVICES: Record<
   ServiceChoice,
@@ -304,12 +312,17 @@ function ConnectServiceDialog({
   const [choice, setChoice] = useState<ServiceChoice>("openai");
   const [key, setKey] = useState("");
   const [model, setModel] = useState(SERVICES.openai.model);
+  const [use, setUse] = useState("dictation");
   const [baseUrl, setBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const service = SERVICES[choice];
   const custom = choice === "custom";
-  const ready = Boolean(model.trim()) && (custom ? Boolean(baseUrl.trim()) : Boolean(key.trim()));
+  const purposes = choice === "openai" ? OPENAI_USES[use].purposes : ["transcription" as const];
+  const dictation = purposes.includes("transcription");
+  const ready =
+    (!dictation || Boolean(model.trim())) &&
+    (custom ? Boolean(baseUrl.trim()) : Boolean(key.trim()));
   const destination = custom ? "the server at this address" : service.label;
   const close = () => {
     if (!busy) onClose();
@@ -324,9 +337,10 @@ function ConnectServiceDialog({
         kind: service.kind,
         preset: service.preset,
         base_url: custom ? baseUrl.trim() : null,
-        model: model.trim(),
+        // The transcription model is unused without dictation; send the preset's own.
+        model: dictation ? model.trim() : service.model,
         key: key.trim(),
-        purposes: ["transcription"],
+        purposes,
       });
       setKey("");
       await onConnected();
@@ -381,6 +395,18 @@ function ConnectServiceDialog({
               ))}
             </select>
           </label>
+          {choice === "openai" ? (
+            <label>
+              Use for
+              <select value={use} disabled={busy} onChange={(event) => setUse(event.target.value)}>
+                {Object.entries(OPENAI_USES).map(([value, option]) => (
+                  <option key={value} value={value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           {custom ? (
             <label>
               Base URL
@@ -412,23 +438,37 @@ function ConnectServiceDialog({
               </a>
             </p>
           ) : null}
-          <label>
-            Model
-            <input
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={model}
-              disabled={busy}
-              onChange={(event) => setModel(event.target.value)}
-            />
-          </label>
+          {dictation ? (
+            <label>
+              Model
+              <input
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={model}
+                disabled={busy}
+                onChange={(event) => setModel(event.target.value)}
+              />
+            </label>
+          ) : null}
+          {dictation ? (
+            <p>
+              Dictation audio goes from your device to RCP, which sends it to {destination}. RCP
+              keeps the key on its server, never shows it again, and does not store audio. What{" "}
+              {destination} keeps is set by your account there.
+            </p>
+          ) : null}
+          {purposes.includes("voice") ? (
+            <p>
+              Standby voice agent audio goes directly between this page and OpenAI; RCP only starts
+              each session with the key it keeps on its server.
+            </p>
+          ) : null}
           <p>
-            Dictation audio goes from your device to RCP, which sends it to {destination}. RCP keeps
-            the key on its server, never shows it again, and does not store audio. What{" "}
-            {destination} keeps is set by your account there.
+            {dictation
+              ? "RCP checks the connection with two short test clips before saving it."
+              : "RCP checks the key with OpenAI before saving it."}
           </p>
-          <p>RCP checks the connection with two short test clips before saving it.</p>
         </div>
         {error ? (
           <div className="transcription-dialog-error" role="alert">

@@ -4278,6 +4278,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </div>
     );
   if (setupOpen)
@@ -4375,6 +4376,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </div>
     );
   if (!project || !paper)
@@ -4390,6 +4392,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </div>
     );
 
