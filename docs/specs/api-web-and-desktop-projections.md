@@ -816,8 +816,9 @@ loaded project replaces those tools with project overview and node inspection,
 in-page navigation, artifact/report listing and visual opening, conversation
 listing, inspection, and Send, bounded Experiment inspection and Start,
 Auto-research authorization, and graceful Stop of an Experiment or
-Auto-research episode. Login, project setup, loading, and invalid project
-states expose no tools; the project surface waits for the same verified backend
+Auto-research episode. The overview lists the ids of stoppable Auto-research
+episodes, which have no Experiment node to inspect. Login, project setup,
+loading, and invalid project states expose no tools; the project surface waits for the same verified backend
 identity, actor, and team-session state as the index, so a reconnect screen
 retires it.
 

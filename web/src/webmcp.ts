@@ -428,7 +428,10 @@ function recentNodes(project: ProjectSnapshot, type: GraphNode["type"]): GraphNo
     .slice(0, OVERVIEW_LIST_LIMIT);
 }
 
-export function projectOverview(project: ProjectSnapshot): Record<string, unknown> {
+export function projectOverview(
+  project: ProjectSnapshot,
+  episodes: Episode[] = [],
+): Record<string, unknown> {
   const attentionIds = [
     ...project.attention.open_blocker_ids,
     ...project.attention.decisions_awaiting_choice_ids,
@@ -450,6 +453,11 @@ export function projectOverview(project: ProjectSnapshot): Record<string, unknow
       blockers: recentNodes(project, "blocker").map(compactNode),
     },
     suggested_node_ids: [...new Set(attentionIds)].slice(0, 6),
+    // Experiment episodes stop through their Experiment; an Auto-research
+    // episode has no node, so its id is listed here for an exact Stop.
+    stoppable_auto_research_episode_ids: episodes
+      .filter((episode) => episode.mode === "auto_research" && episode.can_stop)
+      .map((episode) => episode.episode_id),
   };
 }
 
@@ -657,9 +665,12 @@ const INSPECT_NODE_TOOL: WebMcpToolSpec = {
   confirm: NEVER_CONFIRM,
 };
 
-export function projectReadToolDefinitions(project: ProjectSnapshot): WebMcpToolDefinition[] {
+export function projectReadToolDefinitions(
+  project: ProjectSnapshot,
+  episodes: Episode[] = [],
+): WebMcpToolDefinition[] {
   return [
-    withExecute(PROJECT_OVERVIEW_TOOL, () => webMcpTextResult(projectOverview(project))),
+    withExecute(PROJECT_OVERVIEW_TOOL, () => webMcpTextResult(projectOverview(project, episodes))),
     withExecute(INSPECT_NODE_TOOL, (input) =>
       webMcpTextResult(inspectProjectNode(project, input), WEBMCP_NODE_RESULT_MAX_CHARS),
     ),

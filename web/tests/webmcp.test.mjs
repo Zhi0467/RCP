@@ -683,6 +683,15 @@ test("project overview returns bounded saved facts without an AI summary", () =>
   assert.doesNotThrow(() => webMcpTextResult(overview));
 });
 
+test("project overview lists only stoppable Auto-research episode ids", () => {
+  const overview = projectOverview(projectFixture(), [
+    { episode_id: "auto-live", mode: "auto_research", can_stop: true },
+    { episode_id: "auto-ended", mode: "auto_research", can_stop: false },
+    { episode_id: "exp-live", mode: "experiment_loop", can_stop: true },
+  ]);
+  assert.deepEqual(overview.stoppable_auto_research_episode_ids, ["auto-live"]);
+});
+
 test("node inspection returns exact saved content and direct relation identities", () => {
   const project = projectFixture();
   const inspected = inspectProjectNode(project, { node_id: "hyp-1" });

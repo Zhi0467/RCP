@@ -3848,7 +3848,7 @@ export default function App() {
     if (webMcpProject) {
       const project = webMcpProject;
       return [
-        ...projectReadToolDefinitions(project),
+        ...projectReadToolDefinitions(project, episodes),
         ...projectArtifactToolDefinitions(
           project,
           tasks,
