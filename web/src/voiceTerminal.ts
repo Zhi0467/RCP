@@ -133,7 +133,7 @@ export async function listProjectTerminals(
     repositories: repositories.slice(0, TERMINAL_LIST_LIMIT).map((repository) => ({
       repository_id: repository.repository_id,
       machine_id: repository.machine_id,
-      machine_name: repository.backend_name,
+      terminal_backend: repository.backend_name,
       available: repository.eligible,
       unavailable_reason: (repository.unavailable_reason ?? "").slice(0, 240) || null,
     })),

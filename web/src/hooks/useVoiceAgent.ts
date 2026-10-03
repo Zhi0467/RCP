@@ -100,7 +100,6 @@ async function buildVoicePin(
       terminal: {
         repository_id: repository.repository_id,
         machine_id: repository.machine_id,
-        machine_name: repository.backend_name,
         containment: repository.containment,
         command: input.command,
       },

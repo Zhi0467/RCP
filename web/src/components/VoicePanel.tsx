@@ -64,7 +64,7 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
     ...(terminal
       ? ([
           ["Repository", terminal.repository_id],
-          ["Machine", terminal.machine_name || terminal.machine_id],
+          ["Machine", terminal.machine_id],
         ] as Array<[string, string]>)
       : ([["Graph", target]] as Array<[string, string]>)),
     ...(pin.mode ? ([["Mode", pin.mode]] as Array<[string, string]>) : []),

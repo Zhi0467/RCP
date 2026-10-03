@@ -25,7 +25,6 @@ export type VoicePin = {
   terminal: {
     repository_id: string;
     machine_id: string;
-    machine_name: string | null;
     containment: string | null;
     command: string;
   } | null;
