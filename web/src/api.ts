@@ -726,7 +726,8 @@ export function loadVoiceSettings(): Promise<VoiceSettings> {
   return api("/api/voice/settings");
 }
 
-export function saveVoiceSettings(settings: VoiceSettings): Promise<VoiceSettings> {
+/** Send only the fields that changed; the backend keeps the rest. */
+export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
   return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
 }
 

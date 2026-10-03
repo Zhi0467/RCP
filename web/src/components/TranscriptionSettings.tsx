@@ -235,9 +235,7 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                 event.preventDefault();
                 const model = voiceModel.trim();
                 if (model)
-                  void run("voice-model", () =>
-                    saveVoiceSettings({ ...voice, delegation_model: model }),
-                  );
+                  void run("voice-model", () => saveVoiceSettings({ delegation_model: model }));
               }}
             >
               <span>Voice delegation model</span>

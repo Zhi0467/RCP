@@ -227,6 +227,7 @@ def test_settings_default_roundtrip_and_preserve_dictation(voice_setup):
     private.save(item, KEY)
     private.select(item["id"])
     assert client.get(path).json() == value
+    assert client.put(path, json={"confirm": "tap"}).json() == {**value, "confirm": "tap"}
     assert client.put(path, json=value).json() == value
     assert private.summary()["dictation"] == item["id"]
     assert json.loads((private.root / "settings.json").read_text())["voice"] == value

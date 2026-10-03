@@ -179,6 +179,37 @@ test("identity loss ends the session and refuses the next call, including a cach
   assert.equal(runs.length, 0);
 });
 
+test("after End, a late call never dispatches and the member's reason stands", async () => {
+  const { gate } = harness();
+  const transport = fakeTransport();
+  const calls = [];
+  const ended = [];
+  const session = await openVoiceSession(
+    [],
+    {
+      onTranscript() {},
+      onFunctionCall: (item) => calls.push(item),
+      onEnded: (reason) => ended.push(reason),
+    },
+    gate,
+    transport.deps,
+  );
+  const channel = transport.deps.createPeer().createDataChannel();
+  const deliver = (event) => channel.onmessage({ data: JSON.stringify(event) });
+  const closing = session.end("member");
+  deliver({
+    type: "response.event",
+    event: {
+      type: "response.output_item.done",
+      item: { type: "function_call", call_id: "late", name: "rcp_get_project_overview" },
+    },
+  });
+  deliver({ type: "session.closed" });
+  await closing;
+  assert.equal(calls.length, 0);
+  assert.deepEqual(ended, ["member"]);
+});
+
 test("completion commentary depends only on kind, project name, and status", () => {
   const spoken = voiceCommentary("experiment", "Alpha", "finished", 200);
   assert.equal(voiceCommentary("experiment", "Alpha", "finished", 200), spoken);

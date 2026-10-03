@@ -193,6 +193,8 @@ export function useVoiceAgent({
   const end = useCallback((reason: VoiceEndReason = "member", immediate = false) => {
     // An open session keeps this reason and its bounded close, and loses the gate as it
     // ends; an open still in flight sees the lost gate and ends itself when it lands.
+    // A card on screen is declined now, not after the close wait.
+    cardRef.current?.settle(false);
     if (sessionRef.current) void sessionRef.current.end(reason, { immediate });
     else gateRef.current?.lose();
   }, []);
@@ -296,7 +298,7 @@ export function useVoiceAgent({
       // The choice shows at once; Tap also applies at once, Run without confirming once saved.
       setSettings({ ...current, confirm });
       if (confirm === "tap") settingsRef.current = { ...current, confirm };
-      const saved = await saveVoiceSettings({ ...current, confirm });
+      const saved = await saveVoiceSettings({ confirm });
       settingsRef.current = saved;
       setSettings(saved);
     } catch (failure) {

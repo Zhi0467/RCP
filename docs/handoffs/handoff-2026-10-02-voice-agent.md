@@ -5,9 +5,10 @@ Status: design settled with the human on 2026-10-02 (issue #229, part 2), then
 revised the same day after an astra xhigh review and a Claude review.
 Implementation started on this PR on 2026-10-02. Done: slice 1 (shared tool
 catalog, Auto-research authorization and Stop, `rcp_open_view`, stoppable
-Auto-research ids in the overview) and slice 2 (voice purposes, voice settings,
-the stateless session route). Remaining: slice 3 (voice panel and executor),
-the live probe, the spec updates, and the real-hardware checks below. This
+Auto-research ids in the overview), slice 2 (voice purposes, voice settings,
+the stateless session route), and slice 3 (voice panel and executor, driven
+headless against a fake transport). Remaining: the live probe, the spec
+updates, and the real-hardware checks below. This
 builds on the model-backed dictation handoff
 (part 1, its own PR): it reuses that PR's member service connections, member
 settings file, and microphone owner. A live GPT-Live probe gates the session
@@ -207,7 +208,9 @@ drops the id.
 
 `GET` and `PUT /api/voice/settings`: `{delegation_model, confirm: "tap" |
 "none"}`, stored in the member's settings file from the dictation PR under the
-same per-member lock. A restore drops the file, so settings fall back to
+same per-member lock. A `PUT` carries only the fields it changes, so the panel's
+toggle and the Settings model field never undo each other. A restore drops the
+file, so settings fall back to
 `gpt-6-luna` and tap.
 
 Service connections gain `purposes`, a subset of `transcription` and `voice`.

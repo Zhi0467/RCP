@@ -109,7 +109,9 @@ class ServiceConnections:
     def voice_settings(self, settings: VoiceSettings | None = None) -> dict:
         with self.locked():
             if settings is not None:
-                self._write_setting("voice", settings.model_dump())
+                # Each writer sends only the field it changed; the others keep their value.
+                saved = self._settings().get("voice", {})
+                self._write_setting("voice", {**saved, **settings.model_dump(exclude_unset=True)})
             return VoiceSettings.model_validate(self._settings().get("voice", {})).model_dump()
 
     def voice_credentials(self) -> tuple[dict, str]:

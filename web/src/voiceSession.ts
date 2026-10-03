@@ -128,21 +128,24 @@ function startSession(
   };
 
   let finished = false;
+  // The first reason wins; the close acknowledgement that follows an End is not a new one.
+  let endReason: VoiceEndReason = "connection";
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    channel.close();
+    pc.close();
+    stopAudio();
+    claim.release();
+    events.onEnded(endReason);
+  };
   const end = (reason: VoiceEndReason, options: { immediate?: boolean } = {}): Promise<void> => {
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      channel.close();
-      pc.close();
-      stopAudio();
-      claim.release();
-      events.onEnded(reason);
-    };
     // A page going away cannot wait out a close already in progress.
     if (ending) {
       if (options.immediate) finish();
       return ending;
     }
+    endReason = reason;
     clearTimeout(hardCapTimer);
     if (idleTimer !== null) clearTimeout(idleTimer);
     const waitForClose = channel.readyState === "open" && !options.immediate;
@@ -164,6 +167,8 @@ function startSession(
     } catch {
       return;
     }
+    // After End, only the close acknowledgement matters; a late call must not run.
+    if (ending && event.type !== "session.closed") return;
     if (event.type === "session.input_transcript.delta" && typeof event.delta === "string") {
       noteActivity();
       events.onTranscript("member", event.delta);
