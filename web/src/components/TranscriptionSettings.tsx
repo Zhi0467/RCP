@@ -4,12 +4,21 @@ import {
   connectServiceConnection,
   disconnectServiceConnection,
   loadServiceConnections,
+  loadVoiceSettings,
+  saveVoiceSettings,
   selectDictationService,
+  setServiceConnectionPurposes,
 } from "../api";
 import { isDesktopRuntime } from "../desktopRuntime";
 import { serviceConnectionFailure } from "../dictation";
 import { errorMessage } from "../errors";
-import type { ServiceConnectionKind, ServiceConnectionPreset, ServiceConnections } from "../types";
+import type {
+  ServiceConnectionKind,
+  ServiceConnectionPreset,
+  ServiceConnectionPurpose,
+  ServiceConnections,
+  VoiceSettings,
+} from "../types";
 import { formatServerTimestamp } from "./ServerSettings";
 
 type ServiceChoice = "openai" | "groq" | "gemini" | "custom";
@@ -70,12 +79,21 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [voice, setVoice] = useState<VoiceSettings | null>(null);
+  const [voiceModel, setVoiceModel] = useState("");
   // A reload never clears an error: a failed action stays reported beside the fresh state.
   const refresh = useCallback(async () => {
-    try {
-      setSettings(await loadServiceConnections());
-    } catch (failure) {
-      setError(failureText(failure));
+    const [connections, voiceSettings] = await Promise.allSettled([
+      loadServiceConnections(),
+      loadVoiceSettings(),
+    ]);
+    if (connections.status === "fulfilled") setSettings(connections.value);
+    else setError(failureText(connections.reason));
+    if (voiceSettings.status === "fulfilled") {
+      setVoice(voiceSettings.value);
+      setVoiceModel(voiceSettings.value.delegation_model);
+    } else if (connections.status === "fulfilled") {
+      setError(failureText(voiceSettings.reason));
     }
   }, []);
   useEffect(() => {
@@ -125,11 +143,13 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               <option value="system" disabled={!desktop}>
                 {desktop ? "macOS dictation" : "macOS dictation (desktop app only)"}
               </option>
-              {settings.connections.map((connection) => (
-                <option key={connection.id} value={connection.id}>
-                  {connection.label} · {connection.model}
-                </option>
-              ))}
+              {settings.connections
+                .filter((connection) => connection.purposes.includes("transcription"))
+                .map((connection) => (
+                  <option key={connection.id} value={connection.id}>
+                    {connection.label} · {connection.model}
+                  </option>
+                ))}
             </select>
           </label>
           {!desktop && settings.dictation === "system" ? (
@@ -160,6 +180,25 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                   .
                 </p>
                 <div className="provider-login-actions">
+                  {connection.preset === "openai" ? (
+                    <label className="transcription-voice-toggle">
+                      <input
+                        type="checkbox"
+                        checked={connection.purposes.includes("voice")}
+                        disabled={disabled}
+                        onChange={(event) => {
+                          const purposes: ServiceConnectionPurpose[] = connection.purposes.filter(
+                            (item) => item !== "voice",
+                          );
+                          if (event.target.checked) purposes.push("voice");
+                          void run(`voice:${connection.id}`, () =>
+                            setServiceConnectionPurposes(connection.id, purposes),
+                          );
+                        }}
+                      />
+                      Use for voice
+                    </label>
+                  ) : null}
                   <button
                     className="button secondary compact"
                     type="button"
@@ -189,6 +228,43 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               </button>
             </div>
           </div>
+          {voice ? (
+            <form
+              className="transcription-picker"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const model = voiceModel.trim();
+                if (model)
+                  void run("voice-model", () =>
+                    saveVoiceSettings({ ...voice, delegation_model: model }),
+                  );
+              }}
+            >
+              <span>Voice delegation model</span>
+              <div className="provider-login-token">
+                <input
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={voiceModel}
+                  disabled={disabled}
+                  onChange={(event) => setVoiceModel(event.target.value)}
+                />
+                <button
+                  className="button secondary compact"
+                  type="submit"
+                  disabled={
+                    disabled || !voiceModel.trim() || voiceModel.trim() === voice.delegation_model
+                  }
+                >
+                  Save
+                </button>
+              </div>
+              <p className="provider-login-detail">
+                Voice runs on the connection marked Use for voice, at that account&apos;s cost.
+              </p>
+            </form>
+          ) : null}
         </>
       ) : null}
       {error ? (
@@ -243,6 +319,7 @@ function ConnectServiceDialog({
         base_url: custom ? baseUrl.trim() : null,
         model: model.trim(),
         key: key.trim(),
+        purposes: ["transcription"],
       });
       setKey("");
       await onConnected();

@@ -1459,32 +1459,19 @@ function exactEnabledProviderSkillNames(
   return requested;
 }
 
-export async function sendProjectConversationMessage(
+/** The conversation, node, and provider profile one Send would use, without starting it. */
+export async function conversationSendTarget(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   input: Record<string, unknown>,
   source: WebMcpConversationSource,
-  taskStartPending: boolean,
-  createConversation: CreateWebMcpConversation,
-  startTurn: StartWebMcpConversationTurn,
-): Promise<Record<string, unknown>> {
-  const message = requiredStringInput(input, "message").trim();
-  if (message.length > 2_000) throw new Error("message must contain at most 2000 characters.");
-  const mode = requiredStringInput(input, "mode");
-  if (mode !== "discuss" && mode !== "work") {
-    throw new Error("mode must be discuss or work.");
-  }
+  taskStartPending = false,
+) {
   const requestedChatId = optionalStringInput(input, "chat_id");
   const requestedNodeId = optionalStringInput(input, "node_id");
   if (requestedChatId && requestedNodeId) {
     throw new Error("chat_id and node_id cannot be supplied together.");
   }
-  const workflowIds = exactEnabledSkillIds(
-    project,
-    "workflow",
-    stringListInput(input, "workflow_ids"),
-  );
-  const skillIds = exactEnabledSkillIds(project, "skill", stringListInput(input, "skill_ids"));
   const existing = requestedChatId
     ? await resolveProjectConversationContext(
         project,
@@ -1510,6 +1497,37 @@ export async function sendProjectConversationMessage(
     reasoning: profile.reasoning,
     run_on: profile.run_on,
   };
+  return { existing, node, surface, config };
+}
+
+export async function sendProjectConversationMessage(
+  project: ProjectSnapshot,
+  tasks: AgentTask[],
+  input: Record<string, unknown>,
+  source: WebMcpConversationSource,
+  taskStartPending: boolean,
+  createConversation: CreateWebMcpConversation,
+  startTurn: StartWebMcpConversationTurn,
+): Promise<Record<string, unknown>> {
+  const message = requiredStringInput(input, "message").trim();
+  if (message.length > 2_000) throw new Error("message must contain at most 2000 characters.");
+  const mode = requiredStringInput(input, "mode");
+  if (mode !== "discuss" && mode !== "work") {
+    throw new Error("mode must be discuss or work.");
+  }
+  const workflowIds = exactEnabledSkillIds(
+    project,
+    "workflow",
+    stringListInput(input, "workflow_ids"),
+  );
+  const skillIds = exactEnabledSkillIds(project, "skill", stringListInput(input, "skill_ids"));
+  const { existing, node, surface, config } = await conversationSendTarget(
+    project,
+    tasks,
+    input,
+    source,
+    taskStartPending,
+  );
   const runTruthScope = existing?.runTruthScope ?? project.default_run_truth_scope ?? [];
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =
@@ -1853,15 +1871,20 @@ export function inspectProjectExperiment(
   };
 }
 
-type StartWebMcpExperiment = (node: GraphNode) => Promise<AgentTask>;
+type StartWebMcpExperiment = (node: GraphNode, invocationCeiling?: number) => Promise<AgentTask>;
 
+/** A confirmed voice start passes `invocation_ceiling`; it must still be the node's own. */
 export async function startProjectExperiment(
   project: ProjectSnapshot,
   input: Record<string, unknown>,
   startExperiment: StartWebMcpExperiment,
 ): Promise<Record<string, unknown>> {
   const node = exactExperiment(project, input);
-  const task = await startExperiment(node);
+  const ceiling = input.invocation_ceiling;
+  if (ceiling !== undefined && ceiling !== node.invocation_ceiling) {
+    throw new Error(`Experiment ${node.id}'s invocation ceiling changed; nothing started.`);
+  }
+  const task = await startExperiment(node, ceiling as number | undefined);
   return {
     project_id: project.id,
     experiment_id: node.id,
