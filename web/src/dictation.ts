@@ -40,15 +40,9 @@ const SERVICE_FAILURES: Record<string, string> = {
  * carries no route code. The route's message is already sanitized of the key.
  */
 export function serviceConnectionFailure(failure: unknown): string | null {
-  if (!(failure instanceof Error)) return null;
-  let detail: unknown;
-  try {
-    detail = JSON.parse(failure.message);
-  } catch {
-    return null;
-  }
-  if (!detail || typeof detail !== "object") return null;
-  const { code, message } = detail as { code?: unknown; message?: unknown };
+  const detail = (failure as { detail?: { code?: unknown; message?: unknown } } | null)?.detail;
+  if (!detail) return null;
+  const { code, message } = detail;
   if (typeof code !== "string") return null;
   const reported = typeof message === "string" && message !== code ? message : "";
   return [SERVICE_FAILURES[code], reported].filter(Boolean).join(" ") || code;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { api } from "../src/api.ts";
 import {
   mergeDiffCounts,
   mergeDiffMarks,
@@ -87,10 +88,28 @@ test("Merge waits for the preview of the target the human typed", () => {
   assert.ok(previewAnswersDraft(release, "release", "release", "release"));
 });
 
-test("a Merge paused on unfinished jobs is told apart from other refusals", () => {
+async function refusal(detail) {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail }), {
+      status: 409,
+      headers: { "Content-Type": "application/json" },
+    });
+  try {
+    await api("/api/merge");
+  } catch (error) {
+    return error;
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  throw new Error("expected a refusal");
+}
+
+test("a Merge paused on unfinished jobs is told apart from other refusals", async () => {
   const jobs = [{ kind: "watcher", id: "w", status: "stopped" }];
-  const paused = new Error(JSON.stringify({ code: "unfinished_jobs_confirmation_required", jobs }));
+  const code = "unfinished_jobs_confirmation_required";
+  const paused = await refusal({ code, message: code, jobs });
   assert.deepEqual(unfinishedJobsFromError(paused), jobs);
-  assert.equal(unfinishedJobsFromError(new Error(JSON.stringify({ code: "target_dirty" }))), null);
-  assert.equal(unfinishedJobsFromError(new Error("plain")), null);
+  assert.equal(unfinishedJobsFromError(await refusal({ code: "target_dirty" })), null);
+  assert.equal(unfinishedJobsFromError(await refusal("plain")), null);
 });

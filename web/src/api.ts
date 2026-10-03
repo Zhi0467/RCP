@@ -68,12 +68,15 @@ export const TEAM_SHELL_PROTOCOL_VERSION = 3;
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
+  /** The route's structured `detail`, for callers that read its fields. */
+  readonly detail: Record<string, unknown> | undefined;
 
-  constructor(message: string, status: number, code?: string) {
+  constructor(message: string, status: number, detail?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.status = status;
-    this.code = code;
+    this.detail = detail;
+    this.code = typeof detail?.code === "string" ? detail.code : undefined;
   }
 }
 
@@ -317,11 +320,11 @@ function apiError(status: number, body: unknown): ApiError {
       ? (body as { detail: unknown }).detail
       : undefined;
   if (detail && typeof detail === "object" && !Array.isArray(detail)) {
-    const { message, code } = detail as { message?: unknown; code?: unknown };
+    const { message } = detail as { message?: unknown };
     return new ApiError(
       typeof message === "string" ? message : JSON.stringify(detail),
       status,
-      typeof code === "string" ? code : undefined,
+      detail as Record<string, unknown>,
     );
   }
   if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {

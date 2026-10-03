@@ -16,7 +16,7 @@ interface Props {
 
 /** Open consolidation reports and failures, plus one renewal row near expiry. */
 export function ConsolidationInbox({
-  items,
+  items: loadedItems,
   schedule,
   needsRenewal,
   error,
@@ -27,6 +27,9 @@ export function ConsolidationInbox({
 }: Props) {
   const [busyRun, setBusyRun] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // A closed row stays hidden until the refresh that drops it lands.
+  const [closedRuns, setClosedRuns] = useState<ReadonlySet<string>>(new Set());
+  const items = loadedItems.filter((item) => !closedRuns.has(item.run_id));
   if (items.length === 0 && !needsRenewal && !error) return null;
 
   const resolve = async (runId: string, action: "keep" | "dismiss") => {
@@ -34,6 +37,7 @@ export function ConsolidationInbox({
     setActionError(null);
     try {
       await onResolve(runId, action);
+      setClosedRuns((closed) => new Set(closed).add(runId));
     } catch (failure) {
       setActionError(failure instanceof Error ? failure.message : String(failure));
     } finally {
