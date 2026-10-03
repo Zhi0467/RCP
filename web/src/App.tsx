@@ -276,7 +276,9 @@ import {
   type WebMcpViewOwners,
   webMcpSurface,
 } from "./webmcp";
-import { publishToolSurface } from "./toolCatalog";
+import { publishToolSurface, webMcpHostDefinitions } from "./toolCatalog";
+import { voiceTerminalToolDefinitions } from "./voiceTerminal";
+import { openTerminalSocket } from "./terminalSocket";
 import { useVoiceAgent, type VoicePageState } from "./hooks/useVoiceAgent";
 import { VoiceButton, VoicePanel } from "./components/VoicePanel";
 
@@ -3899,6 +3901,11 @@ export default function App() {
           loadTranscript: loadWebMcpConversation,
           loadExperimentEntries: () => loadProjectExperimentEpisodes(project.id),
         }),
+        // Published for voice only; webMcpHostTools keeps them off WebMCP.
+        ...voiceTerminalToolDefinitions(project.id, {
+          fetchJson: api,
+          openSocket: openTerminalSocket,
+        }),
       ];
     }
     return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
@@ -3979,25 +3986,27 @@ export default function App() {
       webMcpRefusals,
     );
   }, [projectIndexWebMcpAvailable, webMcpProject, webMcpRefusals, webMcpTools]);
+  // WebMCP host agents get no RCP confirmation card, so voice-only tools stay off it.
+  const webMcpHostTools = useMemo(() => webMcpHostDefinitions(webMcpTools), [webMcpTools]);
   const webMcpRegistryRef = useRef<{
     surfaceKey: string;
     registry: WebMcpToolRegistry;
   } | null>(null);
   useEffect(() => {
     const current = webMcpRegistryRef.current;
-    if (!webMcpSurfaceKey || webMcpTools.length === 0) {
+    if (!webMcpSurfaceKey || webMcpHostTools.length === 0) {
       current?.registry.dispose();
       webMcpRegistryRef.current = null;
       return;
     }
     if (current?.surfaceKey === webMcpSurfaceKey) {
-      current.registry.update(webMcpTools);
+      current.registry.update(webMcpHostTools);
       return;
     }
     current?.registry.dispose();
-    const registry = createWebMcpToolRegistry(webMcpTools);
+    const registry = createWebMcpToolRegistry(webMcpHostTools);
     webMcpRegistryRef.current = registry ? { surfaceKey: webMcpSurfaceKey, registry } : null;
-  }, [webMcpSurfaceKey, webMcpTools]);
+  }, [webMcpSurfaceKey, webMcpHostTools]);
   useEffect(
     () => () => {
       webMcpRegistryRef.current?.registry.dispose();

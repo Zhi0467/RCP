@@ -1,6 +1,7 @@
 // One host-independent list of every RCP page tool. WebMCP registers the subset
 // the current page can run; a voice session sends the whole list to its model and
-// resolves each call against the same definitions App registers with WebMCP.
+// resolves each call against the same definitions App publishes for the page.
+// Voice-only tools are published for voice but never registered with WebMCP.
 
 import {
   PROJECT_INDEX_TOOLS,
@@ -8,6 +9,7 @@ import {
   type WebMcpJsonSchema,
   type WebMcpToolDefinition,
 } from "./webmcp";
+import { VOICE_TERMINAL_TOOLS } from "./voiceTerminal";
 
 export type CatalogTool = {
   name: string;
@@ -15,6 +17,8 @@ export type CatalogTool = {
   inputSchema: WebMcpJsonSchema;
   /** True when this exact call waits for the member's tap in a voice session. */
   confirm: (args: Record<string, unknown>) => boolean;
+  /** True when a voice session shows the card even while running without confirming. */
+  alwaysConfirm: boolean;
 };
 
 export type FunctionTool = {
@@ -29,9 +33,19 @@ export type ToolResolution =
 
 export type ToolSurfaceKind = "project-index" | "project" | null;
 
-const CATALOG: readonly CatalogTool[] = [...PROJECT_INDEX_TOOLS, ...PROJECT_TOOLS].map(
-  ({ name, description, inputSchema, confirm }) => ({ name, description, inputSchema, confirm }),
+const SPECS = [...PROJECT_INDEX_TOOLS, ...PROJECT_TOOLS, ...VOICE_TERMINAL_TOOLS];
+
+const CATALOG: readonly CatalogTool[] = SPECS.map(
+  ({ name, description, inputSchema, confirm, alwaysConfirm }) => ({
+    name,
+    description,
+    inputSchema,
+    confirm,
+    alwaysConfirm: alwaysConfirm === true,
+  }),
 );
+
+const VOICE_ONLY = new Set(SPECS.filter((spec) => spec.voiceOnly).map((spec) => spec.name));
 
 export function catalog(): readonly CatalogTool[] {
   return CATALOG;
@@ -47,13 +61,18 @@ export function catalogAsFunctionTools(): FunctionTool[] {
   }));
 }
 
+/** The published definitions a WebMCP host may receive: voice-only tools stay out. */
+export function webMcpHostDefinitions(definitions: WebMcpToolDefinition[]): WebMcpToolDefinition[] {
+  return definitions.filter((definition) => !VOICE_ONLY.has(definition.name));
+}
+
 let surface: {
   kind: ToolSurfaceKind;
   definitions: WebMcpToolDefinition[];
   refusals: Partial<Record<string, string | null>>;
 } = { kind: null, definitions: [], refusals: {} };
 
-/** App publishes the definitions it registers with WebMCP, and why each missing
+/** App publishes the page's definitions, voice-only ones included, and why each missing
  * project tool is unavailable, whenever page state changes. */
 export function publishToolSurface(
   kind: ToolSurfaceKind,

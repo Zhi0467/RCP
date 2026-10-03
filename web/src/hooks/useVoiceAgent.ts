@@ -32,6 +32,7 @@ import {
   type VoiceEndReason,
   type VoiceSession,
 } from "../voiceSession";
+import { terminalCommandInput, terminalRepository } from "../voiceTerminal";
 import { conversationSendTarget, type WebMcpConversationSource } from "../webmcp";
 
 const VOICE_WATCH_POLL_MS = 10_000;
@@ -87,7 +88,24 @@ async function buildVoicePin(
     provider_profile: null,
     starting_instruction: null,
     truth_scope: null,
+    terminal: null,
   };
+  if (name === "rcp_run_terminal_command") {
+    const input = terminalCommandInput(args);
+    // Read at show and Confirm time, so a vanished or changed repository refuses.
+    const repository = await terminalRepository(project.id, input.repository_id, api);
+    return {
+      ...base,
+      arguments: { ...input },
+      terminal: {
+        repository_id: repository.repository_id,
+        machine_id: repository.machine_id,
+        machine_name: repository.backend_name,
+        containment: repository.containment,
+        command: input.command,
+      },
+    };
+  }
   if (name === "rcp_start_experiment") {
     const id = String(args.experiment_id ?? "");
     const node = project.graph.nodes[id];

@@ -21,6 +21,14 @@ export type VoicePin = {
   starting_instruction: string | null;
   /** The truth scope an Experiment start sends. */
   truth_scope: string[] | null;
+  /** The repository terminal a command runs in, as listed, and the exact command. */
+  terminal: {
+    repository_id: string;
+    machine_id: string;
+    machine_name: string | null;
+    containment: string | null;
+    command: string;
+  } | null;
 };
 
 /** The page's verified identity, as the voice session sees it. Loss is final. */
@@ -124,7 +132,8 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
     const available = deps.resolve(call.name);
     if (!available.ok) return refusal("refused", available.refusal);
     let runArgs = args;
-    if (deps.confirmMode() === "tap" && tool.confirm(args)) {
+    // An always-confirm tool shows its card even when the member runs without confirming.
+    if (tool.alwaysConfirm || (deps.confirmMode() === "tap" && tool.confirm(args))) {
       let pinned: VoicePin;
       try {
         pinned = await deps.pin(call.name, args);

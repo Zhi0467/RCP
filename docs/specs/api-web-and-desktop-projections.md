@@ -837,12 +837,16 @@ The registered tools come from one host-independent catalog
 (`web/src/toolCatalog.ts`) that works without a WebMCP host. `catalog()` is a
 fixed list of every tool's name, description, input schema, and `confirm(args)`
 predicate, whatever the page state. `confirm` is true only for a Work Send,
-Experiment Start, and Auto-research authorization; it stays local, so WebMCP
-host agents get no RCP confirmation. `catalogAsFunctionTools()` is the one
-serializer to the Responses function format and leaves `confirm` out.
-`resolve(name)` returns the executable definition App last registered from page
-state, or a refusal that says why: the wrong surface, nothing to stop, or the
-Start or authorization refusal.
+Experiment Start, Auto-research authorization, and a terminal command; it stays
+local, so WebMCP host agents get no RCP confirmation. `catalogAsFunctionTools()`
+is the one serializer to the Responses function format and leaves `confirm` and
+other local markers out. `resolve(name)` returns the executable definition App
+last published from page state, or a refusal that says why: the wrong surface,
+nothing to stop, or the Start or authorization refusal.
+
+The two terminal tools are voice-only. App publishes them for voice, but
+`webMcpHostDefinitions` keeps them out of WebMCP registration. A shell command
+needs the member's tap, and a WebMCP host has no RCP card to show.
 
 Every call accepts exact ids returned by an RCP read tool and revalidates them
 against the current page snapshot before acting. Read results are bounded JSON,
@@ -946,6 +950,20 @@ first shows a card that pins the project, graph target, arguments, budget, and
 for a message its mode and provider profile. The session then speaks one fixed
 line pointing at the card. Confirm rereads page state and runs nothing if a
 pinned value changed; a decline or timeout returns "not confirmed".
+
+Voice can also use a project terminal. `rcp_list_terminals` reads the open
+project's terminal repositories, the machine each runs on, whether it can open
+a terminal now, and the open sessions. `rcp_run_terminal_command` takes a
+listed `repository_id` and one `command` line of 1 to 1000 characters with no
+control characters; the tool adds the Enter. Every run shows a card, even when
+the panel is set to **Run without confirming**. The card pins the repository,
+the machine, and the exact command, and Confirm rereads the listing. The run
+opens or reuses that repository's session, waits for the replayed output to
+settle, types the line once, and collects output until it is quiet for 1.5
+seconds or 10 seconds pass. It strips terminal escape codes and returns the
+last 4000 characters as untrusted content, with flags for truncation and for a
+window that ended before output went quiet. A confirmed command has the
+member's full terminal power.
 
 The page owns the session's lifetime. It ends the session on End, the idle
 limit, the hard cap, identity or team-session loss, a 401 or 403 on a read,

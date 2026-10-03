@@ -41,7 +41,10 @@ Close this handoff when all of these hold on real hardware:
   list and open artifacts and reports; open views; send Discuss and Work
   messages; start an Experiment; authorize Auto-research with any budget, like
   the visible form; gracefully stop an exact Experiment or Auto-research
-  episode.
+  episode; list the project's terminals, and type one command line into a
+  repository's terminal and hear its recent output. A terminal command always
+  waits for a tap, even with **Run without confirming**. The terminal tools are
+  voice-only; WebMCP does not register them.
 - **It does not read artifact contents.** Existing artifact tools return
   metadata and open the viewer; the voice model cannot see the viewer. A
   question about an artifact's content goes through a Discuss message.

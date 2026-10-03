@@ -14,6 +14,7 @@ const TOOLS = [
   { name: "rcp_get_project_overview", confirm: () => false, readOnly: true },
   { name: "rcp_send_conversation_message", confirm: (args) => args.mode === "work" },
   { name: "rcp_start_experiment", confirm: () => true },
+  { name: "rcp_run_terminal_command", confirm: () => true, alwaysConfirm: true },
 ];
 
 function harness({
@@ -29,7 +30,8 @@ function harness({
   let pinCalls = 0;
   const executor = createVoiceExecutor({
     gate,
-    catalog: () => TOOLS.map(({ name, confirm }) => ({ name, confirm })),
+    catalog: () =>
+      TOOLS.map(({ name, confirm, alwaysConfirm }) => ({ name, confirm, alwaysConfirm })),
     resolve: (name) => {
       if (unavailable) return { ok: false, refusal: "not now" };
       const tool = TOOLS.find((candidate) => candidate.name === name);
@@ -109,6 +111,13 @@ test("without confirming, a confirm call runs at once", async () => {
   const { executor, runs, asked } = harness({ mode: "none" });
   await executor.run(call("c1", "rcp_send_conversation_message", { message: "m", mode: "work" }));
   assert.equal(asked.length, 0);
+  assert.equal(runs.length, 1);
+});
+
+test("an always-confirm tool shows its card even without confirming", async () => {
+  const { executor, runs, asked } = harness({ mode: "none", confirmations: [true] });
+  await executor.run(call("c1", "rcp_run_terminal_command", { repository_id: "r", command: "ls" }));
+  assert.equal(asked.length, 1);
   assert.equal(runs.length, 1);
 });
 
