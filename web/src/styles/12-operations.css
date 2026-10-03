@@ -1107,3 +1107,119 @@
   font-weight: 450;
   height: 34px;
 }
+
+/* Nightly consolidation: the settings card and its Inbox rows. */
+.consolidation-schedule {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.6rem 1rem;
+  margin: 0;
+  padding: 18px 20px 0;
+}
+.consolidation-schedule dt {
+  color: var(--muted);
+  font: var(--type-4xs)/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.consolidation-schedule dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.9rem;
+}
+.consolidation-expired {
+  color: var(--oxblood);
+}
+.consolidation-enable {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 18px 20px 0;
+  font-size: 0.9rem;
+}
+.consolidation-enable label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+.project-consolidation .project-member-error,
+.project-lessons .project-member-error {
+  padding: 0 20px 18px;
+}
+.consolidation-inbox {
+  margin-top: 30px;
+}
+.consolidation-row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin: 0 0 12px;
+  padding: 14px 16px;
+}
+.consolidation-row h3 {
+  margin: 6px 0 8px;
+}
+.consolidation-row.failure h3 {
+  color: var(--oxblood);
+}
+.consolidation-counts {
+  display: flex;
+  gap: 1.5rem;
+  margin: 0 0 8px;
+}
+.consolidation-counts dt {
+  color: var(--muted);
+  font: var(--type-4xs)/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.consolidation-counts dd {
+  margin: 0;
+}
+.consolidation-revisions {
+  margin: 0 0 8px;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+}
+.consolidation-error {
+  color: var(--oxblood);
+  font-size: 0.8rem;
+  margin: 0 0 8px;
+}
+
+/* Operational lessons: one row per lesson, editable in place. */
+.project-lesson-list {
+  list-style: none;
+  margin: 0;
+  padding: 18px 20px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.project-lesson-list li {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.6rem;
+}
+.project-lesson-list p {
+  margin: 0;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
+.project-lesson-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+}
+.project-lesson-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+}
+.project-lessons textarea {
+  font: inherit;
+  font-size: 0.85rem;
+  min-height: 3.2rem;
+  flex: 1 1 260px;
+  width: 100%;
+}

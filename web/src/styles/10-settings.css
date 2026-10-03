@@ -1436,6 +1436,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
 .skill-settings > header,
 .project-members > header,
 .project-notifications > header,
+.project-consolidation > header,
+.project-lessons > header,
 .boundary-settings > header {
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -1446,6 +1448,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .project-members > header > span:first-child,
 .project-notifications > header > span:first-child,
+.project-consolidation > header > span:first-child,
+.project-lessons > header > span:first-child,
 .skill-settings > header > span:first-child,
 .boundary-settings > header > span:first-child {
   align-items: center;
@@ -1458,6 +1462,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
 }
 .project-members h2,
 .project-notifications h2,
+.project-consolidation h2,
+.project-lessons h2,
 .skill-settings h2,
 .boundary-settings h2,
 .agent-defaults h2 {

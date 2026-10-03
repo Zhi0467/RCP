@@ -100,6 +100,9 @@ function Fixture() {
         onCacheMetricsChange={noop}
         onRefreshReadiness={ready}
         spaceKind="personal"
+        consolidation={null}
+        consolidationError={null}
+        onConsolidationChanged={() => undefined}
       />
     </main>
   );

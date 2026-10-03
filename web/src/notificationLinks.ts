@@ -10,7 +10,7 @@ import {
 import type { Episode, ExperimentLoopIndexEntry } from "./types";
 
 export type NotificationItemKind =
-  "proposal" | "decision" | "blocker" | "episode" | "artifact" | "node" | "paper";
+  "proposal" | "decision" | "blocker" | "episode" | "artifact" | "node" | "paper" | "consolidation";
 
 export interface NotificationLink {
   projectId: string;
@@ -20,7 +20,7 @@ export interface NotificationLink {
 }
 
 const LINK_PATTERN =
-  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode|artifact|node|paper)\/([^/?#]+)$/;
+  /^#\/projects\/([^/?#]+)\/targets\/([^/?#]+)\/(proposal|decision|blocker|episode|artifact|node|paper|consolidation)\/([^/?#]+)$/;
 
 export function buildNotificationLink(link: NotificationLink): string {
   const segment = (value: string) =>
@@ -46,7 +46,10 @@ export function parseNotificationLink(hash: string): NotificationLink | null {
   }
 }
 
-/** Graph items open in the Inbox; App then opens the node itself, resolved or not. */
+/**
+ * Graph items and consolidation rows open in the Inbox; App then opens a graph
+ * node itself, resolved or not.
+ */
 export function graphNotificationHash(link: NotificationLink): string {
   return `#/projects/${encodeURIComponent(link.projectId)}?view=attention`;
 }
