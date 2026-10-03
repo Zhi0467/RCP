@@ -17,6 +17,7 @@ import {
   createVoiceExecutor,
   episodeWatchStatus,
   taskWatchStatus,
+  voiceCallOutcome,
   voiceCommentary,
   voiceWatchFromResult,
   type VoiceConfirmMode,
@@ -46,7 +47,12 @@ export type VoicePageState = {
   runScope: string[];
 };
 
-export type VoiceTranscriptLine = { role: "member" | "agent"; text: string };
+/** Spoken lines, plus one activity line per tool call so the member sees what ran. */
+export type VoiceTranscriptLine = {
+  role: "member" | "agent" | "tool";
+  text: string;
+  callId?: string;
+};
 
 export type VoiceProblem = { code: string | null; text: string };
 
@@ -121,6 +127,8 @@ async function buildVoicePin(
   }
   if (name === "rcp_send_conversation_message") {
     const target = await conversationSendTarget(project, page.tasks, args, page.conversationSource);
+    // A Send that would be refused is refused now, not after the member taps Confirm.
+    if (target.refusal) throw new Error(target.refusal);
     return {
       ...base,
       arguments: { ...args },
@@ -129,6 +137,25 @@ async function buildVoicePin(
     };
   }
   throw new Error(`${name} has no confirmation card.`);
+}
+
+function toolActivity(name: string, outcome: ReturnType<typeof voiceCallOutcome> | null): string {
+  const label = name.replace(/^rcp_/, "").replaceAll("_", " ");
+  if (!outcome) return `${label}…`;
+  if (outcome.ok) return `${label}: done`;
+  if (outcome.code === "not_confirmed") return `${label}: not confirmed`;
+  return `${label}: refused${outcome.error ? ` (${outcome.error})` : ""}`;
+}
+
+function setToolLine(
+  lines: VoiceTranscriptLine[],
+  callId: string,
+  text: string,
+): VoiceTranscriptLine[] {
+  const index = lines.findIndex((line) => line.callId === callId);
+  if (index < 0)
+    return [...lines, { role: "tool" as const, text, callId }].slice(-VOICE_TRANSCRIPT_LINES);
+  return lines.map((line, i) => (i === index ? { ...line, text } : line));
 }
 
 function appendTranscript(
@@ -275,8 +302,14 @@ export function useVoiceAgent({
           onFunctionCall: (call) => {
             const origin = page.current.project;
             if (origin) projectNames.set(origin.id, origin.name);
+            setTranscript((lines) =>
+              setToolLine(lines, call.call_id, toolActivity(call.name, null)),
+            );
             void executor.run(call).then((output) => {
-              if (output !== null) sessionRef.current?.sendFunctionOutput(call.call_id, output);
+              if (output === null) return;
+              const text = toolActivity(call.name, voiceCallOutcome(output));
+              setTranscript((lines) => setToolLine(lines, call.call_id, text));
+              sessionRef.current?.sendFunctionOutput(call.call_id, output);
             });
           },
           onEnded: (reason) => {

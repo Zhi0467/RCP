@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createIdentityGate,
   createVoiceExecutor,
+  voiceCallOutcome,
   voiceCommentary,
   voiceWatchFromResult,
 } from "../src/voiceExecutor.ts";
@@ -15,7 +16,13 @@ const TOOLS = [
   { name: "rcp_start_experiment", confirm: () => true },
 ];
 
-function harness({ mode = "tap", confirmations = [], pins = null, failWith = null } = {}) {
+function harness({
+  mode = "tap",
+  confirmations = [],
+  pins = null,
+  failWith = null,
+  unavailable = false,
+} = {}) {
   const runs = [];
   const asked = [];
   const gate = createIdentityGate();
@@ -24,6 +31,7 @@ function harness({ mode = "tap", confirmations = [], pins = null, failWith = nul
     gate,
     catalog: () => TOOLS.map(({ name, confirm }) => ({ name, confirm })),
     resolve: (name) => {
+      if (unavailable) return { ok: false, refusal: "not now" };
       const tool = TOOLS.find((candidate) => candidate.name === name);
       return {
         ok: true,
@@ -80,6 +88,12 @@ test("tap mode runs a confirm call only after Confirm, with the pinned arguments
   assert.deepEqual(confirmed.runs, [
     { name: "rcp_start_experiment", args: { experiment_id: "e", invocation_ceiling: 4 } },
   ]);
+});
+
+test("a tool the page cannot run is refused before any card", async () => {
+  const { executor, asked } = harness({ unavailable: true, confirmations: [true] });
+  assert.equal(code(await executor.run(call("c1", "rcp_start_experiment"))), "refused");
+  assert.equal(asked.length, 0);
 });
 
 test("Confirm refuses when a pinned value changed", async () => {
@@ -213,6 +227,15 @@ test("after End, a late call never dispatches and the member's reason stands", a
   await closing;
   assert.equal(calls.length, 0);
   assert.deepEqual(ended, ["member"]);
+});
+
+test("a call outcome separates refusals from results", () => {
+  assert.equal(
+    voiceCallOutcome('{"ok":false,"code":"not_confirmed","error":"x"}').code,
+    "not_confirmed",
+  );
+  assert.equal(voiceCallOutcome('{"project_id":"p"}').ok, true);
+  assert.equal(voiceCallOutcome("plain text").ok, true);
 });
 
 test("a watch is named for the project its result reports, not the open one", () => {

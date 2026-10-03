@@ -120,6 +120,9 @@ export function createVoiceExecutor(deps: VoiceExecutorDeps) {
         "An identical earlier call has an unknown outcome; check the chat before repeating it.",
       );
     }
+    // A tool the page cannot run now is refused before any card is shown.
+    const available = deps.resolve(call.name);
+    if (!available.ok) return refusal("refused", available.refusal);
     let runArgs = args;
     if (deps.confirmMode() === "tap" && tool.confirm(args)) {
       let pinned: VoicePin;
@@ -190,6 +193,27 @@ export type VoiceWatch = {
 };
 
 /** What to watch after a successful start, from the tool's own structured result. */
+/** What a call's output says happened, for the panel's activity line. */
+export function voiceCallOutcome(output: string): {
+  ok: boolean;
+  code: string | null;
+  error: string | null;
+} {
+  try {
+    const parsed = JSON.parse(output) as { ok?: unknown; code?: unknown; error?: unknown };
+    if (parsed && parsed.ok === false) {
+      return {
+        ok: false,
+        code: typeof parsed.code === "string" ? parsed.code : null,
+        error: typeof parsed.error === "string" ? parsed.error : null,
+      };
+    }
+  } catch {
+    // A plain-text result is a success.
+  }
+  return { ok: true, code: null, error: null };
+}
+
 export function voiceWatchFromResult(
   name: string,
   args: Record<string, unknown>,

@@ -1544,7 +1544,15 @@ export async function conversationSendTarget(
     reasoning: profile.reasoning,
     run_on: profile.run_on,
   };
-  return { existing, node, surface, config };
+  const runTruthScope = existing?.runTruthScope ?? project.default_run_truth_scope ?? [];
+  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
+  const providerReady =
+    readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
+  // Why a Send here would be refused, known before any confirmation card is shown.
+  const refusal =
+    existing?.refusal ??
+    conversationRefusal(null, [], taskStartPending, runTruthScope, providerReady);
+  return { existing, node, surface, config, runTruthScope, refusal };
 }
 
 export async function sendProjectConversationMessage(
@@ -1568,20 +1576,13 @@ export async function sendProjectConversationMessage(
     stringListInput(input, "workflow_ids"),
   );
   const skillIds = exactEnabledSkillIds(project, "skill", stringListInput(input, "skill_ids"));
-  const { existing, node, surface, config } = await conversationSendTarget(
+  const { existing, node, surface, config, runTruthScope, refusal } = await conversationSendTarget(
     project,
     tasks,
     input,
     source,
     taskStartPending,
   );
-  const runTruthScope = existing?.runTruthScope ?? project.default_run_truth_scope ?? [];
-  const readiness = project.provider_readiness[config.run_on]?.[config.provider];
-  const providerReady =
-    readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
-  const refusal =
-    existing?.refusal ??
-    conversationRefusal(null, [], taskStartPending, runTruthScope, providerReady);
   if (refusal) throw new Error(refusal);
   const providerSkillNames = exactEnabledProviderSkillNames(
     project,

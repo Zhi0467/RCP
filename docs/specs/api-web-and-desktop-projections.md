@@ -938,6 +938,9 @@ voice** purpose, which RCP checks against OpenAI before saving.
 The page runs each delegated function call through the shared catalog's
 `resolve`, as the member. It runs one call at a time, ignores a repeated
 `call_id`, and refuses an identical repeat of a call whose outcome is unknown.
+A call the page cannot run now, including a Send its provider is not ready
+for, is refused before any card. The panel transcript shows one line per call
+with its outcome.
 In `tap` mode, a Work Send, Experiment Start, or Auto-research authorization
 first shows a card that pins the project, graph target, arguments, budget, and
 for a message its mode and provider profile. The session then speaks one fixed

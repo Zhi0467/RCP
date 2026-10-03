@@ -1259,6 +1259,11 @@
 .voice-transcript li[data-role="member"] {
   color: var(--muted);
 }
+.voice-transcript li[data-role="tool"] {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--type-xs);
+}
 .voice-panel .voice-disclosure {
   color: var(--muted);
   font-size: var(--type-xs);
