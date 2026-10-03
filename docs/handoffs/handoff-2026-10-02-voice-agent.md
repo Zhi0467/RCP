@@ -7,12 +7,16 @@ Implementation started on this PR on 2026-10-02. Done: slice 1 (shared tool
 catalog, Auto-research authorization and Stop, `rcp_open_view`, stoppable
 Auto-research ids in the overview), slice 2 (voice purposes, voice settings,
 the stateless session route), and slice 3 (voice panel and executor, driven
-headless against a fake transport), and the spec and `AGENTS.md` updates.
-Remaining: the live probe and the real-hardware checks below. This
-builds on the model-backed dictation handoff
-(part 1, its own PR): it reuses that PR's member service connections, member
-settings file, and microphone owner. A live GPT-Live probe gates the session
-work below.
+headless against a fake transport), voice-only terminal tools, and the spec
+and `AGENTS.md` updates. On 2026-10-03 the human ran a live session in a
+browser on a throwaway server: connect, Use for voice, session creation,
+spoken answers, project reads, and opening Settings worked. A headless drive
+of the same served app, with only the OpenAI exchange faked, proved the Work
+card, Confirm, and an accepted Work turn, and a confirmed terminal command
+read back its output. Remaining: a live Work turn and terminal command spoken
+end to end, and the real-hardware checks below. This builds on the
+model-backed dictation handoff (part 1, its own PR): it reuses that PR's
+member service connections, member settings file, and microphone owner.
 
 Close this handoff when all of these hold on real hardware:
 
