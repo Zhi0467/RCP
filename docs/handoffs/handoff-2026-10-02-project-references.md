@@ -160,8 +160,9 @@ kept. A link to another project stays text. A drag carries the link as both
   dragging, and Copy and the picker cover it.
 - **Pick:** `+` becomes "Upload file" and "From project…". The picker reads
   the committed target snapshot for nodes, `/paper` for the paper, and the
-  artifact inventory for artifacts and reports. That inventory's query is
-  extended to list eligible temporary artifacts too.
+  saved artifact inventory (`/artifacts`, the Artifacts tab) for artifacts and
+  reports. Temporary turn outputs are not listed; they can still be referenced
+  by dragging or copying from their run card.
 
 Drafts keep chips per project, target, and chat, beside attachments.
 
@@ -179,7 +180,7 @@ Drafts keep chips per project, target, and chat, beside attachments.
 - Specs: attachments and human input in
   `docs/specs/conversations-episodes-and-watchers.md`, which replaces the "no
   message references" sentence and keeps annotations reference-free; link kinds
-  and the inventory query in `docs/specs/api-web-and-desktop-projections.md`;
+  in `docs/specs/api-web-and-desktop-projections.md`;
   reference reads in `docs/specs/paper-artifacts-and-result-views.md`.
 
 ## Slices
