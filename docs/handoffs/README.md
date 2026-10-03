@@ -1,8 +1,11 @@
 # Active implementation handoffs
 
 - [Standby voice agent](handoff-2026-10-02-voice-agent.md)
-  — designed 2026-10-02 (issue #229, part 2); not implemented yet; builds on
-  the model-backed dictation PR.
+  — designed 2026-10-02 (issue #229, part 2); slice 1 (shared tool catalog)
+  implemented on its PR; builds on the model-backed dictation PR.
+- [Model-backed dictation](handoff-2026-10-02-model-backed-dictation.md)
+  — designed 2026-10-02 (issue #229, part 1); native and backend slices
+  implemented on its PR; web slice and hardware checks remain.
 - [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
   — design settled 2026-10-01; implementation in progress on its PR.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)

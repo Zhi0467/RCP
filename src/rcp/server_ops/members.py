@@ -31,6 +31,7 @@ from rcp.server_ops.models import (
     redact_server_text,
 )
 from rcp.server_runtime import ServerMetadata, data_dir_identity
+from rcp.service_connections import ServiceConnections, member_connection_lock
 from rcp.storage import AppStore, MemberRemovalPreviewRecord
 
 
@@ -193,12 +194,14 @@ class MemberRemovalCoordinator:
             if blockers:
                 raise MemberRemovalRefused(" ".join(blockers))
             try:
-                before = self.store.begin_member_removal(
-                    member_id,
-                    expected_boundary_sha256=boundary_sha256,
-                )
+                with member_connection_lock(self.store, member_id):
+                    before = self.store.begin_member_removal(
+                        member_id,
+                        expected_boundary_sha256=boundary_sha256,
+                    )
             except ValueError as exc:
                 raise MemberRemovalRefused(str(exc)) from exc
+        ServiceConnections(self.store, member_id).remove_member_data()
         errors: list[str] = []
         for operation_id in before.active_task_ids:
             try:
@@ -212,6 +215,7 @@ class MemberRemovalCoordinator:
 
         after = self.store.member_removal_preview(member_id)
         if not after.active_task_ids and not after.active_episode_ids:
+            ServiceConnections(self.store, member_id).remove_member_data()
             self.store.complete_member_removal(member_id)
             after = self.store.member_removal_preview(member_id)
         snapshot = self._snapshot(after)
