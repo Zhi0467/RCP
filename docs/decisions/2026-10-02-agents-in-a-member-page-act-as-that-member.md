@@ -11,18 +11,38 @@ calls are the member's actions, and history records the member. There is no
 agent actor.
 
 It may do what the shared tool list allows: read, open views, send Discuss and
-Work messages, start an Experiment, authorize Auto-research, and gracefully
-stop an episode. Protected judgment stays tap-only and outside the list:
-Proposal judgment, Decision choice, node standing, Hypothesis status, truth
-membership, and branch-merge dispatch.
+Work messages, start an Experiment, authorize Auto-research with any budget,
+and gracefully stop an episode. Protected judgment stays tap-only and outside
+the list: Proposal judgment, Decision choice, node standing, Hypothesis status,
+truth membership, and branch-merge dispatch.
 
 The voice agent adds a confirmation toggle the member controls. By default a
-Work message, Experiment Start, or Auto-research authorization waits for a tap.
+Work message, Experiment Start, or Auto-research authorization waits for a tap
+on a card that pins the exact action. WebMCP host agents get no RCP
+confirmation; any confirmation is the host agent's own.
 
-This reads invariant 3's "only humans authorize episodes" as: the member's own
-authenticated session authorizes, whatever the input device or the agent the
-member chose to run in it. It changes nothing for provider agents, which never
-run in a member's page.
+## What this reinterprets
+
+- **Invariant 3** ("only humans authorize episodes") now reads: the member's
+  own authenticated session authorizes, whatever the input device or the agent
+  the member chose to run in it. Nothing changes for provider agents, which
+  never run in a member's page.
+- **The four boundaries** (authority spec): "a prompt or model can never widen
+  another boundary" still holds. The agent's capability is the tool catalog,
+  fixed in web code (boundaries 2 and 3). The model only chooses among those
+  tools. The confirmation toggle removes a guard; it adds no capability, so
+  invariant 4 holds.
+- **Auto-research carries the orchestrator's Decision exception.** Authorizing
+  Auto-research by voice or WebMCP hands the orchestrator Decision choice on its
+  own branch, as a tap does today. The agent in the page never chooses a
+  Decision itself.
+- **`docs/design.md`** says WebMCP adds no human-judgment authority. Starting
+  episodes and sending Work were already product actions the member's page
+  could take; that sentence gains Auto-research authorization and voice.
+- **Invariant 10d** is about prior transcripts becoming task authority. The
+  voice agent can read a conversation and then send a Work message the member
+  asked for. That message is new input from the member's session, recorded as
+  the member's, not a replayed transcript.
 
 ## Why
 
@@ -39,12 +59,14 @@ run in a member's page.
 
 ## What this gives up
 
-- **A misheard phrase or another voice can start paid work** when confirmation
-  is off.
+- **A misheard phrase or another voice can start paid work** when voice
+  confirmation is off.
 - **Prompt injection.** The agent reads project content that other agents and
-  people wrote: node text, chat answers, artifacts. With confirmation off,
-  injected text could steer it into a Work message or an Auto-research
-  authorization. Tap mode is the guard, and it is the default.
+  people wrote: node text, chat answers, artifact listings. Injected text could
+  steer it into a Work message or an Auto-research authorization with any
+  budget. For voice, tap mode is the guard, and it is the default. For WebMCP,
+  RCP has no guard; only the host agent's own confirmation stands between
+  injected text and paid work.
 - **History cannot tell an agent's action from a click.** A voice or WebMCP
   action records only the member.
 - **The member owns the bill.** Voice runs on the member's own key, and

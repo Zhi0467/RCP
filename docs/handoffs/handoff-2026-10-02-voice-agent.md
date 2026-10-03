@@ -1,10 +1,12 @@
 # Standby voice agent
 
 Date: 2026-10-02
-Status: design settled with the human on 2026-10-02 (issue #229, part 2).
+Status: design settled with the human on 2026-10-02 (issue #229, part 2), then
+revised the same day after an astra xhigh review and a Claude review.
 Nothing is implemented yet. This builds on the model-backed dictation handoff
-(part 1, its own PR): it reuses that PR's member service connections and its
-microphone owner. A live GPT-Live probe gates the session work below.
+(part 1, its own PR): it reuses that PR's member service connections, member
+settings file, and microphone owner. A live GPT-Live probe gates the session
+work below.
 
 Close this handoff when all of these hold on real hardware:
 
@@ -12,11 +14,13 @@ Close this handoff when all of these hold on real hardware:
   hears a correct answer, and asks it to open a node, which opens;
 - by voice, the member sends a Work message, starts an Experiment, and
   authorizes Auto-research, once with "Tap to confirm" and once with "Run
-  without confirming", and hears when each one finishes;
-- by voice, the member gracefully stops a running episode;
+  without confirming", and hears when each one finishes, including after
+  moving to another project;
+- by voice, the member gracefully stops a running Experiment episode and a
+  running Auto-research episode;
 - the same session works from a team member's phone web app;
-- a forgotten session ends at the idle limit, and at the hard cap even while
-  the page is suspended.
+- a forgotten session ends at the idle limit, and closing or suspending the page
+  ends the paid session.
 
 ## Settled
 
@@ -25,37 +29,39 @@ Close this handoff when all of these hold on real hardware:
   member. See the
   [decision record](../decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md).
 - **Its tools are the shared WebMCP tool list.** One list serves both WebMCP
-  host agents and voice. It gains two things, for both:
-  - an **Auto-research authorization** tool;
-  - **navigation** tools that open a node, a conversation, a run, or the Inbox.
-- **What it can do:** read projects, nodes, conversations, artifacts, and
-  Experiments; open views; send Discuss and Work messages; start an
-  Experiment; authorize Auto-research; gracefully stop an exact episode.
+  host agents and voice. Additions, for both: Auto-research authorization,
+  Auto-research Stop, and one `rcp_open_view` navigation tool.
+- **What it can do:** read projects, nodes, conversations, and Experiments;
+  list and open artifacts and reports; open views; send Discuss and Work
+  messages; start an Experiment; authorize Auto-research with any budget, like
+  the visible form; gracefully stop an exact Experiment or Auto-research
+  episode.
+- **It does not read artifact contents.** Existing artifact tools return
+  metadata and open the viewer; the voice model cannot see the viewer. A
+  question about an artifact's content goes through a Discuss message.
 - **What stays tap-only, outside the list:** Proposal judgment, Decision
   choice, node standing, Hypothesis status, graph editing and Sync, truth
   membership, branch-merge dispatch, settings, membership, project creation and
   deletion, and artifact retention.
 - **Confirmation toggle** in the voice panel: **Tap to confirm** (default) or
-  **Run without confirming**. RCP remembers the choice per member. It governs
-  Work messages, Experiment Start, and Auto-research authorization. In tap mode
-  the agent fills in the action and shows a card with the exact message, target,
-  and budget; it runs only on Confirm. WebMCP host agents keep running without
-  an RCP confirmation.
+  **Run without confirming**, remembered per member. It governs Work messages,
+  Experiment Start, and Auto-research authorization. WebMCP host agents keep
+  running without an RCP confirmation.
 - **Click to open, click to end.** No always-listening microphone, no
   background session. A session also ends after a few silent minutes, at a hard
   cap, and on reload, logout, or leaving the space. The panel shows the elapsed
-  time. This keeps the bill bounded: GPT-Live costs $0.05 per minute of open
-  session.
+  time. GPT-Live costs $0.05 per minute of open session.
 - **It speaks first only about its own work.** When a Work turn, Experiment, or
   Auto-research episode it started in this session finishes or needs the
-  member, it says so.
+  member, it says so, wherever the member has navigated since.
 - **No memory across sessions.** The panel shows the live transcript, and RCP
   never stores it. The durable records its actions create are ordinary RCP
   records.
+- **No audio passes through RCP.** Audio goes between the browser and OpenAI.
 - **Billing.** The member's own OpenAI connection, with **Use for voice**
-  checked separately from transcription, so a transcription-only key is never
+  enabled separately from transcription, so a transcription-only key is never
   used for voice. The delegation model defaults to `gpt-6-luna` and can be
-  changed in Settings.
+  changed in the voice settings.
 - **Clients:** desktop app, team browser app, team phone web app. A personal
   paired phone stays notify-only.
 - **Disclosure.** The panel says that audio, and the project content the agent
@@ -71,107 +77,175 @@ Responses model, that model picks tools, and the app executes them.
 
 1. The member clicks the voice button. The page takes the microphone through
    the shared owner and creates a WebRTC offer.
-2. The page posts the offer to `POST /api/voice/sessions`, with the shared
-   tool definitions.
+2. The page posts the offer and the catalog's tool schemas to
+   `POST /api/voice/sessions`.
 3. The backend reads the member's voice-enabled OpenAI key, calls
-   `POST /v1/live/sessions` with the offer, the tools, Responses delegation,
-   the chosen model, and RCP's fixed instructions, and returns the answer SDP
-   and session id. The browser never sees the key.
+   `POST /v1/live/sessions` with the offer, the tools, Responses delegation
+   with `parallel_tool_calls: false`, the member's delegation model, and RCP's
+   fixed instructions, and returns the answer SDP. The browser never sees the
+   key. The backend keeps no session state.
 4. Audio flows between the browser and OpenAI. A WebRTC data channel carries
    events.
 5. When the Responses model calls a function, the page's executor receives it
    on the data channel, runs it, and returns `response.item.create`
    (`function_call_output`) then `response.create`.
-6. The member clicks to end, or a limit ends it. `DELETE
-   /api/voice/sessions/{id}` tells the backend.
+6. The page ends the session by closing its peer connection: on the member's
+   click, the idle limit, the hard cap, reload, logout, or leaving the space.
+
+**The page owns the session's lifetime.** If the page crashes or is suspended,
+the WebRTC transport drops, and OpenAI ends the session. The probe measures how
+fast billing stops after transport loss. If the Live session config has a
+duration limit, the backend also sets it to the hard cap. There is no sideband:
+a sideband receives reflected audio, which would break "no audio passes through
+RCP".
+
+A removed member's page loses API access, so every tool call fails, and the
+session ends at the idle limit at the latest. Two tabs can each open their own
+session; each is a deliberate click and its own bill.
+
+### The shared tool catalog (slice 1 owns it)
+
+Today the tool definitions exist only inside App's WebMCP memo, change with page
+state, and get a registry only when a WebMCP host exists
+(`createWebMcpToolRegistry` returns null without `document.modelContext`).
+Slice 1 adds a host-independent catalog:
+
+- `catalog(): {name, description, inputSchema, confirm}[]`: a fixed list of
+  every tool, independent of page state. `confirm` is a field on the tool's own
+  definition, true for Work Send, Experiment Start, and Auto-research
+  authorization. There is no separate confirmation list.
+- `resolve(name)`: the current executable definition built from the latest page
+  state, or a refusal that says why (wrong screen, nothing to stop, and so on).
+- WebMCP keeps registering conditionally from the same definitions.
 
 ### The executor
 
-- It runs only functions in the shared tool list, against the current page
-  state, with the same id revalidation WebMCP already does. Anything else
-  returns an error result. A tool that is unavailable on the current screen
-  returns a refusal; the session keeps one fixed tool schema list.
-- It deduplicates `call_id`s, so a repeated call runs once.
-- It never replays a Send or Start whose outcome is unknown, for example after a
-  dropped connection. It reports "unknown, check the chat" instead.
-- In tap mode, confirm-required calls wait for the card. GPT-Live keeps talking
-  meanwhile. Decline or timeout returns "not confirmed".
+- It runs only names in the catalog, through `resolve`, with the same id
+  revalidation WebMCP already does. Anything else returns an error result.
+- With `parallel_tool_calls: false`, each response carries at most one function
+  call. A declined or timed-out confirmation returns "not confirmed".
+- It deduplicates `call_id`s. It also keeps a per-session list of calls whose
+  outcome is unknown, for example after a dropped request, and refuses an
+  identical repeat under a new `call_id`. It reports "unknown, check the chat"
+  instead.
+- **Confirmation cards pin the exact action.** A card holds project, graph
+  target, the resolved arguments, the budget, and for a message its mode and
+  provider profile. It shows all of them, including the full Auto-research
+  starting instruction. Confirm re-reads current state and refuses if any pinned
+  value changed. Experiment Start sends the confirmed `invocation_ceiling`
+  explicitly; the Run route already accepts it. One card is pending at a time.
+  GPT-Live keeps talking meanwhile.
+
+### Tools added in slice 1
+
+- **Auto-research authorization.** Today `authorizeAutoResearch` in App.tsx
+  returns nothing, writes errors into dialog state, and changes the view, and
+  its fences are split between the button's `disabled` expression and the
+  function body. Slice 1 extracts one start function that throws and returns
+  the Episode, and one refusal check. The button and the tool both use them.
+  Inputs match the form: `invocation_ceiling` (any value of at least 1),
+  `starting_instruction`, `code_worktree`.
+- **Auto-research Stop.** `rcp_stop_episode` also accepts an Auto-research
+  episode, through the existing `POST .../episodes/{id}/stop`.
+- **`rcp_open_view({kind, id})`** with kind `node`, `conversation`, `run`,
+  `artifact`, or `inbox`. It calls the in-page owners (`openNodeById`,
+  `openChats`, `showExperiment`, `showWebMcpArtifactViewer`, the Inbox view)
+  within the current project and graph target. It never switches project or
+  branch; only `rcp_open_project` changes project.
 
 ### Speaking first
 
-The page already polls task and episode state. The voice module remembers the
-ids it started this session. When one finishes or needs the member, it sends
-one bounded `session.commentary.append` with `delegation_id: null`, and
-GPT-Live says it.
+The voice module remembers the task and episode ids it started this session,
+and polls those exact ids itself, the way `loadWebMcpTask` and
+`loadWebMcpEpisode` already fetch one task or episode. This keeps working after
+navigation; the page's own polling covers only the open project. On a change to
+finished or needs-you, it sends one `session.commentary.append` with
+`delegation_id: null`. The text comes from a fixed template of kind, project
+name, and status. It never includes provider answers or other authored text,
+which could carry injected instructions. A refused poll (membership lost)
+drops the id.
 
-### Limits
+## Contracts
 
-New values in `limits.py`: idle end (start at 3 minutes without speech), hard
-cap (start at 30 minutes), confirmation timeout, and commentary length.
-The page ends a session on idle. The backend owns the hard cap so it holds
-while a page is suspended: it uses the session's own duration limit if the
-Live API has one, otherwise it attaches a sideband
-(`wss://api.openai.com/v1/live/sessions/{session_id}/attach`) and sends
-`session.close` at the deadline.
+`POST /api/voice/sessions`, JSON (keeps the team origin check):
 
-## Backend changes
+- request `{sdp_offer, tools}`; `tools` is the catalog's schema list, capped in
+  size. The backend forwards it unchanged. If the probe shows the data channel
+  accepts `session.update` with tools, the page sends them there instead and
+  the field goes away.
+- response `{sdp_answer, limits: {idle_seconds, hard_cap_seconds,
+  confirm_timeout_seconds, commentary_max_chars}}`. The values live in
+  `limits.py`; the page enforces them.
+- errors: `voice_not_connected` (409) when the member has no voice-enabled
+  connection; `voice_upstream_failed` (502) with a bounded message that never
+  echoes OpenAI's raw error, which can carry key fragments.
+- RCP's fixed instructions state identity and rules (act only through tools,
+  never claim an action ran until its result says so). They do not list
+  capabilities; the catalog does.
 
-- Service connections gain a **voice** purpose, only for the OpenAI preset.
-  Turning it on runs one real authenticated request for the live model, and
-  saves the purpose only if it succeeds.
-- `POST /api/voice/sessions` and `DELETE /api/voice/sessions/{id}`, acting for
-  the authenticated member. One open session per member.
-- The member's voice settings: delegation model and the confirmation toggle.
-- No audio passes through RCP.
+`GET` and `PUT /api/voice/settings`: `{delegation_model, confirm: "tap" |
+"none"}`, stored in the member's settings file from the dictation PR. A
+restore drops the file, so settings fall back to `gpt-6-luna` and tap.
 
-## Web changes
+Service connections gain `purposes`, a subset of `transcription` and `voice`.
+A record without the field means transcription only. Connect takes the
+purposes to enable, and each purpose has its own check: transcription keeps the
+clip check, and voice makes one authenticated request for `gpt-live-1`. So a
+voice-only key can be saved. Voice applies only to the OpenAI preset.
 
-- Shared tool list: the Auto-research authorization tool composes the same
-  owner and fences as the visible control (readiness, budget, single start).
-  Navigation tools use the existing deep links (`notificationLinks.ts`).
-- Voice panel: open and end button, elapsed time, live transcript, the
-  confirmation toggle, confirmation cards, and the disclosure line.
-- Executor, as above.
-- The microphone owner from dictation refuses a voice session while dictating,
-  and the reverse.
+## Native
+
+The microphone usage string in `Info.plist` and `Info.dev.template.plist` says
+the microphone is used only for dictation. It must also name voice, so this PR
+needs a native rebuild and the desktop checks.
 
 ## Slices
 
-Three slices run in parallel; the probe gates merging the session slices, not
-starting them.
-
 0. **Live probe** with a real OpenAI key, on a throwaway server. The human
-   connects the key; agents never type it. Prove one WebRTC session with
-   Responses delegation and one custom function: the page receives the call on
-   the data channel, returns the result there, and the model continues and
-   speaks. Also check: a disconnect during an accepted call, whether session
-   config has a duration limit, and a `delegation_id: null` commentary. Record
-   the results here.
-1. **Shared tools** (web): Auto-research authorization and navigation tools,
+   connects the key; agents never type it. Prove:
+   - one WebRTC session with Responses delegation where the page receives a
+     function call on the data channel, returns the result there, and the model
+     continues and speaks; then a second call in the same session;
+   - WebRTC and microphone capture in the desktop app's WKWebView and in iOS
+     Safari;
+   - how fast billing stops after the transport drops;
+   - whether session config has a duration limit, and whether the data channel
+     accepts `session.update` with tools;
+   - a `delegation_id: null` commentary.
+   Record the results here.
+1. **Shared catalog and tools** (web): catalog and `resolve`, the extracted
+   Auto-research start and refusal check, Auto-research Stop, `rcp_open_view`,
    in WebMCP too. Starts now from `main`.
-2. **Session backend** (Python): voice purpose, routes, member voice settings,
-   hard cap. Starts once the dictation connection store lands; merge that
-   branch in first.
-3. **Voice panel and executor** (web). Starts with slice 1, against slice 2's
-   route contract.
+2. **Session backend** (Python): `purposes` and the voice check, the session
+   route, voice settings. Starts once the dictation connection store lands;
+   merge that branch in first.
+3. **Voice panel and executor** (web, plus the plist string). Starts after
+   slice 1's catalog interface is committed, against the contracts above.
 
 ## Tests
 
 One test per invariant, no wording assertions:
 
-- the executor refuses a function outside the shared list;
-- in tap mode, a confirm-required call runs only after Confirm; in the other
-  mode it runs at once; reads never wait;
-- a repeated `call_id` runs once, and an unknown-outcome Send is not replayed;
-- a session cannot open without a voice-enabled connection, and the key never
-  appears in a response;
-- the hard cap closes the session;
-- the Auto-research tool refuses wherever the visible control would.
+- the executor refuses a name outside the catalog;
+- in tap mode, a `confirm` tool runs only after Confirm, and Confirm refuses
+  when a pinned value changed; in the other mode it runs at once; reads never
+  wait;
+- a repeated `call_id`, or an identical repeat of an unknown-outcome call,
+  does not run again;
+- the Auto-research tool and the button refuse in the same states;
+- `rcp_open_view` never changes project or graph target;
+- the session route refuses without a voice-enabled connection, and no response
+  contains the key or OpenAI's raw error;
+- completion commentary is built only from kind, project name, and status.
 
 ## Docs to update when this lands
 
 - API, Web, and desktop projections spec: the WebMCP section (new tools, a
-  shorter exclusion list) and a voice section.
+  shorter exclusion list, the catalog) and a voice section.
 - Authority and Proposals spec: a human action includes an agent the member
-  runs in their own page, per the decision record.
+  runs in their own page, and the four-boundary paragraph, per the decision
+  record.
 - `docs/design.md`: the WebMCP paragraph names Auto-research and voice.
+- `AGENTS.md`: invariant 3 links the decision record, as invariant 4 links its
+  decisions. This edits agent instructions, so confirm it with the human in
+  the PR.
