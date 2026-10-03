@@ -19,7 +19,7 @@ from rcp.core.models import Patch
 from rcp.history import HistoryManager
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import PROVIDER_IDS, ProviderUsage
-from rcp.skill_registry import official_registry
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord
 from rcp.transport import StateUnavailable
 
@@ -127,6 +127,7 @@ def test_cached_project_migrates_retired_campaign_report_default(manifest, tmp_p
         "campaign-report",
         "graph-audit",
     ]
+    envelope["snapshot"]["skill_defaults_declared"] = ["skill_ids"]
     cache_path.write_text(json.dumps(envelope), encoding="utf-8")
 
     saved = client.get(f"/api/projects/{project_id}/cached")
@@ -810,7 +811,31 @@ def test_clearing_project_cache_rebuilds_the_display_snapshot(manifest, tmp_path
     assert rebuilt["snapshot"]["skill_catalog"] == official_registry().catalog()
 
 
-def test_failed_display_rebuild_keeps_the_offline_copy(manifest, tmp_path, monkeypatch) -> None:
+def _unreachable_reconcile(_self, _project_id):
+    raise StateUnavailable("state host is unreachable")
+
+
+def _cold_mirror_reconcile(self, project_id):
+    service, snapshot = _ORIGINAL_RECONCILE(self, project_id)
+    snapshot["canonical_state"] = {**snapshot["canonical_state"], "reachable": False}
+    return service, snapshot
+
+
+_ORIGINAL_RECONCILE = projects_module.ProjectCatalog.reconcile_snapshot
+
+
+@pytest.mark.parametrize(
+    ("target", "replacement"),
+    [
+        ("reconcile_snapshot", _unreachable_reconcile),
+        ("reconcile_snapshot", _cold_mirror_reconcile),
+        ("commit_cached_snapshot", lambda *_args, **_kwargs: False),
+    ],
+    ids=["unreachable", "cold-mirror", "lost-race"],
+)
+def test_failed_display_rebuild_keeps_the_offline_copy(
+    manifest, tmp_path, monkeypatch, target, replacement
+) -> None:
     data_dir = tmp_path / "data"
     app = create_named_app(str(manifest.path), data_dir=data_dir)
     client = TestClient(app)
@@ -818,14 +843,47 @@ def test_failed_display_rebuild_keeps_the_offline_copy(manifest, tmp_path, monke
     cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
     before = cache_path.read_bytes()
 
-    def unreachable(_self, _project_id):
-        raise StateUnavailable("state host is unreachable")
-
-    monkeypatch.setattr(projects_module.ProjectCatalog, "reconcile_snapshot", unreachable)
+    monkeypatch.setattr(projects_module.ProjectCatalog, target, replacement)
     cleared = client.delete(f"/api/projects/{project_id}/caches")
     assert cleared.status_code == 200
     assert cleared.json()["project_page_rebuilt"] is False
     assert cache_path.read_bytes() == before
+
+
+def test_clearing_a_project_deleted_mid_rebuild_is_not_found(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    def deleted(_self, missing_id):
+        raise KeyError(missing_id)
+
+    monkeypatch.setattr(projects_module.ProjectCatalog, "reconcile_snapshot", deleted)
+    assert client.delete(f"/api/projects/{project_id}/caches").status_code == 404
+
+
+def test_cached_snapshot_refills_only_undeclared_skill_defaults(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    current = SkillDefaults().model_dump(mode="json")
+    older = {**current, "skill_ids": current["skill_ids"][1:]}
+
+    def serve(declared: list[str]) -> dict[str, object]:
+        envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+        envelope["snapshot"]["skill_defaults"] = older
+        envelope["snapshot"]["skill_defaults_declared"] = declared
+        cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+        return client.get(f"/api/projects/{project_id}").json()["skill_defaults"]
+
+    assert serve([]) == current
+    assert serve(["skill_ids"])["skill_ids"] == older["skill_ids"]
 
 
 def test_project_readiness_does_not_open_or_materialize_project(

@@ -553,7 +553,10 @@ def clear_rebuildable_caches(
         )
     metrics = service.clear_rebuildable_caches()
     # The display snapshot doubles as the offline copy, so it is rebuilt, never deleted.
-    metrics["project_page_rebuilt"] = project_display_cache.rebuild_cached_snapshot(project_id)
+    try:
+        metrics["project_page_rebuilt"] = project_display_cache.rebuild_cached_snapshot(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
     return metrics
 
 

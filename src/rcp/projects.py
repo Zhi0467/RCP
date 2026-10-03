@@ -66,7 +66,7 @@ from rcp.server_ops.backup_models import (
     BackupRecoveryRepository,
 )
 from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
-from rcp.skill_registry import official_registry
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.sources import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
@@ -2573,6 +2573,7 @@ class ProjectDisplayCache:
         # The catalog belongs to the running release, not to project state; a
         # cache written by an older release must not hide newer official skills.
         payload["skill_catalog"] = official_registry().catalog()
+        _refill_undeclared_skill_defaults(payload)
         self._complete_live_control(project_id, payload)
         payload["machines"] = [
             {
@@ -2606,21 +2607,34 @@ class ProjectDisplayCache:
         return service, self.complete_snapshot(project_id, draft)
 
     def rebuild_cached_snapshot(self, project_id: str) -> bool:
-        """Rebuild one display cache from current state, keeping the old copy on failure."""
+        """Rebuild one display cache from current state, keeping the old copy on failure.
 
-        try:
-            generation = self._catalog.reserve_cached_snapshot_generation(project_id)
-            service, snapshot = self.reconcile_snapshot(project_id)
-            self._catalog.commit_cached_snapshot(
-                project_id,
-                snapshot,
-                generation=generation,
-                patch_log_head=service.history.workspace.cached_patch_log_head(),
-            )
-        except (OSError, RuntimeError, StateUnavailable, TypeError, ValueError) as exc:
-            self._logger.warning("Could not rebuild display snapshot for %s: %s", project_id, exc)
-            return False
-        return True
+        Raises KeyError when the project no longer exists.
+        """
+
+        # One retry: a concurrent freshness update can take a newer generation.
+        for _attempt in range(2):
+            try:
+                generation = self._catalog.reserve_cached_snapshot_generation(project_id)
+                service, snapshot = self.reconcile_snapshot(project_id)
+                canonical = snapshot.get("canonical_state")
+                if isinstance(canonical, dict) and canonical.get("reachable") is False:
+                    # A cold open falls back to the retained mirror; that is not a rebuild.
+                    raise StateUnavailable(str(canonical.get("error") or "state is unreachable"))
+                if self._catalog.commit_cached_snapshot(
+                    project_id,
+                    snapshot,
+                    generation=generation,
+                    patch_log_head=service.history.workspace.cached_patch_log_head(),
+                ):
+                    return True
+            except (OSError, RuntimeError, StateUnavailable, TypeError, ValueError) as exc:
+                self._logger.warning(
+                    "Could not rebuild display snapshot for %s: %s", project_id, exc
+                )
+                return False
+        self._logger.warning("Display snapshot for %s kept a newer concurrent copy", project_id)
+        return False
 
     def update_settings(
         self,
@@ -3200,6 +3214,21 @@ def _valid_display_snapshot(
         return False
     graph_revision = graph_payload.get("revision")
     return type(graph_revision) is int and graph_revision == revision
+
+
+def _refill_undeclared_skill_defaults(payload: dict[str, object]) -> None:
+    """Serve the running release's defaults for fields the manifest leaves unset."""
+
+    declared = payload.get("skill_defaults_declared")
+    cached = payload.get("skill_defaults")
+    if not isinstance(declared, list) or not isinstance(cached, dict):
+        # Caches written before the declaration was recorded keep their values.
+        return
+    current = SkillDefaults().model_dump(mode="json")
+    payload["skill_defaults"] = {
+        name: cached[name] if name in declared and name in cached else value
+        for name, value in current.items()
+    }
 
 
 def _ensure_snapshot_freshness(
