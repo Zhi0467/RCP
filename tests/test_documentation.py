@@ -12,6 +12,7 @@ EXPECTED_SPECS = {
     "authority-and-proposals.md",
     "auto-research-and-branch-merge.md",
     "conversations-episodes-and-watchers.md",
+    "graph-consolidation-and-lessons.md",
     "graph-history-and-transitions.md",
     "interface-and-visual-design.md",
     "paper-artifacts-and-result-views.md",

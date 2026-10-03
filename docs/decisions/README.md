@@ -1,5 +1,14 @@
 # Active decision records
 
+- [Nightly graph consolidation writes main](2026-10-03-nightly-consolidation-writes-main.md)
+  records why a member may authorize a scheduled Work turn, why it writes main
+  rather than a branch, why it applies inside the turn, and why its report sits
+  in the Inbox.
+
+- [Operational lessons live outside the graph](2026-10-03-operational-lessons-live-outside-the-graph.md)
+  records why how-to-get-work-done notes are an RCP-owned store instead of graph
+  state or repository instruction files, and why agents receive a pointer.
+
 - [Agents ask the human through the command channel](2026-10-01-agents-ask-through-the-command-channel.md)
   records why an agent asks with a staged command verb instead of the
   providers' own ask tools or an RCP MCP server, and why an answer is never
