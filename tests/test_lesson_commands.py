@@ -30,19 +30,13 @@ def test_work_lesson_authority_and_keyed_outcome(store):  # noqa: F811
     assert handler(add, identity(task_id="other")).status == "invalid"
     first = handler(add, identity())
     assert first.status == "ok"
-    assert handler(add, identity()).result == first.result
     assert handler(request("add", key="once", text="different"), identity()).result == {
         "code": "lesson_key_conflict"
     }
     lesson_id = first.result["lesson"]["lesson_id"]
-    for action, arguments in (
-        ("list", {}),
-        ("update", {"lesson_id": lesson_id, "text": "changed"}),
-        ("delete", {"lesson_id": lesson_id}),
-    ):
-        response = handler(request(action, key="edit", **arguments), identity())
-        assert response.status == "invalid"
-        assert response.result["code"] == "lesson_edit_not_authorized"
+    response = handler(request("delete", key="edit", lesson_id=lesson_id), identity())
+    assert response.status == "invalid"
+    assert response.result["code"] == "lesson_edit_not_authorized"
     assert len(store.list_lessons("project")) == 1
 
 

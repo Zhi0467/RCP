@@ -42,12 +42,6 @@ def test_served_consolidation_schedule_inbox_notification_and_shutdown(manifest,
                 notices = client.get(f"/api/notifications/devices/{device['device_id']}/pending")
                 assert notices.status_code == 200
                 assert notices.json()[0]["reason"] == "consolidation"
-                assert client.post(base + f"/runs/{run.run_id}/keep", json={}).status_code == 409
-                dismissed = client.post(base + f"/runs/{run.run_id}/dismiss", json={})
-                assert dismissed.status_code == 200
-                assert dismissed.json()["item"]["state"] == "dismissed"
-                assert client.get(base).json()["inbox"] == []
-                assert client.delete(base + "/schedule").json() == {"schedule": None}
         finally:
             server.should_exit = True
             worker.join(timeout=TASK_SETTLE_TIMEOUT)

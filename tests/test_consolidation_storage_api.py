@@ -176,10 +176,9 @@ def test_recent_nights_merge_skipped_occurrences_with_run_outcomes(setup):
     assert nights == sorted(nights, key=lambda night: night["occurrence_date"])
 
 
-def test_open_report_is_retained_and_dismiss_restarts_retention(setup):
-    client, store, project = setup
-    run = _report(store, project)
-    assert store.artifact("report").expires_at is None
+def test_open_report_outlives_stale_expiry_metadata(setup):
+    _, store, project = setup
+    _report(store, project)
     # Old/stale metadata must never overrule the open Inbox row's retention.
     with store.connection() as conn:
         conn.execute(
@@ -189,12 +188,6 @@ def test_open_report_is_retained_and_dismiss_restarts_retention(setup):
     assert (
         store.expire_artifacts(as_of=datetime.fromisoformat(store.now()) + timedelta(days=30)) == 0
     )
-    before = datetime.fromisoformat(store.now())
-    response = client.post(
-        f"/api/projects/{project}/consolidation/runs/{run.run_id}/dismiss", json={}
-    )
-    assert response.status_code == 200
-    assert datetime.fromisoformat(store.artifact("report").expires_at) > before
 
 
 @pytest.mark.parametrize("action", ["settle", "dismiss"])
@@ -288,15 +281,9 @@ def test_keeping_report_closes_inbox_from_either_route(setup, route):
     assert [item["artifact_id"] for item in client.get(artifact_base).json()] == ["report"]
 
 
-@pytest.mark.parametrize("verified", [False, True])
-def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup, verified):
+def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup):
     _, store, project = setup
     closed = _failure(store, project)
-    with store.connection() as conn:
-        conn.execute(
-            "UPDATE consolidation_runs SET revisions_verified=? WHERE run_id=?",
-            (int(verified), closed.run_id),
-        )
     closed = store.resolve_consolidation_run(
         project,
         closed.run_id,

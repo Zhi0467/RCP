@@ -8,19 +8,20 @@ from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.api import service_connections as routes
-from rcp.service_connections import ConnectionError, ServiceConnections
+from rcp.service_connections import ConnectionError, ServiceConnections, VoiceSettings
 from rcp.storage import AppStore
 
 from .test_server_member_removal import _team
 from .test_service_connections import KEY, MIME, connection
 
 
-def test_removal_fences_late_connect_and_selection_and_resumes_cleanup(tmp_path, monkeypatch):
+def test_removal_fences_late_member_writes_and_resumes_cleanup(tmp_path, monkeypatch):
     store, _, bob, _, _, coordinator = _team(tmp_path)
     private = ServiceConnections(store, bob.user_id)
     item = connection()
     private.save(item, KEY)
     private.select(item["id"])
+    previous = private.credentials(item["id"])[0]
     preview = coordinator.plan(bob.user_id).snapshot
     original = ServiceConnections.remove_member_data
     attempts = 0
@@ -36,7 +37,12 @@ def test_removal_fences_late_connect_and_selection_and_resumes_cleanup(tmp_path,
     with pytest.raises(OSError):
         coordinator.advance(bob.user_id, boundary_sha256=preview.boundary_sha256)
     assert store.space_user(bob.user_id).removal_started_at is not None
-    for write in (lambda: private.save(connection(), KEY), lambda: private.select(item["id"])):
+    for write in (
+        lambda: private.save(connection(), KEY),
+        lambda: private.select(item["id"]),
+        lambda: private.voice_settings(VoiceSettings()),
+        lambda: private.update_purposes(previous, {**previous, "purposes": ["voice"]}),
+    ):
         with pytest.raises(ConnectionError) as error:
             write()
         assert error.value.status == 403
@@ -65,6 +71,9 @@ def test_removal_serializes_with_a_member_write(tmp_path, monkeypatch):
         remove = pool.submit(
             coordinator.advance, bob.user_id, boundary_sha256=preview.boundary_sha256
         )
+        # Removal waits for the member write that holds the lock.
+        with pytest.raises(TimeoutError):
+            remove.result(timeout=0.2)
         release.set()
         write.result()
         remove.result()
@@ -75,7 +84,7 @@ def test_team_audio_allowlist_retains_origin_and_member_isolation(tmp_path, monk
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team")
     alice, token = store.enroll_team_member(bootstrap, "Alice")
     _, code = store.create_team_invitation(alice.user_id)
-    bob, bob_token = store.enroll_team_member(code, "Bob")
+    _, bob_token = store.enroll_team_member(code, "Bob")
     private = ServiceConnections(store, alice.user_id)
     item = connection()
     private.save(item, KEY)
@@ -109,4 +118,3 @@ def test_team_audio_allowlist_retains_origin_and_member_isolation(tmp_path, monk
             client.request("DELETE", f"/api/service-connections/{item['id']}", json={}).status_code
             == 404
         )
-    assert ServiceConnections(store, bob.user_id).summary()["connections"] == []

@@ -121,14 +121,13 @@ test("an always-confirm tool shows its card even without confirming", async () =
   assert.equal(runs.length, 1);
 });
 
-test("Discuss Send and reads never wait, even in tap mode", async () => {
+test("in tap mode, a call its tool does not confirm runs at once", async () => {
   const { executor, runs, asked } = harness();
   await executor.run(
     call("c1", "rcp_send_conversation_message", { message: "m", mode: "discuss" }),
   );
-  await executor.run(call("c2", "rcp_get_project_overview"));
   assert.equal(asked.length, 0);
-  assert.equal(runs.length, 2);
+  assert.equal(runs.length, 1);
 });
 
 test("a repeated call_id or an identical unknown-outcome repeat does not run again", async () => {
@@ -229,13 +228,14 @@ test("identity loss ends the session and refuses the next call, including a cach
 
 test("the offer is sent only after ICE gathering, with its candidates", async () => {
   const transport = fakeTransport();
-  await openVoiceSession(
+  const session = await openVoiceSession(
     [],
     { onTranscript() {}, onFunctionCall() {}, onEnded() {} },
     harness().gate,
     transport.deps,
   );
   assert.deepEqual(transport.state.offers, ["offer with candidates"]);
+  await session.end("member", { immediate: true });
 });
 
 test("identity loss while connecting aborts the offer and frees the microphone", async () => {

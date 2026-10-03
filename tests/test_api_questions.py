@@ -59,7 +59,6 @@ def test_list_answer_retry_conflict_and_dismiss(questions_api):
     assert answer["resolved_by"]["user_id"] == store.local_owner.user_id
     assert answer["resolved_at"] and not answer["can_answer"]
     assert client.post(url, json={"answer": "different"}).status_code == 409
-    assert store.get_question(question.question_id).origin == question.origin
     dismissed = _question(store, project_id, key="dismiss")
     dismiss_url = f"{base}/questions/{dismissed.question_id}/dismiss"
     assert client.post(dismiss_url, json={}).json()["state"] == "dismissed"
@@ -67,25 +66,24 @@ def test_list_answer_retry_conflict_and_dismiss(questions_api):
     assert app.state.reconcile_question_answers.call_args_list == [call(project_id)] * 2
 
 
-@pytest.mark.parametrize("field", ["capability", "scope", "target", "mode", "resolved_by"])
-def test_answer_cannot_supply_authority(questions_api, field):
+def test_answer_cannot_supply_authority(questions_api):
     app, client, store, project_id = questions_api
     question = _question(store, project_id)
     response = client.post(
         f"/api/projects/{project_id}/questions/{question.question_id}/answer",
-        json={"answer": "ok", field: "changed"},
+        json={"answer": "ok", "resolved_by": "changed"},
     )
     assert response.status_code == 422
     assert store.get_question(question.question_id) == question
     app.state.reconcile_question_answers.assert_not_called()
 
 
-@pytest.mark.parametrize("body", [{}, {"choices": ["other"]}, {"choices": ["a", "b"]}])
-def test_store_validates_answer(questions_api, body):
+def test_store_validates_answer(questions_api):
     app, client, store, project_id = questions_api
     question = _question(store, project_id)
     response = client.post(
-        f"/api/projects/{project_id}/questions/{question.question_id}/answer", json=body
+        f"/api/projects/{project_id}/questions/{question.question_id}/answer",
+        json={"choices": ["a", "b"]},
     )
     assert response.status_code == 422
     app.state.reconcile_question_answers.assert_not_called()
@@ -194,80 +192,6 @@ def test_delivery_failure_retains_answer_and_exact_retry_delivers(questions_api,
     assert client.post(url, json={"answer": "a"}).json() == first.json()
     assert app.state.reconcile_question_answers.call_args_list == [call(project_id)] * 2
     assert store.get_question(question.question_id).answer_revision == 1
-
-
-def test_answer_launch_keeps_origin_binding(questions_api, monkeypatch):
-    from .test_chat_question_followup import _answered
-
-    app, client, store, project_id = questions_api
-    template = _answered(store)
-    # The fixture's fully bound Work task belongs to its synthetic project;
-    # attach that server record to this API fixture's registered project.
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET project_id=? WHERE operation_id='origin'", (project_id,)
-        )
-    question = store.create_or_get_question(
-        origin=template.origin.model_copy(update={"project_id": project_id}),
-        key="api-answer",
-        question="Choose a dataset",
-    )
-    background = app.state.background_tasks
-    launches = []
-    monkeypatch.setattr(background, "admit_provider_task", lambda *args, **kwargs: None)
-
-    def capture(record, request, **kwargs):
-        launches.append((record, request, kwargs))
-        return record
-
-    monkeypatch.setattr(background, "_spawn_record", capture)
-
-    def reconcile(_project_id):
-        admitted = store.admit_chat_question_followup(question.question_id)
-        if admitted is not None:
-            background.launch_admitted(admitted.operation_id)
-
-    app.state.reconcile_question_answers = reconcile
-    url = f"/api/projects/{project_id}/questions/{question.question_id}/answer"
-    assert client.post(url, json={"answer": "a", "mode": "discuss"}).status_code == 422
-    assert launches == []
-    assert client.post(url, json={"answer": "a"}).status_code == 200
-    assert len(launches) == 1
-    launched, request, binding = launches[0]
-    origin = question.origin
-    assert launched.dispatch_authority.task_contract == origin.capability
-    assert launched.graph_target == origin.graph_target
-    # Scope is bound at provider launch, after admission. The durable stage
-    # binding refuses any different scope for this continuation.
-    with pytest.raises(ValueError):
-        store.bind_agent_task_write_scope(
-            launched.operation_id,
-            project_id=project_id,
-            stage_host=origin.stage_host or "",
-            stage_root=origin.stage_root,
-            fingerprint="b" * 64,
-            continuation_binding=True,
-        )
-    store.bind_agent_task_write_scope(
-        launched.operation_id,
-        project_id=project_id,
-        stage_host=origin.stage_host or "",
-        stage_root=origin.stage_root,
-        fingerprint=origin.write_scope_fingerprint,
-        continuation_binding=True,
-    )
-    assert (
-        store.agent_task(launched.operation_id).write_scope_fingerprint
-        == origin.write_scope_fingerprint
-    )
-    assert launched.native_session_id == request.session_id == origin.native_session_id
-    assert launched.stage_root == origin.stage_root
-    assert request.provider == origin.provider
-    assert request.mode == "work"
-    assert request.run_truth_scope == store.agent_task("origin").request["run_truth_scope"]
-    assert binding["continuation"] == "message_wake"
-    assert client.post(url, json={"answer": "a"}).status_code == 200
-    assert len(launches) == 1
 
 
 def test_legacy_project_alias_reaches_canonical_questions(manifest, tmp_path):

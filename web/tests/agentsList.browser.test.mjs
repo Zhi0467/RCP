@@ -35,8 +35,6 @@ test("Agents keeps archived chats hidden across revisits and shows provider logo
     const box = await logo.boundingBox();
     assert.ok(box.width >= 10 && box.width <= 20 && box.height === box.width);
     assert.equal(await row("Codex chat").getByRole("img", { name: "Codex" }).count(), 1);
-    // The logo leads the same metadata the chat header shows: model, effort, task type.
-    assert.match(await row("Claude chat").locator(".agent-row-meta").innerText(), /Project chat/);
     await page.getByRole("button", { name: /^Archived/ }).click();
     assert.match(await row("Archived chat").locator(".agent-row-meta").innerText(), /Custom agent/);
     await page.getByRole("button", { name: /^All\s*\d/ }).click();

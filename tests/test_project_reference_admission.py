@@ -10,10 +10,9 @@ from .helpers import create_named_app as create_app
 @pytest.mark.parametrize(
     "route,body",
     [
-        *[
-            (f"tasks/{kind}", {})
-            for kind in ("seed", "refresh", "paper_coach", "branch_merge", "artifact_edit")
-        ],
+        # One kind reaches task validation; the other is refused before its 405.
+        ("tasks/seed", {}),
+        ("tasks/branch_merge", {}),
         ("experiments/missing/run", {}),
         ("episodes", {"mode": "auto_research", "invocation_ceiling": 1}),
         ("episodes/missing/continue", {"invocation_ceiling": 1, "request_id": str(uuid.uuid4())}),

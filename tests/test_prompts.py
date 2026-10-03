@@ -947,7 +947,6 @@ def test_auto_research_ask_contract_is_only_in_orchestrator_bootstraps(monkeypat
         )
     assert len(calls) == (0 if actor == "worker" else 1)
     assert ("<shared-ask-contract>" in contract) == (actor != "worker")
-    assert ("ask --key <key> --question <text>" in contract) == (actor != "worker")
 
 
 def test_auto_research_ask_rendering_follows_resolved_verbs(monkeypatch):

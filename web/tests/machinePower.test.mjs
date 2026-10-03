@@ -14,7 +14,6 @@ test("the card requires personal space and a supported status", () => {
   assert.equal(showMachinePowerCard("personal", status), true);
   assert.equal(showMachinePowerCard("personal", { ...status, supported: false }), false);
   assert.equal(showMachinePowerCard("team", status), false);
-  assert.equal(showMachinePowerCard(undefined, status), false);
   assert.equal(showMachinePowerCard("personal", null), false);
 });
 

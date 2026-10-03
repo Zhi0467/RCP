@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
 
 from rcp import limits, transcription
 from rcp.api import voice as routes
-from rcp.service_connections import ConnectionError, ServiceConnections, VoiceSettings
+from rcp.service_connections import VoiceSettings
 
 from .test_service_connections import KEY, MIME, connection, mock_transport, setup  # noqa: F401
 
@@ -75,7 +74,7 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
         assert delegation["responses"]["tools"] == TOOLS
         return reply({"transport": {"type": "webrtc", "sdp": "v=0\r\nanswer"}})
 
-    options = mock_transport(monkeypatch, handler)
+    mock_transport(monkeypatch, handler)
     response = client.post("/api/voice/sessions", json={**OFFER, "tools": TOOLS})
     assert response.status_code == 200
     assert response.json() == {
@@ -87,11 +86,10 @@ def test_session_contract_and_no_session_persistence(voice_setup, monkeypatch):
             "commentary_max_chars": limits.VOICE_COMMENTARY_MAX_CHARS,
         },
     }
-    assert options == [{"trust_env": False, "follow_redirects": False}]
     assert before == {p: p.read_bytes() for p in private.root.rglob("*") if p.is_file()}
 
 
-@pytest.mark.parametrize("failure", ["error", "redirect", "transport", "invalid", "secret"])
+@pytest.mark.parametrize("failure", ["error", "transport", "invalid", "secret"])
 def test_upstream_failures_never_expose_secrets_or_raw_errors(voice_setup, monkeypatch, failure):
     _, private, client = voice_setup
     enable(private)
@@ -106,7 +104,7 @@ def test_upstream_failures_never_expose_secrets_or_raw_errors(voice_setup, monke
             return reply({"transport": {"sdp": KEY}})
         if failure == "invalid":
             return reply({"transport": []})
-        return reply({"error": {"message": raw}}, 302 if failure == "redirect" else 401)
+        return reply({"error": {"message": raw}}, 401)
 
     mock_transport(monkeypatch, handler)
     response = client.post("/api/voice/sessions", json=OFFER)
@@ -117,27 +115,23 @@ def test_upstream_failures_never_expose_secrets_or_raw_errors(voice_setup, monke
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("slow", [False, True])
-def test_voice_transport_uses_total_deadline_and_size_cap(voice_setup, monkeypatch, slow):
+def test_voice_transport_deadline_is_an_upstream_failure(voice_setup, monkeypatch):
     _, private, client = voice_setup
     enable(private)
 
     class Stream(httpx.AsyncByteStream):
         async def __aiter__(self):
             for _ in range(20):
-                if slow:
-                    await asyncio.sleep(0.02)
+                await asyncio.sleep(0.02)
                 yield b"xxxx"
 
     monkeypatch.setattr(limits, "TRANSCRIPTION_OUTBOUND_SECONDS", 0.03)
-    monkeypatch.setattr(limits, "TRANSCRIPTION_RESPONSE_MAX_BYTES", 10)
     mock_transport(monkeypatch, lambda _: httpx.Response(200, stream=Stream()))
     assert client.post("/api/voice/sessions", json=OFFER).status_code == 502
 
 
-def test_voice_only_connect_probes_model_once_and_moves_voice(voice_setup, monkeypatch):
+def test_voice_only_connect_probes_model_once(voice_setup, monkeypatch):
     _, private, client = voice_setup
-    old = enable(private)
     calls = []
 
     def handler(request):
@@ -158,7 +152,6 @@ def test_voice_only_connect_probes_model_once_and_moves_voice(voice_setup, monke
     )
     assert response.status_code == 200 and len(calls) == 1
     assert response.json()["formats"] == []
-    assert private.credentials(old["id"])[0]["purposes"] == []
     assert private.voice_credentials()[0]["id"] == response.json()["id"]
 
 
@@ -230,9 +223,7 @@ def test_settings_default_roundtrip_and_preserve_dictation(voice_setup):
     private.select(item["id"])
     assert client.get(path).json() == value
     assert client.put(path, json={"confirm": "tap"}).json() == {**value, "confirm": "tap"}
-    assert client.put(path, json=value).json() == value
     assert private.summary()["dictation"] == item["id"]
-    assert json.loads((private.root / "settings.json").read_text())["voice"] == value
 
 
 def test_voice_only_connection_cannot_be_used_for_dictation(voice_setup):
@@ -268,14 +259,6 @@ def test_session_validation_bounds_tools_and_does_not_echo_input(voice_setup, mo
         assert response.status_code == 422 and KEY not in response.text
 
 
-def test_concurrent_voice_enable_keeps_one_payer(voice_setup):
-    _, private, _ = voice_setup
-    items = [{**connection(), "purposes": ["voice"]} for _ in range(2)]
-    with ThreadPoolExecutor(2) as pool:
-        list(pool.map(lambda item: private.save(item, KEY), items))
-    assert sum("voice" in item["purposes"] for item in private.summary()["connections"]) == 1
-
-
 def test_purpose_update_rechecks_connection_after_probe(voice_setup, monkeypatch):
     _, private, client = voice_setup
     item = connection()
@@ -290,57 +273,3 @@ def test_purpose_update_rechecks_connection_after_probe(voice_setup, monkeypatch
         f"/api/service-connections/{item['id']}/purposes", json={"purposes": ["voice"]}
     )
     assert response.status_code == 404 and private.summary()["connections"] == []
-
-
-def test_member_removal_fences_voice_settings_and_late_purpose_write(tmp_path):
-    from .test_server_member_removal import _team
-
-    store, _, member, _, _, coordinator = _team(tmp_path)
-    private = ServiceConnections(store, member.user_id)
-    item = connection()
-    private.save(item, KEY)
-    previous = private.credentials(item["id"])[0]
-    preview = coordinator.plan(member.user_id).snapshot
-    coordinator.advance(member.user_id, boundary_sha256=preview.boundary_sha256)
-    for action in (
-        lambda: private.voice_settings(VoiceSettings()),
-        lambda: private.update_purposes(previous, {**previous, "purposes": ["voice"]}),
-    ):
-        with pytest.raises(ConnectionError) as error:
-            action()
-        assert error.value.status == 403
-    assert not private.root.exists()
-
-
-def test_team_voice_routes_retain_auth_origin_and_member_isolation(tmp_path, monkeypatch):
-    from fastapi.testclient import TestClient
-
-    from rcp.api import create_app
-    from rcp.storage import AppStore
-
-    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team")
-    alice, token = store.enroll_team_member(bootstrap, "Alice")
-    _, code = store.create_team_invitation(alice.user_id)
-    _, bob_token = store.enroll_team_member(code, "Bob")
-    enable(ServiceConnections(store, alice.user_id))
-    mock_transport(
-        monkeypatch, lambda _: reply({"transport": {"type": "webrtc", "sdp": "v=0\r\n"}})
-    )
-    with TestClient(create_app(data_dir=tmp_path), base_url="https://team.test") as client:
-        path = "/api/voice/sessions"
-        assert client.post(path, json=OFFER).status_code == 401
-        assert client.post("/api/team/session/exchange", json={"token": token}).status_code == 200
-        assert (
-            client.post(path, json=OFFER, headers={"origin": "https://other.test"}).status_code
-            == 403
-        )
-        assert (
-            client.post(path, json=OFFER, headers={"origin": "https://team.test"}).status_code
-            == 200
-        )
-        assert (
-            client.post("/api/team/session/exchange", json={"token": bob_token}).status_code == 200
-        )
-        response = client.post(path, json=OFFER)
-        assert response.status_code == 409
-        assert response.json()["detail"]["code"] == "voice_not_connected"

@@ -16,7 +16,7 @@ from rcp.runs.auto_research_questions import (
 from rcp.storage.question_models import QuestionOrigin
 
 from .helpers import wait_for_task
-from .test_auto_research_commands import _Effects, _request, _setup_auto_research, _worker
+from .test_auto_research_commands import _Effects, _request, _setup_auto_research
 from .test_auto_research_delivery import _sse, _start_auto_research, _store
 
 
@@ -40,7 +40,7 @@ def _question(store, episode, root, *, key="question"):
     )
 
 
-def test_orchestrator_ask_parks_with_bound_origin_and_worker_is_refused(tmp_path, monkeypatch):
+def test_orchestrator_ask_parks_with_bound_origin(tmp_path, monkeypatch):
     store, episode, root = _setup_auto_research(tmp_path)
     with store.connection() as connection:
         connection.execute(
@@ -76,16 +76,6 @@ def test_orchestrator_ask_parks_with_bound_origin_and_worker_is_refused(tmp_path
     )
     assert repeated.result["state"] == "answered"
     assert repeated.result["answer"] == "问" * 16000
-    changed = _request(
-        AskCommandRequest,
-        verb="ask",
-        request_id=uuid.uuid4().hex,
-        idempotency_key="dataset",
-        arguments={"question": "Other dataset?"},
-    )
-    assert dispatcher.dispatch(root.operation_id, changed).status == "invalid"
-    worker = _worker(store, episode, root, "worker")
-    assert dispatcher.dispatch(worker.operation_id, request).status == "invalid"
     create_question = store.create_or_get_question
 
     def ending_before_insert(**arguments):

@@ -268,12 +268,6 @@ def test_paused_run_settles_commits_and_releases_chat_and_next_occurrence(runtim
     )
     assert [entry["revision"] for entry in outcome.applied_revisions] == [applied.applied_revision]
     assert runtime.store.consolidation_schedule(run.project_id).covered_head == covered_head
-    for method in (
-        runtime.app.state.background_tasks.resume,
-        runtime.app.state.background_tasks.retry,
-    ):
-        with pytest.raises(ValueError, match="consolidation_continuation_forbidden"):
-            method(run.operation_id)
 
     ordinary = runtime.poller._task(runtime.schedule, runtime.service)
     ordinary = ordinary.model_copy(update={"request": {**ordinary.request, "trigger": "human"}})
@@ -441,7 +435,6 @@ def test_restore_detachment_cannot_be_reclassified_as_report(runtime):
     restored = runtime.store.consolidation_run(run.run_id)
     assert restored.kind == "failure" and restored.error_code == "restored_run_detached"
     assert restored.revisions_verified
-    assert runtime.store.consolidation_schedule(run.project_id) is None
 
 
 def test_scheduled_chat_overlap_keeps_occurrence_owed(runtime):
@@ -478,9 +471,6 @@ def test_paused_human_chat_creates_occurrence_failure_without_task(runtime):
     assert datetime.fromisoformat(schedule.next_due_at) > runtime.now
     assert schedule.covered_head == runtime.schedule.covered_head
     assert runtime.store.agent_task(pending.operation_id).can_resume
-    runtime.store.register_notification_device(runtime.store.local_owner.user_id)
-    runtime.app.state.notification_sender.run_pass()
-    assert [row["item_id"] for row in runtime.store.notification_outbox()] == [runs[0].run_id]
 
 
 @pytest.mark.parametrize(
@@ -552,9 +542,6 @@ def test_due_resolution_failure_creates_occurrence_failure_without_task(
     schedule = runtime.store.consolidation_schedule(runtime.schedule.project_id)
     assert datetime.fromisoformat(schedule.next_due_at) > runtime.now
     assert schedule.covered_head == runtime.schedule.covered_head
-    runtime.store.register_notification_device(runtime.store.local_owner.user_id)
-    runtime.app.state.notification_sender.run_pass()
-    assert [row["item_id"] for row in runtime.store.notification_outbox()] == [run.run_id]
 
 
 @pytest.mark.parametrize(

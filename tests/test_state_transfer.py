@@ -318,7 +318,7 @@ def _open_local_stage(tmp_path):
     return stage, root, source
 
 
-def test_stage_inputs_use_the_tar_fallback_without_rsync(tmp_path, fake_ssh, monkeypatch, caplog):
+def test_stage_inputs_use_the_tar_fallback_without_rsync(tmp_path, fake_ssh, monkeypatch):
     tools = tmp_path / "tools"
     tools.mkdir()
     for name, target in (("python3", sys.executable), ("tar", shutil.which("tar"))):
@@ -326,11 +326,10 @@ def test_stage_inputs_use_the_tar_fallback_without_rsync(tmp_path, fake_ssh, mon
     monkeypatch.setenv("PATH", f"{fake_ssh.parent}{os.pathsep}{tools}")
     stage, root, source = _open_local_stage(tmp_path)
 
-    with caplog.at_level("WARNING", logger=state_transfer.__name__):
-        stage.finalize_inputs()
+    stage.finalize_inputs()
 
+    # The once-per-host warning is pinned by test_fallback_warning_once_per_host.
     assert state_transfer.diagnostics("fixture")["engine"] == "tar"
-    assert len([r for r in caplog.records if "use tar over SSH" in r.getMessage()]) == 1
     assert (root / "inputs" / "context" / "nested" / "notes.md").read_bytes() == b"inputs\n"
     assert (root / "inputs" / "schema.json").read_bytes() == b"{}\n"
     assert sorted(path.name for path in root.iterdir()) == ["inputs"]
@@ -373,7 +372,7 @@ def test_dropped_stage_input_upload_resends_the_same_snapshot(
     else:
         with pytest.raises(StateUnreachable) as caught:
             stage.finalize_inputs()
-        assert str(caught.value).count("exit 255: Connection reset by peer") == drops
+        assert str(caught.value).count("Connection reset by peer") == drops
         assert sorted(path.name for path in (root / "inputs").iterdir()) == []
 
     assert len(attempts) == min(drops + 1, state_transfer.STATE_TRANSFER_ATTEMPTS)
