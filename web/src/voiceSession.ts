@@ -22,7 +22,10 @@ export type VoiceSessionEvents = {
 export type VoiceSessionDeps = {
   claim?: () => MicrophoneClaim;
   createPeer?: () => RTCPeerConnection;
-  requestSession?: (body: { sdp_offer: string; tools: unknown[] }) => Promise<VoiceSessionResponse>;
+  requestSession?: (
+    body: { sdp_offer: string; tools: unknown[] },
+    signal?: AbortSignal,
+  ) => Promise<VoiceSessionResponse>;
   playRemote?: (stream: MediaStream) => () => void;
 };
 
@@ -74,8 +77,19 @@ export async function openVoiceSession(
   const claim = (deps.claim ?? (() => claimMicrophone("voice")))();
   let peer: RTCPeerConnection | null = null;
   const audio: { stop: (() => void) | null } = { stop: null };
+  // Listen before the first await: loss during setup aborts the offer and frees the mic.
+  const setup = new AbortController();
+  let session: VoiceSession | null = null;
+  gate.onLost(() => {
+    if (session) void session.end("identity", { immediate: true });
+    else setup.abort();
+  });
+  const checkSetup = () => {
+    if (setup.signal.aborted) throw new DOMException("Voice ended while connecting.", "AbortError");
+  };
   try {
     const stream = await claim.open();
+    checkSetup();
     peer = (deps.createPeer ?? (() => new RTCPeerConnection()))();
     const pc = peer;
     for (const track of stream.getTracks()) pc.addTrack(track, stream);
@@ -86,13 +100,15 @@ export async function openVoiceSession(
     const channel = pc.createDataChannel("oai-events");
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    const answer = await (deps.requestSession ?? createVoiceSession)({
-      sdp_offer: offer.sdp ?? "",
-      tools,
-    });
+    checkSetup();
+    const answer = await (deps.requestSession ?? createVoiceSession)(
+      { sdp_offer: offer.sdp ?? "", tools },
+      setup.signal,
+    );
+    checkSetup();
     await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp_answer });
-    const session = startSession(answer.limits, pc, channel, claim, () => audio.stop?.(), events);
-    gate.onLost(() => void session.end("identity", { immediate: true }));
+    checkSetup();
+    session = startSession(answer.limits, pc, channel, claim, () => audio.stop?.(), events);
     return session;
   } catch (error) {
     audio.stop?.();

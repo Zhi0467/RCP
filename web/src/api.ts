@@ -732,11 +732,11 @@ export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<Voi
 }
 
 /** Exchange the page's WebRTC offer; the backend holds the key and keeps no session. */
-export function createVoiceSession(body: {
-  sdp_offer: string;
-  tools: unknown[];
-}): Promise<VoiceSessionResponse> {
-  return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body) });
+export function createVoiceSession(
+  body: { sdp_offer: string; tools: unknown[] },
+  signal?: AbortSignal,
+): Promise<VoiceSessionResponse> {
+  return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });
 }
 
 /** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */

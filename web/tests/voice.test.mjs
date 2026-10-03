@@ -198,6 +198,27 @@ test("identity loss ends the session and refuses the next call, including a cach
   assert.equal(runs.length, 0);
 });
 
+test("identity loss while connecting aborts the offer and frees the microphone", async () => {
+  const { gate } = harness();
+  const transport = fakeTransport();
+  let signal;
+  transport.deps.requestSession = (_body, given) => {
+    signal = given;
+    gate.lose();
+    return Promise.resolve({ sdp_answer: "answer", limits: {} });
+  };
+  await assert.rejects(
+    openVoiceSession(
+      [],
+      { onTranscript() {}, onFunctionCall() {}, onEnded() {} },
+      gate,
+      transport.deps,
+    ),
+  );
+  assert.equal(signal.aborted, true);
+  assert.ok(transport.state.released && transport.state.peerClosed);
+});
+
 test("after End, a late call never dispatches and the member's reason stands", async () => {
   const { gate } = harness();
   const transport = fakeTransport();

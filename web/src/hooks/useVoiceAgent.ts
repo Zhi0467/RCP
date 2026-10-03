@@ -288,6 +288,7 @@ export function useVoiceAgent({
       pin: (name, args) => buildVoicePin(name, args, page.current),
       requestConfirmation,
       onSucceeded: (name, args, output) => {
+        if (!gate.ok()) return;
         const watch = voiceWatchFromResult(name, args, output, (id) => projectNames.get(id) ?? "");
         if (watch) watchesRef.current.push(watch);
       },
@@ -306,7 +307,8 @@ export function useVoiceAgent({
               setToolLine(lines, call.call_id, toolActivity(call.name, null)),
             );
             void executor.run(call).then((output) => {
-              if (output === null) return;
+              // A call that outlives its session never reaches the next one.
+              if (output === null || !gate.ok()) return;
               const text = toolActivity(call.name, voiceCallOutcome(output));
               setTranscript((lines) => setToolLine(lines, call.call_id, text));
               sessionRef.current?.sendFunctionOutput(call.call_id, output);
@@ -330,7 +332,8 @@ export function useVoiceAgent({
     } catch (failure) {
       if (gateRef.current === gate) gateRef.current = null;
       setPhase("idle");
-      setProblem(openFailure(failure));
+      // End, sign-out, or leaving during setup aborted it; that is not a failure to show.
+      setProblem(gate.ok() ? openFailure(failure) : null);
       return;
     } finally {
       startingRef.current = false;
@@ -343,10 +346,18 @@ export function useVoiceAgent({
     setPhase("open");
   }, [page, requestConfirmation]);
 
+  const confirmSaves = useRef<{ chain: Promise<unknown>; latest: number }>({
+    chain: Promise.resolve(),
+    latest: 0,
+  });
   const setConfirmMode = useCallback(async (confirm: VoiceConfirmMode) => {
-    // A response that lands after this session ended, or another member's opened, is dropped.
+    // Saves run in click order, and only the newest click's result applies; a response
+    // that lands after this session ended, or another member's opened, is dropped.
     const gate = gateRef.current;
-    const live = () => gate !== null && gateRef.current === gate && gate.ok();
+    const saves = confirmSaves.current;
+    const seq = ++saves.latest;
+    const live = () =>
+      gate !== null && gateRef.current === gate && gate.ok() && saves.latest === seq;
     setSettingsError(null);
     try {
       const current = settingsRef.current ?? (await loadVoiceSettings());
@@ -354,7 +365,9 @@ export function useVoiceAgent({
       // The choice shows at once; Tap also applies at once, Run without confirming once saved.
       setSettings({ ...current, confirm });
       if (confirm === "tap") settingsRef.current = { ...current, confirm };
-      const saved = await saveVoiceSettings({ confirm });
+      const save = saves.chain.then(() => saveVoiceSettings({ confirm }));
+      saves.chain = save.catch(() => {});
+      const saved = await save;
       if (!live()) return;
       settingsRef.current = saved;
       setSettings(saved);
