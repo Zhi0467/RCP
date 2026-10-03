@@ -1,8 +1,9 @@
 # Active implementation handoffs
 
 - [Standby voice agent](handoff-2026-10-02-voice-agent.md)
-  — designed 2026-10-02 (issue #229, part 2); slices 1 and 2 implemented on its
-  PR; the voice panel, live probe, and hardware checks remain.
+  — designed 2026-10-02 (issue #229, part 2); all three slices and the specs
+  implemented on its PR; the live probe, the `AGENTS.md` link, and hardware
+  checks remain.
 - [Model-backed dictation](handoff-2026-10-02-model-backed-dictation.md)
   — implemented 2026-10-02 on its PR; real-hardware and real-service checks
   remain.
