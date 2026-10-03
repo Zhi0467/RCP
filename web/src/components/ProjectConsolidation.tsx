@@ -123,10 +123,16 @@ export function ProjectConsolidation({
       <div className="project-member-actions">
         {schedule ? (
           <>
-            <button type="button" disabled={disabled} onClick={() => void renew()}>
+            <button
+              className="button secondary compact"
+              type="button"
+              disabled={disabled}
+              onClick={() => void renew()}
+            >
               Renew
             </button>
             <button
+              className="button secondary compact"
               type="button"
               disabled={disabled}
               onClick={() => void run(() => disableConsolidation(apiBase))}
@@ -136,6 +142,7 @@ export function ProjectConsolidation({
           </>
         ) : (
           <button
+            className="button secondary compact"
             type="button"
             disabled={disabled || !/^\d{2}:\d{2}$/.test(localTime)}
             onClick={() => void enable()}

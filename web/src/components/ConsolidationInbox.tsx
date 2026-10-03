@@ -1,5 +1,6 @@
 import { AlertTriangle, ArrowRight, Bookmark, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
+import { consolidationAttentionCount } from "../consolidation";
 import type { ConsolidationInboxItem, ConsolidationSchedule } from "../types";
 
 interface Props {
@@ -7,7 +8,7 @@ interface Props {
   schedule: ConsolidationSchedule | null;
   needsRenewal: boolean;
   error: string | null;
-  mutationsDisabled: boolean;
+  writesDisabled: boolean;
   onOpenReport: (artifactId: string) => void;
   onResolve: (runId: string, action: "keep" | "dismiss") => Promise<void>;
   onOpenSettings: () => void;
@@ -19,7 +20,7 @@ export function ConsolidationInbox({
   schedule,
   needsRenewal,
   error,
-  mutationsDisabled,
+  writesDisabled,
   onOpenReport,
   onResolve,
   onOpenSettings,
@@ -44,7 +45,7 @@ export function ConsolidationInbox({
     <section className="consolidation-inbox" aria-label="Consolidation">
       <header className="rail-heading proposal-section-heading">
         <h2>Consolidation</h2>
-        <span className="count-badge">{items.length}</span>
+        <span className="count-badge">{consolidationAttentionCount(items, needsRenewal)}</span>
       </header>
       {error ? <p className="consolidation-error">{error}</p> : null}
       {actionError ? <p className="consolidation-error">{actionError}</p> : null}
@@ -60,7 +61,7 @@ export function ConsolidationInbox({
         </button>
       ) : null}
       {items.map((item) => {
-        const busy = busyRun === item.run_id || mutationsDisabled;
+        const busy = busyRun === item.run_id || writesDisabled;
         return (
           <article className={`consolidation-row ${item.kind}`} key={item.run_id}>
             <div className="proposal-topline">

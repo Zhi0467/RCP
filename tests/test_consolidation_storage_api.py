@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from threading import Event
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,7 +11,7 @@ from fastapi.testclient import TestClient
 from rcp.core.models import AuthorizedHuman
 from rcp.storage import Artifact
 
-from .helpers import create_named_app
+from .helpers import TASK_SETTLE_TIMEOUT, create_named_app
 
 
 @pytest.fixture
@@ -46,7 +49,7 @@ def _failure(store, project_id):
     )
 
 
-def _report(store, project_id):
+def _report(store, project_id, *, settle=True):
     run = _failure(store, project_id)
     # Exercise outcome persistence independently of provider launch.
     with store.connection() as conn:
@@ -66,6 +69,8 @@ def _report(store, project_id):
         ),
         data=b"<p>Report</p>",
     )
+    if not settle:
+        return run
     return store.settle_consolidation_run(
         run.run_id,
         kind="report",
@@ -81,7 +86,7 @@ def _report(store, project_id):
 def test_schedule_contract_renewal_validation_and_delete(setup):
     client, store, project = setup
     base = f"/api/projects/{project}/consolidation"
-    assert client.get(base).json() == {"schedule": None, "inbox": []}
+    assert client.get(base).json() == {"schedule": None, "inbox": [], "can_write": True}
     body = {"local_time": "02:30", "timezone": "America/New_York"}
     first = client.put(base + "/schedule", json=body)
     assert first.status_code == 200
@@ -118,10 +123,19 @@ def test_schedule_contract_renewal_validation_and_delete(setup):
 def test_failure_is_dismiss_only_and_dismiss_closes_shared_inbox(setup):
     client, store, project = setup
     run = _failure(store, project)
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE consolidation_runs SET error_code='history_unavailable',revisions_verified=0 WHERE run_id=?",
+            (run.run_id,),
+        )
     base = f"/api/projects/{project}/consolidation"
     assert client.post(f"{base}/runs/{run.run_id}/keep", json={}).status_code == 409
-    inbox = client.get(base).json()["inbox"]
-    assert len(inbox) == 1 and inbox[0]["operation_id"] is None and inbox[0]["revisions_verified"]
+    response = client.get(base).json()
+    assert response["can_write"]
+    inbox = response["inbox"]
+    assert len(inbox) == 1 and inbox[0]["operation_id"] is None
+    assert not inbox[0]["revisions_verified"]
+    assert inbox[0]["error"]["code"] == "history_unavailable"
     assert (
         client.post(f"{base}/runs/{run.run_id}/dismiss", json={}).json()["item"]["state"]
         == "dismissed"
@@ -133,6 +147,15 @@ def test_open_report_is_retained_and_dismiss_restarts_retention(setup):
     client, store, project = setup
     run = _report(store, project)
     assert store.artifact("report").expires_at is None
+    # Old/stale metadata must never overrule the open Inbox row's retention.
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE artifacts SET metadata=json_set(metadata, '$.expires_at', ?) WHERE artifact_id='report'",
+            (store.now(),),
+        )
+    assert (
+        store.expire_artifacts(as_of=datetime.fromisoformat(store.now()) + timedelta(days=30)) == 0
+    )
     before = datetime.fromisoformat(store.now())
     response = client.post(
         f"/api/projects/{project}/consolidation/runs/{run.run_id}/dismiss", json={}
@@ -141,10 +164,56 @@ def test_open_report_is_retained_and_dismiss_restarts_retention(setup):
     assert datetime.fromisoformat(store.artifact("report").expires_at) > before
 
 
+def test_report_settlement_serializes_with_version_publication(setup, monkeypatch):
+    _, store, project = setup
+    run = _report(store, project, settle=False)
+    artifact = store.artifact("report")
+    original_lock = store.artifact_lock
+    settlement_waiting = Event()
+
+    @contextmanager
+    def observed_lock(artifact_id):
+        settlement_waiting.set()
+        with original_lock(artifact_id):
+            yield
+
+    monkeypatch.setattr(store, "artifact_lock", observed_lock)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with original_lock("report"):
+            future = executor.submit(
+                store.settle_consolidation_run,
+                run.run_id,
+                kind="report",
+                report_artifact_id="report",
+                applied_revisions=[],
+                revisions_verified=True,
+                proposals_created=0,
+            )
+            assert settlement_waiting.wait(timeout=TASK_SETTLE_TIMEOUT)
+            version = store.publish_artifact_version(
+                "report",
+                base_version=artifact.current_version,
+                operation_id="report-edit",
+                data=b"<p>Edited report</p>",
+            )
+        assert future.result(timeout=TASK_SETTLE_TIMEOUT).state == "open"
+    artifact = store.artifact("report")
+    assert artifact.current_version == version.version_id
+    assert artifact.expires_at is None
+    assert (
+        store.expire_artifacts(as_of=datetime.fromisoformat(store.now()) + timedelta(days=30)) == 0
+    )
+    assert store.read_artifact_bytes("report") == b"<p>Edited report</p>"
+
+
 @pytest.mark.parametrize("viewer", [False, True])
 def test_keeping_report_closes_inbox_from_either_route(setup, viewer):
     client, store, project = setup
     run = _report(store, project)
+    artifact_base = f"/api/projects/{project}/artifacts"
+    state = client.get(artifact_base + "/report/state").json()
+    assert state["can_keep"] and store.artifact("report").kept_at is None
+    assert client.get(artifact_base).json() == []
     url = (
         f"/api/projects/{project}/artifacts/report/keep"
         if viewer
@@ -154,6 +223,8 @@ def test_keeping_report_closes_inbox_from_either_route(setup, viewer):
     assert store.consolidation_run(run.run_id).state == "kept"
     assert store.consolidation_run(run.run_id).resolved_by.user_id == store.local_owner.user_id
     assert store.artifact("report").kept_at
+    assert not client.get(artifact_base + "/report/state").json()["can_keep"]
+    assert [item["artifact_id"] for item in client.get(artifact_base).json()] == ["report"]
 
 
 def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup):
@@ -201,6 +272,9 @@ def test_route_guards(setup, monkeypatch, guard):
         == status
     )
     assert store.consolidation_schedule(project) is None
+    if guard != "membership":
+        response = client.get(f"/api/projects/{project}/consolidation")
+        assert response.json()["can_write"] is (guard != "admission")
 
 
 def test_captured_report_survives_expiry_before_outcome_recovery(setup):

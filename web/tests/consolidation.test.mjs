@@ -13,6 +13,7 @@ after(() => server.close());
 const {
   CONSOLIDATION_RENEWAL_WINDOW_DAYS,
   LESSON_TEXT_MAX_CHARS,
+  consolidationAttentionCount,
   consolidationNeedsRenewal,
   lessonTextIsValid,
   openConsolidationItems,
@@ -50,6 +51,9 @@ test("only open consolidation rows count toward the Inbox", () => {
     ["a", "c"],
   );
   assert.deepEqual(openConsolidationItems(null), []);
+  assert.equal(consolidationAttentionCount(openConsolidationItems(view), false), 2);
+  assert.equal(consolidationAttentionCount(openConsolidationItems(view), true), 3);
+  assert.equal(consolidationAttentionCount([], true), 1);
 });
 
 test("lesson text must be non-blank and within the code-point limit", () => {

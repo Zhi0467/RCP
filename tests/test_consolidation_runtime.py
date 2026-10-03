@@ -314,6 +314,50 @@ def test_departed_authorizer_creates_occurrence_failure_without_task(runtime):
     assert runtime.dispatched == []
 
 
+@pytest.mark.parametrize(
+    ("project_status", "error_code"),
+    [
+        ("source_fenced", "consolidation_project_unavailable"),
+        ("archive_bound", "consolidation_project_unavailable"),
+        ("retired", "authorization_membership_lost"),
+    ],
+)
+def test_unavailable_project_creates_occurrence_failure_without_task(
+    runtime, project_status, error_code
+):
+    with runtime.store.connection() as conn:
+        if project_status == "retired":
+            conn.execute(
+                "UPDATE projects SET retired_at=? WHERE project_id=?",
+                (runtime.store.now(), runtime.schedule.project_id),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO project_transfer_requests (
+                    request_id, side, phase, project_id, source_space_id,
+                    target_space_id, record_json, revision, created_at, updated_at
+                ) VALUES ('transfer', 'source', ?, ?, ?, 'target', '{}', 1, ?, ?)""",
+                (
+                    project_status,
+                    runtime.schedule.project_id,
+                    runtime.store.space_id,
+                    runtime.store.now(),
+                    runtime.store.now(),
+                ),
+            )
+    runtime.poller.poll_once()
+    runtime.poller.poll_once()
+    runs = runtime.store.consolidation_runs()
+    assert len(runs) == 1
+    assert runs[0].operation_id is None
+    assert runs[0].error_code == error_code
+    assert runs[0].revisions_verified and runs[0].applied_revisions == []
+    assert runtime.dispatched == []
+    schedule = runtime.store.consolidation_schedule(runtime.schedule.project_id)
+    assert datetime.fromisoformat(schedule.next_due_at) > runtime.now
+    assert schedule.last_outcome == "failed"
+
+
 def test_unavailable_history_is_retried_without_reopening_dismissed_row(runtime, monkeypatch):
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
@@ -403,15 +447,16 @@ def test_scheduled_chat_overlap_keeps_occurrence_owed(runtime):
 
 
 @pytest.mark.parametrize(
-    ("failure_status", "committed", "expected_kind"),
+    ("failure_status", "committed_key", "expected_kind"),
     [
-        ("unavailable", False, "failure"),
-        ("unavailable", True, "report"),
-        ("invalid", False, "report"),
+        ("unavailable", None, "failure"),
+        ("unavailable", "commit", "report"),
+        ("unavailable", "retry", "report"),
+        ("invalid", None, "report"),
     ],
 )
 def test_keyed_apply_failure_requires_canonical_commit_before_success(
-    runtime, failure_status, committed, expected_kind
+    runtime, failure_status, committed_key, expected_kind
 ):
     import hashlib
 
@@ -429,14 +474,14 @@ def test_keyed_apply_failure_requires_canonical_commit_before_success(
     runtime.store.reserve_consolidation_apply(
         run.operation_id, "commit", hashlib.sha256(text.encode()).hexdigest(), text, effect
     )
-    if committed:
+    if committed_key:
         execution = AgentTaskExecution(run.operation_id, runtime.store, AgentProcessControl())
         result, failure = _apply_work_patch(
             runtime.app.state.catalog.open(run.project_id),
             execution,
             text,
             run_truth_scope=list(runtime.service.manifest.project.truth_scope),
-            source_effect_id=effect,
+            source_effect_id=source_effect_id(run.operation_id, committed_key),
         )
         assert failure is None and result.status == "applied"
     runtime.store.record_consolidation_apply_failure(

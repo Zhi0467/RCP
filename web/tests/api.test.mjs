@@ -268,7 +268,7 @@ test("cancelling the identity prompt rejects the original 428 without reconnect 
       (error) =>
         error instanceof ApiError &&
         error.status === 428 &&
-        error.message.includes("identity_name_required"),
+        error.code === "identity_name_required",
     );
     assert.equal(requests, 1);
     assert.equal(reconnects, 0);
@@ -622,6 +622,31 @@ test("watcher cancellation preserves the response and encodes identifiers", asyn
   try {
     assert.deepEqual(await cancelWatcher("/api/projects/project-1", "watcher/1"), response);
     assert.deepEqual(requests, [["/api/projects/project-1/watchers/watcher%2F1/cancel", "POST"]]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("structured API failures expose their message and retain the error code", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    for (const detail of [
+      { code: "lesson_not_found", message: "Fixture failure" },
+      [{ msg: "Fixture failure", type: "value_error" }, { msg: "Other failure" }],
+    ]) {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ detail }), {
+          status: 422,
+          headers: { "Content-Type": "application/json" },
+        });
+      await assert.rejects(api("/api/projects/demo/lessons"), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.message, Array.isArray(detail) ? detail[0].msg : detail.message);
+        assert.equal(error.code, Array.isArray(detail) ? undefined : detail.code);
+        assert.equal(error.status, 422);
+        return true;
+      });
+    }
   } finally {
     globalThis.fetch = originalFetch;
   }

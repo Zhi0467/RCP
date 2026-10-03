@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
+import shutil
 import uuid
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from rcp.agents import AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
@@ -261,8 +265,30 @@ def test_consolidation_continuations_cannot_escape_the_bound_operation(
     manifest, tmp_path, monkeypatch
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    _, execution = _admit(app)
+    request, execution = _admit(app)
     manager = app.state.background_tasks
+    store = execution.store
+    store.mark_agent_task_running(execution.operation_id)
+    store.checkpoint_agent_task(execution.operation_id, native_session_id="paused-session")
+    store.pause_agent_task(execution.operation_id)
+    update = {"status": "unavailable", "repairable": True}
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_runs SET result_json=? WHERE operation_id=?",
+            (
+                json.dumps({"graph_update": update, "graph_updates": [update]}),
+                execution.operation_id,
+            ),
+        )
+    client = TestClient(app)
+    response = client.get(
+        f"/api/projects/{app.state.default_project_id}/tasks/{execution.operation_id}"
+    )
+    assert response.status_code == 200
+    task = response.json()
+    assert not task["can_resume"] and not task["can_retry"] and not task["can_apply_again"]
+    assert not task["result"]["graph_update"]["repairable"]
+    assert not task["result"]["graph_updates"][0]["repairable"]
     for method in (manager.resume, manager.retry, manager.repair_graph_update):
         with pytest.raises(ValueError, match="consolidation_continuation_forbidden"):
             method(execution.operation_id)
@@ -270,10 +296,27 @@ def test_consolidation_continuations_cannot_escape_the_bound_operation(
         manager, "_transport_retry_attempt", lambda *_: pytest.fail("scheduled a retry")
     )
     manager._auto_retry_transport_loss(execution.store.agent_task(execution.operation_id))
+    previous = store.agent_task(execution.operation_id)
+    ordinary = store.create_agent_task(
+        previous.model_copy(
+            update={
+                "operation_id": str(uuid.uuid4()),
+                "status": "queued",
+                "result": None,
+                "native_session_id": None,
+                "request": request.model_copy(update={"trigger": "human"}).model_dump(mode="json"),
+            }
+        )
+    )
+    assert ordinary.request["chat_id"] == request.chat_id
+    assert store.consolidation_run_for_operation(ordinary.operation_id) is None
 
 
 @pytest.mark.asyncio
-async def test_consolidation_admission_keeps_stage_but_drops_native_session(manifest, tmp_path):
+@pytest.mark.parametrize("stage_state", ["current", "restored", "different_host"])
+async def test_consolidation_admission_launches_only_with_compatible_stage(
+    manifest, tmp_path, stage_state
+):
     from .test_api import _chat_task_execution
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -287,11 +330,32 @@ async def test_consolidation_admission_keeps_stage_but_drops_native_session(mani
     ):
         pass
     previous.store.complete_agent_task(previous.operation_id, applied_revision=None, result={})
-    _, execution = _admit(app, chat_id=request.chat_id)
+    if stage_state == "restored":
+        with previous.store.connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            previous.store.detach_agent_tasks_for_restore(
+                conn, diagnostic="restored", now=previous.store.now()
+            )
+        shutil.rmtree(Path(previous.stage_root))
+    elif stage_state == "different_host":
+        with previous.store.connection() as conn:
+            conn.execute(
+                "UPDATE graph_runs SET stage_host='old-host' WHERE operation_id=?",
+                (previous.operation_id,),
+            )
+        shutil.rmtree(Path(previous.stage_root))
+    next_request, execution = _admit(app, chat_id=request.chat_id)
     task = execution.store.agent_task(execution.operation_id)
     assert task.native_session_id is None
     assert task.request["session_id"] is None
-    assert task.stage_root == previous.stage_root
+    assert task.stage_root == (previous.stage_root if stage_state == "current" else None)
+    next_launcher = ScriptedLauncher([{}], message="Next turn finished")
+    async for _ in stream_work_run(
+        app.state.service, next_launcher, next_request, tmp_path / "data", execution=execution
+    ):
+        pass
+    assert next_launcher.calls == 1
+    assert next_launcher.resumed_sessions == [None]
 
 
 @pytest.mark.asyncio

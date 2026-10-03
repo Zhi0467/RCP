@@ -1121,10 +1121,9 @@ class AgentTaskStoreMixin:
                     "native_session_id": None,
                 }
             )
-            resolution = {"outcome": "fresh", "reason_code": "consolidation", "session_id": None}
+            return record, {"outcome": "fresh", "reason_code": "consolidation", "session_id": None}
         if (
-            consolidation is None
-            and record.status == "queued"
+            record.status == "queued"
             and record.parent_operation_id is None
             and record.request.get("patch_kind", "work") == "work"
             and record.request.get("control_episode_id") is None
@@ -1250,15 +1249,7 @@ class AgentTaskStoreMixin:
             return record, resolution
         session_id = record.request.get("session_id")
         watcher_ids = record.request.get("watcher_ids")
-        if consolidation is not None:
-            rows = connection.execute(
-                "SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root "
-                "FROM graph_runs WHERE project_id = ? AND kind = ? "
-                "AND json_extract(request_json, '$.chat_id') = ? "
-                "AND stage_root IS NOT NULL AND stage_root != ''",
-                (record.project_id, record.kind, chat_id),
-            ).fetchall()
-        elif isinstance(session_id, str) and session_id:
+        if isinstance(session_id, str) and session_id:
             rows = connection.execute(
                 """
                 SELECT DISTINCT COALESCE(stage_host, '') AS host, stage_root AS root,

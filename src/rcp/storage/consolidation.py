@@ -8,6 +8,7 @@ import os
 import sqlite3
 import tempfile
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -216,6 +217,7 @@ class ConsolidationStoreMixin:
         next_due_at: str,
         input_head: int,
         task: AgentTaskRecord | None = None,
+        execution_host: str = "",
         error_code: str | None = None,
         error_message: str | None = None,
         skipped: bool = False,
@@ -297,6 +299,7 @@ class ConsolidationStoreMixin:
                     ),
                 )
                 if task:
+                    task = self._bind_consolidation_stage(conn, task, execution_host)
                     self._insert_agent_task(conn, task, continuation_cause="fresh")
             conn.execute(
                 "UPDATE consolidation_schedules SET next_due_at=?,last_run_at=?,last_outcome=?,last_occurrence_date=? WHERE project_id=?",
@@ -309,6 +312,27 @@ class ConsolidationStoreMixin:
                 ),
             )
         return None if skipped else self.consolidation_run(run_id)
+
+    @staticmethod
+    def _bind_consolidation_stage(
+        connection: sqlite3.Connection, task: AgentTaskRecord, execution_host: str
+    ) -> AgentTaskRecord:
+        rows = connection.execute(
+            "SELECT DISTINCT stage_root FROM graph_runs "
+            "WHERE project_id=? AND kind=? AND history_only=0 "
+            "AND json_extract(request_json, '$.chat_id')=? "
+            "AND COALESCE(stage_host, '')=? "
+            "AND stage_root IS NOT NULL AND stage_root != ''",
+            (task.project_id, task.kind, task.request.get("chat_id"), execution_host),
+        ).fetchall()
+        if len(rows) > 1:
+            raise ValueError("The consolidation chat has conflicting saved workspace bindings.")
+        return task.model_copy(
+            update={
+                "stage_host": (execution_host or None) if rows else None,
+                "stage_root": rows[0]["stage_root"] if rows else None,
+            }
+        )
 
     def settle_consolidation_run(
         self,
@@ -325,7 +349,8 @@ class ConsolidationStoreMixin:
         covered_head: int | None = None,
     ) -> ConsolidationRun:
         now = self.now()
-        with self.connection() as conn:
+        lock = self.artifact_lock(report_artifact_id) if report_artifact_id else nullcontext()
+        with lock, self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT * FROM consolidation_runs WHERE run_id=?", (run_id,)
@@ -526,7 +551,7 @@ class ConsolidationStoreMixin:
         return result
 
     def consolidation_report_is_pending(self, artifact) -> bool:
-        """Protect captured reports through a crash before outcome reconciliation."""
+        """Protect open reports and captures awaiting outcome reconciliation."""
         if (
             artifact.source_name != "consolidation-report.html"
             or artifact.media_type != "text/html"
@@ -535,9 +560,15 @@ class ConsolidationStoreMixin:
         with self.connection() as conn:
             return (
                 conn.execute(
-                    "SELECT 1 FROM consolidation_runs WHERE project_id=? AND operation_id=? "
-                    "AND (outcome_settled_at IS NULL OR (revisions_verified=0 AND COALESCE(error_code,'') != 'restored_run_detached'))",
-                    (artifact.project_id, artifact.origin_operation_id or artifact.supplier_id),
+                    "SELECT 1 FROM consolidation_runs WHERE project_id=? AND ("
+                    "(report_artifact_id=? AND kind='report' AND state='open') OR "
+                    "(operation_id=? AND (outcome_settled_at IS NULL OR "
+                    "(revisions_verified=0 AND COALESCE(error_code,'') != 'restored_run_detached'))))",
+                    (
+                        artifact.project_id,
+                        artifact.artifact_id,
+                        artifact.origin_operation_id or artifact.supplier_id,
+                    ),
                 ).fetchone()
                 is not None
             )

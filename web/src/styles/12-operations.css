@@ -1157,6 +1157,7 @@
   padding: 14px 16px;
 }
 .consolidation-row h3 {
+  overflow-wrap: anywhere;
   margin: 6px 0 8px;
 }
 .consolidation-row.failure h3 {
@@ -1177,6 +1178,7 @@
   margin: 0;
 }
 .consolidation-revisions {
+  overflow-wrap: anywhere;
   margin: 0 0 8px;
   padding-left: 1.1rem;
   font-size: 0.85rem;
@@ -1201,6 +1203,7 @@
   padding-bottom: 0.6rem;
 }
 .project-lesson-list p {
+  overflow-wrap: anywhere;
   margin: 0;
   font-size: 0.9rem;
   white-space: pre-wrap;

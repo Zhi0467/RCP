@@ -3,7 +3,10 @@
 Date: 2026-10-03
 Status: design settled with the human on 2026-10-02 in a grilling session. The
 human asked for one PR, implemented autonomously with Codex astra and Claude
-subagents. Nothing is implemented yet.
+subagents. Backend, workflow, Web, and documentation slices are implemented.
+The first review fix pass is implemented with focused backend and Web checks.
+The acceptance journeys below and human PR review remain before this handoff
+can close.
 
 Decisions: [nightly consolidation writes main](../decisions/2026-10-03-nightly-consolidation-writes-main.md)
 and [operational lessons live outside the graph](../decisions/2026-10-03-operational-lessons-live-outside-the-graph.md).
@@ -73,7 +76,7 @@ patch-capable identity.
 
 ```
 GET    /api/projects/{id}/consolidation
-  -> { schedule: Schedule | null, inbox: InboxItem[] }
+  -> { schedule: Schedule | null, inbox: InboxItem[], can_write: bool }
 PUT    /api/projects/{id}/consolidation/schedule   { local_time: "HH:MM", timezone: IANA }
   -> { schedule: Schedule }        # enables or renews; authorizer = acting member
 DELETE /api/projects/{id}/consolidation/schedule   -> { schedule: null }

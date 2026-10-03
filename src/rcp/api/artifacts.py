@@ -304,7 +304,9 @@ def saved_artifacts(
         if (report := store.episode_report(summary.episode_id)) is not None
     )
     for artifact in store.artifacts(project_id):
-        if artifact.artifact_id in represented or artifact.expires_at is not None:
+        if artifact.artifact_id in represented or (
+            artifact.supplier == "turn" and artifact.kept_at is None
+        ):
             continue
         view = artifact_view(artifact.media_type)
         artifact_url = f"{base}/artifacts/{quote(artifact.artifact_id, safe='')}"
@@ -466,7 +468,7 @@ def stored_artifact_state(
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
         else None,
         download_url=f"{base}/download",
-        can_keep=artifact.expires_at is not None,
+        can_keep=artifact.kept_at is None,
         expires_at=artifact.expires_at,
     )
 
@@ -577,8 +579,8 @@ def stored_artifact_viewer(
             descriptor,
             content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
-            keep_url=f"{base}/keep" if artifact.expires_at else None,
-            state="temporary" if artifact.expires_at else "kept",
+            keep_url=f"{base}/keep" if artifact.kept_at is None else None,
+            state="kept" if artifact.kept_at else "temporary",
             panel=comment_panel(
                 {
                     "projectId": project_id,

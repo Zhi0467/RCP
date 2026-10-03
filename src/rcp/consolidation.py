@@ -150,7 +150,20 @@ class ConsolidationPoller:
                 error_message="The schedule authorizer is no longer a project member.",
             )
             return
-        self.store.require_project_accepts_new_work(schedule.project_id)
+        try:
+            self.store.require_project_accepts_new_work(schedule.project_id)
+        except ValueError as exc:
+            self.store.claim_consolidation_occurrence(
+                schedule,
+                occurrence_date=occurrence_date,
+                next_due_at=next_due,
+                input_head=0,
+                now=now.isoformat(),
+                task=None,
+                error_code="consolidation_project_unavailable",
+                error_message=str(exc),
+            )
+            return
         service = self.service_for(schedule.project_id)
         replay, boundaries = service.history.accepted_patch_boundaries()
         if replay.state.replay_status != "complete":
@@ -173,6 +186,9 @@ class ConsolidationPoller:
             input_head=replay.state.revision,
             now=now.isoformat(),
             task=task,
+            execution_host=service.manifest.machine_map[task.request["run_on"]].host
+            if task
+            else "",
             skipped=not changed,
         )
         if run is not None and run.operation_id is not None:
@@ -261,7 +277,7 @@ class ConsolidationPoller:
             and not self.store.agent_task_has_receipt(task.operation_id, "agent_launch")
         )
         verified = prelaunch_failure
-        committed_effects: set[tuple[str | None, str | None]] = set()
+        committed_digests: set[str | None] = set()
         if not prelaunch_failure:
             try:
                 replay, boundaries = self.service_for(
@@ -272,8 +288,8 @@ class ConsolidationPoller:
                 revisions, proposals, covered = operation_outcome(
                     boundaries, task.operation_id, run.input_head
                 )
-                committed_effects = {
-                    (patch.source_effect_id, patch.source_effect_sha256)
+                committed_digests = {
+                    patch.source_effect_sha256
                     for _, patch, _ in boundaries
                     if patch.source_operation_id == task.operation_id
                 }
@@ -301,7 +317,7 @@ class ConsolidationPoller:
         graph_update = (task.result or {}).get("graph_update")
         unresolved_apply = any(
             (receipt.get("last_failure") or {}).get("status") == "unavailable"
-            and (receipt["source_effect_id"], receipt["sha256"]) not in committed_effects
+            and receipt["sha256"] not in committed_digests
             for receipt in self.store.list_consolidation_apply_receipts(task.operation_id)
         )
         if run.error_code == "restored_run_detached":

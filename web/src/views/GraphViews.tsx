@@ -1824,6 +1824,7 @@ function experimentProviderLabel(
 }
 
 interface AttentionOverviewProps {
+  consolidationCount: number;
   proposals: Proposal[];
   decisions: GraphNode[];
   blockers: GraphNode[];
@@ -1831,6 +1832,7 @@ interface AttentionOverviewProps {
 }
 
 export function AttentionOverview({
+  consolidationCount,
   proposals,
   decisions,
   blockers,
@@ -1840,7 +1842,7 @@ export function AttentionOverview({
     <section className="view-panel">
       <ViewHeading
         title="Inbox"
-        aside={`${proposals.length + decisions.length + blockers.length} open`}
+        aside={`${proposals.length + decisions.length + blockers.length + consolidationCount} open`}
       />
       <div className="attention-overview-grid">
         <OverviewCard label="Pending proposals" value={proposals.length} />

@@ -342,6 +342,7 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
     if "apply" in handler.allowed_verbs:
         instructions.append(
             "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
+            "If apply returns unavailable, retry the same bytes with the same key. "
             "This turn cannot create watchers."
         )
     if turn.compute_commands is None or "launch" not in handler.allowed_verbs:

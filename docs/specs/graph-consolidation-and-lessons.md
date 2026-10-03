@@ -32,7 +32,7 @@ A due occurrence:
   outcome);
 - starts nothing when the schedule has expired;
 - creates a failure row and starts nothing when the authorizer is no longer a
-  project member;
+  project member or the project no longer accepts new work;
 - records the outcome `skipped` and starts nothing when no revision outside
   consolidation runs has been committed on main since the last covered head;
 - otherwise creates a run row and admits one consolidation turn bound to it.
@@ -107,6 +107,11 @@ Each run leaves one row in the project's Inbox under **Consolidation**:
   revisions RCP committed for the operation, read from history; if history
   cannot be read the list is marked unverified rather than empty. It offers
   only **Dismiss**.
+
+The consolidation response projects `can_write` from project write admission.
+Keep and Dismiss use that offer independently of graph-history availability;
+these actions never require a graph mutation. Artifact Keep availability and
+kept state use `kept_at`, independently of temporary expiry protection.
 
 Both rows show how many Proposals the run's commits created. Keep and Dismiss
 close the row for every member. The rows grant no authority; Proposals appear

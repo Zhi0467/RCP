@@ -55,7 +55,7 @@ def command(store, subcommand, **kwargs):
 
 def test_lesson_limits_and_human_ownership(store):
     owner = store.local_owner
-    with pytest.raises(LessonError, match="lesson_text_invalid"):
+    with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_text_invalid"):
         store.add_lesson(
             "project",
             "x" * (LESSON_TEXT_MAX_CHARS + 1),
@@ -65,7 +65,7 @@ def test_lesson_limits_and_human_ownership(store):
     for i in range(LESSONS_PER_PROJECT_MAX):
         store.add_lesson("project", str(i), user_id=owner.user_id, display_name="Human")
     assert all(item["human_owned"] for item in store.list_lessons("project"))
-    with pytest.raises(LessonError, match="lessons_limit"):
+    with pytest.raises(LessonError, check=lambda exc: exc.code == "lessons_limit"):
         command(store, "add", key="full", text="overflow")
 
 
@@ -73,7 +73,7 @@ def test_keyed_receipts_survive_delete_and_reject_changed_arguments(store):
     consolidate(store)
     first = command(store, "add", key="add", text="same")
     assert command(store, "add", key="add", text="same") == first
-    with pytest.raises(LessonError, match="lesson_key_conflict"):
+    with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_key_conflict"):
         command(store, "add", key="add", text="different")
     lesson_id = first["lesson"]["lesson_id"]
     assert command(store, "delete", key="del", lesson_id=lesson_id) == {}
@@ -86,14 +86,14 @@ def test_edit_authority_and_live_membership(store):
     lesson = command(store, "add", key="a", text="tip")["lesson"]
     assert not lesson_edit_authorized(store, "turn")
     for verb in ("update", "delete", "list"):
-        with pytest.raises(LessonError, match="lesson_forbidden"):
+        with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_forbidden"):
             command(store, verb, key=verb, lesson_id=lesson["lesson_id"], text="new")
     consolidate(store)
     assert lesson_edit_authorized(store, "turn")
     assert not lesson_edit_authorized(store, "other")
     with store.connection() as connection:
         connection.execute("DELETE FROM project_members WHERE project_id='project'")
-    with pytest.raises(LessonError, match="lesson_forbidden"):
+    with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_forbidden"):
         command(store, "add", key="a", text="tip")
 
 
@@ -124,7 +124,7 @@ def test_human_edit_and_agent_mutation_are_serialized(store, verb):
     if survived:
         lesson = store.list_lessons("project")[0]
         assert lesson["text"] == "human" and lesson["human_owned"]
-        with pytest.raises(LessonError, match="lesson_human_owned"):
+        with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_human_owned"):
             command(store, verb, key="after", lesson_id=lesson_id, text="agent")
 
 

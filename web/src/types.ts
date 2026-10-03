@@ -3333,6 +3333,7 @@ export interface ConsolidationInboxItem {
 }
 
 export interface ConsolidationView {
+  can_write: boolean;
   schedule: ConsolidationSchedule | null;
   inbox: ConsolidationInboxItem[];
 }

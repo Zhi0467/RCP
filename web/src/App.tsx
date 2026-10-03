@@ -175,6 +175,7 @@ import { AttentionRail, ProposalJudgmentSection } from "./components/AttentionRa
 import { ConsolidationInbox } from "./components/ConsolidationInbox";
 import {
   CONSOLIDATION_SETTINGS_ANCHOR,
+  consolidationAttentionCount,
   consolidationNeedsRenewal,
   openConsolidationItems,
   resolveConsolidationRun,
@@ -4284,11 +4285,16 @@ export default function App() {
     );
 
   const openConsolidation = openConsolidationItems(consolidation);
+  const needsConsolidationRenewal = consolidationNeedsRenewal(
+    consolidation?.schedule ?? null,
+    Date.now(),
+  );
+  const consolidationCount = consolidationAttentionCount(
+    openConsolidation,
+    needsConsolidationRenewal,
+  );
   const attentionCount =
-    pendingProposals.length +
-    attentionDecisions.length +
-    openBlockers.length +
-    openConsolidation.length;
+    pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
   const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
@@ -4838,6 +4844,7 @@ export default function App() {
                   proposals={pendingProposals}
                   decisions={attentionDecisions}
                   blockers={openBlockers}
+                  consolidationCount={consolidationCount}
                   onSelectNode={openNode}
                 />
                 <ProposalJudgmentSection
@@ -4856,12 +4863,9 @@ export default function App() {
                 <ConsolidationInbox
                   items={openConsolidation}
                   schedule={consolidation?.schedule ?? null}
-                  needsRenewal={consolidationNeedsRenewal(
-                    consolidation?.schedule ?? null,
-                    Date.now(),
-                  )}
+                  needsRenewal={needsConsolidationRenewal}
                   error={consolidationError}
-                  mutationsDisabled={mutationsDisabled}
+                  writesDisabled={!consolidation?.can_write}
                   onOpenReport={(artifactId) => openArtifact({ projectId: project.id, artifactId })}
                   onResolve={async (runId, action) => {
                     await resolveConsolidationRun(apiBase, runId, action);

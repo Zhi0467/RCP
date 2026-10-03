@@ -14,7 +14,17 @@ from rcp.limits import LESSON_TEXT_MAX_CHARS, LESSONS_LIST_PAGE_SIZE, LESSONS_PE
 class LessonError(ValueError):
     def __init__(self, code: str):
         self.code = code
-        super().__init__(code)
+        messages = {
+            "lesson_forbidden": "This turn or member is not authorized to manage these lessons.",
+            "lesson_text_invalid": f"Enter a nonblank lesson of at most {LESSON_TEXT_MAX_CHARS} characters.",
+            "lessons_limit": f"This project has reached its limit of {LESSONS_PER_PROJECT_MAX} lessons.",
+            "lesson_not_found": "This lesson no longer exists. Refresh the lesson list.",
+            "lesson_human_owned": "Only a project member may change a human-owned lesson.",
+            "lesson_command_invalid": "The requested lesson command is not supported.",
+            "lesson_key_invalid": "Provide a valid idempotency key for this lesson command.",
+            "lesson_key_conflict": "This key was already used with different lesson arguments.",
+        }
+        super().__init__(messages[code])
 
 
 def migrate_operational_lessons(connection: sqlite3.Connection) -> None:

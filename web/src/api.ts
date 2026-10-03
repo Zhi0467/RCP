@@ -58,11 +58,13 @@ export const TEAM_SHELL_PROTOCOL_VERSION = 3;
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly code: string | undefined;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -298,6 +300,17 @@ function apiError(status: number, body: unknown): ApiError {
     body && typeof body === "object" && "detail" in body
       ? (body as { detail: unknown }).detail
       : undefined;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const { message, code } = detail as { message?: unknown; code?: unknown };
+    return new ApiError(
+      typeof message === "string" ? message : JSON.stringify(detail),
+      status,
+      typeof code === "string" ? code : undefined,
+    );
+  }
+  if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
+    return new ApiError(detail[0].msg, status);
+  }
   return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), status);
 }
 

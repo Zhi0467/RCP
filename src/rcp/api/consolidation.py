@@ -82,7 +82,13 @@ def item_response(run: ConsolidationRun) -> dict:
 def get_consolidation(project_id: str, *, store: Store, catalog: Catalog) -> dict:
     require_registered_project(catalog, project_id)
     project_id = catalog.resolve_project_id(project_id)
+    try:
+        store.require_project_accepts_new_work(project_id)
+        can_write = True
+    except ValueError:
+        can_write = False
     return {
+        "can_write": can_write,
         "schedule": schedule_response(store.consolidation_schedule(project_id), store.now()),
         "inbox": [
             item_response(run) for run in store.consolidation_runs(project_id, open_only=True)

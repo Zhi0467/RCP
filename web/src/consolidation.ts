@@ -85,6 +85,13 @@ export function openConsolidationItems(view: ConsolidationView | null): Consolid
   return (view?.inbox ?? []).filter((item) => item.state === "open");
 }
 
+export function consolidationAttentionCount(
+  items: ConsolidationInboxItem[],
+  needsRenewal: boolean,
+): number {
+  return items.length + Number(needsRenewal);
+}
+
 /** The server counts characters as code points; so does this limit. */
 export function lessonTextIsValid(text: string): boolean {
   const trimmed = text.trim();

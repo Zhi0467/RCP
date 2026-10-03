@@ -3124,7 +3124,7 @@ def resume_experiment_command_mailbox(
     context = _ExperimentMailboxContext.model_validate(saved)
     return restore_work_validator_mailbox(
         execution,
-        command_handler=_resume_work_command_handler(execution, context),
+        command_handler=_resume_work_command_handler(execution, context, service),
         validate=lambda text: _validate_work_patch_live(
             service(),
             text,

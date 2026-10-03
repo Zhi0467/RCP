@@ -697,7 +697,8 @@ responses before checking provider liveness. Concrete owners restore their exact
 launch-time policy; no new credential or authority is issued. Work and Experiment
 checkpoints retain whether the resolved launch handler offered `ask`; restoration
 requires both that saved offer and current owner authorization. Older checkpoints
-without the offer remain validation/compute-only. Checkpoints use the
+without the offer cannot add `ask`; Work owners still receive `lesson` under
+their server-owned task authority. Checkpoints use the
 existing private provider-credential storage protections and backup exclusion.
 
 Mailbox listing, request reading, handling, and response publication retry

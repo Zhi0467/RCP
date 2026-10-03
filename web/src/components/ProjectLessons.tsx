@@ -43,6 +43,7 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
       return true;
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : String(failure));
+      await reload().catch(() => {});
       return false;
     } finally {
       setBusy(false);
@@ -84,6 +85,7 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
               {editing?.lessonId === lesson.lesson_id ? (
                 <>
                   <button
+                    className="button secondary compact"
                     type="button"
                     disabled={disabled || !lessonTextIsValid(editing.text)}
                     onClick={async () => {
@@ -95,15 +97,20 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
                   >
                     Save
                   </button>
-                  <button type="button" disabled={busy} onClick={() => setEditing(null)}>
+                  <button
+                    className="button secondary compact"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setEditing(null)}
+                  >
                     Cancel
                   </button>
                 </>
               ) : confirmingDelete === lesson.lesson_id ? (
                 <>
                   <button
+                    className="button secondary compact danger"
                     type="button"
-                    className="danger"
                     disabled={disabled}
                     onClick={async () => {
                       if (await run(() => deleteLesson(apiBase, lesson.lesson_id)))
@@ -112,13 +119,19 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
                   >
                     Confirm delete
                   </button>
-                  <button type="button" disabled={busy} onClick={() => setConfirmingDelete(null)}>
+                  <button
+                    className="button secondary compact"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setConfirmingDelete(null)}
+                  >
                     Cancel
                   </button>
                 </>
               ) : (
                 <>
                   <button
+                    className="button secondary compact"
                     type="button"
                     disabled={disabled}
                     onClick={() => {
@@ -129,6 +142,7 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
                     Edit
                   </button>
                   <button
+                    className="button secondary compact"
                     type="button"
                     disabled={disabled}
                     onClick={() => {
@@ -153,6 +167,7 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
           onChange={(event) => setDraft(event.target.value)}
         />
         <button
+          className="button secondary compact"
           type="button"
           disabled={disabled || !lessonTextIsValid(draft)}
           onClick={async () => {

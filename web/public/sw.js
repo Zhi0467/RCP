@@ -8,6 +8,7 @@ const REASONS = {
   blocker: "A Blocker is open",
   episode_needs_action: "An episode needs you",
   episode_finished: "An episode finished",
+  consolidation: "Nightly consolidation needs you",
   test: "Notifications are on",
 };
 

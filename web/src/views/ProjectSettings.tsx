@@ -880,13 +880,13 @@ export function ProjectSettings({
         schedule={consolidation?.schedule ?? null}
         loaded={consolidation !== null}
         loadError={consolidationError}
-        writesDisabled={writesDisabled}
+        writesDisabled={!consolidation?.can_write}
         onChanged={onConsolidationChanged}
       />
       <ProjectLessons
         key={`lessons:${project.id}`}
         apiBase={apiBase}
-        writesDisabled={writesDisabled}
+        writesDisabled={!consolidation?.can_write}
       />
 
       <section className="settings-section compute-settings">
