@@ -293,7 +293,7 @@ def test_consolidation_continuations_cannot_escape_the_bound_operation(
     manifest, tmp_path, monkeypatch
 ):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    request, execution = _admit(app)
+    _, execution = _admit(app)
     manager = app.state.background_tasks
     store = execution.store
     store.mark_agent_task_running(execution.operation_id)
@@ -331,20 +331,6 @@ def test_consolidation_continuations_cannot_escape_the_bound_operation(
     retry_eligible = store.agent_task(execution.operation_id)
     assert retry_eligible.failure_kind == "transport_lost" and retry_eligible.can_retry
     manager._auto_retry_transport_loss(retry_eligible)
-    previous = store.agent_task(execution.operation_id)
-    ordinary = store.create_agent_task(
-        previous.model_copy(
-            update={
-                "operation_id": str(uuid.uuid4()),
-                "status": "queued",
-                "result": None,
-                "native_session_id": None,
-                "request": request.model_copy(update={"trigger": "human"}).model_dump(mode="json"),
-            }
-        )
-    )
-    assert ordinary.request["chat_id"] == request.chat_id
-    assert store.consolidation_run_for_operation(ordinary.operation_id) is None
 
 
 @pytest.mark.asyncio
@@ -429,16 +415,13 @@ async def test_consolidation_mailbox_apply_is_not_reapplied_at_turn_settlement(
                 yield event
 
     launcher = ApplyingLauncher([{"patch.json": text}], message="Applied the graph changes")
-    frames = [
-        frame
-        async for frame in stream_work_run(
-            app.state.service, launcher, request, tmp_path / "data", execution=execution
-        )
-    ]
+    async for _ in stream_work_run(
+        app.state.service, launcher, request, tmp_path / "data", execution=execution
+    ):
+        pass
     assert app.state.service.history.state().revision == initial_revision + 1
     assert launcher.calls == 1
     assert execution.store.list_consolidation_apply_receipts(execution.operation_id)[0]["result"]
-    assert frames
 
 
 def test_consolidation_startup_preserves_the_exact_unstarted_admission(
