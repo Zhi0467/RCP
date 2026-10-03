@@ -221,7 +221,7 @@ type ChatAnnotationComposer = SelectedChatAnnotationComposer | KeyboardChatAnnot
 const EMPTY_WATCHERS: WatcherRecord[] = [];
 const DICTATION_SEGMENT_MS = 55_000;
 const SYSTEM_DICTATION_ELSEWHERE =
-  "Your dictation service is macOS, which works only in the desktop app. Choose a connection in Space settings, under Transcription.";
+  "Your dictation service is macOS, which works only in the desktop app. Choose a connection in Space settings, under Dictation and voice.";
 
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 
