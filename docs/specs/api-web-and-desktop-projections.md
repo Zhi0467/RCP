@@ -15,7 +15,9 @@ The project-scoped terminal routes are:
 - `POST /api/projects/{project_id}/terminals/probe`: invalidate this project's
   machine probes and schedule fresh results.
 - `POST /api/projects/{project_id}/terminals` with `repository_id`: open or return
-  the single existing session for that repository and project.
+  the single existing session for that repository and project. With
+  `require_new: true` it returns 409 instead of an existing session, decided
+  under the manager's lock; the voice agent uses it before typing.
 - `DELETE /api/projects/{project_id}/terminals/{session_id}`: end that session.
 - `WS /api/projects/{project_id}/terminals/{session_id}/ws`: binary PTY output,
   JSON `input` (`data`) and `resize` (`cols`, `rows`) messages, and a JSON `ended`

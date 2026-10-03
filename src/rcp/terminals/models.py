@@ -13,6 +13,10 @@ class TerminalUnavailable(RuntimeError):
     """The required terminal launch or cleanup could not be completed."""
 
 
+class TerminalAlreadyOpen(TerminalUnavailable):
+    """A caller that needs a fresh shell found one already open for the repository."""
+
+
 class SubscriberDetached:
     """One viewer fell behind its own output; the session is unaffected.
 

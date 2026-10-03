@@ -2278,6 +2278,11 @@ export async function openProjectView(
     const entries = episode.mode === "auto_research" ? [] : await source.loadExperimentEntries();
     // An Experiment run route names its own graph target; never pair it with another one.
     const entry = entries.find((item) => item.episode?.episode_id === id);
+    // Without its board entry the route falls back to the generic Runs tab, which is
+    // not the run that was asked for.
+    if (episode.mode !== "auto_research" && !entry) {
+      throw new Error(`Episode ${id} has no exact run view; open the Runs tab instead.`);
+    }
     if (entry && !sameGraphTarget(entry.graph_target, project.graph_target)) {
       throw new Error(`Episode ${id} runs on another graph target; open that graph first.`);
     }

@@ -2063,7 +2063,7 @@ function terminalDoubles(output = "", openSessions = []) {
   const sockets = [];
   const bytes = (text) => new TextEncoder().encode(text).buffer;
   const fetchJson = async (path, init) => {
-    requests.push([init?.method ?? "GET", path]);
+    requests.push([init?.method ?? "GET", path, init?.body]);
     if (path.endsWith("/repositories")) {
       return [{ repository_id: "code", machine_id: "local", backend_name: null, eligible: true }];
     }
@@ -2181,11 +2181,13 @@ test("voice-only terminal tools resolve for voice but never register with WebMCP
 
 test("a terminal run types one line after replay and returns stripped, bounded output", async () => {
   const output = `\u001b[32mok\u001b[0m\r\n${"x".repeat(5_000)}\u001b]0;title\u0007$ `;
-  const { sockets, deps } = terminalDoubles(output);
+  const { requests, sockets, deps } = terminalDoubles(output);
   const run = voiceTerminalToolDefinitions("project-1", deps)[1];
   const result = JSON.parse(
     (await run.execute({ repository_id: "code", command: "git status" })).content[0].text,
   );
+  const opened = requests.find(([method]) => method === "POST");
+  assert.equal(JSON.parse(opened[2]).require_new, true);
   assert.equal(sockets.length, 1);
   assert.deepEqual(sockets[0].sent, [{ type: "input", data: "git status\r" }]);
   assert.ok(sockets[0].closed);
@@ -2318,6 +2320,8 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
   calls.length = 0;
   entry.graph_target = { kind: "main" };
   await assert.rejects(open({ kind: "run", id: "episode-1" }));
+  episodes.push({ episode_id: "old-run", project_id: "project-1", mode: "experiment_loop" });
+  await assert.rejects(open({ kind: "run", id: "old-run" }));
   current = false;
   for (const input of inputs) await assert.rejects(open(input));
   assert.deepEqual(calls, []);

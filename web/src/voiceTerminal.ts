@@ -126,22 +126,30 @@ export async function terminalRepository(
   return repository;
 }
 
-/** Throws unless the repository has no open terminal, or one voice started and left at rest. */
+const ALREADY_OPEN =
+  "This repository's terminal is already open, and voice types only into a terminal it started. Close it in the Terminals tab, or run the command there.";
+
+/**
+ * Throws unless the repository has no open terminal, or one voice started and left at
+ * rest; returns that resting session's id, or null when voice must open a new one.
+ */
 export async function assertVoiceMayType(
   projectId: string,
   repositoryId: string,
   fetchJson: VoiceTerminalDeps["fetchJson"],
-): Promise<void> {
+): Promise<string | null> {
   const open = (await fetchJson<TerminalSession[]>(terminalsPath(projectId))).find(
     (item) => item.repository_id === repositoryId,
   );
-  if (open && voiceSessions.get(open.session_id) !== true) {
+  if (!open) return null;
+  if (voiceSessions.get(open.session_id) !== true) {
     throw new Error(
       voiceSessions.has(open.session_id)
         ? "Voice's last command in this terminal may still be running; check the Terminals tab."
-        : "This repository's terminal is already open, and voice types only into a terminal it started. Close it in the Terminals tab, or run the command there.",
+        : ALREADY_OPEN,
     );
   }
+  return open.session_id;
 }
 
 export async function listProjectTerminals(
@@ -270,11 +278,20 @@ export async function runProjectTerminalCommand(
   const { repository_id, command } = terminalCommandInput(input);
   await terminalRepository(projectId, repository_id, deps.fetchJson);
   const base = terminalsPath(projectId);
-  await assertVoiceMayType(projectId, repository_id, deps.fetchJson);
-  const session = await deps.fetchJson<TerminalSession>(base, {
-    method: "POST",
-    body: JSON.stringify({ repository_id }),
-  });
+  const resting = await assertVoiceMayType(projectId, repository_id, deps.fetchJson);
+  // Unless voice reuses its own resting shell, the server refuses, atomically, to hand
+  // back one someone else opened since the check.
+  let session: TerminalSession;
+  try {
+    session = await deps.fetchJson<TerminalSession>(base, {
+      method: "POST",
+      body: JSON.stringify({ repository_id, require_new: resting === null }),
+    });
+  } catch (error) {
+    if ((error as { status?: unknown } | null)?.status === 409) throw new Error(ALREADY_OPEN);
+    throw error;
+  }
+  if (resting !== null && session.session_id !== resting) throw new Error(ALREADY_OPEN);
   voiceSessions.set(session.session_id, false);
   let outcome: RunOutcome;
   try {
