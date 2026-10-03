@@ -47,6 +47,7 @@ const CARD_TITLES: Record<string, string> = {
   rcp_send_conversation_message: "Send a Work message",
   rcp_start_experiment: "Start an Experiment episode",
   rcp_authorize_auto_research: "Authorize Auto-research",
+  rcp_run_terminal_command: "Run a terminal command",
 };
 
 function valueText(value: unknown): string {
@@ -57,9 +58,15 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
   const target =
     pin.graph_target.kind === "branch" ? `Branch ${pin.graph_target.branch_id}` : "Main graph";
   const profile = pin.provider_profile;
+  const terminal = pin.terminal;
   const rows: Array<[string, string]> = [
     ["Project", pin.project_name],
-    ["Graph", target],
+    ...(terminal
+      ? ([
+          ["Repository", terminal.repository_id],
+          ["Machine", terminal.machine_name || terminal.machine_id],
+        ] as Array<[string, string]>)
+      : ([["Graph", target]] as Array<[string, string]>)),
     ...(pin.mode ? ([["Mode", pin.mode]] as Array<[string, string]>) : []),
     ...(profile
       ? ([
@@ -78,9 +85,11 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
       ? ([["Truth scope", pin.truth_scope.join(", ") || "None"]] as Array<[string, string]>)
       : []),
   ];
-  const shown = Object.entries(pin.arguments).filter(
-    ([key]) => !["invocation_ceiling", "mode", "starting_instruction"].includes(key),
-  );
+  const shown = terminal
+    ? []
+    : Object.entries(pin.arguments).filter(
+        ([key]) => !["invocation_ceiling", "mode", "starting_instruction"].includes(key),
+      );
   return (
     <section
       className="voice-card"
@@ -106,6 +115,12 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
         <div className="voice-card-instruction">
           <span>Starting instruction</span>
           <p>{pin.starting_instruction}</p>
+        </div>
+      ) : null}
+      {terminal ? (
+        <div className="voice-card-instruction">
+          <span>Command</span>
+          <code>{terminal.command}</code>
         </div>
       ) : null}
       <footer>

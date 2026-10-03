@@ -46,8 +46,10 @@ const {
   webMcpSurface,
   webMcpTextResult,
 } = await server.ssrLoadModule("/src/webmcp.ts");
-const { catalog, catalogAsFunctionTools, publishToolSurface, resolve } =
+const { catalog, catalogAsFunctionTools, publishToolSurface, resolve, webMcpHostDefinitions } =
   await server.ssrLoadModule("/src/toolCatalog.ts");
+const { TERMINAL_OUTPUT_MAX_CHARS, voiceTerminalToolDefinitions } =
+  await server.ssrLoadModule("/src/voiceTerminal.ts");
 const { parseProjectHash } = await server.ssrLoadModule("/src/experimentBoard.ts");
 const { graphTargetFromHash } = await server.ssrLoadModule("/src/graphTarget.ts");
 
@@ -2052,7 +2054,43 @@ function evalToolDefinitions(state) {
       async () => undefined,
     ),
     ...projectViewToolDefinitions(project, tasks, episodes, {}, {}),
+    ...voiceTerminalToolDefinitions(project.id, terminalDoubles().deps),
   ];
+}
+
+function terminalDoubles(output = "") {
+  const requests = [];
+  const sockets = [];
+  const bytes = (text) => new TextEncoder().encode(text).buffer;
+  const fetchJson = async (path, init) => {
+    requests.push([init?.method ?? "GET", path]);
+    if (path.endsWith("/repositories")) {
+      return [{ repository_id: "code", machine_id: "local", backend_name: null, eligible: true }];
+    }
+    return init?.method === "POST" ? { session_id: "s1", repository_id: "code" } : [];
+  };
+  const openSocket = (path) => {
+    const socket = {
+      path,
+      sent: [],
+      closed: false,
+      send(data) {
+        this.sent.push(JSON.parse(data));
+        setTimeout(() => this.onmessage?.({ data: bytes(output) }));
+      },
+      close() {
+        this.closed = true;
+      },
+    };
+    sockets.push(socket);
+    setTimeout(() => {
+      socket.onopen();
+      socket.onmessage({ data: bytes("earlier replay") });
+    });
+    return socket;
+  };
+  const timing = { quietMs: 5, windowMs: 2_000, settleMs: 5, settleMaxMs: 500 };
+  return { requests, sockets, deps: { fetchJson, openSocket, timing } };
 }
 
 test("all WebMCP metadata stays descriptive and within model-facing budgets", () => {
@@ -2077,7 +2115,7 @@ test("all WebMCP metadata stays descriptive and within model-facing budgets", ()
   }
 });
 
-test("the catalog lists every tool any page state can register, independent of state", () => {
+test("the catalog lists every tool any page state can publish, independent of state", () => {
   const states = ["landing", "project_ready", "project_live", "project_completed"];
   const names = catalog().map((tool) => tool.name);
   assert.equal(new Set(names).size, names.length);
@@ -2111,7 +2149,7 @@ test("resolve returns the published definition or the reason a tool cannot run",
   publishToolSurface(null, []);
 });
 
-test("only Work, Experiment Start, and Auto-research authorization ask for confirmation", () => {
+test("only Work, Experiment Start, Auto-research, and terminal runs ask for confirmation", () => {
   const send = catalog().find((tool) => tool.name === "rcp_send_conversation_message");
   assert.equal(send.confirm({ message: "Check", mode: "discuss" }), false);
   assert.equal(send.confirm({ message: "Check", mode: "work" }), true);
@@ -2120,8 +2158,54 @@ test("only Work, Experiment Start, and Auto-research authorization ask for confi
       .filter((tool) => tool.confirm({ mode: "work" }))
       .map((tool) => tool.name)
       .sort(),
-    ["rcp_authorize_auto_research", "rcp_send_conversation_message", "rcp_start_experiment"],
+    [
+      "rcp_authorize_auto_research",
+      "rcp_run_terminal_command",
+      "rcp_send_conversation_message",
+      "rcp_start_experiment",
+    ],
   );
+});
+
+test("voice-only terminal tools resolve for voice but never register with WebMCP", () => {
+  const definitions = evalToolDefinitions("project_completed");
+  publishToolSurface("project", definitions);
+  const host = webMcpHostDefinitions(definitions).map((tool) => tool.name);
+  for (const name of ["rcp_list_terminals", "rcp_run_terminal_command"]) {
+    assert.equal(resolve(name).ok, true, name);
+    assert.ok(!host.includes(name), name);
+  }
+  assert.equal(host.length, definitions.length - 2);
+  publishToolSurface(null, []);
+});
+
+test("a terminal run types one line after replay and returns stripped, bounded output", async () => {
+  const output = `\u001b[32mok\u001b[0m\r\n${"x".repeat(5_000)}\u001b]0;title\u0007$ `;
+  const { sockets, deps } = terminalDoubles(output);
+  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+  const result = JSON.parse(
+    (await run.execute({ repository_id: "code", command: "git status" })).content[0].text,
+  );
+  assert.equal(sockets.length, 1);
+  assert.deepEqual(sockets[0].sent, [{ type: "input", data: "git status\r" }]);
+  assert.ok(sockets[0].closed);
+  assert.equal(result.output.length, TERMINAL_OUTPUT_MAX_CHARS);
+  assert.equal(result.truncated, true);
+  assert.equal(result.window_elapsed_before_quiet, false);
+  assert.ok(result.output.endsWith("x$ "));
+  assert.ok(!/[\u001b\u0007]|earlier replay/.test(result.output));
+  await assert.rejects(run.execute({ repository_id: "unlisted", command: "ls" }));
+  assert.equal(sockets.length, 1);
+});
+
+test("a multi-line or control-character command is refused before anything opens", async () => {
+  const { requests, sockets, deps } = terminalDoubles();
+  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+  for (const command of ["ls\nrm -rf x", "ls\r", "ls\u0003", "ls\u007f", "", "x".repeat(1_001)]) {
+    await assert.rejects(run.execute({ repository_id: "code", command }));
+  }
+  assert.deepEqual(requests, []);
+  assert.deepEqual(sockets, []);
 });
 
 test("the function-tool form carries only the Responses fields", () => {

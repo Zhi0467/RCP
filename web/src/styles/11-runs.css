@@ -1235,6 +1235,12 @@
 .voice-card-instruction p {
   white-space: pre-wrap;
 }
+.voice-card-instruction code {
+  display: block;
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .voice-card footer {
   display: flex;
   gap: 8px;

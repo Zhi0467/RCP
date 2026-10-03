@@ -39,6 +39,11 @@ confirmation; any confirmation is the host agent's own.
 - **`docs/design.md`** says WebMCP adds no human-judgment authority. Starting
   episodes and sending Work were already product actions the member's page
   could take; that sentence gains Auto-research authorization and voice.
+- **Voice may run a terminal command as the member.** It can type one command
+  line into a project terminal and read back the output. Every command waits
+  for a tap on a card that shows the exact command and repository, even when
+  voice confirmation is off. WebMCP does not get this tool, because a host
+  agent has no RCP card to show.
 - **Invariant 10d** is about prior transcripts becoming task authority. The
   voice agent can read a conversation and then send a Work message the member
   asked for. That message is new input from the member's session, recorded as
@@ -67,6 +72,8 @@ confirmation; any confirmation is the host agent's own.
   budget. For voice, tap mode is the guard, and it is the default. For WebMCP,
   RCP has no guard; only the host agent's own confirmation stands between
   injected text and paid work.
+- **A confirmed command has the member's full terminal power.** The tap checks
+  the exact line, but the shell does whatever that line does.
 - **History cannot tell an agent's action from a click.** A voice or WebMCP
   action records only the member.
 - **The member owns the bill.** Voice runs on the member's own key, and

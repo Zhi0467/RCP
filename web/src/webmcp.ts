@@ -55,20 +55,24 @@ export type WebMcpToolDefinition = {
 };
 
 /** A tool's fixed definition, independent of page state. `confirm` says whether one
- * exact call waits for the member's confirmation in a voice session; it stays local
- * and is never registered with a host. */
+ * exact call waits for the member's confirmation in a voice session; `alwaysConfirm`
+ * keeps that card even when the member runs without confirming; `voiceOnly` keeps the
+ * tool off WebMCP, whose host agents get no RCP card. All three stay local and are
+ * never registered with a host. */
 export type WebMcpToolSpec = Omit<WebMcpToolDefinition, "execute"> & {
   confirm: (input: Record<string, unknown>) => boolean;
+  alwaysConfirm?: true;
+  voiceOnly?: true;
 };
 
 const NEVER_CONFIRM = () => false;
 const ALWAYS_CONFIRM = () => true;
 
-function withExecute(
+export function withExecute(
   spec: WebMcpToolSpec,
   execute: WebMcpToolDefinition["execute"],
 ): WebMcpToolDefinition {
-  const { confirm: _, ...definition } = spec;
+  const { confirm: _, alwaysConfirm: _always, voiceOnly: _voice, ...definition } = spec;
   return { ...definition, execute };
 }
 
