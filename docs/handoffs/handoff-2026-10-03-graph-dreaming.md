@@ -4,9 +4,10 @@ Date: 2026-10-03
 Status: design settled with the human on 2026-10-02 in a grilling session. The
 human asked for one PR, implemented autonomously with Codex astra and Claude
 subagents. Backend, workflow, Web, and documentation slices are implemented.
-The first review fix pass is implemented with focused backend and Web checks.
-The acceptance journeys below and human PR review remain before this handoff
-can close.
+Two pre-push review rounds are fixed with focused backend and Web checks, and
+the Inbox and Settings surfaces were checked on a served app with seeded data.
+The acceptance journeys below, which need a real provider turn, and human PR
+review remain before this handoff can close.
 
 Decisions: [nightly consolidation writes main](../decisions/2026-10-03-nightly-consolidation-writes-main.md)
 and [operational lessons live outside the graph](../decisions/2026-10-03-operational-lessons-live-outside-the-graph.md).
