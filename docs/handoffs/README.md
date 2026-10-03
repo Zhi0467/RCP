@@ -4,8 +4,8 @@
   — designed 2026-10-02 (issue #229, part 2); slices 1 and 2 implemented on its
   PR; the voice panel, live probe, and hardware checks remain.
 - [Model-backed dictation](handoff-2026-10-02-model-backed-dictation.md)
-  — designed 2026-10-02 (issue #229, part 1); native and backend slices
-  implemented on its PR; web slice and hardware checks remain.
+  — implemented 2026-10-02 on its PR; real-hardware and real-service checks
+  remain.
 - [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
   — design settled 2026-10-01; implementation in progress on its PR.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)

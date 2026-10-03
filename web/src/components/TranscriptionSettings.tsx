@@ -399,7 +399,7 @@ function ConnectServiceDialog({
           {service.keyPage ? (
             <p>
               <a href={service.keyPage} target="_blank" rel="noreferrer">
-                Create a {service.label} API key
+                Get an API key from {service.label}
               </a>
             </p>
           ) : null}
