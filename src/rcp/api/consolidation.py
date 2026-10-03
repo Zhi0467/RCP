@@ -19,6 +19,7 @@ from rcp.api.dependencies import (
 )
 from rcp.api.identity import IdentityAccess
 from rcp.consolidation import next_occurrence
+from rcp.limits import CONSOLIDATION_RECENT_NIGHTS
 from rcp.projects import ProjectCatalog
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS
 from rcp.storage import AppStore
@@ -51,7 +52,13 @@ def schedule_response(schedule: ConsolidationSchedule | None, now: str) -> dict 
         return None
     result = schedule.model_dump(
         mode="json",
-        exclude={"project_id", "covered_head", "notification_observed_at", "last_occurrence_date"},
+        exclude={
+            "project_id",
+            "covered_head",
+            "notification_observed_at",
+            "last_occurrence_date",
+            "skipped_dates",
+        },
     )
     result["authorized_by"] = schedule.authorized_by.model_dump(include={"user_id", "display_name"})
     result["expired"] = datetime.fromisoformat(schedule.expires_at) <= datetime.fromisoformat(now)
@@ -78,6 +85,23 @@ def item_response(run: ConsolidationRun) -> dict:
     }
 
 
+def recent_nights(
+    schedule: ConsolidationSchedule | None, runs: list[ConsolidationRun]
+) -> list[dict]:
+    """The newest occurrences, oldest first: run outcomes plus recorded skips."""
+    nights = {date: "skipped" for date in (schedule.skipped_dates if schedule else [])}
+    for run in runs:
+        nights[run.occurrence_date] = (
+            "running"
+            if run.outcome_settled_at is None
+            else "succeeded"
+            if run.kind == "report"
+            else "failed"
+        )
+    newest = sorted(nights)[-CONSOLIDATION_RECENT_NIGHTS:]
+    return [{"occurrence_date": date, "outcome": nights[date]} for date in newest]
+
+
 @router.get("/api/projects/{project_id}/consolidation")
 def get_consolidation(project_id: str, *, store: Store, catalog: Catalog) -> dict:
     require_registered_project(catalog, project_id)
@@ -87,12 +111,17 @@ def get_consolidation(project_id: str, *, store: Store, catalog: Catalog) -> dic
         can_write = True
     except ValueError:
         can_write = False
+    schedule = store.consolidation_schedule(project_id)
+    runs = store.consolidation_runs(project_id)
     return {
         "can_write": can_write,
-        "schedule": schedule_response(store.consolidation_schedule(project_id), store.now()),
+        "schedule": schedule_response(schedule, store.now()),
         "inbox": [
-            item_response(run) for run in store.consolidation_runs(project_id, open_only=True)
+            item_response(run)
+            for run in runs
+            if run.state == "open" and run.outcome_settled_at is not None
         ],
+        "recent_nights": recent_nights(schedule, runs),
     }
 
 

@@ -77,7 +77,10 @@ patch-capable identity.
 
 ```
 GET    /api/projects/{id}/consolidation
-  -> { schedule: Schedule | null, inbox: InboxItem[], can_write: bool }
+  -> { schedule: Schedule | null, inbox: InboxItem[], can_write: bool,
+       recent_nights: [{ occurrence_date, outcome: "succeeded"|"failed"|"skipped"|"running" }] }
+  # recent_nights: the newest CONSOLIDATION_RECENT_NIGHTS occurrences, oldest first;
+  # skipped nights leave no run row, so the schedule keeps their dates.
 PUT    /api/projects/{id}/consolidation/schedule   { local_time: "HH:MM", timezone: IANA }
   -> { schedule: Schedule }        # enables or renews; authorizer = acting member
 DELETE /api/projects/{id}/consolidation/schedule   -> { schedule: null }

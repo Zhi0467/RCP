@@ -2,7 +2,7 @@
 id: graph-consolidation
 kind: workflow
 label: Graph consolidation
-version: 1.0.0
+version: 1.1.0
 description: Consolidate a project's main research graph and operational lessons while nobody is watching, apply the result inside the turn, and leave one short visual report of every change for the human to read in the morning.
 dependencies:
 - graph-audit@3.4.0
@@ -38,11 +38,23 @@ Fix only what the audit proved, smallest change first:
 - add or sharpen glossary entries for terms a reader would trip on;
 - add a missing relation only when the graph already states its reason.
 
-Do not create Hypotheses, ResearchQuestions, Experiments, or Decisions, do not
-choose a Decision, and do not change standing. A change to an existing
-ResearchQuestion or Hypothesis is a Proposal; raise one only when the audit
-shows a reader would otherwise be misled, and prefer one clear Proposal to many
-small ones. When in doubt, leave the node and mention it in the report.
+You may also add what the graph already implies but never wrote down:
+
+- a ResearchQuestion or Hypothesis that several existing nodes plainly serve or
+  test. It enters as unreviewed, so the human decides whether it belongs;
+- a Decision queued as `ready` for a choice the graph shows is open and
+  unrecorded, with at least two options written with equal care;
+- a decided Decision moved to `revisit` when evidence recorded since it was
+  decided undermines it. Restate the ballot so the card describes the choice
+  the human now faces, and say in `rationale` which evidence reopened it;
+- a restated ballot on a Decision already queued, only when new evidence adds
+  or removes an option.
+
+Never choose a Decision, never create Experiments, and never change standing.
+A change to an existing ResearchQuestion or Hypothesis is a Proposal; raise one
+only when the audit shows a reader would otherwise be misled, and prefer one
+clear Proposal to many small ones. When in doubt, leave the graph alone and
+put the idea under Suggestions in the report.
 
 Validate, then `apply` with a key. Read the returned revision. If validation
 rejects the Patch, fix it or drop the offending operation; never broaden the
@@ -64,8 +76,10 @@ turn's artifact folder. Give it a `<title>` naming what changed most, such as
 Lead with one sentence on the state of the graph. Then list every change you
 applied, grouped as merged, superseded, rewritten, refreshed, glossary, and
 relations, each with the node titles before and after and one line of reason.
-Then list every Proposal you raised and why, the lesson changes, and the audit
-findings you chose not to act on. Use a small before-and-after diagram when a
+Then list the nodes you added, every Decision you queued or reopened, every
+Proposal you raised and why, and the lesson changes. End with **Suggestions**:
+next steps, possible experiments, and audit findings you chose not to act on,
+each one line the human can act on. Use a small before-and-after diagram when a
 merge or supersession changes the shape of a question's path. Keep it to a few
 screens, plain language, short sentences, and no task ids or paths outside one
 collapsed `<details>` appendix.

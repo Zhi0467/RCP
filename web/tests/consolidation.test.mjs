@@ -11,10 +11,15 @@ const server = await createServer({
 });
 after(() => server.close());
 const {
+  CONSOLIDATION_AUTHORIZATION_DAYS,
+  CONSOLIDATION_RECENT_NIGHTS,
   CONSOLIDATION_RENEWAL_WINDOW_DAYS,
   LESSON_TEXT_MAX_CHARS,
   consolidationAttentionCount,
+  consolidationAuthorization,
+  consolidationCountdown,
   consolidationNeedsRenewal,
+  consolidationNightSlots,
   lessonTextIsValid,
   openConsolidationItems,
 } = await server.ssrLoadModule("/src/consolidation.ts");
@@ -62,4 +67,44 @@ test("lesson text must be non-blank and within the code-point limit", () => {
   assert.equal(lessonTextIsValid("x".repeat(LESSON_TEXT_MAX_CHARS + 1)), false);
   // Astral characters are one code point each, as the server counts them.
   assert.equal(lessonTextIsValid("\u{1F600}".repeat(LESSON_TEXT_MAX_CHARS)), true);
+});
+
+test("the card's countdown, authorization share, and night strip", () => {
+  const at = (ms) => new Date(now + ms).toISOString();
+  // Rounded up to the minute, so a pending run never reads as zero.
+  assert.deepEqual(consolidationCountdown(at((6 * 60 + 11) * 60_000 + 1), now), {
+    hours: 6,
+    minutes: 12,
+  });
+  assert.deepEqual(consolidationCountdown(at(30_000), now), { hours: 0, minutes: 1 });
+  assert.equal(consolidationCountdown(at(0), now), null);
+
+  const span = CONSOLIDATION_AUTHORIZATION_DAYS * DAY_MS;
+  const authorization = (elapsed, expired = false) =>
+    consolidationAuthorization(
+      { authorized_at: at(-elapsed), expires_at: at(span - elapsed), expired },
+      now,
+    );
+  assert.deepEqual(authorization(0), {
+    daysLeft: CONSOLIDATION_AUTHORIZATION_DAYS,
+    fraction: 1,
+    expired: false,
+  });
+  const quarter = authorization(span * 0.75);
+  assert.equal(quarter.fraction, 0.25);
+  assert.equal(quarter.daysLeft, Math.ceil(CONSOLIDATION_AUTHORIZATION_DAYS / 4));
+  assert.deepEqual(authorization(span + DAY_MS), { daysLeft: 0, fraction: 0, expired: true });
+  assert.equal(authorization(DAY_MS, true).expired, true);
+
+  const night = (day) => ({ occurrence_date: `2026-09-${day}`, outcome: "succeeded" });
+  const short = consolidationNightSlots([night(28), night(29)]);
+  assert.equal(short.length, CONSOLIDATION_RECENT_NIGHTS);
+  assert.deepEqual(
+    short.slice(-2).map((slot) => slot.occurrence_date),
+    ["2026-09-28", "2026-09-29"],
+  );
+  assert.equal(short.filter((slot) => slot === null).length, CONSOLIDATION_RECENT_NIGHTS - 2);
+  const long = consolidationNightSlots([20, 21, 22, 23, 24, 25, 26, 27, 28].map(night));
+  assert.equal(long[0].occurrence_date, "2026-09-22");
+  assert.equal(long.at(-1).occurrence_date, "2026-09-28");
 });

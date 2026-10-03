@@ -10,6 +10,9 @@ import {
 } from "../consolidation";
 import type { Lesson } from "../types";
 
+// The card shows this many lessons until the member asks for the rest.
+const COLLAPSED_LESSONS = 5;
+
 interface Props {
   apiBase: string;
   writesDisabled: boolean;
@@ -27,6 +30,7 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
 
   const reload = useCallback(async () => {
     const { lessons } = await loadLessons(apiBase);
@@ -55,6 +59,8 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
     }
   };
   const disabled = busy || writesDisabled || lessons === null;
+  const allLessons = lessons ?? [];
+  const shownLessons = showAll ? allLessons : allLessons.slice(0, COLLAPSED_LESSONS);
 
   return (
     <section className="settings-section project-lessons">
@@ -64,8 +70,8 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
         </span>
         <h2>Lessons</h2>
       </header>
-      <ul className="project-lesson-list">
-        {(lessons ?? []).map((lesson) => (
+      <ul className={`project-lesson-list${showAll ? " is-expanded" : ""}`}>
+        {shownLessons.map((lesson) => (
           <li key={lesson.lesson_id}>
             {editing?.lessonId === lesson.lesson_id ? (
               <textarea
@@ -163,6 +169,16 @@ export function ProjectLessons({ apiBase, writesDisabled }: Props) {
           </li>
         ))}
       </ul>
+      {allLessons.length > COLLAPSED_LESSONS ? (
+        <button
+          className="button secondary compact project-lesson-toggle"
+          type="button"
+          aria-expanded={showAll}
+          onClick={() => setShowAll(!showAll)}
+        >
+          {showAll ? "Show fewer" : `Show all ${allLessons.length} lessons`}
+        </button>
+      ) : null}
       <div className="project-member-actions">
         <textarea
           aria-label="New lesson"

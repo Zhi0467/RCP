@@ -198,7 +198,7 @@ class ConsolidationPoller:
             session_id=None,
             mode="work",
             trigger="schedule",
-            message="Run the nightly graph consolidation.",
+            message="Run the graph-consolidation workflow on main.",
             workflow_ids=["graph-consolidation"],
             skill_ids=[],
             invoked_workflow_ids=["graph-consolidation"],

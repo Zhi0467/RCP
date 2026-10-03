@@ -88,7 +88,12 @@ def _report(store, project_id, *, settle=True):
 def test_schedule_contract_renewal_validation_and_delete(setup):
     client, store, project = setup
     base = f"/api/projects/{project}/consolidation"
-    assert client.get(base).json() == {"schedule": None, "inbox": [], "can_write": True}
+    assert client.get(base).json() == {
+        "schedule": None,
+        "inbox": [],
+        "can_write": True,
+        "recent_nights": [],
+    }
     body = {"local_time": "02:30", "timezone": "America/New_York"}
     first = client.put(base + "/schedule", json=body)
     assert first.status_code == 200
@@ -143,6 +148,32 @@ def test_failure_is_dismiss_only_and_dismiss_closes_shared_inbox(setup):
         == "dismissed"
     )
     assert client.get(base).json()["inbox"] == []
+
+
+def test_recent_nights_merge_skipped_occurrences_with_run_outcomes(setup):
+    client, store, project = setup
+    run = _failure(store, project)
+    url = f"/api/projects/{project}/consolidation"
+    assert client.get(url).json()["recent_nights"] == [
+        {"occurrence_date": run.occurrence_date, "outcome": "failed"}
+    ]
+    now = datetime.fromisoformat(store.now())
+    for days in range(1, 8):
+        due = (now - timedelta(minutes=1)).isoformat()
+        with store.connection() as conn:
+            conn.execute("UPDATE consolidation_schedules SET next_due_at=?", (due,))
+        store.claim_consolidation_occurrence(
+            store.consolidation_schedule(project),
+            occurrence_date=(now + timedelta(days=days)).date().isoformat(),
+            next_due_at=(now + timedelta(days=days + 1)).isoformat(),
+            input_head=0,
+            skipped=True,
+        )
+    nights = client.get(url).json()["recent_nights"]
+    # Seven skips after one failure: the oldest night falls out of the strip.
+    assert [night["outcome"] for night in nights] == ["skipped"] * 7
+    assert run.occurrence_date < nights[0]["occurrence_date"]
+    assert nights == sorted(nights, key=lambda night: night["occurrence_date"])
 
 
 def test_open_report_is_retained_and_dismiss_restarts_retention(setup):

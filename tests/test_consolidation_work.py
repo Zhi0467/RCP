@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import uuid
 from datetime import datetime, timedelta
@@ -253,6 +254,14 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(mani
         pass
     assert launcher.calls == 1
     assert launcher.resumed_sessions == [None]
+    # The task contract invokes the staged workflow, not just the request field.
+    contract = Path(re.search(r"(/\S+-initial\.md)", launcher.prompts[0]).group(1))
+    invoked = [
+        Path(line.rstrip().rstrip("`").rsplit("`", 1)[-1])
+        for line in contract.read_text().splitlines()
+        if "`graph-consolidation`" in line and line.rstrip().endswith("`")
+    ]
+    assert invoked and (invoked[0] / "WORKFLOW.md").is_file()
     receipts = execution.store.agent_task_receipts_by_category(
         execution.operation_id, "agent_launch"
     )

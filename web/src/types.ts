@@ -3390,10 +3390,17 @@ export interface ConsolidationInboxItem {
   state: "open" | "kept" | "dismissed";
 }
 
+export interface ConsolidationNight {
+  occurrence_date: string;
+  outcome: "succeeded" | "failed" | "skipped" | "running";
+}
+
 export interface ConsolidationView {
   can_write: boolean;
   schedule: ConsolidationSchedule | null;
   inbox: ConsolidationInboxItem[];
+  /** The newest occurrences, oldest first. */
+  recent_nights: ConsolidationNight[];
 }
 
 export type LessonAuthor =

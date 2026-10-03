@@ -13,7 +13,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from rcp.core.models import AuthorizedHuman
-from rcp.limits import CONSOLIDATION_AUTHORIZATION_DAYS, RUN_STAGE_RETENTION_DAYS
+from rcp.limits import (
+    CONSOLIDATION_AUTHORIZATION_DAYS,
+    CONSOLIDATION_RECENT_NIGHTS,
+    RUN_STAGE_RETENTION_DAYS,
+)
 from rcp.storage.models import AgentTaskRecord
 
 
@@ -31,6 +35,8 @@ class ConsolidationSchedule(BaseModel):
     last_run_at: str | None = None
     last_outcome: Literal["succeeded", "failed", "skipped"] | None = None
     notification_observed_at: str | None = None
+    # Skipped occurrences leave no run row; the newest few feed the nights strip.
+    skipped_dates: list[str] = Field(default_factory=list)
 
 
 class ConsolidationRun(BaseModel):
@@ -64,7 +70,7 @@ def migrate_consolidation(connection: sqlite3.Connection) -> None:
         local_time TEXT NOT NULL, timezone TEXT NOT NULL, authorized_by_json TEXT NOT NULL,
         authorized_at TEXT NOT NULL, expires_at TEXT NOT NULL, next_due_at TEXT NOT NULL,
         covered_head INTEGER, last_occurrence_date TEXT, last_run_at TEXT, last_outcome TEXT,
-        notification_observed_at TEXT
+        notification_observed_at TEXT, skipped_dates_json TEXT
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS consolidation_runs (
         run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, occurrence_date TEXT NOT NULL,
@@ -93,10 +99,13 @@ def _record(model, row):
     if row is None:
         return None
     values = dict(row)
-    for name in ("authorized_by", "resolved_by", "applied_revisions"):
+    for name in ("authorized_by", "resolved_by", "applied_revisions", "skipped_dates"):
         if name + "_json" in values:
             raw = values.pop(name + "_json")
-            values[name] = json.loads(raw) if raw is not None else None
+            if raw is not None:
+                values[name] = json.loads(raw)
+            elif name != "skipped_dates":
+                values[name] = None
     return model.model_validate(values)
 
 
@@ -306,13 +315,17 @@ class ConsolidationStoreMixin:
                 if task:
                     task = self._bind_consolidation_stage(conn, task, execution_host)
                     self._insert_agent_task(conn, task, continuation_cause="fresh")
+            skipped_dates = schedule.skipped_dates
+            if skipped:
+                skipped_dates = [*skipped_dates, occurrence_date][-CONSOLIDATION_RECENT_NIGHTS:]
             conn.execute(
-                "UPDATE consolidation_schedules SET next_due_at=?,last_run_at=?,last_outcome=?,last_occurrence_date=? WHERE project_id=?",
+                "UPDATE consolidation_schedules SET next_due_at=?,last_run_at=?,last_outcome=?,last_occurrence_date=?,skipped_dates_json=? WHERE project_id=?",
                 (
                     next_due_at,
                     now,
                     "skipped" if skipped else ("failed" if task is None else None),
                     occurrence_date,
+                    json.dumps(skipped_dates),
                     schedule.project_id,
                 ),
             )

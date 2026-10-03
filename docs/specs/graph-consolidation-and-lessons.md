@@ -38,8 +38,9 @@ A due occurrence:
   (`history_unavailable`), or launch configuration cannot resolve
   (`consolidation_launch_unavailable`), advancing the occurrence while leaving the
   covered head unchanged;
-- records the outcome `skipped` and starts nothing when no revision outside
-  consolidation runs has been committed on main since the last covered head;
+- records the outcome `skipped`, remembered for the settings card's recent
+  nights, and starts nothing when no revision outside consolidation runs has
+  been committed on main since the last covered head;
 - otherwise creates a run row and admits one consolidation turn bound to it.
 
 The **covered head** advances only when a run succeeds: to the run's input head,

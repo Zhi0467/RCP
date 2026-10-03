@@ -4,6 +4,7 @@
 import { api } from "./api";
 import type {
   ConsolidationInboxItem,
+  ConsolidationNight,
   ConsolidationSchedule,
   ConsolidationView,
   Lesson,
@@ -11,6 +12,9 @@ import type {
 
 export const DEFAULT_CONSOLIDATION_TIME = "03:00";
 export const CONSOLIDATION_RENEWAL_WINDOW_DAYS = 3;
+/** Mirrors `CONSOLIDATION_AUTHORIZATION_DAYS` and `CONSOLIDATION_RECENT_NIGHTS` in limits.py. */
+export const CONSOLIDATION_AUTHORIZATION_DAYS = 30;
+export const CONSOLIDATION_RECENT_NIGHTS = 7;
 export const LESSON_TEXT_MAX_CHARS = 600;
 export const CONSOLIDATION_SETTINGS_ANCHOR = "project-consolidation";
 
@@ -90,6 +94,42 @@ export function consolidationAttentionCount(
   needsRenewal: boolean,
 ): number {
   return items.length + Number(needsRenewal);
+}
+
+/** Whole hours and minutes until the next run, rounded up; null once it is due. */
+export function consolidationCountdown(
+  nextDueAt: string,
+  now: number,
+): { hours: number; minutes: number } | null {
+  const remaining = Date.parse(nextDueAt) - now;
+  if (!(remaining > 0)) return null;
+  const totalMinutes = Math.ceil(remaining / 60_000);
+  return { hours: Math.floor(totalMinutes / 60), minutes: totalMinutes % 60 };
+}
+
+/** Days left on the authorization and the fraction of its span that remains. */
+export function consolidationAuthorization(
+  schedule: Pick<ConsolidationSchedule, "authorized_at" | "expires_at" | "expired">,
+  now: number,
+): { daysLeft: number; fraction: number; expired: boolean } {
+  const authorized = Date.parse(schedule.authorized_at);
+  const expires = Date.parse(schedule.expires_at);
+  const remaining = expires - now;
+  const expired = schedule.expired || !(remaining > 0);
+  if (expired) return { daysLeft: 0, fraction: 0, expired };
+  return {
+    daysLeft: Math.min(CONSOLIDATION_AUTHORIZATION_DAYS, Math.ceil(remaining / DAY_MS)),
+    fraction: Math.min(1, remaining / (expires - authorized)),
+    expired,
+  };
+}
+
+/** The newest nights, oldest first, left-padded with empty slots to a full strip. */
+export function consolidationNightSlots(
+  nights: ConsolidationNight[],
+): Array<ConsolidationNight | null> {
+  const recent = nights.slice(-CONSOLIDATION_RECENT_NIGHTS);
+  return [...Array<null>(CONSOLIDATION_RECENT_NIGHTS - recent.length).fill(null), ...recent];
 }
 
 /** The server counts characters as code points; so does this limit. */

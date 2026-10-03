@@ -878,6 +878,7 @@ export function ProjectSettings({
         key={`consolidation:${project.id}:${consolidation?.schedule?.authorization_id ?? ""}`}
         apiBase={apiBase}
         schedule={consolidation?.schedule ?? null}
+        recentNights={consolidation?.recent_nights ?? []}
         loaded={consolidation !== null}
         loadError={consolidationError}
         writesDisabled={!consolidation?.can_write}
