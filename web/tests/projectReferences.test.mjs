@@ -14,6 +14,7 @@ const { buildNotificationLink, parseNotificationLink } = await server.ssrLoadMod
 );
 const {
   extractReferences,
+  labelArtifactReferences,
   mergeReferences,
   referenceDraftKey,
   parseReferenceDraft,
@@ -21,6 +22,7 @@ const {
   sourceReference,
   referenceUrl,
   setReferenceDrag,
+  unlabeledArtifactIds,
 } = await server.ssrLoadModule("/src/projectReferences.ts");
 const { conversationTurnRequest } = await server.ssrLoadModule("/src/chatWorkspace.ts");
 const main = { kind: "main" };
@@ -150,4 +152,22 @@ test("copy and drag use the same full address-bar URL and both MIME types", () =
   } finally {
     globalThis.window = previous;
   }
+});
+
+test("pasted artifact chips take their saved name and unknown ids keep the fallback", () => {
+  const { references } = extractReferences(
+    `${url("p", "artifact", "known")} ${url("p", "artifact", "temp")}`,
+    "p",
+  );
+  const named = { ...ref("named"), label: "Picked name" };
+  const draft = [...references, named];
+  assert.deepEqual(unlabeledArtifactIds(draft), ["known", "temp"]);
+  const labeled = labelArtifactReferences(draft, [
+    { artifact_id: "known", name: "Episode report" },
+    { artifact_id: "named", name: "Renamed since" },
+  ]);
+  assert.equal(labeled[0].label, "Episode report");
+  assert.deepEqual(unlabeledArtifactIds(labeled), ["temp"]);
+  assert.equal(labeled[2], named);
+  assert.equal(labelArtifactReferences(labeled, []), labeled);
 });

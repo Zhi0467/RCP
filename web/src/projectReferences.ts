@@ -1,5 +1,10 @@
 import { buildNotificationLink, parseNotificationLink } from "./notificationLinks";
-import type { GraphTargetRef, ProjectReferenceSelector, ProjectReferenceSource } from "./types";
+import type {
+  GraphTargetRef,
+  ProjectArtifact,
+  ProjectReferenceSelector,
+  ProjectReferenceSource,
+} from "./types";
 
 export const MAX_CHAT_ATTACHMENTS = 8;
 export interface DraftReference {
@@ -126,6 +131,34 @@ export function referenceFallbackLabel(selector: ProjectReferenceSelector): stri
   if (selector.kind === "paper") return "Paper introduction";
   if (selector.kind === "node") return selector.node_id;
   return `Artifact ${selector.artifact_id.slice(0, 6)}`;
+}
+
+/** Artifact ids still showing the link fallback, so the composer can look up their names. */
+export function unlabeledArtifactIds(references: readonly DraftReference[]): string[] {
+  return references.flatMap((item) =>
+    item.selector.kind === "artifact" && item.label === referenceFallbackLabel(item.selector)
+      ? [item.selector.artifact_id]
+      : [],
+  );
+}
+
+/** Name pasted or dropped artifact chips from the saved inventory; unknown ids keep the fallback. */
+export function labelArtifactReferences(
+  references: DraftReference[],
+  artifacts: readonly Pick<ProjectArtifact, "artifact_id" | "name">[],
+): DraftReference[] {
+  const names = new Map(artifacts.map((item) => [item.artifact_id, item.name]));
+  let changed = false;
+  const labeled = references.map((item) => {
+    const name =
+      item.selector.kind === "artifact" && item.label === referenceFallbackLabel(item.selector)
+        ? names.get(item.selector.artifact_id)
+        : undefined;
+    if (!name) return item;
+    changed = true;
+    return { ...item, label: name };
+  });
+  return changed ? labeled : references;
 }
 
 export function referenceDraftKey(

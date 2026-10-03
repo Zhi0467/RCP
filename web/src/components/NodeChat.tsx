@@ -8,7 +8,9 @@ import {
   referenceKey,
   referenceDraftKey,
   referenceFallbackLabel,
+  labelArtifactReferences,
   parseReferenceDraft,
+  unlabeledArtifactIds,
   sourceReference,
   type DraftReference,
 } from "../projectReferences";
@@ -131,6 +133,7 @@ import type {
   GraphNode,
   GraphUpdateRecovery,
   GraphUpdateResult,
+  ProjectArtifact,
   ProjectSnapshot,
   StartAgentTask,
   WatcherRecord,
@@ -395,6 +398,18 @@ export function NodeChat({
     if (references.length) writeStorage(referencesKey, JSON.stringify(references));
     else removeStorage(referencesKey);
   }, [referencesKey, references]);
+  const unlabeledArtifacts = unlabeledArtifactIds(references).join("\n");
+  useEffect(() => {
+    if (!unlabeledArtifacts) return;
+    const controller = new AbortController();
+    api<ProjectArtifact[]>(`/api/projects/${encodeURIComponent(project.id)}/artifacts`, {
+      signal: controller.signal,
+    })
+      .then((artifacts) => setReferences((current) => labelArtifactReferences(current, artifacts)))
+      // A lookup failure keeps the fallback label; the sent turn shows the server's name.
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [project.id, unlabeledArtifacts]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [attachmentSetId, setAttachmentSetId] = useState<string | null>(null);
   const [draggingFiles, setDraggingFiles] = useState(false);
