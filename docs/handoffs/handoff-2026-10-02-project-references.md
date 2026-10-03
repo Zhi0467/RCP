@@ -4,9 +4,10 @@ Date: 2026-10-02
 Status: design settled with the human on 2026-10-02 and revised after an xhigh
 astra design review. Implemented 2026-10-02 in the same PR: slices 1 and 2,
 the specs, and the browser journey on throwaway data (copy, paste, picker, send,
-staged read-only copies, prompt block, transcript chips). Remaining: drag in
-the desktop app (WKWebView), and live Work, branch-source, and remote-stage
-turns.
+staged read-only copies, prompt block, transcript chips), and drag in a
+source-built desktop app (WKWebView): a reference drop and a Finder file drop
+both reach the composer once Tauri's native drop handler is disabled. Remaining:
+live Work, branch-source, and remote-stage turns.
 
 ## Problem
 
@@ -157,10 +158,9 @@ kept. A link to another project stays text. A drag carries the link as both
   frame: the artifact viewer, the node detail panel, and the paper. A clipboard
   failure shows a notice.
 - **Paste**, as above.
-- **Drag** from Artifacts rows and the Runs report link. Tauri's native drop
-  handler can intercept drops in WKWebView, so this needs a live check. If
-  internal drags cannot reach the page there, the desktop app does not offer
-  dragging, and Copy and the picker cover it.
+- **Drag** from Artifacts rows, the Runs report link, and transcript chips.
+  The desktop window disables Tauri's native drop handler, which otherwise
+  swallows every drag in WKWebView; the page reads file and reference drops.
 - **Pick:** `+` becomes "Upload file" and "From RCP…". The picker browses like
   Finder: folders for Reports, Artifacts, and Nodes, plus the Paper, and a search
   across all of them. It reads
