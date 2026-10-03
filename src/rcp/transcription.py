@@ -153,7 +153,15 @@ async def transcribe(connection: dict, key: str, audio: bytes, mime: str) -> str
             text = body.get("text", "")
         if not isinstance(text, str):
             raise ValueError("Invalid service response.")
-        return text.replace(key, "") if key else text
+        # Rewriting the text would corrupt dictation, so a reply carrying the
+        # key is discarded instead.
+        if key and key in text:
+            raise ConnectionError(
+                "transcription_upstream_failed",
+                502,
+                "The service's reply contained the connection's key, so RCP discarded it.",
+            )
+        return text
     except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
         # Transport exceptions may contain URLs and headers; report no raw exception text.
         raise ConnectionError(

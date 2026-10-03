@@ -1487,7 +1487,9 @@ the clips and gets the voice check instead. A custom base URL must be `https`, o
 accepted format, bounded by `Content-Length`, the bytes actually received, a
 read deadline, and a per-member concurrency limit, and holds it only in memory.
 Outbound calls skip proxies and redirects and read a size-capped response under
-one deadline; upstream errors are bounded and never echo the key. The team
+one deadline; upstream errors are bounded and never echo the key, and a
+transcript that contains the key is discarded with an error rather than
+edited. The team
 middleware admits the two audio types on this route only. On the personal
 loopback server another site's `audio/*` request needs a CORS preflight, which
 the server refuses, and a no-cors request loses its type and gets 415.

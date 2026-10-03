@@ -145,6 +145,21 @@ async def test_upstream_errors_do_not_leak_keys_or_follow_redirects(monkeypatch,
     assert len(transcription.sanitized("x" * 1000, KEY)) <= limits.TRANSCRIPTION_ERROR_MAX_CHARS
 
 
+@pytest.mark.asyncio
+async def test_a_reply_carrying_the_key_is_discarded_not_rewritten(monkeypatch):
+    replies = iter([f"say {KEY} again", "say it again"])
+    mock_transport(
+        monkeypatch,
+        lambda _: httpx.Response(
+            200, stream=httpx.ByteStream(json.dumps({"text": next(replies)}).encode())
+        ),
+    )
+    with pytest.raises(ConnectionError) as error:
+        await transcription.transcribe(connection(), KEY, b"audio", MIME)
+    assert error.value.code == "transcription_upstream_failed" and KEY not in str(error.value)
+    assert await transcription.transcribe(connection(), KEY, b"audio", MIME) == "say it again"
+
+
 @pytest.mark.parametrize(
     "url",
     [
