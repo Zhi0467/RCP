@@ -1569,6 +1569,10 @@ class ProjectService:
                 "agent_profiles": profiles,
                 "skill_catalog": official_registry().catalog(),
                 "skill_defaults": self.manifest.agent.skill_defaults.model_dump(mode="json"),
+                # Undeclared fields follow the running release; complete_snapshot refills them.
+                "skill_defaults_declared": sorted(
+                    self.manifest.agent.skill_defaults.model_fields_set
+                ),
                 "provider_logins": self.provider_logins_for(self.manifest, self.launcher),
                 "provider_readiness": {},
                 "provider_skill_inventories": self.provider_skill_inventory_snapshot(),

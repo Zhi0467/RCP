@@ -543,6 +543,7 @@ def clear_rebuildable_caches(
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    project_display_cache: DisplayCacheDependency,
 ):
     service = get_project_service(catalog, project_id)
     if store.has_active_agent_task(project_id):
@@ -550,7 +551,13 @@ def clear_rebuildable_caches(
             status_code=409,
             detail="This project's cache cannot be cleared while its agent task is active.",
         )
-    return service.clear_rebuildable_caches()
+    metrics = service.clear_rebuildable_caches()
+    # The display snapshot doubles as the offline copy, so it is rebuilt, never deleted.
+    try:
+        metrics["project_page_rebuilt"] = project_display_cache.rebuild_cached_snapshot(project_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    return metrics
 
 
 @router.get("/api/projects/{project_id}/usage", response_model=AgentUsageSnapshot)

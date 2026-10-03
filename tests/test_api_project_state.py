@@ -19,7 +19,9 @@ from rcp.core.models import Patch
 from rcp.history import HistoryManager
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import PROVIDER_IDS, ProviderUsage
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.storage import AgentTaskRecord
+from rcp.transport import StateUnavailable
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -125,6 +127,7 @@ def test_cached_project_migrates_retired_campaign_report_default(manifest, tmp_p
         "campaign-report",
         "graph-audit",
     ]
+    envelope["snapshot"]["skill_defaults_declared"] = ["skill_ids"]
     cache_path.write_text(json.dumps(envelope), encoding="utf-8")
 
     saved = client.get(f"/api/projects/{project_id}/cached")
@@ -767,6 +770,145 @@ def test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection(
     for surface, profile in profiles.items():
         expected = "exec" if profile["provider"] == "codex" else "stream-json"
         assert profile["runtime"] == expected, surface
+
+
+def _write_stale_catalog_cache(client, data_dir, project_id) -> Path:
+    """Rewrite the display cache as an older release left it: one official skill fewer."""
+
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    catalog = envelope["snapshot"]["skill_catalog"]
+    envelope["snapshot"]["skill_catalog"] = catalog[1:]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+    return cache_path
+
+
+def test_cached_snapshot_serves_the_running_release_skill_catalog(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    _write_stale_catalog_cache(client, data_dir, project_id)
+
+    for path in (f"/api/projects/{project_id}", f"/api/projects/{project_id}/cached"):
+        served = client.get(path)
+        assert served.status_code == 200
+        assert served.json()["skill_catalog"] == official_registry().catalog()
+
+
+def test_clearing_project_cache_rebuilds_the_display_snapshot(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
+    opened = app.state.catalog.store.project(project_id).last_opened_at
+
+    cleared = client.delete(f"/api/projects/{project_id}/caches")
+    assert cleared.status_code == 200
+    assert cleared.json()["project_page_rebuilt"] is True
+    # Cache maintenance is not an open: the landing page's recency is kept.
+    assert app.state.catalog.store.project(project_id).last_opened_at == opened
+    rebuilt = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert rebuilt["snapshot"]["skill_catalog"] == official_registry().catalog()
+
+
+def _unreachable_reconcile(_self, _project_id):
+    raise StateUnavailable("state host is unreachable")
+
+
+def _cold_mirror_reconcile(self, project_id):
+    service, snapshot = _ORIGINAL_RECONCILE(self, project_id)
+    snapshot["canonical_state"] = {**snapshot["canonical_state"], "reachable": False}
+    return service, snapshot
+
+
+_ORIGINAL_RECONCILE = projects_module.ProjectCatalog.reconcile_snapshot
+
+
+@pytest.mark.parametrize(
+    ("target", "replacement"),
+    [
+        ("reconcile_snapshot", _unreachable_reconcile),
+        ("reconcile_snapshot", _cold_mirror_reconcile),
+        ("commit_cached_snapshot", lambda *_args, **_kwargs: False),
+    ],
+    ids=["unreachable", "cold-mirror", "lost-race"],
+)
+def test_failed_display_rebuild_keeps_the_offline_copy(
+    manifest, tmp_path, monkeypatch, target, replacement
+) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
+    before = cache_path.read_bytes()
+
+    monkeypatch.setattr(projects_module.ProjectCatalog, target, replacement)
+    cleared = client.delete(f"/api/projects/{project_id}/caches")
+    assert cleared.status_code == 200
+    assert cleared.json()["project_page_rebuilt"] is False
+    assert cache_path.read_bytes() == before
+
+
+def test_clearing_a_project_deleted_mid_rebuild_is_not_found(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    def deleted(_self, missing_id):
+        raise KeyError(missing_id)
+
+    monkeypatch.setattr(projects_module.ProjectCatalog, "reconcile_snapshot", deleted)
+    assert client.delete(f"/api/projects/{project_id}/caches").status_code == 404
+
+
+def test_cached_snapshot_refills_only_undeclared_skill_defaults(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    current = SkillDefaults().model_dump(mode="json")
+    older = {**current, "skill_ids": current["skill_ids"][1:]}
+
+    def serve(declared: list[str]) -> dict[str, object]:
+        envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+        envelope["snapshot"]["skill_defaults"] = older
+        envelope["snapshot"]["skill_defaults_declared"] = declared
+        cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+        return client.get(f"/api/projects/{project_id}").json()["skill_defaults"]
+
+    assert serve([]) == current
+    assert serve(["skill_ids"])["skill_ids"] == older["skill_ids"]
+
+
+def test_cache_predating_declared_defaults_rebuilds_once_in_background(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    current = envelope["snapshot"]["skill_defaults"]
+    envelope["snapshot"]["skill_defaults"] = {**current, "skill_ids": current["skill_ids"][1:]}
+    del envelope["snapshot"]["skill_defaults_declared"]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    assert client.get(f"/api/projects/{project_id}/cached").status_code == 200
+
+    def rebuilt() -> dict[str, object] | None:
+        snapshot = json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
+        return snapshot if "skill_defaults_declared" in snapshot else None
+
+    assert wait_until(rebuilt, timeout=TASK_SETTLE_TIMEOUT)["skill_defaults"] == current
 
 
 def test_project_readiness_does_not_open_or_materialize_project(

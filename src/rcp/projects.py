@@ -66,6 +66,7 @@ from rcp.server_ops.backup_models import (
     BackupRecoveryRepository,
 )
 from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
+from rcp.skill_registry import SkillDefaults, official_registry
 from rcp.sources import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
@@ -1956,6 +1957,7 @@ class ProjectCatalog:
         *,
         generation: int,
         patch_log_head: int | None | object = _PATCH_LOG_HEAD_UNSET,
+        touch_opened: bool = True,
     ) -> bool:
         """Commit a display snapshot unless a newer project view already won."""
 
@@ -1965,7 +1967,11 @@ class ProjectCatalog:
         _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
             return self._commit_cached_snapshot_locked(
-                project_id, snapshot, generation=generation, patch_log_head=patch_log_head
+                project_id,
+                snapshot,
+                generation=generation,
+                patch_log_head=patch_log_head,
+                touch_opened=touch_opened,
             )
 
     def _commit_cached_snapshot_locked(
@@ -1975,6 +1981,7 @@ class ProjectCatalog:
         *,
         generation: int,
         patch_log_head: int | None | object = _PATCH_LOG_HEAD_UNSET,
+        touch_opened: bool = True,
     ) -> bool:
         if self._is_deleting(project_id):
             raise KeyError(project_id)
@@ -2022,7 +2029,7 @@ class ProjectCatalog:
             generation,
             self._committed_snapshot_generations.get(project_id, 0),
         )
-        self.update_summary(project_id, snapshot)
+        self.update_summary(project_id, snapshot, touch_opened=touch_opened)
         return True
 
     def update_cached_snapshot_freshness(
@@ -2355,6 +2362,8 @@ class ProjectCatalog:
         self,
         project_id: str,
         snapshot: ProjectSnapshot,
+        *,
+        touch_opened: bool = True,
     ) -> ProjectRecord:
         project_id = self._canonical_project_id(project_id)
         snapshot = _snapshot_payload(snapshot)
@@ -2385,6 +2394,7 @@ class ProjectCatalog:
             last_refresh_at=_timestamp(last_refresh),
             reachable=bool(canonical["reachable"]),
             error=str(canonical["error"]) if canonical.get("error") else None,
+            touch_opened=touch_opened,
         )
 
     def update_settings(
@@ -2551,6 +2561,8 @@ class ProjectDisplayCache:
         self._logger = logger
         self._reconciliation_tasks: dict[str, asyncio.Task[None]] = {}
         self._probe_started_at: dict[str, float] = {}
+        self._legacy_rebuilds_started: set[str] = set()
+        self._legacy_rebuilds_lock = threading.Lock()
 
     @property
     def reconciliation_tasks(self) -> dict[str, asyncio.Task[None]]:
@@ -2569,6 +2581,10 @@ class ProjectDisplayCache:
         self._catalog._stamp_snapshot_identity(payload, project_id)
         if fresh:
             self._catalog.mark_snapshot_fresh(payload)
+        # The catalog belongs to the running release, not to project state; a
+        # cache written by an older release must not hide newer official skills.
+        payload["skill_catalog"] = official_registry().catalog()
+        _refill_undeclared_skill_defaults(payload)
         self._complete_live_control(project_id, payload)
         payload["machines"] = [
             {
@@ -2595,11 +2611,65 @@ class ProjectDisplayCache:
         snapshot = self._catalog.cached_snapshot(project_id)
         if snapshot is None:
             return None
+        if "skill_defaults_declared" not in _snapshot_payload(snapshot):
+            self._start_legacy_rebuild(project_id)
         return self.complete_snapshot(project_id, snapshot)
+
+    def _start_legacy_rebuild(self, project_id: str) -> None:
+        """Rebuild, once per process, a cache that predates declared skill defaults.
+
+        Without the declaration its skill defaults cannot be refreshed, and a
+        settings save from that page would persist the older release's list.
+        """
+
+        with self._legacy_rebuilds_lock:
+            if project_id in self._legacy_rebuilds_started:
+                return
+            self._legacy_rebuilds_started.add(project_id)
+
+        def rebuild() -> None:
+            with suppress(KeyError):
+                self.rebuild_cached_snapshot(project_id)
+
+        threading.Thread(
+            target=rebuild, name=f"rcp-legacy-display-rebuild-{project_id}", daemon=True
+        ).start()
 
     def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
         service, draft = self._catalog.reconcile_snapshot(project_id)
         return service, self.complete_snapshot(project_id, draft)
+
+    def rebuild_cached_snapshot(self, project_id: str) -> bool:
+        """Rebuild one display cache from current state, keeping the old copy on failure.
+
+        Raises KeyError when the project no longer exists.
+        """
+
+        # One retry: a concurrent freshness update can take a newer generation.
+        for _attempt in range(2):
+            try:
+                generation = self._catalog.reserve_cached_snapshot_generation(project_id)
+                service, snapshot = self.reconcile_snapshot(project_id)
+                canonical = snapshot.get("canonical_state")
+                if isinstance(canonical, dict) and canonical.get("reachable") is False:
+                    # A cold open falls back to the retained mirror; that is not a rebuild.
+                    raise StateUnavailable(str(canonical.get("error") or "state is unreachable"))
+                if self._catalog.commit_cached_snapshot(
+                    project_id,
+                    snapshot,
+                    generation=generation,
+                    patch_log_head=service.history.workspace.cached_patch_log_head(),
+                    # Cache maintenance is not the human opening the project.
+                    touch_opened=False,
+                ):
+                    return True
+            except (OSError, RuntimeError, StateUnavailable, TypeError, ValueError) as exc:
+                self._logger.warning(
+                    "Could not rebuild display snapshot for %s: %s", project_id, exc
+                )
+                return False
+        self._logger.warning("Display snapshot for %s kept a newer concurrent copy", project_id)
+        return False
 
     def update_settings(
         self,
@@ -3179,6 +3249,21 @@ def _valid_display_snapshot(
         return False
     graph_revision = graph_payload.get("revision")
     return type(graph_revision) is int and graph_revision == revision
+
+
+def _refill_undeclared_skill_defaults(payload: dict[str, object]) -> None:
+    """Serve the running release's defaults for fields the manifest leaves unset."""
+
+    declared = payload.get("skill_defaults_declared")
+    cached = payload.get("skill_defaults")
+    if not isinstance(declared, list) or not isinstance(cached, dict):
+        # Caches written before the declaration was recorded keep their values.
+        return
+    current = SkillDefaults().model_dump(mode="json")
+    payload["skill_defaults"] = {
+        name: cached[name] if name in declared and name in cached else value
+        for name, value in current.items()
+    }
 
 
 def _ensure_snapshot_freshness(
