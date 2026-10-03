@@ -1996,15 +1996,15 @@ async def _settle_worker_patch(
             correction_values = {**values, "command_prefix": correction_mailbox.client_command()}
             correction_prompt = compose(
                 classify(LaunchPhase(session_id=native_session_id, phase="correction")),
-                parts=auto_research_patch_correction_parts(
-                    actor=_actor_role,
-                    diagnostics_path=diagnostics_path,
-                ),
+                parts=[
+                    *auto_research_patch_correction_parts(
+                        actor=_actor_role,
+                        diagnostics_path=diagnostics_path,
+                    ),
+                    stage_lessons_pointer(execution, stage.local, stage.remote),
+                ],
                 master=master,
                 delta=changed_since_master(master, correction_values),
-            )
-            correction_prompt += "\n\n" + stage_lessons_pointer(
-                execution, stage.local, stage.remote
             )
             correction_path = record_inline_prompt(
                 execution,

@@ -805,6 +805,9 @@ class _RemoteScopeStage:
     def legacy_stage_roots(self) -> list[str]:
         return []
 
+    def write_workspace_text(self, name: str, content: str) -> None:
+        self.last_workspace_write = (name, content)
+
 
 def _remote_manifest(manifest: Manifest) -> Manifest:
     remote = manifest.model_copy(deep=True)

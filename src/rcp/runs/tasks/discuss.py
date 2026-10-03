@@ -142,6 +142,7 @@ def _prepare_discuss_chat_prompt(
         human_message=request.message,
         node=node,
         master=master,
+        lessons_pointer=stage_lessons_pointer(execution, local_stage, remote_stage),
         context_delta=context_delta,
         invoked_skill_pointers=invoked_package_pointers(
             skill_pointers,
@@ -151,7 +152,6 @@ def _prepare_discuss_chat_prompt(
         invoked_provider_skills=request.resolved_provider_skills,
         attachments=attachment_pointers,
     )
-    prompt += "\n\n" + stage_lessons_pointer(execution, local_stage, remote_stage)
     return prompt, _stage_chat_turn_contract(execution, local_stage, remote_stage, prompt)
 
 

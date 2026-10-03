@@ -709,6 +709,7 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
+        lessons_pointer: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -720,6 +721,7 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
+            lessons_pointer=lessons_pointer,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -733,6 +735,7 @@ class PromptFactory:
         human_message: str,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
+        lessons_pointer: str = "",
         context_delta: dict[str, object] | None = None,
         invoked_skill_pointers: list[dict[str, object]] | None = None,
         invoked_provider_skills: list[ProviderSkillReference] | None = None,
@@ -745,6 +748,7 @@ class PromptFactory:
             human_message=human_message,
             node=node,
             master=master,
+            lessons_pointer=lessons_pointer,
             context_delta=context_delta,
             invoked_skill_pointers=invoked_skill_pointers,
             invoked_provider_skills=invoked_provider_skills,
@@ -764,6 +768,7 @@ class PromptFactory:
         attachments: list[dict[str, object]] | None,
         node: PromptNode = "session_start",
         master: MasterRef | None = None,
+        lessons_pointer: str = "",
         launch_instructions: str | None = None,
     ) -> str:
         """Render one chat turn: its marker, what is new for it, and the human's bytes.
@@ -776,6 +781,8 @@ class PromptFactory:
         if launch_instructions is not None and marker != "Work":
             raise ValueError("launch instructions belong only to a Work turn")
         parts = [f"This is a {marker} turn.\nArtifact directory for this turn: {artifact_path}"]
+        if lessons_pointer:
+            parts.append(lessons_pointer)
         if launch_instructions:
             parts.append(
                 f"Launch instructions for this session's Work turns:\n{launch_instructions}"
