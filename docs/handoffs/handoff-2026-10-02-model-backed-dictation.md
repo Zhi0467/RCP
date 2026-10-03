@@ -82,8 +82,12 @@ service-connections/<user_id>/connections/<id>/key
 - **Not provider logins.** It shares nothing with `ProviderCredentialStore`'s
   account gate, generation, or readiness. A transcription key belongs to a
   person, not an execution account.
-- **Member removal.** Connect and Disconnect publish under a per-member lock
-  and recheck membership inside it before writing. `MemberRemovalCoordinator`
+- **One writer per member.** Every write to a member's folder (Connect,
+  Disconnect, the selection, and later voice settings) holds one per-member
+  lock and rechecks live membership, and for a selection that the connection
+  still exists, before writing. The lock also makes `_write_private`'s fixed
+  temporary filename safe.
+- **Member removal.** `MemberRemovalCoordinator`
   takes the same lock and deletes the member's folder idempotently after
   `begin_member_removal` commits, and again before `complete_member_removal`,
   so an interrupted removal resumes the cleanup. The folder stays out of the
@@ -130,9 +134,12 @@ itself, because `api()` forces JSON on Blob bodies.
 - Every `rcp://dictation-result` carries the session's whole text so far, as
   today: the composer replaces the span with it. On SpeechAnalyzer the native
   side accumulates finalized segments plus the current volatile text itself.
-- Stop finalizes: the native side sends the final result before `stopped`.
-  Today Stop cancels the recognition task; that changes to finish-then-stop on
-  both engines. Invalidation (typing) still cancels.
+- `desktop_stop_dictation` gains a `finish` argument, and
+  `stopDesktopDictation(sessionId, {finish})` passes it. The member's Stop sends
+  `finish: true`: the native side sends the final result, then `stopped`.
+  Invalidation (typing) sends `finish: false`: the native side cancels and sends
+  `stopped` with no further result. Today Stop always cancels; both engines get
+  the new behavior.
 
 ## Upload bounds
 
@@ -218,8 +225,10 @@ the member's own (the rest of Space Settings is space-wide):
   recognizer and reports engine `apple_server`, which the composer labels.
 - macOS 13 to 15 keep `SFSpeechRecognizer`. Its
   `requiresOnDeviceRecognition = NO` allows audio to go to Apple. The speech
-  usage string in `Info.plist` and `Info.dev.template.plist` must be true for
-  both paths: on-device on macOS 26, may go to Apple before.
+  usage string in `Info.plist` and `Info.dev.template.plist` describes each
+  recognizer, not each macOS version: SpeechAnalyzer runs on the Mac; the older
+  recognizer, used before macOS 26, for unsupported languages, and in builds
+  without SpeechAnalyzer, may send audio to Apple.
 - **Build.** SpeechAnalyzer is a Swift API (`public actor SpeechAnalyzer`).
   `build.rs` uses `cc::Build`, which cannot compile Swift, so it also runs
   `swiftc` on one new Swift file that exposes C entry points with `@_cdecl`,
@@ -284,9 +293,10 @@ One test per invariant, no wording assertions:
   that exceeds the limit while streaming, a wrong media type, and a
   disconnected id;
 - the team middleware admits audio only on the transcribe route;
-- member removal deletes the member's folder, a Connect that finishes after
-  removal began does not recreate it, and an interrupted removal finishes the
-  cleanup;
+- member removal deletes the member's folder, a Connect or selection write
+  that finishes after removal began does not recreate it, an interrupted removal
+  finishes the cleanup, and a selection racing Disconnect never points at a
+  missing connection;
 - each adapter builds the request its service expects (mocked transport);
 - the composer drops a late result after typing (node test);
 - the native state and engine mapping (Rust test).
