@@ -7,6 +7,7 @@ import {
   mergeReferences,
   referenceKey,
   referenceDraftKey,
+  referenceFallbackLabel,
   parseReferenceDraft,
   sourceReference,
   type DraftReference,
@@ -862,7 +863,13 @@ export function NodeChat({
     insertPlainText = false,
   ) => {
     if (submitting || artifactContext || !text) return false;
-    const result = extractReferences(text, project.id, references, fileCount);
+    const target = project.graph_target ?? MAIN_GRAPH;
+    const result = extractReferences(text, project.id, references, fileCount, (selector) =>
+      selector.kind === "node" &&
+      (selector.branch_id ?? null) === (target.kind === "branch" ? target.branch_id : null)
+        ? (project.graph?.nodes[selector.node_id]?.title ?? selector.node_id)
+        : referenceFallbackLabel(selector),
+    );
     if (result.rejected)
       setSubmitError(`A turn can include at most ${MAX_CHAT_ATTACHMENTS} files and references.`);
     if (result.text === text && !insertPlainText) return false;
@@ -1853,7 +1860,7 @@ export function NodeChat({
                     files.length,
                     MAX_CHAT_ATTACHMENTS - attachments.length - references.length,
                   ),
-                true,
+                files.length === 0,
               )
             )
               event.preventDefault();

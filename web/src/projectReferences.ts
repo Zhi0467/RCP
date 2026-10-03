@@ -80,6 +80,7 @@ export function extractReferences(
   projectId: string,
   current: DraftReference[] = [],
   attachmentCount = 0,
+  labelFor: (selector: ProjectReferenceSelector) => string = referenceFallbackLabel,
 ): { text: string; references: DraftReference[]; rejected: number } {
   let references = current;
   let rejected = 0;
@@ -109,7 +110,7 @@ export function extractReferences(
             : { kind: "paper" };
       const result = mergeReferences(
         references,
-        [{ selector, target, label: link.itemId }],
+        [{ selector, target, label: labelFor(selector) }],
         attachmentCount,
       );
       references = result.references;
@@ -118,6 +119,13 @@ export function extractReferences(
     },
   );
   return { text: remaining, references, rejected };
+}
+
+/** A link names no title; the sent turn shows the server's display name. */
+export function referenceFallbackLabel(selector: ProjectReferenceSelector): string {
+  if (selector.kind === "paper") return "Paper introduction";
+  if (selector.kind === "node") return selector.node_id;
+  return `Artifact ${selector.artifact_id.slice(0, 6)}`;
 }
 
 export function referenceDraftKey(
