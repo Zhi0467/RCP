@@ -15,6 +15,7 @@ class LessonError(ValueError):
     def __init__(self, code: str):
         self.code = code
         messages = {
+            "lesson_edit_not_authorized": "Only the consolidation owner can list, update, or delete lessons.",
             "lesson_forbidden": "This turn or member is not authorized to manage these lessons.",
             "lesson_text_invalid": f"Enter a nonblank lesson of at most {LESSON_TEXT_MAX_CHARS} characters.",
             "lessons_limit": f"This project has reached its limit of {LESSONS_PER_PROJECT_MAX} lessons.",
@@ -258,7 +259,7 @@ class LessonStoreMixin:
             _require_member(connection, project_id, task["authorized_user_id"])
             self._require_project_accepts_new_work(connection, project_id)
             if subcommand != "add" and not _edit_authorized(connection, operation_id):
-                raise LessonError("lesson_forbidden")
+                raise LessonError("lesson_edit_not_authorized")
             if subcommand == "list":
                 rows = connection.execute(
                     "SELECT * FROM operational_lessons WHERE project_id=? AND lesson_id>? "

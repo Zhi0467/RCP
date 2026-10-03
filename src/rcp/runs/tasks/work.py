@@ -1360,7 +1360,7 @@ async def _validate_patch_deliverable(
             patch_text,
             run_truth_scope=turn.run_truth_scope,
             source_effect_id=(
-                settlement_source_effect_id(turn.service, turn.execution, patch_text)
+                settlement_source_effect_id(turn.execution, patch_text)
                 if is_consolidation(turn.execution)
                 else None
             ),

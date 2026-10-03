@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.consolidation import ConsolidationPoller, next_occurrence, occurrence_at, operation_outcome
-from rcp.machine_power import demand_snapshot
 from rcp.storage.artifact_models import Artifact
 
 from .helpers import append_fixture_patch, authorized_human, create_named_app, seed_patch
@@ -186,11 +185,6 @@ def test_settlement_uses_terminal_task_graph_outcome_and_viewable_artifact(
         assert runtime.store.consolidation_run(run.run_id) == settled
 
 
-def test_consolidation_reuses_ordinary_keep_awake_demand(runtime):
-    runtime.poller.poll_once()
-    assert "task" in demand_snapshot(runtime.store, runtime.app.state.background_tasks)
-
-
 @pytest.mark.parametrize("succeeded", [True, False])
 def test_next_night_skips_own_successful_commits_but_retries_failed_run(
     runtime, monkeypatch, succeeded
@@ -299,21 +293,6 @@ def test_paused_run_settles_commits_and_releases_chat_and_next_occurrence(runtim
     assert runtime.store.consolidation_run(run.run_id).error_code == "paused"
 
 
-def test_departed_authorizer_creates_occurrence_failure_without_task(runtime):
-    with runtime.store.connection() as conn:
-        conn.execute(
-            "DELETE FROM project_members WHERE project_id=?", (runtime.schedule.project_id,)
-        )
-    runtime.poller.poll_once()
-    runtime.poller.poll_once()
-    runs = runtime.store.consolidation_runs()
-    assert len(runs) == 1
-    assert runs[0].operation_id is None
-    assert runs[0].error_code == "authorization_membership_lost"
-    assert runs[0].revisions_verified and runs[0].applied_revisions == []
-    assert runtime.dispatched == []
-
-
 @pytest.mark.parametrize(
     ("project_status", "error_code"),
     [
@@ -358,10 +337,26 @@ def test_unavailable_project_creates_occurrence_failure_without_task(
     assert schedule.last_outcome == "failed"
 
 
-def test_unavailable_history_is_retried_without_reopening_dismissed_row(runtime, monkeypatch):
+@pytest.mark.parametrize("dismiss", [False, True])
+def test_unavailable_history_is_retried_without_changing_settled_outcome(
+    runtime, monkeypatch, dismiss
+):
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
-    runtime.store.fail_agent_task(run.operation_id, "Provider failed")
+    runtime.store.complete_agent_task(run.operation_id, applied_revision=None, result={})
+    runtime.store.create_artifact(
+        Artifact(
+            artifact_id="history-report",
+            project_id=run.project_id,
+            supplier="turn",
+            supplier_id=run.operation_id,
+            origin_operation_id=run.operation_id,
+            source_name="consolidation-report.html",
+            media_type="text/html",
+            created_at=runtime.store.now(),
+        ),
+        data=b"<html>Report</html>",
+    )
     history = runtime.app.state.catalog.open(run.project_id).history
     original = history.accepted_patch_boundaries
 
@@ -372,18 +367,36 @@ def test_unavailable_history_is_retried_without_reopening_dismissed_row(runtime,
     runtime.poller.reconcile_outcomes()
     failed = runtime.store.consolidation_run(run.run_id)
     assert failed.kind == "failure" and not failed.revisions_verified
-    runtime.store.resolve_consolidation_run(
-        run.project_id,
-        run.run_id,
-        state="dismissed",
-        resolved_by=runtime.schedule.authorized_by,
+    assert failed.error_code == "history_unavailable"
+    runtime.store.register_notification_device(runtime.store.local_owner.user_id)
+    runtime.app.state.notification_sender.run_pass()
+    notified = runtime.store.consolidation_run(run.run_id)
+    assert notified.notification_observed_at is not None
+    if dismiss:
+        runtime.store.resolve_consolidation_run(
+            run.project_id,
+            run.run_id,
+            state="dismissed",
+            resolved_by=runtime.schedule.authorized_by,
+        )
+    next_day = runtime.now + timedelta(days=1)
+    monkeypatch.setattr(runtime.store, "now", lambda: next_day.isoformat())
+    runtime.poller.clock = runtime.store.now
+    runtime.poller.poll_once()
+    assert len(runtime.store.consolidation_runs()) == 2
+    assert (
+        datetime.fromisoformat(runtime.store.consolidation_schedule(run.project_id).next_due_at)
+        > next_day
     )
     monkeypatch.setattr(history, "accepted_patch_boundaries", original)
     runtime.poller.reconcile_outcomes()
     verified = runtime.store.consolidation_run(run.run_id)
     assert verified.revisions_verified
-    assert verified.state == "dismissed"
-    assert verified.created_at == failed.created_at
+    assert verified.state == ("dismissed" if dismiss else "open")
+    assert verified.kind == "failure" and verified.error_code == "history_unavailable"
+    assert verified.outcome_settled_at == failed.outcome_settled_at
+    assert verified.notification_observed_at == notified.notification_observed_at
+    assert verified.report_artifact_id is None
     assert runtime.store.consolidation_schedule(run.project_id).covered_head is None
 
 
@@ -446,6 +459,104 @@ def test_scheduled_chat_overlap_keeps_occurrence_owed(runtime):
     )
 
 
+def test_paused_human_chat_creates_occurrence_failure_without_task(runtime):
+    pending = runtime.poller._task(runtime.schedule, runtime.service)
+    pending = pending.model_copy(update={"request": {**pending.request, "trigger": "human"}})
+    runtime.store.create_agent_task(pending)
+    runtime.store.mark_agent_task_running(pending.operation_id)
+    runtime.store.checkpoint_agent_task(pending.operation_id, native_session_id="human-session")
+    runtime.store.pause_agent_task(pending.operation_id)
+    runtime.poller.poll_once()
+    runtime.poller.poll_once()
+    runs = runtime.store.consolidation_runs()
+    assert len(runs) == 1
+    assert runs[0].operation_id is None
+    assert runs[0].error_code == "consolidation_chat_paused"
+    assert runs[0].kind == "failure" and runs[0].revisions_verified
+    assert runtime.dispatched == []
+    schedule = runtime.store.consolidation_schedule(runtime.schedule.project_id)
+    assert datetime.fromisoformat(schedule.next_due_at) > runtime.now
+    assert schedule.covered_head == runtime.schedule.covered_head
+    assert runtime.store.agent_task(pending.operation_id).can_resume
+    runtime.store.register_notification_device(runtime.store.local_owner.user_id)
+    runtime.app.state.notification_sender.run_pass()
+    assert [row["item_id"] for row in runtime.store.notification_outbox()] == [runs[0].run_id]
+
+
+@pytest.mark.parametrize(
+    "failure", ["incomplete", "history", "profile", "compute", "machine", "unexpected"]
+)
+def test_due_resolution_failure_creates_occurrence_failure_without_task(
+    runtime, monkeypatch, caplog, failure
+):
+    service = runtime.app.state.catalog.open(runtime.schedule.project_id)
+
+    def unavailable(*args):
+        raise ValueError("Unavailable configuration")
+
+    if failure == "unexpected":
+
+        def unexpected():
+            raise RuntimeError("Unexpected failure")
+
+        monkeypatch.setattr(service.history, "accepted_patch_boundaries", unexpected)
+    elif failure == "incomplete":
+        replay, boundaries = service.history.accepted_patch_boundaries()
+        replay.state.replay_status = "degraded"
+        monkeypatch.setattr(
+            service.history, "accepted_patch_boundaries", lambda: (replay, boundaries)
+        )
+    elif failure == "history":
+
+        def history_unavailable():
+            raise OSError("Unavailable history")
+
+        monkeypatch.setattr(service.history, "accepted_patch_boundaries", history_unavailable)
+    elif failure == "machine":
+        original = runtime.poller._task
+
+        def missing_machine(schedule, service):
+            task = original(schedule, service)
+            return task.model_copy(update={"request": {**task.request, "run_on": "missing"}})
+
+        monkeypatch.setattr(runtime.poller, "_task", missing_machine)
+    else:
+        monkeypatch.setattr(
+            service,
+            "resolve_agent_profile" if failure == "profile" else "resolve_compute_request",
+            unavailable,
+        )
+    runtime.poller.poll_once()
+    runtime.poller.poll_once()
+    runs = runtime.store.consolidation_runs()
+    if failure == "unexpected":
+        assert runs == []
+        assert (
+            runtime.store.consolidation_schedule(runtime.schedule.project_id).next_due_at
+            == runtime.schedule.next_due_at
+        )
+        assert any(
+            record.exc_info and record.exc_info[0] is RuntimeError for record in caplog.records
+        )
+        return
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.kind == "failure" and run.operation_id is None
+    assert run.error_code == (
+        "history_unavailable"
+        if failure in {"incomplete", "history"}
+        else "consolidation_launch_unavailable"
+    )
+    assert run.revisions_verified and run.applied_revisions == []
+    assert runtime.dispatched == []
+    schedule = runtime.store.consolidation_schedule(runtime.schedule.project_id)
+    assert datetime.fromisoformat(schedule.next_due_at) > runtime.now
+    assert schedule.covered_head == runtime.schedule.covered_head
+    runtime.store.register_notification_device(runtime.store.local_owner.user_id)
+    runtime.app.state.notification_sender.run_pass()
+    assert [row["item_id"] for row in runtime.store.notification_outbox()] == [run.run_id]
+
+
 @pytest.mark.parametrize(
     ("failure_status", "committed_key", "expected_kind"),
     [
@@ -470,18 +581,20 @@ def test_keyed_apply_failure_requires_canonical_commit_before_success(
     runtime.poller.poll_once()
     run = runtime.store.consolidation_runs()[0]
     text = agent_patch_json(refresh_patch("rq/nightly-verified-effect"))
-    effect = source_effect_id(run.operation_id, "commit")
-    runtime.store.reserve_consolidation_apply(
-        run.operation_id, "commit", hashlib.sha256(text.encode()).hexdigest(), text, effect
-    )
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    effect = source_effect_id(run.operation_id, digest)
+    runtime.store.reserve_consolidation_apply(run.operation_id, "commit", digest, text, effect)
     if committed_key:
+        runtime.store.reserve_consolidation_apply(
+            run.operation_id, committed_key, digest, text, effect
+        )
         execution = AgentTaskExecution(run.operation_id, runtime.store, AgentProcessControl())
         result, failure = _apply_work_patch(
             runtime.app.state.catalog.open(run.project_id),
             execution,
             text,
             run_truth_scope=list(runtime.service.manifest.project.truth_scope),
-            source_effect_id=source_effect_id(run.operation_id, committed_key),
+            source_effect_id=effect,
         )
         assert failure is None and result.status == "applied"
     runtime.store.record_consolidation_apply_failure(

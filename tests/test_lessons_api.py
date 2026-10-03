@@ -6,6 +6,7 @@ from rcp.api import create_app
 from rcp.limits import LESSON_TEXT_MAX_CHARS
 
 from .helpers import create_named_app
+from .test_project_membership import _create_project
 
 
 def test_lessons_crud_shapes_and_project_scope(manifest, tmp_path) -> None:
@@ -26,6 +27,17 @@ def test_lessons_crud_shapes_and_project_scope(manifest, tmp_path) -> None:
     }
     assert lesson["human_owned"] is True
     assert client.get(url).json() == {"lessons": [lesson]}
+    other_project = _create_project(client, tmp_path / "other-repo", name="Other project")
+    other_url = f"/api/projects/{other_project}/lessons"
+    assert client.get(other_url).json() == {"lessons": []}
+    other_lesson = client.post(other_url, json={"text": "Other project lesson"}).json()["lesson"]
+    assert client.get(url).json() == {"lessons": [lesson]}
+    for method in ("PATCH", "DELETE"):
+        refused = client.request(
+            method, f"{other_url}/{lesson['lesson_id']}", json={"text": "Wrong project"}
+        )
+        assert refused.status_code == 404
+        assert refused.json()["detail"]["code"] == "lesson_not_found"
     item_url = f"{url}/{lesson['lesson_id']}"
     updated = client.patch(item_url, json={"text": "Use uv for Python."})
     assert updated.status_code == 200
@@ -41,6 +53,7 @@ def test_lessons_crud_shapes_and_project_scope(manifest, tmp_path) -> None:
         == "lesson_not_found"
     )
     assert client.delete(item_url).status_code == 404
+    assert client.get(other_url).json() == {"lessons": [other_lesson]}
 
 
 def test_lessons_require_membership_for_every_route(manifest, tmp_path) -> None:

@@ -81,8 +81,9 @@ async def test_validation_only_mailbox_refuses_lesson_before_owner_dispatch(tmp_
     )
     filename = "request.json"
     (tmp_path / filename).write_text(call.model_dump_json(), encoding="utf-8")
+    staged.credential.activate()
     try:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="^lesson requires broker authority$"):
             await _read_request(filename, call.request_id, staged)
     finally:
         staged.cleanup()

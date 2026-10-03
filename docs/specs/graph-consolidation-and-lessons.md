@@ -33,6 +33,11 @@ A due occurrence:
 - starts nothing when the schedule has expired;
 - creates a failure row and starts nothing when the authorizer is no longer a
   project member or the project no longer accepts new work;
+- creates a failure row without a task when the consolidation chat has a resumable
+  paused turn (`consolidation_chat_paused`), history is unavailable
+  (`history_unavailable`), or launch configuration cannot resolve
+  (`consolidation_launch_unavailable`), advancing the occurrence while leaving the
+  covered head unchanged;
 - records the outcome `skipped` and starts nothing when no revision outside
   consolidation runs has been committed on main since the last covered head;
 - otherwise creates a run row and admits one consolidation turn bound to it.
@@ -72,9 +77,10 @@ Ordinary Patch correction rounds apply.
 
 Keyed `apply` commits a Patch on main inside the turn and returns the new
 revision. RCP records an immutable copy and digest of each applied Patch under
-the operation and key, with a deterministic source effect id; repeating a key
-with the same bytes replays the result, and different bytes under a used key
-are refused. At settlement RCP matches the final `patch.json` by operation and
+the operation and key, with a source effect id derived from the operation and
+Patch digest; repeating a key with the same bytes replays the result, and
+different bytes under a used key are refused. The same bytes under another key share the same canonical effect.
+At settlement RCP matches the final `patch.json` by operation and
 digest against those receipts: a match is not applied again, and a new final
 Patch applies as for any Work turn under its own effect id.
 
@@ -86,9 +92,11 @@ root, captured by ordinary turn-artifact discovery.
 A run's outcome is separate from its task verdict. RCP settles it by run id from
 the ended task, every canonical commit of the run's operation, and the
 captured artifact, and retries settlement at startup and on scheduler passes
-until it is recorded. A run succeeds when the task succeeded, no graph update of
-the turn remains rejected or unavailable, and the report was captured as a
-viewable HTML artifact.
+until it is recorded. A settled outcome is final; later history recovery can
+verify its revisions and Proposal count but cannot turn a failure into a report
+or advance its covered head. A run succeeds when the task succeeded, no graph
+update of the turn remains rejected or unavailable, and the report was captured
+as a viewable HTML artifact.
 
 Paused, stopped, abandoned, or irrecoverably interrupted consolidation tasks
 settle as failures without advancing the covered head and are never resumed,

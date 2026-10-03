@@ -556,22 +556,19 @@ def test_overlay_records_the_running_release_expectation_before_candidate_migrat
     assert ledger[-1] == migrated[0]
 
 
-def test_consolidation_receipt_snapshot_is_rebound_but_bytes_are_retained(tmp_path):
+def test_consolidation_receipt_bytes_survive_rehearsal(tmp_path):
     store = AppStore(tmp_path / "source.sqlite3")
-    original = tmp_path / "original-patch.json"
-    original.write_text("{}")
     overlay = tmp_path / "overlay"
     absent = overlay / "absent"
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO consolidation_apply_receipts(project_id,operation_id,key,sha256,patch_text,patch_path,source_effect_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO consolidation_apply_receipts(project_id,operation_id,key,sha256,patch_text,source_effect_id,created_at) VALUES(?,?,?,?,?,?,?)",
             (
                 "project",
                 "operation",
                 "key",
                 hashlib.sha256(b"{}").hexdigest(),
                 "{}",
-                str(original),
                 "effect",
                 store.now(),
             ),
@@ -580,9 +577,6 @@ def test_consolidation_receipt_snapshot_is_rebound_but_bytes_are_retained(tmp_pa
         rehearsal_module._validate_path_column_inventory(connection)
         rehearsal_module._validate_rebound_paths(connection, root=overlay, projects=[])
         receipt = connection.execute(
-            "SELECT patch_path,patch_text FROM consolidation_apply_receipts"
+            "SELECT patch_text FROM consolidation_apply_receipts"
         ).fetchone()
-        assert Path(receipt["patch_path"]).is_relative_to(absent)
-        assert not Path(receipt["patch_path"]).exists()
         assert receipt["patch_text"] == "{}"
-    assert original.read_text() == "{}"

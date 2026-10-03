@@ -47,8 +47,8 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
         # Operational lessons with graph consolidation, fresh, upgraded in place,
         # and both artifact-import storage boundaries.
-        "9210f600feae63c48f6ecee14a058f17ef3822d8851588c9b174bd58e12217a1",
-        "88d31b75745ff44fddc899cbca6ab984debbda2b9bb4837329906a1cec08ab8c",
+        "bce949facc26dc773128d1619fa40961c0821e386c163f6df3e191a702d3bc5a",
+        "d908449655c61dcedd1be0b707209a08718e02a3505b37c3d69e80b080413965",
         "e134305eaeaf09636a28dc9a6016863ba0662a7cba762e4237599c94d74c4961",
         "f6cbbe7bd4c324857d8c257ff1f8a6972e1aedafa9f5a6867a0865f1d312472c",
         # Durable human-answer chat projection revisions, fresh and upgraded in place.

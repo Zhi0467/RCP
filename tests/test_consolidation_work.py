@@ -13,6 +13,7 @@ from rcp.agents import AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import ApplyArguments, ApplyCommandRequest
 from rcp.background import AgentTaskExecution
+from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.runs.consolidation import consolidation_apply_handler, settlement_source_effect_id
 from rcp.runs.questions import work_command_handler
 from rcp.runs.tasks.work import _apply_work_patch, stream_work_run
@@ -116,7 +117,7 @@ def test_consolidation_apply_keys_replay_and_settlement_matches_each_digest(mani
             execution,
             text,
             run_truth_scope=["repo-a"],
-            source_effect_id=settlement_source_effect_id(service, execution, text),
+            source_effect_id=settlement_source_effect_id(execution, text),
         )
         assert failure is None
         assert result.status == "applied"
@@ -135,30 +136,46 @@ def test_consolidation_apply_recovers_crash_after_canonical_append(manifest, tmp
         patch.setattr(
             execution.store,
             "finish_consolidation_apply",
-            lambda *_: (_ for _ in ()).throw(RuntimeError("crash")),
+            lambda *_: (_ for _ in ()).throw(OSError("result unavailable")),
         )
-        with pytest.raises(RuntimeError, match="crash"):
-            apply("commit")
+        assert apply("commit").status == "unavailable"
     assert app.state.service.history.state().revision == initial_revision + 1
     assert (tmp_path / "patch.json").exists()
-    response = apply("commit")
+    response = apply("retry-new-key")
     assert response.status == "ok"
     assert response.result["revision"] == initial_revision + 1
     assert app.state.service.history.state().revision == initial_revision + 1
-    assert execution.store.list_consolidation_apply_receipts(execution.operation_id)[0]["result"]
+    receipts = execution.store.list_consolidation_apply_receipts(execution.operation_id)
+    assert len(receipts) == 2
+    assert receipts[1]["result"]
+    assert receipts[0]["source_effect_id"] == receipts[1]["source_effect_id"]
+    assert settlement_source_effect_id(execution, text) == receipts[1]["source_effect_id"]
 
 
-def test_consolidation_apply_live_membership_is_required_by_transition(manifest, tmp_path):
+@pytest.mark.parametrize("departure", ["membership", "removal_started_at", "removed_at"])
+def test_consolidation_apply_live_membership_is_required_by_transition(
+    manifest, tmp_path, departure
+):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     _, execution = _admit(app)
     task = execution.store.agent_task(execution.operation_id)
     initial_revision = app.state.service.history.state().revision
     with execution.store.connection() as conn:
-        conn.execute(
-            "DELETE FROM project_members WHERE project_id=? AND user_id=?",
-            (task.project_id, task.authorized_by.user_id),
-        )
+        if departure == "membership":
+            conn.execute(
+                "DELETE FROM project_members WHERE project_id=? AND user_id=?",
+                (task.project_id, task.authorized_by.user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE space_users SET removal_started_at=?, removed_at=? WHERE user_id=?",
+                (
+                    execution.store.now(),
+                    execution.store.now() if departure == "removed_at" else None,
+                    task.authorized_by.user_id,
+                ),
+            )
     mailbox, apply = _command(app, execution, tmp_path)
     mailbox.write_text("patch.json", agent_patch_json(refresh_patch()))
     result = apply("departed")
@@ -172,6 +189,8 @@ def test_consolidation_apply_live_membership_is_required_by_transition(manifest,
     )
     assert applied is None
     assert failure is not None
+    assert result.message == "consolidation_authorizer_departed"
+    assert failure.code == AgentAuthorizerDeparted.code
     assert app.state.service.history.state().revision == initial_revision
     assert (tmp_path / "patch.json").exists()
 
@@ -295,7 +314,14 @@ def test_consolidation_continuations_cannot_escape_the_bound_operation(
     monkeypatch.setattr(
         manager, "_transport_retry_attempt", lambda *_: pytest.fail("scheduled a retry")
     )
-    manager._auto_retry_transport_loss(execution.store.agent_task(execution.operation_id))
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE graph_runs SET status='failed',failure_kind='transport_lost' WHERE operation_id=?",
+            (execution.operation_id,),
+        )
+    retry_eligible = store.agent_task(execution.operation_id)
+    assert retry_eligible.failure_kind == "transport_lost" and retry_eligible.can_retry
+    manager._auto_retry_transport_loss(retry_eligible)
     previous = store.agent_task(execution.operation_id)
     ordinary = store.create_agent_task(
         previous.model_copy(

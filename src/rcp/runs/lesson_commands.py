@@ -4,20 +4,12 @@ from __future__ import annotations
 
 from rcp.agents.command_protocol import CommandResponse, LessonCommandRequest
 from rcp.storage import AppStore
-from rcp.storage.lessons import LessonError, lesson_edit_authorized
+from rcp.storage.lessons import LessonError
 
 
 def handle_lesson(
     store: AppStore, operation_id: str, request: LessonCommandRequest
 ) -> CommandResponse:
-    edit_authorized = lesson_edit_authorized(store, operation_id)
-    if request.arguments.action != "add" and not edit_authorized:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message="Only the consolidation owner can list, update, or delete lessons.",
-            result={"code": "lesson_edit_not_authorized"},
-        )
     task = store.agent_task(operation_id)
     if task is None:
         return CommandResponse(

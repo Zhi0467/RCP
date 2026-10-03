@@ -86,7 +86,7 @@ def test_edit_authority_and_live_membership(store):
     lesson = command(store, "add", key="a", text="tip")["lesson"]
     assert not lesson_edit_authorized(store, "turn")
     for verb in ("update", "delete", "list"):
-        with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_forbidden"):
+        with pytest.raises(LessonError, check=lambda exc: exc.code == "lesson_edit_not_authorized"):
             command(store, verb, key=verb, lesson_id=lesson["lesson_id"], text="new")
     consolidate(store)
     assert lesson_edit_authorized(store, "turn")

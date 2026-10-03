@@ -73,7 +73,6 @@ _PATH_COLUMN_NAMES = frozenset(
         "cwd",
         "job_root",
         "exit_path",
-        "patch_path",
     }
 )
 
@@ -689,15 +688,6 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                     "WHERE rowid = ? AND output_path IS NOT NULL",
                     (str(rebound / "output"), row["rowid"]),
                 )
-    if "consolidation_apply_receipts" in tables:
-        # Receipt bytes are retained in SQLite. Rehearsal must never follow the
-        # source installation's auxiliary immutable-snapshot pointer.
-        for row in connection.execute("SELECT rowid FROM consolidation_apply_receipts"):
-            rebound = absent_root / "consolidation-patches" / str(row["rowid"])
-            connection.execute(
-                "UPDATE consolidation_apply_receipts SET patch_path=? WHERE rowid=?",
-                (str(rebound), row["rowid"]),
-            )
     if "watchers" in tables:
         rows = connection.execute("SELECT rowid, execution_host FROM watchers").fetchall()
         for row in rows:
@@ -770,10 +760,6 @@ def _validate_path_column_inventory(connection: sqlite3.Connection) -> None:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
-            if column == "patch_path" and table != "consolidation_apply_receipts":
-                raise CandidateRehearsalRefused(
-                    f"Copied table {table!r} unexpectedly owns {column!r}."
-                )
             if column == "output_path" and "stage_root" not in columns:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} has output paths without a stage boundary."
@@ -817,13 +803,6 @@ def _validate_rebound_paths(
                 ):
                     raise CandidateRehearsalRefused(
                         f"A copied local stage in {table!r} is not known-absent."
-                    )
-        if table == "consolidation_apply_receipts":
-            for row in connection.execute("SELECT patch_path FROM consolidation_apply_receipts"):
-                path = Path(str(row["patch_path"]))
-                if not path.is_relative_to(root) or path.exists() or path.is_symlink():
-                    raise CandidateRehearsalRefused(
-                        "A copied consolidation Patch snapshot is not known-absent in its overlay."
                     )
         if table == "watchers":
             for row in connection.execute(

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
-import tempfile
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta
@@ -61,14 +59,14 @@ class ConsolidationRun(BaseModel):
 
 
 def migrate_consolidation(connection: sqlite3.Connection) -> None:
-    connection.execute("""CREATE TABLE consolidation_schedules (
+    connection.execute("""CREATE TABLE IF NOT EXISTS consolidation_schedules (
         project_id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL UNIQUE,
         local_time TEXT NOT NULL, timezone TEXT NOT NULL, authorized_by_json TEXT NOT NULL,
         authorized_at TEXT NOT NULL, expires_at TEXT NOT NULL, next_due_at TEXT NOT NULL,
         covered_head INTEGER, last_occurrence_date TEXT, last_run_at TEXT, last_outcome TEXT,
         notification_observed_at TEXT
     )""")
-    connection.execute("""CREATE TABLE consolidation_runs (
+    connection.execute("""CREATE TABLE IF NOT EXISTS consolidation_runs (
         run_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, occurrence_date TEXT NOT NULL,
         operation_id TEXT UNIQUE, chat_id TEXT, authorization_id TEXT NOT NULL,
         authorized_by_json TEXT NOT NULL, input_head INTEGER NOT NULL, created_at TEXT NOT NULL,
@@ -80,14 +78,14 @@ def migrate_consolidation(connection: sqlite3.Connection) -> None:
         resolved_by_json TEXT, resolved_at TEXT, notification_observed_at TEXT,
         UNIQUE(project_id, occurrence_date)
     )""")
-    connection.execute("""CREATE TABLE consolidation_apply_receipts (
+    connection.execute("""CREATE TABLE IF NOT EXISTS consolidation_apply_receipts (
         project_id TEXT NOT NULL, operation_id TEXT NOT NULL, key TEXT NOT NULL,
-        sha256 TEXT NOT NULL, patch_text TEXT NOT NULL, patch_path TEXT NOT NULL,
-        source_effect_id TEXT NOT NULL UNIQUE, result_json TEXT, last_failure_json TEXT, created_at TEXT NOT NULL,
+        sha256 TEXT NOT NULL, patch_text TEXT NOT NULL,
+        source_effect_id TEXT NOT NULL, result_json TEXT, last_failure_json TEXT, created_at TEXT NOT NULL,
         PRIMARY KEY(operation_id,key)
     )""")
     connection.execute(
-        "CREATE INDEX consolidation_runs_unsettled ON consolidation_runs(project_id,outcome_settled_at)"
+        "CREATE INDEX IF NOT EXISTS consolidation_runs_unsettled ON consolidation_runs(project_id,outcome_settled_at)"
     )
 
 
@@ -239,7 +237,7 @@ class ConsolidationStoreMixin:
             ):
                 return None
             if conn.execute(
-                "SELECT 1 FROM consolidation_runs WHERE project_id=? AND (outcome_settled_at IS NULL OR (revisions_verified=0 AND COALESCE(error_code,'') != 'restored_run_detached'))",
+                "SELECT 1 FROM consolidation_runs WHERE project_id=? AND outcome_settled_at IS NULL",
                 (schedule.project_id,),
             ).fetchone():
                 return None
@@ -257,7 +255,8 @@ class ConsolidationStoreMixin:
             if (
                 conn.execute(
                     "SELECT 1 FROM project_members AS member JOIN space_users AS user ON user.user_id=member.user_id "
-                    "WHERE member.project_id=? AND member.user_id=? AND user.removal_started_at IS NULL AND user.removed_at IS NULL",
+                    "JOIN projects AS project ON project.project_id=member.project_id "
+                    "WHERE member.project_id=? AND member.user_id=? AND user.removal_started_at IS NULL AND user.removed_at IS NULL AND project.retired_at IS NULL",
                     (schedule.project_id, schedule.authorized_by.user_id),
                 ).fetchone()
                 is None
@@ -275,6 +274,12 @@ class ConsolidationStoreMixin:
                 self._require_project_accepts_new_work(conn, schedule.project_id)
                 if self._has_active_chat_overlap(conn, task):
                     return None
+                if self._has_resumable_paused_chat_task(
+                    conn, task.project_id, task.kind, task.request["chat_id"]
+                ):
+                    task = None
+                    error_code = "consolidation_chat_paused"
+                    error_message = "The consolidation chat has a resumable paused turn."
             if not skipped:
                 if task is None and error_code is None:
                     raise ValueError("an occurrence requires a task or typed failure")
@@ -359,6 +364,19 @@ class ConsolidationStoreMixin:
                 raise KeyError(run_id)
             if row["outcome_settled_at"] is not None and row["revisions_verified"]:
                 return _record(ConsolidationRun, row)
+            if row["outcome_settled_at"] is not None:
+                # Later history recovery enriches evidence, never a settled outcome.
+                if revisions_verified:
+                    conn.execute(
+                        "UPDATE consolidation_runs SET applied_revisions_json=?,revisions_verified=1,proposals_created=? WHERE run_id=?",
+                        (json.dumps(applied_revisions), proposals_created, run_id),
+                    )
+                return _record(
+                    ConsolidationRun,
+                    conn.execute(
+                        "SELECT * FROM consolidation_runs WHERE run_id=?", (run_id,)
+                    ).fetchone(),
+                )
             if kind == "report":
                 artifact = conn.execute(
                     "SELECT metadata FROM artifacts WHERE artifact_id=? AND project_id=?",
@@ -422,7 +440,10 @@ class ConsolidationStoreMixin:
             self.keep_artifact(run.report_artifact_id, resolved_by=resolved_by)
             return self.consolidation_run(run_id)
         now = self.now()
-        with self.connection() as conn:
+        lock = (
+            self.artifact_lock(run.report_artifact_id) if run.report_artifact_id else nullcontext()
+        )
+        with lock, self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             changed = conn.execute(
                 "UPDATE consolidation_runs SET state='dismissed',resolved_by_json=?,resolved_at=? WHERE run_id=? AND state='open'",
@@ -446,30 +467,6 @@ class ConsolidationStoreMixin:
         run = self.consolidation_run_for_operation(operation_id)
         if run is None:
             raise ValueError("operation has no consolidation binding")
-        # Hash the operation, rather than trusting an id as a filesystem component.
-        root = (
-            self.path.parent
-            / "run-stage"
-            / "consolidation-patches"
-            / hashlib.sha256(operation_id.encode()).hexdigest()
-        )
-        path = root / (sha256 + ".json")
-        root.mkdir(parents=True, exist_ok=True)
-        # A crash can leave a temporary file, never a partially retained snapshot.
-        if path.exists():
-            if path.read_bytes() != patch_text.encode():
-                raise ValueError("retained consolidation Patch differs from its digest")
-        else:
-            fd, temporary = tempfile.mkstemp(prefix=".patch-", dir=root)
-            try:
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(patch_text.encode())
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary, path)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
@@ -482,14 +479,13 @@ class ConsolidationStoreMixin:
                 raise ValueError("consolidation Apply key already names different bytes")
             if row is None:
                 conn.execute(
-                    "INSERT INTO consolidation_apply_receipts(project_id,operation_id,key,sha256,patch_text,patch_path,source_effect_id,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    "INSERT INTO consolidation_apply_receipts(project_id,operation_id,key,sha256,patch_text,source_effect_id,created_at) VALUES(?,?,?,?,?,?,?)",
                     (
                         run.project_id,
                         operation_id,
                         key,
                         sha256,
                         patch_text,
-                        str(path),
                         source_effect_id,
                         self.now(),
                     ),
@@ -562,8 +558,7 @@ class ConsolidationStoreMixin:
                 conn.execute(
                     "SELECT 1 FROM consolidation_runs WHERE project_id=? AND ("
                     "(report_artifact_id=? AND kind='report' AND state='open') OR "
-                    "(operation_id=? AND (outcome_settled_at IS NULL OR "
-                    "(revisions_verified=0 AND COALESCE(error_code,'') != 'restored_run_detached'))))",
+                    "(operation_id=? AND outcome_settled_at IS NULL))",
                     (
                         artifact.project_id,
                         artifact.artifact_id,
@@ -578,6 +573,6 @@ class ConsolidationStoreMixin:
     ) -> None:
         connection.execute("DELETE FROM consolidation_schedules")
         connection.execute(
-            "UPDATE consolidation_runs SET kind='failure',outcome_settled_at=?,error_code='restored_run_detached',error_message=?,revisions_verified=0 WHERE outcome_settled_at IS NULL OR revisions_verified=0",
+            "UPDATE consolidation_runs SET kind='failure',outcome_settled_at=?,error_code='restored_run_detached',error_message=?,revisions_verified=0 WHERE outcome_settled_at IS NULL",
             (now, diagnostic),
         )

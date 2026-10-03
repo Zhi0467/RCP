@@ -52,7 +52,7 @@ states the resolved behavior. Implementation choices:
   covered head, last outcome), `consolidation_runs` (run id, schedule
   occurrence date unique per project, nullable operation id, authorization id,
   input head, kind, outcome fields, verified flag, row state, resolver),
-  `consolidation_apply_receipts` (operation, key, digest, retained bytes path,
+  `consolidation_apply_receipts` (operation, key, digest, Patch text,
   source effect id, result). None transfers; all join deletion, alias rewrite,
   backup inventory, and restore detachment.
 - Scheduler: a runtime owner modelled on `WatcherPoller`, beside the other

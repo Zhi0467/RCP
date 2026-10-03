@@ -12,12 +12,14 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 from rcp.background import BackgroundAgentTasks, StartupEffectFence
+from rcp.history import ReplayHalted
 from rcp.limits import CONSOLIDATION_POLL_SECONDS
 from rcp.machine_sleep import seconds_until_automatic_launch
 from rcp.runs.consolidation import CONSOLIDATION_PRELAUNCH_ERRORS, consolidation_skill_selection
 from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
+from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.core.models import GraphState, Patch
@@ -126,70 +128,59 @@ class ConsolidationPoller:
 
     def _handle_due(self, schedule: ConsolidationSchedule, now: datetime) -> None:
         if any(
-            run.error_code != "restored_run_detached"
+            run.outcome_settled_at is None
             for run in self.store.consolidation_runs(schedule.project_id, unsettled_only=True)
         ):
             return
         due = datetime.fromisoformat(schedule.next_due_at)
         occurrence_date = due.astimezone(ZoneInfo(schedule.timezone)).date().isoformat()
         next_due = next_occurrence(schedule.local_time, schedule.timezone, now).isoformat()
-        user = self.store.space_user(schedule.authorized_by.user_id)
-        if (
-            user is None
-            or user.removal_started_at is not None
-            or not self.store.is_project_member(schedule.project_id, schedule.authorized_by.user_id)
-        ):
-            self.store.claim_consolidation_occurrence(
-                schedule,
-                occurrence_date=occurrence_date,
-                next_due_at=next_due,
-                input_head=0,
-                now=now.isoformat(),
-                task=None,
-                error_code="authorization_membership_lost",
-                error_message="The schedule authorizer is no longer a project member.",
-            )
-            return
+        input_head = 0
+        task = None
+        execution_host = ""
+        skipped = False
+        error_code = None
+        error_message = None
+        failure_code = "consolidation_project_unavailable"
         try:
             self.store.require_project_accepts_new_work(schedule.project_id)
-        except ValueError as exc:
-            self.store.claim_consolidation_occurrence(
-                schedule,
-                occurrence_date=occurrence_date,
-                next_due_at=next_due,
-                input_head=0,
-                now=now.isoformat(),
-                task=None,
-                error_code="consolidation_project_unavailable",
-                error_message=str(exc),
+            service = self.service_for(schedule.project_id)
+            failure_code = "history_unavailable"
+            replay, boundaries = service.history.accepted_patch_boundaries()
+            if replay.state.replay_status != "complete":
+                raise ValueError("Canonical graph history is incomplete")
+            input_head = replay.state.revision
+            consolidation_operations = {
+                run.operation_id
+                for run in self.store.consolidation_runs(schedule.project_id)
+                if run.operation_id is not None
+            }
+            covered = schedule.covered_head
+            changed = covered is None or any(
+                state.revision > covered
+                and patch.source_operation_id not in consolidation_operations
+                for _, patch, state in boundaries
             )
-            return
-        service = self.service_for(schedule.project_id)
-        replay, boundaries = service.history.accepted_patch_boundaries()
-        if replay.state.replay_status != "complete":
-            raise ValueError("Canonical graph history is incomplete")
-        consolidation_operations = {
-            run.operation_id
-            for run in self.store.consolidation_runs(schedule.project_id)
-            if run.operation_id is not None
-        }
-        covered = schedule.covered_head
-        changed = covered is None or any(
-            state.revision > covered and patch.source_operation_id not in consolidation_operations
-            for _, patch, state in boundaries
-        )
-        task = self._task(schedule, service) if changed else None
+            if changed:
+                failure_code = "consolidation_launch_unavailable"
+                task = self._task(schedule, service)
+                execution_host = service.manifest.machine_map[task.request["run_on"]].host
+            else:
+                skipped = True
+        except (ValueError, KeyError, OSError, ReplayHalted, StateUnavailable) as exc:
+            task = None
+            error_code, error_message = failure_code, str(exc)
         run = self.store.claim_consolidation_occurrence(
             schedule,
             occurrence_date=occurrence_date,
             next_due_at=next_due,
-            input_head=replay.state.revision,
+            input_head=input_head,
             now=now.isoformat(),
             task=task,
-            execution_host=service.manifest.machine_map[task.request["run_on"]].host
-            if task
-            else "",
-            skipped=not changed,
+            execution_host=execution_host,
+            skipped=skipped,
+            error_code=error_code,
+            error_message=error_message,
         )
         if run is not None and run.operation_id is not None:
             self._launch(run.operation_id)

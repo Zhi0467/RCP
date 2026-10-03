@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import ApplyCommandRequest, CommandResponse
+from rcp.core.authority import AgentAuthorizerDeparted
 from rcp.limits import PATCH_SELF_CHECK_MAX_REQUEST_BYTES
 from rcp.skill_registry import official_registry
 from rcp.transport import StateUnavailable
@@ -79,29 +80,14 @@ def consolidation_skill_selection():
     return official_registry().resolve(workflow_ids=["graph-consolidation"], skill_ids=[])
 
 
-def source_effect_id(operation_id: str, key: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:consolidation:apply:{operation_id}:{key}"))
+def source_effect_id(operation_id: str, digest: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:consolidation:apply:{operation_id}:{digest}"))
 
 
-def settlement_source_effect_id(
-    service: ProjectService, execution: AgentTaskExecution, patch_text: str
-) -> str:
+def settlement_source_effect_id(execution: AgentTaskExecution, patch_text: str) -> str:
     """Recover a consumed effect even when the process died before saving its result."""
     digest = hashlib.sha256(patch_text.encode("utf-8")).hexdigest()
-    for patch in service.history.load_patches():
-        if (
-            patch.admission == "accepted"
-            and patch.source_operation_id == execution.operation_id
-            and patch.source_effect_sha256 == digest
-            and patch.source_effect_id is not None
-        ):
-            return patch.source_effect_id
-    for receipt in execution.store.list_consolidation_apply_receipts(execution.operation_id):
-        if receipt["sha256"] == digest:
-            return receipt["source_effect_id"]
-    return str(
-        uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:consolidation:final:{execution.operation_id}:{digest}")
-    )
+    return source_effect_id(execution.operation_id, digest)
 
 
 def consolidation_apply_handler(
@@ -122,24 +108,6 @@ def consolidation_apply_handler(
                 request_id=request.request_id,
                 status="invalid",
                 message="consolidation_binding_required",
-            )
-        task = execution.store.agent_task(execution.operation_id)
-        if (
-            task is None
-            or task.authorized_by is None
-            or not execution.store.is_project_member(task.project_id, task.authorized_by.user_id)
-        ):
-            return CommandResponse(
-                request_id=request.request_id,
-                status="invalid",
-                message="consolidation_authorizer_departed",
-            )
-        member = execution.store.space_user(task.authorized_by.user_id)
-        if member is None or member.removal_started_at is not None or member.removed_at is not None:
-            return CommandResponse(
-                request_id=request.request_id,
-                status="invalid",
-                message="consolidation_authorizer_departed",
             )
         key = request.idempotency_key
         if not key:
@@ -172,7 +140,7 @@ def consolidation_apply_handler(
                 key,
                 digest,
                 text,
-                source_effect_id(execution.operation_id, key),
+                source_effect_id(execution.operation_id, digest),
             )
             if receipt["result"] is not None:
                 response = CommandResponse(request_id=request.request_id, **receipt["result"])
@@ -187,16 +155,21 @@ def consolidation_apply_handler(
                 )
                 if result is None:
                     assert failure is not None
+                    message = (
+                        "consolidation_authorizer_departed"
+                        if failure.code == AgentAuthorizerDeparted.code
+                        else failure.message
+                    )
                     execution.store.record_consolidation_apply_failure(
                         execution.operation_id,
                         key,
                         "invalid" if failure.correctable else "unavailable",
-                        failure.message,
+                        message,
                     )
                     return CommandResponse(
                         request_id=request.request_id,
                         status="invalid" if failure.correctable else "unavailable",
-                        message=failure.message,
+                        message=message,
                     )
                 response = CommandResponse(
                     request_id=request.request_id,

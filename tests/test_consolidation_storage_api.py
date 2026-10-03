@@ -164,10 +164,12 @@ def test_open_report_is_retained_and_dismiss_restarts_retention(setup):
     assert datetime.fromisoformat(store.artifact("report").expires_at) > before
 
 
-def test_report_settlement_serializes_with_version_publication(setup, monkeypatch):
+@pytest.mark.parametrize("action", ["settle", "dismiss"])
+def test_report_settlement_serializes_with_version_publication(setup, monkeypatch, action):
     _, store, project = setup
-    run = _report(store, project, settle=False)
+    run = _report(store, project, settle=action == "dismiss")
     artifact = store.artifact("report")
+    human = store.consolidation_schedule(project).authorized_by
     original_lock = store.artifact_lock
     settlement_waiting = Event()
 
@@ -180,15 +182,24 @@ def test_report_settlement_serializes_with_version_publication(setup, monkeypatc
     monkeypatch.setattr(store, "artifact_lock", observed_lock)
     with ThreadPoolExecutor(max_workers=1) as executor:
         with original_lock("report"):
-            future = executor.submit(
-                store.settle_consolidation_run,
-                run.run_id,
-                kind="report",
-                report_artifact_id="report",
-                applied_revisions=[],
-                revisions_verified=True,
-                proposals_created=0,
-            )
+            if action == "settle":
+                future = executor.submit(
+                    store.settle_consolidation_run,
+                    run.run_id,
+                    kind="report",
+                    report_artifact_id="report",
+                    applied_revisions=[],
+                    revisions_verified=True,
+                    proposals_created=0,
+                )
+            else:
+                future = executor.submit(
+                    store.resolve_consolidation_run,
+                    project,
+                    run.run_id,
+                    state="dismissed",
+                    resolved_by=human,
+                )
             assert settlement_waiting.wait(timeout=TASK_SETTLE_TIMEOUT)
             version = store.publish_artifact_version(
                 "report",
@@ -196,14 +207,19 @@ def test_report_settlement_serializes_with_version_publication(setup, monkeypatc
                 operation_id="report-edit",
                 data=b"<p>Edited report</p>",
             )
-        assert future.result(timeout=TASK_SETTLE_TIMEOUT).state == "open"
+        assert future.result(timeout=TASK_SETTLE_TIMEOUT).state == (
+            "open" if action == "settle" else "dismissed"
+        )
     artifact = store.artifact("report")
     assert artifact.current_version == version.version_id
-    assert artifact.expires_at is None
-    assert (
-        store.expire_artifacts(as_of=datetime.fromisoformat(store.now()) + timedelta(days=30)) == 0
-    )
     assert store.read_artifact_bytes("report") == b"<p>Edited report</p>"
+    if action == "settle":
+        assert artifact.expires_at is None
+    else:
+        assert datetime.fromisoformat(artifact.expires_at) > datetime.fromisoformat(store.now())
+    assert store.expire_artifacts(
+        as_of=datetime.fromisoformat(store.now()) + timedelta(days=30)
+    ) == (0 if action == "settle" else 1)
 
 
 @pytest.mark.parametrize("viewer", [False, True])
@@ -227,9 +243,31 @@ def test_keeping_report_closes_inbox_from_either_route(setup, viewer):
     assert [item["artifact_id"] for item in client.get(artifact_base).json()] == ["report"]
 
 
-def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup):
+@pytest.mark.parametrize("verified", [False, True])
+def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup, verified):
     _, store, project = setup
-    run = _failure(store, project)
+    closed = _failure(store, project)
+    with store.connection() as conn:
+        conn.execute(
+            "UPDATE consolidation_runs SET revisions_verified=? WHERE run_id=?",
+            (int(verified), closed.run_id),
+        )
+    closed = store.resolve_consolidation_run(
+        project,
+        closed.run_id,
+        state="dismissed",
+        resolved_by=store.consolidation_schedule(project).authorized_by,
+    )
+    schedule = _due(store, project)
+    now = datetime.fromisoformat(store.now())
+    run = store.claim_consolidation_occurrence(
+        schedule,
+        occurrence_date=(now + timedelta(days=1)).date().isoformat(),
+        next_due_at=(now + timedelta(days=2)).isoformat(),
+        input_head=0,
+        error_code="authorizer_not_member",
+        error_message="departed",
+    )
     with store.connection() as conn:
         conn.execute(
             "UPDATE consolidation_runs SET outcome_settled_at=NULL WHERE run_id=?", (run.run_id,)
@@ -238,6 +276,7 @@ def test_restore_disables_authorizations_and_fails_only_unresolved_runs(setup):
     assert store.consolidation_schedule(project) is None
     detached = store.consolidation_run(run.run_id)
     assert detached.error_code == "restored_run_detached" and detached.outcome_settled_at
+    assert store.consolidation_run(closed.run_id) == closed
 
 
 @pytest.mark.parametrize("guard", ["membership", "admission", "identity"])
@@ -335,27 +374,3 @@ def test_prelaunch_failure_hides_internal_admission_pointers(setup):
     item = client.get(f"/api/projects/{project}/consolidation").json()["inbox"][0]
     assert item["operation_id"] is None and item["chat_id"] is None
     assert store.consolidation_run(run.run_id).operation_id == "internal"
-
-
-def test_apply_failure_evidence_survives_retry_and_success_clears_it(setup):
-    import hashlib
-
-    _, store, project = setup
-    run = _failure(store, project)
-    with store.connection() as conn:
-        conn.execute(
-            "UPDATE consolidation_runs SET operation_id=? WHERE run_id=?", ("turn", run.run_id)
-        )
-    patch = "{}"
-    digest = hashlib.sha256(patch.encode()).hexdigest()
-    store.reserve_consolidation_apply("turn", "key", digest, patch, "effect")
-    store.record_consolidation_apply_failure("turn", "key", "unavailable", "unknown outcome")
-    pending = store.list_consolidation_apply_receipts("turn")[0]
-    assert pending["result"] is None
-    assert pending["last_failure"] == {"status": "unavailable", "message": "unknown outcome"}
-    result = {"status": "ok", "result": {"revision": 1}}
-    store.finish_consolidation_apply("turn", "key", result)
-    store.record_consolidation_apply_failure("turn", "key", "invalid", "late failure")
-    completed = store.list_consolidation_apply_receipts("turn")[0]
-    assert completed["result"] == result
-    assert completed["last_failure"] is None

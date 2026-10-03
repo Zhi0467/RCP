@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -28,20 +29,29 @@ async def test_launch_stages_bounded_lessons_in_priority_order(manifest, tmp_pat
         mode=mode,
     )
     execution = _chat_task_execution(app, request, "lessons-launch")
-    for index in range(80):
+    lessons = [
         store.add_lesson(
             project,
             f"{index}:" + "界" * 590,
             user_id=owner.user_id,
             display_name=owner.display_name,
         )
-    lessons = store.list_lessons(project)
+        for index in range(80)
+    ]
+    now = datetime.fromisoformat(store.now())
     with store.connection() as connection:
-        connection.execute(
-            "UPDATE operational_lessons SET author_kind='agent', operation_id=?, "
-            "user_id=NULL, display_name=NULL, human_owned=0 WHERE lesson_id=?",
-            (execution.operation_id, lessons[0]["lesson_id"]),
-        )
+        for index, lesson in enumerate(lessons):
+            connection.execute(
+                "UPDATE operational_lessons SET updated_at=? WHERE lesson_id=?",
+                ((now + timedelta(seconds=index)).isoformat(), lesson["lesson_id"]),
+            )
+            if index % 10:
+                connection.execute(
+                    "UPDATE operational_lessons SET author_kind='agent', operation_id=?, "
+                    "user_id=NULL, display_name=NULL, human_owned=0 WHERE lesson_id=?",
+                    (execution.operation_id, lesson["lesson_id"]),
+                )
+    lessons = store.list_lessons(project)
     launcher = ScriptedLauncher([{}], message="Context read.")
     stream = stream_discuss_run if mode == "discuss" else stream_work_run
     frames = [
@@ -59,6 +69,17 @@ async def test_launch_stages_bounded_lessons_in_priority_order(manifest, tmp_pat
     included = [lesson for lesson in lessons if lesson["lesson_id"] in content]
     assert 0 < len(included) < len(lessons)
     assert str(len(lessons) - len(included)) in content.splitlines()[-1]
-    assert lessons[0]["lesson_id"] not in content
+    groups = [
+        [lesson for lesson in included if lesson["human_owned"] is human_owned]
+        for human_owned in (True, False)
+    ]
+    for group in groups:
+        assert len(group) > 1
+        newest_first = sorted(group, key=lambda lesson: lesson["updated_at"], reverse=True)
+        positions = [content.index(lesson["lesson_id"]) for lesson in newest_first]
+        assert positions == sorted(positions)
+    assert max(content.index(lesson["lesson_id"]) for lesson in groups[0]) < min(
+        content.index(lesson["lesson_id"]) for lesson in groups[1]
+    )
     for lesson in included:
         assert lesson["text"] in content
