@@ -1282,9 +1282,11 @@
     width: auto;
   }
 }
-.transcription-voice-toggle {
-  align-items: center;
-  display: inline-flex;
-  font-size: var(--type-sm);
-  gap: 6px;
+.transcription-group {
+  border-top: 1px solid var(--line);
+  font-family: var(--editorial);
+  font-size: var(--type-lg);
+  font-weight: 550;
+  margin: 20px 0 0;
+  padding: 16px 16px 0;
 }

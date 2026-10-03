@@ -150,7 +150,7 @@ export function VoicePanel({
       <aside className="voice-panel voice-panel-problem" role="status">
         <p>
           {notConnected
-            ? "Voice needs your own OpenAI connection with Use for voice turned on."
+            ? "The standby voice agent needs your own OpenAI connection. Choose one in Settings, under Standby voice agent, Runs on."
             : voice.problem.text}
         </p>
         <div className="voice-panel-actions">

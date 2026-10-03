@@ -9,8 +9,8 @@ Auto-research ids in the overview), slice 2 (voice purposes, voice settings,
 the stateless session route), and slice 3 (voice panel and executor, driven
 headless against a fake transport), voice-only terminal tools, and the spec
 and `AGENTS.md` updates. On 2026-10-03 the human ran a live session in a
-browser on a throwaway server: connect, Use for voice, session creation,
-spoken answers, project reads, and opening Settings worked. A headless drive
+browser on a throwaway server: connect, choosing the voice connection,
+session creation, spoken answers, project reads, and opening Settings worked. A headless drive
 of the same served app, with only the OpenAI exchange faked, proved the Work
 card, Confirm, and an accepted Work turn, and a confirmed terminal command
 read back its output. Remaining: a live Work turn and terminal command spoken
@@ -71,10 +71,10 @@ Close this handoff when all of these hold on real hardware:
   never stores it. The durable records its actions create are ordinary RCP
   records.
 - **No audio passes through RCP.** Audio goes between the browser and OpenAI.
-- **Billing.** The member's own OpenAI connection, with **Use for voice**
-  enabled separately from transcription, so a transcription-only key is never
-  used for voice. The delegation model defaults to `gpt-6-luna` and can be
-  changed in the voice settings.
+- **Billing.** The member's own OpenAI connection, chosen under **Standby
+  voice agent → Runs on** separately from transcription, so a
+  transcription-only key is never used for voice. The delegation model
+  defaults to `gpt-6-luna` and can be changed in the voice settings.
 - **Clients:** desktop app, team browser app, team phone web app. A personal
   paired phone stays notify-only.
 - **Disclosure.** The panel says that audio, and the project content the agent

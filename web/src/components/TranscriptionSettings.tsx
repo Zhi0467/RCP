@@ -10,12 +10,11 @@ import {
   setServiceConnectionPurposes,
 } from "../api";
 import { isDesktopRuntime } from "../desktopRuntime";
-import { serviceConnectionFailure } from "../dictation";
+import { serviceConnectionFailure, voiceConnectionUpdate } from "../dictation";
 import { errorMessage } from "../errors";
 import type {
   ServiceConnectionKind,
   ServiceConnectionPreset,
-  ServiceConnectionPurpose,
   ServiceConnections,
   VoiceSettings,
 } from "../types";
@@ -68,7 +67,8 @@ function failureText(failure: unknown): string {
 }
 
 /**
- * Settings card: the signed-in member's own dictation service and connections.
+ * Settings card: the signed-in member's own dictation service, standby voice
+ * agent connection, and service connections.
  *
  * Unlike the rest of Space settings this belongs to one person. Keys go to the
  * RCP backend once and are never read back.
@@ -114,22 +114,22 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
   }
 
   const disabled = writesDisabled || busy !== null;
+  const voiceConnection =
+    settings?.connections.find((connection) => connection.purposes.includes("voice")) ?? null;
   return (
     <section className="settings-section transcription-settings">
       <header>
         <span>
           <AudioLines size={16} />
         </span>
-        <h2>Transcription</h2>
+        <h2>Dictation and voice</h2>
         <span className="transcription-owner">Only you</span>
       </header>
-      <p className="provider-login-intro">
-        Your own dictation service and keys. They are not shared with the space: each member
-        connects their own and pays for their own use.
-      </p>
+      <p className="provider-login-intro">Your own services and keys, not shared.</p>
       {settings === null && !error ? <p className="provider-login-intro">Loading…</p> : null}
       {settings ? (
         <>
+          <h3 className="transcription-group">Dictation</h3>
           <label className="transcription-picker">
             <span>Dictate with</span>
             <select
@@ -157,6 +157,64 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               macOS dictation works only in the desktop app. Choose a connection to dictate here.
             </p>
           ) : null}
+          <h3 className="transcription-group">Standby voice agent</h3>
+          <label className="transcription-picker">
+            <span>Runs on</span>
+            <select
+              value={voiceConnection?.id ?? "off"}
+              disabled={disabled}
+              onChange={(event) => {
+                const update = voiceConnectionUpdate(settings.connections, event.target.value);
+                if (update)
+                  void run("voice", () => setServiceConnectionPurposes(update.id, update.purposes));
+              }}
+            >
+              <option value="off">Off</option>
+              {settings.connections
+                .filter((connection) => connection.preset === "openai")
+                .map((connection) => (
+                  <option key={connection.id} value={connection.id}>
+                    {connection.label} · {connection.model}
+                  </option>
+                ))}
+            </select>
+          </label>
+          {voice ? (
+            <form
+              className="transcription-picker"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const model = voiceModel.trim();
+                if (model)
+                  void run("voice-model", () => saveVoiceSettings({ delegation_model: model }));
+              }}
+            >
+              <span>Delegation model</span>
+              <div className="provider-login-token">
+                <input
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={voiceModel}
+                  disabled={disabled}
+                  onChange={(event) => setVoiceModel(event.target.value)}
+                />
+                <button
+                  className="button secondary compact"
+                  type="submit"
+                  disabled={
+                    disabled || !voiceModel.trim() || voiceModel.trim() === voice.delegation_model
+                  }
+                >
+                  Save
+                </button>
+              </div>
+              <p className="provider-login-detail">
+                The standby voice agent is billed to that OpenAI account, about $0.05/min.
+              </p>
+            </form>
+          ) : null}
+          <h3 className="transcription-group">Your services</h3>
           <div className="provider-login-list">
             {settings.connections.map((connection) => (
               <article key={connection.id} className="provider-login-account">
@@ -173,32 +231,12 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                   </p>
                 ) : null}
                 <p className="provider-login-detail">
-                  Accepts {connection.formats.join(", ")}. Last verified{" "}
+                  Verified{" "}
                   <time dateTime={connection.verified_at ?? undefined}>
                     {formatServerTimestamp(connection.verified_at)}
                   </time>
-                  .
                 </p>
                 <div className="provider-login-actions">
-                  {connection.preset === "openai" ? (
-                    <label className="transcription-voice-toggle">
-                      <input
-                        type="checkbox"
-                        checked={connection.purposes.includes("voice")}
-                        disabled={disabled}
-                        onChange={(event) => {
-                          const purposes: ServiceConnectionPurpose[] = connection.purposes.filter(
-                            (item) => item !== "voice",
-                          );
-                          if (event.target.checked) purposes.push("voice");
-                          void run(`voice:${connection.id}`, () =>
-                            setServiceConnectionPurposes(connection.id, purposes),
-                          );
-                        }}
-                      />
-                      Use for voice
-                    </label>
-                  ) : null}
                   <button
                     className="button secondary compact"
                     type="button"
@@ -228,41 +266,6 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               </button>
             </div>
           </div>
-          {voice ? (
-            <form
-              className="transcription-picker"
-              onSubmit={(event) => {
-                event.preventDefault();
-                const model = voiceModel.trim();
-                if (model)
-                  void run("voice-model", () => saveVoiceSettings({ delegation_model: model }));
-              }}
-            >
-              <span>Voice delegation model</span>
-              <div className="provider-login-token">
-                <input
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={voiceModel}
-                  disabled={disabled}
-                  onChange={(event) => setVoiceModel(event.target.value)}
-                />
-                <button
-                  className="button secondary compact"
-                  type="submit"
-                  disabled={
-                    disabled || !voiceModel.trim() || voiceModel.trim() === voice.delegation_model
-                  }
-                >
-                  Save
-                </button>
-              </div>
-              <p className="provider-login-detail">
-                Voice runs on the connection marked Use for voice, at that account&apos;s cost.
-              </p>
-            </form>
-          ) : null}
         </>
       ) : null}
       {error ? (
@@ -349,7 +352,7 @@ function ConnectServiceDialog({
         }}
       >
         <header>
-          <h2 id={titleId}>Connect a transcription service</h2>
+          <h2 id={titleId}>Connect a service</h2>
         </header>
         <div className="transcription-dialog-body">
           <label>

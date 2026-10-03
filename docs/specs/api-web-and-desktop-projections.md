@@ -924,7 +924,7 @@ receives it and keeps no transcript.
 
 `POST /api/voice/sessions` takes `{sdp_offer, tools}`, where `tools` is
 `catalogAsFunctionTools()` with a size cap. The backend reads the member's
-connection marked **Use for voice**, an OpenAI preset connection, and creates a
+OpenAI preset connection that holds the `voice` purpose, and creates a
 Live session with Responses delegation, `parallel_tool_calls: false`, the
 member's delegation model, and RCP's fixed instructions. It returns
 `{sdp_answer, limits}` and keeps no session state. With no such connection it
@@ -935,9 +935,11 @@ returns `voice_not_connected` (409); an OpenAI failure returns
 
 `GET` and `PUT /api/voice/settings` hold `{delegation_model, confirm}` in the
 member's private settings file. `confirm` is `tap` (the default) or `none`. A
-`PUT` changes only the fields it sends. The panel's toggle sets `confirm`; the
-Transcription card sets the delegation model and the per-connection **Use for
-voice** purpose, which RCP checks against OpenAI before saving.
+`PUT` changes only the fields it sends. The panel's toggle sets `confirm`. In
+the Dictation and voice card, the **Standby voice agent** section picks the
+connection it **Runs on** (Off, or an OpenAI connection) and sets the
+delegation model. Choosing a connection gives it the `voice` purpose, which
+RCP checks against OpenAI before saving.
 
 The page runs each delegated function call through the shared catalog's
 `resolve`, as the member. It runs one call at a time, ignores a repeated
@@ -1452,8 +1454,8 @@ remain Codex Desktop behavior rather than RCP product state.
 ### Dictation
 
 The composer dictates through **macOS** (desktop app only) or one of the
-member's **service connections**, chosen in the member's own Transcription
-card in Space Settings. Network services work on the desktop app, the team
+member's **service connections**, chosen in the member's own Dictation and
+voice card in Space Settings. Network services work on the desktop app, the team
 browser app, and the team phone web app; a personal paired phone stays
 notify-only. A client whose member chose macOS outside the desktop app shows the
 microphone disabled with a pointer to Settings. One microphone owner refuses a
