@@ -3833,7 +3833,7 @@ export default function App() {
           route.autoResearchEpisodeId,
         );
       },
-      openInbox: () => changeView("attention"),
+      openTab: changeView,
       openArtifact: showWebMcpArtifactViewer,
       isCurrent: (id, target) =>
         isActiveProject(id) && sameGraphTarget(activeGraphTargetRef.current, target),
@@ -3957,11 +3957,13 @@ export default function App() {
     project: null,
     tasks: [],
     conversationSource: webMcpConversationSource,
+    runScope: [],
   });
   voicePageRef.current = {
     project: webMcpProject,
     tasks,
     conversationSource: webMcpConversationSource,
+    runScope,
   };
   const voice = useVoiceAgent({
     ready: backendSessionReady,
@@ -4282,6 +4284,7 @@ export default function App() {
         {desktopAccessSurface}
         {actorNameSurface}
         {acceptanceAgentSurface}
+        {voiceSurface}
       </>
     );
   if (spaceSettingsOpen)

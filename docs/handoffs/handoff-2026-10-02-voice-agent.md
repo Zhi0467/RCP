@@ -168,8 +168,10 @@ Slice 1 adds a host-independent catalog:
 - **Auto-research Stop.** `rcp_stop_episode` also accepts an Auto-research
   episode, through the existing `POST .../episodes/{id}/stop`.
 - **`rcp_open_view({kind, id})`** with kind `node`, `conversation`, `run`,
-  `artifact`, or `inbox`. It calls the in-page owners (`openNodeById`,
-  `openChats`, `showWebMcpArtifactViewer`, the Inbox view) within the current project and
+  `artifact`, or `tab`. A `tab` id is a project tab by its visible name
+  (overview, inbox, research, runs, artifacts, terminals, agents, settings);
+  opening Settings changes nothing. It calls the in-page owners (`openNodeById`,
+  `openChats`, `showWebMcpArtifactViewer`, the view switch) within the current project and
   graph target. A `run` id is an episode id. It opens through the same exact
   episode route tokens as `episodeNotificationHash` (an Auto-research route, or
   the Experiment's board entry), not `showExperiment`, which takes a node id and

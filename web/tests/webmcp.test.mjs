@@ -680,6 +680,7 @@ test("project overview returns bounded saved facts without an AI summary", () =>
     ["exp-1"],
   );
   assert.equal("summary" in overview, false);
+  assert.deepEqual(Object.keys(overview.agents), Object.keys(projectFixture().agent_profiles));
   assert.doesNotThrow(() => webMcpTextResult(overview));
 });
 
@@ -2156,7 +2157,7 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
     openNode: (id) => calls.push(["node", id]),
     openConversation: (opened) => calls.push(["conversation", opened.chat_id]),
     openRunRoute: (hash) => calls.push(["run", hash]),
-    openInbox: () => calls.push(["inbox"]),
+    openTab: (view) => calls.push(["tab", view]),
     openArtifact: (record) => {
       calls.push(["artifact", record.viewer_id]);
       return true;
@@ -2174,14 +2175,16 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
     { kind: "run", id: "auto-1" },
     { kind: "run", id: "episode-1" },
     { kind: "artifact", id: "task:task-1:artifact-1" },
-    { kind: "inbox" },
+    { kind: "tab", id: "settings" },
   ];
   const open = (input) => openProjectView(project, tasks, episodes, input, owners, source);
   for (const input of inputs) await open(input);
   assert.deepEqual(
     calls.map(([kind]) => kind),
-    ["node", "conversation", "run", "run", "artifact", "inbox"],
+    ["node", "conversation", "run", "run", "artifact", "tab"],
   );
+  assert.deepEqual(calls.at(-1), ["tab", "settings"]);
+  await assert.rejects(open({ kind: "tab", id: "constructor" }));
   const [autoRoute, experimentRoute] = calls
     .filter(([kind]) => kind === "run")
     .map(([, hash]) => {

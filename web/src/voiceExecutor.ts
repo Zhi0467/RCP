@@ -19,6 +19,8 @@ export type VoicePin = {
   mode: string | null;
   provider_profile: Record<string, unknown> | null;
   starting_instruction: string | null;
+  /** The truth scope an Experiment start sends. */
+  truth_scope: string[] | null;
 };
 
 /** The page's verified identity, as the voice session sees it. Loss is final. */

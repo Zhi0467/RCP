@@ -41,6 +41,8 @@ export type VoicePageState = {
   project: ProjectSnapshot | null;
   tasks: AgentTask[];
   conversationSource: WebMcpConversationSource;
+  /** The page's run scope; empty means the project default. */
+  runScope: string[];
 };
 
 export type VoiceTranscriptLine = { role: "member" | "agent"; text: string };
@@ -77,6 +79,7 @@ async function buildVoicePin(
     mode: null,
     provider_profile: null,
     starting_instruction: null,
+    truth_scope: null,
   };
   if (name === "rcp_start_experiment") {
     const id = String(args.experiment_id ?? "");
@@ -89,6 +92,8 @@ async function buildVoicePin(
       arguments: { experiment_id: id, invocation_ceiling: budget },
       budget,
       provider_profile: runProfile(project.agent_profiles.node_chat),
+      // The scope the start request will send, so a change invalidates the card.
+      truth_scope: page.runScope.length ? page.runScope : project.default_run_truth_scope,
     };
   }
   if (name === "rcp_authorize_auto_research") {
@@ -229,12 +234,19 @@ export function useVoiceAgent({
     setProblem(null);
     setTranscript([]);
     setPhase("starting");
+    // A previous session's choice, possibly another member's, never carries over.
+    settingsRef.current = null;
+    setSettings(null);
+    setSettingsError(null);
     void loadVoiceSettings()
       .then((loaded) => {
+        if (gateRef.current !== gate || !gate.ok()) return;
         settingsRef.current = loaded;
         setSettings(loaded);
       })
-      .catch((failure) => setSettingsError(errorMessage(failure)));
+      .catch((failure) => {
+        if (gateRef.current === gate) setSettingsError(errorMessage(failure));
+      });
     const executor = createVoiceExecutor({
       gate,
       catalog,

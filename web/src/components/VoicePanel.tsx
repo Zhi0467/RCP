@@ -74,6 +74,9 @@ function ConfirmationCard({ pin, voice }: { pin: VoicePin; voice: VoiceAgent }) 
     ...(pin.budget !== null
       ? ([["Budget", `${pin.budget} invocations`]] as Array<[string, string]>)
       : []),
+    ...(pin.truth_scope
+      ? ([["Truth scope", pin.truth_scope.join(", ") || "None"]] as Array<[string, string]>)
+      : []),
   ];
   const shown = Object.entries(pin.arguments).filter(
     ([key]) => !["invocation_ceiling", "mode", "starting_instruction"].includes(key),

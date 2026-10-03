@@ -18,6 +18,7 @@ import { filterSkillCatalogToDefaults } from "./skillPicker";
 import type {
   AgentRunConfig,
   AgentTask,
+  AppView,
   ArtifactView,
   ChatMessage,
   ChatSummary,
@@ -453,6 +454,18 @@ export function projectOverview(
       blockers: recentNodes(project, "blocker").map(compactNode),
     },
     suggested_node_ids: [...new Set(attentionIds)].slice(0, 6),
+    // The agent configured for each role, as the Settings tab shows it.
+    agents: Object.fromEntries(
+      Object.entries(project.agent_profiles).map(([role, profile]) => [
+        role,
+        {
+          provider: profile.provider,
+          model: profile.effective_model || profile.model || null,
+          reasoning: profile.reasoning,
+          run_on: profile.run_on,
+        },
+      ]),
+    ),
     // Experiment episodes stop through their Experiment; an Auto-research
     // episode has no node, so its id is listed here for an exact Stop.
     stoppable_auto_research_episode_ids: episodes
@@ -2154,7 +2167,7 @@ export type WebMcpViewOwners = {
   openNode: (nodeId: string) => void;
   openConversation: (transcript: ChatTranscript) => void;
   openRunRoute: (hash: string) => void;
-  openInbox: () => void;
+  openTab: (view: AppView) => void;
   openArtifact: (record: ProjectArtifactRecord, projectId: string) => boolean | Promise<boolean>;
   /** False once the page has left this project or graph target. */
   isCurrent: (projectId: string, graphTarget: GraphTargetRef | undefined) => boolean;
@@ -2165,7 +2178,19 @@ export type WebMcpViewSource = WebMcpArtifactSource & {
   loadExperimentEntries: () => Promise<ExperimentLoopIndexEntry[]>;
 };
 
-const VIEW_KINDS = ["node", "conversation", "run", "artifact", "inbox"];
+const VIEW_KINDS = ["node", "conversation", "run", "artifact", "tab"];
+
+/** Project tabs by the name the member sees, and the view each opens. */
+const PROJECT_TABS: Record<string, AppView> = {
+  overview: "overview",
+  inbox: "attention",
+  research: "scientific",
+  runs: "execution",
+  artifacts: "artifacts",
+  terminals: "terminals",
+  agents: "chats",
+  settings: "settings",
+};
 
 export async function openProjectView(
   project: ProjectSnapshot,
@@ -2184,12 +2209,15 @@ export async function openProjectView(
       throw new Error("The page has left this project or graph target.");
     }
   };
-  if (kind === "inbox") {
-    assertCurrent();
-    owners.openInbox();
-    return { project_id: project.id, kind, id: null, opened: true };
-  }
   const id = requiredStringInput(input, "id");
+  if (kind === "tab") {
+    if (!Object.hasOwn(PROJECT_TABS, id)) {
+      throw new Error(`A tab id is one of ${Object.keys(PROJECT_TABS).join(", ")}.`);
+    }
+    assertCurrent();
+    owners.openTab(PROJECT_TABS[id]);
+    return { project_id: project.id, kind, id, opened: true };
+  }
   if (kind === "node") {
     if (!project.graph.nodes[id]) {
       throw new Error(`Node ${id} is not present in the current project graph.`);
@@ -2237,7 +2265,7 @@ export async function openProjectView(
 const OPEN_VIEW_TOOL: WebMcpToolSpec = {
   name: "rcp_open_view",
   description:
-    "Show one exact node, conversation, run, or artifact of the open project in this page, or its Inbox. It never changes project or graph branch.",
+    "Show one exact node, conversation, run, or artifact of the open project in this page, or one of its tabs, such as Settings. It never changes project or graph branch.",
   inputSchema: {
     type: "object",
     properties: {
@@ -2249,10 +2277,10 @@ const OPEN_VIEW_TOOL: WebMcpToolSpec = {
       id: {
         type: "string",
         minLength: 1,
-        description: "Exact node id, chat_id, episode id, or artifact viewer_id; omit for inbox.",
+        description: `Exact node id, chat_id, episode id, or artifact viewer_id; for a tab, one of ${Object.keys(PROJECT_TABS).join(", ")}.`,
       },
     },
-    required: ["kind"],
+    required: ["kind", "id"],
     additionalProperties: false,
   },
   annotations: { readOnlyHint: true, untrustedContentHint: true },
