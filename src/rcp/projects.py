@@ -2561,6 +2561,8 @@ class ProjectDisplayCache:
         self._logger = logger
         self._reconciliation_tasks: dict[str, asyncio.Task[None]] = {}
         self._probe_started_at: dict[str, float] = {}
+        self._legacy_rebuilds_started: set[str] = set()
+        self._legacy_rebuilds_lock = threading.Lock()
 
     @property
     def reconciliation_tasks(self) -> dict[str, asyncio.Task[None]]:
@@ -2609,7 +2611,29 @@ class ProjectDisplayCache:
         snapshot = self._catalog.cached_snapshot(project_id)
         if snapshot is None:
             return None
+        if "skill_defaults_declared" not in _snapshot_payload(snapshot):
+            self._start_legacy_rebuild(project_id)
         return self.complete_snapshot(project_id, snapshot)
+
+    def _start_legacy_rebuild(self, project_id: str) -> None:
+        """Rebuild, once per process, a cache that predates declared skill defaults.
+
+        Without the declaration its skill defaults cannot be refreshed, and a
+        settings save from that page would persist the older release's list.
+        """
+
+        with self._legacy_rebuilds_lock:
+            if project_id in self._legacy_rebuilds_started:
+                return
+            self._legacy_rebuilds_started.add(project_id)
+
+        def rebuild() -> None:
+            with suppress(KeyError):
+                self.rebuild_cached_snapshot(project_id)
+
+        threading.Thread(
+            target=rebuild, name=f"rcp-legacy-display-rebuild-{project_id}", daemon=True
+        ).start()
 
     def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
         service, draft = self._catalog.reconcile_snapshot(project_id)

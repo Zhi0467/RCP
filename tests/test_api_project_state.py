@@ -889,6 +889,28 @@ def test_cached_snapshot_refills_only_undeclared_skill_defaults(manifest, tmp_pa
     assert serve(["skill_ids"])["skill_ids"] == older["skill_ids"]
 
 
+def test_cache_predating_declared_defaults_rebuilds_once_in_background(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    current = envelope["snapshot"]["skill_defaults"]
+    envelope["snapshot"]["skill_defaults"] = {**current, "skill_ids": current["skill_ids"][1:]}
+    del envelope["snapshot"]["skill_defaults_declared"]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+
+    assert client.get(f"/api/projects/{project_id}/cached").status_code == 200
+
+    def rebuilt() -> dict[str, object] | None:
+        snapshot = json.loads(cache_path.read_text(encoding="utf-8"))["snapshot"]
+        return snapshot if "skill_defaults_declared" in snapshot else None
+
+    assert wait_until(rebuilt, timeout=TASK_SETTLE_TIMEOUT)["skill_defaults"] == current
+
+
 def test_project_readiness_does_not_open_or_materialize_project(
     manifest, tmp_path, monkeypatch
 ) -> None:
