@@ -60,3 +60,9 @@ v0.3.5 server upgrades from.
 `pre-artifacts-v15-ff090e1` retains the final inline report and legacy result-view
 storage shape before artifact bytes move into the data directory. It is built
 by the exact boundary source from the preceding immutable fixture.
+
+`pre-consolidation-v16-61f6fc1` retains the last shape before operational
+lessons and nightly graph consolidation added their tables (storage migrations
+36 and 37). It also carries the question, chat projection, and artifact policy
+migrations that followed the previous boundary. It is built by the exact
+boundary source from the preceding immutable fixture.
