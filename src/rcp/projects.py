@@ -1957,6 +1957,7 @@ class ProjectCatalog:
         *,
         generation: int,
         patch_log_head: int | None | object = _PATCH_LOG_HEAD_UNSET,
+        touch_opened: bool = True,
     ) -> bool:
         """Commit a display snapshot unless a newer project view already won."""
 
@@ -1966,7 +1967,11 @@ class ProjectCatalog:
         _ensure_snapshot_freshness(snapshot)
         with self._snapshot_lock(project_id):
             return self._commit_cached_snapshot_locked(
-                project_id, snapshot, generation=generation, patch_log_head=patch_log_head
+                project_id,
+                snapshot,
+                generation=generation,
+                patch_log_head=patch_log_head,
+                touch_opened=touch_opened,
             )
 
     def _commit_cached_snapshot_locked(
@@ -1976,6 +1981,7 @@ class ProjectCatalog:
         *,
         generation: int,
         patch_log_head: int | None | object = _PATCH_LOG_HEAD_UNSET,
+        touch_opened: bool = True,
     ) -> bool:
         if self._is_deleting(project_id):
             raise KeyError(project_id)
@@ -2023,7 +2029,7 @@ class ProjectCatalog:
             generation,
             self._committed_snapshot_generations.get(project_id, 0),
         )
-        self.update_summary(project_id, snapshot)
+        self.update_summary(project_id, snapshot, touch_opened=touch_opened)
         return True
 
     def update_cached_snapshot_freshness(
@@ -2356,6 +2362,8 @@ class ProjectCatalog:
         self,
         project_id: str,
         snapshot: ProjectSnapshot,
+        *,
+        touch_opened: bool = True,
     ) -> ProjectRecord:
         project_id = self._canonical_project_id(project_id)
         snapshot = _snapshot_payload(snapshot)
@@ -2386,6 +2394,7 @@ class ProjectCatalog:
             last_refresh_at=_timestamp(last_refresh),
             reachable=bool(canonical["reachable"]),
             error=str(canonical["error"]) if canonical.get("error") else None,
+            touch_opened=touch_opened,
         )
 
     def update_settings(
@@ -2626,6 +2635,8 @@ class ProjectDisplayCache:
                     snapshot,
                     generation=generation,
                     patch_log_head=service.history.workspace.cached_patch_log_head(),
+                    # Cache maintenance is not the human opening the project.
+                    touch_opened=False,
                 ):
                     return True
             except (OSError, RuntimeError, StateUnavailable, TypeError, ValueError) as exc:

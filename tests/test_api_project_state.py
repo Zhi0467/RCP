@@ -803,10 +803,13 @@ def test_clearing_project_cache_rebuilds_the_display_snapshot(manifest, tmp_path
     client = TestClient(app)
     project_id = app.state.default_project_id
     cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
+    opened = app.state.catalog.store.project(project_id).last_opened_at
 
     cleared = client.delete(f"/api/projects/{project_id}/caches")
     assert cleared.status_code == 200
     assert cleared.json()["project_page_rebuilt"] is True
+    # Cache maintenance is not an open: the landing page's recency is kept.
+    assert app.state.catalog.store.project(project_id).last_opened_at == opened
     rebuilt = json.loads(cache_path.read_text(encoding="utf-8"))
     assert rebuilt["snapshot"]["skill_catalog"] == official_registry().catalog()
 

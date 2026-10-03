@@ -933,17 +933,19 @@ class ProjectStoreMixin:
         last_refresh_at: str | None,
         reachable: bool,
         error: str | None,
+        touch_opened: bool = True,
     ) -> ProjectRecord:
         with self.connection() as connection:
             connection.execute(
                 """
                 UPDATE projects
-                SET last_opened_at = ?, revision = ?, primary_question = ?,
-                    attention_count = ?, last_refresh_at = ?, reachable = ?, error = ?
+                SET last_opened_at = COALESCE(?, last_opened_at), revision = ?,
+                    primary_question = ?, attention_count = ?, last_refresh_at = ?,
+                    reachable = ?, error = ?
                 WHERE project_id = ?
                 """,
                 (
-                    self.now(),
+                    self.now() if touch_opened else None,
                     revision,
                     primary_question,
                     attention_count,
