@@ -35,33 +35,36 @@ this file holds only the build plan and what remains.
 
 ## Code-level choices (made by the implementer, not the human)
 
-- Capability: a new ordinary-profile task contract `consolidate` beside
-  `work_auto` (`core/authority.py`). It has `work_auto`'s graph authority,
-  `trigger="schedule"`, and `authorized_by` set to the schedule's authorizer,
-  re-checked for membership at dispatch and at Apply. Its verb set is exactly
-  `validate`, `apply`, `lesson` (add/update/delete); no `ask`, no `launch`.
-- Idempotency for the keyed `apply` is keyed by operation id, not episode id,
-  and the end-of-turn settlement skips a consumed `patch.json`.
-- The dedicated chat id is `uuid5(NAMESPACE, "rcp:consolidation:{project_id}")`,
-  `chat_scope="project"`, title "Graph consolidation". Each scheduled turn forces
-  a fresh native session through the existing fresh-session path.
-- The workflow is pinned like the episode report (bypassing project skill
-  defaults), so a project need not enable it.
-- The report is an ordinary turn artifact at the turn artifacts root named
-  `consolidation-report.html`; the run row stores its artifact id. Keep uses the
-  existing artifact keep path.
-- The scheduler is a new runtime owner modelled on `WatcherPoller`: a daemon
-  thread passing every `CONSOLIDATION_POLL_SECONDS` (60), gated by
-  `seconds_until_automatic_launch`, started, paused, resumed, and stopped with
-  the other owners in `api/app.py`. Due times live in SQLite; an overdue row
-  fires once and the next due time is computed from the actual run time.
-- Storage: migration 36 `operational_lessons_v1`, migration 37
-  `graph_consolidation_v1` (schedules and runs). Lessons transfer with a
-  project; schedules and runs are excluded from transfer. Project deletion and
-  project-id alias rewrite cover all three tables.
-- Notifications: one new kind `consolidation` (report ready, failure,
-  authorization expiring), on by default.
-- A running consolidation adds a keep-awake reason in `machine_power`.
+An astra xhigh design review on 2026-10-03 found sixteen P1 gaps; the spec now
+states the resolved behavior. Implementation choices:
+
+- No new task contract. The turn is ordinary `work_auto` Work with trigger
+  `schedule` (joins `TaskTrigger`). Its extra verbs, watcher refusal, fresh
+  session, pinned workflow, and pre-launch authorization check all key off a
+  server-owned `consolidation_runs` row bound to the operation id.
+- Tables (migration 36 `operational_lessons_v1`, 37 `graph_consolidation_v1`):
+  `operational_lessons`, `lesson_command_receipts` (operation, subcommand, key,
+  args digest, result); `consolidation_schedules` (authorization id, local
+  time, zone, authorizer snapshot, authorized/expires at, next due occurrence,
+  covered head, last outcome), `consolidation_runs` (run id, schedule
+  occurrence date unique per project, nullable operation id, authorization id,
+  input head, kind, outcome fields, verified flag, row state, resolver),
+  `consolidation_apply_receipts` (operation, key, digest, retained bytes path,
+  source effect id, result). None transfers; all join deletion, alias rewrite,
+  backup inventory, and restore detachment.
+- Scheduler: a runtime owner modelled on `WatcherPoller`, beside the other
+  owners in `api/app.py` (start, update pause/resume, shutdown), gated by
+  `seconds_until_automatic_launch`, using `zoneinfo`. It also retries outcome
+  settlement and notification observation. Machine keep-awake reuses ordinary
+  task demand.
+- Keyed apply reuses `_apply_work_patch` and the orchestrator's digest and
+  effect-id pattern with operation-scoped receipts; settlement matches by
+  operation plus digest.
+- Report retention: an open report row nulls the artifact's `expires_at`;
+  Dismiss sets it to now plus `RUN_STAGE_RETENTION_DAYS`; keeping from the viewer
+  closes the row.
+- Notifications: kind `consolidation`, observed by the existing sender with a
+  durable marker per run id and per authorization id, enqueued atomically.
 
 ## API contract
 
@@ -77,12 +80,13 @@ DELETE /api/projects/{id}/consolidation/schedule   -> { schedule: null }
 POST   /api/projects/{id}/consolidation/runs/{run_id}/keep     -> { item: InboxItem }  # report rows only
 POST   /api/projects/{id}/consolidation/runs/{run_id}/dismiss  -> { item: InboxItem }
 
-Schedule = { local_time, timezone, authorized_by: { user_id, display_name },
+Schedule = { authorization_id, local_time, timezone, authorized_by: { user_id, display_name },
              authorized_at, expires_at, expired: bool, next_due_at,
              last_run_at | null, last_outcome: "succeeded"|"failed"|"skipped"|null }
-InboxItem = { run_id, kind: "report"|"failure", created_at, operation_id, chat_id,
+InboxItem = { run_id, kind: "report"|"failure", occurrence_date, created_at,
+              operation_id | null, chat_id | null,
               report: { artifact_id, title } | null,
-              applied_revisions: [{ revision, summary }],
+              applied_revisions: [{ revision, summary }], revisions_verified: bool,
               proposals_created: int,
               error: { code, message } | null,
               state: "open"|"kept"|"dismissed" }
@@ -98,8 +102,9 @@ Lesson = { lesson_id, text, created_at, updated_at,
            human_owned: bool }
 ```
 
-Staged command (consolidation owner and every owner with a staged command
-client): `lesson add --key <key> --text <text>`; consolidation only:
+Staged command (owners with a served mutating mailbox, listed in the spec):
+`lesson add --key <key> --text <text>`; consolidation only:
+`lesson list [--cursor <c>]` (bounded page with ids and ownership),
 `lesson update --key <key> --id <lesson_id> --text <text>` and
 `lesson delete --key <key> --id <lesson_id>`. Limits in `limits.py`:
 `LESSON_TEXT_MAX_CHARS` 600, `LESSONS_PER_PROJECT_MAX` 200,
@@ -108,15 +113,13 @@ agent-written, truncated with a stated omission count).
 
 ## Slices
 
-1. **Backend: lessons** (Codex). Storage, migration 36, limits, routes, the
-   `lesson` verb on every staged command client, rendered `lessons.md` staged
-   into every launch with one prompt pointer, transfer and deletion inventories,
-   tests.
+1. **Backend: lessons** (Codex). Storage and receipts, migration 36, limits,
+   routes, the `lesson` verb on the owner matrix in the spec, rendered
+   `lessons.md` with one prompt pointer, inventories and restore, tests.
 2. **Backend: consolidation** (Codex, parallel to 1). Storage, migration 37,
-   `consolidate` contract, scheduler owner, dispatch into the dedicated chat with
-   a fresh session and pinned workflow, keyed `apply`, run settlement into report
-   or failure rows, routes, notification kind, keep-awake reason, inventories,
-   tests.
+   run-bound owner, scheduler, scheduled-chat admission, pre-launch
+   authorization check, keyed `apply` with receipts, outcome settlement, report
+   retention, routes, notification observation, inventories and restore, tests.
 3. **Workflow prose** (Claude): `src/rcp/skills/workflows/graph-consolidation`.
 4. **Web** (Claude subagent, after 1 and 2 land): types, a Nightly consolidation
    card in Project settings, Inbox section with Keep, Dismiss, open-report, and

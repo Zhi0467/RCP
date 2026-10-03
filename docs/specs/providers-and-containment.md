@@ -19,7 +19,9 @@ Capabilities are fixed in code:
 - **Discuss** has writable conversation scratch, read-only project reasoning,
   public-web tools, and no active Patch contract.
 - **Work** has noninteractive project operational tools, public-web tools, exact
-  project repository write roots, and one optional semantic Patch.
+  project repository write roots, and one optional semantic Patch. A nightly
+  consolidation turn is Work that may also commit keyed Patches inside the turn
+  ([graph consolidation](graph-consolidation-and-lessons.md)).
 - **Experiment-loop** uses Work-like operational access with its dedicated
   focused-Experiment graph and watcher contract.
 - **Auto-research orchestrate** uses Work-like project repository access plus
@@ -681,7 +683,9 @@ diagnostic receipts. A Slurm route uses agent-authored scheduler submission
 commands. Both hand off the shell watcher described in
 [compute jobs](compute-jobs.md).
 This gives no additional graph output channel or command authority to other
-task surfaces.
+task surfaces. The `lesson` verb is an operational command over RCP's own
+lesson store, separate from filesystem and graph authority; its owners are
+listed in [graph consolidation and lessons](graph-consolidation-and-lessons.md).
 
 A remote Work, Experiment, or child Work mailbox has one thread-based owner from
 launch through settlement. A disconnected accepted turn transfers the owner to
