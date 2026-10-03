@@ -3303,3 +3303,49 @@ export interface AnswerQuestionRequest {
   answer: string;
   choices: string[];
 }
+
+export interface ConsolidationSchedule {
+  authorization_id: string;
+  local_time: string;
+  timezone: string;
+  authorized_by: { user_id: string; display_name: string | null };
+  authorized_at: string;
+  expires_at: string;
+  expired: boolean;
+  next_due_at: string;
+  last_run_at: string | null;
+  last_outcome: "succeeded" | "failed" | "skipped" | null;
+}
+
+export interface ConsolidationInboxItem {
+  run_id: string;
+  kind: "report" | "failure";
+  occurrence_date: string;
+  created_at: string;
+  operation_id: string | null;
+  chat_id: string | null;
+  report: { artifact_id: string; title: string } | null;
+  applied_revisions: Array<{ revision: number; summary: string }>;
+  revisions_verified: boolean;
+  proposals_created: number;
+  error: { code: string; message: string } | null;
+  state: "open" | "kept" | "dismissed";
+}
+
+export interface ConsolidationView {
+  schedule: ConsolidationSchedule | null;
+  inbox: ConsolidationInboxItem[];
+}
+
+export type LessonAuthor =
+  | { kind: "agent"; operation_id: string }
+  | { kind: "human"; user_id: string; display_name: string | null };
+
+export interface Lesson {
+  lesson_id: string;
+  text: string;
+  created_at: string;
+  updated_at: string;
+  author: LessonAuthor;
+  human_owned: boolean;
+}
