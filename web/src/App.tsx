@@ -118,7 +118,7 @@ import {
   type TransitionPreviewRouting,
 } from "./projectTransition";
 import { nodeDetailSizeStorageKey, type DetailWindowSlot } from "./floatingWindow";
-import { episodeReportPreviewUrl } from "./campaigns";
+import { autoResearchStartRefusal, episodeReportPreviewUrl } from "./campaigns";
 import {
   cloneAgentTasksSnapshot,
   useAgentTasks,
@@ -259,17 +259,23 @@ import { useTheme } from "./hooks/useTheme";
 import { NOTICE_TIMEOUT_MS } from "./uiConstants";
 import {
   createWebMcpToolRegistry,
+  episodeStopRefusal,
+  experimentStartRefusal,
   projectArtifactToolDefinitions,
   type ProjectArtifactRecord,
+  projectAutoResearchToolDefinitions,
   projectConversationSendToolDefinitions,
   projectConversationToolDefinitions,
-  projectExperimentStopToolDefinitions,
+  projectEpisodeStopToolDefinitions,
   projectExperimentToolDefinitions,
   projectIndexToolDefinitions,
   projectReadToolDefinitions,
+  projectViewToolDefinitions,
   type WebMcpToolRegistry,
+  type WebMcpViewOwners,
   webMcpSurface,
 } from "./webmcp";
+import { publishToolSurface } from "./toolCatalog";
 
 import { initialProjectHash, isEditableShortcutTarget, projectTabShortcut } from "./projectTabs";
 import {
@@ -3432,67 +3438,102 @@ export default function App() {
     }
   };
 
+  const autoResearchRefusal = autoResearchStartRefusal({
+    projectOpen: Boolean(project && apiBase),
+    mutationsDisabled,
+    authoritative: projectReconciliation === "authoritative",
+    canonicalReachable: Boolean(project?.canonical_state.reachable),
+    liveAutoResearchEpisode,
+    taskStarting,
+    episodeAction,
+  });
+  // The one Auto-research start: the header form and the WebMCP tool both call it.
+  const startAutoResearch = useCallback(
+    async (
+      invocationCeiling: number,
+      startingInstruction: string | null,
+      codeWorktree = true,
+    ): Promise<Episode> => {
+      if (autoResearchRefusal) throw new Error(autoResearchRefusal);
+      const finishTaskStart = beginTaskStart();
+      if (!finishTaskStart) throw new Error("Another task start is already being submitted.");
+      const finishEpisodeAction = beginEpisodeAction("start");
+      if (!finishEpisodeAction) {
+        finishTaskStart();
+        throw new Error("Wait for the current episode action to finish.");
+      }
+      try {
+        const started = await startEpisode(apiBase, {
+          mode: "auto_research",
+          invocation_ceiling: invocationCeiling,
+          starting_instruction: startingInstruction,
+          // Omitted, the server turns code isolation on only where it is eligible.
+          ...(codeWorktree ? {} : { code_worktree: false }),
+        });
+        replaceEpisode(started);
+        replaceExactAutoResearchSelection(started.project_id, started.episode_id);
+        closeAutoResearchDialog();
+        changeView("execution");
+        try {
+          await reload();
+        } catch (error) {
+          setNotice({
+            kind: "error",
+            text: `Auto-research started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        }
+        return started;
+      } finally {
+        finishTaskStart();
+        finishEpisodeAction();
+      }
+    },
+    [
+      apiBase,
+      autoResearchRefusal,
+      beginEpisodeAction,
+      beginTaskStart,
+      changeView,
+      closeAutoResearchDialog,
+      reload,
+      replaceEpisode,
+      replaceExactAutoResearchSelection,
+    ],
+  );
   const authorizeAutoResearch = async (
     invocationCeiling: number,
     startingInstruction: string | null,
     codeWorktree = true,
   ) => {
-    if (!project || !apiBase || mutationsDisabled || episodeAction || taskStarting) return;
-    if (liveAutoResearchEpisode) {
-      reportAutoResearchStartError("An auto-research episode is already live for this project.");
-      return;
-    }
-    const finishTaskStart = beginTaskStart();
-    if (!finishTaskStart) {
-      reportAutoResearchStartError("Another task start is already being submitted.");
-      return;
-    }
-    const finishEpisodeAction = beginEpisodeAction("start");
-    if (!finishEpisodeAction) {
-      finishTaskStart();
-      return;
-    }
     reportAutoResearchStartError(null);
     try {
-      const started = await startEpisode(apiBase, {
-        mode: "auto_research",
-        invocation_ceiling: invocationCeiling,
-        starting_instruction: startingInstruction,
-        // Omitted, the server turns code isolation on only where it is eligible.
-        ...(codeWorktree ? {} : { code_worktree: false }),
-      });
-      replaceEpisode(started);
-      replaceExactAutoResearchSelection(started.project_id, started.episode_id);
-      closeAutoResearchDialog();
-      changeView("execution");
-      try {
-        await reload();
-      } catch (error) {
-        setNotice({
-          kind: "error",
-          text: `Auto-research started, but Runs could not refresh: ${error instanceof Error ? error.message : String(error)}`,
-        });
-      }
+      await startAutoResearch(invocationCeiling, startingInstruction, codeWorktree);
     } catch (error) {
       reportAutoResearchStartError(error instanceof Error ? error.message : String(error));
-    } finally {
-      finishTaskStart();
-      finishEpisodeAction();
     }
   };
 
+  // The one Auto-research Stop: the run card and the WebMCP tool both call it.
+  const stopAutoResearchEpisode = useCallback(
+    async (episodeId: string): Promise<void> => {
+      if (!apiBase) throw new Error("No RCP project is open.");
+      const finishEpisodeAction = beginEpisodeAction(`stop:${episodeId}`);
+      if (!finishEpisodeAction) throw new Error("Wait for the current episode action to finish.");
+      try {
+        replaceEpisode(await stopEpisode(apiBase, episodeId));
+        await refreshEpisodes();
+      } finally {
+        finishEpisodeAction();
+      }
+    },
+    [apiBase, beginEpisodeAction, refreshEpisodes, replaceEpisode],
+  );
   const requestEpisodeStop = async (episodeId: string) => {
-    if (!apiBase || episodeAction) return;
-    const finishEpisodeAction = beginEpisodeAction(`stop:${episodeId}`);
-    if (!finishEpisodeAction) return;
     try {
-      replaceEpisode(await stopEpisode(apiBase, episodeId));
-      await refreshEpisodes();
+      await stopAutoResearchEpisode(episodeId);
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
       throw error;
-    } finally {
-      finishEpisodeAction();
     }
   };
 
@@ -3766,6 +3807,43 @@ export default function App() {
     indexAvailable: projectIndexWebMcpAvailable,
     key: webMcpSurfaceKey,
   } = webMcpSurface({ backendSessionReady, setupOpen, loading, projectId, project });
+  // openNodeById and openChats change every render; rcp_open_view reads the latest at call time.
+  const openNodeByIdRef = useRef(openNodeById);
+  openNodeByIdRef.current = openNodeById;
+  const openChatsRef = useRef(openChats);
+  openChatsRef.current = openChats;
+  const webMcpViewOwners = useMemo<WebMcpViewOwners>(
+    () => ({
+      openNode: (nodeId) => openNodeByIdRef.current(nodeId),
+      openConversation: (transcript) => {
+        selectCanonicalChat(transcript);
+        openChatsRef.current(transcript.chat_id);
+      },
+      // Like the exact-selection owners, replace the address in place and apply its
+      // selection; the route keeps the page's graph target and fires no hashchange.
+      openRunRoute: (hash) => {
+        window.history.replaceState(null, "", hash);
+        const route = parseProjectHash(hash);
+        applyRouteSelection(
+          route.view,
+          route.experimentId,
+          route.experimentRoute,
+          route.autoResearchEpisodeId,
+        );
+      },
+      openInbox: () => changeView("attention"),
+      openArtifact: showWebMcpArtifactViewer,
+      isCurrent: (id, target) =>
+        isActiveProject(id) && sameGraphTarget(activeGraphTargetRef.current, target),
+    }),
+    [
+      applyRouteSelection,
+      changeView,
+      isActiveProject,
+      selectCanonicalChat,
+      showWebMcpArtifactViewer,
+    ],
+  );
   const webMcpTools = useMemo(() => {
     if (webMcpProject) {
       const project = webMcpProject;
@@ -3804,27 +3882,40 @@ export default function App() {
           experimentStartRequiresSync,
           startWebMcpExperiment,
         ),
-        ...projectExperimentStopToolDefinitions(
+        ...projectAutoResearchToolDefinitions(project, autoResearchRefusal, startAutoResearch),
+        ...projectEpisodeStopToolDefinitions(
           project,
+          episodes,
           requestExperimentStop,
-          experimentStopId !== null,
+          stopAutoResearchEpisode,
+          experimentStopId !== null || Boolean(episodeAction?.startsWith("stop:")),
         ),
+        ...projectViewToolDefinitions(project, tasks, episodes, webMcpViewOwners, {
+          ...webMcpArtifactSource,
+          loadTranscript: loadWebMcpConversation,
+          loadExperimentEntries: () => loadProjectExperimentEpisodes(project.id),
+        }),
       ];
     }
     return projectIndexWebMcpAvailable ? projectIndexWebMcpTools : [];
   }, [
+    autoResearchRefusal,
     chatSummaryTotal,
     createWebMcpConversation,
+    episodeAction,
     episodes,
     experimentStartRequiresSync,
     experimentStopId,
+    loadWebMcpConversation,
     mutationsDisabled,
     projectIndexWebMcpAvailable,
     projectIndexWebMcpTools,
     requestExperimentStop,
     showWebMcpArtifactViewer,
+    startAutoResearch,
     startWebMcpConversationTurn,
     startWebMcpExperiment,
+    stopAutoResearchEpisode,
     taskStarting,
     tasks,
     visibleChatSummaries,
@@ -3833,7 +3924,39 @@ export default function App() {
     webMcpConversationSource,
     webMcpExperimentStartProjectId,
     webMcpProject,
+    webMcpViewOwners,
   ]);
+  // Why each conditional project tool is missing, for the catalog's resolve().
+  const webMcpRefusals = useMemo(
+    () =>
+      webMcpProject
+        ? {
+            rcp_start_experiment: experimentStartRefusal(
+              webMcpProject,
+              taskStarting,
+              mutationsDisabled,
+              experimentStartRequiresSync,
+            ),
+            rcp_stop_episode: episodeStopRefusal(webMcpProject, episodes),
+            rcp_authorize_auto_research: autoResearchRefusal,
+          }
+        : {},
+    [
+      autoResearchRefusal,
+      episodes,
+      experimentStartRequiresSync,
+      mutationsDisabled,
+      taskStarting,
+      webMcpProject,
+    ],
+  );
+  useEffect(() => {
+    publishToolSurface(
+      webMcpProject ? "project" : projectIndexWebMcpAvailable ? "project-index" : null,
+      webMcpTools,
+      webMcpRefusals,
+    );
+  }, [projectIndexWebMcpAvailable, webMcpProject, webMcpRefusals, webMcpTools]);
   const webMcpRegistryRef = useRef<{
     surfaceKey: string;
     registry: WebMcpToolRegistry;
@@ -3857,6 +3980,7 @@ export default function App() {
     () => () => {
       webMcpRegistryRef.current?.registry.dispose();
       webMcpRegistryRef.current = null;
+      publishToolSurface(null, []);
     },
     [],
   );
@@ -4421,17 +4545,9 @@ export default function App() {
               </button>
               <button
                 className="button secondary auto-research-control"
-                disabled={
-                  mutationsDisabled ||
-                  projectReconciliation !== "authoritative" ||
-                  !project.canonical_state.reachable ||
-                  taskStarting ||
-                  Boolean(liveAutoResearchEpisode)
-                }
+                disabled={autoResearchRefusal !== null}
                 aria-label="Auto-research"
-                title={
-                  liveAutoResearchEpisode ? "An auto-research episode is already live." : undefined
-                }
+                title={autoResearchRefusal ?? undefined}
                 onClick={() => {
                   openAutoResearchDialog();
                 }}

@@ -26,6 +26,7 @@ import {
   stopEpisode,
 } from "../src/api.ts";
 import {
+  autoResearchStartRefusal,
   episodeProjection,
   episodeReportPreviewUrl,
   episodeTaskRows,
@@ -91,6 +92,31 @@ function renderEpisodes(values, { busyAction = null } = {}) {
     ),
   );
 }
+
+test("Auto-research refuses in every state that disables its button", () => {
+  const ready = {
+    projectOpen: true,
+    mutationsDisabled: false,
+    authoritative: true,
+    canonicalReachable: true,
+    liveAutoResearchEpisode: null,
+    taskStarting: false,
+    episodeAction: null,
+  };
+  assert.equal(autoResearchStartRefusal(ready), null);
+  for (const blocked of [
+    { projectOpen: false },
+    { mutationsDisabled: true },
+    { authoritative: false },
+    { canonicalReachable: false },
+    { liveAutoResearchEpisode: episode },
+    { taskStarting: true },
+    { episodeAction: "stop:episode-1" },
+  ]) {
+    const refusal = autoResearchStartRefusal({ ...ready, ...blocked });
+    assert.equal(typeof refusal, "string", Object.keys(blocked)[0]);
+  }
+});
 
 test("the episode parent owns an operational-only invocation meter", () => {
   const html = renderEpisodes([episode]);

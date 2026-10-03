@@ -813,18 +813,32 @@ When the browser host supplies `document.modelContext.registerTool`, RCP
 registers a page-scoped WebMCP surface over its existing application owners. A
 ready project index exposes project listing and exact project navigation. A
 loaded project replaces those tools with project overview and node inspection,
-artifact/report listing and visual opening, conversation listing, inspection,
-and Send, and bounded Experiment inspection, Start, and graceful Stop. Login,
-project setup, loading, and invalid project states expose no tools; the project
-surface waits for the same verified backend identity, actor, and team-session
-state as the index, so a reconnect screen retires it.
+in-page navigation, artifact/report listing and visual opening, conversation
+listing, inspection, and Send, bounded Experiment inspection and Start,
+Auto-research authorization, and graceful Stop of an Experiment or
+Auto-research episode. Login, project setup, loading, and invalid project
+states expose no tools; the project surface waits for the same verified backend
+identity, actor, and team-session state as the index, so a reconnect screen
+retires it.
 
-The inventory follows current backend and browser state. Experiment Start and
-Stop are registered only while at least one exact action can succeed or while
-that action's accepted call is returning. Changing state updates stable tool
-proxies without aborting an in-flight call; leaving the surface unregisters its
-tools. Project navigation returns before the index registration is retired, so
-the host does not mistake successful navigation for a stale tool failure.
+The inventory follows current backend and browser state. Experiment Start,
+Auto-research authorization, and Stop are registered only while at least one
+exact action can succeed or while that action's accepted call is returning.
+Changing state updates stable tool proxies without aborting an in-flight call;
+leaving the surface unregisters its tools. Project navigation returns before
+the index registration is retired, so the host does not mistake successful
+navigation for a stale tool failure.
+
+The registered tools come from one host-independent catalog
+(`web/src/toolCatalog.ts`) that works without a WebMCP host. `catalog()` is a
+fixed list of every tool's name, description, input schema, and `confirm(args)`
+predicate, whatever the page state. `confirm` is true only for a Work Send,
+Experiment Start, and Auto-research authorization; it stays local, so WebMCP
+host agents get no RCP confirmation. `catalogAsFunctionTools()` is the one
+serializer to the Responses function format and leaves `confirm` out.
+`resolve(name)` returns the executable definition App last registered from page
+state, or a refusal that says why: the wrong surface, nothing to stop, or the
+Start or authorization refusal.
 
 Every call accepts exact ids returned by an RCP read tool and revalidates them
 against the current page snapshot before acting. Read results are bounded JSON,
@@ -869,13 +883,29 @@ visible-composer controls. Experiment Start and Stop likewise reuse the existing
 backend projections and action owners, including staged-Sync, readiness, budget,
 single-start, exact-episode, and graceful-Stop fences.
 
+Auto-research authorization takes the visible form's inputs: an
+`invocation_ceiling` of any integer of at least 1, an optional
+`starting_instruction`, and `code_worktree`. It calls the same start function
+and refusal check as the header button, so the tool and the button refuse in
+the same states. Stop takes an exact `episode_id`. With `experiment_id` it uses
+the Experiment Stop route; without it the episode must be a stoppable
+Auto-research episode, stopped through `POST .../episodes/{id}/stop`.
+
+`rcp_open_view({kind, id})` shows one exact node, conversation, run, or
+artifact viewer, or the Inbox, through the page's own owners. A run id is an
+episode id, opened through the same exact route as an episode notification: its
+Auto-research route or its Experiment's Runs entry. The view stays in the
+current project and graph target. It checks that the page still shows them
+before opening and never switches project or branch; only `rcp_open_project`
+changes project.
+
 WebMCP is not a second API or authority plane. Calls run in the current
 authenticated browser session and receive no capability that the corresponding
 RCP surface lacks. There is no WebMCP tool for Proposal judgment, Decision choice,
 graph editing or Sync, artifact retention or version undo, settings,
-membership, project creation/deletion, or Auto-research authorization. Provider
-answers, artifacts, and tool output still cannot become canonical graph truth;
-only the ordinary typed Patch and human-authority paths can do so.
+membership, or project creation/deletion. Provider answers, artifacts, and tool
+output still cannot become canonical graph truth; only the ordinary typed Patch
+and human-authority paths can do so.
 
 ## Application surfaces
 

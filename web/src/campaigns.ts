@@ -63,6 +63,31 @@ export function isLiveEpisode(episode: Episode): boolean {
   return episode.live;
 }
 
+export interface AutoResearchStartState {
+  projectOpen: boolean;
+  mutationsDisabled: boolean;
+  authoritative: boolean;
+  canonicalReachable: boolean;
+  liveAutoResearchEpisode: Episode | null;
+  taskStarting: boolean;
+  episodeAction: string | null;
+}
+
+/** Why Auto-research cannot be authorized now, or null. The header button and the
+ * agent tool both refuse through this one check. */
+export function autoResearchStartRefusal(state: AutoResearchStartState): string | null {
+  if (!state.projectOpen) return "No RCP project is open.";
+  if (state.mutationsDisabled) return "Graph mutations are currently disabled.";
+  if (!state.authoritative) return "The project has not finished reconciling its saved state.";
+  if (!state.canonicalReachable) return "The project's saved state is unreachable.";
+  if (state.liveAutoResearchEpisode) {
+    return "An auto-research episode is already live for this project.";
+  }
+  if (state.taskStarting) return "Another task start is already being submitted.";
+  if (state.episodeAction) return "Wait for the current episode action to finish.";
+  return null;
+}
+
 export function mergeEpisode(episodes: Episode[], nextEpisode: Episode): Episode[] {
   return [
     nextEpisode,

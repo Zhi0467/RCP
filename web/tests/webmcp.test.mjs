@@ -13,6 +13,7 @@ const server = await createServer({
 const {
   WEBMCP_NODE_CONTENT_MAX_CHARS,
   WEBMCP_RESULT_MAX_CHARS,
+  authorizeProjectAutoResearch,
   boundJsonToBudget,
   createWebMcpToolRegistry,
   currentWebMcpContext,
@@ -25,21 +26,29 @@ const {
   modelContextFromDocument,
   openProjectFromIndex,
   openProjectArtifact,
+  openProjectView,
   projectArtifactToolDefinitions,
+  projectAutoResearchToolDefinitions,
   projectConversationSendToolDefinitions,
   projectConversationToolDefinitions,
+  projectEpisodeStopToolDefinitions,
   projectExperimentToolDefinitions,
-  projectExperimentStopToolDefinitions,
   projectIndexToolDefinitions,
   projectOverview,
   projectReadToolDefinitions,
+  projectViewToolDefinitions,
   registerWebMcpTools,
   sendProjectConversationMessage,
   startProjectExperiment,
+  stopProjectAutoResearchEpisode,
   stopProjectExperimentEpisode,
   webMcpSurface,
   webMcpTextResult,
 } = await server.ssrLoadModule("/src/webmcp.ts");
+const { catalog, catalogAsFunctionTools, publishToolSurface, resolve } =
+  await server.ssrLoadModule("/src/toolCatalog.ts");
+const { parseProjectHash } = await server.ssrLoadModule("/src/experimentBoard.ts");
+const { graphTargetFromHash } = await server.ssrLoadModule("/src/graphTarget.ts");
 
 after(() => server.close());
 
@@ -1918,16 +1927,50 @@ test("Experiment Stop refuses backend can_stop false and hides until available",
     ),
     /already stopping/,
   );
-  assert.deepEqual(
-    projectExperimentStopToolDefinitions(project, async () => undefined),
-    [],
-  );
-  const tools = projectExperimentStopToolDefinitions(project, async () => undefined, true);
+  const stop = async () => undefined;
+  assert.deepEqual(projectEpisodeStopToolDefinitions(project, [], stop, stop), []);
+  const tools = projectEpisodeStopToolDefinitions(project, [], stop, stop, true);
   assert.deepEqual(
     tools.map((tool) => [tool.name, tool.annotations?.readOnlyHint]),
     [["rcp_stop_episode", false]],
   );
-  assert.deepEqual(tools[0].inputSchema.required, ["experiment_id", "episode_id"]);
+});
+
+test("Stop also accepts an exact stoppable Auto-research episode", async () => {
+  const project = projectFixture();
+  project.experiment_control["exp-1"] = { episode_id: null, can_stop: false, reasons: [] };
+  const live = { episode_id: "auto-1", mode: "auto_research", can_stop: true };
+  const stopped = [];
+  const stopAutoResearch = async (episodeId) => stopped.push(episodeId);
+  const stopExperiment = async () => stopped.push("experiment");
+  assert.deepEqual(
+    projectEpisodeStopToolDefinitions(project, [], stopExperiment, stopAutoResearch),
+    [],
+  );
+  const [tool] = projectEpisodeStopToolDefinitions(
+    project,
+    [live],
+    stopExperiment,
+    stopAutoResearch,
+  );
+  assert.deepEqual(tool.inputSchema.required, ["episode_id"]);
+  const receipt = JSON.parse((await tool.execute({ episode_id: "auto-1" })).content[0].text);
+  assert.equal(receipt.stop_requested, true);
+  assert.deepEqual(stopped, ["auto-1"]);
+  for (const episode of [
+    { ...live, can_stop: false },
+    { ...live, mode: "experiment_loop" },
+  ]) {
+    await assert.rejects(
+      stopProjectAutoResearchEpisode(
+        project,
+        [episode],
+        { episode_id: "auto-1" },
+        stopAutoResearch,
+      ),
+    );
+  }
+  assert.deepEqual(stopped, ["auto-1"]);
 });
 
 function evalToolDefinitions(state) {
@@ -1968,7 +2011,14 @@ function evalToolDefinitions(state) {
     ...projectExperimentToolDefinitions(project, [], [], false, false, false, false, async () => ({
       operation_id: "experiment-task",
     })),
-    ...projectExperimentStopToolDefinitions(project, async () => undefined),
+    ...projectAutoResearchToolDefinitions(project, null, async () => ({ episode_id: "auto-1" })),
+    ...projectEpisodeStopToolDefinitions(
+      project,
+      [],
+      async () => undefined,
+      async () => undefined,
+    ),
+    ...projectViewToolDefinitions(project, tasks, episodes, {}, {}),
   ];
 }
 
@@ -1992,6 +2042,151 @@ test("all WebMCP metadata stays descriptive and within model-facing budgets", ()
       );
     }
   }
+});
+
+test("the catalog lists every tool any page state can register, independent of state", () => {
+  const states = ["landing", "project_ready", "project_live", "project_completed"];
+  const names = catalog().map((tool) => tool.name);
+  assert.equal(new Set(names).size, names.length);
+  assert.deepEqual(
+    new Set(names),
+    new Set(states.flatMap(evalToolDefinitions).map((tool) => tool.name)),
+  );
+  publishToolSurface("project", evalToolDefinitions("project_completed"));
+  assert.deepEqual(
+    catalog().map((tool) => tool.name),
+    names,
+  );
+  publishToolSurface(null, []);
+});
+
+test("resolve returns the published definition or the reason a tool cannot run", () => {
+  assert.equal(resolve("rcp_get_project_overview").ok, false);
+  const definitions = evalToolDefinitions("project_completed");
+  publishToolSurface("project", definitions, { rcp_start_experiment: "start-refusal" });
+  const overview = resolve("rcp_get_project_overview");
+  assert.equal(overview.ok, true);
+  assert.equal(
+    overview.definition,
+    definitions.find((tool) => tool.name === "rcp_get_project_overview"),
+  );
+  assert.deepEqual(resolve("rcp_start_experiment"), { ok: false, refusal: "start-refusal" });
+  for (const name of ["rcp_stop_episode", "rcp_open_project", "rcp_delete_project"]) {
+    assert.equal(resolve(name).ok, false, name);
+    assert.equal(typeof resolve(name).refusal, "string", name);
+  }
+  publishToolSurface(null, []);
+});
+
+test("only Work, Experiment Start, and Auto-research authorization ask for confirmation", () => {
+  const send = catalog().find((tool) => tool.name === "rcp_send_conversation_message");
+  assert.equal(send.confirm({ message: "Check", mode: "discuss" }), false);
+  assert.equal(send.confirm({ message: "Check", mode: "work" }), true);
+  assert.deepEqual(
+    catalog()
+      .filter((tool) => tool.confirm({ mode: "work" }))
+      .map((tool) => tool.name)
+      .sort(),
+    ["rcp_authorize_auto_research", "rcp_send_conversation_message", "rcp_start_experiment"],
+  );
+});
+
+test("the function-tool form carries only the Responses fields", () => {
+  const tools = catalogAsFunctionTools();
+  assert.deepEqual(JSON.parse(JSON.stringify(tools)), tools);
+  for (const [index, tool] of tools.entries()) {
+    assert.deepEqual(Object.keys(tool).sort(), ["description", "name", "parameters", "type"]);
+    assert.equal(tool.type, "function");
+    assert.equal(tool.name, catalog()[index].name);
+    assert.deepEqual(tool.parameters, catalog()[index].inputSchema);
+  }
+});
+
+test("Auto-research authorization takes the form's inputs and is offered only unrefused", async () => {
+  const project = projectFixture();
+  const starts = [];
+  const start = async (...args) => {
+    starts.push(args);
+    return { episode_id: "auto-1", status: "running", live: true };
+  };
+  assert.deepEqual(projectAutoResearchToolDefinitions(project, "refused", start), []);
+  const [tool] = projectAutoResearchToolDefinitions(project, null, start);
+  const receipt = JSON.parse(
+    (await tool.execute({ invocation_ceiling: 500, starting_instruction: " Probe " })).content[0]
+      .text,
+  );
+  assert.equal(receipt.episode_id, "auto-1");
+  await tool.execute({ invocation_ceiling: 1, code_worktree: false });
+  assert.deepEqual(starts, [
+    [500, "Probe", true],
+    [1, null, false],
+  ]);
+  for (const invocation_ceiling of [0, 1.5, "3", undefined]) {
+    await assert.rejects(authorizeProjectAutoResearch(project, { invocation_ceiling }, start));
+  }
+  assert.equal(starts.length, 2);
+});
+
+test("rcp_open_view uses in-page owners and never addresses another project or graph target", async () => {
+  const graphTarget = { kind: "branch", branch_id: "branch-1" };
+  const project = { ...projectFixture(), graph_target: graphTarget };
+  const { transcript } = conversationFixtures();
+  const { tasks, episodes } = artifactFixtures();
+  episodes.push({ episode_id: "auto-1", project_id: "project-1", mode: "auto_research" });
+  const entry = {
+    project_id: "project-1",
+    node: { id: "exp-1" },
+    control: { episode_id: "episode-1" },
+    episode: { episode_id: "episode-1" },
+    graph_target: { kind: "main" },
+    parent_episode_id: null,
+  };
+  const calls = [];
+  let current = true;
+  const owners = {
+    openNode: (id) => calls.push(["node", id]),
+    openConversation: (opened) => calls.push(["conversation", opened.chat_id]),
+    openRunRoute: (hash) => calls.push(["run", hash]),
+    openInbox: () => calls.push(["inbox"]),
+    openArtifact: (record) => {
+      calls.push(["artifact", record.viewer_id]);
+      return true;
+    },
+    isCurrent: (id, target) => current && id === "project-1" && target === graphTarget,
+  };
+  const source = {
+    ...noArtifactFetch,
+    loadTranscript: async () => transcript,
+    loadExperimentEntries: async () => [entry],
+  };
+  const inputs = [
+    { kind: "node", id: "hyp-1" },
+    { kind: "conversation", id: "chat-1" },
+    { kind: "run", id: "auto-1" },
+    { kind: "run", id: "episode-1" },
+    { kind: "artifact", id: "task:task-1:artifact-1" },
+    { kind: "inbox" },
+  ];
+  const open = (input) => openProjectView(project, tasks, episodes, input, owners, source);
+  for (const input of inputs) await open(input);
+  assert.deepEqual(
+    calls.map(([kind]) => kind),
+    ["node", "conversation", "run", "run", "artifact", "inbox"],
+  );
+  const [autoRoute, experimentRoute] = calls
+    .filter(([kind]) => kind === "run")
+    .map(([, hash]) => {
+      assert.deepEqual(graphTargetFromHash(hash), graphTarget);
+      return parseProjectHash(hash);
+    });
+  assert.equal(autoRoute.projectId, "project-1");
+  assert.equal(autoRoute.autoResearchEpisodeId, "auto-1");
+  assert.equal(experimentRoute.projectId, "project-1");
+  assert.equal(experimentRoute.experimentRoute.episode_id, "episode-1");
+  current = false;
+  calls.length = 0;
+  for (const input of inputs) await assert.rejects(open(input));
+  assert.deepEqual(calls, []);
 });
 
 test("the WebMCP surface opens only behind the page's backend-session gate", () => {
