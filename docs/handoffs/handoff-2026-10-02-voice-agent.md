@@ -209,7 +209,10 @@ Service connections gain `purposes`, a subset of `transcription` and `voice`.
 A record without the field means transcription only. Connect takes the
 purposes to enable, and each purpose has its own check: transcription keeps the
 clip check, and voice makes one authenticated request for `gpt-live-1`. So a
-voice-only key can be saved. Voice applies only to the OpenAI preset, and at
+voice-only key can be saved. `PUT /api/service-connections/{id}/purposes` takes
+`{purposes}` and runs the check for each newly added purpose with the stored
+key, so an existing OpenAI connection gains voice without pasting its key
+again. Removing every purpose is refused; Disconnect does that. Voice applies only to the OpenAI preset, and at
 most one connection has it: enabling voice on a connection moves it off any
 other. That connection pays for every voice session.
 
