@@ -47,9 +47,13 @@ so the desktop can be rebuilt or the server updated to a compatible promoted rel
 
 A compatible browser host may expose a page-scoped WebMCP tool surface for
 reading projects, opening existing views, sending ordinary conversation turns,
-and operating bounded Experiment controls. Those tools compose the same browser
-and API owners as visible controls; they add no backend shortcut, graph-change
-channel, provider capability, or human-judgment authority.
+operating bounded Experiment controls, and authorizing or gracefully stopping
+Auto-research. RCP's voice agent uses the same fixed tool catalog. An agent the
+member runs in their own page acts as that member
+([decision](decisions/2026-10-02-agents-in-a-member-page-act-as-that-member.md)).
+Those tools compose the same browser and API owners as visible controls; they
+add no backend shortcut, graph-change channel, or provider capability, and they
+expose none of the protected judgment controls.
 
 The confirmed first team deployment is one lab using one installed RCP server
 and desktop member clients. A dedicated Linux `rcp` account owns the control
@@ -101,7 +105,9 @@ number here.
   operational state.
 - **Humans retain the protected authority boundary.** Only humans set ordinary
   belief standing, resolve Proposals, change project truth membership, authorize
-  a bounded episode, or dispatch a branch merge. Agents may assert new work and
+  a bounded episode, or dispatch a branch merge. A member's own authenticated
+  page authorizes episodes, including through an agent the member runs there;
+  every other protected action stays a visible control. Agents may assert new work and
   must propose changes to an existing ResearchQuestion or Hypothesis. The one
   deliberate Decision exception is the human-authorized Auto-research
   orchestrator: on its branch, and during its human-dispatched merge, it may

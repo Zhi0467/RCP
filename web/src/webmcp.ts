@@ -2209,6 +2209,11 @@ export async function openProjectView(
     );
     if (!episode) throw new Error(`Episode ${id} is not present in the current project.`);
     const entries = episode.mode === "auto_research" ? [] : await source.loadExperimentEntries();
+    // An Experiment run route names its own graph target; never pair it with another one.
+    const entry = entries.find((item) => item.episode?.episode_id === id);
+    if (entry && !sameGraphTarget(entry.graph_target, project.graph_target)) {
+      throw new Error(`Episode ${id} runs on another graph target; open that graph first.`);
+    }
     assertCurrent();
     owners.openRunRoute(
       graphTargetUrl(episodeRunHash(project.id, id, episode, entries), project.graph_target),

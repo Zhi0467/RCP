@@ -2147,7 +2147,7 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
     node: { id: "exp-1" },
     control: { episode_id: "episode-1" },
     episode: { episode_id: "episode-1" },
-    graph_target: { kind: "main" },
+    graph_target: graphTarget,
     parent_episode_id: null,
   };
   const calls = [];
@@ -2192,8 +2192,10 @@ test("rcp_open_view uses in-page owners and never addresses another project or g
   assert.equal(autoRoute.autoResearchEpisodeId, "auto-1");
   assert.equal(experimentRoute.projectId, "project-1");
   assert.equal(experimentRoute.experimentRoute.episode_id, "episode-1");
-  current = false;
   calls.length = 0;
+  entry.graph_target = { kind: "main" };
+  await assert.rejects(open({ kind: "run", id: "episode-1" }));
+  current = false;
   for (const input of inputs) await assert.rejects(open(input));
   assert.deepEqual(calls, []);
 });

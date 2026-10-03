@@ -908,6 +908,48 @@ membership, or project creation/deletion. Provider answers, artifacts, and tool
 output still cannot become canonical graph truth; only the ordinary typed Patch
 and human-authority paths can do so.
 
+## Voice agent
+
+The voice button opens one GPT-Live session for the member's page; a second
+click ends it. It works in the desktop app, the team browser app, and the team
+phone web app. Audio goes between the page and OpenAI over WebRTC; RCP never
+receives it and keeps no transcript.
+
+`POST /api/voice/sessions` takes `{sdp_offer, tools}`, where `tools` is
+`catalogAsFunctionTools()` with a size cap. The backend reads the member's
+connection marked **Use for voice**, an OpenAI preset connection, and creates a
+Live session with Responses delegation, `parallel_tool_calls: false`, the
+member's delegation model, and RCP's fixed instructions. It returns
+`{sdp_answer, limits}` and keeps no session state. With no such connection it
+returns `voice_not_connected` (409); an OpenAI failure returns
+`voice_upstream_failed` (502) with a bounded message. `limits` carries
+`idle_seconds`, `hard_cap_seconds`, `confirm_timeout_seconds`, and
+`commentary_max_chars` from `limits.py`, and the page enforces them.
+
+`GET` and `PUT /api/voice/settings` hold `{delegation_model, confirm}` in the
+member's private settings file. `confirm` is `tap` (the default) or `none`. A
+`PUT` changes only the fields it sends. The panel's toggle sets `confirm`; the
+Transcription card sets the delegation model and the per-connection **Use for
+voice** purpose, which RCP checks against OpenAI before saving.
+
+The page runs each delegated function call through the shared catalog's
+`resolve`, as the member. It runs one call at a time, ignores a repeated
+`call_id`, and refuses an identical repeat of a call whose outcome is unknown.
+In `tap` mode, a Work Send, Experiment Start, or Auto-research authorization
+first shows a card that pins the project, graph target, arguments, budget, and
+for a message its mode and provider profile. Confirm rereads page state and
+runs nothing if a pinned value changed; a decline or timeout returns "not
+confirmed".
+
+The page owns the session's lifetime. It ends the session on End, the idle
+limit, the hard cap, identity or team-session loss, a 401 or 403 on a read,
+leaving the space, and the page going hidden, frozen, or away. It sends
+`session.close`, waits a bounded time for `session.closed`, then closes the
+peer. After End, it runs no further calls. While open, the session speaks
+first only when a Work turn, Experiment, or Auto-research episode it started
+finishes or needs the member, polling that record through its own project's
+routes; the spoken text is a fixed template with no authored content.
+
 ## Application surfaces
 
 ### Overview

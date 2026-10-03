@@ -7,8 +7,8 @@ Implementation started on this PR on 2026-10-02. Done: slice 1 (shared tool
 catalog, Auto-research authorization and Stop, `rcp_open_view`, stoppable
 Auto-research ids in the overview), slice 2 (voice purposes, voice settings,
 the stateless session route), and slice 3 (voice panel and executor, driven
-headless against a fake transport). Remaining: the live probe, the spec
-updates, and the real-hardware checks below. This
+headless against a fake transport), and the spec updates. Remaining: the
+live probe, the `AGENTS.md` link below, and the real-hardware checks below. This
 builds on the model-backed dictation handoff
 (part 1, its own PR): it reuses that PR's member service connections, member
 settings file, and microphone owner. A live GPT-Live probe gates the session
@@ -179,9 +179,9 @@ Slice 1 adds a host-independent catalog:
 ### Speaking first
 
 The voice module remembers the task and episode ids it started this session,
-and polls those exact ids itself, the way `loadWebMcpTask` and
-`loadWebMcpEpisode` already fetch one task or episode. This keeps working after
-navigation; the page's own polling covers only the open project. On a change to
+each with the project it started in, and polls those exact ids through that
+project's task and episode routes. This keeps working after navigation; the
+page's own polling covers only the open project. On a change to
 finished or needs-you, it sends one `session.commentary.append` with
 `delegation_id: null`. The text comes from a fixed template of kind, project
 name, and status. It never includes provider answers or other authored text,
@@ -271,14 +271,8 @@ One test per invariant, no wording assertions:
   contains the key or OpenAI's raw error;
 - completion commentary is built only from kind, project name, and status.
 
-## Docs to update when this lands
+## Docs still to update
 
-- API, Web, and desktop projections spec: the WebMCP section (new tools, a
-  shorter exclusion list, the catalog) and a voice section.
-- Authority and Proposals spec: a human action includes an agent the member
-  runs in their own page, and the four-boundary paragraph, per the decision
-  record.
-- `docs/design.md`: the WebMCP paragraph names Auto-research and voice.
 - `AGENTS.md`: invariant 3 links the decision record, as invariant 4 links its
   decisions. This edits agent instructions, so confirm it with the human in
   the PR.
