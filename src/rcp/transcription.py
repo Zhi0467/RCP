@@ -11,13 +11,14 @@ import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import ConfigDict, Field, SecretStr
 
 from rcp import limits
-from rcp.service_connections import ConnectionError
+from rcp.service_connections import ConnectionError, PurposesRequest, connection_purposes
 
 FORMATS = {"audio/webm;codecs=opus": "webm", "audio/mp4;codecs=mp4a.40.2": "mp4"}
 PRESETS = {
@@ -28,7 +29,10 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
 GEMINI_MODEL = "gemini-3.5-transcribe"
 
 
-class ConnectRequest(BaseModel):
+class ConnectRequest(PurposesRequest):
+    purposes: list[Literal["transcription", "voice"]] = Field(
+        default_factory=lambda: ["transcription"], min_length=1, max_length=2
+    )
     model_config = ConfigDict(extra="forbid", strict=True)
     kind: str
     preset: str | None = None
@@ -60,6 +64,7 @@ class ConnectRequest(BaseModel):
             base_url=base,
             model=model,
             label=label,
+            purposes=self.purposes,
         )
 
 
@@ -125,47 +130,38 @@ async def transcribe(connection: dict, key: str, audio: bytes, mime: str) -> str
             "files": {"file": (f"audio.{FORMATS[mime]}", audio, mime)},
         }
     try:
-        async with asyncio.timeout(limits.TRANSCRIPTION_OUTBOUND_SECONDS):
-            async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
-                async with client.stream("POST", url, headers=headers, **kwargs) as response:
-                    data = bytearray()
-                    async for chunk in response.aiter_raw():
-                        if len(data) + len(chunk) > limits.TRANSCRIPTION_RESPONSE_MAX_BYTES:
-                            raise ValueError("Service response exceeded the size limit.")
-                        data.extend(chunk)
-                    if not 200 <= response.status_code < 300:
-                        message = f"Service returned HTTP {response.status_code}."
-                        with suppress(ValueError, TypeError, AttributeError):
-                            service_error = json.loads(data).get("error", {})
-                            if isinstance(service_error, dict) and isinstance(
-                                service_error.get("message"), str
-                            ):
-                                message = service_error["message"]
-                        raise ConnectionError(
-                            "transcription_upstream_failed", 502, sanitized(message, key)
-                        )
-                    body = json.loads(data)
-                    if not isinstance(body, dict):
-                        raise ValueError("Invalid service response.")
-                    if connection["kind"] == "gemini":
-                        text = "".join(
-                            part.get("text", "")
-                            for candidate in body.get("candidates", [])
-                            for part in candidate.get("content", {}).get("parts", [])
-                        )
-                    else:
-                        text = body.get("text", "")
-                    if not isinstance(text, str):
-                        raise ValueError("Invalid service response.")
-                    # Rewriting the text would corrupt dictation, so a reply carrying the
-                    # key is discarded instead.
-                    if key and key in text:
-                        raise ConnectionError(
-                            "transcription_upstream_failed",
-                            502,
-                            "The service's reply contained the connection's key, so RCP discarded it.",
-                        )
-                    return text
+        status, data = await service_request("POST", url, headers=headers, **kwargs)
+        if not 200 <= status < 300:
+            message = f"Service returned HTTP {status}."
+            with suppress(ValueError, TypeError, AttributeError):
+                service_error = json.loads(data).get("error", {})
+                if isinstance(service_error, dict) and isinstance(
+                    service_error.get("message"), str
+                ):
+                    message = service_error["message"]
+            raise ConnectionError("transcription_upstream_failed", 502, sanitized(message, key))
+        body = json.loads(data)
+        if not isinstance(body, dict):
+            raise ValueError("Invalid service response.")
+        if connection["kind"] == "gemini":
+            text = "".join(
+                part.get("text", "")
+                for candidate in body.get("candidates", [])
+                for part in candidate.get("content", {}).get("parts", [])
+            )
+        else:
+            text = body.get("text", "")
+        if not isinstance(text, str):
+            raise ValueError("Invalid service response.")
+        # Rewriting the text would corrupt dictation, so a reply carrying the
+        # key is discarded instead.
+        if key and key in text:
+            raise ConnectionError(
+                "transcription_upstream_failed",
+                502,
+                "The service's reply contained the connection's key, so RCP discarded it.",
+            )
+        return text
     except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, AttributeError):
         # Transport exceptions may contain URLs and headers; report no raw exception text.
         raise ConnectionError(
@@ -175,8 +171,41 @@ async def transcribe(connection: dict, key: str, audio: bytes, mime: str) -> str
         ) from None
 
 
+async def service_request(method: str, url: str, **kwargs) -> tuple[int, bytes]:
+    """One deadline and bounded raw response for member service calls."""
+    async with asyncio.timeout(limits.TRANSCRIPTION_OUTBOUND_SECONDS):
+        async with httpx.AsyncClient(trust_env=False, follow_redirects=False) as client:
+            async with client.stream(method, url, **kwargs) as response:
+                data = bytearray()
+                async for chunk in response.aiter_raw():
+                    if len(data) + len(chunk) > limits.TRANSCRIPTION_RESPONSE_MAX_BYTES:
+                        raise ValueError("Service response exceeded the size limit.")
+                    data.extend(chunk)
+                return response.status_code, bytes(data)
+
+
 async def check_connection(request: ConnectRequest) -> dict:
     connection = request.configuration()
+    return await check_purposes(connection, request.key.get_secret_value(), request.purposes)
+
+
+async def check_purposes(connection: dict, key: str, added: list[str]) -> dict:
+    if "voice" in connection_purposes(connection):
+        # Import locally: voice uses the shared bounded transport above.
+        from rcp.voice import check_voice_connection, require_openai
+
+        require_openai(connection)
+        if "voice" in added:
+            await check_voice_connection(connection, key)
+    result = {"formats": [], **connection}
+    if "transcription" in added:
+        result["formats"] = await check_transcription(connection, key)
+    if added:
+        result["verified_at"] = datetime.now(UTC).isoformat()
+    return result
+
+
+async def check_transcription(connection: dict, key: str) -> list[str]:
     formats = []
     failure = "No bundled audio check clips are available."
     for mime, suffix in FORMATS.items():
@@ -184,13 +213,11 @@ async def check_connection(request: ConnectRequest) -> dict:
         if not clip.is_file():
             continue
         try:
-            await transcribe(connection, request.key.get_secret_value(), clip.read_bytes(), mime)
+            await transcribe(connection, key, clip.read_bytes(), mime)
         except ConnectionError as exc:
             failure = exc.message
             continue
         formats.append(mime)
     if not formats:
-        raise ConnectionError(
-            "connection_check_failed", 422, sanitized(failure, request.key.get_secret_value())
-        )
-    return {**connection, "formats": formats, "verified_at": datetime.now(UTC).isoformat()}
+        raise ConnectionError("connection_check_failed", 422, sanitized(failure, key))
+    return formats

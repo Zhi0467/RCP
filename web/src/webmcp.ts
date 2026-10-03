@@ -1,4 +1,4 @@
-import { sameGraphTarget } from "./graphTarget";
+import { graphTargetUrl, sameGraphTarget } from "./graphTarget";
 import type { GraphTargetRef } from "./types";
 import {
   artifactUrl,
@@ -13,18 +13,22 @@ import {
   type ChatKind,
   type ConversationTurnSubmission,
 } from "./chatWorkspace";
+import { episodeRunHash } from "./notificationLinks";
 import { filterSkillCatalogToDefaults } from "./skillPicker";
 import type {
   AgentRunConfig,
   AgentTask,
+  AppView,
   ArtifactView,
   ChatMessage,
   ChatSummary,
   ChatTranscript,
   Episode,
+  ExperimentLoopIndexEntry,
   GraphNode,
   ProjectCard,
   ProjectSnapshot,
+  ProviderLoginAccount,
   WatcherRecord,
 } from "./types";
 
@@ -50,6 +54,28 @@ export type WebMcpToolDefinition = {
   execute: (input: Record<string, unknown>) => WebMcpToolResult | Promise<WebMcpToolResult>;
 };
 
+/** A tool's fixed definition, independent of page state. `confirm` says whether one
+ * exact call waits for the member's confirmation in a voice session; `alwaysConfirm`
+ * keeps that card even when the member runs without confirming; `voiceOnly` keeps the
+ * tool off WebMCP, whose host agents get no RCP card. All three stay local and are
+ * never registered with a host. */
+export type WebMcpToolSpec = Omit<WebMcpToolDefinition, "execute"> & {
+  confirm: (input: Record<string, unknown>) => boolean;
+  alwaysConfirm?: true;
+  voiceOnly?: true;
+};
+
+const NEVER_CONFIRM = () => false;
+const ALWAYS_CONFIRM = () => true;
+
+export function withExecute(
+  spec: WebMcpToolSpec,
+  execute: WebMcpToolDefinition["execute"],
+): WebMcpToolDefinition {
+  const { confirm: _, alwaysConfirm: _always, voiceOnly: _voice, ...definition } = spec;
+  return { ...definition, execute };
+}
+
 export type WebMcpModelContext = {
   registerTool: (
     definition: WebMcpToolDefinition,
@@ -73,6 +99,7 @@ export type WebMcpToolRegistry = {
 
 export const WEBMCP_RESULT_MAX_CHARS = 1_500;
 const WEBMCP_NODE_RESULT_MAX_CHARS = 16_000;
+const WEBMCP_OVERVIEW_RESULT_MAX_CHARS = 6_000;
 export const WEBMCP_NODE_CONTENT_MAX_CHARS = 6_000;
 const WEBMCP_ARTIFACT_RESULT_MAX_CHARS = 8_000;
 const WEBMCP_CONVERSATION_RESULT_MAX_CHARS = 12_000;
@@ -81,6 +108,7 @@ const WEBMCP_EXPERIMENT_RESULT_MAX_CHARS = 12_000;
 const WEBMCP_PROJECT_INDEX_RESULT_MAX_CHARS = 6_000;
 const PROJECT_LIST_LIMIT = 8;
 const OVERVIEW_LIST_LIMIT = 2;
+const OVERVIEW_STOPPABLE_LIMIT = 16;
 const NODE_RELATION_LIMIT = 32;
 const NODE_TEXT_LIMIT = 1_200;
 const NODE_TEXT_LIMIT_FLOOR = 64;
@@ -341,51 +369,63 @@ export async function openProjectFromIndex(
   };
 }
 
+const LIST_PROJECTS_TOOL: WebMcpToolSpec = {
+  name: "rcp_list_projects",
+  description: "List the RCP projects available from the current project index.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        minLength: 1,
+        description: "Optional words from the project name or primary research question.",
+      },
+    },
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+const OPEN_PROJECT_TOOL: WebMcpToolSpec = {
+  name: "rcp_open_project",
+  description: "Open one exact listed RCP project in the current browser page.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      project_id: {
+        type: "string",
+        minLength: 1,
+        description: "Exact project id returned by rcp_list_projects.",
+      },
+    },
+    required: ["project_id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+/** The tools of the project index surface; every other tool needs an open project. */
+export const PROJECT_INDEX_TOOLS: readonly WebMcpToolSpec[] = [
+  LIST_PROJECTS_TOOL,
+  OPEN_PROJECT_TOOL,
+];
+
 export function projectIndexToolDefinitions(
   currentProjects: () => ProjectCard[],
   openProject: (projectId: string) => boolean | void | Promise<boolean | void>,
 ): WebMcpToolDefinition[] {
   return [
-    {
-      name: "rcp_list_projects",
-      description: "List the RCP projects available from the current project index.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            minLength: 1,
-            description: "Optional words from the project name or primary research question.",
-          },
-        },
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: (input) =>
-        webMcpTextResult(
-          listProjectsForWebMcp(currentProjects(), input),
-          WEBMCP_PROJECT_INDEX_RESULT_MAX_CHARS,
-        ),
-    },
-    {
-      name: "rcp_open_project",
-      description: "Open one exact listed RCP project in the current browser page.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          project_id: {
-            type: "string",
-            minLength: 1,
-            description: "Exact project id returned by rcp_list_projects.",
-          },
-        },
-        required: ["project_id"],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: async (input) =>
-        webMcpTextResult(await openProjectFromIndex(currentProjects(), input, openProject)),
-    },
+    withExecute(LIST_PROJECTS_TOOL, (input) =>
+      webMcpTextResult(
+        listProjectsForWebMcp(currentProjects(), input),
+        WEBMCP_PROJECT_INDEX_RESULT_MAX_CHARS,
+      ),
+    ),
+    withExecute(OPEN_PROJECT_TOOL, async (input) =>
+      webMcpTextResult(await openProjectFromIndex(currentProjects(), input, openProject)),
+    ),
   ];
 }
 
@@ -396,7 +436,10 @@ function recentNodes(project: ProjectSnapshot, type: GraphNode["type"]): GraphNo
     .slice(0, OVERVIEW_LIST_LIMIT);
 }
 
-export function projectOverview(project: ProjectSnapshot): Record<string, unknown> {
+export function projectOverview(
+  project: ProjectSnapshot,
+  episodes: Episode[] = [],
+): Record<string, unknown> {
   const attentionIds = [
     ...project.attention.open_blocker_ids,
     ...project.attention.decisions_awaiting_choice_ids,
@@ -418,6 +461,24 @@ export function projectOverview(project: ProjectSnapshot): Record<string, unknow
       blockers: recentNodes(project, "blocker").map(compactNode),
     },
     suggested_node_ids: [...new Set(attentionIds)].slice(0, 6),
+    // The agent configured for each role, as the Settings tab shows it.
+    agents: Object.fromEntries(
+      Object.entries(project.agent_profiles).map(([role, profile]) => [
+        role,
+        {
+          provider: profile.provider,
+          model: profile.effective_model || profile.model || null,
+          reasoning: profile.reasoning,
+          run_on: profile.run_on,
+        },
+      ]),
+    ),
+    // Experiment episodes stop through their Experiment; an Auto-research
+    // episode has no node, so its id is listed here for an exact Stop.
+    stoppable_auto_research_episode_ids: episodes
+      .filter((episode) => episode.mode === "auto_research" && episode.can_stop)
+      .map((episode) => episode.episode_id)
+      .slice(0, OVERVIEW_STOPPABLE_LIMIT),
   };
 }
 
@@ -597,35 +658,78 @@ export function webMcpSurface<P extends { id: string }>(gate: {
   return { project, indexAvailable, key };
 }
 
-export function projectReadToolDefinitions(project: ProjectSnapshot): WebMcpToolDefinition[] {
-  return [
-    {
-      name: "rcp_get_project_overview",
-      description: "Read a compact map of the open RCP research project.",
-      inputSchema: { type: "object", additionalProperties: false },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: () => webMcpTextResult(projectOverview(project)),
-    },
-    {
-      name: "rcp_inspect_node",
-      description:
-        "Read one exact saved RCP graph node and its direct relations. Oversized text or lists are shortened and every shortened path is reported in node_truncation.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          node_id: {
-            type: "string",
-            minLength: 1,
-            description: "Exact current graph node id returned by an RCP read tool.",
-          },
-        },
-        required: ["node_id"],
-        additionalProperties: false,
+const PROJECT_OVERVIEW_TOOL: WebMcpToolSpec = {
+  name: "rcp_get_project_overview",
+  description: "Read a compact map of the open RCP research project.",
+  inputSchema: { type: "object", additionalProperties: false },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+const INSPECT_NODE_TOOL: WebMcpToolSpec = {
+  name: "rcp_inspect_node",
+  description:
+    "Read one exact saved RCP graph node and its direct relations. Oversized text or lists are shortened and every shortened path is reported in node_truncation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      node_id: {
+        type: "string",
+        minLength: 1,
+        description: "Exact current graph node id returned by an RCP read tool.",
       },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: (input) =>
-        webMcpTextResult(inspectProjectNode(project, input), WEBMCP_NODE_RESULT_MAX_CHARS),
     },
+    required: ["node_id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+const PROVIDER_LOGINS_TOOL: WebMcpToolSpec = {
+  name: "rcp_get_provider_logins",
+  description:
+    "Read whether each agent provider, such as Codex or Claude, is signed in for this RCP space, as Settings shows it. This is RCP's record, not a live check of the credential.",
+  inputSchema: { type: "object", additionalProperties: false },
+  annotations: { readOnlyHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+/** Each provider's sign-in state as Settings shows it; credentials never appear. */
+export function providerLoginsForWebMcp(accounts: ProviderLoginAccount[]): Record<string, unknown> {
+  return {
+    providers: accounts.map((account) => ({
+      provider: account.provider,
+      label: account.label,
+      host: account.host || null,
+      machines: account.machines,
+      state: account.state,
+      detail: account.detail ? compactText(account.detail, 240) : null,
+    })),
+  };
+}
+
+export function providerLoginToolDefinitions(
+  loadLogins: () => Promise<ProviderLoginAccount[]>,
+): WebMcpToolDefinition[] {
+  return [
+    withExecute(PROVIDER_LOGINS_TOOL, async () =>
+      webMcpTextResult(providerLoginsForWebMcp(await loadLogins())),
+    ),
+  ];
+}
+
+export function projectReadToolDefinitions(
+  project: ProjectSnapshot,
+  episodes: Episode[] = [],
+): WebMcpToolDefinition[] {
+  return [
+    withExecute(PROJECT_OVERVIEW_TOOL, () =>
+      webMcpTextResult(projectOverview(project, episodes), WEBMCP_OVERVIEW_RESULT_MAX_CHARS),
+    ),
+    withExecute(INSPECT_NODE_TOOL, (input) =>
+      webMcpTextResult(inspectProjectNode(project, input), WEBMCP_NODE_RESULT_MAX_CHARS),
+    ),
   ];
 }
 
@@ -893,6 +997,59 @@ export async function openProjectArtifact(
   };
 }
 
+const LIST_ARTIFACTS_TOOL: WebMcpToolSpec = {
+  name: "rcp_list_artifacts",
+  description:
+    "List RCP task artifacts and immutable episode reports in the open project. Results come from the recent task and episode windows unless an exact task_id or episode_id is supplied.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      node_id: {
+        type: "string",
+        minLength: 1,
+        description: "Optional exact graph node id whose artifacts should be listed.",
+      },
+      chat_id: {
+        type: "string",
+        minLength: 1,
+        description: "Optional exact conversation id whose artifacts should be listed.",
+      },
+      task_id: {
+        type: "string",
+        minLength: 1,
+        description: "Optional exact task id whose artifacts should be listed.",
+      },
+      episode_id: {
+        type: "string",
+        minLength: 1,
+        description: "Optional exact episode id whose artifacts and report should be listed.",
+      },
+    },
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+const OPEN_ARTIFACT_TOOL: WebMcpToolSpec = {
+  name: "rcp_open_artifact",
+  description: "Open one listed artifact or report in RCP's existing visual viewer.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      viewer_id: {
+        type: "string",
+        minLength: 1,
+        description: "Exact viewer id returned by rcp_list_artifacts.",
+      },
+    },
+    required: ["viewer_id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
 export function projectArtifactToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
@@ -901,64 +1058,17 @@ export function projectArtifactToolDefinitions(
   source: WebMcpArtifactSource,
 ): WebMcpToolDefinition[] {
   return [
-    {
-      name: "rcp_list_artifacts",
-      description:
-        "List RCP task artifacts and immutable episode reports in the open project. Results come from the recent task and episode windows unless an exact task_id or episode_id is supplied.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          node_id: {
-            type: "string",
-            minLength: 1,
-            description: "Optional exact graph node id whose artifacts should be listed.",
-          },
-          chat_id: {
-            type: "string",
-            minLength: 1,
-            description: "Optional exact conversation id whose artifacts should be listed.",
-          },
-          task_id: {
-            type: "string",
-            minLength: 1,
-            description: "Optional exact task id whose artifacts should be listed.",
-          },
-          episode_id: {
-            type: "string",
-            minLength: 1,
-            description: "Optional exact episode id whose artifacts and report should be listed.",
-          },
-        },
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: async (input) =>
-        webMcpTextResult(
-          await listProjectArtifacts(project, tasks, episodes, input, source),
-          WEBMCP_ARTIFACT_RESULT_MAX_CHARS,
-        ),
-    },
-    {
-      name: "rcp_open_artifact",
-      description: "Open one listed artifact or report in RCP's existing visual viewer.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          viewer_id: {
-            type: "string",
-            minLength: 1,
-            description: "Exact viewer id returned by rcp_list_artifacts.",
-          },
-        },
-        required: ["viewer_id"],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: async (input) =>
-        webMcpTextResult(
-          await openProjectArtifact(project, tasks, episodes, input, openViewer, source),
-        ),
-    },
+    withExecute(LIST_ARTIFACTS_TOOL, async (input) =>
+      webMcpTextResult(
+        await listProjectArtifacts(project, tasks, episodes, input, source),
+        WEBMCP_ARTIFACT_RESULT_MAX_CHARS,
+      ),
+    ),
+    withExecute(OPEN_ARTIFACT_TOOL, async (input) =>
+      webMcpTextResult(
+        await openProjectArtifact(project, tasks, episodes, input, openViewer, source),
+      ),
+    ),
   ];
 }
 
@@ -1299,6 +1409,49 @@ export function listProjectConversations(
   };
 }
 
+const LIST_CONVERSATIONS_TOOL: WebMcpToolSpec = {
+  name: "rcp_list_conversations",
+  description:
+    "List saved RCP conversations in the open project so an exact chat_id can be inspected or resumed.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      node_id: {
+        type: "string",
+        minLength: 1,
+        description: "Optional exact graph node id whose conversations should be listed.",
+      },
+      query: {
+        type: "string",
+        minLength: 1,
+        description: "Optional words from the conversation title or latest message.",
+      },
+    },
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+const INSPECT_CONVERSATION_TOOL: WebMcpToolSpec = {
+  name: "rcp_inspect_conversation",
+  description: "Read one bounded RCP conversation and its current Send options.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      chat_id: {
+        type: "string",
+        minLength: 1,
+        description: "Exact current RCP conversation id.",
+      },
+    },
+    required: ["chat_id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
 export function projectConversationToolDefinitions(
   project: ProjectSnapshot,
   summaries: ChatSummary[],
@@ -1308,55 +1461,18 @@ export function projectConversationToolDefinitions(
   taskStartPending = false,
 ): WebMcpToolDefinition[] {
   return [
-    {
-      name: "rcp_list_conversations",
-      description:
-        "List saved RCP conversations in the open project so an exact chat_id can be inspected or resumed.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          node_id: {
-            type: "string",
-            minLength: 1,
-            description: "Optional exact graph node id whose conversations should be listed.",
-          },
-          query: {
-            type: "string",
-            minLength: 1,
-            description: "Optional words from the conversation title or latest message.",
-          },
-        },
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: (input) =>
-        webMcpTextResult(
-          listProjectConversations(project, summaries, summaryTotal, input),
-          WEBMCP_CONVERSATION_LIST_RESULT_MAX_CHARS,
-        ),
-    },
-    {
-      name: "rcp_inspect_conversation",
-      description: "Read one bounded RCP conversation and its current Send options.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          chat_id: {
-            type: "string",
-            minLength: 1,
-            description: "Exact current RCP conversation id.",
-          },
-        },
-        required: ["chat_id"],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: true, untrustedContentHint: true },
-      execute: async (input) =>
-        webMcpTextResult(
-          await inspectProjectConversation(project, tasks, input, source, taskStartPending),
-          WEBMCP_CONVERSATION_RESULT_MAX_CHARS,
-        ),
-    },
+    withExecute(LIST_CONVERSATIONS_TOOL, (input) =>
+      webMcpTextResult(
+        listProjectConversations(project, summaries, summaryTotal, input),
+        WEBMCP_CONVERSATION_LIST_RESULT_MAX_CHARS,
+      ),
+    ),
+    withExecute(INSPECT_CONVERSATION_TOOL, async (input) =>
+      webMcpTextResult(
+        await inspectProjectConversation(project, tasks, input, source, taskStartPending),
+        WEBMCP_CONVERSATION_RESULT_MAX_CHARS,
+      ),
+    ),
   ];
 }
 
@@ -1399,35 +1515,19 @@ function exactEnabledProviderSkillNames(
   return requested;
 }
 
-export async function sendProjectConversationMessage(
+/** The conversation, node, and provider profile one Send would use, without starting it. */
+export async function conversationSendTarget(
   project: ProjectSnapshot,
   tasks: AgentTask[],
   input: Record<string, unknown>,
   source: WebMcpConversationSource,
-  taskStartPending: boolean,
-  createConversation: CreateWebMcpConversation,
-  startTurn: StartWebMcpConversationTurn,
-): Promise<Record<string, unknown>> {
-  if (Object.prototype.hasOwnProperty.call(input, "references")) {
-    throw new Error("Project references are not supported by WebMCP Send.");
-  }
-  const message = requiredStringInput(input, "message").trim();
-  if (message.length > 2_000) throw new Error("message must contain at most 2000 characters.");
-  const mode = requiredStringInput(input, "mode");
-  if (mode !== "discuss" && mode !== "work") {
-    throw new Error("mode must be discuss or work.");
-  }
+  taskStartPending = false,
+) {
   const requestedChatId = optionalStringInput(input, "chat_id");
   const requestedNodeId = optionalStringInput(input, "node_id");
   if (requestedChatId && requestedNodeId) {
     throw new Error("chat_id and node_id cannot be supplied together.");
   }
-  const workflowIds = exactEnabledSkillIds(
-    project,
-    "workflow",
-    stringListInput(input, "workflow_ids"),
-  );
-  const skillIds = exactEnabledSkillIds(project, "skill", stringListInput(input, "skill_ids"));
   const existing = requestedChatId
     ? await resolveProjectConversationContext(
         project,
@@ -1457,9 +1557,44 @@ export async function sendProjectConversationMessage(
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   const providerReady =
     readiness === undefined || Boolean(readiness.installed && readiness.authenticated);
+  // Why a Send here would be refused, known before any confirmation card is shown.
   const refusal =
     existing?.refusal ??
     conversationRefusal(null, [], taskStartPending, runTruthScope, providerReady);
+  return { existing, node, surface, config, runTruthScope, refusal };
+}
+
+export async function sendProjectConversationMessage(
+  project: ProjectSnapshot,
+  tasks: AgentTask[],
+  input: Record<string, unknown>,
+  source: WebMcpConversationSource,
+  taskStartPending: boolean,
+  createConversation: CreateWebMcpConversation,
+  startTurn: StartWebMcpConversationTurn,
+): Promise<Record<string, unknown>> {
+  if (Object.prototype.hasOwnProperty.call(input, "references")) {
+    throw new Error("Project references are not supported by WebMCP Send.");
+  }
+  const message = requiredStringInput(input, "message").trim();
+  if (message.length > 2_000) throw new Error("message must contain at most 2000 characters.");
+  const mode = requiredStringInput(input, "mode");
+  if (mode !== "discuss" && mode !== "work") {
+    throw new Error("mode must be discuss or work.");
+  }
+  const workflowIds = exactEnabledSkillIds(
+    project,
+    "workflow",
+    stringListInput(input, "workflow_ids"),
+  );
+  const skillIds = exactEnabledSkillIds(project, "skill", stringListInput(input, "skill_ids"));
+  const { existing, node, surface, config, runTruthScope, refusal } = await conversationSendTarget(
+    project,
+    tasks,
+    input,
+    source,
+    taskStartPending,
+  );
   if (refusal) throw new Error(refusal);
   const providerSkillNames = exactEnabledProviderSkillNames(
     project,
@@ -1493,6 +1628,61 @@ export async function sendProjectConversationMessage(
   };
 }
 
+const SEND_CONVERSATION_TOOL: WebMcpToolSpec = {
+  name: "rcp_send_conversation_message",
+  description: "Start one asynchronous RCP Discuss or Work turn in a new or existing conversation.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2_000,
+        description: "Natural-language request for the provider turn.",
+      },
+      mode: {
+        type: "string",
+        enum: ["discuss", "work"],
+        description: "Discuss cannot change project truth; Work uses RCP's bounded Work authority.",
+      },
+      chat_id: {
+        type: "string",
+        minLength: 1,
+        description:
+          "Existing conversation to resume; omit for a fresh project or node conversation.",
+      },
+      node_id: {
+        type: "string",
+        minLength: 1,
+        description: "Current node for a fresh node conversation; omit when chat_id is supplied.",
+      },
+      workflow_ids: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        maxItems: 32,
+        description: "Exact enabled workflow ids returned by conversation inspection.",
+      },
+      skill_ids: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        maxItems: 32,
+        description: "Exact enabled RCP skill ids returned by conversation inspection.",
+      },
+      provider_skill_names: {
+        type: "array",
+        items: { type: "string", minLength: 1 },
+        maxItems: 32,
+        description: "Exact provider-native skill names returned by conversation inspection.",
+      },
+    },
+    required: ["message", "mode"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false },
+  // Work can change project truth; Discuss cannot.
+  confirm: (input) => input.mode === "work",
+};
+
 export function projectConversationSendToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
@@ -1502,73 +1692,19 @@ export function projectConversationSendToolDefinitions(
   startTurn: StartWebMcpConversationTurn,
 ): WebMcpToolDefinition[] {
   return [
-    {
-      name: "rcp_send_conversation_message",
-      description:
-        "Start one asynchronous RCP Discuss or Work turn in a new or existing conversation.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          message: {
-            type: "string",
-            minLength: 1,
-            maxLength: 2_000,
-            description: "Natural-language request for the provider turn.",
-          },
-          mode: {
-            type: "string",
-            enum: ["discuss", "work"],
-            description:
-              "Discuss cannot change project truth; Work uses RCP's bounded Work authority.",
-          },
-          chat_id: {
-            type: "string",
-            minLength: 1,
-            description:
-              "Existing conversation to resume; omit for a fresh project or node conversation.",
-          },
-          node_id: {
-            type: "string",
-            minLength: 1,
-            description:
-              "Current node for a fresh node conversation; omit when chat_id is supplied.",
-          },
-          workflow_ids: {
-            type: "array",
-            items: { type: "string", minLength: 1 },
-            maxItems: 32,
-            description: "Exact enabled workflow ids returned by conversation inspection.",
-          },
-          skill_ids: {
-            type: "array",
-            items: { type: "string", minLength: 1 },
-            maxItems: 32,
-            description: "Exact enabled RCP skill ids returned by conversation inspection.",
-          },
-          provider_skill_names: {
-            type: "array",
-            items: { type: "string", minLength: 1 },
-            maxItems: 32,
-            description: "Exact provider-native skill names returned by conversation inspection.",
-          },
-        },
-        required: ["message", "mode"],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: false },
-      execute: async (toolInput) =>
-        webMcpTextResult(
-          await sendProjectConversationMessage(
-            project,
-            tasks,
-            toolInput,
-            source,
-            taskStartPending,
-            createConversation,
-            startTurn,
-          ),
+    withExecute(SEND_CONVERSATION_TOOL, async (toolInput) =>
+      webMcpTextResult(
+        await sendProjectConversationMessage(
+          project,
+          tasks,
+          toolInput,
+          source,
+          taskStartPending,
+          createConversation,
+          startTurn,
         ),
-    },
+      ),
+    ),
   ];
 }
 
@@ -1722,6 +1858,32 @@ function compactExperimentControl(
   };
 }
 
+function pageStartRefusal(
+  taskStartPending: boolean,
+  mutationsDisabled: boolean,
+  startRequiresSync: boolean,
+): string | null {
+  if (mutationsDisabled) return "Graph mutations are currently disabled.";
+  if (startRequiresSync) return "Sync staged graph changes before starting an episode.";
+  if (taskStartPending) return "Another task start is already being submitted.";
+  return null;
+}
+
+/** Why no Experiment in the open project can start now, or null when one can. */
+export function experimentStartRefusal(
+  project: ProjectSnapshot,
+  taskStartPending: boolean,
+  mutationsDisabled: boolean,
+  startRequiresSync: boolean,
+): string | null {
+  return (
+    pageStartRefusal(taskStartPending, mutationsDisabled, startRequiresSync) ??
+    (Object.values(project.experiment_control).some((control) => control.can_start)
+      ? null
+      : "No Experiment in this project can start now.")
+  );
+}
+
 export function inspectProjectExperiment(
   project: ProjectSnapshot,
   tasks: AgentTask[],
@@ -1736,20 +1898,14 @@ export function inspectProjectExperiment(
   if (!control) throw new Error(`Experiment ${node.id} has no current control projection.`);
   const relatedTasks = experimentTasks(tasks, node.id);
   const relatedWatchers = experimentWatchers(watchers, node.id);
-  const pageStartRefusal = mutationsDisabled
-    ? "Graph mutations are currently disabled."
-    : startRequiresSync
-      ? "Sync staged graph changes before starting an episode."
-      : taskStartPending
-        ? "Another task start is already being submitted."
-        : null;
+  const startRefusal = pageStartRefusal(taskStartPending, mutationsDisabled, startRequiresSync);
   return {
     project_id: project.id,
     graph_revision: project.graph.revision,
     experiment: compactExperimentNode(node),
     control: compactExperimentControl(control),
-    page_start_refusal: pageStartRefusal,
-    start_available: control.can_start && pageStartRefusal === null,
+    page_start_refusal: startRefusal,
+    start_available: control.can_start && startRefusal === null,
     tasks: relatedTasks.slice(0, 3).map((task) => ({
       task_id: task.operation_id,
       episode_id: task.episode_id ?? task.request.control_episode_id ?? null,
@@ -1775,15 +1931,20 @@ export function inspectProjectExperiment(
   };
 }
 
-type StartWebMcpExperiment = (node: GraphNode) => Promise<AgentTask>;
+type StartWebMcpExperiment = (node: GraphNode, invocationCeiling?: number) => Promise<AgentTask>;
 
+/** A confirmed voice start passes `invocation_ceiling`; it must still be the node's own. */
 export async function startProjectExperiment(
   project: ProjectSnapshot,
   input: Record<string, unknown>,
   startExperiment: StartWebMcpExperiment,
 ): Promise<Record<string, unknown>> {
   const node = exactExperiment(project, input);
-  const task = await startExperiment(node);
+  const ceiling = input.invocation_ceiling;
+  if (ceiling !== undefined && ceiling !== node.invocation_ceiling) {
+    throw new Error(`Experiment ${node.id}'s invocation ceiling changed; nothing started.`);
+  }
+  const task = await startExperiment(node, ceiling as number | undefined);
   return {
     project_id: project.id,
     experiment_id: node.id,
@@ -1796,6 +1957,35 @@ export async function startProjectExperiment(
   };
 }
 
+const EXPERIMENT_INPUT_SCHEMA: WebMcpJsonSchema = {
+  type: "object",
+  properties: {
+    experiment_id: {
+      type: "string",
+      minLength: 1,
+      description: "Exact current Experiment node id returned by an RCP read tool.",
+    },
+  },
+  required: ["experiment_id"],
+  additionalProperties: false,
+};
+
+const INSPECT_EXPERIMENT_TOOL: WebMcpToolSpec = {
+  name: "rcp_inspect_experiment",
+  description: "Read one RCP Experiment's current control, work, watchers, and report state.",
+  inputSchema: EXPERIMENT_INPUT_SCHEMA,
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+const START_EXPERIMENT_TOOL: WebMcpToolSpec = {
+  name: "rcp_start_experiment",
+  description: "Start the next bounded episode for one exact RCP Experiment.",
+  inputSchema: EXPERIMENT_INPUT_SCHEMA,
+  annotations: { readOnlyHint: false },
+  confirm: ALWAYS_CONFIRM,
+};
+
 export function projectExperimentToolDefinitions(
   project: ProjectSnapshot,
   tasks: AgentTask[],
@@ -1806,54 +1996,30 @@ export function projectExperimentToolDefinitions(
   startRequiresSync: boolean,
   startExperiment: StartWebMcpExperiment,
 ): WebMcpToolDefinition[] {
-  const inputSchema: WebMcpJsonSchema = {
-    type: "object",
-    properties: {
-      experiment_id: {
-        type: "string",
-        minLength: 1,
-        description: "Exact current Experiment node id returned by an RCP read tool.",
-      },
-    },
-    required: ["experiment_id"],
-    additionalProperties: false,
-  };
-  const inspectTool: WebMcpToolDefinition = {
-    name: "rcp_inspect_experiment",
-    description: "Read one RCP Experiment's current control, work, watchers, and report state.",
-    inputSchema,
-    annotations: { readOnlyHint: true, untrustedContentHint: true },
-    execute: (toolInput) =>
-      webMcpTextResult(
-        inspectProjectExperiment(
-          project,
-          tasks,
-          watchers,
-          toolInput,
-          taskStartPending,
-          mutationsDisabled,
-          startRequiresSync,
-        ),
-        WEBMCP_EXPERIMENT_RESULT_MAX_CHARS,
+  const inspectTool = withExecute(INSPECT_EXPERIMENT_TOOL, (toolInput) =>
+    webMcpTextResult(
+      inspectProjectExperiment(
+        project,
+        tasks,
+        watchers,
+        toolInput,
+        taskStartPending,
+        mutationsDisabled,
+        startRequiresSync,
       ),
-  };
+      WEBMCP_EXPERIMENT_RESULT_MAX_CHARS,
+    ),
+  );
   const startIsDiscoverable =
     startReturning ||
-    (!taskStartPending &&
-      !mutationsDisabled &&
-      !startRequiresSync &&
-      Object.values(project.experiment_control).some((control) => control.can_start));
+    experimentStartRefusal(project, taskStartPending, mutationsDisabled, startRequiresSync) ===
+      null;
   if (!startIsDiscoverable) return [inspectTool];
   return [
     inspectTool,
-    {
-      name: "rcp_start_experiment",
-      description: "Start the next bounded episode for one exact RCP Experiment.",
-      inputSchema,
-      annotations: { readOnlyHint: false },
-      execute: async (toolInput) =>
-        webMcpTextResult(await startProjectExperiment(project, toolInput, startExperiment)),
-    },
+    withExecute(START_EXPERIMENT_TOOL, async (toolInput) =>
+      webMcpTextResult(await startProjectExperiment(project, toolInput, startExperiment)),
+    ),
   ];
 }
 
@@ -1884,41 +2050,322 @@ export async function stopProjectExperimentEpisode(
   };
 }
 
-export function projectExperimentStopToolDefinitions(
+type StopWebMcpAutoResearch = (episodeId: string) => Promise<void>;
+
+export async function stopProjectAutoResearchEpisode(
   project: ProjectSnapshot,
+  episodes: Episode[],
+  input: Record<string, unknown>,
+  stopAutoResearch: StopWebMcpAutoResearch,
+): Promise<Record<string, unknown>> {
+  const episodeId = requiredStringInput(input, "episode_id");
+  const episode = episodes.find(
+    (candidate) => candidate.episode_id === episodeId && candidate.mode === "auto_research",
+  );
+  if (!episode) {
+    throw new Error(
+      `Episode ${episodeId} is not a current Auto-research episode; an Experiment episode needs experiment_id.`,
+    );
+  }
+  if (!episode.can_stop) {
+    throw new Error(`Auto-research episode ${episodeId} cannot be stopped now.`);
+  }
+  await stopAutoResearch(episodeId);
+  return {
+    project_id: project.id,
+    episode_id: episodeId,
+    stop_requested: true,
+    graceful: true,
+  };
+}
+
+/** Why no Experiment or Auto-research episode in the open project can stop now. */
+export function episodeStopRefusal(project: ProjectSnapshot, episodes: Episode[]): string | null {
+  const canStop =
+    Object.values(project.experiment_control).some((control) => control.can_stop) ||
+    episodes.some((episode) => episode.mode === "auto_research" && episode.can_stop);
+  return canStop ? null : "No Experiment or Auto-research episode can stop now.";
+}
+
+const STOP_EPISODE_TOOL: WebMcpToolSpec = {
+  name: "rcp_stop_episode",
+  description:
+    "Request RCP's graceful Stop fence for one exact live Experiment or Auto-research episode.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      episode_id: {
+        type: "string",
+        minLength: 1,
+        description: "Exact live episode id returned by an RCP read or start tool.",
+      },
+      experiment_id: {
+        type: "string",
+        minLength: 1,
+        description: "Exact Experiment node id for an Experiment episode; omit for Auto-research.",
+      },
+    },
+    required: ["episode_id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false },
+  confirm: NEVER_CONFIRM,
+};
+
+export function projectEpisodeStopToolDefinitions(
+  project: ProjectSnapshot,
+  episodes: Episode[],
   stopExperiment: StopWebMcpExperiment,
+  stopAutoResearch: StopWebMcpAutoResearch,
   stopPending = false,
 ): WebMcpToolDefinition[] {
-  if (
-    !stopPending &&
-    !Object.values(project.experiment_control).some((control) => control.can_stop)
-  ) {
-    return [];
-  }
+  if (!stopPending && episodeStopRefusal(project, episodes)) return [];
   return [
-    {
-      name: "rcp_stop_episode",
-      description: "Request RCP's graceful Stop fence for one exact live Experiment episode.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          experiment_id: {
-            type: "string",
-            minLength: 1,
-            description: "Exact current Experiment node id returned by rcp_inspect_experiment.",
-          },
-          episode_id: {
-            type: "string",
-            minLength: 1,
-            description: "Exact live episode id returned by rcp_inspect_experiment.",
-          },
-        },
-        required: ["experiment_id", "episode_id"],
-        additionalProperties: false,
-      },
-      annotations: { readOnlyHint: false },
-      execute: async (toolInput) =>
-        webMcpTextResult(await stopProjectExperimentEpisode(project, toolInput, stopExperiment)),
-    },
+    withExecute(STOP_EPISODE_TOOL, async (toolInput) =>
+      webMcpTextResult(
+        toolInput.experiment_id === undefined
+          ? await stopProjectAutoResearchEpisode(project, episodes, toolInput, stopAutoResearch)
+          : await stopProjectExperimentEpisode(project, toolInput, stopExperiment),
+      ),
+    ),
   ];
 }
+
+type StartWebMcpAutoResearch = (
+  invocationCeiling: number,
+  startingInstruction: string | null,
+  codeWorktree: boolean,
+) => Promise<Episode>;
+
+export async function authorizeProjectAutoResearch(
+  project: ProjectSnapshot,
+  input: Record<string, unknown>,
+  startAutoResearch: StartWebMcpAutoResearch,
+): Promise<Record<string, unknown>> {
+  const invocationCeiling = input.invocation_ceiling;
+  if (
+    typeof invocationCeiling !== "number" ||
+    !Number.isSafeInteger(invocationCeiling) ||
+    invocationCeiling < 1
+  ) {
+    throw new Error("invocation_ceiling must be an integer of at least 1.");
+  }
+  const startingInstruction = optionalStringInput(input, "starting_instruction")?.trim() ?? null;
+  const codeWorktree = input.code_worktree ?? true;
+  if (typeof codeWorktree !== "boolean") {
+    throw new Error("code_worktree must be a boolean when supplied.");
+  }
+  const episode = await startAutoResearch(invocationCeiling, startingInstruction, codeWorktree);
+  return {
+    project_id: project.id,
+    episode_id: episode.episode_id,
+    accepted: true,
+    status: episode.status,
+    live: episode.live,
+    invocation_ceiling: invocationCeiling,
+  };
+}
+
+const AUTHORIZE_AUTO_RESEARCH_TOOL: WebMcpToolSpec = {
+  name: "rcp_authorize_auto_research",
+  description:
+    "Authorize one Auto-research episode for the open project, like the visible Auto-research form. It works on its own graph branch and returns the episode id.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      invocation_ceiling: {
+        type: "integer",
+        minimum: 1,
+        description: "Operational invocation ceiling: the most orchestrator turns it may use.",
+      },
+      starting_instruction: {
+        type: "string",
+        minLength: 1,
+        description: "Optional starting instruction for the orchestrator.",
+      },
+      code_worktree: {
+        type: "boolean",
+        description: "False opts out of a code worktree; omitted or true leaves it to eligibility.",
+      },
+    },
+    required: ["invocation_ceiling"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false },
+  confirm: ALWAYS_CONFIRM,
+};
+
+/** `refusal` is the same check that disables the visible Auto-research button. */
+export function projectAutoResearchToolDefinitions(
+  project: ProjectSnapshot,
+  refusal: string | null,
+  startAutoResearch: StartWebMcpAutoResearch,
+): WebMcpToolDefinition[] {
+  if (refusal) return [];
+  return [
+    withExecute(AUTHORIZE_AUTO_RESEARCH_TOOL, async (toolInput) =>
+      webMcpTextResult(await authorizeProjectAutoResearch(project, toolInput, startAutoResearch)),
+    ),
+  ];
+}
+
+/** The page's own navigation owners; none of them changes project or graph target. */
+export type WebMcpViewOwners = {
+  openNode: (nodeId: string) => void;
+  openConversation: (transcript: ChatTranscript) => void;
+  openRunRoute: (hash: string) => void;
+  openTab: (view: AppView) => void;
+  openArtifact: (record: ProjectArtifactRecord, projectId: string) => boolean | Promise<boolean>;
+  /** False once the page has left this project or graph target. */
+  isCurrent: (projectId: string, graphTarget: GraphTargetRef | undefined) => boolean;
+};
+
+export type WebMcpViewSource = WebMcpArtifactSource & {
+  loadTranscript: (chatId: string) => Promise<ChatTranscript>;
+  loadExperimentEntries: () => Promise<ExperimentLoopIndexEntry[]>;
+};
+
+const VIEW_KINDS = ["node", "conversation", "run", "artifact", "tab"];
+
+/** Project tabs by the name the member sees, and the view each opens. */
+const PROJECT_TABS: Record<string, AppView> = {
+  overview: "overview",
+  inbox: "attention",
+  research: "scientific",
+  runs: "execution",
+  artifacts: "artifacts",
+  terminals: "terminals",
+  agents: "chats",
+  settings: "settings",
+};
+
+export async function openProjectView(
+  project: ProjectSnapshot,
+  tasks: AgentTask[],
+  episodes: Episode[],
+  input: Record<string, unknown>,
+  owners: WebMcpViewOwners,
+  source: WebMcpViewSource,
+): Promise<Record<string, unknown>> {
+  const kind = requiredStringInput(input, "kind");
+  if (!VIEW_KINDS.includes(kind)) throw new Error(`kind must be one of ${VIEW_KINDS.join(", ")}.`);
+  // Every owner runs only while the page still shows this project and graph target,
+  // checked after the reads, so a move during an await cannot address another one.
+  const assertCurrent = () => {
+    if (!owners.isCurrent(project.id, project.graph_target)) {
+      throw new Error("The page has left this project or graph target.");
+    }
+  };
+  const id = requiredStringInput(input, "id");
+  if (kind === "tab") {
+    if (!Object.hasOwn(PROJECT_TABS, id)) {
+      throw new Error(`A tab id is one of ${Object.keys(PROJECT_TABS).join(", ")}.`);
+    }
+    assertCurrent();
+    owners.openTab(PROJECT_TABS[id]);
+    return { project_id: project.id, kind, id, opened: true };
+  }
+  if (kind === "node") {
+    if (!project.graph.nodes[id]) {
+      throw new Error(`Node ${id} is not present in the current project graph.`);
+    }
+    assertCurrent();
+    owners.openNode(id);
+  } else if (kind === "conversation") {
+    const transcript = await source.loadTranscript(id);
+    if (transcript.chat_id !== id) {
+      throw new Error(`Conversation ${id} returned a mismatched transcript.`);
+    }
+    assertCurrent();
+    owners.openConversation(transcript);
+  } else if (kind === "run") {
+    const episode = (await withExactEpisode(episodes, id, source)).find(
+      (candidate) => candidate.episode_id === id,
+    );
+    if (!episode) throw new Error(`Episode ${id} is not present in the current project.`);
+    const entries = episode.mode === "auto_research" ? [] : await source.loadExperimentEntries();
+    // An Experiment run route names its own graph target; never pair it with another one.
+    const entry = entries.find((item) => item.episode?.episode_id === id);
+    // Without its board entry the route falls back to the generic Runs tab, which is
+    // not the run that was asked for.
+    if (episode.mode !== "auto_research" && !entry) {
+      throw new Error(`Episode ${id} has no exact run view; open the Runs tab instead.`);
+    }
+    if (entry && !sameGraphTarget(entry.graph_target, project.graph_target)) {
+      throw new Error(`Episode ${id} runs on another graph target; open that graph first.`);
+    }
+    assertCurrent();
+    owners.openRunRoute(
+      graphTargetUrl(episodeRunHash(project.id, id, episode, entries), project.graph_target),
+    );
+  } else {
+    await openProjectArtifact(
+      project,
+      tasks,
+      episodes,
+      { viewer_id: id },
+      (record, projectId) => {
+        assertCurrent();
+        return owners.openArtifact(record, projectId);
+      },
+      source,
+    );
+  }
+  return { project_id: project.id, kind, id, opened: true };
+}
+
+const OPEN_VIEW_TOOL: WebMcpToolSpec = {
+  name: "rcp_open_view",
+  description:
+    "Show one exact node, conversation, run, or artifact of the open project in this page, or one of its tabs, such as Settings. It never changes project or graph branch.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      kind: {
+        type: "string",
+        enum: VIEW_KINDS,
+        description: "What to show.",
+      },
+      id: {
+        type: "string",
+        minLength: 1,
+        description: `Exact node id, chat_id, episode id, or artifact viewer_id; for a tab, one of ${Object.keys(PROJECT_TABS).join(", ")}.`,
+      },
+    },
+    required: ["kind", "id"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: true, untrustedContentHint: true },
+  confirm: NEVER_CONFIRM,
+};
+
+export function projectViewToolDefinitions(
+  project: ProjectSnapshot,
+  tasks: AgentTask[],
+  episodes: Episode[],
+  owners: WebMcpViewOwners,
+  source: WebMcpViewSource,
+): WebMcpToolDefinition[] {
+  return [
+    withExecute(OPEN_VIEW_TOOL, async (toolInput) =>
+      webMcpTextResult(await openProjectView(project, tasks, episodes, toolInput, owners, source)),
+    ),
+  ];
+}
+
+/** Every tool of the open-project surface, in catalog order. */
+export const PROJECT_TOOLS: readonly WebMcpToolSpec[] = [
+  PROJECT_OVERVIEW_TOOL,
+  PROVIDER_LOGINS_TOOL,
+  INSPECT_NODE_TOOL,
+  OPEN_VIEW_TOOL,
+  LIST_ARTIFACTS_TOOL,
+  OPEN_ARTIFACT_TOOL,
+  LIST_CONVERSATIONS_TOOL,
+  INSPECT_CONVERSATION_TOOL,
+  SEND_CONVERSATION_TOOL,
+  INSPECT_EXPERIMENT_TOOL,
+  START_EXPERIMENT_TOOL,
+  AUTHORIZE_AUTO_RESEARCH_TOOL,
+  STOP_EPISODE_TOOL,
+];

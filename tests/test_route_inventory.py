@@ -63,7 +63,11 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/service-connections"),
     (("DELETE",), "/api/service-connections/{connection_id}"),
     (("PUT",), "/api/service-connections/selection"),
+    (("PUT",), "/api/service-connections/{connection_id}/purposes"),
     (("POST",), "/api/service-connections/{connection_id}/transcribe"),
+    (("GET",), "/api/voice/settings"),
+    (("PUT",), "/api/voice/settings"),
+    (("POST",), "/api/voice/sessions"),
     (("POST",), "/api/projects"),
     (("POST",), "/api/project-setup/preflight"),
     (("POST",), "/api/project-setup/create"),
@@ -259,13 +263,13 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     routes = list(_walk_routes(route_app.routes))
     entries = tuple(_route_entry(route) for route in routes)
 
-    assert len(entries) == 200
-    assert len(_FROZEN_ROUTE_INVENTORY) == 200
+    assert len(entries) == 204
+    assert len(_FROZEN_ROUTE_INVENTORY) == 204
     # Registration order is not part of the route contract; membership is.
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
     # The count makes the application/generated split explicit. FastAPI's
     # built-in routes are ordinary Starlette Route objects, while application
     # routes are APIRoute objects (including those nested in the router).
-    assert sum(isinstance(route, APIRoute) for route in routes) == 196
+    assert sum(isinstance(route, APIRoute) for route in routes) == 200
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

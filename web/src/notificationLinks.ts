@@ -57,16 +57,23 @@ export function episodeNotificationHash(
   episode: Episode | null,
   experimentEntries: ExperimentLoopIndexEntry[],
 ): string {
+  return episodeRunHash(link.projectId, link.itemId, episode, experimentEntries);
+}
+
+/** The exact run route for one episode id: an Auto-research route, or the Experiment's board entry. */
+export function episodeRunHash(
+  projectId: string,
+  episodeId: string,
+  episode: Episode | null,
+  experimentEntries: ExperimentLoopIndexEntry[],
+): string {
   if (episode?.mode === "auto_research") {
-    return experimentBoardHref(
-      link.projectId,
-      `${AUTO_RESEARCH_ROUTE_PREFIX}${episode.episode_id}`,
-    );
+    return experimentBoardHref(projectId, `${AUTO_RESEARCH_ROUTE_PREFIX}${episode.episode_id}`);
   }
-  const entry = experimentEntries.find((item) => item.episode?.episode_id === link.itemId);
+  const entry = experimentEntries.find((item) => item.episode?.episode_id === episodeId);
   return entry
-    ? experimentBoardHref(link.projectId, experimentBoardRouteToken(entry))
-    : `#/projects/${encodeURIComponent(link.projectId)}?view=runs`;
+    ? experimentBoardHref(projectId, experimentBoardRouteToken(entry))
+    : `#/projects/${encodeURIComponent(projectId)}?view=runs`;
 }
 
 // Read once at load, like a pairing code, so a sign-in in between keeps it.

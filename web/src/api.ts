@@ -33,6 +33,7 @@ import type {
   ServerStatus,
   ServiceConnection,
   ServiceConnectionCreateRequest,
+  ServiceConnectionPurpose,
   ServiceConnections,
   TranscriptionResult,
   SpaceMachine,
@@ -46,15 +47,19 @@ import type {
   TeamDevicePairing,
   TeamDevicePairingStatus,
   TeamSession,
+  VoiceSessionResponse,
+  VoiceSettings,
 } from "./types";
 
 type MutationFailureHandler = (path: string) => Promise<void>;
 type IdentityNameRequiredHandler = () => Promise<boolean>;
 type TransportFailureHandler = () => void;
+type AccessLossHandler = () => void;
 
 let mutationFailureHandler: MutationFailureHandler | null = null;
 let transportFailureHandler: TransportFailureHandler | null = null;
 let identityNameRequiredHandler: IdentityNameRequiredHandler | null = null;
+let accessLossHandler: AccessLossHandler | null = null;
 let pinnedInstanceId: string | null = null;
 
 export const TEAM_SHELL_PROTOCOL_HEADER = "RCP-Team-Shell-Protocol";
@@ -102,6 +107,7 @@ export async function api<T>(
     throw error;
   }
   if (!response.ok) {
+    if (!mutation && (response.status === 401 || response.status === 403)) accessLossHandler?.();
     const body = await readErrorBody(response);
     if (
       mutation &&
@@ -150,6 +156,11 @@ export function isMutationRequest(init?: RequestInit): boolean {
 
 export function registerMutationFailureHandler(handler: MutationFailureHandler | null): void {
   mutationFailureHandler = handler;
+}
+
+/** Called whenever a read is refused with 401 or 403: the page lost its identity or access. */
+export function registerAccessLossHandler(handler: AccessLossHandler | null): void {
+  accessLossHandler = handler;
 }
 
 /** Called, without waiting, whenever a request never reached the backend. */
@@ -702,6 +713,34 @@ export function selectDictationService(dictation: string): Promise<unknown> {
     method: "PUT",
     body: JSON.stringify({ dictation }),
   });
+}
+
+/** Add or remove purposes; RCP checks each newly added one with the stored key. */
+export function setServiceConnectionPurposes(
+  connectionId: string,
+  purposes: ServiceConnectionPurpose[],
+): Promise<ServiceConnection> {
+  return api(`/api/service-connections/${encodeURIComponent(connectionId)}/purposes`, {
+    method: "PUT",
+    body: JSON.stringify({ purposes }),
+  });
+}
+
+export function loadVoiceSettings(): Promise<VoiceSettings> {
+  return api("/api/voice/settings");
+}
+
+/** Send only the fields that changed; the backend keeps the rest. */
+export function saveVoiceSettings(settings: Partial<VoiceSettings>): Promise<VoiceSettings> {
+  return api("/api/voice/settings", { method: "PUT", body: JSON.stringify(settings) });
+}
+
+/** Exchange the page's WebRTC offer; the backend holds the key and keeps no session. */
+export function createVoiceSession(
+  body: { sdp_offer: string; tools: unknown[] },
+  signal?: AbortSignal,
+): Promise<VoiceSessionResponse> {
+  return api("/api/voice/sessions", { method: "POST", body: JSON.stringify(body), signal });
 }
 
 /** Upload one recorded segment as raw audio; the chosen MIME type is the request's type. */

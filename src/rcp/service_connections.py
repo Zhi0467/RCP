@@ -7,12 +7,40 @@ import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from rcp.agents.provider_environment import _write_private
 from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AppStore
 
 _MEMBER_LOCKS = KeyedLocks()
+
+
+class PurposesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    # Empty is allowed: turning off a connection's last use keeps its key, unused.
+    purposes: list[Literal["transcription", "voice"]] = Field(max_length=2)
+
+    @field_validator("purposes")
+    @classmethod
+    def unique_purposes(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("Duplicate purpose")
+        return value
+
+
+class VoiceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    delegation_model: str = Field(
+        default="gpt-6-luna", min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$"
+    )
+    confirm: Literal["tap", "none"] = "tap"
+
+
+def connection_purposes(connection: dict) -> list[str]:
+    return connection.get("purposes", ["transcription"])
 
 
 class ConnectionError(Exception):
@@ -59,24 +87,72 @@ class ServiceConnections:
     def _connection(self, connection_id: str) -> dict:
         path = self.root / "connections" / _component(connection_id) / "connection.json"
         try:
-            return json.loads(path.read_text())
+            connection = json.loads(path.read_text())
+            return {**connection, "purposes": connection_purposes(connection)}
         except FileNotFoundError:
             raise ConnectionError("connection_not_found", 404) from None
 
-    def _selection(self) -> str:
+    def _settings(self) -> dict:
         try:
-            return json.loads((self.root / "settings.json").read_text())["dictation"]
+            return json.loads((self.root / "settings.json").read_text())
         except FileNotFoundError:
-            return "system"
+            return {}
+
+    def _selection(self) -> str:
+        return self._settings().get("dictation", "system")
+
+    def _connections(self) -> list[dict]:
+        return [
+            self._connection(p.parent.name)
+            for p in sorted((self.root / "connections").glob("*/connection.json"))
+        ]
+
+    def voice_settings(self, settings: VoiceSettings | None = None) -> dict:
+        with self.locked():
+            if settings is not None:
+                # Each writer sends only the field it changed; the others keep their value.
+                saved = self._settings().get("voice", {})
+                self._write_setting("voice", {**saved, **settings.model_dump(exclude_unset=True)})
+            return VoiceSettings.model_validate(self._settings().get("voice", {})).model_dump()
+
+    def voice_credentials(self) -> tuple[dict, str]:
+        with self.locked():
+            for connection in self._connections():
+                if "voice" in connection["purposes"]:
+                    key = (self.root / "connections" / connection["id"] / "key").read_text()
+                    return connection, key
+            raise ConnectionError("voice_not_connected", 409)
+
+    def _publish(self, connection: dict) -> None:
+        # Revoke first so interrupted publication cannot leave two voice payers.
+        if "voice" in connection_purposes(connection):
+            for other in self._connections():
+                if other["id"] != connection["id"] and "voice" in other["purposes"]:
+                    other["purposes"].remove("voice")
+                    self._write_connection(other)
+        if (
+            "transcription" not in connection_purposes(connection)
+            and self._selection() == connection["id"]
+        ):
+            self._write_selection("system")
+        self._write_connection(connection)
+
+    def _write_connection(self, connection: dict) -> None:
+        path = self.root / "connections" / _component(connection["id"]) / "connection.json"
+        _write_private(path, json.dumps(connection))
+
+    def update_purposes(self, previous: dict, checked: dict) -> dict:
+        with self.locked():
+            if self._connection(previous["id"]) != previous:
+                raise ConnectionError("connection_changed", 409)
+            self._publish(checked)
+            return checked
 
     def summary(self) -> dict:
         with self.locked():
-            connections = [
-                json.loads(p.read_text())
-                for p in sorted((self.root / "connections").glob("*/connection.json"))
-            ]
+            connections = self._connections()
             selection = self._selection()
-            if selection not in {c["id"] for c in connections}:
+            if selection not in {c["id"] for c in connections if "transcription" in c["purposes"]}:
                 selection = "system"
             return {"dictation": selection, "connections": connections}
 
@@ -92,21 +168,26 @@ class ServiceConnections:
             self._mkdir(path)
             _write_private(path / "key", key)
             # Publish the metadata last: incomplete writes are not usable connections.
-            _write_private(path / "connection.json", json.dumps(connection))
+            self._publish(connection)
 
     def select(self, connection_id: str) -> dict:
         with self.locked():
-            if connection_id != "system":
-                self._connection(connection_id)
+            if (
+                connection_id != "system"
+                and "transcription" not in self._connection(connection_id)["purposes"]
+            ):
+                raise ConnectionError("transcription_not_enabled", 409)
             self._write_selection(connection_id)
             return {"dictation": connection_id}
 
     def _write_selection(self, connection_id: str) -> None:
+        self._write_setting("dictation", connection_id)
+
+    def _write_setting(self, name: str, value: object) -> None:
         self._mkdir(self.root)
-        path = self.root / "settings.json"
-        settings = json.loads(path.read_text()) if path.exists() else {}
-        settings["dictation"] = connection_id
-        _write_private(path, json.dumps(settings))
+        settings = self._settings()
+        settings[name] = value
+        _write_private(self.root / "settings.json", json.dumps(settings))
 
     def disconnect(self, connection_id: str) -> None:
         with self.locked():

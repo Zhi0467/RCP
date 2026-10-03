@@ -1,5 +1,7 @@
 /** Pure composer rules for dictation through macOS or a member's service connection. */
 
+import type { ServiceConnection, ServiceConnectionPurpose } from "./types";
+
 /** The draft range one dictation session may rewrite. */
 export interface DictationSpan {
   sessionId: string;
@@ -50,4 +52,23 @@ export function serviceConnectionFailure(failure: unknown): string | null {
   if (typeof code !== "string") return null;
   const reported = typeof message === "string" && message !== code ? message : "";
   return [SERVICE_FAILURES[code], reported].filter(Boolean).join(" ") || code;
+}
+
+/**
+ * The purposes update for a "Runs on" choice of the standby voice agent: a
+ * connection id adds `voice` to it (the backend moves it off any other), and
+ * `"off"` removes `voice` from the connection that has it. Null means no change.
+ */
+export function voiceConnectionUpdate(
+  connections: ServiceConnection[],
+  choice: string,
+): { id: string; purposes: ServiceConnectionPurpose[] } | null {
+  if (choice === "off") {
+    const current = connections.find((connection) => connection.purposes.includes("voice"));
+    if (!current) return null;
+    return { id: current.id, purposes: current.purposes.filter((item) => item !== "voice") };
+  }
+  const target = connections.find((connection) => connection.id === choice);
+  if (!target || target.purposes.includes("voice")) return null;
+  return { id: target.id, purposes: [...target.purposes, "voice"] };
 }

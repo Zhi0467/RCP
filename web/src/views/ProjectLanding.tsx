@@ -1,7 +1,7 @@
 import { ProviderLoginNotice } from "../components/ProviderLoginNotice";
 import { loadProviderLogins } from "../api";
 import { LogOut, Mail, MoreHorizontal, Server, Settings, Trash2, WifiOff } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { SpaceRuns } from "../components/SpaceRuns";
 import type { AppearancePickerProps, TextScaleControl } from "../components/AppearancePicker";
 import type { ArchiveEpisodeAction } from "../components/EpisodeRunControls";
@@ -42,6 +42,7 @@ interface Props extends AppearancePickerProps {
   onRequestIdentityName: () => Promise<boolean> | void;
   onExitTeamSpace?: () => void;
   onOpenSpaceSettings?: () => void;
+  voiceControl?: ReactNode;
   textScale?: TextScaleControl;
 }
 
@@ -201,6 +202,7 @@ export function ProjectLanding({
   onRequestIdentityName,
   onExitTeamSpace,
   onOpenSpaceSettings,
+  voiceControl,
   textScale,
   themeChoice,
   colorModeChoice,
@@ -307,6 +309,7 @@ export function ProjectLanding({
           onActivate={onActivateProjectTab}
           onClose={onCloseProjectTab}
         />
+        {voiceControl}
         {onOpenSpaceSettings && (
           <button
             className="landing-space-settings"

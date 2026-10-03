@@ -4,15 +4,31 @@ import {
   connectServiceConnection,
   disconnectServiceConnection,
   loadServiceConnections,
+  loadVoiceSettings,
+  saveVoiceSettings,
   selectDictationService,
+  setServiceConnectionPurposes,
 } from "../api";
 import { isDesktopRuntime } from "../desktopRuntime";
-import { serviceConnectionFailure } from "../dictation";
+import { serviceConnectionFailure, voiceConnectionUpdate } from "../dictation";
 import { errorMessage } from "../errors";
-import type { ServiceConnectionKind, ServiceConnectionPreset, ServiceConnections } from "../types";
+import type {
+  ServiceConnectionKind,
+  ServiceConnectionPreset,
+  ServiceConnectionPurpose,
+  ServiceConnections,
+  VoiceSettings,
+} from "../types";
 import { formatServerTimestamp } from "./ServerSettings";
 
 type ServiceChoice = "openai" | "groq" | "gemini" | "custom";
+
+/** Only an OpenAI key can also run the standby voice agent. */
+const OPENAI_USES: Record<string, { label: string; purposes: ServiceConnectionPurpose[] }> = {
+  dictation: { label: "Dictation", purposes: ["transcription"] },
+  voice: { label: "Standby voice agent", purposes: ["voice"] },
+  both: { label: "Dictation and standby voice agent", purposes: ["transcription", "voice"] },
+};
 
 const SERVICES: Record<
   ServiceChoice,
@@ -59,7 +75,8 @@ function failureText(failure: unknown): string {
 }
 
 /**
- * Settings card: the signed-in member's own dictation service and connections.
+ * Settings card: the signed-in member's own dictation service, standby voice
+ * agent connection, and service connections.
  *
  * Unlike the rest of Space settings this belongs to one person. Keys go to the
  * RCP backend once and are never read back.
@@ -70,12 +87,21 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [voice, setVoice] = useState<VoiceSettings | null>(null);
+  const [voiceModel, setVoiceModel] = useState("");
   // A reload never clears an error: a failed action stays reported beside the fresh state.
   const refresh = useCallback(async () => {
-    try {
-      setSettings(await loadServiceConnections());
-    } catch (failure) {
-      setError(failureText(failure));
+    const [connections, voiceSettings] = await Promise.allSettled([
+      loadServiceConnections(),
+      loadVoiceSettings(),
+    ]);
+    if (connections.status === "fulfilled") setSettings(connections.value);
+    else setError(failureText(connections.reason));
+    if (voiceSettings.status === "fulfilled") {
+      setVoice(voiceSettings.value);
+      setVoiceModel(voiceSettings.value.delegation_model);
+    } else if (connections.status === "fulfilled") {
+      setError(failureText(voiceSettings.reason));
     }
   }, []);
   useEffect(() => {
@@ -96,22 +122,22 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
   }
 
   const disabled = writesDisabled || busy !== null;
+  const voiceConnection =
+    settings?.connections.find((connection) => connection.purposes.includes("voice")) ?? null;
   return (
     <section className="settings-section transcription-settings">
       <header>
         <span>
           <AudioLines size={16} />
         </span>
-        <h2>Transcription</h2>
+        <h2>Dictation and voice</h2>
         <span className="transcription-owner">Only you</span>
       </header>
-      <p className="provider-login-intro">
-        Your own dictation service and keys. They are not shared with the space: each member
-        connects their own and pays for their own use.
-      </p>
+      <p className="provider-login-intro">Your own services and keys, not shared.</p>
       {settings === null && !error ? <p className="provider-login-intro">Loading…</p> : null}
       {settings ? (
         <>
+          <h3 className="transcription-group">Dictation</h3>
           <label className="transcription-picker">
             <span>Dictate with</span>
             <select
@@ -125,11 +151,13 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               <option value="system" disabled={!desktop}>
                 {desktop ? "macOS dictation" : "macOS dictation (desktop app only)"}
               </option>
-              {settings.connections.map((connection) => (
-                <option key={connection.id} value={connection.id}>
-                  {connection.label} · {connection.model}
-                </option>
-              ))}
+              {settings.connections
+                .filter((connection) => connection.purposes.includes("transcription"))
+                .map((connection) => (
+                  <option key={connection.id} value={connection.id}>
+                    {connection.label} · {connection.model}
+                  </option>
+                ))}
             </select>
           </label>
           {!desktop && settings.dictation === "system" ? (
@@ -137,6 +165,67 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
               macOS dictation works only in the desktop app. Choose a connection to dictate here.
             </p>
           ) : null}
+          <h3 className="transcription-group">Standby voice agent</h3>
+          <label className="transcription-picker">
+            <span>Runs on</span>
+            <select
+              value={voiceConnection?.id ?? "off"}
+              disabled={disabled}
+              onChange={(event) => {
+                const update = voiceConnectionUpdate(settings.connections, event.target.value);
+                if (update)
+                  void run("voice", () => setServiceConnectionPurposes(update.id, update.purposes));
+              }}
+            >
+              <option value="off">Off</option>
+              {/* The agent uses the account, not the connection's transcription model. */}
+              {settings.connections
+                .filter((connection) => connection.preset === "openai")
+                .map((connection, _index, accounts) => (
+                  <option key={connection.id} value={connection.id}>
+                    {accounts.length > 1
+                      ? `${connection.label} account, verified ${formatServerTimestamp(connection.verified_at)}`
+                      : `${connection.label} account`}
+                  </option>
+                ))}
+            </select>
+          </label>
+          {voice ? (
+            <form
+              className="transcription-picker"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const model = voiceModel.trim();
+                if (model)
+                  void run("voice-model", () => saveVoiceSettings({ delegation_model: model }));
+              }}
+            >
+              <span>Delegation model</span>
+              <div className="provider-login-token">
+                <input
+                  type="text"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={voiceModel}
+                  disabled={disabled}
+                  onChange={(event) => setVoiceModel(event.target.value)}
+                />
+                <button
+                  className="button secondary compact"
+                  type="submit"
+                  disabled={
+                    disabled || !voiceModel.trim() || voiceModel.trim() === voice.delegation_model
+                  }
+                >
+                  Save
+                </button>
+              </div>
+              <p className="provider-login-detail">
+                The standby voice agent is billed to that OpenAI account, about $0.05/min.
+              </p>
+            </form>
+          ) : null}
+          <h3 className="transcription-group">Your services</h3>
           <div className="provider-login-list">
             {settings.connections.map((connection) => (
               <article key={connection.id} className="provider-login-account">
@@ -144,7 +233,10 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                   <strong>{connection.label}</strong>
                   <span>{connection.model}</span>
                   {settings.dictation === connection.id ? (
-                    <span className="provider-path-state ready">In use</span>
+                    <span className="provider-path-state ready">Dictation</span>
+                  ) : null}
+                  {connection.purposes.includes("voice") ? (
+                    <span className="provider-path-state ready">Standby voice agent</span>
                   ) : null}
                 </header>
                 {connection.preset === "custom" && connection.base_url ? (
@@ -153,11 +245,10 @@ export function TranscriptionSettings({ writesDisabled = false }: { writesDisabl
                   </p>
                 ) : null}
                 <p className="provider-login-detail">
-                  Accepts {connection.formats.join(", ")}. Last verified{" "}
+                  Verified{" "}
                   <time dateTime={connection.verified_at ?? undefined}>
                     {formatServerTimestamp(connection.verified_at)}
                   </time>
-                  .
                 </p>
                 <div className="provider-login-actions">
                   <button
@@ -221,12 +312,17 @@ function ConnectServiceDialog({
   const [choice, setChoice] = useState<ServiceChoice>("openai");
   const [key, setKey] = useState("");
   const [model, setModel] = useState(SERVICES.openai.model);
+  const [use, setUse] = useState("dictation");
   const [baseUrl, setBaseUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const service = SERVICES[choice];
   const custom = choice === "custom";
-  const ready = Boolean(model.trim()) && (custom ? Boolean(baseUrl.trim()) : Boolean(key.trim()));
+  const purposes = choice === "openai" ? OPENAI_USES[use].purposes : ["transcription" as const];
+  const dictation = purposes.includes("transcription");
+  const ready =
+    (!dictation || Boolean(model.trim())) &&
+    (custom ? Boolean(baseUrl.trim()) : Boolean(key.trim()));
   const destination = custom ? "the server at this address" : service.label;
   const close = () => {
     if (!busy) onClose();
@@ -241,8 +337,10 @@ function ConnectServiceDialog({
         kind: service.kind,
         preset: service.preset,
         base_url: custom ? baseUrl.trim() : null,
-        model: model.trim(),
+        // The transcription model is unused without dictation; send the preset's own.
+        model: dictation ? model.trim() : service.model,
         key: key.trim(),
+        purposes,
       });
       setKey("");
       await onConnected();
@@ -274,7 +372,7 @@ function ConnectServiceDialog({
         }}
       >
         <header>
-          <h2 id={titleId}>Connect a transcription service</h2>
+          <h2 id={titleId}>Connect a service</h2>
         </header>
         <div className="transcription-dialog-body">
           <label>
@@ -297,6 +395,18 @@ function ConnectServiceDialog({
               ))}
             </select>
           </label>
+          {choice === "openai" ? (
+            <label>
+              Use for
+              <select value={use} disabled={busy} onChange={(event) => setUse(event.target.value)}>
+                {Object.entries(OPENAI_USES).map(([value, option]) => (
+                  <option key={value} value={value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           {custom ? (
             <label>
               Base URL
@@ -328,23 +438,37 @@ function ConnectServiceDialog({
               </a>
             </p>
           ) : null}
-          <label>
-            Model
-            <input
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={model}
-              disabled={busy}
-              onChange={(event) => setModel(event.target.value)}
-            />
-          </label>
+          {dictation ? (
+            <label>
+              Model
+              <input
+                type="text"
+                autoComplete="off"
+                spellCheck={false}
+                value={model}
+                disabled={busy}
+                onChange={(event) => setModel(event.target.value)}
+              />
+            </label>
+          ) : null}
+          {dictation ? (
+            <p>
+              Dictation audio goes from your device to RCP, which sends it to {destination}. RCP
+              keeps the key on its server, never shows it again, and does not store audio. What{" "}
+              {destination} keeps is set by your account there.
+            </p>
+          ) : null}
+          {purposes.includes("voice") ? (
+            <p>
+              Standby voice agent audio goes directly between this page and OpenAI; RCP only starts
+              each session with the key it keeps on its server.
+            </p>
+          ) : null}
           <p>
-            Dictation audio goes from your device to RCP, which sends it to {destination}. RCP keeps
-            the key on its server, never shows it again, and does not store audio. What{" "}
-            {destination} keeps is set by your account there.
+            {dictation
+              ? "RCP checks the connection with two short test clips before saving it."
+              : "RCP checks the key with OpenAI before saving it."}
           </p>
-          <p>RCP checks the connection with two short test clips before saving it.</p>
         </div>
         {error ? (
           <div className="transcription-dialog-error" role="alert">

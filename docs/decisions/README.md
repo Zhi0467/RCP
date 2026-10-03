@@ -1,5 +1,10 @@
 # Active decision records
 
+- [Agents in a member's page act as that member](2026-10-02-agents-in-a-member-page-act-as-that-member.md)
+  records why a WebMCP or voice agent running in a member's own page acts as
+  that member, why it may send Work and start episodes, why protected judgment
+  stays a tap, and what that gives up.
+
 - [Transcription keys belong to members](2026-10-02-transcription-keys-belong-to-members.md)
   records why each member connects their own transcription keys, why the
   backend stores them and calls the service, why they are not provider
