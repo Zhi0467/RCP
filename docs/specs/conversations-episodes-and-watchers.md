@@ -296,8 +296,14 @@ permission. Refused and unknown input is not silently sent as a subsequent turn.
 The [provider lifecycle](providers-and-containment.md#live-human-steering) owns
 acknowledgment, completion races, and disconnect handling.
 
-The desktop composer may turn one bounded macOS dictation segment into editable
-text. It never sends automatically or retains audio. Temporary input attachments
+The composer may turn one bounded dictation segment into editable text, through
+macOS dictation in the desktop app or through the member's own transcription
+service (see [dictation](api-web-and-desktop-projections.md#dictation)). It never
+sends automatically, and RCP never stores the audio. SpeechAnalyzer recognizes
+speech on the Mac; the older Apple recognizer, used before macOS 26, for
+unsupported languages, and in builds without SpeechAnalyzer, may send audio to
+Apple. A network service receives the audio under its own retention policy.
+Audio files remain refused as attachments. Temporary input attachments
 are claimed atomically for one nonblank Discuss or Work message, bounded by the
 current file allow-list and size/count limits, staged immutably on the execution
 host, and reused exactly by task recovery. A partial or unprovable transfer

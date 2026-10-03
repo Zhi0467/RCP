@@ -8,9 +8,13 @@ SpeechAnalyzer, finish-or-cancel stop, engine reporting, `build.rs` with
 `swiftc`, older-SDK skip, CI Xcode selection and weak-link check) and slice 1
 (backend: storage, both adapters, connect check with recorded clips, routes,
 upload and outbound bounds, backup and transfer exclusion, member removal).
-Remaining: slice 2 (web), the spec updates, and the real-hardware checks below.
-Until slice 2 lands, the web client does not pass `finish`, so native Stop
-fails on this branch. The standby voice agent (part 2) is a separate
+Slice 2 (web: Transcription card, microphone owner, `MediaRecorder` path,
+composer states, native event fields) and the spec updates landed the same day.
+On 2026-10-02 a throwaway server drove the journey against a local
+OpenAI-compatible stand-in: a LAN `http` URL was refused, Connect through the
+card and the API checked both clips and saved the formats, both formats
+transcribed, a wrong type got 415, no response carried the key, and the stored
+files were private. Remaining: the real-hardware checks below. The standby voice agent (part 2) is a separate
 handoff and PR; it reuses this PR's service connections, member settings file,
 and microphone owner.
 
