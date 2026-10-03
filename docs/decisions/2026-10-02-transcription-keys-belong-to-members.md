@@ -1,7 +1,7 @@
 # Transcription keys belong to members
 
-Date: 2026-10-02. Status: active. The work is planned in the
-[model-backed dictation handoff](../handoffs/handoff-2026-10-02-model-backed-dictation.md).
+Date: 2026-10-02. Status: active. Its real-hardware checks are among
+[the open live checks](../handoffs/README.md).
 
 ## Decision
 

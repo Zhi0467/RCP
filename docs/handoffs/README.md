@@ -3,9 +3,6 @@
 - [Standby voice agent](handoff-2026-10-02-voice-agent.md)
   — designed 2026-10-02 (issue #229, part 2); all three slices and the specs
   implemented on its PR; the live probe and hardware checks remain.
-- [Model-backed dictation](handoff-2026-10-02-model-backed-dictation.md)
-  — implemented 2026-10-02 on its PR; real-hardware and real-service checks
-  remain.
 - [Agents ask the human through an `ask` verb](handoff-2026-10-01-ask-verb.md)
   — design settled 2026-10-01; implementation in progress on its PR.
 - [Live artifacts and the docked viewer](handoff-2026-09-29-live-artifacts.md)
@@ -73,3 +70,10 @@ stands in for it. Run one on disposable data, then delete its line here.
   while it runs.
 - Update notices: a `publish-desktop.yml` rerun after a failed upload; in the
   prebuilt app, the Download button, quit and reopen, and a team connection.
+- Model-backed dictation: dictate through a connected OpenAI or Groq key from
+  the desktop app in a personal space, and from the team browser app and phone
+  web app, each member with their own key; dictate through a Gemini connection
+  from at least one client; on macOS 26 or later, macOS dictation runs
+  on-device through SpeechAnalyzer, including the first-use model download;
+  `RCP Candidate.app` connects a service (proving the bundled check clips ship)
+  and dictates on macOS 13, 14, or 15 through the old recognizer.
