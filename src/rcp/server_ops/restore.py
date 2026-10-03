@@ -45,6 +45,9 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Graph consolidation receipts and schedules, fresh and upgraded in place.
+        "a2c1933a451226b36b33629c99bb10572c7acc1f5e2ef5db18ca6e8d015dcfaf",
+        "80f72d4c36107220c0e6a86945c037b52ee6040039abb1da8706fe35ead470af",
         # Durable human-answer chat projection revisions, fresh and upgraded in place.
         "05024a3725beb284ccb5cf2b05b5e71d075db571ed1b38fcf427e4865e557cf7",
         "f2c94ee3b39dab4cc48086634075ccbe10635afe1043399173cbebf8260e6bfa",

@@ -60,6 +60,7 @@ class RestoreDetachmentStoreMixin:
                 diagnostic=recorded_detail,
                 now=now,
             )
+            self.detach_consolidation_for_restore(connection, diagnostic=recorded_detail, now=now)
             connection.execute("DELETE FROM notification_devices")
             connection.execute("DELETE FROM notification_phone_pairings")
             connection.execute("DELETE FROM notification_graph_markers")

@@ -19,6 +19,7 @@ NOTIFICATION_DEFAULTS = {
     "blocker": True,
     "episode_needs_action": True,
     "episode_finished": False,
+    "consolidation": True,
 }
 
 
@@ -74,6 +75,72 @@ def migrate_question_notifications(connection: sqlite3.Connection) -> None:
 
 
 class NotificationStoreMixin:
+    def unobserved_consolidation_notifications(
+        self, project_id: str, expiry_cutoff: str
+    ) -> list[tuple[str, str]]:
+        with self.connection() as connection:
+            runs = connection.execute(
+                "SELECT run_id FROM consolidation_runs WHERE project_id=? "
+                "AND outcome_settled_at IS NOT NULL AND state='open' "
+                "AND notification_observed_at IS NULL",
+                (project_id,),
+            ).fetchall()
+            schedules = connection.execute(
+                "SELECT authorization_id FROM consolidation_schedules WHERE project_id=? "
+                "AND expires_at<=? AND notification_observed_at IS NULL",
+                (project_id, expiry_cutoff),
+            ).fetchall()
+            return [("run", row[0]) for row in runs] + [
+                ("authorization", row[0]) for row in schedules
+            ]
+
+    def observe_consolidation_notification(self, event: str, notification: dict[str, Any]) -> bool:
+        """Mark and enqueue together; outbox expiry never recreates an event."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if event == "run":
+                changed = connection.execute(
+                    "UPDATE consolidation_runs SET notification_observed_at=? "
+                    "WHERE project_id=? AND run_id=? AND state='open' "
+                    "AND outcome_settled_at IS NOT NULL AND notification_observed_at IS NULL",
+                    (self.now(), notification["project_id"], notification["item_id"]),
+                ).rowcount
+            elif event == "authorization":
+                changed = connection.execute(
+                    "UPDATE consolidation_schedules SET notification_observed_at=? "
+                    "WHERE project_id=? AND authorization_id=? "
+                    "AND notification_observed_at IS NULL",
+                    (self.now(), notification["project_id"], notification["item_id"]),
+                ).rowcount
+            else:
+                raise ValueError("invalid consolidation notification event")
+            if changed:
+                self.enqueue_notification(connection, **notification)
+            return bool(changed)
+
+    def consolidation_notification_pending(self, project_id: str, item_id: str, event: str) -> bool:
+        with self.connection() as connection:
+            return self._consolidation_notification_pending(connection, project_id, item_id, event)
+
+    @staticmethod
+    def _consolidation_notification_pending(
+        connection: sqlite3.Connection, project_id: str, item_id: str, event: str
+    ) -> bool:
+        if event == "run":
+            row = connection.execute(
+                "SELECT 1 FROM consolidation_runs WHERE project_id=? AND run_id=? "
+                "AND state='open' AND outcome_settled_at IS NOT NULL",
+                (project_id, item_id),
+            ).fetchone()
+        elif event == "authorization":
+            row = connection.execute(
+                "SELECT 1 FROM consolidation_schedules WHERE project_id=? AND authorization_id=?",
+                (project_id, item_id),
+            ).fetchone()
+        else:
+            return False
+        return row is not None
+
     def unobserved_notification_questions(self, project_id: str) -> list[str]:
         with self.connection() as connection:
             return [
@@ -580,7 +647,12 @@ class NotificationStoreMixin:
         ).fetchone()
         if row is None or (row["last_status"] == "posted" and not allow_posted):
             return False
-        if not self._notification_allowed(connection, device, row["project_id"], row["kind"]):
+        if not self._notification_allowed(connection, device, row["project_id"], row["kind"]) or (
+            row["kind"] == "consolidation"
+            and not self._consolidation_notification_pending(
+                connection, row["project_id"], row["item_id"], row["observed_blocked_reason"]
+            )
+        ):
             connection.execute(
                 "DELETE FROM notification_outbox WHERE device_id=? AND notification_id=?",
                 (device_id, notification_id),

@@ -84,6 +84,13 @@ from rcp.runs.chat import (
     chat_prompt_values,
     stage_artifact_context,
 )
+from rcp.runs.consolidation import (
+    consolidation_apply_handler,
+    consolidation_skill_selection,
+    is_consolidation,
+    require_consolidation_launch,
+    settlement_source_effect_id,
+)
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     read_experiment_watcher_outputs,
@@ -319,7 +326,12 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
                 "messages are separate steering."
             )
         )
-    if turn.compute_commands is None:
+    if "apply" in handler.allowed_verbs:
+        instructions.append(
+            "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
+            "This turn cannot create watchers."
+        )
+    if turn.compute_commands is None or "launch" not in handler.allowed_verbs:
         return "\n\n".join(instructions)
     arguments = (
         "launch",
@@ -740,7 +752,20 @@ async def _stage_work_turn(
             clear_stale=clear_stale_handoffs,
         )
         experiment_resource_pointers = [item.prompt_value() for item in experiment_resources]
-        skill_selection = service.resolve_skill_selection(request)
+        skill_selection = (
+            consolidation_skill_selection()
+            if is_consolidation(execution)
+            else service.resolve_skill_selection(request)
+        )
+        if is_consolidation(execution):
+            request = request.model_copy(
+                update={
+                    "workflow_ids": skill_selection.workflow_ids,
+                    "skill_ids": skill_selection.skill_ids,
+                    "invoked_workflow_ids": ["graph-consolidation"],
+                    "resolved_skill_packages": skill_selection.resolved_skill_packages,
+                }
+            )
         skill_pointers = stage_skill_selection(
             skill_selection,
             local_stage=local_stage,
@@ -1314,6 +1339,11 @@ async def _validate_patch_deliverable(
             turn.execution,
             patch_text,
             run_truth_scope=turn.run_truth_scope,
+            source_effect_id=(
+                settlement_source_effect_id(turn.service, turn.execution, patch_text)
+                if is_consolidation(turn.execution)
+                else None
+            ),
         )
     except RunLockCancelled:
         return _DeliverableStep(
@@ -1807,6 +1837,15 @@ async def _settle_watch_deliverable(
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
     initial = _read_initial_watch_deliverable(turn, predecessor_digest)
+    if is_consolidation(turn.execution):
+        if initial.text is not None or initial.failure is not None:
+            _reject_watch_deliverable(
+                turn,
+                settled,
+                _DeliverableFailure("consolidation_watchers_forbidden", correctable=False),
+                0,
+            )
+        return
     text = initial.text
     failure = initial.failure
     if text is None and failure is None:
@@ -1991,6 +2030,8 @@ async def _apply_work_turn(
     composed: _ComposedWorkPrompt | None = None,
     maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
 ) -> AsyncIterator[str]:
+    if is_consolidation(turn.execution):
+        return
     (
         maintenance_frames,
         native_session_id,
@@ -2109,6 +2150,12 @@ async def _launch_and_stream_work_turn(
 ) -> AsyncIterator[str]:
     turn.supervise_remote = supervise_remote
     try:
+        if is_consolidation(turn.execution) and not turn.execution.store.agent_task_has_receipt(
+            turn.execution.operation_id, "agent_launch"
+        ):
+            require_consolidation_launch(
+                turn.execution.store, turn.execution.store.agent_task(turn.execution.operation_id)
+            )
         _record_agent_launch_receipt(
             turn.execution,
             turn.request,
@@ -2120,6 +2167,17 @@ async def _launch_and_stream_work_turn(
             continuation=turn.continuation,
             extra={
                 "surface": turn.surface,
+                **(
+                    {
+                        "workflow_ids": staged.skill_selection.workflow_ids,
+                        "resolved_skill_packages": [
+                            item.model_dump(mode="json")
+                            for item in staged.skill_selection.resolved_skill_packages
+                        ],
+                    }
+                    if is_consolidation(turn.execution)
+                    else {}
+                ),
                 "mode": "work",
                 "capability": "work_auto",
                 "network_access": True,
@@ -2798,7 +2856,15 @@ def _start_work_validator_mailbox(
     compute_commands: WorkComputeCommands | None = None,
     run_truth_scope: list[str],
 ) -> _WorkValidatorMailboxLifecycle:
-    command_handler = _work_command_handler(execution, compute_commands)
+    command_handler = _work_command_handler(
+        execution,
+        compute_commands,
+        consolidation_apply=(
+            consolidation_apply_handler(lambda: service, execution, staged.mailbox, run_truth_scope)
+            if is_consolidation(execution)
+            else None
+        ),
+    )
     return start_work_validator_mailbox(
         staged,
         execution=execution,
@@ -2866,8 +2932,31 @@ def _resume_work_compute_commands(
     return WorkComputeCommands(execution, context.manifest, scope, stage, context.episode_id)
 
 
-def _resume_work_command_handler(execution: AgentTaskExecution, context: _WorkMailboxContext):
+def _resume_work_command_handler(
+    execution: AgentTaskExecution,
+    context: _WorkMailboxContext,
+    service: Callable[[], ProjectService],
+):
     compute_commands = _resume_work_compute_commands(execution, context)
+    if is_consolidation(execution):
+        from rcp.transport.workspace_mailbox import RunStageMailbox
+
+        if not execution.stage_root:
+            raise ValueError("The consolidation mailbox lost its stage.")
+        stage = None
+        if execution.stage_host:
+            stage = RemoteRunStage(execution.stage_host)
+            stage.root = PurePosixPath(execution.stage_root)
+        mailbox = RunStageMailbox(
+            Path(str(stage.workspace)) if stage else Path(execution.stage_root) / "workspace", stage
+        )
+        return _work_command_handler(
+            execution,
+            None,
+            consolidation_apply=consolidation_apply_handler(
+                service, execution, mailbox, context.run_truth_scope
+            ),
+        )
     if not context.ask_allowed:
         return compute_commands
     handler = _work_command_handler(execution, compute_commands)
@@ -2883,7 +2972,7 @@ def resume_work_command_mailbox(
     context = _WorkMailboxContext.model_validate(saved)
     return restore_work_validator_mailbox(
         execution,
-        command_handler=_resume_work_command_handler(execution, context),
+        command_handler=_resume_work_command_handler(execution, context, service),
         validate=lambda text: _validate_work_patch_live(
             service(),
             text,

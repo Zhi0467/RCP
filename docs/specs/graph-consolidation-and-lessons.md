@@ -27,7 +27,7 @@ any number of missed occurrences collapses into one.
 A due occurrence:
 
 - stays owed, starting nothing, while an earlier consolidation run of the
-  project is unresolved (admitted, queued, running, paused, or awaiting its
+  project is unresolved (admitted, queued, running, or awaiting its
   outcome);
 - starts nothing when the schedule has expired;
 - creates a failure row and starts nothing when the authorizer is no longer a
@@ -83,11 +83,16 @@ root, captured by ordinary turn-artifact discovery.
 ## Outcomes and Inbox rows
 
 A run's outcome is separate from its task verdict. RCP settles it by run id from
-the terminal task, every canonical commit of the run's operation, and the
+the ended task, every canonical commit of the run's operation, and the
 captured artifact, and retries settlement at startup and on scheduler passes
 until it is recorded. A run succeeds when the task succeeded, no graph update of
 the turn remains rejected or unavailable, and the report was captured as a
 viewable HTML artifact.
+
+Paused, stopped, abandoned, or irrecoverably interrupted consolidation tasks
+settle as failures without advancing the covered head and are never resumed,
+retried, or continued as scheduled runs; a human may start a separate ordinary
+Work turn in the same chat.
 
 Each run leaves one row in the project's Inbox under **Consolidation**:
 

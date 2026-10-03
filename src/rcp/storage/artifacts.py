@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_MAX_VERSION_BYTES, ARTIFACT_RECENT_VERSIONS
 from rcp.live_artifacts import ResolvedLiveVersion
 from rcp.server_ops._local_primitives import fsync_directory
@@ -260,7 +261,9 @@ class ArtifactStoreMixin:
                 raise ValueError("stored live snapshot bytes differ from inventory")
             return data
 
-    def keep_artifact(self, artifact_id: str) -> Artifact:
+    def keep_artifact(
+        self, artifact_id: str, *, resolved_by: AuthorizedHuman | None = None
+    ) -> Artifact:
         with self.artifact_lock(artifact_id):
             artifact = self.artifact(artifact_id)
             if artifact is None:
@@ -272,6 +275,15 @@ class ArtifactStoreMixin:
                 connection.execute(
                     "UPDATE artifacts SET metadata = ? WHERE artifact_id = ?",
                     (artifact.model_dump_json(), artifact_id),
+                )
+                connection.execute(
+                    "UPDATE consolidation_runs SET state='kept', resolved_by_json=?, resolved_at=? "
+                    "WHERE report_artifact_id=? AND kind='report' AND state='open'",
+                    (
+                        resolved_by.model_dump_json() if resolved_by else None,
+                        self.now(),
+                        artifact_id,
+                    ),
                 )
             return artifact
 
@@ -494,6 +506,7 @@ class ArtifactStoreMixin:
                     or datetime.fromisoformat(artifact.expires_at) > now
                     or self.artifact_edit_operation_id(artifact.project_id, artifact_id) is not None
                     or artifact_id in self.protected_edit_artifact_ids()
+                    or self.consolidation_report_is_pending(artifact)
                 ):
                     continue
                 with _capture_guard(self.path.parent).deletion():

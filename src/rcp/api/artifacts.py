@@ -637,11 +637,14 @@ def stored_artifact_live(
 def keep_stored_artifact(
     project_id: str,
     artifact_id: str,
+    request: Request,
     *,
     store: Annotated[AppStore, Depends(get_store)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
 ):
+    human = identity_access.require_patch_capable_identity(request)
     _stored_artifact(store, project_id, artifact_id)
-    return store.keep_artifact(artifact_id)
+    return store.keep_artifact(artifact_id, resolved_by=human)
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/download")

@@ -246,6 +246,12 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     # Migration 31 only adds this table and its index. Reconstruct its preceding
     # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
+        for table in (
+            "consolidation_schedules",
+            "consolidation_runs",
+            "consolidation_apply_receipts",
+        ):
+            connection.execute(f"DROP TABLE {table}")
         connection.execute("DROP TABLE artifact_imports")
         connection.execute("DROP INDEX graph_runs_artifact_edit_episode")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 31")

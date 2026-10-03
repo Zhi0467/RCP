@@ -37,11 +37,19 @@ class NotificationPreferencesUpdate(BaseModel):
     blocker: StrictBool | None = None
     episode_needs_action: StrictBool | None = None
     episode_finished: StrictBool | None = None
+    consolidation: StrictBool | None = None
 
 
 class DesktopNotification(BaseModel):
     notification_id: str
-    reason: Literal["proposal", "decision", "blocker", "episode_needs_action", "episode_finished"]
+    reason: Literal[
+        "proposal",
+        "decision",
+        "blocker",
+        "episode_needs_action",
+        "episode_finished",
+        "consolidation",
+    ]
     project_name: str
     deep_link: str
 
