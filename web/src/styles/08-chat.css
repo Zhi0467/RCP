@@ -1388,3 +1388,42 @@
 .episode-questions:empty {
   display: none;
 }
+
+.chat-reference-chip a {
+  color: inherit;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-reference-chip small {
+  margin-left: 0.5em;
+}
+.chat-add-menu {
+  display: flex;
+  gap: 0.4rem;
+}
+.chat-reference-picker {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem;
+}
+.chat-reference-picker-heading {
+  display: flex;
+  gap: 0.5rem;
+}
+.chat-reference-picker-heading input {
+  min-width: 0;
+  flex: 1;
+}
+.chat-reference-picker ul {
+  list-style: none;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+}
+.chat-reference-picker li button {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  text-align: left;
+}

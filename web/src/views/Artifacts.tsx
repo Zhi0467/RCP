@@ -1,3 +1,6 @@
+import { parseProjectHash } from "../experimentBoard";
+import { graphTargetFromHash } from "../graphTarget";
+import { setReferenceDrag } from "../projectReferences";
 import { useEffect, useState, type MouseEvent } from "react";
 import {
   Download,
@@ -106,7 +109,24 @@ export function Artifacts({
           {entries.map((entry) => {
             const sourceNodeTitle = entry.source_node_id ? nodeTitle(entry.source_node_id) : null;
             return (
-              <li key={entry.id} className="artifact-entry">
+              <li
+                key={entry.id}
+                className="artifact-entry"
+                draggable={Boolean(entry.artifact_id && entry.available)}
+                onDragStart={(event) => {
+                  if (!entry.artifact_id || !entry.available) {
+                    event.preventDefault();
+                    return;
+                  }
+                  setReferenceDrag(
+                    event.dataTransfer,
+                    projectId,
+                    parseProjectHash(entry.source_chat_href ?? "").experimentRoute?.graph_target ??
+                      graphTargetFromHash(entry.source_chat_href ?? ""),
+                    { kind: "artifact", artifact_id: entry.artifact_id },
+                  );
+                }}
+              >
                 <div>
                   <div className="artifact-entry-heading">
                     <h3>{entry.name}</h3>

@@ -249,6 +249,7 @@ export function AutoResearchEpisodeCard({
                       className="campaign-run-chain-report"
                       aria-label={`Open ${episodeEndingLabel(member.report.ending)} report from ${formatTimestamp(member.report.created_at, true)}`}
                       projectId={episode.project_id}
+                      graphTarget={episode.graph_target}
                       episodeId={member.episode_id}
                       href={episodeReportPreviewUrl(episode.project_id, member.episode_id)}
                       onOpenError={setLocalError}
@@ -365,6 +366,7 @@ export function AutoResearchEpisodeCard({
 
           <RunArtifacts
             projectId={episode.project_id}
+            graphTarget={episode.graph_target}
             {...runArtifacts}
             onRetry={runArtifacts.reload}
           />
