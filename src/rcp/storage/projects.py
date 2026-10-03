@@ -1061,6 +1061,9 @@ class ProjectStoreMixin:
             for table in (
                 "operational_lessons",
                 "lesson_command_receipts",
+                "consolidation_schedules",
+                "consolidation_runs",
+                "consolidation_apply_receipts",
                 "notification_preferences",
                 "notification_outbox",
                 "notification_graph_markers",

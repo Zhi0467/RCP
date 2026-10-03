@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.storage import Artifact
 
 from .helpers import TASK_SETTLE_TIMEOUT, create_named_app
+from .test_storage import _project
 
 
 @pytest.fixture
@@ -374,3 +376,18 @@ def test_prelaunch_failure_hides_internal_admission_pointers(setup):
     item = client.get(f"/api/projects/{project}/consolidation").json()["inbox"][0]
     assert item["operation_id"] is None and item["chat_id"] is None
     assert store.consolidation_run(run.run_id).operation_id == "internal"
+
+
+def test_legacy_project_id_rewrite_moves_consolidation_state(setup):
+    _client, store, legacy_id = setup
+    run = _failure(store, legacy_id)
+    canonical_id = str(uuid.uuid4())
+    with store.connection() as connection:
+        connection.execute("DELETE FROM projects WHERE project_id=?", (legacy_id,))
+    store.upsert_project(
+        _project(canonical_id).model_copy(update={"home_space_id": store.space_id})
+    )
+    store.migrate_legacy_project_data(legacy_id, canonical_id)
+    assert store.consolidation_schedule(legacy_id) is None
+    assert store.consolidation_schedule(canonical_id) is not None
+    assert [item.run_id for item in store.consolidation_runs(canonical_id)] == [run.run_id]

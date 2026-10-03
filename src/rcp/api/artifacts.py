@@ -37,7 +37,13 @@ from rcp.runs.artifact_edit_admission import (
     start_artifact_edit,
 )
 from rcp.service import ArtifactContextRequest, ArtifactSelection, RunRequest
-from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, EpisodeMode
+from rcp.storage import (
+    AgentTaskAdmissionConflict,
+    AgentTaskRecord,
+    AppStore,
+    Artifact,
+    EpisodeMode,
+)
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
@@ -207,6 +213,11 @@ def _saved_chat_origins(
     return origins
 
 
+def _temporary(artifact: Artifact) -> bool:
+    """An unkept turn artifact; episode reports and kept artifacts are permanent."""
+    return artifact.supplier == "turn" and artifact.kept_at is None
+
+
 @router.get("/api/projects/{project_id}/artifacts", response_model=list[SavedArtifactResponse])
 def saved_artifacts(
     project_id: str,
@@ -304,9 +315,7 @@ def saved_artifacts(
         if (report := store.episode_report(summary.episode_id)) is not None
     )
     for artifact in store.artifacts(project_id):
-        if artifact.artifact_id in represented or (
-            artifact.supplier == "turn" and artifact.kept_at is None
-        ):
+        if artifact.artifact_id in represented or _temporary(artifact):
             continue
         view = artifact_view(artifact.media_type)
         artifact_url = f"{base}/artifacts/{quote(artifact.artifact_id, safe='')}"
@@ -468,7 +477,7 @@ def stored_artifact_state(
         if artifact_view(artifact.media_type) not in {"pdf", "file"}
         else None,
         download_url=f"{base}/download",
-        can_keep=artifact.kept_at is None,
+        can_keep=_temporary(artifact),
         expires_at=artifact.expires_at,
     )
 
@@ -579,8 +588,8 @@ def stored_artifact_viewer(
             descriptor,
             content_url=f"{base}/content?{urlencode({'version_id': artifact.current_version})}",
             live_url=f"{base}/versions/{quote(artifact.current_version, safe='')}/live",
-            keep_url=f"{base}/keep" if artifact.kept_at is None else None,
-            state="kept" if artifact.kept_at else "temporary",
+            keep_url=f"{base}/keep" if _temporary(artifact) else None,
+            state="temporary" if _temporary(artifact) else "kept",
             panel=comment_panel(
                 {
                     "projectId": project_id,
