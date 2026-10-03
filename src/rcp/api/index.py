@@ -891,6 +891,7 @@ def clear_all_rebuildable_caches(
     *,
     catalog: CatalogDependency,
     store: StoreDependency,
+    project_display_cache: DisplayCacheDependency,
 ) -> dict[str, object]:
     if store.space_kind != "personal":
         raise HTTPException(
@@ -932,7 +933,17 @@ def clear_all_rebuildable_caches(
         SESSION_SLICE_CACHE_LIMITS,
         layout="directories",
     ).clear()
-    return current_service.indexer.cache_metrics().model_dump(mode="json")
+    not_rebuilt: list[str] = []
+    for record in store.projects():
+        try:
+            rebuilt = project_display_cache.rebuild_cached_snapshot(record.project_id)
+        except KeyError:
+            continue
+        if not rebuilt:
+            not_rebuilt.append(record.name)
+    metrics = current_service.indexer.cache_metrics().model_dump(mode="json")
+    metrics["project_pages_not_rebuilt"] = not_rebuilt
+    return metrics
 
 
 @router.get("/api/skills/{kind}/{package_id}")

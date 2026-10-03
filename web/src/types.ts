@@ -2940,6 +2940,15 @@ export interface ProjectCacheMetrics {
   session_slices: CacheMetric;
 }
 
+/** Clearing rebuilds the project page instead of deleting it; it doubles as the offline copy. */
+export interface ProjectCacheClearResult extends ProjectCacheMetrics {
+  project_page_rebuilt: boolean;
+}
+
+export interface AllProjectCacheClearResult extends ProjectCacheMetrics {
+  project_pages_not_rebuilt: string[];
+}
+
 export interface ProjectCard {
   id: string;
   home_space_id: string | null;

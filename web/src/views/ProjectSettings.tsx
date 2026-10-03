@@ -578,7 +578,14 @@ export function ProjectSettings({
       const metrics = await clearProjectCaches(apiBase);
       if (!requestIsCurrent()) return;
       publishCacheMetrics(metrics, setCacheMetrics, onCacheMetricsChange);
-      setStatus({ kind: "saved", text: "Project cache cleared." });
+      setStatus(
+        metrics.project_page_rebuilt
+          ? { kind: "saved", text: "Project cache cleared." }
+          : {
+              kind: "error",
+              text: "Project cache cleared, but the project page could not be rebuilt; the previous copy is kept.",
+            },
+      );
     } catch (caught) {
       if (!requestIsCurrent()) return;
       setStatus({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });

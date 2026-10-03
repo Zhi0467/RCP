@@ -21,7 +21,8 @@ import type {
   IdentityResponse,
   MachineDirectoryListing,
   MachineDirectoryRequest,
-  ProjectCacheMetrics,
+  AllProjectCacheClearResult,
+  ProjectCacheClearResult,
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
@@ -300,14 +301,17 @@ function apiError(status: number, body: unknown): ApiError {
   return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), status);
 }
 
-export function clearProjectCaches(apiBase: string): Promise<ProjectCacheMetrics> {
-  return api<ProjectCacheMetrics>(`${apiBase}/caches`, { method: "DELETE" });
+export function clearProjectCaches(apiBase: string): Promise<ProjectCacheClearResult> {
+  return api<ProjectCacheClearResult>(`${apiBase}/caches`, { method: "DELETE" });
 }
 
-export function clearAllProjectCaches(projectId: string): Promise<ProjectCacheMetrics> {
-  return api<ProjectCacheMetrics>(`/api/projects/${encodeURIComponent(projectId)}/caches/all`, {
-    method: "DELETE",
-  });
+export function clearAllProjectCaches(projectId: string): Promise<AllProjectCacheClearResult> {
+  return api<AllProjectCacheClearResult>(
+    `/api/projects/${encodeURIComponent(projectId)}/caches/all`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export async function loadSpaceMachines(): Promise<SpaceMachine[]> {

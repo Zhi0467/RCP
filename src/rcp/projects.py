@@ -66,6 +66,7 @@ from rcp.server_ops.backup_models import (
     BackupRecoveryRepository,
 )
 from rcp.service import ProjectService, ProjectSettingsRequest, _ProjectSnapshotDraft
+from rcp.skill_registry import official_registry
 from rcp.sources import (
     ImportedProviderSourceInventory,
     ImportedProviderSourceStore,
@@ -2569,6 +2570,9 @@ class ProjectDisplayCache:
         self._catalog._stamp_snapshot_identity(payload, project_id)
         if fresh:
             self._catalog.mark_snapshot_fresh(payload)
+        # The catalog belongs to the running release, not to project state; a
+        # cache written by an older release must not hide newer official skills.
+        payload["skill_catalog"] = official_registry().catalog()
         self._complete_live_control(project_id, payload)
         payload["machines"] = [
             {
@@ -2600,6 +2604,23 @@ class ProjectDisplayCache:
     def reconcile_snapshot(self, project_id: str) -> tuple[ProjectService, dict[str, object]]:
         service, draft = self._catalog.reconcile_snapshot(project_id)
         return service, self.complete_snapshot(project_id, draft)
+
+    def rebuild_cached_snapshot(self, project_id: str) -> bool:
+        """Rebuild one display cache from current state, keeping the old copy on failure."""
+
+        try:
+            generation = self._catalog.reserve_cached_snapshot_generation(project_id)
+            service, snapshot = self.reconcile_snapshot(project_id)
+            self._catalog.commit_cached_snapshot(
+                project_id,
+                snapshot,
+                generation=generation,
+                patch_log_head=service.history.workspace.cached_patch_log_head(),
+            )
+        except (OSError, RuntimeError, StateUnavailable, TypeError, ValueError) as exc:
+            self._logger.warning("Could not rebuild display snapshot for %s: %s", project_id, exc)
+            return False
+        return True
 
     def update_settings(
         self,

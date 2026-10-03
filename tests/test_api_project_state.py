@@ -19,7 +19,9 @@ from rcp.core.models import Patch
 from rcp.history import HistoryManager
 from rcp.limits import COMPUTE_CONNECTION_MAX_COUNT
 from rcp.providers import PROVIDER_IDS, ProviderUsage
+from rcp.skill_registry import official_registry
 from rcp.storage import AgentTaskRecord
+from rcp.transport import StateUnavailable
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -767,6 +769,63 @@ def test_cached_snapshot_names_the_runtime_on_profiles_saved_before_selection(
     for surface, profile in profiles.items():
         expected = "exec" if profile["provider"] == "codex" else "stream-json"
         assert profile["runtime"] == expected, surface
+
+
+def _write_stale_catalog_cache(client, data_dir, project_id) -> Path:
+    """Rewrite the display cache as an older release left it: one official skill fewer."""
+
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+    cache_path = next((data_dir / "project-snapshots").iterdir())
+    envelope = json.loads(cache_path.read_text(encoding="utf-8"))
+    catalog = envelope["snapshot"]["skill_catalog"]
+    envelope["snapshot"]["skill_catalog"] = catalog[1:]
+    cache_path.write_text(json.dumps(envelope), encoding="utf-8")
+    return cache_path
+
+
+def test_cached_snapshot_serves_the_running_release_skill_catalog(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    _write_stale_catalog_cache(client, data_dir, project_id)
+
+    for path in (f"/api/projects/{project_id}", f"/api/projects/{project_id}/cached"):
+        served = client.get(path)
+        assert served.status_code == 200
+        assert served.json()["skill_catalog"] == official_registry().catalog()
+
+
+def test_clearing_project_cache_rebuilds_the_display_snapshot(manifest, tmp_path) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
+
+    cleared = client.delete(f"/api/projects/{project_id}/caches")
+    assert cleared.status_code == 200
+    assert cleared.json()["project_page_rebuilt"] is True
+    rebuilt = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert rebuilt["snapshot"]["skill_catalog"] == official_registry().catalog()
+
+
+def test_failed_display_rebuild_keeps_the_offline_copy(manifest, tmp_path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    app = create_named_app(str(manifest.path), data_dir=data_dir)
+    client = TestClient(app)
+    project_id = app.state.default_project_id
+    cache_path = _write_stale_catalog_cache(client, data_dir, project_id)
+    before = cache_path.read_bytes()
+
+    def unreachable(_self, _project_id):
+        raise StateUnavailable("state host is unreachable")
+
+    monkeypatch.setattr(projects_module.ProjectCatalog, "reconcile_snapshot", unreachable)
+    cleared = client.delete(f"/api/projects/{project_id}/caches")
+    assert cleared.status_code == 200
+    assert cleared.json()["project_page_rebuilt"] is False
+    assert cache_path.read_bytes() == before
 
 
 def test_project_readiness_does_not_open_or_materialize_project(
