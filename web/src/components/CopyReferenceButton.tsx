@@ -34,7 +34,7 @@ export function CopyReferenceButton({
         }}
       >
         <Copy size={showLabel ? 14 : 16} />
-        {showLabel && " Copy reference"}
+        {showLabel && <span className="copy-reference-label">Copy reference</span>}
       </button>
       {notice && <span role="alert">{notice}</span>}
     </>

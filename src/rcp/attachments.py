@@ -44,7 +44,7 @@ class NodeReferenceSelector(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     kind: Literal["node"]
-    node_id: str = Field(min_length=1, max_length=256)
+    node_id: str = Field(min_length=1)
     branch_id: str | None = Field(default=None, min_length=1)
 
 

@@ -70,3 +70,27 @@ def test_paper_reference_reads_saved_canonical_after_confirmed_refresh(
     monkeypatch.setattr(paper.workspace, "refresh", lambda: False)
     with pytest.raises(ValueError):
         _resolve(branch_services, [PaperReferenceSelector(kind="paper")])
+
+
+def test_oversized_artifact_is_refused_before_its_bytes_are_read(branch_services, monkeypatch):
+    from rcp.attachments import ArtifactReferenceSelector
+    from rcp.storage import Artifact
+
+    store = branch_services[0].paper.store
+    artifact = store.create_artifact(
+        Artifact(
+            artifact_id="c" * 24,
+            project_id="project",
+            supplier="turn",
+            supplier_id="origin",
+            source_name="large.txt",
+            media_type="text/plain",
+            created_at=store.now(),
+        ),
+        data=b"12345",
+    )
+    selector = ArtifactReferenceSelector(kind="artifact", artifact_id=artifact.artifact_id)
+    monkeypatch.setattr("rcp.project_references.CHAT_ATTACHMENT_MAX_FILE_BYTES", 4)
+    monkeypatch.setattr(store, "read_artifact_bytes", lambda *_: pytest.fail("bytes read"))
+    with pytest.raises(ValueError):
+        _resolve(branch_services, [selector])

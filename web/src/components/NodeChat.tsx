@@ -2047,7 +2047,7 @@ export function NodeChat({
                 <button
                   className="icon-button chat-add-file"
                   type="button"
-                  aria-label="Add input"
+                  aria-label="Add files"
                   aria-expanded={addMenuOpen}
                   disabled={
                     attachments.length + references.length >= MAX_CHAT_ATTACHMENTS ||

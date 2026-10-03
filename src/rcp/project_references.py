@@ -11,7 +11,11 @@ from typing import TYPE_CHECKING
 from rcp.agents.context import ContextAssembler
 from rcp.attachments import ProjectReferenceSelector, ProjectReferenceSource
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import PROJECT_REFERENCE_NODE_MAX_BYTES
+from rcp.limits import (
+    CHAT_ATTACHMENT_MAX_FILE_BYTES,
+    CHAT_ATTACHMENT_MAX_TOTAL_BYTES,
+    PROJECT_REFERENCE_NODE_MAX_BYTES,
+)
 from rcp.storage import AppStore
 from rcp.transport import StateUnavailable
 
@@ -40,6 +44,7 @@ def resolve_project_references(
     if len(set(keys)) != len(keys):
         raise ValueError("Duplicate project references are not allowed.")
     resolved = []
+    artifact_bytes = 0
     for selector in selectors:
         try:
             if selector.kind == "artifact":
@@ -47,6 +52,20 @@ def resolve_project_references(
                     artifact = store.artifact(selector.artifact_id)
                     if artifact is None or artifact.project_id != project_id:
                         raise ValueError("Project reference artifact is unavailable.")
+                    # Stored versions may exceed the turn caps; check sizes before reading.
+                    size = next(
+                        version.size_bytes
+                        for version in store.artifact_versions(artifact.artifact_id)
+                        if version.version_id == artifact.current_version
+                    )
+                    artifact_bytes += size
+                    if (
+                        size > CHAT_ATTACHMENT_MAX_FILE_BYTES
+                        or artifact_bytes > CHAT_ATTACHMENT_MAX_TOTAL_BYTES
+                    ):
+                        raise ValueError(
+                            "Project reference artifacts exceed the attachment limits."
+                        )
                     content = store.read_artifact_bytes(
                         artifact.artifact_id, artifact.current_version
                     )
@@ -112,6 +131,6 @@ def resolve_project_references(
                     ),
                 )
             )
-        except (KeyError, OSError, StateUnavailable) as exc:
+        except (KeyError, OSError, StateUnavailable, StopIteration) as exc:
             raise ValueError("Project reference source is unavailable.") from exc
     return resolved

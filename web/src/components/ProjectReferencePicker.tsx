@@ -3,7 +3,7 @@ import { api } from "../api";
 import { ArrowLeft, Check, ChevronRight, Folder, Search, X } from "lucide-react";
 import { referenceKey, type DraftReference } from "../projectReferences";
 import { ReferenceIcon } from "./ReferenceChip";
-import type { GraphNode, GraphTargetRef, ProjectArtifact } from "../types";
+import type { GraphNode, GraphTargetRef, PaperSnapshot, ProjectArtifact } from "../types";
 
 type FolderId = "reports" | "artifacts" | "nodes";
 const FOLDER_LABEL: Record<FolderId, string> = {
@@ -43,7 +43,10 @@ export function ProjectReferencePicker({
     const base = `/api/projects/${encodeURIComponent(projectId)}`;
     void Promise.all([
       api<ProjectArtifact[]>(`${base}/artifacts`, { signal: controller.signal }).then(setArtifacts),
-      api(`${base}/paper`, { signal: controller.signal }).then(() => setPaperAvailable(true)),
+      // Only a saved introduction can be referenced; a draft or no paper cannot.
+      api<PaperSnapshot>(`${base}/paper`, { signal: controller.signal }).then((paper) =>
+        setPaperAvailable(paper.canonical_available && Boolean(paper.canonical_hash)),
+      ),
     ])
       .catch((failure) => {
         if (!controller.signal.aborted)

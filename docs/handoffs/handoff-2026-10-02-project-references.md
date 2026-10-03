@@ -1,9 +1,12 @@
 # Project references in chat
 
 Date: 2026-10-02
-Status: design settled with the human on 2026-10-02. Revised the same day after
-an xhigh astra design review. Implementation has not started. It ships in the
-same PR as this design.
+Status: design settled with the human on 2026-10-02 and revised after an xhigh
+astra design review. Implemented 2026-10-02 in the same PR: slices 1 and 2,
+the specs, and the browser journey on throwaway data (copy, paste, picker, send,
+staged read-only copies, prompt block, transcript chips). Remaining: drag in
+the desktop app (WKWebView), and live Work, branch-source, and remote-stage
+turns.
 
 ## Problem
 
