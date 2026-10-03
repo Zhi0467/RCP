@@ -99,6 +99,7 @@ export type WebMcpToolRegistry = {
 
 export const WEBMCP_RESULT_MAX_CHARS = 1_500;
 const WEBMCP_NODE_RESULT_MAX_CHARS = 16_000;
+const WEBMCP_OVERVIEW_RESULT_MAX_CHARS = 6_000;
 export const WEBMCP_NODE_CONTENT_MAX_CHARS = 6_000;
 const WEBMCP_ARTIFACT_RESULT_MAX_CHARS = 8_000;
 const WEBMCP_CONVERSATION_RESULT_MAX_CHARS = 12_000;
@@ -107,6 +108,7 @@ const WEBMCP_EXPERIMENT_RESULT_MAX_CHARS = 12_000;
 const WEBMCP_PROJECT_INDEX_RESULT_MAX_CHARS = 6_000;
 const PROJECT_LIST_LIMIT = 8;
 const OVERVIEW_LIST_LIMIT = 2;
+const OVERVIEW_STOPPABLE_LIMIT = 16;
 const NODE_RELATION_LIMIT = 32;
 const NODE_TEXT_LIMIT = 1_200;
 const NODE_TEXT_LIMIT_FLOOR = 64;
@@ -475,7 +477,8 @@ export function projectOverview(
     // episode has no node, so its id is listed here for an exact Stop.
     stoppable_auto_research_episode_ids: episodes
       .filter((episode) => episode.mode === "auto_research" && episode.can_stop)
-      .map((episode) => episode.episode_id),
+      .map((episode) => episode.episode_id)
+      .slice(0, OVERVIEW_STOPPABLE_LIMIT),
   };
 }
 
@@ -721,7 +724,9 @@ export function projectReadToolDefinitions(
   episodes: Episode[] = [],
 ): WebMcpToolDefinition[] {
   return [
-    withExecute(PROJECT_OVERVIEW_TOOL, () => webMcpTextResult(projectOverview(project, episodes))),
+    withExecute(PROJECT_OVERVIEW_TOOL, () =>
+      webMcpTextResult(projectOverview(project, episodes), WEBMCP_OVERVIEW_RESULT_MAX_CHARS),
+    ),
     withExecute(INSPECT_NODE_TOOL, (input) =>
       webMcpTextResult(inspectProjectNode(project, input), WEBMCP_NODE_RESULT_MAX_CHARS),
     ),

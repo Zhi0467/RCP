@@ -153,6 +153,8 @@ async function buildVoicePin(
       arguments: { ...args },
       mode: typeof args.mode === "string" ? args.mode : null,
       provider_profile: { ...target.config, conversation: target.surface },
+      // The write roots a Work turn will get, so a scope change invalidates the card.
+      truth_scope: target.runTruthScope,
     };
   }
   throw new Error(`${name} has no confirmation card.`);
@@ -379,8 +381,8 @@ export function useVoiceAgent({
     const gate = gateRef.current;
     const saves = confirmSaves.current;
     const seq = ++saves.latest;
-    const live = () =>
-      gate !== null && gateRef.current === gate && gate.ok() && saves.latest === seq;
+    const sameMember = () => gate !== null && gateRef.current === gate && gate.ok();
+    const live = () => sameMember() && saves.latest === seq;
     setSettingsError(null);
     try {
       const current = settingsRef.current ?? (await loadVoiceSettings());
@@ -388,7 +390,11 @@ export function useVoiceAgent({
       // The choice shows at once; Tap also applies at once, Run without confirming once saved.
       setSettings({ ...current, confirm });
       if (confirm === "tap") settingsRef.current = { ...current, confirm };
-      const save = saves.chain.then(() => saveVoiceSettings({ confirm }));
+      // A queued save rechecks the member: the PUT rides whoever's cookie is current.
+      const save = saves.chain.then(() => {
+        if (!sameMember()) throw new Error("Voice ended before this choice was saved.");
+        return saveVoiceSettings({ confirm });
+      });
       saves.chain = save.catch(() => {});
       const saved = await save;
       if (!live()) return;

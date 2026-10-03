@@ -684,7 +684,38 @@ test("project overview returns bounded saved facts without an AI summary", () =>
   );
   assert.equal("summary" in overview, false);
   assert.deepEqual(Object.keys(overview.agents), Object.keys(projectFixture().agent_profiles));
-  assert.doesNotThrow(() => webMcpTextResult(overview));
+});
+
+test("the overview tool fits every agent role, long recent titles, and many episodes", async () => {
+  const project = projectFixture();
+  for (const role of [
+    "seed",
+    "refresh",
+    "node_chat",
+    "project_chat",
+    "paper_coach",
+    "orchestrator",
+  ]) {
+    project.agent_profiles[role] = { ...project.agent_profiles.node_chat, model: "m".repeat(40) };
+  }
+  for (const type of ["hypothesis", "experiment", "evidence", "blocker"]) {
+    for (const n of [1, 2]) {
+      const id = `${type}-long-${n}`;
+      project.graph.nodes[id] = {
+        ...project.graph.nodes["rq-1"],
+        id,
+        type,
+        title: "t".repeat(200),
+      };
+    }
+  }
+  const episodes = Array.from({ length: 40 }, (_, n) => ({
+    episode_id: `auto-${n}`.padEnd(36, "0"),
+    mode: "auto_research",
+    can_stop: true,
+  }));
+  const result = await projectReadToolDefinitions(project, episodes)[0].execute({});
+  assert.equal(JSON.parse(result.content[0].text).recent.blockers.length, 2);
 });
 
 test("project overview lists only stoppable Auto-research episode ids", () => {
