@@ -184,7 +184,8 @@ def test_purpose_update_checks_only_additions_and_preserves_key(voice_setup, mon
     assert client.put(path, json={"purposes": ["voice", "transcription"]}).status_code == 200
     assert probes.count("transcription") == len(transcription.FORMATS)
     assert private.credentials(item["id"])[1] == KEY
-    assert client.put(path, json={"purposes": []}).status_code == 422
+    assert client.put(path, json={"purposes": []}).status_code == 200
+    assert private.credentials(item["id"])[0]["purposes"] == []
 
 
 def test_failed_purpose_probe_leaves_selection_and_payer_unchanged(voice_setup, monkeypatch):

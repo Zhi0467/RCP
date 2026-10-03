@@ -40,7 +40,8 @@ confirmation; any confirmation is the host agent's own.
   episodes and sending Work were already product actions the member's page
   could take; that sentence gains Auto-research authorization and voice.
 - **Voice may run a terminal command as the member.** It can type one command
-  line into a project terminal and read back the output. Every command waits
+  line into a fresh project terminal and read back the output; it never types
+  into a shell that was already open. Every command waits
   for a tap on a card that shows the exact command and repository, even when
   voice confirmation is off. WebMCP does not get this tool, because a host
   agent has no RCP card to show.

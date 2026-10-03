@@ -2085,7 +2085,7 @@ function terminalDoubles(output = "", openSessions = []) {
     sockets.push(socket);
     setTimeout(() => {
       socket.onopen();
-      socket.onmessage({ data: bytes("earlier replay") });
+      socket.onmessage({ data: bytes("earlier replay\r\n$ ") });
     });
     return socket;
   };
@@ -2179,8 +2179,8 @@ test("voice-only terminal tools resolve for voice but never register with WebMCP
   publishToolSurface(null, []);
 });
 
-test("a terminal run types one line after replay and returns stripped, bounded output", async () => {
-  const output = `\u001b[32mok\u001b[0m\r\n${"x".repeat(5_000)}\u001b]0;title\u0007$ `;
+test("a terminal run types one line into a fresh shell and closes it at the prompt", async () => {
+  const output = `\u001b[32mok\u001b[0m\r\n${"x".repeat(5_000)}\r\n\u001b]0;title\u0007$ `;
   const { requests, sockets, deps } = terminalDoubles(output);
   const run = voiceTerminalToolDefinitions("project-1", deps)[1];
   const result = JSON.parse(
@@ -2193,11 +2193,27 @@ test("a terminal run types one line after replay and returns stripped, bounded o
   assert.ok(sockets[0].closed);
   assert.equal(result.output.length, TERMINAL_OUTPUT_MAX_CHARS);
   assert.equal(result.truncated, true);
-  assert.equal(result.window_elapsed_before_quiet, false);
-  assert.ok(result.output.endsWith("x$ "));
+  assert.equal(result.finished, true);
+  assert.ok(requests.some(([method, path]) => method === "DELETE" && path.endsWith("/s1")));
+  assert.ok(result.output.endsWith("x\n$ "));
   assert.ok(!/[\u001b\u0007]|earlier replay/.test(result.output));
   await assert.rejects(run.execute({ repository_id: "unlisted", command: "ls" }));
   assert.equal(sockets.length, 1);
+});
+
+test("a command still running when the window ends leaves its shell open", async () => {
+  const { requests, deps } = terminalDoubles("compiling\r\n");
+  deps.timing.windowMs = 50;
+  const run = voiceTerminalToolDefinitions("project-1", deps)[1];
+  const result = JSON.parse(
+    (await run.execute({ repository_id: "code", command: "make" })).content[0].text,
+  );
+  assert.equal(result.finished, false);
+  assert.equal(result.still_running, true);
+  assert.equal(
+    requests.some(([method]) => method === "DELETE"),
+    false,
+  );
 });
 
 test("a terminal voice did not start is refused before anything is typed", async () => {

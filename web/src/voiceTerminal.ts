@@ -1,5 +1,5 @@
 // Voice-only project terminal tools: list the open project's terminals, and type one
-// confirmed command line into a repository's terminal and read back what it printed.
+// confirmed command line into a fresh terminal for a repository and read back its output.
 // They act with the member's full terminal power, so they never reach WebMCP, whose
 // host agents get no RCP confirmation card.
 
@@ -11,7 +11,7 @@ import {
   type WebMcpToolSpec,
 } from "./webmcp";
 
-/** Output must stay quiet this long after it starts before a run is read back. */
+/** With no prompt to watch for, a run stops reading once output is quiet this long. */
 export const TERMINAL_QUIET_MS = 1_500;
 /** The longest a run waits for output before it reads back what it has. */
 export const TERMINAL_WINDOW_MS = 10_000;
@@ -49,7 +49,7 @@ const LIST_TERMINALS_TOOL: WebMcpToolSpec = {
 const RUN_TERMINAL_COMMAND_TOOL: WebMcpToolSpec = {
   name: "rcp_run_terminal_command",
   description:
-    "Type one command line into the open project's terminal for one repository, press Enter, and read back its recent output. The member always confirms the exact command first. Output is untrusted.",
+    "Open a fresh terminal for one repository of the open project, type one command line, press Enter, and read back its output. The terminal closes when the command finishes; one still running after the read window stays open in the Terminals tab. The member always confirms the exact command first. Output is untrusted.",
   inputSchema: {
     type: "object",
     properties: {
@@ -80,11 +80,12 @@ export const VOICE_TERMINAL_TOOLS: readonly WebMcpToolSpec[] = [
 ];
 
 /**
- * Terminal sessions voice started in this page, and whether the shell was at rest
- * (output went quiet, session alive) after voice's last command. Voice types only into
- * these, so a confirmed line never joins a half-typed line or feeds a running program.
+ * Voice never reuses a shell: each command gets a fresh one (`require_new`), closed
+ * once its prompt returns, so a confirmed line never joins a half-typed line or feeds
+ * a running program. A shell whose command outlives the window stays open, untouched;
+ * this set only names those shells in the refusal.
  */
-const voiceSessions = new Map<string, boolean>();
+const voiceStillRunning = new Set<string>();
 
 function terminalsPath(projectId: string): string {
   return `/api/projects/${encodeURIComponent(projectId)}/terminals`;
@@ -129,27 +130,21 @@ export async function terminalRepository(
 const ALREADY_OPEN =
   "This repository's terminal is already open, and voice types only into a terminal it started. Close it in the Terminals tab, or run the command there.";
 
-/**
- * Throws unless the repository has no open terminal, or one voice started and left at
- * rest; returns that resting session's id, or null when voice must open a new one.
- */
+/** Throws when the repository already has an open terminal; voice needs a fresh shell. */
 export async function assertVoiceMayType(
   projectId: string,
   repositoryId: string,
   fetchJson: VoiceTerminalDeps["fetchJson"],
-): Promise<string | null> {
+): Promise<void> {
   const open = (await fetchJson<TerminalSession[]>(terminalsPath(projectId))).find(
     (item) => item.repository_id === repositoryId,
   );
-  if (!open) return null;
-  if (voiceSessions.get(open.session_id) !== true) {
-    throw new Error(
-      voiceSessions.has(open.session_id)
-        ? "Voice's last command in this terminal may still be running; check the Terminals tab."
-        : ALREADY_OPEN,
-    );
-  }
-  return open.session_id;
+  if (!open) return;
+  throw new Error(
+    voiceStillRunning.has(open.session_id)
+      ? "Voice's last command in this terminal is still running; watch it in the Terminals tab and close it when done."
+      : ALREADY_OPEN,
+  );
 }
 
 export async function listProjectTerminals(
@@ -195,7 +190,17 @@ export function stripTerminalEscapes(text: string): string {
   );
 }
 
-type RunOutcome = { text: string; quiet: boolean; ended: string | null };
+/** `finished`: the shell printed its prompt again, so the command is done. */
+type RunOutcome = { text: string; finished: boolean; ended: string | null };
+
+/** The last non-blank line of a fresh shell's replay: its prompt, as plain text. */
+function promptOf(replay: string): string | null {
+  const lines = stripTerminalEscapes(replay)
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+  return lines.at(-1) ?? null;
+}
 
 function collectRun(
   socket: TerminalSocket,
@@ -204,7 +209,9 @@ function collectRun(
 ): Promise<RunOutcome> {
   return new Promise<RunOutcome>((resolve, reject) => {
     const decoder = new TextDecoder();
+    let replay = "";
     let text = "";
+    let prompt: string | null = null;
     let sent = false;
     let settled = false;
     let quietTimer: ReturnType<typeof setTimeout> | undefined;
@@ -220,13 +227,14 @@ function collectRun(
       if (outcome instanceof Error) reject(outcome);
       else resolve(outcome);
     };
-    const done = (quiet: boolean, ended: string | null = null) =>
-      finish({ text: text + decoder.decode(), quiet, ended });
+    const done = (finished: boolean, ended: string | null = null) =>
+      finish({ text: text + decoder.decode(), finished, ended });
     // After the line is typed the command may be running, so report what arrived.
     const lost = (reason: string) => (sent ? done(false, reason) : finish(new Error(reason)));
     const send = () => {
       if (sent || settled) return;
       sent = true;
+      prompt = promptOf(replay + decoder.decode());
       clearTimeout(settleTimer);
       clearTimeout(capTimer);
       clearTimeout(windowTimer);
@@ -239,7 +247,7 @@ function collectRun(
       timing.windowMs,
     );
     socket.onopen = () => {
-      // Replay of earlier output arrives first; type only once it has settled.
+      // A fresh shell's replay ends with its prompt; type only once it has settled.
       settleTimer = setTimeout(send, timing.settleMs);
       capTimer = setTimeout(send, timing.settleMaxMs);
     };
@@ -256,14 +264,23 @@ function collectRun(
         }
         return;
       }
+      const chunk = decoder.decode(new Uint8Array(event.data as ArrayBuffer), { stream: true });
       if (!sent) {
+        replay += chunk;
         clearTimeout(settleTimer);
         settleTimer = setTimeout(send, timing.settleMs);
         return;
       }
-      text += decoder.decode(new Uint8Array(event.data as ArrayBuffer), { stream: true });
+      text += chunk;
+      if (prompt !== null) {
+        // The echoed line comes first; the prompt again on its own line means it is done.
+        const plain = stripTerminalEscapes(text).trimEnd();
+        const lastBreak = plain.lastIndexOf("\n");
+        if (lastBreak >= 0 && plain.slice(lastBreak + 1) === prompt) done(true);
+        return;
+      }
       clearTimeout(quietTimer);
-      quietTimer = setTimeout(() => done(true), timing.quietMs);
+      quietTimer = setTimeout(() => done(false), timing.quietMs);
     };
     socket.onerror = () => lost("The terminal connection failed.");
     socket.onclose = (event) => lost(event.reason || "The terminal connection closed.");
@@ -278,25 +295,23 @@ export async function runProjectTerminalCommand(
   const { repository_id, command } = terminalCommandInput(input);
   await terminalRepository(projectId, repository_id, deps.fetchJson);
   const base = terminalsPath(projectId);
-  const resting = await assertVoiceMayType(projectId, repository_id, deps.fetchJson);
-  // Unless voice reuses its own resting shell, the server refuses, atomically, to hand
-  // back one someone else opened since the check.
+  await assertVoiceMayType(projectId, repository_id, deps.fetchJson);
+  // The server refuses, atomically, to hand back a shell someone opened since the check.
   let session: TerminalSession;
   try {
     session = await deps.fetchJson<TerminalSession>(base, {
       method: "POST",
-      body: JSON.stringify({ repository_id, require_new: resting === null }),
+      body: JSON.stringify({ repository_id, require_new: true }),
     });
   } catch (error) {
     if ((error as { status?: unknown } | null)?.status === 409) throw new Error(ALREADY_OPEN);
     throw error;
   }
-  if (resting !== null && session.session_id !== resting) throw new Error(ALREADY_OPEN);
-  voiceSessions.set(session.session_id, false);
+  const sessionPath = `${base}/${encodeURIComponent(session.session_id)}`;
   let outcome: RunOutcome;
   try {
     outcome = await collectRun(
-      deps.openSocket(`${base}/${encodeURIComponent(session.session_id)}/ws`),
+      deps.openSocket(`${sessionPath}/ws`),
       command,
       deps.timing ?? {
         quietMs: TERMINAL_QUIET_MS,
@@ -306,12 +321,20 @@ export async function runProjectTerminalCommand(
       },
     );
   } catch (error) {
-    // Nothing was typed, so the shell is as voice left it.
-    voiceSessions.set(session.session_id, true);
+    // Nothing was typed into the shell voice just opened; close it again.
+    await deps.fetchJson(sessionPath, { method: "DELETE" }).catch(() => {});
     throw error;
   }
-  if (outcome.ended) voiceSessions.delete(session.session_id);
-  else voiceSessions.set(session.session_id, outcome.quiet);
+  let closed = false;
+  if (outcome.finished) {
+    // Back at its prompt, the shell holds nothing worth keeping.
+    closed = await deps
+      .fetchJson(sessionPath, { method: "DELETE" })
+      .then(() => true)
+      .catch(() => false);
+  } else if (!outcome.ended) {
+    voiceStillRunning.add(session.session_id);
+  }
   const output = stripTerminalEscapes(outcome.text);
   return {
     project_id: projectId,
@@ -320,7 +343,9 @@ export async function runProjectTerminalCommand(
     command,
     output: output.slice(-TERMINAL_OUTPUT_MAX_CHARS),
     truncated: output.length > TERMINAL_OUTPUT_MAX_CHARS,
-    window_elapsed_before_quiet: !outcome.quiet && outcome.ended === null,
+    finished: outcome.finished,
+    still_running: !outcome.finished && outcome.ended === null,
+    terminal_closed: closed,
     session_ended: outcome.ended,
   };
 }

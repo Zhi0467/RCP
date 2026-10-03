@@ -962,15 +962,18 @@ listed `repository_id` and one `command` line of 1 to 1000 characters with no
 control characters; the tool adds the Enter. Every run shows a card, even when
 the panel is set to **Run without confirming**. The card pins the repository,
 the machine, and the exact command, and Confirm rereads the listing. Voice
-types only into a terminal it started in this page, and only after its last
-command there went quiet; an already open terminal is refused before the card,
-so a confirmed line never joins a half-typed line or feeds a running program.
-The run opens that session, waits for the replayed output to settle, types the
-line once, and collects output until it is quiet for 1.5
-seconds or 10 seconds pass. It strips terminal escape codes and returns the
-last 4000 characters as untrusted content, with flags for truncation and for a
-window that ended before output went quiet. A confirmed command has the
-member's full terminal power.
+never reuses a shell. Each run opens a fresh one with `require_new`, so a
+confirmed line never joins a half-typed line or feeds a running program; when
+the repository already has an open terminal, the run is refused before the
+card, and the server's 409 covers one opened after that check. The run waits
+for the new shell's prompt to settle, types the line once, and reads output
+until the same prompt returns on its own line or 10 seconds pass (with no
+prompt to recognize, until output is quiet for 1.5 seconds). A command that
+finished closes its shell. One still running stays open in the Terminals tab,
+and voice does not type into it again. The result strips terminal escape codes
+and returns the last 4000 characters as untrusted content, with `finished`,
+`still_running`, and truncation flags. A confirmed command has the member's
+full terminal power.
 
 The page owns the session's lifetime. It ends the session on End, the idle
 limit, the hard cap, identity or team-session loss, a 401 or 403 on a read,

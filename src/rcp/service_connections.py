@@ -20,7 +20,8 @@ _MEMBER_LOCKS = KeyedLocks()
 
 class PurposesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    purposes: list[Literal["transcription", "voice"]] = Field(min_length=1, max_length=2)
+    # Empty is allowed: turning off a connection's last use keeps its key, unused.
+    purposes: list[Literal["transcription", "voice"]] = Field(max_length=2)
 
     @field_validator("purposes")
     @classmethod

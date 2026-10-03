@@ -46,7 +46,7 @@ Close this handoff when all of these hold on real hardware:
   messages; start an Experiment; authorize Auto-research with any budget, like
   the visible form; gracefully stop an exact Experiment or Auto-research
   episode; list the project's terminals, and type one command line into a
-  repository's terminal and hear its recent output. A terminal command always
+  fresh terminal for a repository and hear its output. A terminal command always
   waits for a tap, even with **Run without confirming**. The terminal tools are
   voice-only; WebMCP does not register them.
 - **It does not read artifact contents.** Existing artifact tools return
