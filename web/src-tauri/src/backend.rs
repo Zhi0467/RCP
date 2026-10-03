@@ -30,10 +30,13 @@ const HEALTH_READY_TIMEOUT: Duration = Duration::from_secs(12);
 // result. A full `npm run build` takes far longer than a packaged backend's
 // startup, so the launch deadline has to cover it. Keeping the packaged 12s here
 // is what made every cold dev start time out while a warm one succeeded.
+// The packaged one-file backend unpacks itself before it reports, which took
+// 13-14s on a loaded MacBook Air with any data directory, so 12s refused a
+// healthy packaged start too.
 const LAUNCH_RESULT_TIMEOUT: Duration = if cfg!(debug_assertions) {
     Duration::from_secs(180)
 } else {
-    HEALTH_READY_TIMEOUT
+    Duration::from_secs(60)
 };
 // The packaged one-file supervisor can report SIGTERM after Uvicorn completed
 // teardown. packaging/smoke-backend.py establishes this exact stderr receipt.
