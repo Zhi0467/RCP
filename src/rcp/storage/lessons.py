@@ -40,13 +40,6 @@ def migrate_operational_lessons(connection: sqlite3.Connection) -> None:
 
 
 def _edit_authorized(connection: sqlite3.Connection, operation_id: str) -> bool:
-    if (
-        connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='consolidation_runs'"
-        ).fetchone()
-        is None
-    ):
-        return False
     return (
         connection.execute(
             "SELECT 1 FROM consolidation_runs WHERE operation_id=?", (operation_id,)

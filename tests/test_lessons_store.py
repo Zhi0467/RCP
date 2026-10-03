@@ -36,8 +36,11 @@ def store(tmp_path):
 
 def consolidate(store):
     with store.connection() as connection:
-        connection.execute("CREATE TABLE consolidation_runs(operation_id TEXT)")
-        connection.execute("INSERT INTO consolidation_runs VALUES ('turn')")
+        connection.execute(
+            "INSERT INTO consolidation_runs(run_id,project_id,occurrence_date,operation_id,"
+            "authorization_id,authorized_by_json,input_head,created_at) "
+            "VALUES ('run','project','2026-10-03','turn','authorization','{}',0,'now')"
+        )
 
 
 def human_edit(store, lesson_id):

@@ -473,6 +473,12 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
         project_id = connection.execute("SELECT project_id FROM projects LIMIT 1").fetchone()[0]
         for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
             connection.execute(f"DROP TABLE {table}")
+        for table in (
+            "consolidation_schedules",
+            "consolidation_runs",
+            "consolidation_apply_receipts",
+        ):
+            connection.execute(f"DROP TABLE {table}")
         connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_id")
         connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
         connection.execute("ALTER TABLE episode_reports ADD COLUMN html TEXT NOT NULL DEFAULT ''")

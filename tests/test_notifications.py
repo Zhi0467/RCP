@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ from rcp.notifications import NotificationSender
 from rcp.server_ops.maintenance import RuntimeAdmissionGate
 from rcp.storage import ProjectRecord
 
-from .helpers import append_fixture_patch, create_named_app
+from .helpers import append_fixture_patch, authorized_human, create_named_app
 from .test_episode_api_serialization import _auto_episode
 
 
@@ -52,6 +53,72 @@ def _blocker_patch(identifier):
             }
         ],
     )
+
+
+def test_consolidation_notifications_observed_once_and_closed_items_drop(manifest, tmp_path):
+    app, store, project_id, device = _setup(manifest, tmp_path)
+    now = datetime.fromisoformat(store.now())
+    schedule = store.put_consolidation_schedule(
+        project_id,
+        local_time="02:00",
+        timezone="UTC",
+        authorized_by=authorized_human(store),
+        next_due_at=(now - timedelta(minutes=1)).isoformat(),
+    )
+    run = store.claim_consolidation_occurrence(
+        schedule,
+        occurrence_date=now.date().isoformat(),
+        next_due_at=(now + timedelta(days=1)).isoformat(),
+        input_head=0,
+        error_code="authorizer_not_member",
+        error_message="Authorization refused.",
+    )
+    sender = app.state.notification_sender
+    sender.run_pass()
+    sender.run_pass()
+    assert [row["item_id"] for row in store.notification_outbox()] == [run.run_id]
+    assert sender.pending_desktop(device["device_id"])[0]["reason"] == "consolidation"
+    store.resolve_consolidation_run(
+        project_id, run.run_id, state="dismissed", resolved_by=authorized_human(store)
+    )
+    assert not store.guard_notification_delivery(
+        device["device_id"], store.notification_outbox()[0]["notification_id"]
+    )
+    assert sender.pending_desktop(device["device_id"]) == []
+    sender.run_pass()
+    assert store.notification_outbox() == []
+
+
+def test_consolidation_expiry_notice_observes_offline_expiry_and_rejects_old_generation(
+    manifest, tmp_path
+):
+    from rcp.limits import CONSOLIDATION_AUTHORIZATION_DAYS
+
+    app, store, project_id, device = _setup(manifest, tmp_path)
+    now = datetime.fromisoformat(store.now())
+    schedule = store.put_consolidation_schedule(
+        project_id,
+        local_time="02:00",
+        timezone="UTC",
+        authorized_by=authorized_human(store),
+        next_due_at=now.isoformat(),
+        now=(now - timedelta(days=CONSOLIDATION_AUTHORIZATION_DAYS + 1)).isoformat(),
+    )
+    sender = app.state.notification_sender
+    sender.run_pass()
+    sender.run_pass()
+    assert [row["item_id"] for row in store.notification_outbox()] == [schedule.authorization_id]
+    renewed = store.put_consolidation_schedule(
+        project_id,
+        local_time="02:00",
+        timezone="UTC",
+        authorized_by=authorized_human(store),
+        next_due_at=now.isoformat(),
+    )
+    assert renewed.authorization_id != schedule.authorization_id
+    assert sender.pending_desktop(device["device_id"]) == []
+    sender.run_pass()
+    assert store.notification_outbox() == []
 
 
 @pytest.mark.parametrize("nonempty", [False, True])

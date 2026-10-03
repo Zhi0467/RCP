@@ -45,6 +45,12 @@ RESTORE_DIRECTORY_MODE = 0o700
 # that release can restore its own archives.
 SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
     {
+        # Operational lessons with graph consolidation, fresh, upgraded in place,
+        # and both artifact-import storage boundaries.
+        "9210f600feae63c48f6ecee14a058f17ef3822d8851588c9b174bd58e12217a1",
+        "88d31b75745ff44fddc899cbca6ab984debbda2b9bb4837329906a1cec08ab8c",
+        "e134305eaeaf09636a28dc9a6016863ba0662a7cba762e4237599c94d74c4961",
+        "f6cbbe7bd4c324857d8c257ff1f8a6972e1aedafa9f5a6867a0865f1d312472c",
         # Durable human-answer chat projection revisions, fresh and upgraded in place.
         "05024a3725beb284ccb5cf2b05b5e71d075db571ed1b38fcf427e4865e557cf7",
         "f2c94ee3b39dab4cc48086634075ccbe10635afe1043399173cbebf8260e6bfa",

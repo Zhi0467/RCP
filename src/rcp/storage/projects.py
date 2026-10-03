@@ -670,6 +670,14 @@ class ProjectStoreMixin:
                     """,
                     (project_id,),
                 ).rowcount
+                for table in (
+                    "consolidation_schedules",
+                    "consolidation_runs",
+                    "consolidation_apply_receipts",
+                ):
+                    counts[table] = connection.execute(
+                        f"DELETE FROM {table} WHERE project_id = ?", (project_id,)
+                    ).rowcount
                 counts["questions"] = connection.execute(
                     "DELETE FROM questions WHERE project_id = ?", (project_id,)
                 ).rowcount
