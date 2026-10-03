@@ -51,6 +51,9 @@ SUPPORTED_RESTORE_DATABASE_SCHEMAS = frozenset(
         "ae4db09460344d181ac41feb6260227d9e280eea54b417be7690f847f509a2e0",
         "e134305eaeaf09636a28dc9a6016863ba0662a7cba762e4237599c94d74c4961",
         "f6cbbe7bd4c324857d8c257ff1f8a6972e1aedafa9f5a6867a0865f1d312472c",
+        # Pre-consolidation shape (pre-consolidation-v16-61f6fc1) as an upgraded
+        # server reached it, missed when its era shipped.
+        "2b754c67bf190e08d00b576a29dbfc7cfb6006db18961d7f9f41416388a29569",
         # Durable human-answer chat projection revisions, fresh and upgraded in place.
         "05024a3725beb284ccb5cf2b05b5e71d075db571ed1b38fcf427e4865e557cf7",
         "f2c94ee3b39dab4cc48086634075ccbe10635afe1043399173cbebf8260e6bfa",
