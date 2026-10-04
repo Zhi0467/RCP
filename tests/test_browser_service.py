@@ -55,6 +55,9 @@ def test_failed_cleanup_is_durable_retried_and_blocks_ensure(tmp_path, monkeypat
     result = service.ensure_session("owner", execution=execution, workspace_dir="/workspace")
     assert isinstance(result, Unavailable) and result.reason_code == "cleanup_pending"
     assert all(call["action"] == "close" for call in calls)
+    # Another owner's stuck cleanup never blocks this one.
+    other = service.ensure_session("other", execution=execution, workspace_dir="/other")
+    assert isinstance(other, Unavailable) and other.reason_code == "host_unreachable"
     reachable = True
     assert service._retry_pending(host=execution.host, partition=None, data_dir=tmp_path)
     assert not pending[0].exists()

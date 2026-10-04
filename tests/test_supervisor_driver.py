@@ -481,10 +481,34 @@ def test_prepare_release_replaces_a_build_left_unsealed_by_a_failed_attempt(monk
 
 def test_browser_libraries_run_only_from_the_verified_operator(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(
-        driver.subprocess, "run", lambda argv, **kwargs: calls.append((argv, kwargs))
-    )
-    driver.install_browser_libraries(tmp_path)
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(driver.subprocess, "run", run)
+    assert driver.install_browser_libraries(tmp_path) is None
     argv, kwargs = calls.pop()
     assert argv == (str(tmp_path / "bin/python"), "-I", "-m", "rcp.browser.libraries", "--install")
     assert kwargs["check"] and kwargs["timeout"] > 0
+
+
+def test_browser_libraries_never_block_an_update_or_rollback(monkeypatch, tmp_path):
+    # A release from before the browser has no module: nothing runs, nothing is reported.
+    calls = []
+    monkeypatch.setattr(
+        driver.subprocess,
+        "run",
+        lambda argv, **kwargs: (calls.append(argv), SimpleNamespace(returncode=3))[-1],
+    )
+    assert driver.install_browser_libraries(tmp_path) is None
+    assert len(calls) == 1
+
+    # A failed apt run becomes a reported warning instead of a failed update.
+    def failing(argv, **kwargs):
+        if "--install" in argv:
+            raise driver.subprocess.CalledProcessError(100, argv, stderr="apt lock held")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(driver.subprocess, "run", failing)
+    assert "apt lock held" in driver.install_browser_libraries(tmp_path)

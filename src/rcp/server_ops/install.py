@@ -84,7 +84,6 @@ def prepare_install_command(
         )
         try:
             resolved.validate_host()
-            resolved.converge_browser_libraries()
             resolved.converge_account_and_layout()
             for directory in (
                 resolved.layout.supervisor_root,
@@ -131,11 +130,6 @@ class LinuxInstallMachine:
         self.layout = layout
         self._service_uid: int | None = None
         self._service_gid: int | None = None
-
-    def converge_browser_libraries(self) -> None:
-        from rcp.browser.libraries import install_system_libraries
-
-        install_system_libraries()
 
     def validate_host(self) -> HostFacts:
         os_release = _read_os_release(Path("/etc/os-release"))

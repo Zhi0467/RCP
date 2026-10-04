@@ -163,10 +163,14 @@ def release_receipt(release: VerifiedRelease, paths: Paths) -> dict:
     )
 
 
-def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
+def prepare_release(
+    runtime: SystemRuntime, release: VerifiedRelease, warnings: list[dict] | None = None
+) -> dict:
     receipt = release_receipt(release, runtime.paths)
     operator = install_operator_console(release.directory, runtime.paths.supervisor)
-    install_browser_libraries(operator)
+    warning = install_browser_libraries(operator)
+    if warning is not None and warnings is not None:
+        warnings.append({"name": "browser_libraries", "value": warning})
     inventory = runtime.paths.supervisor / "release-receipts"
     _root_directory(inventory, mode=0o755)
     sealed = inventory / f"{release.build}.json"
@@ -194,17 +198,41 @@ def prepare_release(runtime: SystemRuntime, release: VerifiedRelease) -> dict:
     return receipt
 
 
-def install_browser_libraries(operator: Path) -> None:
-    """Run the candidate's fixed dependency owner from root-verified code."""
+def install_browser_libraries(operator: Path) -> str | None:
+    """Best effort, like retention: browser libraries never block an update or a rollback."""
+    python = str(operator / "bin/python")
+    environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
     try:
+        # A release that predates the agent browser has nothing to install.
+        present = subprocess.run(
+            (python, "-I", "-c", _BROWSER_LIBRARIES_PRESENT),
+            env=environment,
+            timeout=INSTALL_TIMEOUT_SECONDS,
+            check=False,
+        )
+        if present.returncode == 3:
+            return None
+        if present.returncode:
+            return "not installed: the release's Python could not inspect its browser module"
         subprocess.run(
-            (str(operator / "bin/python"), "-I", "-m", "rcp.browser.libraries", "--install"),
-            env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"},
+            (python, "-I", "-m", "rcp.browser.libraries", "--install"),
+            env=environment,
             timeout=INSTALL_TIMEOUT_SECONDS,
             check=True,
+            capture_output=True,
+            text=True,
         )
+    except subprocess.CalledProcessError as exc:
+        return f"not installed: {(exc.stderr or exc.stdout or str(exc)).strip()[-512:]}"
     except (OSError, subprocess.SubprocessError) as exc:
-        raise SupervisorError("Chromium system library installation failed.") from exc
+        return f"not installed: {str(exc)[:512]}"
+    return None
+
+
+_BROWSER_LIBRARIES_PRESENT = (
+    "import importlib.util, sys\n"
+    "sys.exit(0 if importlib.util.find_spec('rcp.browser.libraries') else 3)"
+)
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -260,7 +288,8 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
         )
         return 3
     runtime.require_capability(previous)
-    target = prepare_release(runtime, release)
+    warnings: list[dict] = []
+    target = prepare_release(runtime, release, warnings)
     store = store_for(paths)
     coordinator = Coordinator(store, runtime)
     result = coordinator.deploy(previous, target)
@@ -270,6 +299,7 @@ def update(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) ->
     ]
     if coordinator.backup_warning is not None:
         fields.append({"name": "backup_warning", "value": coordinator.backup_warning})
+    fields.extend(warnings)
     fields.extend(_retention_after_commit(runtime, store))
     emitter.emit(
         "succeeded",
@@ -322,6 +352,7 @@ def _emit_adoption(adoption: dict, emitter: EventEmitter) -> int:
 
 @_serialized_preparation
 def install(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -> int:
+    warnings: list[dict] = []
     runtime = SystemRuntime(paths, allow_legacy_config=True)
     _root_directory(paths.operations, mode=0o700)
     with store_for(paths).locked():
@@ -342,7 +373,7 @@ def install(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
         else:
             release = followed_release(runtime)
             _require_supervisor(release)
-            selected = prepare_release(runtime, release)
+            selected = prepare_release(runtime, release, warnings)
             bundle = release.directory
             if os.path.lexists(paths.current):
                 if runtime.config["schema_version"] != 3:
@@ -398,6 +429,7 @@ def install(arguments, emitter: EventEmitter, *, paths: Paths = DEFAULT_PATHS) -
         "Optional: to let members connect phones and other devices, put the server on a "
         "tailnet and write its https address to /etc/rcp/team.toml; docs/device-pairing.md "
         "walks through it.",
+        fields=warnings,
     )
     return 0
 

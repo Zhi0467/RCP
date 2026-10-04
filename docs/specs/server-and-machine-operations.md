@@ -112,6 +112,8 @@ managed through `uv`; Git, OpenSSH, system-wide `uv`, and the upstream `age`
 CLI in the range `>=1.0.0,<2.0.0` are prerequisites. Installation validates
 those system tools. Root install and release update also install the fixed
 Chromium library package set for the supported Ubuntu release through apt-get.
+This step is best effort: a release that predates the browser skips it, and an
+apt failure is reported as a warning field, never a failed install or update.
 They do not modify apt repositories. Ubuntu 24.04 uses the corresponding t64
 packages. Browser readiness maps missing shared libraries to an exact apt-get
 command; ordinary browser install never elevates or installs OS packages.

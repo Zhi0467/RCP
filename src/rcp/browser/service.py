@@ -129,10 +129,14 @@ def _save_pending(path: Path, *, host: str, request: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _retry_pending(*, host: str, partition: str | None, data_dir: Path) -> bool:
-    """Retry this host's queued closures before admitting any new lease."""
+def _retry_pending(
+    *, host: str, partition: str | None, data_dir: Path, owner_token: str | None = None
+) -> bool:
+    """Retry one queued cleanup; report whether this owner (or, for None, the host) is clear."""
     try:
-        return _retry_pending_checked(host=host, partition=partition, data_dir=data_dir)
+        return _retry_pending_checked(
+            host=host, partition=partition, data_dir=data_dir, owner_token=owner_token
+        )
     except (OSError, ValueError) as exc:
         logger.warning("Browser cleanup journal could not be processed: %s", exc)
         return False
@@ -154,21 +158,28 @@ def _read_pending(path: Path) -> dict:
     return pending
 
 
-def _retry_pending_checked(*, host: str, partition: str | None, data_dir: Path) -> bool:
+def _retry_pending_checked(
+    *, host: str, partition: str | None, data_dir: Path, owner_token: str | None
+) -> bool:
     with _PENDING_LOCK:
-        for path in (data_dir / "browser" / "pending").glob("*.json"):
-            pending = _read_pending(path)
-            if pending["host"] != host:
-                continue
+        queued = [
+            (path, pending)
+            for path in (data_dir / "browser" / "pending").glob("*.json")
+            if (pending := _read_pending(path))["host"] == host
+        ]
+        # This owner's own cleanup goes first; a stuck entry of another owner never blocks it.
+        queued.sort(key=lambda item: item[1]["request"]["owner_token"] != owner_token)
+        if queued:
+            path, pending = queued[0]
             result = _invoke(pending["request"], host=host, partition=partition, data_dir=data_dir)
-            if result.get("reason_code") not in (None, "lost"):
-                return False
-            path.unlink()
             # One retry per call bounds cleanup latency even after a long outage.
-            return not any(
-                _read_pending(other)["host"] == host for other in path.parent.glob("*.json")
-            )
-    return True
+            if result.get("reason_code") in (None, "lost"):
+                path.unlink()
+                queued = queued[1:]
+        return not any(
+            owner_token is None or pending["request"]["owner_token"] == owner_token
+            for _path, pending in queued
+        )
 
 
 def ensure_session(
@@ -178,7 +189,9 @@ def ensure_session(
         data_dir = _data_dir()
         host = execution.host if execution else ""
         partition = execution.transport_partition if execution else None
-        if not _retry_pending(host=host, partition=partition, data_dir=data_dir):
+        if not _retry_pending(
+            host=host, partition=partition, data_dir=data_dir, owner_token=owner_token
+        ):
             return Unavailable(
                 reason_code="cleanup_pending", detail="Browser cleanup is still pending."
             )

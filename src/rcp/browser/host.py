@@ -45,6 +45,36 @@ console.log(chromium.executablePath());
 """
 
 
+# The daemon outlives the turn under an OS owner and its environment is written to
+# disk (plist or wrapper), so it gets only what a browser needs, never login secrets.
+_DAEMON_ENVIRONMENT = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TMPDIR",
+        "TZ",
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "XDG_RUNTIME_DIR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "NO_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "no_proxy",
+        "all_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+    }
+)
+
+
 class UnavailableError(RuntimeError):
     def __init__(self, code: str, detail: str):
         super().__init__(detail)
@@ -148,6 +178,9 @@ class HostRuntime:
         self.cli = self.tools / "node_modules" / "@playwright" / "cli" / "playwright-cli.js"
         self.core = self.tools / "node_modules" / "playwright-core"
         self.backend = "launchd" if platform.system() == "Darwin" else "systemd_user"
+
+    def daemon_env(self) -> dict[str, str]:
+        return {key: value for key, value in self.env.items() if key in _DAEMON_ENVIRONMENT}
 
     def run(self, command: list[str], *, cwd: str | None = None, check: bool = True):
         remaining = self.deadline - time.monotonic()
@@ -353,7 +386,7 @@ class HostRuntime:
                         "Label": record["handle"],
                         "ProgramArguments": command,
                         "WorkingDirectory": record["workspace_dir"],
-                        "EnvironmentVariables": self.env,
+                        "EnvironmentVariables": self.daemon_env(),
                         "RunAtLoad": True,
                         "KeepAlive": False,
                         "StandardOutPath": str(owner_dir / "daemon.log"),
@@ -375,7 +408,12 @@ class HostRuntime:
                 wrapper,
                 "#!/bin/sh\nexec "
                 + shlex.join(
-                    ["/usr/bin/env", "-i", *[f"{k}={v}" for k, v in self.env.items()], *command]
+                    [
+                        "/usr/bin/env",
+                        "-i",
+                        *[f"{k}={v}" for k, v in self.daemon_env().items()],
+                        *command,
+                    ]
                 )
                 + "\n",
             )
