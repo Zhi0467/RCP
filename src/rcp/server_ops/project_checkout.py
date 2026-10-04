@@ -550,18 +550,18 @@ class ProjectCheckoutManager:
         *,
         expected_commit: str | None,
     ) -> str:
-        checks = (
-            (("rev-parse", "--is-inside-work-tree"), "true"),
-            (("rev-parse", "--show-toplevel"), repository_path),
+        checkout = self._git_at(
+            machine,
+            material,
+            repository_path,
+            ("rev-parse", "--is-inside-work-tree", "--show-toplevel"),
         )
-        for arguments, expected in checks:
-            result = self._git_at(machine, material, repository_path, arguments)
-            if result.returncode != 0 or result.stdout.strip() != expected:
-                raise self._checkout_conflict(
-                    material,
-                    repository_path,
-                    "The central path is not the exact non-bare Git working tree.",
-                )
+        if checkout.returncode != 0 or checkout.stdout.strip() != f"true\n{repository_path}":
+            raise self._checkout_conflict(
+                material,
+                repository_path,
+                "The central path is not the exact non-bare Git working tree.",
+            )
         remotes = self._git_at(machine, material, repository_path, ("remote",))
         if remotes.returncode != 0 or remotes.stdout.splitlines() != ["origin"]:
             raise self._checkout_conflict(
@@ -569,71 +569,54 @@ class ProjectCheckoutManager:
                 repository_path,
                 "The central checkout must have exactly one remote named origin.",
             )
-        remote = self._git_at(
-            machine,
-            material,
-            repository_path,
-            ("config", "--local", "--get-all", "remote.origin.url"),
+        unsafe_config = re.compile(
+            r"^(include(\..*)?|includeif\..*|"
+            r"url\..*\.(insteadof|pushinsteadof)|"
+            r"remote\..*\.(uploadpack|receivepack)|"
+            r"core\.fsmonitor|"
+            r"filter\..*\.(clean|smudge|process|required))$",
+            re.DOTALL,
         )
-        push_remote = self._git_at(
-            machine,
-            material,
-            repository_path,
-            ("config", "--local", "--get-all", "remote.origin.pushurl"),
-        )
-        if (
-            remote.returncode != 0
-            or remote.stdout.splitlines() != [material.repository.ssh_clone_url]
-            or push_remote.returncode not in {0, 1}
-            or (
-                push_remote.returncode == 0
-                and push_remote.stdout.splitlines() != [material.repository.ssh_clone_url]
-            )
-            or (push_remote.returncode == 1 and push_remote.stdout)
-        ):
-            raise self._checkout_conflict(
-                material,
-                repository_path,
-                "The central checkout origin does not match the canonical GitHub repository.",
-            )
-        fetch_refspec = self._git_at(
-            machine,
-            material,
-            repository_path,
-            ("config", "--local", "--get-all", "remote.origin.fetch"),
-        )
-        if fetch_refspec.returncode != 0 or fetch_refspec.stdout.splitlines() != [
-            "+refs/heads/*:refs/remotes/origin/*"
-        ]:
-            raise self._checkout_conflict(
-                material,
-                repository_path,
-                "The central checkout has an unsafe origin fetch mapping; RCP left it intact.",
-            )
-        unsafe_config = self._git_at(
+        # Keep unrelated values out of the bounded helper response. A complete
+        # --list can exceed that bound even when every checked setting is safe.
+        local_config = self._git_at(
             machine,
             material,
             repository_path,
             (
                 "config",
                 "--local",
-                "--no-includes",
-                "--name-only",
+                "--null",
                 "--get-regexp",
-                (
-                    r"^(include(\..*)?|includeif\..*|"
-                    r"url\..*\.(insteadof|pushinsteadof)|"
-                    r"remote\..*\.(uploadpack|receivepack)|"
-                    r"core\.fsmonitor|"
-                    r"filter\..*\.(clean|smudge|process|required))$"
-                ),
+                unsafe_config.pattern
+                + r"|^(remote\.origin\.(url|pushurl|fetch)|core\.(sshcommand|hookspath))$",
             ),
         )
+        config: dict[str, list[str]] = {}
+        for record in local_config.stdout.split("\0"):
+            if record:
+                key, _, value = record.partition("\n")
+                # Git normalizes section/variable case, but preserves subsection
+                # case. Reproduce get-all's line output, including empty values.
+                config.setdefault(key, []).extend((value + "\n").splitlines())
         if (
-            unsafe_config.returncode not in {0, 1}
-            or unsafe_config.returncode == 0
-            or unsafe_config.stdout
+            local_config.returncode != 0
+            or config.get("remote.origin.url") != [material.repository.ssh_clone_url]
+            or config.get("remote.origin.pushurl", [material.repository.ssh_clone_url])
+            != [material.repository.ssh_clone_url]
         ):
+            raise self._checkout_conflict(
+                material,
+                repository_path,
+                "The central checkout origin does not match the canonical GitHub repository.",
+            )
+        if config.get("remote.origin.fetch") != ["+refs/heads/*:refs/remotes/origin/*"]:
+            raise self._checkout_conflict(
+                material,
+                repository_path,
+                "The central checkout has an unsafe origin fetch mapping; RCP left it intact.",
+            )
+        if any(unsafe_config.search(key) for key in config):
             raise self._checkout_conflict(
                 material,
                 repository_path,
@@ -641,31 +624,15 @@ class ProjectCheckoutManager:
                 "RCP left it intact.",
             )
         ssh_command = deploy_key_ssh_command(material)
-        stored_ssh = self._git_at(
-            machine,
-            material,
-            repository_path,
-            ("config", "--local", "--get-all", "core.sshCommand"),
-        )
-        if stored_ssh.returncode not in {0, 1} or (
-            stored_ssh.returncode == 0 and stored_ssh.stdout.splitlines() != [ssh_command]
-        ):
+        stored_ssh = config.get("core.sshcommand")
+        if stored_ssh is not None and stored_ssh != [ssh_command]:
             raise self._checkout_conflict(
                 material,
                 repository_path,
                 "The central checkout contains unsafe local Git SSH configuration; RCP left it intact.",
             )
-        stored_hooks = self._git_at(
-            machine,
-            material,
-            repository_path,
-            ("config", "--local", "--get-all", "core.hooksPath"),
-        )
-        if (
-            stored_hooks.returncode not in {0, 1}
-            or (stored_hooks.returncode == 0 and stored_hooks.stdout.splitlines() != ["/dev/null"])
-            or (stored_hooks.returncode == 1 and stored_hooks.stdout)
-        ):
+        stored_hooks = config.get("core.hookspath")
+        if stored_hooks is not None and stored_hooks != ["/dev/null"]:
             raise self._checkout_conflict(
                 material,
                 repository_path,
@@ -736,7 +703,7 @@ class ProjectCheckoutManager:
                 repository_path,
                 "The central checkout changed during verification; RCP left it intact.",
             )
-        if stored_ssh.returncode == 1:
+        if stored_ssh is None:
             configured = self._git_at(
                 machine,
                 material,
@@ -749,7 +716,7 @@ class ProjectCheckoutManager:
                     repository_path,
                     "The central checkout could not configure its repository deploy key.",
                 )
-        if stored_hooks.returncode == 1:
+        if stored_hooks is None:
             configured = self._git_at(
                 machine,
                 material,
