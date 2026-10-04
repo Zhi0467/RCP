@@ -130,20 +130,11 @@ pmset -g | grep SleepDisabled
 ls -l /etc/sudoers.d/rcp-keep-awake /Library/LaunchDaemons/org.rcp.keep-awake-reset.plist
 ```
 
-1. **Install.** In Space Settings, tick **Lid-closed mode**, read the dialog,
-   and press **Install**. Cancel the admin prompt once: nothing changes. Then
-   approve it: the three paths exist, and the flag reads 0.
-2. **Overnight.** Start an Auto-research episode that waits on a compute job.
-   Close the lid overnight. In the morning, the episode has advanced through
-   the watcher wake, the continuation, and a Patch apply.
-3. **Faults.** With lid mode active, `kill -9` the backend worker, then repeat
-   with `kill -STOP`. Within about a minute the flag reads 0 and a closed Mac
-   sleeps. Kill the watchdog: the next pass replaces it or releases.
-4. **Reboot.** With the flag set by RCP, restart. After login the flag reads 0.
-5. **Battery.** Unplug and let it reach 20%: lid mode releases and a closed
-   Mac sleeps. Plug in: it re-arms.
-6. **Uninstall.** Press **Uninstall**: the flag reads 0, and the sudoers file
-   and LaunchDaemon are gone.
+1. Install, then uninstall.
+2. With the flag set and the lid closed, SIGKILL the backend: the flag
+   clears and the Mac sleeps within the watchdog's stale window.
+3. Reboot with the flag set: the flag is clear before login.
+4. One overnight lid-closed Auto-research run advances.
 
 To clear the flag by hand:
 

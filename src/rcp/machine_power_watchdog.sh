@@ -117,8 +117,7 @@ release() {
     atomic result "generation=$generation" "cause=$release_cause" "at=$now" \
         'clear_failed=0' 'sleep_failed=0' 'complete=0'
     # Never clear somebody else's flag, including before our first activation.
-    if [ "$(field activation generation)" = "$generation" ] &&
-        [ "$(field activation set)" = 1 ]; then
+    if [ "$owned" = 1 ]; then
         if ! bounded "$sudo" -n "$pmset" -a disablesleep 0 || ! flag_is 0; then
             clear_failed=1
         else
@@ -135,6 +134,24 @@ release() {
 
 worker_pid=
 worker_start=
+owned=0
+# Only recovery needs persisted ownership; this process retains its own in memory.
+if [ "$(field activation generation)" = "$generation" ] &&
+    [ "$(field activation set)" = 1 ]; then
+    owned=1
+fi
+signal_release() {
+    trap '' TERM HUP INT
+    # A signal interrupts wait; finish the bounded command before clearing.
+    [ -z "${child:-}" ] || wait "$child" 2>/dev/null
+    if [ -n "${timer:-}" ]; then
+        kill "$timer" 2>/dev/null
+        wait "$timer" 2>/dev/null
+    fi
+    release watchdog_lost
+    exit 0
+}
+trap signal_release TERM HUP INT
 revoked=$(field revoked generation) || revoked=0
 case "$revoked" in ''|*[!0-9]*) exit 2 ;; esac
 [ "$generation" -gt "$revoked" ] || exit 0
@@ -187,8 +204,7 @@ HEARTBEAT
         release "$cause"
         exit 0
     fi
-    if [ "$(field activation generation)" != "$generation" ] ||
-        [ "$(field activation set)" != 1 ]; then
+    if [ "$owned" != 1 ]; then
         # Refuse an external flag even if it changed after the backend's safety pass.
         if ! flag_is 0; then
             release reading_failed
@@ -197,6 +213,7 @@ HEARTBEAT
         # Ownership is recorded before attempting the write, including an interrupted write.
         atomic activation "generation=$generation" "pid=$worker_pid" \
             "start=$worker_start" 'set=1' || exit 1
+        owned=1
         if ! bounded "$sudo" -n "$pmset" -a disablesleep 1 || ! flag_is 1; then
             release reading_failed
             exit 1

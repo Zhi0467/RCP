@@ -37,6 +37,8 @@ Confirmed by the human 2026-10-01.
 
 ## What this gives up
 
+- **A closed-lid release runs `pmset sleepnow` even with an external display attached.**
+
 - **Any process in the enrolled account can toggle the flag**, agent shells
   included. The sudoers rule names a user, not an app.
 - **A removed sudoers rule can strand the flag.** If something deletes it while

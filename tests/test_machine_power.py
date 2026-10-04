@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -12,7 +13,6 @@ from unittest.mock import Mock
 import pytest
 
 from rcp import machine_power as power
-from rcp.limits import MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
 from rcp.machine_power_macos import InstallError, InstallStatus, MacOSProfile
 from rcp.storage import AppStore
 from tests.helpers import wait_for_entry, wait_until
@@ -343,12 +343,13 @@ class LidMachine:
         self.profile.readings["flag"] = value
 
     def run(self, argv, timeout):
-        assert timeout == MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
-        assert argv[0] == "/bin/kill"
-        self.commands.append(argv)
-        return subprocess.CompletedProcess(
-            argv, int(argv[1] == "-0" and not self.group_alive), "", ""
-        )
+        raise AssertionError(f"unexpected command: {argv}")
+
+    def killpg(self, pid, sig):
+        assert any(child.pid == pid for _, child in self.children)
+        self.commands.append((pid, sig))
+        if not self.group_alive:
+            raise ProcessLookupError
 
     def spawn(self, argv):
         child = Process(500 + len(self.children))
@@ -401,8 +402,9 @@ class LidMachine:
 
 
 @pytest.fixture
-def lid_machine(tmp_path):
+def lid_machine(tmp_path, monkeypatch):
     lid_machine = LidMachine(tmp_path)
+    monkeypatch.setattr(power.os, "killpg", lid_machine.killpg)
     yield lid_machine
     lid_machine.close()
 
@@ -698,6 +700,24 @@ def test_shutdown_replaces_dead_watchdog_to_release(lid_machine, off_published):
     assert lid_machine.flag is False
 
 
+@pytest.mark.parametrize("group_alive", [False, True])
+def test_watchdog_dies_while_shutdown_waits(lid_machine, group_alive):
+    lid_machine.activate()
+    previous = lid_machine.controller._watchdog
+    previous.on_wait = lambda: setattr(previous, "returncode", -9)
+    lid_machine.group_alive = group_alive
+    lid_machine.controller.stop()
+    assert (previous.pid, signal.SIGTERM) in lid_machine.commands
+    if group_alive:
+        assert lid_machine.controller._watchdog is previous
+        assert lid_machine.flag is True
+        assert lid_machine.controller.status()["cleanup_failure"]["kind"] == "clear_failed"
+    else:
+        assert lid_machine.flag is False
+        assert power.read_record(lid_machine.root / "heartbeat")["generation"] == "2"
+    lid_machine.group_alive = False
+
+
 def test_surviving_watchdog_commands_prevent_replacement(lid_machine):
     lid_machine.activate()
     previous = lid_machine.controller._watchdog
@@ -730,11 +750,6 @@ def test_controller_and_real_watchdog_release_and_retire_crashed_group(tmp_path)
     profile.readings["battery"] = (True, 75)
     profile.read_flag = lambda: (root / "flag").read_text().strip() == "1"
 
-    def run(argv, timeout):
-        assert argv[0] == "/bin/kill"
-        assert int(argv[-1]) == -children[0].pid
-        return subprocess.run(argv, timeout=timeout, capture_output=True, text=True, env=fake.env)
-
     def spawn(argv):
         assert argv[0] == "/bin/sh"
         child = subprocess.Popen(
@@ -751,7 +766,6 @@ def test_controller_and_real_watchdog_release_and_retire_crashed_group(tmp_path)
     controller = power.MachinePowerController(
         store,
         demand_reader=lambda: ["runtime"],
-        run=run,
         spawn=spawn,
         clock=time.time,
         process_identity=lambda: (123, START),
@@ -806,6 +820,7 @@ def test_other_account_installation_keeps_the_idle_hold(lid_machine):
 def test_external_flag_is_reported_without_installation(lid_machine):
     lid_machine.flag = True
     lid_machine.installed = False
+    lid_machine.controller.update({"lid_mode": True})
     lid_machine.controller.safety_pass()
     assert lid_machine.controller.status()["external_owner"] is True
     assert lid_machine.controller._watchdog is None
@@ -876,9 +891,7 @@ def test_restart_consumes_previous_executor_result_before_rearming(lid_machine, 
     assert status["latched"] == ("thermal" if failure == "thermal" else "cleanup_failure")
     assert power.read_record(lid_machine.root / "heartbeat")["desired"] == "off"
     if failure == "clear_failed":
-        assert power.read_record(lid_machine.root / "heartbeat")["generation"] == "2"
-        lid_machine.execute()
-        lid_machine.controller.safety_pass()
+        assert power.read_record(lid_machine.root / "heartbeat")["generation"] == "1"
     assert (
         status["cleanup_failure"] is None
         if failure == "thermal"

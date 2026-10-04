@@ -3331,7 +3331,6 @@ export interface UpdateNotice {
   update_command: string | null;
 }
 
-export type MachinePowerPlatform = "macos" | "linux" | "other";
 export type MachinePowerInstallProblem =
   "not_installed" | "partial" | "other_account" | "foreign_file";
 export type MachinePowerDemandReason = "episode" | "task" | "runtime" | "retry";
@@ -3348,7 +3347,6 @@ export type MachinePowerReleaseCause =
 export type MachinePowerCleanupKind = "clear_failed" | "sleep_failed";
 
 export interface MachinePowerStatus {
-  platform: MachinePowerPlatform;
   supported: boolean;
   installed: boolean;
   install_problem: MachinePowerInstallProblem | null;

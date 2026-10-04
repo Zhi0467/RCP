@@ -127,6 +127,33 @@ def test_acknowledges_before_activation_and_on_requires_fresh_heartbeat(watchdog
     assert "set=0" in (watchdog.root / "activation").read_text()
 
 
+def test_term_releases_owned_flag(watchdog):
+    watchdog.heartbeat()
+    process = watchdog.start()
+    watchdog.active()
+    process.terminate()
+    assert watchdog.finish() == 0
+    assert watchdog.calls() == ["on", "clear"]
+    assert (watchdog.root / "flag").read_text() == "0\n"
+    assert "cause=watchdog_lost" in (watchdog.root / "result").read_text()
+
+
+def test_unreadable_activation_does_not_abandon_owned_flag(watchdog):
+    watchdog.heartbeat()
+    watchdog.start()
+    watchdog.active()
+    activation = watchdog.root / "activation"
+    activation.chmod(0)
+    try:
+        watchdog.heartbeat(desired="off", cause="shutdown")
+        assert watchdog.finish() == 0
+        assert watchdog.calls() == ["on", "clear"]
+        assert (watchdog.root / "flag").read_text() == "0\n"
+        assert "cause=shutdown" in (watchdog.root / "result").read_text()
+    finally:
+        activation.chmod(0o600)
+
+
 @pytest.mark.parametrize(
     "failure", ["stale", "malformed", "dead", "start_changed", "ps_timeout", "pid_changed"]
 )

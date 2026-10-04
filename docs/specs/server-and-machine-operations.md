@@ -523,7 +523,8 @@ clears the flag, reads it back, and runs `pmset sleepnow` unless the lid is
 known to be open. After a stale or mismatched heartbeat it revokes that
 generation and exits, so a resumed backend cannot re-arm it.
 
-**Safety.** Each pass reads battery, thermal state, lid, and flag through
+**Safety.** While lid mode is enabled or an owned activation needs cleanup,
+each pass reads battery, thermal state, lid, and flag through
 lazily loaded macOS frameworks (`ctypes`), with no command-text fallback.
 IOKit power-source descriptions supply AC/battery state and charge;
 `NSProcessInfo.thermalState` supplies thermal state; `AppleClamshellState` on
@@ -544,7 +545,8 @@ re-enables it, and the latch survives restarts. A successful uninstall clears it
 power. If the flag cannot be cleared, the space home page shows
 `sudo pmset -a disablesleep 0`; if the flag cleared but the closed Mac did not
 sleep, it shows `pmset sleepnow`. A removed sudoers rule can strand the flag;
-that is accepted.
+that is accepted. A failed clear preserves its release cause and waits for
+human action instead of repeatedly spawning cleanup watchdogs.
 
 Lid-mode preferences and latches share the data directory's SQLite
 `machine_power_state` row.

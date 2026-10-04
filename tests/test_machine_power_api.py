@@ -57,7 +57,6 @@ def test_personal_power_status_and_preferences(tmp_path, mac_power):
         assert response.status_code == 200
         status = response.json()
         assert set(status) == {
-            "platform",
             "supported",
             "installed",
             "install_problem",
@@ -177,7 +176,6 @@ def test_served_macos_power_preferences(tmp_path, mac_power, caplog):
             with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
                 before = client.get("/api/machine-power")
                 assert before.status_code == 200
-                assert before.json()["platform"] == "macos"
                 assert before.json()["supported"] is True
                 changed = client.put("/api/machine-power", json={"idle_hold": False})
                 assert changed.status_code == 200

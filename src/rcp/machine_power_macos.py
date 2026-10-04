@@ -462,7 +462,6 @@ class _Frameworks:
             (self.io, "IOPSCopyPowerSourcesInfo", pointer, []),
             (self.io, "IOPSCopyPowerSourcesList", pointer, [pointer]),
             (self.io, "IOPSGetPowerSourceDescription", pointer, [pointer, pointer]),
-            (self.io, "IOPSGetProvidingPowerSourceType", pointer, [pointer]),
             (self.io, "IOPMCopySystemPowerSettings", pointer, []),
             (self.io, "IOServiceMatching", pointer, [ctypes.c_char_p]),
             (self.io, "IOServiceGetMatchingService", ctypes.c_uint32, [ctypes.c_uint32, pointer]),
@@ -473,6 +472,8 @@ class _Frameworks:
                 [ctypes.c_uint32, pointer, pointer, ctypes.c_uint32],
             ),
             (self.io, "IOObjectRelease", ctypes.c_int, [ctypes.c_uint32]),
+            (self.objc, "objc_autoreleasePoolPush", pointer, []),
+            (self.objc, "objc_autoreleasePoolPop", None, [pointer]),
             (self.objc, "objc_getClass", pointer, [ctypes.c_char_p]),
             (self.objc, "sel_registerName", pointer, [ctypes.c_char_p]),
         )
@@ -542,6 +543,27 @@ class MacOSProfile:
         return MachinePowerInstaller(run=run)
 
     @staticmethod
+    def process_identity(run=run_command) -> tuple[int, str]:
+        pid = os.getpid()
+        result = run(
+            ["/bin/ps", "-p", str(pid), "-o", "lstart="], MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
+        )
+        if result.returncode:
+            raise OSError("command failed: /bin/ps")
+        start = result.stdout.strip()
+        if not start:
+            raise ValueError("missing process start time")
+        return pid, start
+
+    @property
+    def watchdog_script(self) -> Path:
+        return Path(__file__).with_name("machine_power_watchdog.sh")
+
+    @staticmethod
+    def is_watchdog_command(argv: list[str]) -> bool:
+        return argv[0] == "/bin/sh"
+
+    @staticmethod
     def watchdog_command(script: Path, directory: Path, generation: int) -> list[str]:
         return [
             "/bin/sh",
@@ -565,9 +587,6 @@ class MacOSProfile:
             try:
                 count = f.cf.CFArrayGetCount(sources)
                 if count == 0:
-                    state = f.text(f.io.IOPSGetProvidingPowerSourceType(info))
-                    if state == "AC Power":
-                        return True, None  # Desktop Mac without a battery.
                     raise ValueError("missing battery capacity")
                 levels = []
                 states = []
@@ -591,14 +610,18 @@ class MacOSProfile:
 
     def read_thermal(self) -> bool:
         f = self._frameworks
-        cls = f.required(f.objc.objc_getClass(b"NSProcessInfo"))
-        selector = f.required(f.objc.sel_registerName(b"processInfo"))
-        process = f.required(f.send_object(cls, selector))
-        selector = f.required(f.objc.sel_registerName(b"thermalState"))
-        state = f.send_integer(process, selector)
-        if state not in {0, 1, 2, 3}:
-            raise ValueError("unknown thermal state")
-        return state >= 2
+        pool = f.objc.objc_autoreleasePoolPush()
+        try:
+            cls = f.required(f.objc.objc_getClass(b"NSProcessInfo"))
+            selector = f.required(f.objc.sel_registerName(b"processInfo"))
+            process = f.required(f.send_object(cls, selector))
+            selector = f.required(f.objc.sel_registerName(b"thermalState"))
+            state = f.send_integer(process, selector)
+            if state not in {0, 1, 2, 3}:
+                raise ValueError("unknown thermal state")
+            return state >= 2
+        finally:
+            f.objc.objc_autoreleasePoolPop(pool)
 
     def read_lid(self) -> bool:
         f = self._frameworks

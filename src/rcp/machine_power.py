@@ -12,6 +12,7 @@ import fcntl
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -144,20 +145,14 @@ class MachinePowerController:
         self.store, self.demand_reader = store, demand_reader
         self.spawn = spawn or self._spawn
         self.run, self.clock, self.monotonic = run, clock, monotonic
-        self.platform = (
-            "macos"
-            if platform == "darwin"
-            else "linux"
-            if platform.startswith("linux")
-            else "other"
-        )
         self.profile = profile if profile is not None else PLATFORM_PROFILES.get(platform)
         self.lid = self.profile.lid_mode if self.profile is not None else None
         self.installer = installer or (self.lid.create_installer(run=run) if self.lid else None)
         self.directory = directory or (self.installer.paths.directory if self.installer else None)
-        self.identity_reader = process_identity or self._process_identity
+        self.identity_reader = process_identity or (lambda: self.lid.process_identity(self.run))
         self._identity = None
         self._admin_lock = threading.Lock()
+        self._uninstalling = False
         self._owner = None
         self._watchdog = None
         self._generation = 0
@@ -199,7 +194,6 @@ class MachinePowerController:
             supported = self.command is not None
             installed = self.installer.status() if self.lid is not None else None
             return {
-                "platform": self.platform,
                 "supported": supported,
                 "installed": installed.installed if installed else False,
                 "install_problem": installed.install_problem if installed else "not_installed",
@@ -301,16 +295,14 @@ class MachinePowerController:
                 self._reasons = reasons
             if self.command is None or self._stop.is_set():
                 return
-            if demand_failed:
-                pass
-            elif self._enabled and reasons:
+            if not demand_failed and self._enabled and reasons:
                 if not self._held():
                     try:
                         self._hold = self.spawn(self.command(os.getpid()))
                     except OSError:
                         # The next pass retries; the thread must outlive this.
                         logger.exception("Could not start the keep-awake hold")
-            else:
+            elif not demand_failed:
                 self._drop()
             if self.lid is not None:
                 try:
@@ -335,21 +327,14 @@ class MachinePowerController:
     def _spawn(self, argv):
         # Only the watchdog inherits the machine lock. An idle hold or unrelated
         # child must not keep another data directory from acquiring ownership.
-        fds = (self._owner,) if argv[0] == "/bin/sh" and self._owner is not None else ()
+        fds = (
+            (self._owner,)
+            if self.lid is not None
+            and self.lid.is_watchdog_command(argv)
+            and self._owner is not None
+            else ()
+        )
         return spawn_command(argv, pass_fds=fds)
-
-    def _process_identity(self) -> tuple[int, str]:
-        pid = os.getpid()
-        start = self._read(["/bin/ps", "-p", str(pid), "-o", "lstart="]).strip()
-        if not start:
-            raise ValueError("missing process start time")
-        return pid, start
-
-    def _read(self, argv):
-        result = self.run(argv, MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
-        if result.returncode:
-            raise OSError(f"command failed: {argv[0]}")
-        return result.stdout
 
     def _save(self):
         with self.store.connection() as connection:
@@ -393,19 +378,17 @@ class MachinePowerController:
                 before = self.status()
                 if self.lid is None:
                     return before
-            quiesced = False
 
             def quiesce():
-                nonlocal quiesced
-                self._lock.acquire()
-                quiesced = True
-                self._release("disabled")
+                with self._lock:
+                    self._uninstalling = True
+                    self._release("disabled")
                 if not self._wait_watchdog():
                     raise InstallError("owner_busy")
 
             try:
                 # Acceptance precedes quiescence. Once accepted, retain the
-                # controller fence through removal so no pass can re-arm it.
+                # lid-mode fence through removal so no pass can re-arm it.
                 self.installer.uninstall(before_remove=quiesce)
                 with self._lock:
                     if self.installer.cancelled:
@@ -422,8 +405,8 @@ class MachinePowerController:
                         self._cleanup_failed("clear_failed")
                 raise
             finally:
-                if quiesced:
-                    self._lock.release()
+                with self._lock:
+                    self._uninstalling = False
 
     def _close_owner(self):
         if self._owner is not None:
@@ -441,14 +424,14 @@ class MachinePowerController:
                 # Keep the cleanup executor alive, with its inherited lock.
                 return False
             complete = self._consume_result()
-            self._watchdog = None
             # It died after `off` was published but before clearing: recover
             # the owned flag before ownership is dropped.
             owned = read_record(self.directory / "activation").get("set") == "1"
             if recover and not complete and owned:
-                self._start_watchdog(recover=True)
+                self._replace_lost_watchdog()
                 self._heartbeat("off", "shutdown")
                 return self._wait_watchdog(recover=False)
+            self._watchdog = None
         self._close_owner()
         return True
 
@@ -503,7 +486,7 @@ class MachinePowerController:
             + 1
         )
         self._identity = self.identity_reader()
-        source = Path(__file__).with_name("machine_power_watchdog.sh")
+        source = self.lid.watchdog_script
         script = self.directory / source.name
         fd, temporary = tempfile.mkstemp(prefix=".watchdog.", dir=self.directory)
         try:
@@ -543,22 +526,32 @@ class MachinePowerController:
 
     def _retire_watchdog_group(self, process):
         """A killed shell may have left an in-flight pmset command behind."""
-        group = f"-{process.pid}"
-        self.run(["/bin/kill", "-TERM", group], MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            # A privileged child may still be exiting; prove the group is gone.
+            pass
         deadline = self.monotonic() + MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
         while True:
-            alive = self.run(["/bin/kill", "-0", group], MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
-            if alive.returncode:
-                if "not permitted" in (alive.stderr or "").lower():
-                    raise OSError("watchdog command group could not be retired")
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
                 return
+            except PermissionError:
+                pass  # The group exists, but is not ours to signal.
             if self.monotonic() >= deadline:
                 break
             self._stop.wait(0.02)
-        self.run(["/bin/kill", "-KILL", group], MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
-        alive = self.run(["/bin/kill", "-0", group], MACHINE_POWER_COMMAND_TIMEOUT_SECONDS)
-        if alive.returncode == 0 or "not permitted" in (alive.stderr or "").lower():
-            raise OSError("watchdog command group is still alive")
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        raise OSError("watchdog command group is still alive")
 
     def _replace_lost_watchdog(self):
         process = self._watchdog
@@ -618,6 +611,9 @@ class MachinePowerController:
     def _release(self, cause):
         if self.lid is None:
             return
+        self._consume_result()
+        if (self._state["cleanup_failure"] or {}).get("kind") == "clear_failed":
+            return
         held = self._desired == "on"
         # Ending demand is only a release when something was held; a safety
         # cause is always recorded because it latches or blocks re-arming.
@@ -630,6 +626,9 @@ class MachinePowerController:
                 and self.installer.status().install_problem in {None, "partial"}
                 and self._acquire()
             ):
+                if (self._state["cleanup_failure"] or {}).get("kind") == "clear_failed":
+                    self._close_owner()
+                    return
                 if read_record(self.directory / "activation").get("set") == "1":
                     self._start_watchdog(recover=True)
                 else:
@@ -647,17 +646,27 @@ class MachinePowerController:
             self._lid_active = False
 
     def _pass(self, *, demand_failed=False):
+        if self._uninstalling:
+            return
         complete = self._consume_result()
         if self._watchdog is not None and self._watchdog.poll() is not None:
             was_on = self._desired == "on"
             owned = read_record(self.directory / "activation").get("set") == "1"
-            if owned or (was_on and not complete):
+            if not complete and (owned or was_on):
                 self._record_release("watchdog_lost")
                 self._replace_lost_watchdog()
                 self._release("watchdog_lost")
                 return
             self._watchdog = None
             self._close_owner()
+
+        if (self._state["cleanup_failure"] or {}).get("kind") == "clear_failed":
+            return
+        if not self._state["lid_mode"] and self._watchdog is None:
+            if self.installer.status().install_problem in {"other_account", "foreign_file"}:
+                return
+            if read_record(self.directory / "activation").get("set") != "1":
+                return
 
         # Attempt each reading on every pass; one failure never silently defaults
         # a battery, thermal, lid, or flag input to a safe value.
@@ -702,6 +711,9 @@ class MachinePowerController:
             # Another backend owning lid mode gates only recovery and lid mode;
             # this backend's idle hold still follows its own demand.
             if not can_recover or self._acquire():
+                if (self._state["cleanup_failure"] or {}).get("kind") == "clear_failed":
+                    self._close_owner()
+                    return
                 activation = read_record(self.directory / "activation")
                 owned = activation.get("set") == "1"
                 self._external = readings.get("flag", False) and not owned
@@ -722,7 +734,7 @@ class MachinePowerController:
             if self._watchdog is not None:
                 if self._desired == "on":
                     self._record_release("disabled")
-                self._heartbeat("off", "disabled")
+                    self._heartbeat("off", "disabled")
                 self._lid_active = False
             return
         if self._external or not self._acquire():
