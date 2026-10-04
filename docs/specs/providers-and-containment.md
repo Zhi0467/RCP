@@ -396,8 +396,10 @@ failures. A detached remote turn retains the same lease until remote-result
 reconciliation proves its provider stopped. Its lease identity stays in the
 existing turn status record; settlement releases it and records the final browser
 status before deferred cleanup, without acquiring another grant. A controller
-restart that loses the lease records `lost` with `lease_unknown`; host epoch
-cleanup clears the old lease. Settled paused tasks do not block cleanup.
+restart preserves leases whose remote result is still pending and reconstructs
+release routing from the durable task and browser owner. Host epoch cleanup
+adopts those leases while pruning the others. Settled paused tasks do not block
+cleanup.
 Granted turns merge its environment and prefix its tool directory to PATH.
 SSH launches prefix the execution host's PATH after login-shell initialization;
 they never copy the controller's PATH. Codex retains `shell_environment_policy={}`.
@@ -1617,7 +1619,13 @@ session. It creates no `.playwright` marker and never reopens a live session.
 Release checks liveness and ends the active lease. File locks serialize host
 operations. The host cap counts managed live sessions; the least recently used
 owner without active leases is closed first. A full busy host reports capacity.
-Controller restart clears that controller's old leases and adopts live sessions.
+Controller restart adopts live sessions and the leases of remote turns still
+awaiting settlement. Ensure and close carry those retained lease ids to the host,
+which moves them to the current controller epoch and prunes its other old leases.
+Normal and recovered turns release through the same durable owner, host, stage,
+and lease routing. Recorded-result settlement, Pause, and a proven-stopped remote
+provider pass finish retained leases before deferred cleanup; cleanup retries
+probe unresolved passes of inactive tasks and stay pending until they stop.
 
 Close uses the CLI's graceful close before removing an explicitly requested
 profile. A confirmed profile deletion retires the runtime record. A removed
@@ -1626,7 +1634,9 @@ owner remains fenced without blocking other owners' acquisition.
 Closing an active owner waits for its last lease to finish. Idle timeout
 is passed in milliseconds from the seconds-based limit. Failed remote cleanup
 and release remain durable and retry on later ensure or install calls, one
-queued operation per call. Before acquisition contacts the host, the controller
+queued operation per call. Replayed close requests do not prune old epochs from
+stale retention snapshots; a fresh ensure or close owns that pruning. Before
+acquisition contacts the host, the controller
 journals a release for the exact new lease; handing back a validated grant clears
 that recovery request. A lost or invalid reply leaves it for retry, and releasing
 an unknown lease is a no-op. Readiness does not run queued cleanup.

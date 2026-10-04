@@ -36,3 +36,10 @@ def require_remote_provider_quiescence(store: AppStore, host: str, root: str) ->
                 f"{reason}. Recovery cannot reuse this workspace until that call is confirmed stopped."
             )
         store.finish_remote_provider_pass(operation_id, pid_file)
+        from rcp.runs.browser_lifecycle import finish_recorded_browser
+
+        if not any(
+            pending_id == operation_id
+            for pending_id, _ in store.unresolved_remote_provider_passes(host, root)
+        ):
+            finish_recorded_browser(store, operation_id)

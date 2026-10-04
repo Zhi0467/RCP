@@ -1047,7 +1047,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 ) -> None:
     acquired = []
 
-    def acquire(owner, *, execution, workspace_dir, data_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
         acquired.append(owner)
         return BrowserGrant(
             requested=True,
@@ -1055,12 +1055,13 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
             owner=owner,
             session_name=owner.token(),
             invocation_dir=workspace_dir,
+            lease_id=f"browser-test-lease-{len(acquired)}",
         )
 
     monkeypatch.setattr("rcp.runs.browser_runtime_seam.acquire_browser_grant", acquire)
     monkeypatch.setattr(
         "rcp.runs.browser_runtime_seam.finish_browser_grant",
-        lambda grant: BrowserTurnStatus(status=grant.status),
+        lambda grant, *, execution, data_dir: BrowserTurnStatus(status=grant.status),
     )
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)

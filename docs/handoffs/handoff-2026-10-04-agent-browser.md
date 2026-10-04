@@ -3,7 +3,7 @@
 Date: 2026-10-04
 Status: design settled with the human on 2026-10-04 and reviewed once by an
 xhigh design pass the same night. Implemented on this PR: part 1, the host
-runtime, launch grants, and their wiring. The Web controls are in progress. The
+runtime, launch grants, their wiring, and the Web controls. The
 live checks still open are listed under "Implementation checks still open".
 
 Two parts ship together, part 1 first:

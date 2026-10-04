@@ -172,7 +172,11 @@ def test_served_macos_power_preferences(tmp_path, mac_power, caplog):
         worker.start()
         try:
             wait_until(lambda: server.started, timeout=10)
-            with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+            base_url = f"http://127.0.0.1:{port}"
+            authenticated = signed_in_client(app, base_url=base_url)
+            with httpx.Client(
+                base_url=base_url, cookies=authenticated.cookies, trust_env=False
+            ) as client:
                 before = client.get("/api/machine-power")
                 assert before.status_code == 200
                 assert before.json()["supported"] is True

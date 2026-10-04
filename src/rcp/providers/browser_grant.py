@@ -39,11 +39,17 @@ class BrowserGrant(BaseModel):
 class BrowserTurnStatus(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    # Retained until the provider stops, including detached remote turns.
+    # Retained until the provider stops, including detached remote turns. The owner
+    # token routes the release durably, so a controller restart cannot strand it.
     lease_id: str | None = None
+    owner_token: str | None = None
     status: Literal["not_requested", "granted", "unavailable", "lost"] = "not_requested"
     reason_code: str | None = None
     detail: str | None = None
+
+    def public(self) -> BrowserTurnStatus:
+        """Routing stays in the controller; readers see only the outcome."""
+        return self.model_copy(update={"lease_id": None, "owner_token": None})
 
 
 def browser_prompt_line(grant: BrowserGrant) -> str:

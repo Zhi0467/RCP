@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from types import SimpleNamespace
 
@@ -19,6 +20,7 @@ from rcp.runs.browser_lifecycle import (
 from rcp.runs.shared import _ProviderOutcome, _stream_agent_events
 from rcp.storage import AppStore
 
+from .test_browser_host import host as host
 from .test_discuss_recorded_finalization import _discuss_app
 
 
@@ -47,7 +49,7 @@ def test_browser_admission_matrix(tmp_path, monkeypatch, capability, requested, 
     store = AppStore(tmp_path / "app.sqlite3")
     calls = []
 
-    def acquire(owner, *, execution, workspace_dir, data_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
         calls.append(owner)
         return BrowserGrant(
             requested=True, status="unavailable", reason_code="runtime_checked", owner=owner
@@ -87,18 +89,19 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
     execution.checkpoint_stage("", str(workspace.parent))
     calls = []
 
-    def acquire(owner, *, execution, workspace_dir, data_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
         return BrowserGrant(
             requested=True,
             status="granted",
             owner=owner,
+            lease_id="lease",
             session_name=owner.token(),
             invocation_dir=workspace_dir,
             path_prefix="/tools/bin",
             env={"PLAYWRIGHT_CLI_SESSION": owner.token()},
         )
 
-    def finish(grant):
+    def finish(grant, **kwargs):
         calls.append(grant)
         return BrowserTurnStatus(status="lost", reason_code="session_lost")
 
@@ -146,7 +149,14 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
                 pass
     assert len(calls) == 1
     assert store.browser_turn_status(execution.operation_id).status == "lost"
-    assert closed == [{"execution": None, "delete_profile": True, "data_dir": store.path.parent}]
+    assert closed == [
+        {
+            "execution": None,
+            "delete_profile": True,
+            "data_dir": store.path.parent,
+            "retained_lease_ids": [],
+        }
+    ]
     assert store.browser_owners(task.project_id) == []
 
 
@@ -180,7 +190,14 @@ def test_archive_cleanup_is_deferred_and_unreachable_cleanup_is_retained(
     close_chat_browser_owners(store, task.project_id, request.chat_id, delete_profile=False)
     assert closed == []
     retry_browser_cleanup(store, finished_operation_id=execution.operation_id)
-    assert closed == [{"execution": None, "delete_profile": False, "data_dir": store.path.parent}]
+    assert closed == [
+        {
+            "execution": None,
+            "delete_profile": False,
+            "data_dir": store.path.parent,
+            "retained_lease_ids": [],
+        }
+    ]
     assert len(store.browser_owners(task.project_id)) == 1
 
     def unavailable(*args, **kwargs):
@@ -240,13 +257,12 @@ async def test_detached_remote_browser_lease_finishes_only_on_settlement(
         acquired.append(lease)
         return lease
 
-    def release(value):
-        released.append(value.lease_id)
+    def release(owner_token, *, lease_id, **kwargs):
+        released.append(lease_id)
         return SessionCheck(alive=True)
 
     monkeypatch.setattr(browser_runtime_seam, "ensure_session", ensure)
     monkeypatch.setattr(browser_runtime_seam, "release_session", release)
-    monkeypatch.setattr(browser_runtime_seam, "_LEASES", {})
     monkeypatch.setattr(
         browser_runtime_seam, "close_browser_owner", lambda *a, **kw: closed.append(kw)
     )
@@ -273,7 +289,6 @@ async def test_detached_remote_browser_lease_finishes_only_on_settlement(
     retry_browser_cleanup(store)
     assert closed == []
     if restart:
-        browser_runtime_seam._LEASES.clear()
         store = AppStore(store.path)
 
     async def recorded_stream(*args):
@@ -310,10 +325,10 @@ async def test_detached_remote_browser_lease_finishes_only_on_settlement(
             "failed" if settlement == "fail" else "succeeded"
         )
     assert acquired == [lease]
-    assert released == ([] if restart else [lease.lease_id])
+    assert released == [lease.lease_id]
     status = store.browser_turn_status(execution.operation_id)
-    assert status.status == ("lost" if restart else "granted")
-    assert status.reason_code == ("lease_unknown" if restart else None)
+    assert status.status == "granted"
+    assert status.reason_code is None
     assert status.lease_id is None
     assert len(closed) == 1
     assert closed[0]["delete_profile"] is True
@@ -351,6 +366,9 @@ def test_paused_task_does_not_block_browser_profile_cleanup(tmp_path, monkeypatc
     assert store.agent_task(execution.operation_id).status == "paused"
     closed = []
     monkeypatch.setattr(
+        "rcp.runs.provider_process.AgentProcessControl.remote_stopped", lambda *a, **kw: False
+    )
+    monkeypatch.setattr(
         browser_runtime_seam, "close_browser_owner", lambda *a, **kw: closed.append(kw)
     )
     close_chat_browser_owners(store, task.project_id, request.chat_id, delete_profile=True)
@@ -366,3 +384,176 @@ def test_paused_task_does_not_block_browser_profile_cleanup(tmp_path, monkeypatc
         host if pending_remote else None
     )
     assert store.browser_owners(task.project_id) == []
+
+
+@pytest.mark.asyncio
+async def test_restart_preserves_pending_browser_and_releases_original_lease(
+    host, tmp_path, monkeypatch
+):
+    from pathlib import PurePosixPath
+
+    from rcp.browser import service
+    from rcp.browser.host import UnavailableError
+    from rcp.runs.browser_lifecycle import finish_recorded_browser
+    from rcp.transport import RemoteRunStage
+
+    epoch = "before"
+    calls = []
+    release_routes = []
+
+    def invoke(payload, **kwargs):
+        calls.append(payload.copy())
+        if payload["action"] == "release":
+            release_routes.append(kwargs)
+        host.request.update(payload, controller_epoch=epoch)
+        try:
+            return getattr(host, payload["action"])()
+        except UnavailableError as exc:
+            return {"reason_code": exc.code, "detail": str(exc)}
+
+    monkeypatch.setattr(service, "_invoke", invoke)
+    monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda _: "host")
+    _, request, execution = _discuss_app(tmp_path / "app")
+    store = execution.store
+    task = store.agent_task(execution.operation_id)
+    request.browser_requested = True
+    store.set_chat_browser_requested(task.project_id, request.chat_id, browser_requested=True)
+    root = tmp_path / "stage"
+    (root / "workspace").mkdir(parents=True)
+    execution.checkpoint_stage("remote", str(root))
+    remote = RemoteRunStage("remote")
+    remote.root = PurePosixPath(root)
+    pid_file = str(root / "provider.pid")
+    async with browser_turn(
+        request,
+        workspace=root / "workspace",
+        execution_host="remote",
+        execution=execution,
+        remote_stage=remote,
+        capability="discuss",
+    ) as grant:
+        store.begin_remote_provider_pass(
+            execution.operation_id, "remote", str(root), pid_file, supervised=True
+        )
+    lease_id = grant.lease_id
+    owner = grant.owner.token()
+    epoch = "after"
+    importlib.reload(browser_runtime_seam)
+    store.interrupt_active_agent_tasks()
+    store = AppStore(store.path)
+    other = acquire_turn_browser(
+        requested=True,
+        capability="discuss",
+        store=store,
+        project_id=task.project_id,
+        stage_root=str(tmp_path / "other"),
+        execution_host="remote",
+        execution=remote,
+        workspace_dir=str(tmp_path / "other" / "workspace"),
+        chat_id=None,
+    )
+    assert other.reason_code == "capacity"
+    assert host.closes == []
+    record = json.loads(host.record_path(owner).read_text())
+    assert record["leases"][lease_id]["controller_epoch"] == "after"
+    store.finish_remote_provider_pass(execution.operation_id, pid_file)
+    finish_recorded_browser(store, execution.operation_id)
+    finish_recorded_browser(store, execution.operation_id)
+    assert [call["lease_id"] for call in calls if call["action"] == "release"] == [lease_id]
+    assert release_routes == [
+        {
+            "host": remote.host,
+            "partition": remote.transport_partition,
+            "data_dir": store.path.parent,
+        }
+    ]
+    assert json.loads(host.record_path(owner).read_text())["leases"] == {}
+    assert store.browser_turn_status(execution.operation_id).lease_id is None
+
+
+@pytest.mark.asyncio
+async def test_failed_remote_continuation_cleanup_settles_retained_lease(
+    host, tmp_path, monkeypatch
+):
+    from pathlib import PurePosixPath
+
+    from rcp.browser import service
+    from rcp.transport import RemoteRunStage
+
+    calls = []
+
+    def invoke(payload, **kwargs):
+        calls.append(payload["action"])
+        host.request.update(payload)
+        return getattr(host, payload["action"])()
+
+    monkeypatch.setattr(service, "_invoke", invoke)
+    monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda _: "host")
+    _, request, execution = _discuss_app(tmp_path / "app")
+    store = execution.store
+    task = store.agent_task(execution.operation_id)
+    request.browser_requested = True
+    request.provider = "claude"
+    store.set_chat_browser_requested(task.project_id, request.chat_id, browser_requested=True)
+    root = tmp_path / "stage"
+    (root / "workspace").mkdir(parents=True)
+    execution.checkpoint_stage("remote", str(root))
+    remote = RemoteRunStage("remote")
+    remote.root = PurePosixPath(root)
+    monkeypatch.setattr(remote, "finalize_inputs", lambda: None)
+    monkeypatch.setattr("rcp.runs.shared._stage_or_reuse_task_input", lambda *a: "/supervisor.py")
+
+    class Launcher:
+        async def stream(self, *args, **kwargs):
+            yield AgentEvent(event="remote_process_start", text=str(root / "provider.pid"))
+            yield AgentEvent(event="session", session_id="wrong-session")
+
+    outcome = _ProviderOutcome()
+    async with browser_turn(
+        request,
+        workspace=root / "workspace",
+        execution_host="remote",
+        execution=execution,
+        remote_stage=remote,
+        capability="discuss",
+    ) as grant:
+        frames = [
+            frame
+            async for frame in _stream_agent_events(
+                Launcher(),
+                request,
+                "resume",
+                workspace=root / "workspace",
+                session_id="saved-session",
+                required_session_id="saved-session",
+                read_dirs=[],
+                write_dirs=[],
+                write_scope=None,
+                execution_host="remote",
+                execution=execution,
+                remote_stage=remote,
+                capability="discuss",
+                outcome=outcome,
+                binary=None,
+                supervise_remote=True,
+                browser_grant=grant,
+            )
+        ]
+    assert outcome.failed
+    assert outcome.session_id is None
+    assert frames
+    store.fail_agent_task(execution.operation_id, "native session mismatch")
+    stopped = False
+    monkeypatch.setattr(
+        "rcp.runs.provider_process.AgentProcessControl.remote_stopped", lambda *a, **kw: stopped
+    )
+    close_chat_browser_owners(store, task.project_id, request.chat_id, delete_profile=True)
+    assert store.browser_owners(task.project_id)
+    assert store.browser_turn_status(execution.operation_id).lease_id == grant.lease_id
+    stopped = True
+    retry_browser_cleanup(store)
+    assert not store.unresolved_remote_provider_passes("remote", str(root))
+    assert store.browser_turn_status(execution.operation_id).lease_id is None
+    assert not host.record_path(grant.owner.token()).exists()
+    assert store.browser_owners(task.project_id) == []
+    assert calls == ["ensure", "release", "close"]

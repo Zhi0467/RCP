@@ -187,7 +187,11 @@ def _retry_pending_checked(
     if claimed:
         path, pending = claimed
         try:
-            result = _invoke(pending["request"], host=host, partition=partition, data_dir=data_dir)
+            request = pending["request"]
+            if request["action"] == "close":
+                # A queued snapshot cannot authorize pruning after another restart.
+                request = {**request, "retained_lease_ids": None}
+            result = _invoke(request, host=host, partition=partition, data_dir=data_dir)
             # One retry per call bounds cleanup latency even after a long outage.
             if result.get("reason_code") in (None, "lost"):
                 _acknowledge(path, pending["request"])
@@ -202,7 +206,12 @@ def _retry_pending_checked(
 
 
 def ensure_session(
-    owner_token: str, *, execution: RemoteRunStage | None, workspace_dir: str, data_dir: Path
+    owner_token: str,
+    *,
+    execution: RemoteRunStage | None,
+    workspace_dir: str,
+    data_dir: Path,
+    retained_lease_ids: tuple[str, ...] | list[str] = (),
 ) -> SessionLease | Unavailable:
     try:
         data_dir = _data_dir(data_dir)
@@ -228,6 +237,7 @@ def ensure_session(
                     "owner_token": owner_token,
                     "workspace_dir": workspace_dir,
                     "lease_id": lease_id,
+                    "retained_lease_ids": list(retained_lease_ids),
                 },
                 host=host,
                 partition=partition,
@@ -255,14 +265,18 @@ def ensure_session(
         return Unavailable(reason_code="runtime_failed", detail=str(exc)[-2000:])
 
 
-def release_session(lease: SessionLease) -> SessionCheck:
-    request = {"action": "release", "owner_token": lease.owner_token, "lease_id": lease.lease_id}
+def release_session(
+    owner_token: str, *, lease_id: str, execution: RemoteRunStage | None, data_dir: Path
+) -> SessionCheck:
+    host = execution.host if execution else ""
+    partition = execution.transport_partition if execution else None
+    request = {"action": "release", "owner_token": owner_token, "lease_id": lease_id}
     try:
         result = _invoke(
             request,
-            host=lease.host,
-            partition=lease.partition,
-            data_dir=Path(lease.data_dir),
+            host=host,
+            partition=partition,
+            data_dir=data_dir,
         )
         try:
             checked = SessionCheck.model_validate(
@@ -276,8 +290,8 @@ def release_session(lease: SessionLease) -> SessionCheck:
             # A transport failure must not leave a lease busy forever after reconnection.
             with _PENDING_LOCK:
                 _save_pending(
-                    _pending_path(Path(lease.data_dir), lease.host, lease.lease_id),
-                    host=lease.host,
+                    _pending_path(data_dir, host, lease_id),
+                    host=host,
                     request=request,
                 )
         return checked
@@ -288,13 +302,23 @@ def release_session(lease: SessionLease) -> SessionCheck:
 
 
 def close_owner(
-    owner_token: str, *, execution: RemoteRunStage | None, delete_profile: bool, data_dir: Path
+    owner_token: str,
+    *,
+    execution: RemoteRunStage | None,
+    delete_profile: bool,
+    data_dir: Path,
+    retained_lease_ids: tuple[str, ...] | list[str] = (),
 ) -> None:
     try:
         data_dir = _data_dir(data_dir)
         host = execution.host if execution else ""
         partition = execution.transport_partition if execution else None
-        request = {"action": "close", "owner_token": owner_token, "delete_profile": delete_profile}
+        request = {
+            "action": "close",
+            "owner_token": owner_token,
+            "delete_profile": delete_profile,
+            "retained_lease_ids": list(retained_lease_ids),
+        }
         with _PENDING_LOCK:
             path = _pending_path(data_dir, host, owner_token)
             # Persist before contacting the host: interruption cannot forget a delete.

@@ -472,12 +472,16 @@ class HostRuntime:
         self.cli_run(record, "goto", "about:blank")
 
     def prune_old_leases(self, record: dict) -> None:
-        record["leases"] = {
-            k: v
-            for k, v in record["leases"].items()
-            if v["controller_id"] != self.request["controller_id"]
-            or v["controller_epoch"] == self.request["controller_epoch"]
-        }
+        if self.request.get("retained_lease_ids", ()) is None:
+            return
+        retained = set(self.request.get("retained_lease_ids", ()))
+        for lease_id, lease in list(record["leases"].items()):
+            if lease["controller_id"] != self.request["controller_id"]:
+                continue
+            if lease_id in retained:
+                lease["controller_epoch"] = self.request["controller_epoch"]
+            elif lease["controller_epoch"] != self.request["controller_epoch"]:
+                del record["leases"][lease_id]
 
     def ensure(self) -> dict:
         readiness = self.readiness()

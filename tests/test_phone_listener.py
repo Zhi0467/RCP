@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 
 from rcp.limits import TEAM_CODE_FAILED_ATTEMPT_LIMIT
 from rcp.phone_listener import PhoneListener, create_phone_listener_app
@@ -23,7 +24,7 @@ def _registration(code):
 
 
 def _listener(store):
-    return signed_in_client(
+    return TestClient(
         create_phone_listener_app(store, lambda _host: [_PUBLIC_ADDRESS]),
         base_url="https://mac.example.ts.net",
     )

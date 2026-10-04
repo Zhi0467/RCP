@@ -35,7 +35,12 @@ def test_lease_releases_on_its_original_host_and_reports_loss(tmp_path, monkeypa
     )
     assert not isinstance(lease, Unavailable)
     execution.host = "other.example"
-    result = service.release_session(lease)
+    result = service.release_session(
+        lease.owner_token,
+        lease_id=lease.lease_id,
+        execution=RemoteRunStage(lease.host),
+        data_dir=tmp_path,
+    )
     assert not result.alive and result.reason_code == "host_unreachable"
     assert calls[1][1]["host"] == "gpu.example"
     assert calls[1][0]["lease_id"] == lease.lease_id

@@ -297,7 +297,11 @@ def test_served_notice_and_server_settings_share_cache(github, tmp_path, monkeyp
         try:
             wait_until(lambda: server.started)
             wait_until(lambda: checker.snapshot().status == "update_available")
-            with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+            base_url = f"http://127.0.0.1:{port}"
+            authenticated = signed_in_client(app, base_url=base_url)
+            with httpx.Client(
+                base_url=base_url, cookies=authenticated.cookies, trust_env=False
+            ) as client:
                 before = list(github[1])
                 response = client.get("/api/update-notice")
                 assert response.status_code == 200

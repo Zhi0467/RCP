@@ -343,5 +343,12 @@ def test_turning_the_browser_off_deletes_the_chat_profile_without_a_turn(
     assert client.put(url, json={"browser_requested": True}).status_code == 200
     assert closed == []
     assert client.put(url, json={"browser_requested": False}).status_code == 200
-    assert closed == [{"execution": None, "delete_profile": True, "data_dir": tmp_path / "data"}]
+    assert closed == [
+        {
+            "execution": None,
+            "delete_profile": True,
+            "data_dir": tmp_path / "data",
+            "retained_lease_ids": [],
+        }
+    ]
     assert store.browser_owners(project_id) == []

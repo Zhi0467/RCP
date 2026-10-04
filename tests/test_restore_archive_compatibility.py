@@ -246,7 +246,13 @@ def test_restore_accepts_artifact_storage_before_and_after_import_migration(
     # Migration 31 only adds this table and its index. Reconstruct its preceding
     # artifact-storage boundary without changing either historical table shape.
     with store.connection() as connection:
+        connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
         for table in (
+            "owner_credentials",
+            "owner_sign_in_codes",
+            "chat_browser_preferences",
+            "browser_owners",
+            "browser_turn_status",
             "digest_events",
             "digest_marks",
             "digest_heads",

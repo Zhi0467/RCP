@@ -214,6 +214,7 @@ def _setup_auto_research(
     episode_id: str = "auto_research",
     graph_base_head: GraphHeadRef | None = None,
     code_worktree: bool = False,
+    browser_requested: bool = False,
 ) -> tuple[AppStore, EpisodeRecord, AgentTaskRecord, AgentTaskRecord]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     store = AppStore(tmp_path / "app.sqlite3")
@@ -235,6 +236,7 @@ def _setup_auto_research(
         episode_id=episode_id,
         role="orchestrator",
         code_worktree=code_worktree,
+        browser_requested=browser_requested,
         actor_operation_id="root",
         provider="codex",
         model="",
@@ -257,6 +259,7 @@ def _setup_auto_research(
             project_id="project",
             mode="auto_research",
             code_worktree=code_worktree,
+            browser_requested=browser_requested,
             graph_isolation=True,
             graph_target=graph_target,
             graph_base_head=graph_base_head,
@@ -301,6 +304,7 @@ def _setup_auto_research(
         episode_id=episode_id,
         role="worker",
         code_worktree=code_worktree,
+        browser_requested=browser_requested,
         actor_operation_id="worker",
         provider="codex",
         model="",
@@ -1957,24 +1961,29 @@ async def test_main_mailbox_is_closed_when_prompt_build_fails_after_staging(
     manifest, tmp_path, monkeypatch
 ) -> None:
     service = _service(manifest, tmp_path)
-    store, _auto_research, _root, worker = _setup_auto_research(tmp_path)
+    store, _auto_research, _root, worker = _setup_auto_research(tmp_path, browser_requested=True)
     from rcp.providers.browser_grant import BrowserGrant, BrowserTurnStatus
-    from rcp.runs import browser_lifecycle
+    from rcp.runs import browser_runtime_seam
 
-    grant = BrowserGrant(requested=True, status="granted", session_name="browser-test-session")
     grant_events = []
 
-    def acquire_grant(**_kwargs):
+    def acquire_grant(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
         grant_events.append("acquired")
-        return grant
+        return BrowserGrant(
+            requested=True,
+            status="granted",
+            owner=owner,
+            session_name="browser-test-session",
+            lease_id="browser-test-lease",
+        )
 
-    def finish_grant(finished_grant):
-        assert finished_grant is grant
+    def finish_grant(finished_grant, *, execution, data_dir):
+        assert finished_grant.lease_id == "browser-test-lease"
         grant_events.append("finished")
         return BrowserTurnStatus(status="granted")
 
-    monkeypatch.setattr(browser_lifecycle, "acquire_turn_browser", acquire_grant)
-    monkeypatch.setattr(browser_lifecycle, "finish_turn_browser", finish_grant)
+    monkeypatch.setattr(browser_runtime_seam, "acquire_browser_grant", acquire_grant)
+    monkeypatch.setattr(browser_runtime_seam, "finish_browser_grant", finish_grant)
     staged_mailboxes = []
     started: list[str] = []
     finished: list[str] = []

@@ -769,20 +769,21 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
     acquired, finished, grants = [], [], []
     native_session_id = str(uuid.uuid4())
 
-    def acquire(owner, *, execution, workspace_dir, data_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir, retained_lease_ids):
         acquired.append(owner)
         return BrowserGrant(
             requested=True,
             status=browser_status,
             reason_code="runtime_not_wired" if browser_status == "unavailable" else None,
             owner=owner,
+            lease_id="test-lease" if browser_status == "granted" else None,
             session_name="test-session",
             invocation_dir=str(workspace_dir),
             path_prefix=str(tmp_path / "tools"),
             env={"PLAYWRIGHT_CLI_SESSION": "test-session"},
         )
 
-    def finish(grant):
+    def finish(grant, **kwargs):
         finished.append(grant)
         return BrowserTurnStatus(status=grant.status)
 
@@ -838,7 +839,9 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
         changed_fields.append("browser" in receipt.payload["changed_fields"])
     assert len(acquired) == 1
     assert [grant.status for grant in grants] == [browser_status, "not_requested", "not_requested"]
-    assert finished == grants
+    assert [grant.lease_id for grant in finished] == (
+        ["test-lease"] if browser_status == "granted" else []
+    )
     # The session hears the browser state when it changes, not on every turn.
     assert changed_fields == [False, True, False]
 
@@ -854,10 +857,19 @@ async def test_work_browser_lease_finishes_when_prompt_rendering_fails(
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     append_fixture_patch(app.state.service, seed_patch())
     finished = []
-    grant = BrowserGrant(requested=True, status="granted", session_name="render-failure")
-    monkeypatch.setattr("rcp.runs.browser_lifecycle.acquire_turn_browser", lambda **kwargs: grant)
 
-    def finish(value):
+    def acquire(owner, **kwargs):
+        return BrowserGrant(
+            requested=True,
+            status="granted",
+            owner=owner,
+            lease_id="render-failure",
+            session_name="render-failure",
+        )
+
+    monkeypatch.setattr(browser_runtime_seam, "acquire_browser_grant", acquire)
+
+    def finish(value, **kwargs):
         finished.append(value)
         return BrowserTurnStatus(status=value.status)
 
@@ -867,17 +879,27 @@ async def test_work_browser_lease_finishes_when_prompt_rendering_fails(
     monkeypatch.setattr(browser_runtime_seam, "finish_browser_grant", finish)
     monkeypatch.setattr(work, "_compose_fresh_prompt", fail_render)
     launcher = _FailThenSucceedLauncher("unused")
+    from .test_api import _chat_task_execution
+
+    request = RunRequest(
+        chat_scope="project",
+        run_truth_scope=["repo-a"],
+        chat_id=str(uuid.uuid4()),
+        message="run",
+        mode="work",
+        browser_requested=True,
+    )
+    execution = _chat_task_execution(app, request, "render-failure")
     frames = [
         frame
         async for frame in stream_work_run(
             app.state.service,
             launcher,
-            RunRequest(
-                chat_id=str(uuid.uuid4()), message="run", mode="work", browser_requested=True
-            ),
+            request,
             tmp_path / "data",
+            execution=execution,
         )
     ]
     assert frames
     assert launcher.prompts == []
-    assert finished == [grant]
+    assert [grant.lease_id for grant in finished] == ["render-failure"]

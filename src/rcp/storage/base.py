@@ -719,18 +719,20 @@ class AppStoreBase:
 
     @staticmethod
     def _migrate_browser_grants(connection: sqlite3.Connection) -> None:
-        connection.execute(
-            "ALTER TABLE episodes ADD COLUMN browser_requested INTEGER NOT NULL DEFAULT 0"
-        )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(episodes)")}
+        if "browser_requested" not in columns:
+            connection.execute(
+                "ALTER TABLE episodes ADD COLUMN browser_requested INTEGER NOT NULL DEFAULT 0"
+            )
         connection.execute("""
-            CREATE TABLE chat_browser_preferences (
+            CREATE TABLE IF NOT EXISTS chat_browser_preferences (
                 project_id TEXT NOT NULL, chat_id TEXT NOT NULL,
                 browser_requested INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(project_id, chat_id)
             )
         """)
         connection.execute("""
-            CREATE TABLE browser_owners (
+            CREATE TABLE IF NOT EXISTS browser_owners (
                 owner_token TEXT PRIMARY KEY, owner_json TEXT NOT NULL,
                 execution_host TEXT NOT NULL DEFAULT '', workspace_dir TEXT NOT NULL,
                 stage_root TEXT NOT NULL,
@@ -740,7 +742,7 @@ class AppStoreBase:
             )
         """)
         connection.execute("""
-            CREATE TABLE browser_turn_status (
+            CREATE TABLE IF NOT EXISTS browser_turn_status (
                 operation_id TEXT PRIMARY KEY REFERENCES graph_runs(operation_id),
                 status_json TEXT NOT NULL
             )

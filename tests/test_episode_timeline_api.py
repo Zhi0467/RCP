@@ -219,6 +219,13 @@ def seed_episode_timeline(store: AppStore, project_id: str) -> EpisodeRecord:
     return result
 
 
+def _dump_without_session_touch(connection):
+    # Every authenticated request extends its session; the timeline itself must not write.
+    return [
+        line for line in connection.iterdump() if not line.startswith('INSERT INTO "team_sessions"')
+    ]
+
+
 @pytest.fixture
 def timeline(manifest, tmp_path):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -256,7 +263,7 @@ def test_actor_kinds_and_recorded_links(timeline):
                 episode.updated_at,
             ),
         )
-        before = list(connection.iterdump())
+        before = _dump_without_session_touch(connection)
     response = client.get(f"/api/projects/{episode.project_id}/episodes/{prefix}/timeline")
     assert response.status_code == 200
     data = response.json()
@@ -283,7 +290,7 @@ def test_actor_kinds_and_recorded_links(timeline):
     assert stop["by_span_id"] is None
     assert not data["truncated"]
     with store.connection() as connection:
-        assert list(connection.iterdump()) == before
+        assert _dump_without_session_touch(connection) == before
     assert client.get(f"/api/projects/foreign/episodes/{prefix}/timeline").status_code == 404
 
 

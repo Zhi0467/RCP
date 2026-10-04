@@ -683,7 +683,7 @@ def _serialize_task(
         role=role,
         depth=depth,
         degradation=degradation,
-        browser_status=store.browser_turn_status(task.operation_id),
+        browser_status=store.browser_turn_status(task.operation_id).public(),
     )
     if not isinstance(task.request.get("artifact_edit"), dict):
         values.update(_episode_task_controls(episode, task))

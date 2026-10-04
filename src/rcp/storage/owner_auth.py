@@ -22,11 +22,11 @@ from rcp.storage.models import (
 
 def migrate_owner_auth(connection: sqlite3.Connection) -> None:
     connection.execute(
-        "CREATE TABLE owner_credentials (singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
+        "CREATE TABLE IF NOT EXISTS owner_credentials (singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
         "secret_hash TEXT NOT NULL)"
     )
     connection.execute(
-        "CREATE TABLE owner_sign_in_codes (code_id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, "
+        "CREATE TABLE IF NOT EXISTS owner_sign_in_codes (code_id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, "
         "expires_at TEXT NOT NULL, consumed_at TEXT, failed_attempts INTEGER NOT NULL DEFAULT 0, "
         "locked_at TEXT)"
     )

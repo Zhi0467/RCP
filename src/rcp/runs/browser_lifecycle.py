@@ -81,6 +81,7 @@ def acquire_turn_browser(
             execution=execution,
             workspace_dir=workspace_dir,
             data_dir=store.path.parent,
+            retained_lease_ids=_retained_browser_leases(store, owner.host_key),
         )
     except Exception:
         logger.exception("Browser admission failed")
@@ -92,12 +93,34 @@ def acquire_turn_browser(
         )
 
 
-def finish_turn_browser(grant: BrowserGrant) -> BrowserTurnStatus:
-    try:
-        return browser_runtime_seam.finish_browser_grant(grant)
-    except Exception:
-        logger.exception("Browser finalization failed")
-        return BrowserTurnStatus(status="lost", reason_code="finish_failed")
+def _owner_execution(row) -> RemoteRunStage | None:
+    execution = RemoteRunStage(row["execution_host"]) if row["execution_host"] else None
+    if execution is not None:
+        execution.root = PurePosixPath(row["stage_root"])
+    return execution
+
+
+def _lease_owner(store: AppStore, status: BrowserTurnStatus):
+    with store.connection() as connection:
+        return connection.execute(
+            "SELECT * FROM browser_owners WHERE owner_token = ?", (status.owner_token,)
+        ).fetchone()
+
+
+def _retained_browser_leases(store: AppStore, host_key: str) -> list[str]:
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT status.operation_id, status.status_json, owners.owner_json "
+            "FROM browser_turn_status AS status JOIN browser_owners AS owners "
+            "ON owners.owner_token = json_extract(status.status_json, '$.owner_token')"
+        ).fetchall()
+    return [
+        status.lease_id
+        for row in rows
+        if BrowserOwnerKey.model_validate_json(row["owner_json"]).host_key == host_key
+        and (status := BrowserTurnStatus.model_validate_json(row["status_json"])).lease_id
+        and _browser_result_pending(store, row["operation_id"])
+    ]
 
 
 def close_chat_browser_owners(
@@ -143,7 +166,7 @@ def retry_browser_cleanup(
         with store.connection() as connection:
             active = connection.execute(
                 "SELECT 1 FROM graph_runs WHERE project_id = ? AND stage_root = ? "
-                f"AND (status IN ({placeholders}) OR phase = 'awaiting_remote_result') "
+                f"AND status IN ({placeholders}) "
                 "AND operation_id != ? LIMIT 1",
                 (
                     row["project_id"],
@@ -152,26 +175,35 @@ def retry_browser_cleanup(
                     finished_operation_id or "",
                 ),
             ).fetchone()
-        if active is not None or any(
-            operation_id != finished_operation_id
-            for operation_id, _ in store.unresolved_remote_provider_passes(
-                row["execution_host"], row["stage_root"]
-            )
-        ):
+        if active is not None:
             continue
         try:
+            pending = store.unresolved_remote_provider_passes(
+                row["execution_host"], row["stage_root"]
+            )
+            if any(operation_id != finished_operation_id for operation_id, _ in pending):
+                from rcp.runs.provider_process import require_remote_provider_quiescence
+
+                require_remote_provider_quiescence(store, row["execution_host"], row["stage_root"])
+                # Settlement may have completed this cleanup through its own finalizer.
+                with store.connection() as connection:
+                    remaining = connection.execute(
+                        "SELECT 1 FROM browser_owners WHERE owner_token = ? AND close_requested = 1",
+                        (row["owner_token"],),
+                    ).fetchone()
+                if remaining is None:
+                    continue
             owner = BrowserOwnerKey.model_validate_json(row["owner_json"])
             # Never address an old profile through an alias which now names another account.
             if browser_host_key(row["execution_host"]) != owner.host_key:
                 continue
-            execution = RemoteRunStage(row["execution_host"]) if row["execution_host"] else None
-            if execution is not None:
-                execution.root = PurePosixPath(row["stage_root"])
+            execution = _owner_execution(row)
             browser_runtime_seam.close_browser_owner(
                 owner,
                 execution=execution,
                 delete_profile=bool(row["delete_profile"]),
                 data_dir=store.path.parent,
+                retained_lease_ids=_retained_browser_leases(store, owner.host_key),
             )
             with store.connection() as connection:
                 if row["delete_profile"]:
@@ -219,10 +251,26 @@ def _record_browser_finish(store: AppStore, operation_id: str, status: BrowserTu
 def finish_recorded_browser(store: AppStore, operation_id: str) -> None:
     """Finish the original lease only after reconciliation proves the provider stopped."""
     status = store.browser_turn_status(operation_id)
-    if status.lease_id is not None:
-        status = finish_turn_browser(
-            BrowserGrant(requested=True, status="granted", lease_id=status.lease_id)
+    if status.lease_id is None:
+        return
+    row = _lease_owner(store, status)
+    if row is None:
+        logger.error("Browser lease routing unavailable for %s", operation_id)
+        return
+    try:
+        status = browser_runtime_seam.finish_browser_grant(
+            BrowserGrant(
+                requested=True,
+                status="granted",
+                lease_id=status.lease_id,
+                owner=BrowserOwnerKey.model_validate_json(row["owner_json"]),
+            ),
+            execution=_owner_execution(row),
+            data_dir=store.path.parent,
         )
+    except Exception:
+        logger.exception("Browser finalization failed")
+        return
     _record_browser_finish(store, operation_id, status)
 
 
@@ -269,15 +317,24 @@ async def browser_turn(
                     reason_code=grant.reason_code,
                     detail=grant.detail,
                     lease_id=grant.lease_id,
+                    owner_token=grant.owner.token() if grant.lease_id and grant.owner else None,
                 ),
             )
         yield grant
     finally:
-        if execution is None or not _browser_result_pending(
+        if execution is not None and not _browser_result_pending(
             execution.store, execution.operation_id
         ):
-            status = await asyncio.to_thread(finish_turn_browser, grant)
-            if execution is not None:
+            if grant.lease_id is not None:
                 await asyncio.to_thread(
-                    _record_browser_finish, execution.store, execution.operation_id, status
+                    finish_recorded_browser, execution.store, execution.operation_id
+                )
+            else:
+                await asyncio.to_thread(
+                    _record_browser_finish,
+                    execution.store,
+                    execution.operation_id,
+                    BrowserTurnStatus(
+                        status=grant.status, reason_code=grant.reason_code, detail=grant.detail
+                    ),
                 )

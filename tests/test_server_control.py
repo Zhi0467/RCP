@@ -534,9 +534,8 @@ def test_update_maintenance_blocks_new_machine_operations(
 
 def test_update_maintenance_blocks_get_routes_that_can_mutate(tmp_path: Path) -> None:
     app = create_app(data_dir=tmp_path / "data")
-    app.state.runtime_admission_gate.close_and_wait(timeout=1)
-
     with signed_in_client(app) as client:
+        app.state.runtime_admission_gate.close_and_wait(timeout=1)
         response = client.get(
             "/api/health",
             headers={"Origin": "http://localhost:5173"},

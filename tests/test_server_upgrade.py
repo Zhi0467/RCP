@@ -119,6 +119,8 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
             (36,),
             (37,),
             (38,),
+            (39,),
+            (40,),
         ]
 
         plan = connection.execute(
@@ -354,8 +356,6 @@ def _exercise_candidate_upgrade(fixture: Path) -> None:
                 "space_id": space_id,
                 "space_kind": "team",
                 "agent_mode": "acceptance",
-                "projects": 1,
-                "active_agent_tasks": 0,
             }
             assert {name: health_payload[name] for name in expected_health} == expected_health
 

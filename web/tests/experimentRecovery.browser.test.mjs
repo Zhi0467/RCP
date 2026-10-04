@@ -248,7 +248,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       await page.route("**/api/**", async (route) => {
         const path = new URL(route.request().url()).pathname;
         let json = [];
-        if (path === "/api/health")
+        if (path === "/api/health" || path === "/api/health/details")
           json = { status: "ok", space_id: "space", space_kind: "personal", instance_id: "test" };
         else if (path === "/api/identity")
           json = {

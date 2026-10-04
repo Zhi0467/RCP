@@ -68,6 +68,7 @@ _PATH_COLUMN_NAMES = frozenset(
         "locator",
         "state_location",
         "stage_root",
+        "workspace_dir",
         "output_path",
         "log_path",
         "cwd",
@@ -666,12 +667,13 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
     for table, columns in tables.items():
         if "stage_root" not in columns:
             continue
-        if "stage_host" not in columns:
+        host_column = "execution_host" if table == "browser_owners" else "stage_host"
+        if host_column not in columns:
             raise CandidateRehearsalRefused(
                 f"Path-bearing table {table!r} has no stage-host boundary."
             )
         rows = connection.execute(
-            f'SELECT rowid, stage_host, stage_root FROM "{table}" '
+            f'SELECT rowid, {host_column} AS stage_host, stage_root FROM "{table}" '
             "WHERE stage_root IS NOT NULL AND stage_root != ''"
         ).fetchall()
         for row in rows:
@@ -682,6 +684,11 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                 f'UPDATE "{table}" SET stage_root = ? WHERE rowid = ?',
                 (str(rebound), row["rowid"]),
             )
+            if table == "browser_owners":
+                connection.execute(
+                    "UPDATE browser_owners SET workspace_dir = ? WHERE rowid = ?",
+                    (str(rebound / "workspace"), row["rowid"]),
+                )
             if "output_path" in columns:
                 connection.execute(
                     f'UPDATE "{table}" SET output_path = ? '
@@ -760,6 +767,10 @@ def _validate_path_column_inventory(connection: sqlite3.Connection) -> None:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
+            if column == "workspace_dir" and table != "browser_owners":
+                raise CandidateRehearsalRefused(
+                    f"Copied table {table!r} unexpectedly owns {column!r}."
+                )
             if column == "output_path" and "stage_root" not in columns:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} has output paths without a stage boundary."
@@ -789,8 +800,9 @@ def _validate_rebound_paths(
                 )
     for table, columns in _schema_columns(connection).items():
         if "stage_root" in columns:
+            host_column = "execution_host" if table == "browser_owners" else "stage_host"
             for row in connection.execute(
-                f'SELECT stage_host, stage_root FROM "{table}" '
+                f'SELECT {host_column} AS stage_host, stage_root FROM "{table}" '
                 "WHERE stage_root IS NOT NULL AND stage_root != ''"
             ).fetchall():
                 if not row["stage_host"] and not Path(str(row["stage_root"])).is_relative_to(root):
@@ -803,6 +815,18 @@ def _validate_rebound_paths(
                 ):
                     raise CandidateRehearsalRefused(
                         f"A copied local stage in {table!r} is not known-absent."
+                    )
+        if table == "browser_owners":
+            for row in connection.execute(
+                "SELECT execution_host, workspace_dir FROM browser_owners"
+            ).fetchall():
+                if not row["execution_host"] and (
+                    not Path(row["workspace_dir"]).is_relative_to(root)
+                    or Path(row["workspace_dir"]).exists()
+                    or Path(row["workspace_dir"]).is_symlink()
+                ):
+                    raise CandidateRehearsalRefused(
+                        "A copied local browser workspace escaped its known-absent boundary."
                     )
         if table == "watchers":
             for row in connection.execute(

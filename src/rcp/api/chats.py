@@ -384,7 +384,7 @@ def chat(
         raise HTTPException(status_code=404, detail="Chat not found")
     for message in transcript.messages:
         if message.operation_id is not None:
-            message.browser_status = store.browser_turn_status(message.operation_id)
+            message.browser_status = store.browser_turn_status(message.operation_id).public()
     return transcript
 
 

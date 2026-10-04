@@ -7,7 +7,6 @@ import httpx
 import pytest
 
 from rcp import limits, transcription
-from rcp.api import voice as routes
 from rcp.service_connections import VoiceSettings
 
 from .test_service_connections import KEY, MIME, connection, mock_transport, setup  # noqa: F401
@@ -30,7 +29,6 @@ TOOLS = [
 @pytest.fixture
 def voice_setup(setup):  # noqa: F811
     store, private, client = setup
-    client.app.include_router(routes.router)
     return store, private, client
 
 
