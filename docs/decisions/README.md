@@ -1,5 +1,14 @@
 # Active decision records
 
+- [Agents browse with Playwright CLI](2026-10-04-agents-browse-with-playwright-cli.md)
+  records why agents run Playwright CLI in their own shell instead of MCP, a
+  command-channel relay, or the providers' own browsers, why every CLI feature
+  stays on behind a per-chat toggle, and what that gives up.
+
+- [The personal backend requires an owner session](2026-10-04-the-personal-backend-requires-an-owner-session.md)
+  records why a personal backend stops trusting loopback, why the fix reuses team
+  sessions, and what a same-account agent can still do.
+
 - [Nightly graph consolidation writes main](2026-10-03-nightly-consolidation-writes-main.md)
   records why a member may authorize a scheduled Work turn, why it writes main
   rather than a branch, why it applies inside the turn, and why its report sits
