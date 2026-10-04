@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -283,7 +284,16 @@ class BranchHistoryManager:
                 raise
         if raise_on_reject and report.rejected:
             raise PatchRejected(report)
+        if not report.rejected:
+            self._notify_accepted_transition(result.state.revision)
         return prepared, result
+
+    def _notify_accepted_transition(self, revision: int) -> None:
+        if self.parent.on_accepted_branch_transition is not None:
+            try:
+                self.parent.on_accepted_branch_transition(self.graph_target.key, revision)
+            except Exception:
+                logging.getLogger(__name__).exception("Accepted branch signal failed")
 
     def append_batch(
         self,
@@ -368,6 +378,7 @@ class BranchHistoryManager:
                     raise
                 if not self._reconcile_patch_publish_failure(exc, target):
                     raise
+            self._notify_accepted_transition(result.state.revision)
             return [prepared], result
 
     def validate_candidate(

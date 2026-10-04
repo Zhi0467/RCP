@@ -13,6 +13,7 @@ from rcp_supervisor.checkpoint import SnapshotRoot, create_checkpoint, restore_c
 
 from rcp.api import create_app
 from rcp.server_ops.backup import _write_deterministic_archive, build_archive_manifest
+from rcp.server_ops.backup_capture import BackupCaptureCoordinator
 from rcp.server_ops.backup_models import BackupArchiveManifest
 from rcp.server_ops.backup_project_files import BackupProjectFileCapturePublication
 from rcp.server_ops.deployment import (
@@ -24,6 +25,8 @@ from rcp.server_ops.deployment import (
 )
 from rcp.server_ops.maintenance import MaintenanceIdentity
 from rcp.server_ops.restore import RestorePrepareRequest, RestoreRefused, prepare_restore
+from rcp.storage import AppStore
+from rcp.storage.digest import append_digest_event
 from tests.legacy_artifacts import insert_legacy_view
 from tests.test_application_deployment import captured, socket_root  # noqa: F401
 
@@ -44,7 +47,33 @@ def _write_archive(value, manifest, root):
 
 @pytest.fixture
 def restore_request(captured, tmp_path):  # noqa: F811 - imported shared fixture
-    request, state, _ = captured
+    request, state, metadata = captured
+    store = AppStore(Path(request.data_dir) / "rcp.sqlite3")
+    project_id = store.projects()[0].project_id
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        seq = append_digest_event(
+            connection,
+            project_id=project_id,
+            kind="job_ended",
+            item_id="restored-job",
+            created_at=store.now(),
+            payload={"title": "Finished job", "status": "exited"},
+        )
+        user_id = store.project_members(project_id)[0].user_id
+        connection.execute(
+            "INSERT INTO digest_marks VALUES(?,?,?,?)", (project_id, user_id, seq, store.now())
+        )
+        connection.execute(
+            "INSERT INTO digest_heads VALUES(?,?,?,?)", (project_id, "main", 1, "restored-head")
+        )
+    capture = BackupCaptureCoordinator(store, Path(request.data_dir), metadata).capture_sqlite()
+    request = request.model_copy(
+        update={
+            "sqlite_receipt_path": str(capture.receipt_path),
+            "sqlite_receipt_sha256": capture.receipt_sha256,
+        }
+    )
     previous = prepare(request)
     proof = ApplicationProof.model_validate_json(Path(previous["proof_path"]).read_bytes())
     recipient = "age1" + "q" * 58
@@ -106,6 +135,17 @@ def test_restore_reviews_then_prepares_exact_candidate_without_changing_live(
     )
     result = prepare_restore(RestorePrepareRequest(**value))
     assert result["status"] == "prepared"
+    restored_data = next(
+        Path(root["payload"]) for root in result["roots"] if root["live"] == str(data)
+    )
+    with AppStore.open_read_only_snapshot(restored_data / "rcp.sqlite3").connection() as connection:
+        assert (
+            connection.execute("SELECT item_id FROM digest_events").fetchone()[0] == "restored-job"
+        )
+        assert connection.execute("SELECT seq FROM digest_marks").fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT patch_id FROM digest_heads").fetchone()[0] == "restored-head"
+        )
     assert (data / "rcp.sqlite3").read_bytes() == original
     assert {
         p.relative_to(research): p.read_bytes() for p in research.rglob("*") if p.is_file()
@@ -474,6 +514,9 @@ def test_restore_legacy_migrated_artifact_can_be_archived_again(
         for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
             connection.execute(f"DROP TABLE {table}")
         for table in (
+            "digest_events",
+            "digest_marks",
+            "digest_heads",
             "consolidation_schedules",
             "consolidation_runs",
             "consolidation_apply_receipts",

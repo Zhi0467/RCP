@@ -14,6 +14,7 @@ from rcp.limits import (
     AUTO_RESEARCH_MAIL_MAX_MESSAGES,
     WATCHER_ERROR_BACKOFF_SECONDS,
 )
+from rcp.storage.digest import append_episode_ended
 from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -1555,6 +1556,7 @@ class AutoResearchStoreMixin:
                 """,
                 (now, now, detail, now, now, episode_id),
             )
+            append_episode_ended(connection, episode_id, now)
 
     def auto_research_recovery(self, recovery_id: str) -> AutoResearchRecoveryRecord | None:
         with self.connection() as connection:

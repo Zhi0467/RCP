@@ -56,12 +56,10 @@ from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import RESTRUCTURE_PROTECTED_EPISTEMIC, operation_actions
 from rcp.core.materialize import apply_valid_patch
 from rcp.core.models import (
-    Ambiguity,
     AuthorizedHuman,
     BranchMergeProvenance,
     BranchMergeReceipt,
     Edge,
-    GlossaryTerm,
     GraphBranchMetadata,
     GraphState,
     Hypothesis,
@@ -103,6 +101,20 @@ from rcp.history import (
     PatchRejected,
     RevisionConflict,
 )
+from rcp.history.delta import (
+    _SEMANTIC_AMBIGUITY_BOOKKEEPING,
+    _SEMANTIC_EDGE_BOOKKEEPING,
+    _SEMANTIC_GLOSSARY_BOOKKEEPING,
+    _SEMANTIC_NODE_BOOKKEEPING,
+    _SEMANTIC_PROPOSAL_BOOKKEEPING,
+    AmbiguitySemanticDelta,
+    EdgeSemanticDelta,
+    GlobalSemanticDelta,
+    GlossarySemanticDelta,
+    NodeSemanticDelta,
+    ProposalSemanticDelta,
+    semantic_delta,
+)
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.runs.session_master import record_inline_prompt, record_session_master
 from rcp.runs.shared import (
@@ -122,22 +134,6 @@ from rcp.service import RunRequest, _proposal_judgment_patch
 from rcp.transport import RemoteRunStage, StateUnavailable
 
 MAX_BRANCH_MERGE_REBASE_ROUNDS = 3
-# Main's transition recomputes guidance validity from its merged dependencies.
-_SEMANTIC_NODE_BOOKKEEPING = frozenset(
-    {"created_rev", "updated_rev", "current_summary_stale", "next_action_stale"}
-)
-_SEMANTIC_EDGE_BOOKKEEPING = frozenset({"created_rev"})
-_SEMANTIC_PROPOSAL_BOOKKEEPING = frozenset(
-    {
-        "base_rev",
-        "raised_rev",
-        "resolved_rev",
-        "created_by_operation_id",
-        "resolved_by_operation_id",
-    }
-)
-_SEMANTIC_AMBIGUITY_BOOKKEEPING = frozenset({"raised_rev"})
-_SEMANTIC_GLOSSARY_BOOKKEEPING = frozenset({"updated_rev"})
 
 
 class _StrictMergeModel(BaseModel):
@@ -185,78 +181,6 @@ class BranchMergeEligibility(_StrictMergeModel):
             raise ValueError("merge eligibility must name one exact branch head")
         if self.active_branch_writer_task_ids:
             raise ValueError("a graph branch with an active writer is not merge eligible")
-        return self
-
-
-class NodeSemanticDelta(_StrictMergeModel):
-    change: Literal["created", "updated", "removed"]
-    node_id: str
-    before: ProjectNode | None = None
-    after: ProjectNode | None = None
-
-    @model_validator(mode="after")
-    def require_shape(self) -> NodeSemanticDelta:
-        _require_change_shape(self.change, self.before, self.after, self.node_id)
-        return self
-
-
-class EdgeSemanticDelta(_StrictMergeModel):
-    change: Literal["created", "updated", "removed"]
-    edge_id: str
-    before: Edge | None = None
-    after: Edge | None = None
-
-    @model_validator(mode="after")
-    def require_shape(self) -> EdgeSemanticDelta:
-        _require_change_shape(self.change, self.before, self.after, self.edge_id)
-        return self
-
-
-class ProposalSemanticDelta(_StrictMergeModel):
-    change: Literal["created", "updated", "removed"]
-    proposal_id: str
-    before: Proposal | None = None
-    after: Proposal | None = None
-
-    @model_validator(mode="after")
-    def require_shape(self) -> ProposalSemanticDelta:
-        _require_change_shape(self.change, self.before, self.after, self.proposal_id)
-        return self
-
-
-class AmbiguitySemanticDelta(_StrictMergeModel):
-    change: Literal["created", "updated", "removed"]
-    ambiguity_id: str
-    before: Ambiguity | None = None
-    after: Ambiguity | None = None
-
-    @model_validator(mode="after")
-    def require_shape(self) -> AmbiguitySemanticDelta:
-        _require_change_shape(self.change, self.before, self.after, self.ambiguity_id)
-        return self
-
-
-class GlossarySemanticDelta(_StrictMergeModel):
-    change: Literal["created", "updated", "removed"]
-    term: str
-    before: GlossaryTerm | None = None
-    after: GlossaryTerm | None = None
-
-    @model_validator(mode="after")
-    def require_shape(self) -> GlossarySemanticDelta:
-        _require_change_shape(self.change, self.before, self.after, self.term, id_field="term")
-        return self
-
-
-class GlobalSemanticDelta(_StrictMergeModel):
-    field: Literal["project_truth_scope", "ontology"]
-    before: JsonValue
-    after: JsonValue
-
-    @model_validator(mode="after")
-    def require_actual_change(self) -> GlobalSemanticDelta:
-        if self.before == self.after:
-            raise ValueError("a global semantic delta must change its field")
         return self
 
 
@@ -556,62 +480,10 @@ def build_semantic_delta(
         raise ValueError("semantic delta snapshots do not match their exact heads")
     if base_head.target.kind != "main" or branch_head.target.kind != "branch":
         raise ValueError("semantic delta requires a main base and branch head")
-    globals_: list[GlobalSemanticDelta] = []
-    if base.project_truth_scope != branch.project_truth_scope:
-        globals_.append(
-            GlobalSemanticDelta(
-                field="project_truth_scope",
-                before=base.project_truth_scope,
-                after=branch.project_truth_scope,
-            )
-        )
-    if base.ontology != branch.ontology:
-        globals_.append(
-            GlobalSemanticDelta(
-                field="ontology",
-                before=base.ontology.model_dump(mode="json"),
-                after=branch.ontology.model_dump(mode="json"),
-            )
-        )
     return GraphSemanticDelta(
         base_head=base_head,
         branch_head=branch_head,
-        nodes=_typed_collection_delta(
-            base.nodes,
-            branch.nodes,
-            model=NodeSemanticDelta,
-            id_field="node_id",
-            bookkeeping=_SEMANTIC_NODE_BOOKKEEPING,
-        ),
-        edges=_typed_collection_delta(
-            base.edges,
-            branch.edges,
-            model=EdgeSemanticDelta,
-            id_field="edge_id",
-            bookkeeping=_SEMANTIC_EDGE_BOOKKEEPING,
-        ),
-        proposals=_typed_collection_delta(
-            base.proposals,
-            branch.proposals,
-            model=ProposalSemanticDelta,
-            id_field="proposal_id",
-            bookkeeping=_SEMANTIC_PROPOSAL_BOOKKEEPING,
-        ),
-        ambiguities=_typed_collection_delta(
-            base.ambiguities,
-            branch.ambiguities,
-            model=AmbiguitySemanticDelta,
-            id_field="ambiguity_id",
-            bookkeeping=_SEMANTIC_AMBIGUITY_BOOKKEEPING,
-        ),
-        glossary=_typed_collection_delta(
-            base.glossary,
-            branch.glossary,
-            model=GlossarySemanticDelta,
-            id_field="term",
-            bookkeeping=_SEMANTIC_GLOSSARY_BOOKKEEPING,
-        ),
-        globals=globals_,
+        **semantic_delta(base, branch).model_dump(mode="python"),
     )
 
 
@@ -2531,54 +2403,6 @@ async def stream_code_merge_run(
     if provider.paused or provider.failed or not provider.completed:
         raise ValueError("The code merge provider did not complete its turn.")
     verify()
-
-
-def _require_change_shape(
-    change: str,
-    before: BaseModel | None,
-    after: BaseModel | None,
-    identity: str,
-    *,
-    id_field: str = "id",
-) -> None:
-    if change == "created" and (before is not None or after is None):
-        raise ValueError("created semantic deltas require only an after value")
-    if change == "updated" and (before is None or after is None):
-        raise ValueError("updated semantic deltas require before and after values")
-    if change == "removed" and (before is None or after is not None):
-        raise ValueError("removed semantic deltas require only a before value")
-    for value in (before, after):
-        if value is not None and getattr(value, id_field) != identity:
-            raise ValueError("semantic delta identity does not match its payload")
-
-
-def _typed_collection_delta(
-    before: Mapping[str, BaseModel],
-    after: Mapping[str, BaseModel],
-    *,
-    model: type[BaseModel],
-    id_field: str,
-    bookkeeping: frozenset[str],
-) -> list[Any]:
-    result: list[Any] = []
-    for identity in sorted(set(before) | set(after)):
-        old = before.get(identity)
-        new = after.get(identity)
-        if old is None:
-            result.append(
-                model.model_validate({"change": "created", id_field: identity, "after": new})
-            )
-        elif new is None:
-            result.append(
-                model.model_validate({"change": "removed", id_field: identity, "before": old})
-            )
-        elif _semantic_document(old, bookkeeping) != _semantic_document(new, bookkeeping):
-            result.append(
-                model.model_validate(
-                    {"change": "updated", id_field: identity, "before": old, "after": new}
-                )
-            )
-    return result
 
 
 def _graph_semantic_document(state: GraphState) -> dict[str, JsonValue]:

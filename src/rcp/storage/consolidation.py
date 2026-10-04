@@ -18,6 +18,7 @@ from rcp.limits import (
     CONSOLIDATION_RECENT_NIGHTS,
     RUN_STAGE_RETENTION_DAYS,
 )
+from rcp.storage.digest import append_digest_event, digest_link
 from rcp.storage.models import AgentTaskRecord
 
 
@@ -312,6 +313,21 @@ class ConsolidationStoreMixin:
                         int(task is None),
                     ),
                 )
+                if task is None:
+                    append_digest_event(
+                        conn,
+                        project_id=schedule.project_id,
+                        kind="consolidation_failed",
+                        item_id=run_id,
+                        created_at=now,
+                        payload={
+                            "title": "Nightly consolidation",
+                            "status": "failed",
+                            "deep_link": digest_link(
+                                schedule.project_id, {"kind": "main"}, "consolidation", run_id
+                            ),
+                        },
+                    )
                 if task:
                     task = self._bind_consolidation_stage(conn, task, execution_host)
                     self._insert_agent_task(conn, task, continuation_cause="fresh")
@@ -423,6 +439,21 @@ class ConsolidationStoreMixin:
                     error_message,
                     run_id,
                 ),
+            )
+            append_digest_event(
+                conn,
+                project_id=row["project_id"],
+                kind="consolidation_report" if kind == "report" else "consolidation_failed",
+                item_id=run_id,
+                created_at=now,
+                payload={
+                    "title": report_title or "Nightly consolidation",
+                    "report_artifact_id": report_artifact_id,
+                    "status": "succeeded" if kind == "report" else "failed",
+                    "deep_link": digest_link(
+                        row["project_id"], {"kind": "main"}, "consolidation", run_id
+                    ),
+                },
             )
             conn.execute(
                 "UPDATE consolidation_schedules SET last_outcome=?,covered_head=COALESCE(?,covered_head) WHERE project_id=?",
@@ -585,7 +616,22 @@ class ConsolidationStoreMixin:
         self, connection: sqlite3.Connection, *, diagnostic: str, now: str
     ) -> None:
         connection.execute("DELETE FROM consolidation_schedules")
-        connection.execute(
-            "UPDATE consolidation_runs SET kind='failure',outcome_settled_at=?,error_code='restored_run_detached',error_message=?,revisions_verified=0 WHERE outcome_settled_at IS NULL",
+        rows = connection.execute(
+            "UPDATE consolidation_runs SET kind='failure',outcome_settled_at=?,error_code='restored_run_detached',error_message=?,revisions_verified=0 WHERE outcome_settled_at IS NULL RETURNING project_id,run_id",
             (now, diagnostic),
-        )
+        ).fetchall()
+        for row in rows:
+            append_digest_event(
+                connection,
+                project_id=row["project_id"],
+                kind="consolidation_failed",
+                item_id=row["run_id"],
+                created_at=now,
+                payload={
+                    "title": "Nightly consolidation",
+                    "status": "failed",
+                    "deep_link": digest_link(
+                        row["project_id"], {"kind": "main"}, "consolidation", row["run_id"]
+                    ),
+                },
+            )

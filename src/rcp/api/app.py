@@ -41,6 +41,7 @@ from rcp.api.dependencies import (
 from rcp.api.dependencies import (
     get_project_service as _project_service,
 )
+from rcp.api.digest import router as digest_router
 from rcp.api.episode_branches import (
     ensure_episode_graph_target as _ensure_episode_graph_target,
 )
@@ -95,6 +96,7 @@ from rcp.config import load_manifest
 from rcp.consolidation import ConsolidationPoller
 from rcp.control import admit_experiment_watcher_invocation
 from rcp.core.transition_models import GraphTargetRef
+from rcp.digest import DigestProjector
 from rcp.history import PatchRejected, ReplayHalted
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
@@ -1477,7 +1479,19 @@ def create_app(
         admission=background_admission_gate,
         startup_effect_fence=startup_effect_fence,
     )
-    catalog.on_accepted_transition = notification_sender.signal
+    digest_projector = DigestProjector(
+        store,
+        catalog,
+        admission=background_admission_gate,
+        startup_effect_fence=startup_effect_fence,
+    )
+
+    def signal_graph_observers(project_id: str, revision: int) -> None:
+        notification_sender.signal(project_id, revision)
+        digest_projector.signal(project_id, revision)
+
+    catalog.on_accepted_transition = signal_graph_observers
+    catalog.on_accepted_branch_transition = digest_projector.signal_branch
     phone_listener = (
         PhoneListener(store, notification_sender.resolve) if space_kind == "personal" else None
     )
@@ -1670,8 +1684,11 @@ def create_app(
         consolidation_poller.stop(timeout=timeout)
         graph_watcher_retry_worker.stop(timeout=timeout)
         notification_sender.stop(timeout=timeout)
+        digest_projector.stop(timeout=timeout)
         if phone_listener is not None:
             phone_listener.stop(timeout=timeout)
+        if digest_projector.is_running():
+            raise MaintenanceRefused("Timed out stopping digest projection at the update boundary.")
         if notification_sender.is_running():
             raise MaintenanceRefused(
                 "Timed out stopping notification delivery at the update boundary."
@@ -1714,6 +1731,7 @@ def create_app(
         watcher_poller.start()
         consolidation_poller.start()
         notification_sender.start()
+        digest_projector.start()
         if phone_listener is not None:
             phone_listener.resume()
         loop = runtime_loop[0]
@@ -1915,6 +1933,7 @@ def create_app(
                 watcher_poller.start()
                 consolidation_poller.start()
                 notification_sender.start()
+                digest_projector.start()
                 if phone_listener is not None:
                     await asyncio.to_thread(phone_listener.resume)
                 if control_server is not None and not control_started:
@@ -1997,6 +2016,7 @@ def create_app(
             await asyncio.to_thread(consolidation_poller.stop)
             graph_watcher_retry_worker.stop()
             await asyncio.to_thread(notification_sender.stop)
+            await asyncio.to_thread(digest_projector.stop)
             if phone_listener is not None:
                 await asyncio.to_thread(phone_listener.stop)
             try:
@@ -2032,6 +2052,7 @@ def create_app(
     app.state.consolidation_poller = consolidation_poller
     app.state.graph_watcher_retry_worker = graph_watcher_retry_worker
     app.state.notification_sender = notification_sender
+    app.state.digest_projector = digest_projector
     app.state.instance_metadata = identity
     app.state.server_control = control_server
     app.state.space_id = space_id
@@ -2306,6 +2327,7 @@ def create_app(
     app.include_router(update_notice_router)
     app.include_router(team_router)
     app.include_router(notifications_router)
+    app.include_router(digest_router)
     app.include_router(lessons_router)
     app.include_router(machine_power_router)
     app.include_router(index_router)

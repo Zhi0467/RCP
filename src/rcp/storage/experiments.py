@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES, QUESTION_SNAPSHOT_MAX_RECORDS
+from rcp.storage.digest import append_question_attention
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.models import (
     _EXPERIMENT_EPISODE_CONTEXT_CANDIDATE_ROLE,
@@ -410,6 +411,12 @@ class ExperimentStoreMixin:
                             )
                             continue
                         claimable.append(question)
+                    for question_row in reopened:
+                        current = connection.execute(
+                            "SELECT * FROM questions WHERE question_id=?",
+                            (question_row["question_id"],),
+                        ).fetchone()
+                        append_question_attention(connection, current, record.created_at)
                     # Claim only what this invocation's snapshot carries: claimed answers
                     # sort first there, by the same key, under the same cap. The rest stay
                     # unclaimed for later answer wakes.

@@ -145,6 +145,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
         (35, "question_answer_projection_v1"),
         (36, "operational_lessons_v1"),
         (37, "graph_consolidation_v1"),
+        (38, "digest_v1"),
     ]
 
     def unexpected_migration(*_args) -> None:
@@ -2048,6 +2049,9 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "notification_project_baselines": 0,
         "notification_question_events": 1,
         "questions": 1,
+        "digest_events": 1,
+        "digest_marks": 0,
+        "digest_heads": 0,
         "consolidation_schedules": 0,
         "consolidation_runs": 0,
         "consolidation_apply_receipts": 0,
