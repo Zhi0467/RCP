@@ -256,6 +256,12 @@ def experiment_dependency_signature(state: GraphState, experiment_id: str) -> tu
         source = state.nodes.get(edge.source)
         if not isinstance(source, Evidence):
             continue
+        lifecycle = getattr(source, project_type.lifecycle_field(source.type))
+        # Retiring Evidence keeps its edges. Dropping it here makes the
+        # retirement itself change the signature, and later edits to a retired
+        # source's edges no longer do.
+        if lifecycle == project_type.retired_value:
+            continue
         assessments.append(
             (
                 edge.id,
@@ -263,9 +269,7 @@ def experiment_dependency_signature(state: GraphState, experiment_id: str) -> tu
                 edge.target,
                 edge.relation,
                 edge.assessment.model_dump(mode="json") if edge.assessment else None,
-                # Retiring Evidence keeps its edges, so its lifecycle is part of
-                # what the guidance was written against.
-                getattr(source, project_type.lifecycle_field(source.type)),
+                lifecycle,
             )
         )
     return (

@@ -816,6 +816,69 @@ def test_transition_identity_accepts_a_recomputed_historical_ruleset_tag() -> No
     assert recovered == source_patches
 
 
+def test_edges_of_retired_evidence_no_longer_invalidate_guidance() -> None:
+    evidence = Evidence(
+        id="ev/old",
+        type="evidence",
+        title="Old result",
+        observation="The run recovered.",
+        interpretation="The intervention helped.",
+        origin="analytic",
+        validity="superseded",
+    )
+    edge = Edge(
+        id="ev/old::supports::hyp/claim",
+        source=evidence.id,
+        target="hyp/claim",
+        relation="supports",
+        layer="epistemic",
+    )
+    state = GraphState(
+        nodes={
+            "exp/run": Experiment(
+                id="exp/run",
+                type="experiment",
+                title="Run",
+                objective="Test the hypothesis.",
+                current_summary="The current result supports the hypothesis.",
+                next_action="Replicate the current result.",
+            ),
+            "hyp/claim": Hypothesis(
+                id="hyp/claim",
+                type="hypothesis",
+                title="Claim",
+                statement="The intervention helps.",
+            ),
+            evidence.id: evidence,
+        },
+        edges={
+            "exp/run::tests::hyp/claim": Edge(
+                id="exp/run::tests::hyp/claim",
+                source="exp/run",
+                target="hyp/claim",
+                relation="tests",
+                layer="seam",
+            ),
+            edge.id: edge,
+        },
+    )
+    patch = Patch(
+        revision=1,
+        kind="approval",
+        author="human",
+        producer="human",
+        summary="Drop the retired result's relation.",
+        ops=[{"op": "remove_edges", "edge_ids": [edge.id]}],
+    )
+
+    prepared = GraphTransitionManager().prepare_validated(state, [patch])
+
+    projected = prepared.projection.graph.nodes["exp/run"]
+    assert isinstance(projected, Experiment)
+    assert projected.current_summary_stale is False
+    assert projected.next_action_stale is False
+
+
 def _evidence_retirement_transition() -> tuple[GraphState, Patch]:
     evidence = {
         evidence_id: Evidence(
