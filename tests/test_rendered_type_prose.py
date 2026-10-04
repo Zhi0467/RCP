@@ -13,6 +13,7 @@ from hashlib import sha256
 import pytest
 
 from rcp.agents.auto_research_prompt import (
+    _decision_disposition,
     auto_research_orchestrator_task_contract,
     orchestrator_graph_authority_contract,
 )
@@ -80,6 +81,13 @@ def test_contract_sentences_follow_the_project_type(renamed: None) -> None:
         orchestrator_authority
     )
     assert "ResearchQuestion" not in orchestrator_authority
+    assert "Directly create and change Evidence, Choices, Changes, and Blockers" in (
+        orchestrator_authority
+    )
+    assert "Decision" not in orchestrator_authority
+    disposition = _flat(_decision_disposition())
+    assert disposition.startswith("Choice disposition:")
+    assert "Decision" not in disposition
 
     assert "A change to an existing Goal or Design is still a Proposal." in _flat(
         ask_contract("<how>")

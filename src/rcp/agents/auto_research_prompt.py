@@ -17,7 +17,7 @@ from rcp.agents.prompts import (
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
-from rcp.core.project_types import project_type_of
+from rcp.core.project_types import ProjectType, project_type_of
 from rcp.limits import (
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
@@ -215,16 +215,41 @@ def _auto_research_commands(command_client: str) -> str:
 def _decision_disposition() -> str:
     """When the root orchestrator settles a Decision itself and when it hands it over."""
 
-    return """Decision disposition:
+    chooser = project_type_of().label_list(project_type_of().chooser_types)
+    return f"""{chooser} disposition:
 - You hold the choice on your episode branch and the human reviews that branch before any merge, so
-  a Decision your own evidence settles is yours to decide. Record what it turned on in `rationale`.
+  a {chooser} your own evidence settles is yours to decide. Record what it turned on in `rationale`.
 - Set `ready` instead only when the choice turns on something your authority cannot supply: human
   preference, cost or risk the human carries, or a direction the starting instruction left open.
   Name in `rationale` exactly what you are asking the human for.
-- A `ready` Decision does not announce itself. Waking on `decided` parks the episode until the human
+- A `ready` {chooser} does not announce itself. Waking on `decided` parks the episode until the human
   happens to look, so prefer deciding, and when you do hand a choice over keep other authorized work
   moving rather than making that wake the episode's only remaining path forward.
 """
+
+
+def _ordinary_type_names(project_type: ProjectType) -> str:
+    """Plural names of the types an orchestrator changes directly, outcomes first.
+
+    The order follows the roles (outcome, chooser, control node, blocker), then
+    any other unprotected type in canonical order.
+    """
+
+    ordered: list[str] = []
+    for role in (
+        project_type.outcome_types,
+        project_type.chooser_types,
+        project_type.control_node_types,
+        project_type.blocker_types,
+        frozenset(project_type.node_types),
+    ):
+        for node_type in project_type.ordered(role):
+            if node_type not in ordered and not project_type.is_protected_belief(node_type):
+                ordered.append(node_type)
+    words = [project_type.plural_labels[node_type] for node_type in ordered]
+    if len(words) <= 2:
+        return " and ".join(words)
+    return f"{', '.join(words[:-1])}, and {words[-1]}"
 
 
 def orchestrator_graph_authority_contract() -> str:
@@ -239,7 +264,7 @@ def orchestrator_graph_authority_contract() -> str:
 - Create new {new_protected} directly. Any edit, removal, merge, supersession, or
   protected relation change involving an existing {protected_belief_names()} must instead be
   one pending Proposal for human judgment.
-- Directly create and change Evidence, Decisions, Experiments, and Blockers, including choosing a
+- Directly create and change {_ordinary_type_names(project_type)}, including choosing a
   {chooser} and setting ordinary-node standing where the staged schema permits it. Choosing one
   writes `selected_option` and `status: decided` on that {chooser} in the same Patch and requires
   `agent_action: "decision_choice"`; without that field RCP refuses the outcome.
