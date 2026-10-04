@@ -56,8 +56,10 @@ def browser_prompt_line(grant: BrowserGrant) -> str:
     """An explicit value each turn also revokes a prior native-session instruction."""
     if grant.status == "granted":
         return (
-            f"Browser: session {grant.session_name}; run playwright-cli from "
-            f"{grant.invocation_dir}; playwright-cli --help lists commands."
+            f"Browser: session {grant.session_name} is already open; run playwright-cli "
+            f"from {grant.invocation_dir}. Start with goto, not open: open, close, and "
+            "kill-all end RCP's session for the rest of the turn. "
+            "playwright-cli --help lists commands."
         )
     if grant.status == "unavailable":
         return f"Browser: unavailable ({grant.reason_code}); no browser grant for this turn."
