@@ -164,7 +164,18 @@ export function ProjectOverview({
 
 /** "Since you last looked": hidden when empty; Caught up acknowledges what is on screen. */
 function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: DigestCardProps) {
-  if (!digest || projectDigestIsEmpty(digest)) return null;
+  if (!digest || projectDigestIsEmpty(digest)) {
+    // A failed read must not look like being caught up.
+    if (!error) return null;
+    return (
+      <section className="digest-card" aria-label="Since you last looked">
+        <header className="digest-card-header">
+          <h2>Since you last looked</h2>
+        </header>
+        <p role="alert">{error}</p>
+      </section>
+    );
+  }
   return (
     <section className="digest-card" aria-label="Since you last looked">
       <header className="digest-card-header">

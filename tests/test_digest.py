@@ -299,3 +299,24 @@ def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     projector.run_pass()
     result = read_digest(store, app.state.catalog, episode.project_id, user_id)
     assert len(result["branches"]) == 1 and result["branches"][0]["edits"] == 1
+
+
+def test_first_pass_baselines_existing_branches_before_main(manifest, tmp_path):
+    from rcp.digest import read_digest
+
+    from .test_branch_chats import _app_branch
+    from .test_branch_history import _branch_patch
+
+    app, main, episode, root = _app_branch(manifest, tmp_path)
+    store = app.state.background_tasks.store
+    # Branch history that predates the digest, as on an upgraded project.
+    main.for_graph_target(episode.graph_target).history.append(
+        _branch_patch("ev/old").model_copy(update={"source_operation_id": root.operation_id})
+    )
+    projector = DigestProjector(store, app.state.catalog, admission=RuntimeAdmissionGate())
+    # Even a first pass driven by a main signal baselines every branch first.
+    projector.reconcile_project(episode.project_id, targets={"main"})
+    user_id = store.local_owner.user_id
+    assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0
+    projector.run_pass()
+    assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0

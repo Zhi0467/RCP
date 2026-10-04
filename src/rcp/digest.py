@@ -497,11 +497,22 @@ class DigestProjector:
     def reconcile_project(self, project_id, targets=None):
         with self._lock:
             history = self.catalog.open(project_id).history
-            if targets is None or "main" in targets:
+            with self.store.connection() as conn:
+                initial = (
+                    conn.execute(
+                        "SELECT 1 FROM digest_heads WHERE project_id=? AND target='main'",
+                        (project_id,),
+                    ).fetchone()
+                    is None
+                )
+            # Member marks wait for the main checkpoint, so on a project's first
+            # pass the main checkpoint comes last: existing branches are
+            # baselined before any member can start counting.
+            if not initial and (targets is None or "main" in targets):
                 self._project_history(project_id, "main", history)
             branches = (
                 self._branch_targets(project_id)
-                if targets is None
+                if targets is None or initial
                 else {
                     target: target.removeprefix("branch:") for target in targets if target != "main"
                 }
@@ -515,6 +526,8 @@ class DigestProjector:
                     )
                 except Exception:
                     _LOG.exception("Digest branch projection failed for %s/%s", project_id, target)
+            if initial and (targets is None or "main" in targets):
+                self._project_history(project_id, "main", history)
 
     def _project_history(self, project_id, target, history):
         with self.store.connection() as conn:
