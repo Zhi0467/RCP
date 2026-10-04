@@ -18,6 +18,10 @@ sign-in boundary; a one-time code can be pasted or supplied in the sign-in URL's
 fragment. Project locator intent stays in the URL across sign-in. The human
 confirms it before registration. Display-name entry remains a separate action.
 Authenticated `/api/health/details` supplies runtime and project-creation data.
+During desktop status, an owner-session 401 clears the cached native session and
+returns the verified backend identity with `owner_authenticated=false`, allowing
+the ordinary sign-in boundary. Quit and update still require authenticated
+health details before using active-work counts.
 
 ## Agent browser Web consumers
 

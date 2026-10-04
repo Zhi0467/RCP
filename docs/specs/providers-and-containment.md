@@ -392,7 +392,12 @@ Work, orchestrate, and Discuss admit grants. Paper coach, ingestion, scratch-onl
 correction, and recorded replay do not. Prompts render the resolved session and
 invocation directory. Continuations send explicit off or unavailable values.
 The owner releases the grant in a finally block, including prompt preparation
-failures.
+failures. A detached remote turn retains the same lease until remote-result
+reconciliation proves its provider stopped. Its lease identity stays in the
+existing turn status record; settlement releases it and records the final browser
+status before deferred cleanup, without acquiring another grant. A controller
+restart that loses the lease records `lost` with `lease_unknown`; host epoch
+cleanup clears the old lease. Settled paused tasks do not block cleanup.
 Granted turns merge its environment and prefix its tool directory to PATH.
 SSH launches prefix the execution host's PATH after login-shell initialization;
 they never copy the controller's PATH. Codex retains `shell_environment_policy={}`.
@@ -1615,7 +1620,13 @@ owner without active leases is closed first. A full busy host reports capacity.
 Controller restart clears that controller's old leases and adopts live sessions.
 
 Close uses the CLI's graceful close before removing an explicitly requested
-profile. Closing an active owner waits for its last lease to finish. Idle timeout
+profile. A confirmed profile deletion retires the runtime record. A removed
+workspace is retired only after its OS owner is proven stopped; a live or unknown
+owner remains fenced without blocking other owners' acquisition.
+Closing an active owner waits for its last lease to finish. Idle timeout
 is passed in milliseconds from the seconds-based limit. Failed remote cleanup
 and release remain durable and retry on later ensure or install calls, one
-queued operation per call. Readiness does not run queued cleanup.
+queued operation per call. Before acquisition contacts the host, the controller
+journals a release for the exact new lease; handing back a validated grant clears
+that recovery request. A lost or invalid reply leaves it for retry, and releasing
+an unknown lease is a no-op. Readiness does not run queued cleanup.

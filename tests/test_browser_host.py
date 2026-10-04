@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -164,3 +165,39 @@ def test_owner_tokens_cannot_escape_storage(tmp_path):
     result = dispatch(request(tmp_path, "../escape", action="close", delete_profile=True))
     assert result["reason_code"] == "runtime_error"
     assert not (tmp_path / "escape").exists()
+
+
+@pytest.mark.parametrize("stale_owner", [None, "stopped", "live", "unknown"])
+def test_deleted_workspace_does_not_block_other_owner(host, tmp_path, monkeypatch, stale_owner):
+    host.ensure()
+    host.release()
+    record = json.loads(host.record_path("first").read_text())
+    host.close_record(record, delete=True)
+    assert not host.record_path("first").exists()
+    if stale_owner:
+        host.save(record)
+    fresh_workspace = tmp_path / "next-workspace"
+    fresh_workspace.mkdir()
+    runtime = Host(request(tmp_path, "next", workspace_dir=str(fresh_workspace)))
+    shutil.rmtree(tmp_path / "workspace")
+    original_alive = Host.alive
+
+    def alive(self, value):
+        assert Path(value["workspace_dir"]).is_dir()
+        return original_alive(self, value)
+
+    def owner_status(self, value):
+        if value["owner_token"] == "first":
+            if stale_owner == "unknown":
+                raise UnavailableError("owner_unavailable", "offline")
+            return stale_owner == "live"
+        return original_alive(self, value)
+
+    monkeypatch.setattr(Host, "alive", alive)
+    monkeypatch.setattr(Host, "owner_status", owner_status)
+    assert runtime.ensure()["invocation_dir"] == str(fresh_workspace)
+    assert host.record_path("first").exists() == (stale_owner in {"live", "unknown"})
+    if stale_owner in {"live", "unknown"}:
+        with pytest.raises(UnavailableError) as error:
+            host.ensure()
+        assert error.value.code in {"workspace_missing", "owner_unavailable"}

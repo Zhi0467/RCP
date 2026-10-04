@@ -4,9 +4,12 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from rcp.browser import service
 from rcp.browser.models import Unavailable
 from rcp.transport.run_stage import RemoteRunStage
+from tests.test_browser_host import host as host
 
 
 def test_lease_releases_on_its_original_host_and_reports_loss(tmp_path, monkeypatch):
@@ -63,8 +66,11 @@ def test_failed_cleanup_is_durable_retried_and_blocks_ensure(tmp_path, monkeypat
     )
     assert isinstance(other, Unavailable) and other.reason_code == "host_unreachable"
     reachable = True
-    assert service._retry_pending(host=execution.host, partition=None, data_dir=tmp_path)
+    assert service._retry_pending(
+        host=execution.host, partition=None, data_dir=tmp_path, owner_token="owner"
+    )
     assert not pending[0].exists()
+    assert service._retry_pending(host=execution.host, partition=None, data_dir=tmp_path)
 
 
 def test_remote_transport_ships_source_and_uses_login_environment(tmp_path, monkeypatch):
@@ -124,3 +130,46 @@ def test_corrupt_pending_journal_blocks_browser_without_failing_turn(tmp_path, m
     assert result.reason_code == "cleanup_pending"
     assert service.install_browser(data_dir=tmp_path).status == "cleanup_pending"
     assert path.exists()
+
+
+@pytest.mark.parametrize("reply", [{"reason_code": "host_unreachable", "detail": "Lost reply"}, {}])
+def test_lost_ensure_reply_releases_exact_lease_before_profile_deletion(
+    host, tmp_path, monkeypatch, reply
+):
+    calls = []
+
+    def invoke(request, **kwargs):
+        calls.append(request.copy())
+        host.request.update(request)
+        if request["action"] == "ensure":
+            pending = list((tmp_path / "browser" / "pending").glob("*.json"))
+            assert len(pending) == 1
+            assert json.loads(pending[0].read_text())["request"] == {
+                "action": "release",
+                "owner_token": "first",
+                "lease_id": request["lease_id"],
+            }
+            host.ensure()
+            return reply
+        return getattr(host, request["action"])()
+
+    monkeypatch.setattr(service, "_invoke", invoke)
+    remote = RemoteRunStage("host.example")
+    result = service.ensure_session(
+        "first", execution=remote, workspace_dir=str(tmp_path / "workspace"), data_dir=tmp_path
+    )
+    assert isinstance(result, Unavailable)
+    pending = list((tmp_path / "browser" / "pending").glob("*.json"))
+    assert len(pending) == 1
+    recovery = json.loads(pending[0].read_text())["request"]
+    assert recovery == {
+        "action": "release",
+        "owner_token": "first",
+        "lease_id": calls[0]["lease_id"],
+    }
+    service.close_owner("first", execution=remote, delete_profile=True, data_dir=tmp_path)
+    assert service._retry_pending(host=remote.host, partition=None, data_dir=tmp_path)
+    assert calls[-1] == recovery
+    assert not (host.record_path("first").parent / "profile").exists()
+    assert not list((tmp_path / "browser" / "pending").glob("*.json"))
+    assert host.release()["reason_code"] == "lost"

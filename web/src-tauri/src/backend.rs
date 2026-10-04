@@ -1106,8 +1106,22 @@ pub async fn health(status: &DesktopStatus) -> Result<Health, String> {
     health_at(&status.base_url).await
 }
 
+pub async fn status_health(status: &DesktopStatus) -> Result<Option<Health>, String> {
+    let details = optional_health_details(status).await?;
+    if details.is_none() && !status.matches_health(&health(status).await?) {
+        return Err("backend identity changed while checking desktop status".into());
+    }
+    Ok(details)
+}
+
 /// Operational counts are protected; callers that gate updates must never use public health.
 pub async fn health_details(status: &DesktopStatus) -> Result<Health, String> {
+    optional_health_details(status)
+        .await?
+        .ok_or_else(|| "owner session expired; sign in before checking active work".into())
+}
+
+async fn optional_health_details(status: &DesktopStatus) -> Result<Option<Health>, String> {
     if !owner_session::has_session(status) {
         return Err("owner sign-in required before checking active work".into());
     }
@@ -1117,7 +1131,8 @@ pub async fn health_details(status: &DesktopStatus) -> Result<Health, String> {
         .await
         .map_err(|error| format!("backend details are unavailable: {error}"))?;
     if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-        return Err("owner session expired; sign in before checking active work".into());
+        owner_session::forget(status)?;
+        return Ok(None);
     }
     let current = response
         .error_for_status()
@@ -1128,7 +1143,7 @@ pub async fn health_details(status: &DesktopStatus) -> Result<Health, String> {
     if !status.matches_health(&current) {
         return Err("backend identity changed while checking active work".into());
     }
-    Ok(current)
+    Ok(Some(current))
 }
 
 async fn health_at(base_url: &str) -> Result<Health, String> {

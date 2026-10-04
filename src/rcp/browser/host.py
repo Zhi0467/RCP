@@ -339,16 +339,35 @@ class HostRuntime:
         atomic_write(self.record_path(record["owner_token"]), json.dumps(record))
 
     def records(self) -> list[dict]:
-        return [
-            json.loads(path.read_text()) for path in (self.root / "owners").glob("*/state.json")
-        ]
+        records = []
+        for path in (self.root / "owners").glob("*/state.json"):
+            record = json.loads(path.read_text())
+            if not Path(record["workspace_dir"]).is_dir():
+                try:
+                    if self.owner_status(record):
+                        raise UnavailableError("workspace_missing", "Browser workspace disappeared")
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    if self.request.get("owner_token") in (None, record["owner_token"]):
+                        raise
+                    # Retain ambiguous owners, but isolate their failure from other owners.
+                    continue
+                if record.get("delete_profile"):
+                    self.close_record(record)
+                else:
+                    path.unlink()
+                continue
+            records.append(record)
+        return records
 
     def close_record(self, record: dict, *, delete: bool = False) -> None:
         # Persist intent before contact: retry after a controller interruption.
         record["pending_close"] = True
         record["delete_profile"] = delete or record.get("delete_profile", False)
         self.save(record)
-        if self.alive(record):
+        workspace_exists = Path(record["workspace_dir"]).is_dir()
+        if not workspace_exists and self.owner_status(record):
+            raise UnavailableError("workspace_missing", "Browser workspace disappeared")
+        if workspace_exists and self.alive(record):
             self.cli_run(record, "close")
             while self.alive(record):
                 time.sleep(0.05)
@@ -361,6 +380,8 @@ class HostRuntime:
             profile = self.record_path(record["owner_token"]).parent / "profile"
             if profile.exists():
                 shutil.rmtree(profile)
+            self.record_path(record["owner_token"]).unlink()
+            return
         record.update(pending_close=False, delete_profile=False, leases={})
         self.save(record)
 
@@ -474,6 +495,7 @@ class HostRuntime:
             self.save(record)
             if record.get("pending_close") and not record["leases"]:
                 self.close_record(record)
+        records = self.records()
         record = next((r for r in records if r["owner_token"] == token), None)
         if record and record["workspace_dir"] != self.request["workspace_dir"]:
             raise UnavailableError("owner_mismatch", "Browser owner workspace changed")
@@ -525,7 +547,9 @@ class HostRuntime:
         if not path.exists():
             return {"alive": False, "reason_code": "lost", "detail": "Browser owner disappeared"}
         record = json.loads(path.read_text())
-        record["leases"].pop(self.request["lease_id"], None)
+        if self.request["lease_id"] not in record["leases"]:
+            return {"alive": False, "reason_code": "lost", "detail": "Browser lease disappeared"}
+        record["leases"].pop(self.request["lease_id"])
         record["last_used"] = time.time()
         self.save(record)
         alive = self.alive(record)
@@ -586,7 +610,6 @@ class HostRuntime:
             self.start(record, self.executable())
         finally:
             self.close_record(record, delete=True)
-        self.record_path(token).unlink()
         atomic_write(self.tools / "verified.json", json.dumps({"version": CLI_VERSION}))
         return self.readiness()
 

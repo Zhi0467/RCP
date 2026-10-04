@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from rcp.limits import SSH_REPOSITORY_BROWSER_TIMEOUT_SECONDS
 from rcp.providers.browser_grant import BrowserGrant, BrowserOwnerKey, BrowserTurnStatus
 from rcp.runs import browser_runtime_seam
+from rcp.storage.models import ACTIVE_AGENT_TASK_STATUSES
 from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -128,6 +129,8 @@ def retry_browser_cleanup(
     chat_id: str | None = None,
     finished_operation_id: str | None = None,
 ) -> None:
+    active_statuses = sorted(ACTIVE_AGENT_TASK_STATUSES)
+    placeholders = ",".join("?" for _ in active_statuses)
     with store.connection() as connection:
         rows = connection.execute(
             "SELECT * FROM browser_owners WHERE close_requested = 1"
@@ -140,15 +143,21 @@ def retry_browser_cleanup(
         with store.connection() as connection:
             active = connection.execute(
                 "SELECT 1 FROM graph_runs WHERE project_id = ? AND stage_root = ? "
-                "AND status NOT IN ('succeeded', 'failed', 'interrupted') "
+                f"AND (status IN ({placeholders}) OR phase = 'awaiting_remote_result') "
                 "AND operation_id != ? LIMIT 1",
                 (
                     row["project_id"],
                     row["stage_root"],
+                    *active_statuses,
                     finished_operation_id or "",
                 ),
             ).fetchone()
-        if active is not None:
+        if active is not None or any(
+            operation_id != finished_operation_id
+            for operation_id, _ in store.unresolved_remote_provider_passes(
+                row["execution_host"], row["stage_root"]
+            )
+        ):
             continue
         try:
             owner = BrowserOwnerKey.model_validate_json(row["owner_json"])
@@ -176,6 +185,45 @@ def retry_browser_cleanup(
                     )
         except Exception:
             logger.exception("Browser cleanup remains pending")
+
+
+def _browser_result_pending(store: AppStore, operation_id: str) -> bool:
+    task = store.agent_task(operation_id)
+    if task is None:
+        return False
+    # The stream closes before Background writes awaiting_remote_result. The
+    # existing process receipt already protects that interval (and cancellation).
+    return task.phase == "awaiting_remote_result" or any(
+        pending_id == operation_id
+        for pending_id, _ in store.unresolved_remote_provider_passes(
+            task.stage_host or "", task.stage_root or ""
+        )
+    )
+
+
+def _record_browser_finish(store: AppStore, operation_id: str, status: BrowserTurnStatus) -> None:
+    store.set_browser_turn_status(operation_id, status)
+    store.record_agent_task_receipt(operation_id, "browser_status", status.model_dump(mode="json"))
+    task = store.agent_task(operation_id)
+    chat_id = task.request.get("chat_id") if task is not None else None
+    if (
+        task is not None
+        and task.episode_id is None
+        and chat_id is not None
+        and not store.chat_browser_requested(task.project_id, chat_id)
+    ):
+        close_chat_browser_owners(store, task.project_id, chat_id, delete_profile=True)
+    retry_browser_cleanup(store, finished_operation_id=operation_id)
+
+
+def finish_recorded_browser(store: AppStore, operation_id: str) -> None:
+    """Finish the original lease only after reconciliation proves the provider stopped."""
+    status = store.browser_turn_status(operation_id)
+    if status.lease_id is not None:
+        status = finish_turn_browser(
+            BrowserGrant(requested=True, status="granted", lease_id=status.lease_id)
+        )
+    _record_browser_finish(store, operation_id, status)
 
 
 @asynccontextmanager
@@ -217,32 +265,19 @@ async def browser_turn(
             execution.store.set_browser_turn_status(
                 execution.operation_id,
                 BrowserTurnStatus(
-                    status=grant.status, reason_code=grant.reason_code, detail=grant.detail
+                    status=grant.status,
+                    reason_code=grant.reason_code,
+                    detail=grant.detail,
+                    lease_id=grant.lease_id,
                 ),
             )
         yield grant
     finally:
-        status = await asyncio.to_thread(finish_turn_browser, grant)
-        if execution is not None:
-            execution.store.set_browser_turn_status(execution.operation_id, status)
-            execution.store.record_agent_task_receipt(
-                execution.operation_id,
-                "browser_status",
-                status.model_dump(mode="json"),
-            )
-            if (
-                task is not None
-                and task.episode_id is None
-                and chat_id is not None
-                and not execution.store.chat_browser_requested(task.project_id, chat_id)
-            ):
+        if execution is None or not _browser_result_pending(
+            execution.store, execution.operation_id
+        ):
+            status = await asyncio.to_thread(finish_turn_browser, grant)
+            if execution is not None:
                 await asyncio.to_thread(
-                    close_chat_browser_owners,
-                    execution.store,
-                    task.project_id,
-                    chat_id,
-                    delete_profile=True,
+                    _record_browser_finish, execution.store, execution.operation_id, status
                 )
-            await asyncio.to_thread(
-                retry_browser_cleanup, execution.store, finished_operation_id=execution.operation_id
-            )

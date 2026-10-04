@@ -32,13 +32,15 @@ class BrowserGrant(BaseModel):
     invocation_dir: str | None = None
     path_prefix: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
-    # Names the runtime lease this turn must release; never part of a record.
+    # Names the runtime lease this turn must release; persisted only in turn status.
     lease_id: str | None = Field(default=None, exclude=True)
 
 
 class BrowserTurnStatus(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    # Retained until the provider stops, including detached remote turns.
+    lease_id: str | None = None
     status: Literal["not_requested", "granted", "unavailable", "lost"] = "not_requested"
     reason_code: str | None = None
     detail: str | None = None

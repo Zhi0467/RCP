@@ -71,6 +71,19 @@ pub fn has_session(status: &DesktopStatus) -> bool {
     })
 }
 
+pub fn forget(status: &DesktopStatus) -> Result<(), String> {
+    let mut sessions = sessions()
+        .lock()
+        .map_err(|_| "owner session is unavailable")?;
+    if sessions
+        .get(&status.base_url)
+        .is_some_and(|session| session.instance_id == status.instance_id)
+    {
+        sessions.remove(&status.base_url);
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn saved_secret(status: &DesktopStatus) -> Result<Option<Zeroizing<String>>, String> {
     crate::keychain::get(KEYCHAIN_SERVICE, &status.data_dir_id)?
@@ -310,6 +323,82 @@ mod tests {
             .unwrap();
         sessions().lock().unwrap().remove(origin);
         assert!(client(origin, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn expired_native_session_preserves_verified_status_and_blocks_active_work() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let origin = origin.as_str();
+        let status = DesktopStatus {
+            desktop: true,
+            owner_authenticated: true,
+            version: "test".into(),
+            base_url: origin.into(),
+            instance_id: "same-instance".into(),
+            data_dir_id: "same-data".into(),
+            owner_kind: "desktop".into(),
+            active_agent_tasks: 1,
+            owned: true,
+        };
+        sessions().lock().unwrap().insert(
+            origin.into(),
+            OwnerCookie {
+                instance_id: status.instance_id.clone(),
+                header: validate_cookie(
+                    "rcp_owner_session=expired; HttpOnly; SameSite=Strict; Path=/",
+                    origin,
+                )
+                .unwrap(),
+            },
+        );
+        let server = tokio::spawn(async move {
+            for response in [
+                "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string(),
+                {
+                    let body = serde_json::json!({
+                        "status": "ok", "version": "test", "pid": 1, "owner_kind": "desktop",
+                        "instance_id": "same-instance", "data_dir_id": "same-data"
+                    })
+                    .to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                },
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let mut chunk = [0; 1024];
+                    let count = stream.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let refreshed = crate::commands::refresh_personal_status(
+            &backend::BackendState::default(),
+            status.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(!refreshed.owner_authenticated);
+        assert_eq!(refreshed.instance_id, status.instance_id);
+        assert_eq!(refreshed.data_dir_id, status.data_dir_id);
+        assert!(!has_session(&status));
+        assert!(backend::health_details(&status).await.is_err());
+        tokio::time::timeout(REQUEST_TIMEOUT, server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

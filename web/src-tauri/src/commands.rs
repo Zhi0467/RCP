@@ -879,7 +879,7 @@ pub async fn desktop_status(
     let current = window
         .url()
         .map_err(|error| format!("cannot inspect the current desktop origin: {error}"))?;
-    let mut status = state.status()?;
+    let status = state.status()?;
     if !is_personal_origin(&current, &status.base_url, cfg!(debug_assertions))? {
         if let Some(team_status) = sessions.status_for_origin(&current)? {
             return Ok(team_status);
@@ -891,11 +891,19 @@ pub async fn desktop_status(
             Err("the displayed desktop origin is not a saved RCP space".into())
         };
     }
+    refresh_personal_status(&state, status).await
+}
+
+pub(crate) async fn refresh_personal_status(
+    state: &BackendState,
+    mut status: DesktopStatus,
+) -> Result<DesktopStatus, String> {
     if crate::owner_session::has_session(&status) {
-        let health = backend::health_details(&status).await?;
-        state.update_health(&health);
-        status.active_agent_tasks = health.active_agent_tasks;
-        status.owner_kind = health.owner_kind;
+        if let Some(health) = backend::status_health(&status).await? {
+            state.update_health(&health);
+            status.active_agent_tasks = health.active_agent_tasks;
+            status.owner_kind = health.owner_kind;
+        }
     }
     status.owner_authenticated = crate::owner_session::has_session(&status);
     Ok(status)

@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 _EPOCH = uuid.uuid4().hex
 _PENDING_LOCK = threading.RLock()
+# Journal entries a thread is sending to a host right now. The lock covers only the
+# journal, never a host call, so one slow host cannot stall another.
+_INFLIGHT_ENSURES: set[Path] = set()
+_INFLIGHT_RETRIES: set[Path] = set()
 
 
 def _data_dir(data_dir: Path) -> Path:
@@ -158,24 +162,33 @@ def _retry_pending_checked(
     *, host: str, partition: str | None, data_dir: Path, owner_token: str | None
 ) -> bool:
     with _PENDING_LOCK:
+        # An acquisition's own journaled release is not cleanup until its reply is lost.
         queued = [
             (path, pending)
             for path in (data_dir / "browser" / "pending").glob("*.json")
-            if (pending := _read_pending(path))["host"] == host
+            if path not in _INFLIGHT_ENSURES and (pending := _read_pending(path))["host"] == host
         ]
         # This owner's own cleanup goes first; a stuck entry of another owner never blocks it.
         queued.sort(key=lambda item: item[1]["request"]["owner_token"] != owner_token)
-        if queued:
-            path, pending = queued[0]
+        claimed = next((item for item in queued if item[0] not in _INFLIGHT_RETRIES), None)
+        if claimed:
+            _INFLIGHT_RETRIES.add(claimed[0])
+    if claimed:
+        path, pending = claimed
+        try:
             result = _invoke(pending["request"], host=host, partition=partition, data_dir=data_dir)
             # One retry per call bounds cleanup latency even after a long outage.
             if result.get("reason_code") in (None, "lost"):
-                path.unlink()
-                queued = queued[1:]
-        return not any(
-            owner_token is None or pending["request"]["owner_token"] == owner_token
-            for _path, pending in queued
-        )
+                with _PENDING_LOCK:
+                    path.unlink(missing_ok=True)
+                queued.remove(claimed)
+        finally:
+            with _PENDING_LOCK:
+                _INFLIGHT_RETRIES.discard(path)
+    return not any(
+        owner_token is None or pending["request"]["owner_token"] == owner_token
+        for _path, pending in queued
+    )
 
 
 def ensure_session(
@@ -192,29 +205,45 @@ def ensure_session(
                 reason_code="cleanup_pending", detail="Browser cleanup is still pending."
             )
         lease_id = uuid.uuid4().hex
-        result = _invoke(
-            {
-                "action": "ensure",
-                "owner_token": owner_token,
-                "workspace_dir": workspace_dir,
-                "lease_id": lease_id,
-            },
-            host=host,
-            partition=partition,
-            data_dir=data_dir,
-        )
-        if result.get("reason_code"):
-            return Unavailable.model_validate(result)
-        return SessionLease.model_validate(
-            {
-                **result,
-                "owner_token": owner_token,
-                "lease_id": lease_id,
-                "host": host,
-                "partition": partition,
-                "data_dir": str(data_dir),
-            }
-        )
+        path = _pending_path(data_dir, host, lease_id)
+        # Journal the release first, so a lost reply cannot strand a busy lease.
+        with _PENDING_LOCK:
+            _save_pending(
+                path,
+                host=host,
+                request={"action": "release", "owner_token": owner_token, "lease_id": lease_id},
+            )
+            _INFLIGHT_ENSURES.add(path)
+        try:
+            result = _invoke(
+                {
+                    "action": "ensure",
+                    "owner_token": owner_token,
+                    "workspace_dir": workspace_dir,
+                    "lease_id": lease_id,
+                },
+                host=host,
+                partition=partition,
+                data_dir=data_dir,
+            )
+            if result.get("reason_code"):
+                return Unavailable.model_validate(result)
+            lease = SessionLease.model_validate(
+                {
+                    **result,
+                    "owner_token": owner_token,
+                    "lease_id": lease_id,
+                    "host": host,
+                    "partition": partition,
+                    "data_dir": str(data_dir),
+                }
+            )
+            with _PENDING_LOCK:
+                path.unlink(missing_ok=True)
+            return lease
+        finally:
+            with _PENDING_LOCK:
+                _INFLIGHT_ENSURES.discard(path)
 
     except (OSError, ValidationError) as exc:
         return Unavailable(reason_code="runtime_failed", detail=str(exc)[-2000:])
@@ -269,9 +298,16 @@ def close_owner(
                     raise ValueError("Unexpected browser cleanup action")
                 request["delete_profile"] |= existing["delete_profile"]
             _save_pending(path, host=host, request=request)
+            _INFLIGHT_RETRIES.add(path)
+        try:
             result = _invoke(request, host=host, partition=partition, data_dir=data_dir)
-            if not result.get("reason_code"):
-                path.unlink()
+            with _PENDING_LOCK:
+                # A concurrent close may have widened the entry to a delete meanwhile.
+                if not result.get("reason_code") and _read_pending(path)["request"] == request:
+                    path.unlink()
+        finally:
+            with _PENDING_LOCK:
+                _INFLIGHT_RETRIES.discard(path)
 
     except (OSError, ValueError) as exc:
         logger.error("Browser close could not be durably recorded; cleanup requires retry: %s", exc)
