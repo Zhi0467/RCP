@@ -10,7 +10,6 @@ from rcp.transport.run_stage import RemoteRunStage
 
 
 def test_lease_releases_on_its_original_host_and_reports_loss(tmp_path, monkeypatch):
-    monkeypatch.setenv("RCP_DATA_DIR", str(tmp_path))
     calls = []
 
     def invoke(request, **kwargs):
@@ -26,7 +25,9 @@ def test_lease_releases_on_its_original_host_and_reports_loss(tmp_path, monkeypa
 
     monkeypatch.setattr(service, "_invoke", invoke)
     execution = RemoteRunStage("gpu.example")
-    lease = service.ensure_session("owner", execution=execution, workspace_dir="/workspace")
+    lease = service.ensure_session(
+        "owner", execution=execution, workspace_dir="/workspace", data_dir=tmp_path
+    )
     assert not isinstance(lease, Unavailable)
     execution.host = "other.example"
     result = service.release_session(lease)
@@ -37,7 +38,6 @@ def test_lease_releases_on_its_original_host_and_reports_loss(tmp_path, monkeypa
 
 
 def test_failed_cleanup_is_durable_retried_and_blocks_ensure(tmp_path, monkeypatch):
-    monkeypatch.setenv("RCP_DATA_DIR", str(tmp_path))
     calls = []
     reachable = False
 
@@ -47,16 +47,20 @@ def test_failed_cleanup_is_durable_retried_and_blocks_ensure(tmp_path, monkeypat
 
     monkeypatch.setattr(service, "_invoke", invoke)
     execution = RemoteRunStage("gpu.example")
-    service.close_owner("owner", execution=execution, delete_profile=True)
-    service.close_owner("owner", execution=execution, delete_profile=False)
+    service.close_owner("owner", execution=execution, delete_profile=True, data_dir=tmp_path)
+    service.close_owner("owner", execution=execution, delete_profile=False, data_dir=tmp_path)
     pending = list((tmp_path / "browser" / "pending").glob("*.json"))
     assert len(pending) == 1
     assert json.loads(pending[0].read_text())["request"]["delete_profile"] is True
-    result = service.ensure_session("owner", execution=execution, workspace_dir="/workspace")
+    result = service.ensure_session(
+        "owner", execution=execution, workspace_dir="/workspace", data_dir=tmp_path
+    )
     assert isinstance(result, Unavailable) and result.reason_code == "cleanup_pending"
     assert all(call["action"] == "close" for call in calls)
     # Another owner's stuck cleanup never blocks this one.
-    other = service.ensure_session("other", execution=execution, workspace_dir="/other")
+    other = service.ensure_session(
+        "other", execution=execution, workspace_dir="/other", data_dir=tmp_path
+    )
     assert isinstance(other, Unavailable) and other.reason_code == "host_unreachable"
     reachable = True
     assert service._retry_pending(host=execution.host, partition=None, data_dir=tmp_path)
@@ -110,11 +114,12 @@ def test_local_dispatch_uses_login_environment_without_a_python_child(tmp_path, 
 
 
 def test_corrupt_pending_journal_blocks_browser_without_failing_turn(tmp_path, monkeypatch):
-    monkeypatch.setenv("RCP_DATA_DIR", str(tmp_path))
     path = tmp_path / "browser" / "pending" / "corrupt.json"
     path.parent.mkdir(parents=True)
     path.write_text('{"host": "", "request": {"action": []}}')
-    result = service.ensure_session("owner", execution=None, workspace_dir=str(tmp_path))
+    result = service.ensure_session(
+        "owner", execution=None, workspace_dir=str(tmp_path), data_dir=tmp_path
+    )
     assert isinstance(result, Unavailable)
     assert result.reason_code == "cleanup_pending"
     assert service.install_browser(data_dir=tmp_path).status == "cleanup_pending"

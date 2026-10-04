@@ -79,6 +79,7 @@ def acquire_turn_browser(
             owner,
             execution=execution,
             workspace_dir=workspace_dir,
+            data_dir=store.path.parent,
         )
     except Exception:
         logger.exception("Browser admission failed")
@@ -161,6 +162,7 @@ def retry_browser_cleanup(
                 owner,
                 execution=execution,
                 delete_profile=bool(row["delete_profile"]),
+                data_dir=store.path.parent,
             )
             with store.connection() as connection:
                 if row["delete_profile"]:

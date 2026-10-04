@@ -84,7 +84,10 @@ snapshots it into `browser_requested`; changing the toggle affects the next turn
 Imported history does not import consent or browser profiles. Chat transcript messages
 project the durable browser status of their turn, including unavailable and lost.
 Archiving a chat closes its browser and retains its profile after active work ends.
-A turn ending with the chat toggle off closes the browser and deletes its profile.
+Turning the toggle off deletes the chat's browser profile, with its logins and
+cookies, right after the response; an active turn keeps its browser and the profile
+is deleted when that turn ends. A session hears its browser state when it starts
+with a browser and whenever the state changes, compared with its last committed turn.
 Project removal requests deletion for every retained owner. Failed cleanup stays
 pending and retries at later turn boundaries. The owner key names the stable stage,
 space, project, and resolved execution host and account; a repointed SSH alias

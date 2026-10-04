@@ -769,7 +769,7 @@ def test_browser_grant_precedes_persisted_prompt_and_turns_off(
     acquired, finished, grants = [], [], []
     native_session_id = str(uuid.uuid4())
 
-    def acquire(owner, *, execution, workspace_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir):
         acquired.append(owner)
         return BrowserGrant(
             requested=True,

@@ -311,3 +311,37 @@ def test_browser_preference_is_local_and_snapshotted_at_admission(manifest, tmp_
     assert app.state.service.chat_transcript(chat_id) == before
     assert client.get(url).json() == {"browser_requested": False}
     assert client.put(url, json={"browser_requested": True, "env": {}}).status_code == 422
+
+
+def test_turning_the_browser_off_deletes_the_chat_profile_without_a_turn(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.agents.browser_grant import BrowserOwnerKey
+    from rcp.runs import browser_runtime_seam
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    store = app.state.catalog.store
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    owner = BrowserOwnerKey(
+        space_id=store.space_id, project_id=project_id, stage_name="stage", host_key="local"
+    )
+    store.record_browser_owner(
+        owner,
+        execution_host="",
+        workspace_dir="/stage/workspace",
+        stage_root="/stage",
+        chat_id=chat_id,
+    )
+    closed = []
+    monkeypatch.setattr("rcp.runs.browser_lifecycle.browser_host_key", lambda host: "local")
+    monkeypatch.setattr(
+        browser_runtime_seam, "close_browser_owner", lambda owner, **kw: closed.append(kw)
+    )
+    url = f"/api/projects/{project_id}/chats/{chat_id}/browser"
+    assert client.put(url, json={"browser_requested": True}).status_code == 200
+    assert closed == []
+    assert client.put(url, json={"browser_requested": False}).status_code == 200
+    assert closed == [{"execution": None, "delete_profile": True, "data_dir": tmp_path / "data"}]
+    assert store.browser_owners(project_id) == []

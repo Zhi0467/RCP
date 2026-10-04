@@ -27,11 +27,7 @@ _EPOCH = uuid.uuid4().hex
 _PENDING_LOCK = threading.RLock()
 
 
-def _data_dir(data_dir: Path | None = None) -> Path:
-    if data_dir is None:
-        from rcp.api.app import default_data_dir
-
-        data_dir = default_data_dir()
+def _data_dir(data_dir: Path) -> Path:
     return Path(data_dir).expanduser().resolve()
 
 
@@ -183,10 +179,10 @@ def _retry_pending_checked(
 
 
 def ensure_session(
-    owner_token: str, *, execution: RemoteRunStage | None, workspace_dir: str
+    owner_token: str, *, execution: RemoteRunStage | None, workspace_dir: str, data_dir: Path
 ) -> SessionLease | Unavailable:
     try:
-        data_dir = _data_dir()
+        data_dir = _data_dir(data_dir)
         host = execution.host if execution else ""
         partition = execution.transport_partition if execution else None
         if not _retry_pending(
@@ -257,10 +253,10 @@ def release_session(lease: SessionLease) -> SessionCheck:
 
 
 def close_owner(
-    owner_token: str, *, execution: RemoteRunStage | None, delete_profile: bool
+    owner_token: str, *, execution: RemoteRunStage | None, delete_profile: bool, data_dir: Path
 ) -> None:
     try:
-        data_dir = _data_dir()
+        data_dir = _data_dir(data_dir)
         host = execution.host if execution else ""
         partition = execution.transport_partition if execution else None
         request = {"action": "close", "owner_token": owner_token, "delete_profile": delete_profile}
@@ -281,9 +277,7 @@ def close_owner(
         logger.error("Browser close could not be durably recorded; cleanup requires retry: %s", exc)
 
 
-def _host_status(
-    action: str, *, host: str, os_account: str, data_dir: Path | None
-) -> BrowserReadiness:
+def _host_status(action: str, *, host: str, os_account: str, data_dir: Path) -> BrowserReadiness:
     try:
         directory = _data_dir(data_dir)
         if action == "install" and not _retry_pending(
@@ -309,13 +303,9 @@ def _host_status(
         return BrowserReadiness(status="runtime_failed", detail=str(exc)[-2000:])
 
 
-def readiness(
-    *, host: str = "", os_account: str = "", data_dir: Path | None = None
-) -> BrowserReadiness:
+def readiness(*, host: str = "", os_account: str = "", data_dir: Path) -> BrowserReadiness:
     return _host_status("readiness", host=host, os_account=os_account, data_dir=data_dir)
 
 
-def install_browser(
-    *, host: str = "", os_account: str = "", data_dir: Path | None = None
-) -> BrowserReadiness:
+def install_browser(*, host: str = "", os_account: str = "", data_dir: Path) -> BrowserReadiness:
     return _host_status("install", host=host, os_account=os_account, data_dir=data_dir)

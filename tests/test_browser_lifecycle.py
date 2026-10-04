@@ -46,11 +46,12 @@ def test_owner_is_stable_namespaced_and_frozen():
 def test_browser_admission_matrix(tmp_path, monkeypatch, capability, requested, status):
     store = AppStore(tmp_path / "app.sqlite3")
     calls = []
-    original = browser_runtime_seam.acquire_browser_grant
 
-    def acquire(owner, *, execution, workspace_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir):
         calls.append(owner)
-        return original(owner, execution=execution, workspace_dir=workspace_dir)
+        return BrowserGrant(
+            requested=True, status="unavailable", reason_code="runtime_checked", owner=owner
+        )
 
     monkeypatch.setattr(browser_runtime_seam, "acquire_browser_grant", acquire)
     grant = acquire_turn_browser(
@@ -67,7 +68,7 @@ def test_browser_admission_matrix(tmp_path, monkeypatch, capability, requested, 
     assert grant.status == status
     assert len(calls) == int(requested and capability in {"work_auto", "orchestrate", "discuss"})
     if calls:
-        assert grant.reason_code == "runtime_not_wired"
+        assert grant.reason_code == "runtime_checked"
         assert calls[0].stage_name == "chat"
 
 
@@ -86,7 +87,7 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
     execution.checkpoint_stage("", str(workspace.parent))
     calls = []
 
-    def acquire(owner, *, execution, workspace_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir):
         return BrowserGrant(
             requested=True,
             status="granted",
@@ -145,7 +146,7 @@ async def test_stream_finalizes_loss_after_provider_exception_and_closes_after_t
                 pass
     assert len(calls) == 1
     assert store.browser_turn_status(execution.operation_id).status == "lost"
-    assert closed == [{"execution": None, "delete_profile": True}]
+    assert closed == [{"execution": None, "delete_profile": True, "data_dir": store.path.parent}]
     assert store.browser_owners(task.project_id) == []
 
 
@@ -179,7 +180,7 @@ def test_archive_cleanup_is_deferred_and_unreachable_cleanup_is_retained(
     close_chat_browser_owners(store, task.project_id, request.chat_id, delete_profile=False)
     assert closed == []
     retry_browser_cleanup(store, finished_operation_id=execution.operation_id)
-    assert closed == [{"execution": None, "delete_profile": False}]
+    assert closed == [{"execution": None, "delete_profile": False, "data_dir": store.path.parent}]
     assert len(store.browser_owners(task.project_id)) == 1
 
     def unavailable(*args, **kwargs):

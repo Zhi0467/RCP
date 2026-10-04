@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl, PromptFactory
-from rcp.agents.browser_grant import BrowserGrant
+from rcp.agents.browser_grant import BrowserGrant, BrowserTurnStatus
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
@@ -363,7 +363,6 @@ def _changed_values(prompt: str) -> dict[str, str]:
 
 
 _TURN_VALUES = {
-    "browser",
     "paths.loop_control",
     "paths.watcher_state",
     "paths.artifacts",
@@ -1048,7 +1047,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 ) -> None:
     acquired = []
 
-    def acquire(owner, *, execution, workspace_dir):
+    def acquire(owner, *, execution, workspace_dir, data_dir):
         acquired.append(owner)
         return BrowserGrant(
             requested=True,
@@ -1059,6 +1058,10 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         )
 
     monkeypatch.setattr("rcp.runs.browser_runtime_seam.acquire_browser_grant", acquire)
+    monkeypatch.setattr(
+        "rcp.runs.browser_runtime_seam.finish_browser_grant",
+        lambda grant: BrowserTurnStatus(status=grant.status),
+    )
     data_dir = tmp_path / "data"
     app = create_app(str(manifest.path), data_dir=data_dir)
     service = app.state.service
@@ -1201,7 +1204,8 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     # Only this turn's own inputs and commands changed from the master; unchanged graph,
     # research, schema, write roots, repositories, and skills do not travel again.
     changed = _changed_values(wake_contract)
-    assert set(changed) == _TURN_VALUES
+    # Only an episode that asked for the browser hears about it.
+    assert set(changed) == _TURN_VALUES | ({"browser"} if browser_requested else set())
     assert "task-loop-wake-experiment-control-watcher_wake.json" in changed["paths.loop_control"]
     assert "task-loop-wake-experiment-watchers.json" in changed["paths.watcher_state"]
     assert str(service.manifest.research_dir / "graph.json") not in wake_contract
@@ -1214,7 +1218,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert str(initial_workspace / "turns" / "loop-wake" / "artifacts") in wake_contract
     assert str(initial_workspace / "turns" / "loop-initial" / "artifacts") not in wake_contract
     # The correction repeats its browser state and replaces its validator.
-    assert set(_changed_values(launcher.contracts[2])) == {"commands.validate", "browser"}
+    assert set(_changed_values(launcher.contracts[2])) == {"commands.validate"} | (
+        {"browser"} if browser_requested else set()
+    )
 
     committed = store.experiment_episode(episode_id)
     assert committed is not None

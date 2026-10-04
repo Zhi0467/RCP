@@ -32,6 +32,8 @@ class BrowserGrant(BaseModel):
     invocation_dir: str | None = None
     path_prefix: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
+    # Names the runtime lease this turn must release; never part of a record.
+    lease_id: str | None = Field(default=None, exclude=True)
 
 
 class BrowserTurnStatus(BaseModel):
