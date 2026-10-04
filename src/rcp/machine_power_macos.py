@@ -1,7 +1,8 @@
-"""The explicitly requested, administrator-authorized keep-awake installation."""
+"""macOS power readers, commands, and administrator-authorized installation."""
 
 from __future__ import annotations
 
+import ctypes
 import fcntl
 import json
 import os
@@ -10,14 +11,21 @@ import pwd
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
-from rcp.limits import MACHINE_POWER_ADMIN_TIMEOUT_SECONDS, MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
+from rcp.limits import (
+    MACHINE_POWER_ADMIN_TIMEOUT_SECONDS,
+    MACHINE_POWER_COMMAND_TIMEOUT_SECONDS,
+    MACHINE_POWER_HEARTBEAT_STALE_SECONDS,
+    MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS,
+)
 
 LABEL = "org.rcp.keep-awake-reset"
 MARKER = "RCP keep-awake v1"
@@ -298,7 +306,7 @@ clear=false
 attempt=0
 while [ "$attempt" -lt {MACHINE_POWER_COMMAND_TIMEOUT_SECONDS} ]; do
     bounded /usr/bin/pmset -g > "$work/flag" || fail clear_failed
-    # Same reading as parse_flag: pmset omits the line until the flag has been
+    # Same reading as the watchdog: pmset omits the line until the flag has been
     # set once since boot, which counts as off only under the settings header.
     if bounded /usr/bin/grep -Eq '^[[:space:]]*(SleepDisabled|disablesleep)[[:space:]]+0[[:space:]]*$' "$work/flag" ||
         {{ ! bounded /usr/bin/grep -Eq '^[[:space:]]*(SleepDisabled|disablesleep)[[:space:]]' "$work/flag" &&
@@ -415,3 +423,205 @@ bounded /bin/rm -f {daemon}
 
     def uninstall(self, before_remove: Callable[[], None] | None = None) -> InstallStatus:
         return self._change(uninstall=True, before_remove=before_remove)
+
+
+class _Frameworks:
+    """Typed bindings; only reader calls load macOS libraries."""
+
+    def __init__(self) -> None:
+        if sys.platform != "darwin":
+            raise OSError("macOS power readers require macOS")
+        self.cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        self.io = ctypes.CDLL("/System/Library/Frameworks/IOKit.framework/IOKit")
+        self.foundation = ctypes.CDLL("/System/Library/Frameworks/Foundation.framework/Foundation")
+        self.objc = ctypes.CDLL("/usr/lib/libobjc.A.dylib")
+        pointer = ctypes.c_void_p
+        signatures = (
+            (self.cf, "CFRelease", None, [pointer]),
+            (self.cf, "CFGetTypeID", ctypes.c_ulong, [pointer]),
+            (self.cf, "CFBooleanGetTypeID", ctypes.c_ulong, []),
+            (self.cf, "CFNumberGetTypeID", ctypes.c_ulong, []),
+            (self.cf, "CFStringGetTypeID", ctypes.c_ulong, []),
+            (self.cf, "CFBooleanGetValue", ctypes.c_bool, [pointer]),
+            (self.cf, "CFNumberGetValue", ctypes.c_bool, [pointer, ctypes.c_int, pointer]),
+            (
+                self.cf,
+                "CFStringCreateWithCString",
+                pointer,
+                [pointer, ctypes.c_char_p, ctypes.c_uint32],
+            ),
+            (
+                self.cf,
+                "CFStringGetCString",
+                ctypes.c_bool,
+                [pointer, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32],
+            ),
+            (self.cf, "CFDictionaryGetValue", pointer, [pointer, pointer]),
+            (self.cf, "CFArrayGetCount", ctypes.c_long, [pointer]),
+            (self.cf, "CFArrayGetValueAtIndex", pointer, [pointer, ctypes.c_long]),
+            (self.io, "IOPSCopyPowerSourcesInfo", pointer, []),
+            (self.io, "IOPSCopyPowerSourcesList", pointer, [pointer]),
+            (self.io, "IOPSGetPowerSourceDescription", pointer, [pointer, pointer]),
+            (self.io, "IOPSGetProvidingPowerSourceType", pointer, [pointer]),
+            (self.io, "IOPMCopySystemPowerSettings", pointer, []),
+            (self.io, "IOServiceMatching", pointer, [ctypes.c_char_p]),
+            (self.io, "IOServiceGetMatchingService", ctypes.c_uint32, [ctypes.c_uint32, pointer]),
+            (
+                self.io,
+                "IORegistryEntryCreateCFProperty",
+                pointer,
+                [ctypes.c_uint32, pointer, pointer, ctypes.c_uint32],
+            ),
+            (self.io, "IOObjectRelease", ctypes.c_int, [ctypes.c_uint32]),
+            (self.objc, "objc_getClass", pointer, [ctypes.c_char_p]),
+            (self.objc, "sel_registerName", pointer, [ctypes.c_char_p]),
+        )
+        for library, name, result, arguments in signatures:
+            function = getattr(library, name)
+            function.restype = result
+            function.argtypes = arguments
+        self.send_object = ctypes.CFUNCTYPE(pointer, pointer, pointer)(("objc_msgSend", self.objc))
+        self.send_integer = ctypes.CFUNCTYPE(ctypes.c_long, pointer, pointer)(
+            ("objc_msgSend", self.objc)
+        )
+
+    @staticmethod
+    def required(value):
+        if not value:
+            raise ValueError("missing macOS power value")
+        return value
+
+    def string(self, value: str):
+        return self.required(self.cf.CFStringCreateWithCString(None, value.encode(), 0x08000100))
+
+    def lookup(self, dictionary, name: str):
+        key = self.string(name)
+        try:
+            return self.required(self.cf.CFDictionaryGetValue(dictionary, key))
+        finally:
+            self.cf.CFRelease(key)
+
+    def typed(self, value, type_id):
+        if self.cf.CFGetTypeID(self.required(value)) != type_id():
+            raise ValueError("unexpected macOS power value type")
+        return value
+
+    def boolean(self, value) -> bool:
+        return self.cf.CFBooleanGetValue(self.typed(value, self.cf.CFBooleanGetTypeID))
+
+    def number(self, value) -> int:
+        value = self.typed(value, self.cf.CFNumberGetTypeID)
+        number = ctypes.c_longlong()
+        if not self.cf.CFNumberGetValue(value, 4, ctypes.byref(number)):
+            raise ValueError("invalid macOS power number")
+        return number.value
+
+    def text(self, value) -> str:
+        value = self.typed(value, self.cf.CFStringGetTypeID)
+        buffer = ctypes.create_string_buffer(256)
+        if not self.cf.CFStringGetCString(value, buffer, len(buffer), 0x08000100):
+            raise ValueError("invalid macOS power string")
+        return buffer.value.decode()
+
+
+class MacOSProfile:
+    @property
+    def lid_mode(self) -> MacOSProfile:
+        return self
+
+    @cached_property
+    def _frameworks(self) -> _Frameworks:
+        return _Frameworks()
+
+    @staticmethod
+    def idle_hold_command(pid: int) -> list[str]:
+        return ["/usr/bin/caffeinate", "-i", "-w", str(pid)]
+
+    @staticmethod
+    def create_installer(*, run=run_command) -> MachinePowerInstaller:
+        return MachinePowerInstaller(run=run)
+
+    @staticmethod
+    def watchdog_command(script: Path, directory: Path, generation: int) -> list[str]:
+        return [
+            "/bin/sh",
+            str(script),
+            str(directory),
+            str(generation),
+            str(MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS),
+            str(MACHINE_POWER_HEARTBEAT_STALE_SECONDS),
+            str(MACHINE_POWER_COMMAND_TIMEOUT_SECONDS),
+        ]
+
+    @staticmethod
+    def cleanup_command(kind: str) -> str:
+        return "pmset sleepnow" if kind == "sleep_failed" else "sudo pmset -a disablesleep 0"
+
+    def read_battery(self) -> tuple[bool, int | None]:
+        f = self._frameworks
+        info = f.required(f.io.IOPSCopyPowerSourcesInfo())
+        try:
+            sources = f.required(f.io.IOPSCopyPowerSourcesList(info))
+            try:
+                count = f.cf.CFArrayGetCount(sources)
+                if count == 0:
+                    state = f.text(f.io.IOPSGetProvidingPowerSourceType(info))
+                    if state == "AC Power":
+                        return True, None  # Desktop Mac without a battery.
+                    raise ValueError("missing battery capacity")
+                levels = []
+                states = []
+                for index in range(count):
+                    source = f.required(f.cf.CFArrayGetValueAtIndex(sources, index))
+                    description = f.required(f.io.IOPSGetPowerSourceDescription(info, source))
+                    state = f.text(f.lookup(description, "Power Source State"))
+                    if state not in {"AC Power", "Battery Power"}:
+                        raise ValueError("unknown power source")
+                    current = f.number(f.lookup(description, "Current Capacity"))
+                    maximum = f.number(f.lookup(description, "Max Capacity"))
+                    if maximum <= 0 or not 0 <= current <= maximum:
+                        raise ValueError("invalid battery capacity")
+                    states.append(state == "AC Power")
+                    levels.append(current * 100 // maximum)
+                return all(states), min(levels)
+            finally:
+                f.cf.CFRelease(sources)
+        finally:
+            f.cf.CFRelease(info)
+
+    def read_thermal(self) -> bool:
+        f = self._frameworks
+        cls = f.required(f.objc.objc_getClass(b"NSProcessInfo"))
+        selector = f.required(f.objc.sel_registerName(b"processInfo"))
+        process = f.required(f.send_object(cls, selector))
+        selector = f.required(f.objc.sel_registerName(b"thermalState"))
+        state = f.send_integer(process, selector)
+        if state not in {0, 1, 2, 3}:
+            raise ValueError("unknown thermal state")
+        return state >= 2
+
+    def read_lid(self) -> bool:
+        f = self._frameworks
+        matching = f.required(f.io.IOServiceMatching(b"IOPMrootDomain"))
+        # IOServiceGetMatchingService consumes the matching dictionary.
+        service = f.required(f.io.IOServiceGetMatchingService(0, matching))
+        try:
+            key = f.string("AppleClamshellState")
+            try:
+                value = f.required(f.io.IORegistryEntryCreateCFProperty(service, key, None, 0))
+                try:
+                    return f.boolean(value)
+                finally:
+                    f.cf.CFRelease(value)
+            finally:
+                f.cf.CFRelease(key)
+        finally:
+            f.io.IOObjectRelease(service)
+
+    def read_flag(self) -> bool:
+        f = self._frameworks
+        settings = f.required(f.io.IOPMCopySystemPowerSettings())
+        try:
+            return f.boolean(f.lookup(settings, "SleepDisabled"))
+        finally:
+            f.cf.CFRelease(settings)

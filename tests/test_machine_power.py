@@ -13,7 +13,7 @@ import pytest
 
 from rcp import machine_power as power
 from rcp.limits import MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
-from rcp.machine_power_install import InstallError, InstallStatus
+from rcp.machine_power_macos import InstallError, InstallStatus, MacOSProfile
 from rcp.storage import AppStore
 from tests.helpers import wait_for_entry, wait_until
 
@@ -50,6 +50,11 @@ class Machine:
             demand_reader=lambda: self.reasons,
             spawn=spawn,
             platform=self.platform,
+            profile=(
+                SimpleNamespace(idle_hold_command=MacOSProfile().idle_hold_command, lid_mode=None)
+                if self.platform == "darwin"
+                else None
+            ),
             run=Mock(side_effect=OSError("No lid readings in idle-hold tests")),
             directory=self.store.path.parent / "machine",
             installer=SimpleNamespace(status=lambda: InstallStatus(False, "not_installed")),
@@ -231,43 +236,30 @@ def test_failed_preference_write_changes_nothing_live(machine, monkeypatch):
 
 macos_tools = pytest.mark.skipif(sys.platform != "darwin", reason="macOS BSD tools")
 
-BATTERY = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=123)\t75%; discharging; 3:20 remaining present: true\n"
 
-AC = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=123)\t75%; charging; 1:20 remaining present: true\n"
+class FakeMacOSProfile(MacOSProfile):
+    def __init__(self):
+        self.readings = {"battery": (False, 75), "thermal": False, "lid": False, "flag": False}
+        self.calls = []
+        self.fail = None
 
-THERMAL = "Note: No thermal warning level has been recorded\nNote: No performance warning level has been recorded\n"
+    def read(self, name):
+        self.calls.append(name)
+        if self.fail == name:
+            raise OSError("framework read failed")
+        return self.readings[name]
 
-LID = '+-o Root\n    "AppleClamshellState" = No\n'
+    def read_battery(self):
+        return self.read("battery")
 
-FLAG = "System-wide power settings:\nCurrently in use:\n SleepDisabled          0\n"
+    def read_thermal(self):
+        return self.read("thermal")
 
+    def read_lid(self):
+        return self.read("lid")
 
-@pytest.mark.parametrize(
-    "parser,output,expected",
-    [
-        (power.parse_battery, BATTERY, (False, 75)),
-        (power.parse_battery, AC, (True, 75)),
-        (power.parse_battery, "Now drawing from 'AC Power'\n", (True, None)),
-        (power.parse_thermal, THERMAL, False),
-        (power.parse_thermal, "Thermal Warning = 1\n", True),
-        (power.parse_thermal, "CPU_Speed_Limit = 80\n", True),
-        (power.parse_lid, LID, False),
-        (power.parse_lid, '"AppleClamshellState" = Yes\n', True),
-        (power.parse_flag, FLAG, False),
-        (power.parse_flag, " SleepDisabled 1\n", True),
-        (power.parse_flag, "System-wide power settings:\nCurrently in use:\n sleep 1\n", False),
-    ],
-)
-def test_power_output_parsers(parser, output, expected):
-    assert parser(output) == expected
-
-
-@pytest.mark.parametrize(
-    "parser", [power.parse_battery, power.parse_thermal, power.parse_lid, power.parse_flag]
-)
-def test_unknown_output_is_never_safe(parser):
-    with pytest.raises(ValueError):
-        parser("unrecognized output")
+    def read_flag(self):
+        return self.read("flag")
 
 
 class Process:
@@ -303,10 +295,9 @@ class LidMachine:
         self.store = AppStore(tmp_path / "rcp.sqlite3")
         self.commands = []
         self.children = []
-        self.outputs = {"batt": BATTERY, "therm": THERMAL, "lid": LID}
+        self.profile = FakeMacOSProfile()
         self.flag = False
         self.reasons = ["episode"]
-        self.fail = None
         self.ack = True
         self.group_alive = False
         self.now = 1000.0
@@ -335,6 +326,7 @@ class LidMachine:
             directory=self.root,
             installer=self.installer,
             platform="darwin",
+            profile=self.profile,
             **kwargs,
         )
 
@@ -342,25 +334,21 @@ class LidMachine:
         self.ticks += 1
         return self.ticks
 
+    @property
+    def flag(self):
+        return self.profile.readings["flag"]
+
+    @flag.setter
+    def flag(self, value):
+        self.profile.readings["flag"] = value
+
     def run(self, argv, timeout):
         assert timeout == MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
-        if argv[0] == "/bin/kill":
-            self.commands.append(argv)
-            return subprocess.CompletedProcess(
-                argv, int(argv[1] == "-0" and not self.group_alive), "", ""
-            )
-        assert argv in (
-            [power.PMSET, "-g", "batt"],
-            [power.PMSET, "-g", "therm"],
-            [power.PMSET, "-g"],
-            [power.IOREG, "-r", "-k", "AppleClamshellState"],
-        )
+        assert argv[0] == "/bin/kill"
         self.commands.append(argv)
-        key = argv[-1] if argv[0] == power.PMSET else "lid"
-        if self.fail == key:
-            raise subprocess.TimeoutExpired(argv, timeout)
-        stdout = f"SleepDisabled {int(self.flag)}\n" if key == "-g" else self.outputs[key]
-        return subprocess.CompletedProcess(argv, 0, stdout, "")
+        return subprocess.CompletedProcess(
+            argv, int(argv[1] == "-0" and not self.group_alive), "", ""
+        )
 
     def spawn(self, argv):
         child = Process(500 + len(self.children))
@@ -447,24 +435,16 @@ def test_no_ack_never_requests_on(lid_machine):
     assert lid_machine.controller.status()["idle_hold"]["active"] is True
 
 
-@pytest.mark.parametrize("reading", ["batt", "therm", "lid", "-g"])
-def test_reading_timeouts_release_lid_mode_but_keep_idle_hold(lid_machine, reading):
+@pytest.mark.parametrize("reading", ["battery", "thermal", "lid", "flag"])
+def test_reading_failures_release_lid_mode_but_keep_idle_hold(lid_machine, reading):
     lid_machine.activate()
-    lid_machine.fail = reading
-    lid_machine.commands.clear()
+    lid_machine.profile.fail = reading
+    lid_machine.profile.calls.clear()
     lid_machine.controller.safety_pass()
-    assert len(lid_machine.commands) == 4
+    assert lid_machine.profile.calls == ["battery", "thermal", "lid", "flag"]
     assert power.read_record(lid_machine.root / "heartbeat")["cause"] == "reading_failed"
     assert lid_machine.controller.status()["idle_hold"]["active"] is True
     assert lid_machine.controller.status()["lid_mode"]["active"] is False
-
-
-@pytest.mark.parametrize("reading", ["batt", "therm", "lid"])
-def test_unparseable_reading_releases(lid_machine, reading):
-    lid_machine.activate()
-    lid_machine.outputs[reading] = "unrecognized output"
-    lid_machine.controller.safety_pass()
-    assert power.read_record(lid_machine.root / "heartbeat")["cause"] == "reading_failed"
 
 
 def test_demand_gone_releases_both_holds(lid_machine):
@@ -485,14 +465,17 @@ def test_broken_installation_releases_immediately(lid_machine):
 
 def test_battery_floor_stays_released_until_ac_then_rearms(lid_machine):
     lid_machine.activate()
-    lid_machine.outputs["batt"] = BATTERY.replace("75%", "20%")
+    lid_machine.profile.readings["battery"] = (False, 20)
     lid_machine.controller.safety_pass()
     assert power.read_record(lid_machine.root / "heartbeat")["cause"] == "battery_floor"
     lid_machine.execute()
-    lid_machine.outputs["batt"] = BATTERY  # recovering percent on battery is insufficient
+    lid_machine.profile.readings["battery"] = (
+        False,
+        75,
+    )  # recovering percent on battery is insufficient
     lid_machine.controller.safety_pass()
     assert lid_machine.controller.status()["lid_mode"]["active"] is False
-    lid_machine.outputs["batt"] = AC
+    lid_machine.profile.readings["battery"] = (True, 75)
     lid_machine.controller.safety_pass()
     assert power.read_record(lid_machine.root / "heartbeat")["desired"] == "on"
     assert power.read_record(lid_machine.root / "heartbeat")["generation"] == "2"
@@ -500,14 +483,14 @@ def test_battery_floor_stays_released_until_ac_then_rearms(lid_machine):
 
 def test_thermal_latch_survives_restart_and_human_reenable_clears_it(lid_machine):
     lid_machine.activate()
-    lid_machine.outputs["therm"] = "Thermal Warning = 1\n"
+    lid_machine.profile.readings["thermal"] = True
     lid_machine.controller.safety_pass()
     lid_machine.execute()
     lid_machine.controller.stop()
     lid_machine.controller = lid_machine.new_controller()
     assert lid_machine.controller.status()["latched"] == "thermal"
     assert lid_machine.controller.status()["lid_mode"]["enabled"] is True
-    lid_machine.outputs["therm"] = THERMAL
+    lid_machine.profile.readings["thermal"] = False
     lid_machine.controller.safety_pass()
     assert lid_machine.controller._watchdog is None
     lid_machine.controller.update({"lid_mode": True})
@@ -615,6 +598,7 @@ def test_machine_lock_prevents_two_data_directories_from_owning_lid_mode(lid_mac
         directory=lid_machine.root,
         installer=lid_machine.installer,
         platform="darwin",
+        profile=lid_machine.profile,
     )
     other.update({"lid_mode": True})
     other.safety_pass()
@@ -681,8 +665,15 @@ def test_preference_changes_before_start_do_not_launch_processes(lid_machine):
 
 
 def test_unsupported_platform_has_no_os_commands(lid_machine):
-    lid_machine.controller.platform = "linux"
-    lid_machine.controller.command = None
+    lid_machine.controller = power.MachinePowerController(
+        lid_machine.store,
+        demand_reader=lambda: lid_machine.reasons,
+        platform="linux",
+        run=lid_machine.run,
+        spawn=lid_machine.spawn,
+        installer=lid_machine.installer,
+        directory=lid_machine.root,
+    )
     lid_machine.controller.start()
     lid_machine.controller.safety_pass()
     lid_machine.controller.install()
@@ -735,18 +726,13 @@ def test_controller_and_real_watchdog_release_and_retire_crashed_group(tmp_path)
     controller = None
     children = []
 
+    profile = FakeMacOSProfile()
+    profile.readings["battery"] = (True, 75)
+    profile.read_flag = lambda: (root / "flag").read_text().strip() == "1"
+
     def run(argv, timeout):
-        if argv[:3] == [power.PMSET, "-g", "batt"]:
-            return subprocess.CompletedProcess(argv, 0, AC, "")
-        if argv[:3] == [power.PMSET, "-g", "therm"]:
-            return subprocess.CompletedProcess(argv, 0, THERMAL, "")
-        if argv[0] == power.PMSET:
-            argv = [str(root / "pmset"), *argv[1:]]
-        elif argv[0] == power.IOREG:
-            argv = [str(root / "ioreg"), *argv[1:]]
-        else:
-            assert argv[0] == "/bin/kill"
-            assert int(argv[-1]) == -children[0].pid
+        assert argv[0] == "/bin/kill"
+        assert int(argv[-1]) == -children[0].pid
         return subprocess.run(argv, timeout=timeout, capture_output=True, text=True, env=fake.env)
 
     def spawn(argv):
@@ -772,6 +758,7 @@ def test_controller_and_real_watchdog_release_and_retire_crashed_group(tmp_path)
         directory=root,
         installer=installer,
         platform="darwin",
+        profile=profile,
     )
     try:
         controller.update({"idle_hold": False, "lid_mode": True})
@@ -795,11 +782,6 @@ def test_controller_and_real_watchdog_release_and_retire_crashed_group(tmp_path)
             if child.poll() is None:
                 child.kill()
                 child.wait(timeout=5)
-
-
-def test_unknown_lid_prefix_is_not_parsed_as_open():
-    with pytest.raises(ValueError):
-        power.parse_lid('"AppleClamshellState" = Nope')
 
 
 def test_partial_install_still_releases_previously_owned_flag(lid_machine):
@@ -859,7 +841,7 @@ def test_waiting_admin_prompt_does_not_block_safety_passes(lid_machine):
 
 def test_thermal_warning_latches_even_when_demand_read_fails(lid_machine):
     lid_machine.activate()
-    lid_machine.outputs["therm"] = "Thermal Warning = 1\n"
+    lid_machine.profile.readings["thermal"] = True
     lid_machine.controller.demand_reader = Mock(side_effect=OSError("store unavailable"))
     lid_machine.controller.safety_pass()
     assert lid_machine.controller.status()["latched"] == "thermal"
@@ -917,12 +899,10 @@ def test_shutdown_recovers_previous_owned_activation_without_a_safety_pass(lid_m
     assert power.read_record(lid_machine.root / "heartbeat")["cause"] == "shutdown"
 
 
-@pytest.mark.parametrize(
-    "reading,output", [("batt", BATTERY.replace("75%", "20%")), ("therm", "Thermal Warning = 1\n")]
-)
-def test_lid_safety_release_preserves_main_idle_hold(lid_machine, reading, output):
+@pytest.mark.parametrize("reading,value", [("battery", (False, 20)), ("thermal", True)])
+def test_lid_safety_release_preserves_main_idle_hold(lid_machine, reading, value):
     lid_machine.activate()
-    lid_machine.outputs[reading] = output
+    lid_machine.profile.readings[reading] = value
     lid_machine.controller.safety_pass()
     assert lid_machine.controller.status()["lid_mode"]["active"] is False
     assert lid_machine.controller.status()["idle_hold"]["active"] is True

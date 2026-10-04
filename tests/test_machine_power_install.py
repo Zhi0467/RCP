@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from rcp.machine_power_install import (
+from rcp.machine_power_macos import (
     InstallError,
     InstallPaths,
     MachinePowerInstaller,
@@ -229,7 +229,7 @@ def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
         return subprocess.CompletedProcess(argv, 1, "", "(-128)")
 
     installer.run = run
-    monkeypatch.setattr("rcp.machine_power_install.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 0.02)
     try:
         with pytest.raises(InstallError, match="admin_failed"):
             installer.uninstall()
@@ -243,7 +243,7 @@ def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
 def test_approved_script_gets_its_own_window(installer, monkeypatch, tmp_path):
     """Work after approval is not bounded by what is left of the prompt's window."""
 
-    monkeypatch.setattr("rcp.machine_power_install.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 2)
+    monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 2)
     # The post-approval flag check outlasts the whole 2 s prompt window.
     (tmp_path / "pmset").write_text("#!/bin/sh\nsleep 2.2\necho ' SleepDisabled 0'\n")
     assert installer.install().installed
@@ -252,7 +252,7 @@ def test_approved_script_gets_its_own_window(installer, monkeypatch, tmp_path):
 @macos_tools
 def test_setup_before_approval_marker_gets_its_own_window(installer, monkeypatch, tmp_path):
     """A late approval is not cut off by the setup that precedes the approved marker."""
-    monkeypatch.setattr("rcp.machine_power_install.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 3)
+    monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 3)
     run = installer.run
 
     def late_approval(argv, timeout):
@@ -359,7 +359,7 @@ def test_uninstall_clears_only_after_removing_the_rule(installer):
         (" disablesleep 1\\n", False),
     ],
 )
-def test_clear_check_reads_the_flag_like_the_controller(installer, output, cleared):
+def test_admin_clear_check_recognizes_flag_output(installer, output, cleared):
     fake_pmset = installer.paths.sudoers.parent / "pmset"
     fake_pmset.write_text(f"#!/bin/sh\nprintf '{output}'\n")
     if cleared:

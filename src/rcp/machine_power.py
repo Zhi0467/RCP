@@ -12,7 +12,6 @@ import fcntl
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -29,22 +28,15 @@ from rcp.episode_health import load_episode_health
 from rcp.limits import (
     MACHINE_POWER_BATTERY_FLOOR,
     MACHINE_POWER_COMMAND_TIMEOUT_SECONDS,
-    MACHINE_POWER_HEARTBEAT_STALE_SECONDS,
     MACHINE_POWER_PASS_SECONDS,
     MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS,
 )
-from rcp.machine_power_install import InstallError
+from rcp.machine_power_macos import InstallError, MacOSProfile
 from rcp.runs.provider_login import provider_login_host
 
 logger = logging.getLogger(__name__)
-PMSET = "/usr/bin/pmset"
-IOREG = "/usr/sbin/ioreg"
-
-# One profile per platform: the command that holds an idle-sleep assertion
-# until the given process exits. A platform without an entry is unsupported.
-IDLE_HOLD_COMMANDS: dict[str, Callable[[int], list[str]]] = {
-    "darwin": lambda pid: ["/usr/bin/caffeinate", "-i", "-w", str(pid)],
-}
+# Profiles own platform commands and optional lid-mode capabilities.
+PLATFORM_PROFILES = {"darwin": MacOSProfile()}
 
 
 def spawn_command(argv: list[str], *, pass_fds: tuple[int, ...] = ()) -> subprocess.Popen:
@@ -60,62 +52,6 @@ def spawn_command(argv: list[str], *, pass_fds: tuple[int, ...] = ()) -> subproc
 
 def run_command(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, timeout=timeout, capture_output=True, text=True, check=False)
-
-
-def parse_battery(output: str) -> tuple[bool, int | None]:
-    match = re.search(r"Now drawing from '(AC Power|Battery Power)'", output)
-    if match is None:
-        raise ValueError("unknown battery source")
-    ac = match[1] == "AC Power"
-    percentages = re.findall(r"\b(\d+)%;", output)
-    if not percentages:
-        if ac and "InternalBattery" not in output:
-            return True, None  # desktop Mac, no battery
-        raise ValueError("unknown battery percentage")
-    level = min(map(int, percentages))
-    if not 0 <= level <= 100:
-        raise ValueError("invalid battery percentage")
-    return ac, level
-
-
-def parse_thermal(output: str) -> bool:
-    """True is a warning; unrecognized output never means healthy."""
-    if re.search(
-        r"(?:Thermal|Performance)\s+(?:Warning(?:\s+Level)?|Level)\s*[:=]\s*[1-9]", output, re.I
-    ):
-        return True
-    limits = re.findall(r"CPU_(?:Speed_Limit|Scheduler_Limit|Available_CPUs)\s*=\s*(\d+)", output)
-    speed = re.findall(r"CPU_(?:Speed_Limit|Scheduler_Limit)\s*=\s*(\d+)", output)
-    if any(int(value) < 100 for value in speed):
-        return True
-    thermal_ok = "No thermal warning level has been recorded" in output
-    performance_ok = "No performance warning level has been recorded" in output
-    if thermal_ok and performance_ok:
-        return False
-    if limits or re.search(
-        r"(?:Thermal|Performance)\s+(?:Warning|Level)\s*[:=]\s*0\b", output, re.I
-    ):
-        # A report that contains a warning history but no affirmative all-clear
-        # is a warning even if CPU speed has since recovered.
-        return True
-    raise ValueError("unknown thermal output")
-
-
-def parse_lid(output: str) -> bool:
-    values = re.findall(r'"AppleClamshellState"\s*=\s*(Yes|No)\s*$', output, re.M)
-    if not values or len(set(values)) != 1:
-        raise ValueError("unknown lid state")
-    return values[0] == "Yes"
-
-
-def parse_flag(output: str) -> bool:
-    match = re.search(r"^\s*(?:SleepDisabled|disablesleep)\s+([01])\s*$", output, re.M)
-    if match is not None:
-        return match[1] == "1"
-    # pmset omits the line until the flag has been set once since boot.
-    if "System-wide power settings:" in output:
-        return False
-    raise ValueError("unknown SleepDisabled flag")
 
 
 def read_record(path: Path) -> dict[str, str]:
@@ -203,9 +139,8 @@ class MachinePowerController:
         directory: Path | None = None,
         installer=None,
         platform: str = sys.platform,
+        profile=None,
     ):
-        from rcp.machine_power_install import MachinePowerInstaller
-
         self.store, self.demand_reader = store, demand_reader
         self.spawn = spawn or self._spawn
         self.run, self.clock, self.monotonic = run, clock, monotonic
@@ -216,8 +151,10 @@ class MachinePowerController:
             if platform.startswith("linux")
             else "other"
         )
-        self.installer = installer or MachinePowerInstaller(run=run)
-        self.directory = directory or self.installer.paths.directory
+        self.profile = profile if profile is not None else PLATFORM_PROFILES.get(platform)
+        self.lid = self.profile.lid_mode if self.profile is not None else None
+        self.installer = installer or (self.lid.create_installer(run=run) if self.lid else None)
+        self.directory = directory or (self.installer.paths.directory if self.installer else None)
         self.identity_reader = process_identity or self._process_identity
         self._identity = None
         self._admin_lock = threading.Lock()
@@ -228,7 +165,7 @@ class MachinePowerController:
         self._external = False
         self._lid_active = False
         self._release_cause = None
-        self.command = IDLE_HOLD_COMMANDS.get(platform)
+        self.command = self.profile.idle_hold_command if self.profile is not None else None
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -260,7 +197,7 @@ class MachinePowerController:
     def status(self) -> dict:
         with self._lock:
             supported = self.command is not None
-            installed = self.installer.status() if supported else None
+            installed = self.installer.status() if self.lid is not None else None
             return {
                 "platform": self.platform,
                 "supported": supported,
@@ -325,7 +262,7 @@ class MachinePowerController:
                 or self._hold is not None
                 or self._watchdog is not None
                 or (
-                    self.platform == "macos"
+                    self.lid is not None
                     and read_record(self.directory / "activation").get("set") == "1"
                 )
             ):
@@ -375,7 +312,7 @@ class MachinePowerController:
                         logger.exception("Could not start the keep-awake hold")
             else:
                 self._drop()
-            if self.platform == "macos":
+            if self.lid is not None:
                 try:
                     self._pass(demand_failed=demand_failed)
                 except Exception:
@@ -432,7 +369,7 @@ class MachinePowerController:
         with self._admin_lock:
             with self._lock:
                 before = self.status()
-                if self.platform != "macos" or before["installed"]:
+                if self.lid is None or before["installed"]:
                     return before
             # A prompt can outlive heartbeat staleness. Safety passes continue
             # while the human decides; the admin action owns its machine lock.
@@ -454,7 +391,7 @@ class MachinePowerController:
         with self._admin_lock:
             with self._lock:
                 before = self.status()
-                if self.platform != "macos":
+                if self.lid is None:
                     return before
             quiesced = False
 
@@ -588,15 +525,7 @@ class MachinePowerController:
                 },
             )
         self._watchdog = self.spawn(
-            [
-                "/bin/sh",
-                str(script),
-                str(self.directory),
-                str(self._generation),
-                str(MACHINE_POWER_WATCHDOG_INTERVAL_SECONDS),
-                str(MACHINE_POWER_HEARTBEAT_STALE_SECONDS),
-                str(MACHINE_POWER_COMMAND_TIMEOUT_SECONDS),
-            ]
+            self.lid.watchdog_command(script, self.directory, self._generation)
         )
         self._desired = "off"
         deadline = self.monotonic() + MACHINE_POWER_COMMAND_TIMEOUT_SECONDS
@@ -670,9 +599,7 @@ class MachinePowerController:
             "kind": kind,
             # A cleared flag does not sleep a closed Mac, so a failed sleep
             # needs its own remedy.
-            "command": "pmset sleepnow"
-            if kind == "sleep_failed"
-            else "sudo pmset -a disablesleep 0",
+            "command": self.lid.cleanup_command(kind),
         }
         self._save_best_effort()
 
@@ -689,6 +616,8 @@ class MachinePowerController:
         self._save_best_effort()
 
     def _release(self, cause):
+        if self.lid is None:
+            return
         held = self._desired == "on"
         # Ending demand is only a release when something was held; a safety
         # cause is always recorded because it latches or blocks re-arming.
@@ -734,15 +663,15 @@ class MachinePowerController:
         # a battery, thermal, lid, or flag input to a safe value.
         readings = {}
         failed = demand_failed
-        for name, argv, parser in (
-            ("battery", [PMSET, "-g", "batt"], parse_battery),
-            ("thermal", [PMSET, "-g", "therm"], parse_thermal),
-            ("lid", [IOREG, "-r", "-k", "AppleClamshellState"], parse_lid),
-            ("flag", [PMSET, "-g"], parse_flag),
+        for name, reader in (
+            ("battery", self.lid.read_battery),
+            ("thermal", self.lid.read_thermal),
+            ("lid", self.lid.read_lid),
+            ("flag", self.lid.read_flag),
         ):
             try:
-                readings[name] = parser(self._read(argv))
-            except (OSError, ValueError, subprocess.TimeoutExpired):
+                readings[name] = reader()
+            except (OSError, ValueError):
                 failed = True
         battery = readings.get("battery")
         if battery and battery[0] and self._state["battery_blocked"]:

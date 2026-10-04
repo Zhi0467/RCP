@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import socket
-import subprocess
 import threading
 from unittest.mock import Mock
 
@@ -14,9 +13,10 @@ from fastapi.testclient import TestClient
 from rcp.api import create_app
 from rcp.background import StartupEffectFence
 from rcp.machine_power import MachinePowerController
-from rcp.machine_power_install import InstallStatus
+from rcp.machine_power_macos import InstallStatus
 from rcp.storage import AppStore
 from tests.helpers import wait_until
+from tests.test_machine_power import FakeMacOSProfile
 
 
 @pytest.fixture
@@ -26,19 +26,8 @@ def mac_power(tmp_path, monkeypatch):
     installer.cancelled = True
     installer.install.return_value = installer.status.return_value
     installer.uninstall.return_value = installer.status.return_value
-    outputs = {
-        ("/usr/bin/pmset", "-g", "batt"): "Now drawing from 'AC Power'\n",
-        ("/usr/bin/pmset", "-g", "therm"): (
-            "No thermal warning level has been recorded\n"
-            "No performance warning level has been recorded\n"
-        ),
-        ("/usr/sbin/ioreg", "-r", "-k", "AppleClamshellState"): '"AppleClamshellState" = No',
-        ("/usr/bin/pmset", "-g"): "SleepDisabled 0\n",
-    }
-
-    def run(argv, timeout):
-        assert timeout > 0
-        return subprocess.CompletedProcess(argv, 0, outputs[tuple(argv)], "")
+    profile = FakeMacOSProfile()
+    profile.readings["battery"] = (True, None)
 
     def spawn(argv):
         raise AssertionError(f"unexpected process: {argv}")
@@ -50,7 +39,7 @@ def mac_power(tmp_path, monkeypatch):
             platform="darwin",
             installer=installer,
             directory=tmp_path / "machine",
-            run=run,
+            profile=profile,
             spawn=spawn,
             clock=lambda: 1000,
             process_identity=lambda: (123, "test start"),

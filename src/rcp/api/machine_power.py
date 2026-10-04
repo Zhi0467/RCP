@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool, model_validator
 
 from rcp.machine_power import MachinePowerController
-from rcp.machine_power_install import InstallError
+from rcp.machine_power_macos import InstallError
 
 router = APIRouter()
 
