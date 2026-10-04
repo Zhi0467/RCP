@@ -28,6 +28,7 @@ export interface DesktopBuildIdentity {
 }
 
 export interface DesktopStatus {
+  owner_authenticated?: boolean;
   desktop: boolean;
   version: string;
   base_url: string;
@@ -837,4 +838,8 @@ function dispatchIdentityResult(detail: BackendIdentityEventDetail): void {
 async function invokeDesktop<T>(command: string, args?: object): Promise<T> {
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(command, args as Record<string, unknown> | undefined);
+}
+
+export async function signInDesktopOwner(code: string): Promise<void> {
+  await invokeDesktop("desktop_owner_sign_in", { code });
 }

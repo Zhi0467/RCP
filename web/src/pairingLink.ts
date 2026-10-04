@@ -20,3 +20,9 @@ export function pairingCodeFromHash(hash: string): string | null {
 
 export const initialPairingCode: string | null =
   typeof window === "undefined" ? null : pairingCodeFromHash(window.location.hash);
+
+// Capture before App normalizes its route; fragments never reach the server.
+export const initialOwnerCode: string | null =
+  typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.hash.slice(1)).get("owner-code");

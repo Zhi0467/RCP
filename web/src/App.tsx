@@ -187,6 +187,8 @@ import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
 import { ProjectDock } from "./components/ProjectDock";
 import { RunDialog } from "./components/RunDialog";
+import { initialOwnerCode } from "./pairingLink";
+import { ProjectLocatorBoundary } from "./components/ProjectLocatorBoundary";
 import { TeamLoginBoundary } from "./components/TeamLoginBoundary";
 import {
   applyHumanDraft,
@@ -896,6 +898,8 @@ export default function App() {
     actorIdentityError,
     actorIdentityChecked,
     teamSessionRequired,
+    ownerSessionRequired,
+    authenticateOwnerSession,
     actorNamePromptOpen,
     actorNameDraft,
     actorNameSaving,
@@ -913,7 +917,12 @@ export default function App() {
   // Every backend-facing surface, including the WebMCP inventory, waits for the
   // same verified identity, actor, and team-session state that gates the page.
   const backendSessionReady =
-    identityReady && !identityIssue && actorIdentityChecked && !teamSessionRequired;
+    identityReady &&
+    !identityIssue &&
+    actorIdentityChecked &&
+    !!actorIdentity &&
+    !teamSessionRequired &&
+    !ownerSessionRequired;
   const [releaseUpdate, setReleaseUpdate] = useUpdateNotice(backendSessionReady);
   const {
     buildIdentity,
@@ -1696,7 +1705,7 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
+    if (!backendSessionReady) return;
     const runHeartbeat = (id: string) => {
       void heartbeatProjectCache(id).catch(() => {
         // Heartbeat failures leave the last usable display cache intact.
@@ -1728,6 +1737,7 @@ export default function App() {
     getActiveProjectId,
     projectIdsForHeartbeat,
     teamSessionRequired,
+    backendSessionReady,
   ]);
 
   const settleTeamSignIn = useCallback(() => {
@@ -2106,7 +2116,7 @@ export default function App() {
   }, [applyHashRoute, applyRouteSelection, getActiveProjectId, rememberProjectState]);
 
   useLayoutEffect(() => {
-    if (!identityReady || identityIssue || !actorIdentityChecked || teamSessionRequired) return;
+    if (!backendSessionReady) return;
     const requestedRoute = parseProjectHash(window.location.hash);
     const routeMatchesProject = requestedRoute.projectId === projectId;
     const retainedOpen = projectId ? cachedProjectStateForOpen(projectId, graphTarget) : null;
@@ -2246,6 +2256,7 @@ export default function App() {
     selectChat,
     setupOpen,
     teamSessionRequired,
+    backendSessionReady,
   ]);
 
   useEffect(() => {
@@ -4327,6 +4338,16 @@ export default function App() {
         {acceptanceAgentSurface}
       </div>
     );
+  if (ownerSessionRequired)
+    return (
+      <TeamLoginBoundary
+        personal
+        spaceName={null}
+        initialCode={initialOwnerCode}
+        onAuthenticate={authenticateOwnerSession}
+        onPair={async () => {}}
+      />
+    );
   if (teamSessionRequired)
     return (
       <>
@@ -4338,6 +4359,14 @@ export default function App() {
         {acceptanceAgentSurface}
       </>
     );
+  if (actorIdentity && new URLSearchParams(window.location.search).has("project-locator")) {
+    return (
+      <>
+        <ProjectLocatorBoundary />
+        {actorNameSurface}
+      </>
+    );
+  }
   if (loading)
     return (
       <div className="app-loading">

@@ -651,3 +651,27 @@ test("structured API failures expose their message and retain the error code", a
     globalThis.fetch = originalFetch;
   }
 });
+
+test("an unauthorized request signals the sign-in boundary", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const target = new EventTarget();
+  globalThis.window = target;
+  let required = 0;
+  target.addEventListener("rcp:session-required", () => required++);
+  globalThis.fetch = async () => new Response("{}", { status: 401 });
+  try {
+    await assert.rejects(api("/api/projects"), (error) => error.status === 401);
+    assert.equal(required, 1);
+    await assert.rejects(
+      api("/api/owner/redeem", { method: "POST" }),
+      (error) => error.status === 401,
+    );
+    assert.equal(required, 1);
+    await assert.rejects(api("/api/owner/sessions"), (error) => error.status === 401);
+    assert.equal(required, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
+  }
+});

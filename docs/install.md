@@ -84,8 +84,9 @@ For development with backend reload and automatic Web rebuild:
 uv run rcp serve --reload
 ```
 
-Open <http://127.0.0.1:8421>. React and CSS changes rebuild the bundle; refresh
-the page to see them.
+Open the sign-in URL printed to the terminal. Its code works once and expires
+after ten minutes. A signed-in browser keeps an owner session. React and CSS
+changes rebuild the bundle; refresh the page to see them.
 
 For a normal non-reloading launch that opens the browser:
 
@@ -93,11 +94,15 @@ For a normal non-reloading launch that opens the browser:
 uv run rcp open
 ```
 
-Register and open a checkout at launch:
+Open a checkout at launch:
 
 ```bash
 uv run rcp open /absolute/path/to/project
 ```
+
+If a backend is already running, the browser asks you to confirm the project
+locator after sign-in. The CLI does not register it through the API. A fresh
+backend still registers a project supplied at startup.
 
 Serve without opening a browser:
 

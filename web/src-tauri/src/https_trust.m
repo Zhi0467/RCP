@@ -234,6 +234,50 @@ int rcp_https_trust_set_team_cookie(void *webview, const char *origin,
   return 0;
 }
 
+int rcp_https_trust_set_owner_cookie(void *webview, const char *origin,
+                                    const char *set_cookie,
+                                    RcpCookieCompletion completion,
+                                    void *context) {
+  if (webview == NULL || origin == NULL || set_cookie == NULL || completion == NULL ||
+      context == NULL) {
+    return 4;
+  }
+  WKWebView *view = (__bridge WKWebView *)webview;
+  NSURL *url = [NSURL URLWithString:[NSString stringWithUTF8String:origin]];
+  NSString *header = [NSString stringWithUTF8String:set_cookie];
+  if (url == nil || header == nil || (![url.scheme isEqualToString:@"https"] && ![url.scheme isEqualToString:@"http"]) ||
+      url.host.length == 0) {
+    return 6;
+  }
+  NSArray<NSHTTPCookie *> *cookies =
+      [NSHTTPCookie cookiesWithResponseHeaderFields:@{ @"Set-Cookie" : header }
+                                             forURL:url];
+  if (cookies.count != 1) {
+    return 7;
+  }
+  NSHTTPCookie *cookie = cookies.firstObject;
+  NSString *lowerHeader = header.lowercaseString;
+  if ([lowerHeader rangeOfString:@"domain="].location != NSNotFound ||
+      [lowerHeader rangeOfString:@"samesite=strict"].location == NSNotFound) {
+    return 8;
+  }
+  NSString *domain = cookie.domain;
+  if ([domain hasPrefix:@"."]) {
+    domain = [domain substringFromIndex:1];
+  }
+  if (![cookie.name isEqualToString:@"rcp_owner_session"] || cookie.isSecure != [url.scheme isEqualToString:@"https"] ||
+      !cookie.isHTTPOnly || ![cookie.path isEqualToString:@"/"] ||
+      [domain caseInsensitiveCompare:url.host] != NSOrderedSame) {
+    return 8;
+  }
+  [view.configuration.websiteDataStore.httpCookieStore
+      setCookie:cookie
+      completionHandler:^{
+        completion(context, 0);
+      }];
+  return 0;
+}
+
 int rcp_https_trust_install(const char *fingerprint_hex, void *webview,
                            const char *start_url, int reset_cookies) {
   if (start_url == NULL) {
