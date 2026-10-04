@@ -23,6 +23,17 @@ from .test_project_checkout import ALIAS, PROJECT_ID, REPOSITORY, _git_command, 
         ),
         ('[Core "different"]\n HooksPath = /unsafe\n[Core]\n HooksPath = /dev/null\n', None),
     ],
+    # Short ids: pytest exports the node id in PYTEST_CURRENT_TEST, and Linux
+    # refuses any child process whose environment holds a string over 128 KiB.
+    ids=[
+        "large-unrelated-value",
+        "uppercase-remote-section",
+        "duplicate-hooks-path",
+        "multiline-hooks-path",
+        "valueless-hooks-path",
+        "include-before-hooks-path",
+        "hooks-path-in-subsection",
+    ],
 )
 def test_checkout_batched_config_preserves_values_case_and_refusal_order(
     tmp_path: Path, configuration: str, error: str | None
