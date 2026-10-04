@@ -131,6 +131,8 @@ interface Props {
   graph: GraphState;
   trustView: TrustView;
   onSelectNode: (node: GraphNode) => void;
+  /** Main nodes changed since the viewer's digest mark; empty on other targets. */
+  changedNodeIds?: ReadonlySet<string>;
 }
 
 interface ScientificProps extends Props, GraphEditingProps {}
@@ -144,6 +146,7 @@ const scienceOrder: GraphNode["type"][] = [
   "blocker",
 ];
 const dagTypes = scienceOrder;
+const NO_CHANGED_NODES: ReadonlySet<string> = new Set();
 // These feed CSS custom properties, so naming the palette tokens rather than
 // their light values keeps the graph legible in both themes.
 const dagTypeMeta: Record<GraphNode["type"], { label: string; color: string }> = {
@@ -155,7 +158,13 @@ const dagTypeMeta: Record<GraphNode["type"], { label: string; color: string }> =
   blocker: { label: "Blockers", color: "var(--coral)" },
 };
 
-export function ScientificView({ graph, trustView, onSelectNode, ...editing }: ScientificProps) {
+export function ScientificView({
+  graph,
+  trustView,
+  onSelectNode,
+  changedNodeIds = NO_CHANGED_NODES,
+  ...editing
+}: ScientificProps) {
   const nodes = projectNodes(Object.values(graph.nodes), trustView);
   const projection = buildResearchPaths(nodes, Object.values(graph.edges));
   const hidden = Object.values(graph.nodes).length - nodes.length;
@@ -179,19 +188,30 @@ export function ScientificView({ graph, trustView, onSelectNode, ...editing }: S
               <article className="research-path" key={path.question.id}>
                 <div className="research-path-stage question-stage">
                   <span className="research-stage-label">Question</span>
-                  <ResearchNodeCard node={path.question} onSelectNode={onSelectNode} />
+                  <ResearchNodeCard
+                    node={path.question}
+                    onSelectNode={onSelectNode}
+                    changed={changedNodeIds.has(path.question.id)}
+                  />
                 </div>
                 <ResearchStage
                   label="Ideas & decisions"
+                  changedNodeIds={changedNodeIds}
                   nodes={path.ideas}
                   onSelectNode={onSelectNode}
                 />
                 <ResearchStage
                   label="Experiments"
+                  changedNodeIds={changedNodeIds}
                   nodes={path.experiments}
                   onSelectNode={onSelectNode}
                 />
-                <ResearchStage label="Evidence" nodes={path.evidence} onSelectNode={onSelectNode} />
+                <ResearchStage
+                  label="Evidence"
+                  nodes={path.evidence}
+                  changedNodeIds={changedNodeIds}
+                  onSelectNode={onSelectNode}
+                />
               </article>
             ))}
           </div>
@@ -203,7 +223,13 @@ export function ScientificView({ graph, trustView, onSelectNode, ...editing }: S
               </header>
               <div>
                 {projection.unconnected.map((node) => (
-                  <ResearchNodeCard node={node} onSelectNode={onSelectNode} compact key={node.id} />
+                  <ResearchNodeCard
+                    node={node}
+                    onSelectNode={onSelectNode}
+                    changed={changedNodeIds.has(node.id)}
+                    compact
+                    key={node.id}
+                  />
                 ))}
               </div>
             </section>
@@ -246,6 +272,7 @@ export function DagView({
   viewportRef,
   relationFocusNodeId,
   onClearRelationFocus,
+  changedNodeIds = NO_CHANGED_NODES,
   ...editing
 }: DagProps) {
   const narrow = useNarrowViewport();
@@ -1030,7 +1057,7 @@ export function DagView({
                     : null;
                   return (
                     <div
-                      className={`dag-node ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""}`}
+                      className={`dag-node ${branchChanges ? "is-branch-diff" : ""} ${diffWord ? `diff-${diffWord}` : ""} ${node.type} ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${dimmed ? "is-dim" : ""} ${projectionEmphasis === "neutral" ? "is-layer-neutral" : ""} ${position.pinned ? "is-pinned" : ""} ${draggingId === node.id ? "is-dragging" : ""} ${changedNodeIds.has(node.id) ? "digest-changed" : ""}`}
                       data-node-id={node.id}
                       style={
                         {
@@ -1873,10 +1900,12 @@ export function AttentionOverview({
 function ResearchStage({
   label,
   nodes,
+  changedNodeIds,
   onSelectNode,
 }: {
   label: string;
   nodes: GraphNode[];
+  changedNodeIds: ReadonlySet<string>;
   onSelectNode: (node: GraphNode) => void;
 }) {
   return (
@@ -1885,7 +1914,12 @@ function ResearchStage({
       <div className="research-stage-cards">
         {nodes.length > 0 ? (
           nodes.map((node) => (
-            <ResearchNodeCard node={node} onSelectNode={onSelectNode} key={node.id} />
+            <ResearchNodeCard
+              node={node}
+              onSelectNode={onSelectNode}
+              changed={changedNodeIds.has(node.id)}
+              key={node.id}
+            />
           ))
         ) : (
           <span className="research-stage-empty">—</span>
@@ -1899,14 +1933,16 @@ function ResearchNodeCard({
   node,
   onSelectNode,
   compact = false,
+  changed = false,
 }: {
   node: GraphNode;
   onSelectNode: (node: GraphNode) => void;
   compact?: boolean;
+  changed?: boolean;
 }) {
   return (
     <button
-      className={`research-node-card ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${compact ? "compact" : ""}`}
+      className={`research-node-card ${node.standing} ${node.draft_touched ? "draft-touched" : ""} ${compact ? "compact" : ""} ${changed ? "digest-changed" : ""}`}
       onClick={() => onSelectNode(node)}
     >
       <span className="research-node-topline">

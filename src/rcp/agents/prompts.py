@@ -1013,8 +1013,6 @@ Method:
   Keep observations separate from untested causal actions and retain invalid attempts when they
   change interpretation.
 - Collector dumps are observations at their filename timestamp, never live state.
-- Write every node for a cold reader: ordinary language, complete sentences, concrete context, and
-  technical terms expanded inline. The glossary is supplementary, not a substitute.
 
 {render_agent_graph_authority_contract()}
 

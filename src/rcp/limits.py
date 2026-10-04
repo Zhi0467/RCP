@@ -551,3 +551,10 @@ VOICE_CONFIRM_TIMEOUT_SECONDS = 60
 VOICE_COMMENTARY_MAX_CHARS = 240
 VOICE_TOOLS_MAX_BYTES = 64 * 1024
 VOICE_SDP_MAX_CHARS = 64 * 1024
+
+# Pull-only digest projector lifecycle.
+DIGEST_RECHECK_SECONDS = 10.0
+DIGEST_STOP_TIMEOUT_SECONDS = 10.0
+
+# Landing counts are a lower bound when this latest-event window is full.
+DIGEST_LANDING_EVENT_LIMIT = 1000

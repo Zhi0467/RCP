@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from rcp import web_push
 from rcp.core.attention import project_graph_attention
 from rcp.core.models import GraphState, Patch
-from rcp.episode_health import load_episode_health
+from rcp.episode_health import episode_needs_action, load_episode_health
 from rcp.limits import (
     CONSOLIDATION_EXPIRY_NOTICE_DAYS,
     NOTIFICATION_RECHECK_SECONDS,
@@ -441,7 +441,7 @@ class NotificationSender:
             ):
                 continue
             kind = None
-            if health == "needs_action" or (health == "wrapping_up" and blocked == "sign_in"):
+            if episode_needs_action(health, blocked):
                 kind = "episode_needs_action"
             elif health in _TERMINAL:
                 kind = "episode_finished"
@@ -645,8 +645,7 @@ class NotificationSender:
                     ) and (
                         health in _TERMINAL
                         if row["kind"] == "episode_finished"
-                        else health == "needs_action"
-                        or (health == "wrapping_up" and blocked == "sign_in")
+                        else episode_needs_action(health, blocked)
                     )
             if not unresolved:
                 self.store.drop_notification(device_id, notification_id)

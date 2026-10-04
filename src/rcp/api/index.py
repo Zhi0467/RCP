@@ -35,6 +35,7 @@ from rcp.api.team_shell_protocol import (
 from rcp.compute_jobs.reconcile import reconcile_compute_jobs
 from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, Experiment, GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
@@ -155,9 +156,11 @@ def projects(
     store: StoreDependency,
 ) -> list[dict[str, object]]:
     selected_protocol = acknowledge_team_shell_protocol(request, response)
-    visible = store.member_project_ids(identity_access.acting_user(request).user_id)
+    user_id = identity_access.acting_user(request).user_id
+    visible = store.member_project_ids(user_id)
+    counts = digest_counts(store, visible, user_id)
     return [
-        card
+        {**card, "digest_count": counts.get(card["id"], 0)}
         for card in catalog.cards(team_shell_protocol=selected_protocol)
         if card["id"] in visible
     ]

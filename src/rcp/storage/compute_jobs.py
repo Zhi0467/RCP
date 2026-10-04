@@ -14,6 +14,7 @@ from rcp.compute_jobs.models import (
 from rcp.compute_jobs.routes import ComputeRoute
 from rcp.core.models import EpisodeUnfinishedJob
 from rcp.limits import COMPUTE_JOBS_PER_PROJECT_LIST_LIMIT
+from rcp.storage.digest import append_digest_event
 
 
 def _compute_job_record(row: sqlite3.Row) -> ComputeJobRecord:
@@ -218,4 +219,17 @@ class ComputeJobStoreMixin:
                     job_id,
                 ),
             )
+            if refreshed.status != "running":
+                append_digest_event(
+                    connection,
+                    project_id=current.project_id,
+                    kind="job_ended",
+                    item_id=job_id,
+                    created_at=self.now(),
+                    payload={
+                        "title": current.label or job_id,
+                        "status": refreshed.status,
+                        "deep_link": None,
+                    },
+                )
         return refreshed

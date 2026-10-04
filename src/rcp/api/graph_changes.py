@@ -12,8 +12,7 @@ from rcp.core.materialize import MaterializationResult
 from rcp.core.models import Edge, GraphState, ProjectNode
 from rcp.core.transition_models import GraphHeadRef, GraphMutationAvailability, GraphTargetRef
 from rcp.history.branches import BranchHistoryManager
-from rcp.history.delta import render_revision_summary
-from rcp.runs.branch_merge import build_semantic_delta
+from rcp.history.delta import render_revision_summary, semantic_delta
 from rcp.storage import ACTIVE_AGENT_TASK_STATUSES, AppStore
 
 
@@ -67,13 +66,10 @@ def branch_changes(
         base = history.base_state()
         result, boundaries = history.accepted_patch_boundaries()
         head = history.head_ref(result)
-        delta = build_semantic_delta(
-            base, result.state, base_head=metadata.base_head, branch_head=head
-        )
+        delta = semantic_delta(base, result.state)
         sources = [
             (
-                before,
-                after,
+                semantic_delta(before, after),
                 GraphChangeSource(
                     revision=patch.revision,
                     producer=patch.producer,
@@ -89,8 +85,8 @@ def branch_changes(
                 **item.model_dump(mode="python"),
                 history=[
                     source
-                    for before, after, source in sources
-                    if before.nodes.get(item.node_id) != after.nodes.get(item.node_id)
+                    for change, source in sources
+                    if any(node.node_id == item.node_id for node in change.nodes)
                 ],
             )
             for item in delta.nodes
@@ -100,8 +96,8 @@ def branch_changes(
                 **item.model_dump(mode="python"),
                 history=[
                     source
-                    for before, after, source in sources
-                    if before.edges.get(item.edge_id) != after.edges.get(item.edge_id)
+                    for change, source in sources
+                    if any(edge.edge_id == item.edge_id for edge in change.edges)
                 ],
             )
             for item in delta.edges

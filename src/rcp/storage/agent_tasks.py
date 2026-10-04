@@ -54,6 +54,7 @@ from rcp.limits import (
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
+from rcp.storage.digest import append_task_failed
 from rcp.storage.models import (
     ACTIVE_AGENT_TASK_STATUSES,
     AGENT_TASK_PROJECTION_FIELDS,
@@ -4848,6 +4849,9 @@ class AgentTaskStoreMixin:
                     status=status,
                     created_at=now,
                     diagnostic=detail,
+                )
+                append_task_failed(
+                    connection, operation_id, now, previous_status=transition.observed_status
                 )
 
     def agent_task_dispatch_was_proven_not_started(self, operation_id: str) -> bool:

@@ -36,7 +36,7 @@ def test_delete_project_route_refuses_active_task(manifest, tmp_path) -> None:
     [v1_card] = (
         TestClient(app).get("/api/projects", headers={TEAM_SHELL_PROTOCOL_HEADER: "1"}).json()
     )
-    assert v1_card == card
+    assert v1_card == card | {"digest_count": 0}
     now = app.state.background_tasks.store.now()
     app.state.background_tasks.store.create_agent_task(
         AgentTaskRecord(

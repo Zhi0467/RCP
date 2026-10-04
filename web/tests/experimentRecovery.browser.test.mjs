@@ -283,6 +283,17 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
             archived: [],
           };
         else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
+        else if (path.endsWith("/digest"))
+          json = {
+            cursor: 0,
+            mark: null,
+            needs_you: [],
+            changed: [],
+            branches: [],
+            ran: [],
+            changed_node_ids: [],
+            count: 0,
+          };
         else if (path.endsWith("/revision"))
           json = { revision: 1, graph_head: project().graph_head };
         else if (path === "/api/providers/logins") json = [];

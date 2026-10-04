@@ -294,6 +294,7 @@ def test_archive_migration_defaults_legacy_episodes_visible_and_project_deletion
         "question_answer_projection_v1",
         "operational_lessons_v1",
         "graph_consolidation_v1",
+        "digest_v1",
     )
     migrated = AppStore(store.path)
     assert migrated.episode("episode") == before

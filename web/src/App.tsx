@@ -180,6 +180,8 @@ import {
   resolveConsolidationRun,
 } from "./consolidation";
 import { useConsolidation } from "./hooks/useConsolidation";
+import { useProjectDigest } from "./hooks/useProjectDigest";
+import { digestChangedNodeIds } from "./projectDigest";
 import { DetailDrawer } from "./components/DetailDrawer";
 import { DraggableWindow } from "./components/DraggableWindow";
 import { ProjectHistoryDrawer } from "./components/ProjectHistoryDrawer";
@@ -2290,6 +2292,20 @@ export default function App() {
     error: consolidationError,
     refresh: refreshConsolidation,
   } = useConsolidation(apiBase, String(graph.revision));
+  const refreshProjectIndexQuietly = useCallback(() => {
+    // The landing count follows Caught up; a failed index read keeps the old list.
+    void loadProjectIndex().catch(() => undefined);
+  }, [loadProjectIndex]);
+  const {
+    digest: projectDigest,
+    error: projectDigestError,
+    catchingUp: projectDigestCatchingUp,
+    catchUp: catchUpProjectDigest,
+  } = useProjectDigest(projectId, String(graph.revision), refreshProjectIndexQuietly);
+  const digestChangedNodes = useMemo(
+    () => digestChangedNodeIds(projectDigest, graphTarget),
+    [projectDigest, graphTarget],
+  );
   const candidateTransitionProjection = mutationsDisabled ? null : draftTransitionProjection;
   const retryConfig = useMemo(
     () => (retryTask && project ? taskRetryConfig(retryTask, project) : null),
@@ -4994,6 +5010,13 @@ export default function App() {
                 latestRevisionSummary?.to_revision === graph.revision ? latestRevisionSummary : null
               }
               onNavigate={changeView}
+              digest={{
+                digest: projectDigest,
+                error: projectDigestError,
+                catchingUp: projectDigestCatchingUp,
+                onCatchUp: () => void catchUpProjectDigest(),
+                onOpenArtifact: (artifactId) => openArtifact({ projectId: project.id, artifactId }),
+              }}
             />
           )}
           {view === "attention" && (
@@ -5052,6 +5075,7 @@ export default function App() {
               {...graphEditingProps}
               graph={presentedGraph}
               trustView={trustView}
+              changedNodeIds={digestChangedNodes}
               onSelectNode={openNode}
             />
           )}
@@ -5068,6 +5092,7 @@ export default function App() {
               viewportRef={activeDagViewportRef!}
               relationFocusNodeId={dagRelationFocusId}
               onClearRelationFocus={clearDagRelationFocus}
+              changedNodeIds={digestChangedNodes}
               onSelectNode={openNode}
             />
           )}

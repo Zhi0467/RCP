@@ -74,9 +74,20 @@ _EDIT_METHOD = """Editing the graph:
   can build a better model" is not a Hypothesis: failing to build one would not show that it cannot
   be built, and success would come from testing narrower claims. Write those instead, such as
   "Adding retrieval lowers held-out error on long documents."
-- Keep node prose concise. When a durable design, plan, result, or handoff file already exists or
-  the task naturally produces one, cite its repository-relative path in an allowed field. Do not
-  create a file only to cite it; a preview artifact is not durable.
+- When a durable design, plan, result, or handoff file already exists or the task naturally produces
+  one, cite its repository-relative path in an allowed field. Do not create a file only to cite it;
+  a preview artifact is not durable.
+
+Writing for a reader (every node you create or edit):
+- The title names the node's one idea in about ten words: the question for a ResearchQuestion, the
+  claim for a Hypothesis, the result for Evidence, the choice for a Decision, what is run for an
+  Experiment, and what is stuck for a Blocker.
+- Open each prose field with one sentence that stands alone. A reader who stops there knows the
+  point; details follow.
+- Short sentences, one idea each. Use a list for three or more parallel items.
+- Expand a technical term the first time a node uses it. Keep ids, run names, and paths out of
+  prose; cite paths only in the fields meant for them.
+- Call one concept by the same words in every node, so related nodes read as related.
 
 Causal check:
 - Separate an Experiment's inputs from what its results will decide. A Decision or Blocker the

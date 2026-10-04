@@ -23,6 +23,8 @@ import type {
   MachineDirectoryRequest,
   AllProjectCacheClearResult,
   ProjectCacheClearResult,
+  ProjectDigest,
+  ProjectDigestMark,
   ProjectProvisioningCreateRequest,
   ProjectProvisioningResponse,
   ProjectSnapshot,
@@ -619,6 +621,21 @@ export function loadChatReads(path: string): Promise<ChatReads> {
 /** `readThrough` is a turn's server-reported finish time; the marker never moves back. */
 export function markChatRead(path: string, readThrough: string): Promise<ChatReads> {
   return api(path, { method: "POST", body: JSON.stringify({ read_through: readThrough }) });
+}
+
+export function loadProjectDigest(projectId: string): Promise<ProjectDigest> {
+  return api(`/api/projects/${encodeURIComponent(projectId)}/digest`);
+}
+
+/** `seq` is the cursor of the digest on screen, never "now"; the mark never moves back. */
+export function markDigestCaughtUp(
+  projectId: string,
+  seq: number,
+): Promise<{ mark: ProjectDigestMark }> {
+  return api(`/api/projects/${encodeURIComponent(projectId)}/digest/caught-up`, {
+    method: "POST",
+    body: JSON.stringify({ seq }),
+  });
 }
 
 export function setChatPinned(

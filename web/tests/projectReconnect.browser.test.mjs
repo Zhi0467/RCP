@@ -138,6 +138,17 @@ for (const initialFreshness of ["stale", "fresh"]) {
             archived: [],
           };
         else if (path.endsWith("/usage")) json = { tasks: [], totals: {}, by_provider: [] };
+        else if (path.endsWith("/digest"))
+          json = {
+            cursor: 0,
+            mark: null,
+            needs_you: [],
+            changed: [],
+            branches: [],
+            ran: [],
+            changed_node_ids: [],
+            count: 0,
+          };
         await route.fulfill({ json });
       });
       const readinessLoaded = page.waitForResponse((response) =>

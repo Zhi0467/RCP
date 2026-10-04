@@ -2960,6 +2960,8 @@ export interface ProjectCard {
   revision?: number | null;
   primary_question?: string | null;
   attention_count: number;
+  /** Rendered "Since you last looked" lines for the viewer; 0 without a mark. */
+  digest_count: number;
   last_refresh_at?: string | null;
   reachable?: boolean | null;
   error?: string | null;
@@ -3462,4 +3464,70 @@ export interface Lesson {
   updated_at: string;
   author: LessonAuthor;
   human_owned: boolean;
+}
+
+export interface ProjectDigestMark {
+  seq: number;
+  marked_at: string;
+}
+
+export interface ProjectDigestNeedsYou {
+  kind: "proposal" | "decision" | "question" | "episode";
+  item_id: string;
+  title: string;
+  target: string;
+  deep_link: string | null;
+  created_at: string;
+}
+
+export interface ProjectDigestChange {
+  source_key: string;
+  source_kind:
+    | "consolidation"
+    | "episode"
+    | "member"
+    | "ingestion"
+    | "chat"
+    | "agent"
+    | "system"
+    | "unattributed";
+  label: string;
+  edits: number;
+  node_ids: string[];
+  report_artifact_id: string | null;
+  deep_link: string | null;
+}
+
+export interface ProjectDigestBranch {
+  episode_id: string;
+  title: string;
+  edits: number;
+  deep_link: string | null;
+}
+
+export interface ProjectDigestRan {
+  kind:
+    | "episode_ended"
+    | "job_ended"
+    | "task_failed"
+    | "consolidation_report"
+    | "consolidation_failed"
+    | "episode_report";
+  item_id: string;
+  title: string;
+  status: string | null;
+  deep_link: string | null;
+  created_at: string;
+}
+
+/** `GET /api/projects/{id}/digest`: events after the viewer's mark, up to `cursor`. */
+export interface ProjectDigest {
+  cursor: number;
+  mark: ProjectDigestMark | null;
+  needs_you: ProjectDigestNeedsYou[];
+  changed: ProjectDigestChange[];
+  branches: ProjectDigestBranch[];
+  ran: ProjectDigestRan[];
+  changed_node_ids: string[];
+  count: number;
 }

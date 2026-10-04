@@ -381,3 +381,8 @@ def operational_episode_tasks(
             continue
         tasks.append(task)
     return tasks
+
+
+def episode_needs_action(health: str, blocked_reason: str | None) -> bool:
+    """Shared local episode attention predicate for pull and push projections."""
+    return health == "needs_action" or (health == "wrapping_up" and blocked_reason == "sign_in")
