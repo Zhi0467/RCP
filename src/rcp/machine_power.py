@@ -453,6 +453,9 @@ class MachinePowerController:
     def _acquire(self) -> bool:
         if self._owner is not None:
             return True
+        if not self.directory.is_dir():
+            # A damaged install lost the state directory; nothing can own it.
+            return False
         fd = os.open(self.directory / "owner.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

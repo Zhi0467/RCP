@@ -95,6 +95,16 @@ def test_partial_install_repair(installer, missing):
     assert installer.install().installed
 
 
+@macos_tools
+def test_uninstall_removes_leftovers_when_the_state_directory_is_gone(installer):
+    installer.install()
+    for child in installer.paths.directory.iterdir():
+        child.unlink()
+    installer.paths.directory.rmdir()
+    assert installer.uninstall().install_problem == "not_installed"
+    assert not installer.paths.sudoers.exists() and not installer.paths.daemon.exists()
+
+
 @pytest.mark.parametrize("name", ["sudoers", "daemon", "directory"])
 def test_foreign_file_refused(installer, name):
     getattr(installer.paths, name).parent.mkdir(parents=True, exist_ok=True)

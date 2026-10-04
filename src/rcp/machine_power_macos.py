@@ -357,6 +357,10 @@ bounded /bin/rm -f {daemon}
         def acquire() -> None:
             nonlocal lock
             if not self.paths.directory.exists():
+                if uninstall:
+                    # The owner lock lives in the missing directory, so no
+                    # watchdog can hold it; removing the leftovers is safe.
+                    return
                 raise InstallError("owner_busy")
             if lock is None:
                 lock_path = self.paths.directory / "owner.lock"
