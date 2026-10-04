@@ -19,7 +19,7 @@ from .helpers import create_named_app, wait_until
 
 @pytest.mark.parametrize("provider", PROVIDER_IDS)
 def test_local_provider_discovery_stays_unconfigured(provider: str) -> None:
-    """`unconfigured_local_providers` must stay autouse.
+    """`isolated_host` must keep discovery unconfigured.
 
     Discovery is what readiness runs `--version` and `login status` through, so
     a live path here is a suite that executes the developer's own authenticated
