@@ -2366,15 +2366,16 @@ export function NodeChat({
                   />
                 </>
               )}
-              <div className="chat-compute-picker" ref={optionsRef}>
+              <div className="chat-compute-picker chat-options-picker" ref={optionsRef}>
                 <button
                   className="chat-compute-trigger"
                   type="button"
                   aria-expanded={optionsOpen}
+                  aria-label="Options"
+                  title="Options"
                   onClick={() => setOptionsOpen((open) => !open)}
                 >
                   <SlidersHorizontal size={14} />
-                  Options
                   {optionCount ? <strong>{optionCount}</strong> : null}
                   <ChevronUp size={12} />
                 </button>

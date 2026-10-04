@@ -159,9 +159,11 @@ and centering offsets.
 
 ## Agent browser controls
 
-Discuss and Work chats have a **Browser** switch in the composer's **Options**
-menu, beside **Work in a worktree**. The folded chip counts the options that are
-on, so a Browser grant stays visible. The menu closes on an outside click,
+Discuss and Work chats have a **Browser** switch in the composer's Options
+menu, beside **Work in a worktree**. The folded chip is a sliders icon with no
+label; it counts the options that are on, so a Browser grant stays visible. On
+a phone the open menu spans the composer, and the chat view keeps a
+screen-height shell so the composer sits at the bottom of the screen. The menu closes on an outside click,
 Escape, or a switch to another chat. New chats start with it off. Each chat loads and saves its own server preference. The
 switch waits for a successful load and keeps the server value after a failed
 save. Errors offer a check-again action. Paper coaching has no Browser switch.

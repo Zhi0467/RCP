@@ -152,6 +152,12 @@
     min-height: 100vh;
     overflow: visible;
   }
+  /* Chats keep the screen-height shell, so the composer stays at the bottom. */
+  .app-shell:has(> .project-panel > .chats-workspace) {
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
   .attention-rail {
     border-left: 0;
     border-top: 1px solid var(--line);
