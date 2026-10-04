@@ -6,6 +6,7 @@ import json
 import os
 import pwd
 import re
+import shlex
 import sqlite3
 import stat
 import subprocess
@@ -129,6 +130,9 @@ class ServerDoctorReport(_StrictModel):
     provider_check_status: Literal["available", "unavailable"]
     dependencies_ready: bool
     dependency_versions: str
+    browser_status: str = "not_installed"
+    browser_detail: str | None = None
+    browser_apt_command: str | None = None
     #: Each machine account's durable provider login state, from real provider
     #: results and verified requests; never a provider status command.
     provider_logins: str = "none recorded"
@@ -250,6 +254,9 @@ class ServerDoctorReport(_StrictModel):
             NonsecretField(name="provider_check_status", value=self.provider_check_status),
             NonsecretField(name="dependencies_ready", value=self.dependencies_ready),
             NonsecretField(name="dependency_versions", value=self.dependency_versions),
+            NonsecretField(name="browser_status", value=self.browser_status),
+            NonsecretField(name="browser_detail", value=_shown(self.browser_detail)),
+            NonsecretField(name="browser_apt_command", value=_shown(self.browser_apt_command)),
             NonsecretField(name="provider_logins", value=self.provider_logins),
             NonsecretField(name="backup_status", value=self.backup_status),
             NonsecretField(name="backup_destination", value=_shown(self.backup_destination)),
@@ -526,6 +533,7 @@ class LinuxServerDoctorMachine:
             current_commit,
             add_problem,
         )
+        browser = self._inspect_browser()
         backup = self._inspect_backup(
             config,
             service_uid=service_uid,
@@ -601,6 +609,9 @@ class LinuxServerDoctorMachine:
             provider_logins=provider_login_summary(self.layout.data_dir / "rcp.sqlite3"),
             dependencies_ready=dependencies_ready,
             dependency_versions=dependency_versions,
+            browser_status=browser.status,
+            browser_detail=browser.detail,
+            browser_apt_command=browser.apt_command,
             backup_status=backup.status,
             backup_destination=backup.destination,
             backup_schedule=backup.schedule,
@@ -988,6 +999,47 @@ class LinuxServerDoctorMachine:
             add_problem("control socket identity differs from running metadata")
             return metadata, probe, "identity_mismatch"
         return metadata, probe, "healthy"
+
+    def _inspect_browser(self):
+        from rcp.browser import BrowserReadiness
+
+        if self._selected is None:
+            return BrowserReadiness(status="not_installed", detail="No installed release to probe")
+        python = Path(self._selected["release_directory"]) / ".venv/bin/python"
+        program = (
+            "from pathlib import Path; from rcp.browser import readiness; "
+            "print(readiness(data_dir=Path("
+            + repr(str(self.layout.data_dir))
+            + ")).model_dump_json())"
+        )
+        # Doctor is root; browser readiness belongs to the execution account.
+        # The shared service resolves Node/npm through that account's login shell.
+        result = self._runner(
+            (
+                "runuser",
+                "--user",
+                self.layout.service_account,
+                "--",
+                "env",
+                "-i",
+                f"HOME={self.layout.service_home}",
+                f"USER={self.layout.service_account}",
+                f"LOGNAME={self.layout.service_account}",
+                "PATH=/usr/local/bin:/usr/bin:/bin",
+                "LANG=C.UTF-8",
+                "/bin/bash",
+                "-lc",
+                shlex.join((str(python), "-I", "-c", program)),
+            )
+        )
+        if result.returncode == 0:
+            try:
+                return BrowserReadiness.model_validate_json(result.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                pass
+        return BrowserReadiness(
+            status="host_unreachable", detail="Browser readiness failed for the service account"
+        )
 
     def _inspect_dependencies(
         self,

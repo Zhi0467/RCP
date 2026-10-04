@@ -128,7 +128,7 @@ def test_doctor_renders_one_complete_report_through_both_cli_modes() -> None:
     assert [event["event"] for event in events] == ["plan", "step", "step"]
     assert events[-1]["step"]["state"] == "succeeded"
     fields = {item["name"]: item["value"] for item in events[-1]["step"]["fields"]}
-    assert len(fields) == 53
+    assert len(fields) == len(_report().fields())
     assert fields["overall_state"] == "healthy"
     assert fields["configured_authentication"] == "public"
     assert fields["candidate_commit"] == "none"
@@ -866,3 +866,26 @@ def test_cli_doctor_release_failure_is_separate_from_source_health(monkeypatch):
     assert code == 0
     assert fields["source_state"] == "aligned"
     assert fields["release_check_status"] == "failed"
+
+
+def test_browser_doctor_uses_execution_account_and_shared_service(tmp_path):
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, '{"status":"ready","detail":null,"apt_command":null}', ""
+        )
+
+    machine = LinuxServerDoctorMachine(runner=runner)
+    machine._selected = {"release_directory": str(tmp_path)}
+    readiness = machine._inspect_browser()
+    assert readiness.status == "ready"
+    argv = calls.pop()
+    assert argv[:4] == ("runuser", "--user", machine.layout.service_account, "--")
+    assert f"HOME={machine.layout.service_home}" in argv
+    import shlex
+
+    invocation = shlex.split(argv[-1])
+    assert invocation[:3] == [str(tmp_path / ".venv/bin/python"), "-I", "-c"]
+    assert "from rcp.browser import readiness" in invocation[3]

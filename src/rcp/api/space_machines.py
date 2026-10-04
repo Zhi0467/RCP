@@ -14,6 +14,7 @@ from rcp.agents.grant_paths import check_writable_path_text, refuse_grants_insid
 from rcp.agents.write_scope import rcp_owned_paths
 from rcp.api.dependencies import get_catalog, get_identity_access, get_store
 from rcp.api.identity import IdentityAccess
+from rcp.browser import install_browser, readiness
 from rcp.config import MachineConfig, load_manifest
 from rcp.projects import ProjectCatalog
 from rcp.setup import MachineBrowseFailure, browse_machine_directory, run_machine_directory_request
@@ -227,12 +228,19 @@ def list_space_machines(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
+    catalog: CatalogDependency,
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
     usage, complete = _machine_usage(store)
     return {
         "machines": [
-            _machine_view(machine, usage, complete, visible) for machine in store.space_machines()
+            {
+                **_machine_view(machine, usage, complete, visible),
+                "browser": readiness(
+                    host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
+                ).model_dump(),
+            }
+            for machine in store.space_machines()
         ]
     }
 
@@ -364,3 +372,20 @@ def list_machine_directories(
         "total": page.total,
         "next_offset": page.next_offset,
     }
+
+
+@router.post("/api/space/machines/{machine_id}/browser/install")
+def install_machine_browser(
+    machine_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    """Explicit bounded install on the authenticated member's selected machine."""
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    return install_browser(
+        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
+    ).model_dump()
