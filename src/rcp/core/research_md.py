@@ -30,14 +30,17 @@ def render_research_md(state: GraphState) -> str:
                 line = f"- **{node.title}** — **Open:** {node.question}"
             sections["Decisions"].append(line)
 
+    project_type = project_type_of(state)
     for edge in sorted(state.edges.values(), key=lambda item: item.id):
         source = state.nodes.get(edge.source)
         target = state.nodes.get(edge.target)
         if (
             not isinstance(source, Evidence)
+            or getattr(source, project_type.lifecycle_field(source.type))
+            == project_type.retired_value
             or not isinstance(target, Hypothesis)
             or target.standing != Standing.ACCEPTED
-            or edge.relation not in project_type_of(state).belief_outcome_relations
+            or edge.relation not in project_type.belief_outcome_relations
         ):
             continue
         if edge.assessment is None:

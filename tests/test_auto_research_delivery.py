@@ -1569,7 +1569,11 @@ def test_reconciliation_retries_every_pending_canonical_actor(tmp_path) -> None:
 
     async def stream(_project_id, _kind, request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("execution-host", str(stage))
+            # Each actor owns its scratch, so the two concurrent wakes below do
+            # not contend for one workspace.
+            actor_stage = stage / execution.operation_id
+            actor_stage.mkdir()
+            execution.checkpoint_stage("execution-host", str(actor_stage))
         yield _sse(
             AgentEvent(
                 event="session",
