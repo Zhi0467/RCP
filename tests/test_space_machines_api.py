@@ -281,7 +281,9 @@ def test_browser_readiness_and_explicit_install(app, monkeypatch, tmp_path) -> N
     monkeypatch.setattr("rcp.api.space_machines.install_browser", install)
     client = signed_in_client(app)
     machine = _machine(client, "laptop")
-    assert machine["browser"]["status"] == "not_installed"
+    assert "browser" not in machine
+    browser = client.get(f"/api/space/machines/{machine['machine_id']}/browser")
+    assert browser.json()["status"] == "not_installed"
     assert calls == []
     response = client.post(f"/api/space/machines/{machine['machine_id']}/browser/install", json={})
     assert response.status_code == 200

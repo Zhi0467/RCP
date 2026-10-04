@@ -1443,7 +1443,10 @@ path on its machine: absolute, an existing directory, no `:` or `$` or control
 characters, not `/`, and not inside RCP's own storage.
 `/api/space/machines/{id}/directories` lists one directory level on the machine,
 filtered then paged, marking protected entries; project setup's folder browser
-uses the same endpoint. `POST /api/projects/{id}/machines` appends a machine
+uses the same endpoint. `GET /api/space/machines/{id}/browser` reports that
+machine's agent-browser readiness, reaching the host, so cards load it one
+machine at a time rather than with the list; `POST .../browser/install` is the
+explicit, bounded install. `POST /api/projects/{id}/machines` appends a machine
 alias to the project manifest through the state workspace. Existing projects
 fill the machine list at startup and on registration. Project
 snapshots expose non-secret compute metadata; readiness exposes a backend-owned

@@ -228,19 +228,12 @@ def list_space_machines(
     *,
     identity_access: IdentityDependency,
     store: StoreDependency,
-    catalog: CatalogDependency,
 ) -> dict[str, object]:
     visible = _visible_project_ids(request, identity_access, store)
     usage, complete = _machine_usage(store)
     return {
         "machines": [
-            {
-                **_machine_view(machine, usage, complete, visible),
-                "browser": readiness(
-                    host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
-                ).model_dump(),
-            }
-            for machine in store.space_machines()
+            _machine_view(machine, usage, complete, visible) for machine in store.space_machines()
         ]
     }
 
@@ -372,6 +365,23 @@ def list_machine_directories(
         "total": page.total,
         "next_offset": page.next_offset,
     }
+
+
+@router.get("/api/space/machines/{machine_id}/browser")
+def machine_browser(
+    machine_id: str,
+    request: Request,
+    *,
+    identity_access: IdentityDependency,
+    store: StoreDependency,
+    catalog: CatalogDependency,
+) -> dict[str, object]:
+    """Readiness reaches the host, so cards load it per machine, not with the list."""
+    identity_access.acting_user(request)
+    machine = _machine_or_404(store, machine_id)
+    return readiness(
+        host=machine.host, os_account=machine.os_account, data_dir=catalog.data_dir
+    ).model_dump()
 
 
 @router.post("/api/space/machines/{machine_id}/browser/install")
