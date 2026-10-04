@@ -27,6 +27,7 @@ from rcp.agents import (
     RunContext,
     parse_agent_patch_json,
 )
+from rcp.agents.browser_grant import BrowserTurnStatus
 from rcp.agents.write_scope import RegisteredRepositoryRoot, registered_repository_roots
 from rcp.attachments import ChatAttachmentDescriptor, ProjectReferenceSelector
 from rcp.compute import selected_compute_connections
@@ -321,6 +322,9 @@ class ChatMessage(BaseModel):
 
     message_id: str
     operation_id: str | None = None
+    browser_status: BrowserTurnStatus = Field(
+        default_factory=lambda: BrowserTurnStatus(status="not_requested")
+    )
     role: Literal["user", "assistant"]
     text: str
     timestamp: str
@@ -895,6 +899,8 @@ class ArtifactEditAdmission(BaseModel):
 
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
+
+    browser_requested: bool = False
 
     provider: ProviderId | None = None
     run_truth_scope: list[str] | None = None

@@ -219,7 +219,7 @@ class ExperimentStoreMixin:
         return connection.execute(
             """
             SELECT state.*, episode.project_id, episode.control_node_id,
-                   episode.graph_target_json,
+                   episode.graph_target_json, episode.browser_requested,
                    episode.stop_requested_at, episode.stop_settled_at
             FROM experiment_episode_state AS state
             JOIN episodes AS episode ON episode.episode_id = state.episode_id
@@ -312,6 +312,16 @@ class ExperimentStoreMixin:
                         "code_worktree": episode.code_worktree,
                         "graph_isolation": episode.graph_isolation,
                     }
+                }
+            )
+        browser_parent = source or parent_episode
+        if browser_parent is not None:
+            episode = episode.model_copy(
+                update={"browser_requested": browser_parent.browser_requested}
+            )
+            record = record.model_copy(
+                update={
+                    "request": {**record.request, "browser_requested": episode.browser_requested}
                 }
             )
         self._validate_new_episode(episode)
@@ -767,6 +777,7 @@ class ExperimentStoreMixin:
             project_id=record.project_id,
             mode="experiment_loop",
             isolation_owner_episode_id=episode_id,
+            browser_requested=bool(request.get("browser_requested", False)),
             code_worktree=bool(request.get("code_worktree", False)),
             graph_isolation=bool(request.get("graph_isolation", False)),
             control_node_id=control_node_id,
@@ -3330,7 +3341,7 @@ class ExperimentStoreMixin:
         episode_rows = _connection.execute(
             """
                 SELECT state.*, episode.project_id, episode.control_node_id,
-                       episode.graph_target_json,
+                       episode.graph_target_json, episode.browser_requested,
                        episode.stop_requested_at, episode.stop_settled_at
                 FROM experiment_episode_state AS state
                 JOIN episodes AS episode ON episode.episode_id = state.episode_id
@@ -3573,6 +3584,7 @@ class ExperimentStoreMixin:
             completion_criteria=completion_criteria,
             stop_requested=parent.stop_requested_at is not None,
             stop_settled=parent.stop_settled_at is not None,
+            browser_requested=episode.browser_requested if episode else False,
             session_bound=episode is not None and episode.session_bound,
             session_diagnostic=episode.session_diagnostic if episode else None,
             provider=(episode.provider if episode is not None else None)

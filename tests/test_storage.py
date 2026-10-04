@@ -107,46 +107,7 @@ def test_expensive_storage_migrations_are_versioned_and_not_rescanned(
             FROM storage_schema_migrations ORDER BY migration_version
             """
         ).fetchall()
-    assert migrations == [
-        (1, "episode_lineage_v1"),
-        (2, "legacy_episode_ledger_v1"),
-        (3, "experiment_episode_state_v1"),
-        (4, "agent_usage_counted_dedupe_v1"),
-        (5, "legacy_startup_schema_v1"),
-        (6, "artifact_revision_candidates_v1"),
-        (7, "space_run_projection_indexes_v1"),
-        (8, "conversation_worktrees_v1"),
-        (9, "compute_jobs_v1"),
-        (10, "external_watcher_actions_v1"),
-        (11, "child_work_watchers_v1"),
-        (12, "compute_job_labels_v1"),
-        (13, "episode_archives_v1"),
-        (14, "team_session_ids_v1"),
-        (15, "team_device_pairings_v1"),
-        (16, "agent_task_failure_kind_v1"),
-        (17, "episode_report_titles_v1"),
-        (18, "provider_login_states_v1"),
-        (19, "episode_stop_provenance_v1"),
-        (20, "lifecycle_notice_acknowledging_turn_v1"),
-        (21, "provider_readiness_snapshots_v1"),
-        (22, "episode_continuations_v1"),
-        (23, "agent_task_list_indexes_v1"),
-        (24, "compute_probe_routes_v1"),
-        (25, "chat_display_v1"),
-        (26, "chat_reads_and_pins_v1"),
-        (27, "space_machines_v1"),
-        (28, "notifications_v1"),
-        (29, "episode_isolation_v1"),
-        (30, "artifact_storage_v1"),
-        (31, "artifact_imports_v1"),
-        (32, "artifact_live_policy_v1"),
-        (33, "questions_v1"),
-        (34, "question_notifications_v1"),
-        (35, "question_answer_projection_v1"),
-        (36, "operational_lessons_v1"),
-        (37, "graph_consolidation_v1"),
-        (38, "digest_v1"),
-    ]
+    assert migrations == list(AppStore._STORAGE_SCHEMA_MIGRATIONS)
 
     def unexpected_migration(*_args) -> None:
         raise AssertionError("completed storage migration was rescanned")
@@ -2041,6 +2002,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "writing_sessions": 1,
         "chat_session_contexts": 1,
         "chat_display": 0,
+        "chat_browser_preferences": 0,
+        "browser_turn_status": 0,
         "chat_reads": 0,
         "notification_preferences": 0,
         "notification_outbox": 0,

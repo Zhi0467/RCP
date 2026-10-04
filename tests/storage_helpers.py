@@ -13,6 +13,12 @@ def downgrade_artifacts(
         row[1] == "artifact_id" for row in connection.execute("PRAGMA table_info(episode_reports)")
     ):
         return
+    connection.execute("ALTER TABLE episodes DROP COLUMN browser_requested")
+    for table in ("chat_browser_preferences", "browser_owners", "browser_turn_status"):
+        connection.execute(f"DROP TABLE IF EXISTS {table}")
+    connection.execute(
+        "DELETE FROM storage_schema_migrations WHERE migration_name = 'browser_grants_v1'"
+    )
     report_html = report_html or {}
     assert {row[0] for row in connection.execute("SELECT report_id FROM episode_reports")} == set(
         report_html

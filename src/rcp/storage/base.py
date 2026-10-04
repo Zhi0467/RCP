@@ -80,6 +80,7 @@ class AppStoreBase:
         (36, "operational_lessons_v1"),
         (37, "graph_consolidation_v1"),
         (38, "digest_v1"),
+        (39, "browser_grants_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -694,11 +695,43 @@ class AppStoreBase:
         self._run_storage_schema_migration(
             connection, version=38, name="digest_v1", migration=migrate_digest
         )
+        self._run_storage_schema_migration(
+            connection, version=39, name="browser_grants_v1", migration=self._migrate_browser_grants
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_browser_grants(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "ALTER TABLE episodes ADD COLUMN browser_requested INTEGER NOT NULL DEFAULT 0"
+        )
+        connection.execute("""
+            CREATE TABLE chat_browser_preferences (
+                project_id TEXT NOT NULL, chat_id TEXT NOT NULL,
+                browser_requested INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(project_id, chat_id)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE browser_owners (
+                owner_token TEXT PRIMARY KEY, owner_json TEXT NOT NULL,
+                execution_host TEXT NOT NULL DEFAULT '', workspace_dir TEXT NOT NULL,
+                stage_root TEXT NOT NULL,
+                chat_id TEXT, project_id TEXT NOT NULL,
+                close_requested INTEGER NOT NULL DEFAULT 0,
+                delete_profile INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE browser_turn_status (
+                operation_id TEXT PRIMARY KEY REFERENCES graph_runs(operation_id),
+                status_json TEXT NOT NULL
+            )
+        """)
 
     @staticmethod
     def _migrate_question_answer_projection(connection: sqlite3.Connection) -> None:
