@@ -21,6 +21,7 @@ import rcp.storage.models as storage_models
 from rcp.api import create_app
 from rcp.config import load_manifest
 from rcp.history import HistoryManager
+from rcp.server_ops.deployment import UPDATE_SOURCE_FLOOR
 from rcp.storage import AppStore
 
 from . import server_upgrade_harness
@@ -44,11 +45,14 @@ def test_immutable_server_boundary_registry_is_complete() -> None:
 def test_release_catalog_is_complete_and_missing_sources_fail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    tags = [f"v1.0.{index}" for index in range(125)]
+    assert server_upgrade_harness.update_source_floor() == UPDATE_SOURCE_FLOOR
+    tags = [f"v{UPDATE_SOURCE_FLOOR}", *[f"v1.0.{index}" for index in range(125)]]
     releases = [{"tagName": tag, "isDraft": False, "isPrerelease": False} for tag in tags] + [
         {"tagName": "v2.0.0", "isDraft": True, "isPrerelease": False},
         {"tagName": "v2.0.1", "isDraft": False, "isPrerelease": True},
         {"tagName": "build/1", "isDraft": False, "isPrerelease": False},
+        {"tagName": "v0.4.4", "isDraft": False, "isPrerelease": False},
+        {"tagName": "v1.0.0rc1", "isDraft": False, "isPrerelease": False},
     ]
 
     def release_list(argv: list[str], *, cwd: Path) -> str:
@@ -57,7 +61,7 @@ def test_release_catalog_is_complete_and_missing_sources_fail(
 
     monkeypatch.setattr(server_upgrade_harness, "_capture", release_list)
     assert published_release_tags() == tags
-    releases.clear()
+    releases.pop(0)  # Newer releases alone cannot satisfy the floor gate.
     with pytest.raises(ValueError):
         published_release_tags()
     with pytest.raises(subprocess.CalledProcessError):
@@ -167,33 +171,24 @@ def test_pre_ledger_fixture_records_migrations_and_never_rescans(
     AppStore(database)
 
 
+@pytest.fixture(scope="module")
+def baseline_schema(tmp_path_factory: pytest.TempPathFactory) -> list[tuple[str, str, str, str]]:
+    baseline = tmp_path_factory.mktemp("baseline") / "baseline.sqlite3"
+    AppStore(baseline).close()
+    return _normalized_schema(baseline)
+
+
 @pytest.mark.parametrize("fixture", immutable_fixture_directories(), ids=lambda path: path.name)
 def test_immutable_server_boundaries_upgrade_and_start(
     fixture: Path,
     tmp_path: Path,
+    baseline_schema: list[tuple[str, str, str, str]],
 ) -> None:
     verify_fixture_integrity(fixture)
     copied = tmp_path / "fixture"
     shutil.copytree(fixture, copied)
 
-    _exercise_candidate_upgrade(copied)
-
-
-@pytest.mark.parametrize("fixture", immutable_fixture_directories(), ids=lambda path: path.name)
-def test_immutable_server_boundaries_converge_on_the_baseline_schema(
-    fixture: Path,
-    tmp_path: Path,
-) -> None:
-    verify_fixture_integrity(fixture)
-    copied = tmp_path / "fixture"
-    shutil.copytree(fixture, copied)
-    upgraded = _materialize_database(copied / "data")
-    AppStore(upgraded)
-
-    baseline = tmp_path / "baseline.sqlite3"
-    AppStore(baseline)
-
-    assert _normalized_schema(upgraded) == _normalized_schema(baseline)
+    _exercise_candidate_upgrade(copied, baseline_schema=baseline_schema)
 
 
 @pytest.mark.skipif(not exact_base_gate_enabled(), reason="dedicated exact-base upgrade gate")
@@ -286,7 +281,9 @@ def test_release_update_from_every_published_release_validates(
             assert cached["graph"] == fresh["graph"]
 
 
-def _exercise_candidate_upgrade(fixture: Path) -> None:
+def _exercise_candidate_upgrade(
+    fixture: Path, *, baseline_schema: list[tuple[str, str, str, str]] | None = None
+) -> None:
     metadata = verify_fixture_integrity(fixture)
     original_patches = _canonical_patch_hashes(fixture)
     data_dir = fixture / "data"
@@ -302,6 +299,9 @@ def _exercise_candidate_upgrade(fixture: Path) -> None:
         _assert_raw_impossible_experiment_wrapup(database, experiment_episode_id)
     with chdir(fixture):
         store = AppStore(database)
+        if baseline_schema is not None:
+            # Every immutable boundary converges on the schema a fresh store creates.
+            assert _normalized_schema(database) == baseline_schema
         space_id = _metadata_string(metadata, "space_id")
         user_id = _metadata_string(metadata, "user_id")
         project_id = _metadata_string(metadata, "project_id")

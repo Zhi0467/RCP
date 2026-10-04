@@ -65,6 +65,16 @@ class ConversationWorktreeResponse(BaseModel):
     dirty_worktree: list[str] = Field(default_factory=list)
 
 
+def _worktree_command_error(result: dict, *, host: str) -> ValueError:
+    if host:
+        return conversation_worktree.WorktreeValidationError(
+            str(result.get("code", "worktree_execution_failed")), str(result["error"])
+        )
+    if result.get("unavailable"):
+        return ValueError(f"Worktree execution unavailable: {result['error']}")
+    return ValueError(str(result["error"]))
+
+
 def worktree_command(
     store: AppStore,
     *,
@@ -97,9 +107,7 @@ def worktree_command(
         if not isinstance(result, dict):
             raise ValueError("Worktree execution returned an invalid response")
         if "error" in result:
-            raise conversation_worktree.WorktreeValidationError(
-                str(result.get("code", "worktree_execution_failed")), str(result["error"])
-            )
+            raise _worktree_command_error(result, host=host)
         return result
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError(f"Worktree execution unavailable: {exc}") from exc
@@ -344,6 +352,7 @@ def admit_conversation_worktree(
             raise ValueError("Integration requires a bound conversation worktree.")
         return request
     validate_worktree_binding(service, request, binding, store)
+    facts = None
     if binding.status == "creating":
         _validate_creation_roots(service, store, project_id, request, binding.model_dump())
         worktree_command(store, host=binding.execution_host, operation="create", binding=binding)
@@ -351,13 +360,16 @@ def admit_conversation_worktree(
             project_id, request.chat_id, expected_status="creating", status="ready"
         )
     else:
-        worktree_command(store, host=binding.execution_host, operation="inspect", binding=binding)
-    if request.worktree_integration:
-        if request.mode != "work":
-            raise ValueError("Integration is a Work turn.")
         facts = worktree_command(
             store, host=binding.execution_host, operation="inspect", binding=binding
         )
+    if request.worktree_integration:
+        if request.mode != "work":
+            raise ValueError("Integration is a Work turn.")
+        if facts is None:
+            facts = worktree_command(
+                store, host=binding.execution_host, operation="inspect", binding=binding
+            )
         option = _integration_option(binding, facts, request.worktree_integration)
         if option.target_branch is None and option.id != "pull_request":
             raise ValueError(option.reason or "The integration target is unavailable.")
@@ -594,20 +606,29 @@ def project_conversation_worktree(
         choices: list[IntegrationChoice] = ["pull_request", "starting_branch"]
         if facts["default_branch"] != binding.starting_branch:
             choices.append("default_branch")
-        for choice in choices:
-            option = _integration_option(binding, facts, choice)
-            reason = common_reason or option.reason
-            if reason is None:
-                try:
-                    worktree_command(
-                        store,
-                        host=binding.execution_host,
-                        operation="preflight",
-                        binding=binding,
-                        target_branch=option.target_branch,
+        options = [_integration_option(binding, facts, choice) for choice in choices]
+        pending = [option for option in options if common_reason is None and option.reason is None]
+        reasons: dict[IntegrationChoice, str | None] = {}
+        if pending:
+            try:
+                preflights = worktree_command(
+                    store,
+                    host=binding.execution_host,
+                    operation="preflight_many",
+                    binding=binding,
+                    target_branches=[option.target_branch for option in pending],
+                )["results"]
+            except ValueError as exc:
+                reasons = {option.id: str(exc) for option in pending}
+            else:
+                for option, outcome in zip(pending, preflights, strict=True):
+                    reasons[option.id] = (
+                        str(_worktree_command_error(outcome, host=binding.execution_host))
+                        if "error" in outcome
+                        else None
                     )
-                except ValueError as exc:
-                    reason = str(exc)
+        for option in options:
+            reason = common_reason or option.reason or reasons.get(option.id)
             response.integration_options.append(
                 option.model_copy(update={"enabled": reason is None, "reason": reason})
             )

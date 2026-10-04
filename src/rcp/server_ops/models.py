@@ -65,6 +65,7 @@ _PEM_PRIVATE_KEY = re.compile(
     r"-----BEGIN [^-\n]*PRIVATE KEY-----.*?-----END [^-\n]*PRIVATE KEY-----",
     re.DOTALL,
 )
+_CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 _BEARER_TOKEN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _BASIC_AUTHORIZATION = re.compile(r"(?i)\b(authorization\s*(?::|=)\s*)Basic\s+[A-Za-z0-9+/=]+")
 _RCP_CREDENTIAL = re.compile(r"\brcp_(?:bootstrap|member)_[A-Za-z0-9_.-]+")
@@ -109,7 +110,7 @@ def _safe_text(value: str) -> str:
 
 
 def _single_line_text(value: str) -> str:
-    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+    if _CONTROL_CHARACTER.search(value):
         raise ValueError("server CLI text cannot contain control characters")
     return value
 

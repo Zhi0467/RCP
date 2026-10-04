@@ -15,6 +15,7 @@ from contextlib import aclosing, suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
@@ -233,12 +234,19 @@ class BranchMergeTransitionContract(_StrictMergeModel):
 
     @classmethod
     def current(cls) -> BranchMergeTransitionContract:
-        return cls(
-            ruleset_tag=TRANSITION_RULESET_TAG,
-            trigger_manifest=transition_trigger_manifest().model_dump(mode="json"),
-            transition_trace_schema=TransitionTrace.model_json_schema(),
-            orchestrator_patch_schema=agent_output_schema(profile="orchestrator"),
-        )
+        # Building the two JSON schemas costs about 25 ms and depends only on the
+        # code, while every merge context build and check asks for the contract.
+        return _current_transition_contract().model_copy(deep=True)
+
+
+@cache
+def _current_transition_contract() -> BranchMergeTransitionContract:
+    return BranchMergeTransitionContract(
+        ruleset_tag=TRANSITION_RULESET_TAG,
+        trigger_manifest=transition_trigger_manifest().model_dump(mode="json"),
+        transition_trace_schema=TransitionTrace.model_json_schema(),
+        orchestrator_patch_schema=agent_output_schema(profile="orchestrator"),
+    )
 
 
 class BranchMergeContext(_StrictMergeModel):

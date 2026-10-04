@@ -1610,6 +1610,8 @@ def test_detached_mailbox_survives_worker_loop_and_backend_restart(tmp_path, mon
 
     monkeypatch.setattr(runtime, "_stream_agent_events", disconnect)
     monkeypatch.setattr(runtime, "RemoteRunStage", _FilesystemRemoteMailboxStage)
+    # The stage is local files, so the remote poll interval only adds waiting.
+    monkeypatch.setattr("rcp.agents.command_mailbox.COMMAND_MAILBOX_REMOTE_POLL_SECONDS", 0.02)
 
     async def launch():
         owner = runtime.start_work_validator_mailbox(

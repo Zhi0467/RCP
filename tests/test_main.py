@@ -244,7 +244,8 @@ def test_space_init_recovers_an_unclaimed_team_after_terminal_interruption(
 
 
 def test_serve_never_emits_the_team_bootstrap_credential(tmp_path, monkeypatch, capsys) -> None:
-    _store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+    store.close()
 
     class FakeSocket:
         def fileno(self) -> int:
@@ -275,6 +276,15 @@ def test_team_serve_refuses_plaintext_non_loopback_bind(tmp_path, host) -> None:
 
     with pytest.raises(SystemExit):
         _serve_as_owner(_serve_args(host=host), tmp_path)
+
+
+def test_team_bind_guard_reads_a_running_servers_wal(tmp_path) -> None:
+    """A running server keeps its connection open, so its schema may live only in the WAL."""
+    live, _code = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Lab")
+
+    with pytest.raises(SystemExit):
+        _serve_as_owner(_serve_args(host="0.0.0.0"), tmp_path)
+    live.close()
 
 
 def test_refused_team_bind_never_reaches_the_singleton_takeover(tmp_path, monkeypatch) -> None:

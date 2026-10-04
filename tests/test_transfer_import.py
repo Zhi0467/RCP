@@ -529,8 +529,11 @@ def _archive_fixture(
     }
 
 
-@pytest.mark.parametrize("include_local_commits", [False, True])
-@pytest.mark.parametrize("include_episode_archive", [False, True])
+# Local commits without an archived episode is covered by the retry test below.
+@pytest.mark.parametrize(
+    ("include_episode_archive", "include_local_commits"),
+    [(False, False), (True, False), (True, True)],
+)
 def test_target_import_publishes_exact_history_but_does_not_activate(
     manifest,
     tmp_path: Path,
@@ -643,11 +646,25 @@ def test_target_import_cleans_only_imported_sources_if_completion_crashes(
     assert target.project(archive.project_id) is None
 
 
+# Repository install precedes every boundary but `database` in the same way, so
+# local commits run once before it (`database`) and once after it (`project_files`).
 @pytest.mark.parametrize(
-    "boundary",
-    ("database", "canonical", "project_files", "provider_history", "completion"),
+    ("boundary", "include_local_commits"),
+    [
+        *(
+            (boundary, False)
+            for boundary in (
+                "database",
+                "canonical",
+                "project_files",
+                "provider_history",
+                "completion",
+            )
+        ),
+        ("database", True),
+        ("project_files", True),
+    ],
 )
-@pytest.mark.parametrize("include_local_commits", [False, True])
 def test_target_import_retries_the_same_archive_after_each_committed_boundary(
     manifest,
     tmp_path: Path,

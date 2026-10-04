@@ -207,10 +207,13 @@ def test_session_exchange_defaults_an_omitted_label_and_rejects_excess_length(tm
 
 
 def test_bootstrap_is_not_issued_before_late_schema_work_succeeds(tmp_path, monkeypatch) -> None:
-    def fail_late_schema_work(*_args, **_kwargs) -> None:
+    original = AppStore._new_database_schema
+
+    def fail_late_schema_work(store):
+        yield from original(store)
         raise sqlite3.OperationalError("injected late schema failure")
 
-    monkeypatch.setattr(AppStore, "_ensure_column", fail_late_schema_work)
+    monkeypatch.setattr(AppStore, "_new_database_schema", fail_late_schema_work)
     with pytest.raises(sqlite3.OperationalError, match="injected late schema failure"):
         AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team Lab")
 

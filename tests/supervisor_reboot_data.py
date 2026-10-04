@@ -415,7 +415,7 @@ def _prepare_data(
         media_type="text/plain",
         source=io.BytesIO(b"Retained attachment before deployment.\n"),
     )
-    return {
+    state = {
         "space_id": store.space_id,
         "member_id": member.user_id,
         "token": token,
@@ -427,6 +427,14 @@ def _prepare_data(
         "ledger_head": store.storage_schema_ledger_head(),
         "empty_patches": empty_patches,
     }
+
+    # These bytes next model a stopped server; release every live SQLite handle.
+    # The fixture also runs under older releases, before AppStore exposed close.
+    for retired in (app.state.catalog.store, store):
+        close = getattr(retired, "close", None)
+        if close is not None:
+            close()
+    return state
 
 
 def file_digests(root: Path) -> dict[str, str]:
