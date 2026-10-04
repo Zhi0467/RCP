@@ -345,7 +345,13 @@ CLI's idle close. A real `codex sandbox` refused reads of the desktop app's
 storage. Run C drove real Claude and OpenCode Discuss launches with a granted
 shim (OpenCode including a resumed session). Over SSH, remote readiness and
 install ran on the Linux GPU host under a member account and reported the
-missing `libasound2` with its `apt` command.
+missing `libasound2` with its `apt` command. Real Claude Work and Discuss turns
+with a granted browser reused a page and cookie, released their leases, and
+toggling off deleted the chat's browser folder. The desktop app from a source
+build and from a frozen candidate passed fresh start, adopt, and restart with
+one session each; the source build also passed reload, and an expired session
+showed the sign-in screen until a relaunch. The frozen candidate's native
+notification client registered the Mac through the owner session.
 
 Still open:
 
@@ -353,12 +359,8 @@ Still open:
   disconnect and an installed-service restart, and a Work turn that opens a
   localhost service the agent started there. The member account used had no
   linger, so ensure correctly refused.
-- Claude Work and Discuss turns with a real grant through a served backend that
-  holds a Claude sign-in.
-- The desktop app with the owner session: fresh start, adopt, restart, and
-  reload, the WKWebView cookie on the plain-HTTP origin, native PDF, transfer,
-  and notifications, from a source build and from a frozen candidate. These need
-  the human's running app to be quit.
+- The desktop app's native PDF preview, project transfer, terminals, and a
+  manual sign-in with a pasted code. Each needs the human's running app quit.
 
 ## Close criteria
 
