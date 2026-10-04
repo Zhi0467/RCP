@@ -50,3 +50,50 @@ Confirmed by the human 2026-10-01.
   over-counts, until the battery floor.
 - **No guarantee beyond orchestration.** Wi-Fi, provider sign-in, SSH, and
   remote hosts can still stop an overnight run.
+
+## Rebuild on the idle hold (2026-10-03)
+
+Confirmed by the human 2026-10-03, after idle hold shipped alone in #237.
+
+- **Lid-closed mode extends the shipped idle-hold controller.** It does not
+  replace it. Idle hold keeps its settings row, toggle, and demand check.
+- **The backend reads power state from macOS frameworks, not command text.**
+  It calls IOKit through `ctypes` for four values: battery (power-source
+  state and charge), thermal state, lid (`AppleClamshellState` on the power
+  root domain), and `SleepDisabled` (system power settings). A missing key
+  or a failed call is a read failure, and a read failure releases.
+- **The watchdog stays a shell script.** It must outlive a dead or stopped
+  backend, so it cannot depend on the backend's Python. It reads only the
+  flag (`pmset -g`) and the lid (`ioreg`). Any output it does not recognize
+  releases. Tests pin its parsing to captured real output.
+- **The backend still never writes the flag.** The watchdog remains the only
+  process that runs `pmset -a disablesleep`.
+- **One profile per platform.** `machine_power.py` holds the portable parts:
+  demand, the controller, and the lid-mode policy (generations, heartbeat,
+  battery floor, thermal release). `machine_power_macos.py` holds the macOS
+  profile: the idle-hold command, the IOKit readers, the `pmset`/`sudo`/watchdog
+  commands, and the installer. A platform registry replaces
+  `IDLE_HOLD_COMMANDS`. A profile without lid mode declares it absent. Only
+  macOS is registered.
+
+### Why
+
+- Three earlier review rounds fixed text parsing: `ioreg` tree glyphs, a flag
+  line that `pmset` omits until first set, and a thermal report with history
+  but no all-clear. Framework calls return typed values and remove that class
+  of bug from the backend.
+- Policy and platform calls were mixed in one 800-line module, which made the
+  idle-hold carve-out hard to merge back.
+
+### Release gate
+
+Four checks on a Finder-launched packaged candidate replace the earlier list:
+
+1. Install, then uninstall.
+2. With the flag set and the lid closed, SIGKILL the backend. The flag clears
+   and the Mac sleeps within the watchdog's stale window.
+3. Reboot with the flag set. The flag is clear before login.
+4. One overnight lid-closed Auto-research run advances.
+
+Battery floor, thermal release, SIGSTOP, cancel, and repaired installs are
+covered by tests with simulated readers, not by hand.
