@@ -85,6 +85,12 @@ At settlement RCP matches the final `patch.json` by operation and
 digest against those receipts: a match is not applied again, and a new final
 Patch applies as for any Work turn under its own effect id.
 
+Besides consolidating, the workflow keeps the graph readable. It rewrites
+`asserted` nodes that fall short of the "Writing for a reader" rules in the
+graph rules every graph-writing launch receives, and it builds the glossary
+from terms several nodes use without defining. It only suggests rewrites of
+accepted nodes, because an edit would return them to `asserted`.
+
 The workflow ends by writing `consolidation-report.html` in the turn's artifact
 root, captured by ordinary turn-artifact discovery.
 
