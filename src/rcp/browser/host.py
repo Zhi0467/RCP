@@ -377,10 +377,8 @@ class HostRuntime:
         elif self.backend == "launchd":
             self.stop_owner(record)
         if record["delete_profile"]:
-            profile = self.record_path(record["owner_token"]).parent / "profile"
-            if profile.exists():
-                shutil.rmtree(profile)
-            self.record_path(record["owner_token"]).unlink()
+            # Page snapshots and logs can hold signed-in content; delete with the profile.
+            shutil.rmtree(self.record_path(record["owner_token"]).parent)
             return
         record.update(pending_close=False, delete_profile=False, leases={})
         self.save(record)

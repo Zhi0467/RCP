@@ -1628,7 +1628,7 @@ provider pass finish retained leases before deferred cleanup; cleanup retries
 probe unresolved passes of inactive tasks and stay pending until they stop.
 
 Close uses the CLI's graceful close before removing an explicitly requested
-profile. A confirmed profile deletion retires the runtime record. A removed
+profile together with that owner's page snapshots and logs. A confirmed profile deletion retires the runtime record. A removed
 workspace is retired only after its OS owner is proven stopped; a live or unknown
 owner remains fenced without blocking other owners' acquisition.
 Closing an active owner waits for its last lease to finish. Idle timeout

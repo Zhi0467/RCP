@@ -127,7 +127,7 @@ def test_close_defers_active_lease_then_gracefully_deletes_profile(host):
     assert host.live == {"first"}
     assert host.release()["alive"]
     assert host.closes == ["first"]
-    assert not (host.record_path("first").parent / "profile").exists()
+    assert not host.record_path("first").parent.exists()
     host.close()  # Idempotent deletion.
 
 
