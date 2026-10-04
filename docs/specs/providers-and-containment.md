@@ -1559,3 +1559,31 @@ and Paper surface retains its provider-native public-web behavior as defined by
 its contract. Exact project write roots do not add a new network restriction.
 Generic scratch-only Patch correction remains offline where its retained
 contract requires that.
+
+## Host browser runtime
+
+`browser/` owns optional headless browser installation and sessions. It is
+separate from provider launches. The launch integration supplies a stable owner
+token and the stage workspace. The runtime exports ensure, release, and close;
+it never installs tools during ensure.
+
+RCP pins Playwright CLI 0.1.22. Each owner has an explicit Chromium executable,
+headless configuration, persistent profile, and output directory. Ambient
+attachment, headed, profile, and storage-state settings are overridden. Launch
+environment overrides are removed. The pinned daemon entry point runs directly
+under launchd or a lingering systemd user manager, so the OS owns the daemon
+rather than its short-lived CLI launcher. A missing process owner makes the
+browser unavailable.
+
+Ensure probes the CLI registry from the stage workspace before starting a
+session. It creates no `.playwright` marker and never reopens a live session.
+Release checks liveness and ends the active lease. File locks serialize host
+operations. The host cap counts managed live sessions; the least recently used
+owner without active leases is closed first. A full busy host reports capacity.
+Controller restart clears that controller's old leases and adopts live sessions.
+
+Close uses the CLI's graceful close before removing an explicitly requested
+profile. Closing an active owner waits for its last lease to finish. Idle timeout
+is passed in milliseconds from the seconds-based limit. Failed remote cleanup
+and release remain durable and retry on later ensure or install calls, one
+queued operation per call. Readiness does not run queued cleanup.
