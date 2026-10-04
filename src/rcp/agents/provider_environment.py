@@ -68,6 +68,19 @@ class ProviderProcessEnvironment:
             remote_prefix=self.remote_prefix,
         )
 
+    def with_path_prefix(self, directory: str, *, remote: bool) -> ProviderProcessEnvironment:
+        """Prefix this host's PATH after its login shell has initialized."""
+        if remote:
+            prefix = f'export PATH={shlex.quote(directory)}:"$PATH"'
+            return ProviderProcessEnvironment(
+                local_env=self.local_env,
+                remote_prefix="; ".join(part for part in (self.remote_prefix, prefix) if part),
+            )
+        inherited = os.environ if self.local_env is None else self.local_env
+        return self.with_variables(
+            {"PATH": directory + os.pathsep + inherited.get("PATH", os.defpath)}, remote=False
+        )
+
     def with_git_identity(
         self, identity: GitIdentity, *, data_dir: Path, remote: bool = False
     ) -> ProviderProcessEnvironment:
