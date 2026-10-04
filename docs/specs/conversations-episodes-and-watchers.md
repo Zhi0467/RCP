@@ -79,8 +79,9 @@ Discuss is retained as a receipt and discarded; a file cannot grant its author a
 different mode.
 
 Browser consent is an app-local per-chat preference, off by default. The browser
-preference API reads and sets it without rewriting transcripts. Fresh turn admission
-snapshots it into `browser_requested`; changing the toggle affects the next turn.
+preference API reads and sets it without rewriting transcripts. Admission of every
+chat turn, including a watcher wake and a question answer, snapshots it into
+`browser_requested`; changing the toggle affects the next turn.
 Imported history does not import consent or browser profiles. Chat transcript messages
 project the durable browser status of their turn, including unavailable and lost.
 Archiving a chat closes its browser and retains its profile after active work ends.

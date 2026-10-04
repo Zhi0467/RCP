@@ -16,11 +16,14 @@ from rcp.providers.browser_grant import BrowserOwnerKey, BrowserTurnStatus
 class ChatDisplayStoreMixin:
     def chat_browser_requested(self, project_id: str, chat_id: str) -> bool:
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT browser_requested FROM chat_browser_preferences "
-                "WHERE project_id = ? AND chat_id = ?",
-                (project_id, chat_id),
-            ).fetchone()
+            return self._chat_browser_requested(connection, project_id, chat_id)
+
+    def _chat_browser_requested(self, connection: Any, project_id: str, chat_id: str) -> bool:
+        row = connection.execute(
+            "SELECT browser_requested FROM chat_browser_preferences "
+            "WHERE project_id = ? AND chat_id = ?",
+            (project_id, chat_id),
+        ).fetchone()
         return bool(row["browser_requested"]) if row is not None else False
 
     def set_chat_browser_requested(

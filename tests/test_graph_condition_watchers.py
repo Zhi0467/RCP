@@ -821,6 +821,35 @@ def test_agent_settlement_evaluates_the_exact_applied_revision_boundary(
     app.state.background_tasks.shutdown()
 
 
+def test_chat_wake_reads_browser_choice_at_delivery(manifest, tmp_path, monkeypatch) -> None:
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
+    origin = _completed_origin(store, project_id, "browser-origin")
+    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
+    store.create_watchers(
+        [
+            _graph_record(
+                "browser-wake",
+                condition,
+                continuation=_continuation().model_copy(update={"browser_requested": True}),
+                status="completed",
+                project_id=project_id,
+                origin=origin.operation_id,
+            )
+        ]
+    )
+    store.set_chat_browser_requested(project_id, "chat", browser_requested=False)
+    delivered: list[RunRequest] = []
+    monkeypatch.setattr(
+        "rcp.api.app.start_watcher_notification",
+        lambda _tasks, _project_id, _kind, request, *_args, **_kwargs: delivered.append(request),
+    )
+
+    app.state.services.watcher_delivery.deliver_watcher_group([store.watcher("browser-wake")])
+
+    assert [request.browser_requested for request in delivered] == [False]
+    app.state.background_tasks.shutdown()
+
+
 @pytest.mark.parametrize(
     ("historical", "armed"),
     [
