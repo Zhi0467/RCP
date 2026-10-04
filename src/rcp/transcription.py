@@ -153,8 +153,10 @@ async def transcribe(connection: dict, key: str, audio: bytes, mime: str) -> str
         if not isinstance(body, dict):
             raise ValueError("Invalid service response.")
         if connection["kind"] == "gemini":
+            # General models answer in `text`; transcribe models in `audioTranscription.text`
+            # (probed with gemini-3.5-transcribe on 2026-10-04).
             text = "".join(
-                part.get("text", "")
+                part.get("text") or part.get("audioTranscription", {}).get("text", "")
                 for candidate in body.get("candidates", [])
                 for part in candidate.get("content", {}).get("parts", [])
             )
