@@ -1,4 +1,13 @@
-import { ArrowUpRight } from "lucide-react";
+import {
+  ArrowUpRight,
+  Check,
+  CircleAlert,
+  CircleCheck,
+  FileText,
+  GitBranch,
+  GitCommitHorizontal,
+  Sparkles,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { currentExperimentGuidance } from "../experimentGuidance";
 import {
@@ -170,83 +179,175 @@ function DigestCard({ digest, error, catchingUp, onCatchUp, onOpenArtifact }: Di
     return (
       <section className="digest-card" aria-label="Since you last looked">
         <header className="digest-card-header">
-          <h2>Since you last looked</h2>
+          <div className="digest-heading">
+            <span className="digest-eyebrow">
+              <Sparkles size={14} />
+              Since you last looked
+            </span>
+          </div>
         </header>
         <p role="alert">{error}</p>
       </section>
     );
   }
+  const changes = digest.changed.length + digest.branches.length;
   return (
     <section className="digest-card" aria-label="Since you last looked">
       <header className="digest-card-header">
-        <h2>Since you last looked</h2>
+        <div className="digest-heading">
+          <span className="digest-eyebrow">
+            <Sparkles size={14} />
+            Since you last looked
+          </span>
+          <h2>{digestSummary(digest)}</h2>
+          {digest.mark && <small>Since {formatDigestTime(digest.mark.marked_at)}</small>}
+        </div>
         <button
-          className="button compact secondary"
+          className="button primary compact"
           type="button"
           disabled={catchingUp}
           onClick={onCatchUp}
         >
+          <Check size={14} />
           Caught up
         </button>
       </header>
       {error && <p role="alert">{error}</p>}
-      {digest.needs_you.length > 0 && (
-        <DigestGroup title="Needs you">
-          {digest.needs_you.map((item) => (
-            <li key={`${item.kind}:${item.item_id}`}>
-              <span className="digest-kind">{needsYouKindLabel(item)}</span>
-              <DigestLink href={item.deep_link}>{item.title}</DigestLink>
-            </li>
-          ))}
-        </DigestGroup>
-      )}
-      {(digest.changed.length > 0 || digest.branches.length > 0) && (
-        <DigestGroup title="Changed on main">
-          {digest.changed.map((change) => (
-            <li key={change.source_key}>
-              <DigestLink href={change.deep_link}>{change.label}</DigestLink>
-              <span className="digest-count">{editCountLabel(change.edits)}</span>
-              {change.report_artifact_id && (
-                <button
-                  className="digest-report"
-                  type="button"
-                  onClick={() => onOpenArtifact(change.report_artifact_id!)}
-                >
-                  Report
-                </button>
-              )}
-            </li>
-          ))}
-          {digest.branches.map((branch) => (
-            <li key={`branch:${branch.episode_id}`}>
-              <DigestLink href={branch.deep_link}>{branch.title}</DigestLink>
-              <span className="digest-count">{editCountLabel(branch.edits)} on its branch</span>
-            </li>
-          ))}
-        </DigestGroup>
-      )}
-      {digest.ran.length > 0 && (
-        <DigestGroup title="Ran">
-          {digest.ran.map((item) => (
-            <li key={`${item.kind}:${item.item_id}`}>
-              <span className="digest-kind">{ranKindLabel(item)}</span>
-              <DigestLink href={item.deep_link}>{item.title}</DigestLink>
-              {item.status && <span className="digest-count">{item.status}</span>}
-            </li>
-          ))}
-        </DigestGroup>
-      )}
+      <div className="digest-groups">
+        {digest.needs_you.length > 0 && (
+          <DigestGroup
+            tone="attention"
+            icon={<CircleAlert size={15} />}
+            title="Needs you"
+            count={digest.needs_you.length}
+          >
+            {digest.needs_you.map((item) => (
+              <li className="digest-row" key={`${item.kind}:${item.item_id}`}>
+                <span className="digest-kind">{needsYouKindLabel(item)}</span>
+                <DigestLink href={item.deep_link}>{item.title}</DigestLink>
+              </li>
+            ))}
+          </DigestGroup>
+        )}
+        {changes > 0 && (
+          <DigestGroup
+            tone="change"
+            icon={<GitCommitHorizontal size={15} />}
+            title="Changed on main"
+            count={changes}
+          >
+            {digest.changed.map((change) => (
+              <li className="digest-row" key={change.source_key}>
+                <DigestLink href={change.deep_link}>{change.label}</DigestLink>
+                <span className="digest-row-meta">
+                  <span className="digest-pill">{editCountLabel(change.edits)}</span>
+                  {change.report_artifact_id && (
+                    <button
+                      className="digest-report"
+                      type="button"
+                      onClick={() => onOpenArtifact(change.report_artifact_id!)}
+                    >
+                      <FileText size={13} />
+                      Report
+                    </button>
+                  )}
+                </span>
+              </li>
+            ))}
+            {digest.branches.map((branch) => (
+              <li className="digest-row" key={`branch:${branch.episode_id}`}>
+                <DigestLink href={branch.deep_link}>{branch.title}</DigestLink>
+                <span className="digest-row-meta">
+                  <span className="digest-pill branch">
+                    <GitBranch size={12} />
+                    {editCountLabel(branch.edits)} on its branch
+                  </span>
+                </span>
+              </li>
+            ))}
+          </DigestGroup>
+        )}
+        {digest.ran.length > 0 && (
+          <DigestGroup
+            tone="ran"
+            icon={<CircleCheck size={15} />}
+            title="Ran"
+            count={digest.ran.length}
+          >
+            {digest.ran.map((item) => (
+              <li className="digest-row" key={`${item.kind}:${item.item_id}`}>
+                <span className="digest-kind">{ranKindLabel(item)}</span>
+                <DigestLink href={item.deep_link}>{item.title}</DigestLink>
+                {item.status && (
+                  <span className="digest-row-meta">
+                    <span className={`digest-pill status-${digestStatusTone(item.status)}`}>
+                      {item.status}
+                    </span>
+                  </span>
+                )}
+              </li>
+            ))}
+          </DigestGroup>
+        )}
+      </div>
     </section>
   );
 }
 
-function DigestGroup({ title, children }: { title: string; children: ReactNode }) {
+function DigestGroup({
+  tone,
+  icon,
+  title,
+  count,
+  children,
+}: {
+  tone: "attention" | "change" | "ran";
+  icon: ReactNode;
+  title: string;
+  count: number;
+  children: ReactNode;
+}) {
   return (
-    <div className="digest-group">
-      <h3>{title}</h3>
+    <div className={`digest-group ${tone}`}>
+      <h3>
+        {icon}
+        {title}
+        <span className="digest-group-count">{count}</span>
+      </h3>
       <ul>{children}</ul>
     </div>
   );
+}
+
+function digestSummary(digest: ProjectDigest): string {
+  const edits =
+    digest.changed.reduce((total, change) => total + change.edits, 0) +
+    digest.branches.reduce((total, branch) => total + branch.edits, 0);
+  const parts = [
+    digest.needs_you.length > 0 &&
+      `${digest.needs_you.length} need${digest.needs_you.length === 1 ? "s" : ""} you`,
+    edits > 0 && editCountLabel(edits),
+    digest.ran.length > 0 && `${digest.ran.length} finished`,
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function digestStatusTone(status: string): "bad" | "good" | "neutral" {
+  if (/fail|error|lost|cancel/i.test(status)) return "bad";
+  if (/succe|complete|kept/i.test(status)) return "good";
+  return "neutral";
+}
+
+function formatDigestTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
 }
 
 /** A digest link is the notification link format, resolved by App on hashchange. */
