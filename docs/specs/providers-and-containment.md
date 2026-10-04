@@ -390,7 +390,9 @@ Admission resolves one immutable grant before rendering the prompt. The launcher
 passes it explicitly through provider requests and legacy command construction.
 Work, orchestrate, and Discuss admit grants. Paper coach, ingestion, scratch-only
 correction, and recorded replay do not. Prompts render the resolved session and
-invocation directory. Continuations send explicit off or unavailable values.
+invocation directory, say the session is already open, and tell the agent to
+start with `goto`: the CLI's `open`, `close`, `close-all`, and `kill-all` end
+RCP's session for the rest of the turn, and `delete-data` also erases its logins. Continuations send explicit off or unavailable values.
 The owner releases the grant in a finally block, including prompt preparation
 failures. A detached remote turn retains the same lease until remote-result
 reconciliation proves its provider stopped. Its lease identity stays in the
@@ -1631,8 +1633,10 @@ probe unresolved passes of inactive tasks and stay pending until they stop.
 
 Close uses the CLI's graceful close before removing an explicitly requested
 profile together with that owner's page snapshots and logs. A confirmed profile deletion retires the runtime record. A removed
-workspace is retired only after its OS owner is proven stopped; a live or unknown
-owner remains fenced without blocking other owners' acquisition.
+workspace is retired, with its profile, only after its OS owner is proven
+stopped, because a new stage gets a new owner; a live or unknown owner remains
+fenced without blocking other owners' acquisition. A partly written install
+reads as not installed, so Install can repair it.
 Closing an active owner waits for its last lease to finish. Idle timeout
 is passed in milliseconds from the seconds-based limit. Failed remote cleanup
 and release remain durable and retry on later ensure or install calls, one

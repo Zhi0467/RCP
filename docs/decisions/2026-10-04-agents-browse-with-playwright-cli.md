@@ -1,7 +1,8 @@
 # Agents browse with Playwright CLI
 
 Date: 2026-10-04. Status: active. Confirmed by the human on 2026-10-04.
-Implementation: [handoff](../handoffs/handoff-2026-10-04-agent-browser.md).
+Current behavior is in the
+[providers spec](../specs/providers-and-containment.md#browser-grants).
 
 ## Decision
 
@@ -15,7 +16,18 @@ RCP adds no MCP server to agent launches and offers no UI to add one.
 
 ## Options considered
 
-Probe evidence is in the handoff.
+Probed on 2026-10-04 with Claude Code 2.1.288, Codex 0.160.0 (macOS) and 0.157.0
+(Linux), OpenCode 1.18.30, and `@playwright/cli` 0.1.22:
+
+| Check | Result |
+| --- | --- |
+| Agent starts Chromium itself inside Codex's macOS Work sandbox | Fails: Mach port registration is denied (WebKit fails too) |
+| RCP-side `open` outside the sandbox, then `goto` and `eval` inside it | Works on macOS and Linux |
+| `state-save` and `screenshot --filename` outside the workspace, from inside the sandbox | Both wrote the file |
+| Turn Playwright's file checks back on, or remove `run-code`, by config | Not possible: CLI mode hard-codes `skillMode: true`; `run-code` is core |
+| Claude `Bash(playwright-cli:*)`; OpenCode `*` deny then `playwright-cli *` allow | Bare calls run; chaining into other programs refused |
+| Persistent profile across browser restarts | localStorage survives; cookies survive a graceful close |
+| `playwright-cli open` on a live session | Stops it first, losing its tabs |
 
 - **The providers' own browsers.** Claude's computer use refuses `-p` runs, and
   RCP launches Claude with `--print`. Claude in Chrome needs the member's own

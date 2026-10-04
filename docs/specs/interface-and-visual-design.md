@@ -159,17 +159,21 @@ and centering offsets.
 
 ## Agent browser controls
 
-Discuss and Work chats have a **Browser** switch in the header area. New chats
-start with it off. Each chat loads and saves its own server preference. The
+Discuss and Work chats have a **Browser** switch in the composer's **Options**
+menu, beside **Work in a worktree**. The folded chip counts the options that are
+on, so a Browser grant stays visible. The menu closes on an outside click,
+Escape, or a switch to another chat. New chats start with it off. Each chat loads and saves its own server preference. The
 switch waits for a successful load and keeps the server value after a failed
 save. Errors offer a check-again action. Paper coaching has no Browser switch.
 
-The consent paragraph is primary content at normal reading size. It states
-that the agent can use a headless browser on its execution machine, run
-agent-written browser code, and write outside the chat's folders. It also
-states that changes apply from the next turn and turning Browser off deletes
-that chat's logins and cookies. Experiment launch controls in node detail and
-Runs, and the Auto-research launch dialog, carry the same switch and consent.
+The chat's consent line is primary content at normal reading size. It states
+that the browser runs agent-written code outside the chat's folders, that
+changes apply from the next turn, and that turning Browser off deletes the
+chat's logins. Experiment launch controls in node detail and Runs, and the
+Auto-research launch dialog, carry the same switch with a launch-time consent
+paragraph: the run's agents can use a headless browser on the run's machine,
+and browser actions can run agent-written code and write outside the run's
+folders.
 Continuations keep the episode's existing grant.
 
 Unavailable or lost browser access appears as a notice on the affected chat

@@ -296,9 +296,18 @@ class HostRuntime:
         if prerequisite:
             return prerequisite
         package = self.tools / "node_modules" / "@playwright" / "cli" / "package.json"
-        if not package.is_file() or json.loads(package.read_text()).get("version") != CLI_VERSION:
-            return self.readiness_result("not_installed")
-        executable = self.executable()
+        try:
+            if (
+                not package.is_file()
+                or json.loads(package.read_text()).get("version") != CLI_VERSION
+            ):
+                return self.readiness_result("not_installed")
+            executable = self.executable()
+        except (ValueError, UnavailableError) as exc:
+            # An interrupted install leaves files Install can repair.
+            return self.readiness_result(
+                "not_installed", f"RCP browser files are incomplete: {exc}"
+            )
         if not Path(executable).is_file():
             return self.readiness_result("not_installed", "RCP Chromium is not installed")
         if platform.system() == "Linux":
@@ -351,10 +360,8 @@ class HostRuntime:
                         raise
                     # Retain ambiguous owners, but isolate their failure from other owners.
                     continue
-                if record.get("delete_profile"):
-                    self.close_record(record)
-                else:
-                    path.unlink()
+                # A new stage gets a new owner, so this profile is unreachable: delete its logins.
+                self.close_record(record, delete=True)
                 continue
             records.append(record)
         return records

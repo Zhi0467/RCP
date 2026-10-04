@@ -1,8 +1,5 @@
 # Active implementation handoffs
 
-- [Agents use a headless browser through Playwright CLI](handoff-2026-10-04-agent-browser.md)
-  — design settled and reviewed 2026-10-04, including the personal owner session;
-  implementation started on its PR.
 - [Graph dreaming: nightly consolidation and operational lessons](handoff-2026-10-03-graph-dreaming.md)
   — design settled 2026-10-02; implementation in progress on its PR.
 - [Keep RCP running with the lid closed on a Mac](handoff-2026-10-01-macos-keep-awake.md)
@@ -94,3 +91,11 @@ stands in for it. Run one on disposable data, then delete its line here.
   Experiment and Auto-research episode; run one terminal command; repeat from a
   team member's phone web app; a forgotten session ends at the idle limit, and
   closing or suspending the page ends the paid session.
+- Agent browser: a Codex Work turn with Browser on, on a disposable team
+  server, opens a localhost service the agent started there, and the session
+  survives a service restart; a real OpenCode Work turn reuses a page and
+  login across turns; killing the browser mid-turn leaves the turn complete
+  with a lost notice.
+- Personal sign-in: in the desktop app, native PDF preview, project transfer,
+  and terminals through the owner session, and adopting a terminal-started
+  backend by pasting its one-time code.

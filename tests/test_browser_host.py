@@ -175,7 +175,8 @@ def test_deleted_workspace_does_not_block_other_owner(host, tmp_path, monkeypatc
     host.close_record(record, delete=True)
     assert not host.record_path("first").exists()
     if stale_owner:
-        host.save(record)
+        host.save({**record, "pending_close": False, "delete_profile": False})
+        (host.record_path("first").parent / "profile").mkdir()
     fresh_workspace = tmp_path / "next-workspace"
     fresh_workspace.mkdir()
     runtime = Host(request(tmp_path, "next", workspace_dir=str(fresh_workspace)))
@@ -196,11 +197,20 @@ def test_deleted_workspace_does_not_block_other_owner(host, tmp_path, monkeypatc
     monkeypatch.setattr(Host, "alive", alive)
     monkeypatch.setattr(Host, "owner_status", owner_status)
     assert runtime.ensure()["invocation_dir"] == str(fresh_workspace)
-    assert host.record_path("first").exists() == (stale_owner in {"live", "unknown"})
+    assert host.record_path("first").parent.exists() == (stale_owner in {"live", "unknown"})
     if stale_owner in {"live", "unknown"}:
         with pytest.raises(UnavailableError) as error:
             host.ensure()
         assert error.value.code in {"workspace_missing", "owner_unavailable"}
+
+
+def test_interrupted_install_reads_as_installable(tmp_path, monkeypatch):
+    runtime = HostRuntime(request(tmp_path, action="readiness"))
+    path = runtime.tools / "node_modules" / "@playwright" / "cli" / "package.json"
+    path.parent.mkdir(parents=True)
+    path.write_text('{"version": "0.1')
+    monkeypatch.setattr(runtime, "prerequisites", lambda: None)
+    assert runtime.readiness()["status"] == "not_installed"
 
 
 @pytest.mark.parametrize("owner_state", ["stopped", "live", "unknown"])

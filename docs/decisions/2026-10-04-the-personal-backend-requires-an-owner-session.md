@@ -1,8 +1,8 @@
 # The personal backend requires an owner session
 
 Date: 2026-10-04. Status: active. Confirmed by the human on 2026-10-04.
-Implementation: slice 1 of the
-[agent browser handoff](../handoffs/handoff-2026-10-04-agent-browser.md).
+Current behavior is in the
+[projects spec](../specs/projects-spaces-and-operations.md#personal-sign-in).
 
 ## Decision
 

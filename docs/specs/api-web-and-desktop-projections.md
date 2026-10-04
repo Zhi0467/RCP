@@ -29,7 +29,7 @@ health details before using active-work counts.
 
 ## Agent browser Web consumers
 
-Chat headers read and update `/api/projects/{project_id}/chats/{chat_id}/browser`
+The chat Options menu reads and updates `/api/projects/{project_id}/chats/{chat_id}/browser`
 with the `browser_requested` preference. The strict PUT body contains only that
 boolean. The preference exists before the chat has messages. A failed write
 triggers a read to reconcile the server value before another change.
@@ -727,8 +727,8 @@ accept any other HTTP-to-HTTPS origin substitution. This keeps browser mutation
 protection aligned with the desktop TLS terminator instead of rejecting the
 desktop's own invitation and team-control requests.
 
-A personal backend has no session, and it listens on a predictable loopback
-port, so any web page can aim requests at it. Browsers send a cross-site POST
+A personal backend listens on a predictable loopback port, so any web page can
+aim requests at it, and its owner cookie is the session those requests would ride. Browsers send a cross-site POST
 without a CORS preflight only when it has no content type or a simple one
 (`application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`).
 The personal backend refuses those POSTs with 415
