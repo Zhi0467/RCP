@@ -2915,7 +2915,7 @@ details[open] > .view-disclosure-summary > svg:last-child {
 
 @media (prefers-reduced-motion: reduce) {
   .dag-edge-group,
-  .dag-layout-switch button,
+  .segmented button,
   .dag-lens,
   .dag-node,
   .dag-tool-button {

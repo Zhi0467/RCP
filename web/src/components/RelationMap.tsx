@@ -1,4 +1,4 @@
-import { AlertTriangle, ExternalLink, Maximize2, X } from "lucide-react";
+import { TriangleAlert, ExternalLink, Maximize2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { edgeValidationFlags } from "../nodeDetail";
@@ -236,7 +236,7 @@ export function RelationMap({
           title="Expand relation map"
           onClick={openOverlay}
         >
-          <Maximize2 size={15} />
+          <Maximize2 size={16} />
         </button>
       </div>
       <RelationFlow
@@ -273,7 +273,7 @@ export function RelationMap({
                 aria-label="Close expanded relation map"
                 onClick={closeOverlay}
               >
-                <X size={18} />
+                <X size={20} />
               </button>
             </header>
             <div className={`relation-map-overlay-body${inspectedNode ? " has-inspection" : ""}`}>
@@ -396,7 +396,7 @@ function RelationPeer({
             <span className="relation-map-edge-label">{humanize(edge.relation)}</span>
             {assessment === "legacy" && (
               <span className="relation-map-edge-warning">
-                <AlertTriangle size={12} />
+                <TriangleAlert size={12} />
                 Legacy unassessed relation
               </span>
             )}
@@ -414,7 +414,7 @@ function RelationPeer({
                 )}
                 {assessment.qualifications.length > 0 && (
                   <span className="relation-map-edge-warning">
-                    <AlertTriangle size={12} />
+                    <TriangleAlert size={12} />
                     Qualifications · {assessment.qualifications.join(" · ")}
                   </span>
                 )}
@@ -422,7 +422,7 @@ function RelationPeer({
             )}
             {edge.expectation === "diverged" ? (
               <span className="relation-map-edge-warning">
-                <AlertTriangle size={12} />
+                <TriangleAlert size={12} />
                 Diverged from expected outcomes
                 {edge.explanation ? ` · ${edge.explanation}` : ""}
               </span>
@@ -440,7 +440,7 @@ function RelationPeer({
                 role="status"
                 key={`${flag.code}-${flag.message}-${index}`}
               >
-                <AlertTriangle size={12} />
+                <TriangleAlert size={12} />
                 {flag.message}
               </span>
             ))}
@@ -511,7 +511,7 @@ function NodeInspectionCard({ node, onOpenNodeWindow, onClose }: NodeInspectionC
           aria-label="Close node card"
           onClick={onClose}
         >
-          <X size={15} />
+          <X size={16} />
         </button>
       </header>
       <dl className="relation-map-inspection-fields">

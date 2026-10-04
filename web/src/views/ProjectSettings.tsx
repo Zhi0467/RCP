@@ -397,7 +397,7 @@ export function ProjectSettings({
                 aria-label={`Inspect ${entry.label}`}
                 onClick={() => setInspectedPackage(entry)}
               >
-                <BookOpen size={13} />
+                <BookOpen size={14} />
               </button>
             </div>
           );
@@ -772,9 +772,9 @@ export function ProjectSettings({
                             }
                           >
                             {resolvingProvider === resolveKey ? (
-                              <LoaderCircle className="spin" size={13} />
+                              <LoaderCircle className="spin" size={14} />
                             ) : (
-                              <ScanSearch size={13} />
+                              <ScanSearch size={14} />
                             )}
                             Resolve
                           </button>
@@ -909,9 +909,9 @@ export function ProjectSettings({
               onClick={() => void onRefreshReadiness().catch(() => {})}
             >
               {readinessRequest?.pending ? (
-                <LoaderCircle className="spin" size={13} />
+                <LoaderCircle className="spin" size={14} />
               ) : (
-                <ScanSearch size={13} />
+                <ScanSearch size={14} />
               )}
               {computeConfigurationIsDirty ? "Save first" : "Probe"}
             </button>
@@ -933,7 +933,7 @@ export function ProjectSettings({
                 setStatus(null);
               }}
             >
-              <Plus size={13} /> Local
+              <Plus size={14} /> Local
             </button>
             <button
               className="button secondary compact"
@@ -953,7 +953,7 @@ export function ProjectSettings({
                 setStatus(null);
               }}
             >
-              <Plus size={13} /> SSH
+              <Plus size={14} /> SSH
             </button>
           </div>
         </header>
@@ -1201,7 +1201,7 @@ export function ProjectSettings({
             aria-label="Clear project cache"
             onClick={() => void clearCaches()}
           >
-            {clearingCaches ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}
+            {clearingCaches ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
             {clearingCaches ? "Clearing" : "Clear project cache"}
           </button>
         </header>
@@ -1217,8 +1217,8 @@ export function ProjectSettings({
 
       <footer className="settings-savebar">
         <div className={status ? `settings-save-status ${status.kind}` : "settings-save-status"}>
-          {status?.kind === "error" && <TriangleAlert size={15} />}
-          {status?.kind === "saved" && <Check size={15} />}
+          {status?.kind === "error" && <TriangleAlert size={16} />}
+          {status?.kind === "saved" && <Check size={16} />}
           <span>
             {status?.text ||
               (dirty ? "Unsaved manifest changes" : "Manifest matches these defaults")}

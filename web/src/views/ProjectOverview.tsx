@@ -1,4 +1,4 @@
-import { ArrowUpRight } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { currentExperimentGuidance } from "../experimentGuidance";
 import type {
   AppView,
@@ -135,7 +135,7 @@ export function ProjectOverview({
               <strong>{row.answer}</strong>
             </span>
             <span className="overview-detail">{row.detail}</span>
-            <ArrowUpRight size={18} />
+            <ExternalLink size={20} />
           </button>
         ))}
       </div>

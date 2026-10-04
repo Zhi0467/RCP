@@ -212,7 +212,7 @@ export function TeamConnectionGroup({
         <h3>{connection.display_name}</h3>
         {state === "unavailable" && (
           <button type="button" onClick={onReconnect}>
-            <RefreshCw size={13} aria-hidden="true" /> Reconnect
+            <RefreshCw size={14} aria-hidden="true" /> Reconnect
           </button>
         )}
         {state === "available" && (

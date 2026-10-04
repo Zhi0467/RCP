@@ -208,7 +208,7 @@ export function PersonalTeamSeam({
       <div className="landing-team-seam-actions">
         {onAddTeamSpace && (
           <button type="button" onClick={onAddTeamSpace}>
-            <Link2 size={13} aria-hidden="true" />
+            <Link2 size={14} aria-hidden="true" />
             Add team space
           </button>
         )}
@@ -331,7 +331,7 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
           disabled={loading || revoking !== null}
           onClick={() => setRefreshVersion((current) => current + 1)}
         >
-          <RefreshCw size={10} aria-hidden="true" />
+          <RefreshCw size={12} aria-hidden="true" />
           Refresh
         </button>
       </header>
@@ -341,7 +341,7 @@ export function TeamDevicesPanel({ active = true }: { active?: boolean }) {
         disabled={issuing || loading}
         onClick={() => void connectDevice()}
       >
-        <Smartphone size={13} aria-hidden="true" />
+        <Smartphone size={14} aria-hidden="true" />
         {issuing ? "Issuing code" : "Connect a device"}
       </button>
       {pairing && <TeamDevicePairingCard pairing={pairing} onDismiss={() => setPairing(null)} />}
@@ -568,7 +568,7 @@ export function TeamInvitationPanel({
               disabled={loading}
               onClick={() => setRefreshVersion((current) => current + 1)}
             >
-              <RefreshCw size={10} aria-hidden="true" />
+              <RefreshCw size={12} aria-hidden="true" />
               Refresh
             </button>
           </span>
@@ -579,7 +579,7 @@ export function TeamInvitationPanel({
           disabled={creating}
           onClick={() => void createInvitation()}
         >
-          <UserPlus size={13} aria-hidden="true" />
+          <UserPlus size={14} aria-hidden="true" />
           {creating ? "Creating" : "Invite member"}
         </button>
 
@@ -815,7 +815,7 @@ export function LandingIdentityMenu({
             {namedIdentity && <small>{spaceLabel}</small>}
           </span>
         )}
-        {namedIdentity && !compact && <ChevronDown size={13} aria-hidden="true" />}
+        {namedIdentity && !compact && <ChevronDown size={14} aria-hidden="true" />}
       </button>
 
       {identityError && (

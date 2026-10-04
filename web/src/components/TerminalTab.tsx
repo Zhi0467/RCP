@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { TerminalSquare } from "lucide-react";
+import { SquareTerminal } from "lucide-react";
 import { api } from "../api";
 import type { TerminalRepository, TerminalSession } from "../types";
 
@@ -60,7 +60,7 @@ export function TerminalTab({
       aria-current={active ? "page" : undefined}
       onClick={onClick}
     >
-      <TerminalSquare size={14} />
+      <SquareTerminal size={14} />
       <span>Terminals</span>
     </button>
   );

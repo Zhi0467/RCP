@@ -197,12 +197,12 @@ function ClearAllCaches({
             )
           }
         >
-          <Trash2 size={13} /> Clear all project caches
+          <Trash2 size={14} /> Clear all project caches
         </button>
       </div>
       {status && !open && (
         <div className={`settings-save-status ${status.kind}`} role="status">
-          {status.kind === "saved" ? <Check size={15} /> : <TriangleAlert size={15} />}
+          {status.kind === "saved" ? <Check size={16} /> : <TriangleAlert size={16} />}
           <span>{status.text}</span>
         </div>
       )}
@@ -221,7 +221,7 @@ function ClearAllCaches({
             aria-describedby="app-cache-clear-warning"
           >
             <header>
-              <TriangleAlert size={18} aria-hidden="true" />
+              <TriangleAlert size={20} aria-hidden="true" />
               <h2 id="app-cache-clear-title">Clear caches for every project?</h2>
             </header>
             <p id="app-cache-clear-warning">
@@ -249,7 +249,7 @@ function ClearAllCaches({
                 disabled={clearing}
                 onClick={() => void clear()}
               >
-                {clearing ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}
+                {clearing ? <LoaderCircle className="spin" size={14} /> : <Trash2 size={14} />}
                 {clearing ? "Clearing…" : "Clear all project caches"}
               </button>
             </footer>

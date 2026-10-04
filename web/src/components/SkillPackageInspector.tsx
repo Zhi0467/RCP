@@ -49,7 +49,7 @@ export function SkillPackageInspector({ entry, onClose }: Props) {
             </span>
           </div>
           <button type="button" className="icon-button" aria-label="Close" onClick={onClose}>
-            <X size={15} />
+            <X size={16} />
           </button>
         </header>
         {entry.dependencies.length > 0 && (

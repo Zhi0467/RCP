@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Bookmark, ExternalLink, X } from "lucide-react";
+import { TriangleAlert, ArrowRight, Bookmark, ExternalLink, X } from "lucide-react";
 import { useState } from "react";
 import { consolidationAttentionCount } from "../consolidation";
 import type { ConsolidationInboxItem, ConsolidationSchedule } from "../types";
@@ -55,7 +55,7 @@ export function ConsolidationInbox({
       {actionError ? <p className="consolidation-error">{actionError}</p> : null}
       {needsRenewal && schedule ? (
         <button className="attention-item blocker" type="button" onClick={onOpenSettings}>
-          <AlertTriangle size={15} />
+          <TriangleAlert size={16} />
           <strong>
             {schedule.expired
               ? "Nightly consolidation expired"

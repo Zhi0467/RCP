@@ -520,26 +520,9 @@
 }
 .location-toggle {
   align-self: end;
-  background: var(--surface-cool);
-  border-radius: 6px;
   display: grid;
-  gap: 2px;
   grid-template-columns: 1fr 1fr;
   height: 35px;
-  padding: 3px;
-}
-.location-toggle button {
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  color: var(--muted);
-  font-size: var(--type-3xs);
-  font-weight: 700;
-}
-.location-toggle button.active {
-  background: var(--sheet);
-  box-shadow: 0 1px 3px rgb(var(--shadow-rgb) / 12%);
-  color: var(--oxblood-dark);
 }
 .repository-editor > footer {
   align-items: center;

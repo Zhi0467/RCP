@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, Check, X } from "lucide-react";
+import { TriangleAlert, ArrowRight, Check, X } from "lucide-react";
 import type { GlossaryIndex } from "../glossary";
 import { proposalApprovalConflict, type HumanDraft, type ProposalDecision } from "../humanDraft";
 import { type GraphNode, type GraphState, type Proposal, type ProposalActionLine } from "../types";
@@ -182,7 +182,7 @@ export function AttentionRail({ decisions, blockers, onSelectNode }: AttentionRa
           key={blocker.id}
           onClick={() => onSelectNode(blocker.id)}
         >
-          <AlertTriangle size={15} />
+          <TriangleAlert size={16} />
           <strong>{blocker.title}</strong>
           <ArrowRight size={14} />
         </button>

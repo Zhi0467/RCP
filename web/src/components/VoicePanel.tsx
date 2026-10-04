@@ -17,9 +17,9 @@ export function VoiceButton({ voice, className }: { voice: VoiceAgent; className
       onClick={() => (active ? voice.end() : void voice.open())}
     >
       {voice.phase === "starting" ? (
-        <LoaderCircle className="spin" size={15} aria-hidden="true" />
+        <LoaderCircle className="spin" size={16} aria-hidden="true" />
       ) : (
-        <AudioLines size={15} aria-hidden="true" />
+        <AudioLines size={16} aria-hidden="true" />
       )}
     </button>
   );
@@ -181,7 +181,7 @@ export function VoicePanel({
   return (
     <aside className="voice-panel" aria-label="Voice">
       <header>
-        <AudioLines size={15} aria-hidden="true" />
+        <AudioLines size={16} aria-hidden="true" />
         <strong>Voice</strong>
         {voice.startedAt !== null ? <Elapsed since={voice.startedAt} /> : <span>Connecting…</span>}
         <button className="button secondary compact" type="button" onClick={() => voice.end()}>

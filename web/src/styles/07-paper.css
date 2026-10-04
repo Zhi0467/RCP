@@ -17,27 +17,6 @@
   display: flex;
   gap: 7px;
 }
-.paper-view-toggle {
-  background: color-mix(in srgb, var(--sheet) 55%, var(--paper-deep));
-  border: 1px solid var(--rule);
-  border-radius: 5px;
-  display: inline-flex;
-  padding: 2px;
-}
-.paper-view-toggle button {
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  color: var(--muted);
-  font: 700 var(--type-3xs) var(--ui);
-  min-height: 25px;
-  padding: 0 9px;
-}
-.paper-view-toggle button[aria-pressed="true"] {
-  background: var(--sheet);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--walnut) 14%, transparent);
-  color: var(--teal);
-}
 .paper-apply-incoming {
   min-height: 31px;
 }

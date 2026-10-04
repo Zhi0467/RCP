@@ -20,7 +20,7 @@ import { questionIsOpen, questionTranscript } from "../questions";
 import { useHiddenWatchers } from "../hooks/useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
 import {
-  AlertTriangle,
+  TriangleAlert,
   ChevronUp,
   Cpu,
   Download,
@@ -1603,7 +1603,7 @@ export function NodeChat({
       )}
       {!fixedConversation && !readOnly && (
         <button className="chat-new-session" type="button" onClick={onNewSession}>
-          <MessageCirclePlus size={13} /> New session
+          <MessageCirclePlus size={14} /> New session
         </button>
       )}
       {presentation === "workspace" && watcherToggle}
@@ -1632,7 +1632,7 @@ export function NodeChat({
     >
       {presentation === "floating" && (
         <header data-drag-handle="true">
-          <MessageCircle size={17} />
+          <MessageCircle size={16} />
           <strong>{chatTitle}</strong>
           {watcherToggle}
           <button
@@ -1640,7 +1640,7 @@ export function NodeChat({
             onClick={onClose}
             aria-label="Minimize chat; background work will continue"
           >
-            <X size={17} />
+            <X size={16} />
           </button>
         </header>
       )}
@@ -1846,7 +1846,7 @@ export function NodeChat({
                         className={`chat-input-attachment${expired ? " expired" : ""}`}
                         key={attachment.attachment_id}
                       >
-                        <File size={13} />
+                        <File size={14} />
                         <span>
                           <strong>{attachment.name}</strong>
                           <small>
@@ -2111,7 +2111,7 @@ export function NodeChat({
                   aria-label="Close annotations"
                   onClick={() => setAnnotationsOpen(false)}
                 >
-                  <X size={13} />
+                  <X size={14} />
                 </button>
               </header>
               <div className="chat-annotation-review-list">
@@ -2304,7 +2304,11 @@ export function NodeChat({
               </div>
               {!artifactContext && (
                 <>
-                  <div className="chat-mode-toggle" role="group" aria-label="Conversation mode">
+                  <div
+                    className="segmented chat-mode-toggle"
+                    role="group"
+                    aria-label="Conversation mode"
+                  >
                     {(["discuss", "work"] as const).map((option) => (
                       <button
                         type="button"
@@ -2347,7 +2351,7 @@ export function NodeChat({
                     aria-expanded={computeMenuOpen}
                     onClick={() => setComputeMenuOpen((open) => !open)}
                   >
-                    <Cpu size={13} />
+                    <Cpu size={14} />
                     Compute
                     {computeState.ids.length ? <strong>{computeState.ids.length}</strong> : null}
                     <ChevronUp size={12} />
@@ -2408,11 +2412,11 @@ export function NodeChat({
                 onClick={() => void toggleDictation()}
               >
                 {dictationState === "transcribing" ? (
-                  <LoaderCircle className="spin" size={15} />
+                  <LoaderCircle className="spin" size={16} />
                 ) : dictating ? (
-                  <MicOff size={15} />
+                  <MicOff size={16} />
                 ) : (
-                  <Mic size={15} />
+                  <Mic size={16} />
                 )}
               </button>
               <button
@@ -2437,7 +2441,7 @@ export function NodeChat({
                   steeringTask ? steeringTask.steer_action_label : `Start ${modeLabel(mode)} turn`
                 }
               >
-                <Send size={15} />
+                <Send size={16} />
               </button>
             </div>
             {dictationError ? (
@@ -2616,7 +2620,7 @@ function InlinePausedTask({
         disabled={disabled}
         onClick={onResume}
       >
-        <Play size={11} /> Resume
+        <Play size={12} /> Resume
       </button>
       <button
         type="button"
@@ -2624,7 +2628,7 @@ function InlinePausedTask({
         disabled={disabled}
         onClick={onRetry}
       >
-        <RotateCcw size={11} /> Retry
+        <RotateCcw size={12} /> Retry
       </button>
     </div>
   );
@@ -2672,12 +2676,12 @@ function GraphUpdateReceipt({
         )}
         {update.status === "rejected" && (
           <strong>
-            <AlertTriangle size={12} /> Graph update rejected
+            <TriangleAlert size={12} /> Graph update rejected
           </strong>
         )}
         {update.status === "unavailable" && (
           <strong>
-            <AlertTriangle size={12} />{" "}
+            <TriangleAlert size={12} />{" "}
             {update.commit_status === "present"
               ? "Graph update committed, but canonical state became unreachable"
               : update.commit_status === "unknown"

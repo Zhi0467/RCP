@@ -7,7 +7,7 @@ import {
   Download,
   ExternalLink,
   GitCommitHorizontal,
-  MessageSquare,
+  MessageCircle,
   RefreshCw,
 } from "lucide-react";
 import { openArtifact } from "../artifactViewer";
@@ -143,7 +143,7 @@ export function Artifacts({
                       href={entry.source_chat_href}
                       aria-label={`Open originating chat for ${entry.name}`}
                     >
-                      <MessageSquare size={14} aria-hidden="true" /> Source chat
+                      <MessageCircle size={14} aria-hidden="true" /> Source chat
                     </a>
                   )}
                   {entry.source_node_id && sourceNodeTitle !== null && (

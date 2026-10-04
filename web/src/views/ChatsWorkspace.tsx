@@ -162,7 +162,7 @@ function AgentGroupIcon({ group }: { group: AgentListSection }) {
     working: Circle,
     done: null,
   }[group];
-  return Icon ? <Icon className="agent-group-icon" size={13} aria-hidden="true" /> : null;
+  return Icon ? <Icon className="agent-group-icon" size={14} aria-hidden="true" /> : null;
 }
 
 function sinceLabel(timestamp: string | null | undefined, now: number): string {
@@ -737,7 +737,7 @@ export function ChatsWorkspace({
         <>
           <div className="agent-card-top">
             <span className="agent-card-avatar" data-working={card.working || undefined}>
-              <GitBranch size={15} aria-hidden="true" />
+              <GitBranch size={16} aria-hidden="true" />
             </span>
             <strong className="agent-card-title">
               <span className="agent-branch-pill">Branch</span>
@@ -823,7 +823,7 @@ export function ChatsWorkspace({
         <header className="agents-board-head">
           <h2>Agents</h2>
           <label className="agent-list-search">
-            <Search size={13} aria-hidden="true" />
+            <Search size={14} aria-hidden="true" />
             <input
               type="search"
               aria-label="Search agents"
@@ -901,7 +901,7 @@ export function ChatsWorkspace({
               title="Collapse conversation list"
               type="button"
             >
-              <PanelLeft size={15} />
+              <PanelLeft size={16} />
             </button>
             <button
               aria-label="Show the agents board"
@@ -910,10 +910,10 @@ export function ChatsWorkspace({
               title="Show the agents board"
               type="button"
             >
-              <Kanban size={15} />
+              <Kanban size={16} />
             </button>
             <label className="agent-list-search">
-              <Search size={13} aria-hidden="true" />
+              <Search size={14} aria-hidden="true" />
               <input
                 type="search"
                 aria-label="Search agents"
@@ -1149,7 +1149,7 @@ export function ChatsWorkspace({
             title="Expand conversation list"
             type="button"
           >
-            <PanelLeft size={15} />
+            <PanelLeft size={16} />
           </button>
         )}
         {selected ? (
