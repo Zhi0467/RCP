@@ -7,7 +7,7 @@ import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -16,6 +16,7 @@ from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AppStore
 
 _MEMBER_LOCKS = KeyedLocks()
+ModelId = Annotated[str, Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$")]
 
 
 class PurposesRequest(BaseModel):
@@ -26,17 +27,22 @@ class PurposesRequest(BaseModel):
     @field_validator("purposes")
     @classmethod
     def unique_purposes(cls, value):
-        if len(set(value)) != len(value):
+        if value is not None and len(set(value)) != len(value):
             raise ValueError("Duplicate purpose")
         return value
 
 
 class VoiceSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    delegation_model: str = Field(
-        default="gpt-6-luna", min_length=1, max_length=200, pattern=r"^[A-Za-z0-9._:/-]+$"
-    )
+    delegation_model: ModelId = "gpt-6-luna"
+    live_model: ModelId = "gpt-live-1"
     confirm: Literal["tap", "none"] = "tap"
+
+
+# Account-level voice models: the live voice and the model it hands work to.
+VOICE_MODELS = ("live_model", "delegation_model")
+# (each VOICE_MODELS value, voice connection id) as a check saw them.
+VoiceCheck = tuple[tuple[str, ...], str | None]
 
 
 def connection_purposes(connection: dict) -> list[str]:
@@ -141,12 +147,37 @@ class ServiceConnections:
         path = self.root / "connections" / _component(connection["id"]) / "connection.json"
         _write_private(path, json.dumps(connection))
 
-    def update_purposes(self, previous: dict, checked: dict) -> dict:
+    def update_connection(
+        self,
+        previous: dict,
+        checked: dict,
+        voice_models: dict[str, str] | None = None,
+        voice_check: VoiceCheck | None = None,
+    ) -> dict:
         with self.locked():
             if self._connection(previous["id"]) != previous:
                 raise ConnectionError("connection_changed", 409)
+            self._require_voice_check(voice_check)
             self._publish(checked)
+            self._write_voice_models(voice_models)
             return checked
+
+    def _require_voice_check(self, checked: VoiceCheck | None) -> None:
+        # Voice models were checked against these values and this voice connection; a
+        # concurrent change to any of them means the check no longer proves they work.
+        if checked is None:
+            return
+        saved = VoiceSettings.model_validate(self._settings().get("voice", {}))
+        models = tuple(getattr(saved, name) for name in VOICE_MODELS)
+        if (models, self._voice_connection_id()) != checked:
+            raise ConnectionError("connection_changed", 409)
+
+    def _voice_connection_id(self) -> str | None:
+        return next((c["id"] for c in self._connections() if "voice" in c["purposes"]), None)
+
+    def _write_voice_models(self, models: dict[str, str] | None) -> None:
+        if models:
+            self._write_setting("voice", {**self._settings().get("voice", {}), **models})
 
     def summary(self) -> dict:
         with self.locked():
@@ -162,13 +193,21 @@ class ServiceConnections:
             key = (self.root / "connections" / connection_id / "key").read_text()
             return connection, key
 
-    def save(self, connection: dict, key: str) -> None:
+    def save(
+        self,
+        connection: dict,
+        key: str,
+        voice_models: dict[str, str] | None = None,
+        voice_check: VoiceCheck | None = None,
+    ) -> None:
         with self.locked():
+            self._require_voice_check(voice_check)
             path = self.root / "connections" / _component(connection["id"])
             self._mkdir(path)
             _write_private(path / "key", key)
             # Publish the metadata last: incomplete writes are not usable connections.
             self._publish(connection)
+            self._write_voice_models(voice_models)
 
     def select(self, connection_id: str) -> dict:
         with self.locked():

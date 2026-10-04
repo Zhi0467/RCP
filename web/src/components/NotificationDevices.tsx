@@ -219,7 +219,7 @@ export function PersonalDevicesPanel({ active = true }: { active?: boolean }) {
         disabled={busy}
         onClick={() => void connectPhone()}
       >
-        <Bell size={13} aria-hidden="true" />
+        <Bell size={14} aria-hidden="true" />
         {busy ? "Issuing code" : "Connect a phone"}
       </button>
       {pairing && <PhonePairingCard pairing={pairing} onDismiss={() => setPairing(null)} />}

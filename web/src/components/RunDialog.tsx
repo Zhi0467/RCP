@@ -1,4 +1,4 @@
-import { AlertTriangle, Play, X } from "lucide-react";
+import { TriangleAlert, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AgentExecutionProfile, AgentRunConfig, ProjectSnapshot } from "../types";
 import { AgentConfigControls, profileRunConfig } from "./AgentConfigControls";
@@ -133,7 +133,7 @@ export function RunDialog({
                   : "Refresh project understanding"}
           </h2>
           <button className="icon-button" onClick={onClose} disabled={busy} aria-label="Close">
-            <X size={17} />
+            <X size={16} />
           </button>
         </header>
         {mode === "start" && (
@@ -177,7 +177,7 @@ export function RunDialog({
         />
         {childBindingStays && (
           <div className="run-staging-warning">
-            <AlertTriangle size={15} />
+            <TriangleAlert size={16} />
             <span>
               <strong>
                 Children this orchestrator spawns stay on {childProfile.provider}
@@ -190,7 +190,7 @@ export function RunDialog({
         )}
         {hostlessRepositories.length > 0 && (
           <div className="run-staging-warning">
-            <AlertTriangle size={15} />
+            <TriangleAlert size={16} />
             <span>
               <strong>
                 {hostlessRepositories.map((repository) => repository.alias).join(", ")} cannot be
@@ -202,7 +202,7 @@ export function RunDialog({
         )}
         {sshRepositories.length > 0 && (
           <div className="run-staging-warning">
-            <AlertTriangle size={15} />
+            <TriangleAlert size={16} />
             <span>
               <strong>
                 {sshRepositories.map((repository) => repository.alias).join(", ")} will be read over

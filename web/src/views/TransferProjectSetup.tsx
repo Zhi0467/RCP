@@ -2,7 +2,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  CircleAlert,
+  TriangleAlert,
   Clipboard,
   FolderGit2,
   LoaderCircle,
@@ -10,7 +10,6 @@ import {
   RefreshCw,
   Server,
   ShieldCheck,
-  TriangleAlert,
 } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../api";
@@ -700,7 +699,7 @@ export function TransferProjectSetup({
       <main className="setup-layout transfer-setup-layout">
         <section className="setup-sheet transfer-unavailable-sheet">
           <div className="setup-section transfer-unavailable" role="alert">
-            <CircleAlert size={22} aria-hidden="true" />
+            <TriangleAlert size={20} aria-hidden="true" />
             <SectionHeading
               eyebrow="Move to team space"
               title="This move is unavailable in a browser."
@@ -710,7 +709,7 @@ export function TransferProjectSetup({
               team connection.
             </p>
             <button className="button secondary" type="button" onClick={onCancel}>
-              <ArrowLeft size={15} /> Return to projects
+              <ArrowLeft size={16} /> Return to projects
             </button>
           </div>
         </section>
@@ -742,7 +741,7 @@ export function TransferProjectSetup({
             key={number}
             onClick={() => index < step && !bundle && setStep(index)}
           >
-            <span>{index < step ? <Check size={13} /> : number}</span>
+            <span>{index < step ? <Check size={14} /> : number}</span>
             <strong>{label}</strong>
           </button>
         ))}
@@ -761,7 +760,7 @@ export function TransferProjectSetup({
         )}
         {loading && (
           <div className="setup-section setup-resume-loading" role="status">
-            <LoaderCircle className="spin" size={18} />
+            <LoaderCircle className="spin" size={20} />
             <strong>Reading the personal project and transfer state</strong>
           </div>
         )}
@@ -1370,7 +1369,7 @@ export function TransferProjectSetup({
                 step === 0 || bundle || preparedRequestIds ? onCancel() : setStep(step - 1)
               }
             >
-              <ArrowLeft size={15} /> Back
+              <ArrowLeft size={16} /> Back
             </button>
             {step === 0 && (
               <button
@@ -1382,9 +1381,9 @@ export function TransferProjectSetup({
                 onClick={() => void chooseTarget()}
               >
                 {busy === "target" ? (
-                  <LoaderCircle className="spin" size={15} />
+                  <LoaderCircle className="spin" size={16} />
                 ) : (
-                  <ArrowRight size={15} />
+                  <ArrowRight size={16} />
                 )}{" "}
                 Continue
               </button>
@@ -1397,9 +1396,9 @@ export function TransferProjectSetup({
                 onClick={() => void prepareTransfer()}
               >
                 {busy === "prepare" ? (
-                  <LoaderCircle className="spin" size={15} />
+                  <LoaderCircle className="spin" size={16} />
                 ) : (
-                  <ShieldCheck size={15} />
+                  <ShieldCheck size={16} />
                 )}{" "}
                 {preparedRequestIds ? "Retry preparation" : "Prepare team target"}
               </button>

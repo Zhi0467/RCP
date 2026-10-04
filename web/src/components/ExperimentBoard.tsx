@@ -45,7 +45,7 @@ export function ExperimentBoard({ entries, onOpen }: Props) {
       <header className="experiment-board-header">
         <div>
           <span className="experiment-board-kicker">
-            <FlaskConical size={13} aria-hidden="true" /> Loop register
+            <FlaskConical size={14} aria-hidden="true" /> Loop register
           </span>
           <h2 id="experiment-board-title">Experiments</h2>
         </div>
@@ -139,12 +139,12 @@ function ExperimentRows({
                 <span className={`status-pill ${tone}`}>{statusLabel}</span>
                 {entry.project_reachable === false && (
                   <span className="experiment-board-unavailable">
-                    <WifiOff size={11} aria-hidden="true" /> Unavailable
+                    <WifiOff size={12} aria-hidden="true" /> Unavailable
                   </span>
                 )}
                 <time dateTime={lastActivityAt ?? undefined}>{formatActivity(lastActivityAt)}</time>
               </span>
-              <ChevronRight className="experiment-board-row-arrow" size={15} aria-hidden="true" />
+              <ChevronRight className="experiment-board-row-arrow" size={16} aria-hidden="true" />
             </button>
           </li>
         );

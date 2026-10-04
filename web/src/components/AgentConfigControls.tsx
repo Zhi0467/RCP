@@ -1,5 +1,5 @@
 import {
-  CheckCircle2,
+  Check,
   ChevronDown,
   LoaderCircle,
   LockKeyhole,
@@ -146,7 +146,7 @@ export function AgentConfigControls({
         {runtime && (
           <label className={runtime.locked ? "agent-machine-fixed" : undefined}>
             <span>
-              Runtime {runtime.locked ? <LockKeyhole size={10} aria-hidden="true" /> : null}
+              Runtime {runtime.locked ? <LockKeyhole size={12} aria-hidden="true" /> : null}
             </span>
             <select
               value={runtime.value}
@@ -195,7 +195,7 @@ export function AgentConfigControls({
           </label>
         )}
         <label className={runOnLocked ? "agent-machine-fixed" : undefined}>
-          <span>Run on {runOnLocked ? <LockKeyhole size={10} aria-hidden="true" /> : null}</span>
+          <span>Run on {runOnLocked ? <LockKeyhole size={12} aria-hidden="true" /> : null}</span>
           <select
             value={value.run_on}
             disabled={locked || runOnLocked}
@@ -230,7 +230,7 @@ export function AgentConfigControls({
                 <TriangleAlert size={14} />
               )
             ) : readiness.authenticated && !workBlocked ? (
-              <CheckCircle2 size={14} />
+              <Check size={14} />
             ) : (
               <TriangleAlert size={14} />
             )}
@@ -259,7 +259,7 @@ export function AgentConfigControls({
                   );
                 }}
               >
-                {reprobing ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />}
+                {reprobing ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
               </button>
             )}
           </div>

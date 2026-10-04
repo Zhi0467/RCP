@@ -40,7 +40,7 @@ export function UpdateNotice({
       role="status"
       data-kind={release.kind}
     >
-      <CircleArrowUp size={15} />
+      <CircleArrowUp size={16} />
       <strong>
         RCP v{release.release} is out.{" "}
         {release.kind === "team" ? "This team server runs" : "This app is"} v{release.current}.
@@ -49,7 +49,7 @@ export function UpdateNotice({
         <>
           <code>{release.command}</code>
           <button className="button secondary" type="button" onClick={() => void copy()}>
-            {copied === release.command ? <Check size={13} /> : <Copy size={13} />} Copy command
+            {copied === release.command ? <Check size={14} /> : <Copy size={14} />} Copy command
           </button>
         </>
       ) : null}
@@ -135,7 +135,7 @@ function DesktopUpdateNotice({
   if (update && activeWork && !expanded && !error) {
     return (
       <button className="desktop-update-marker" type="button" onClick={onExpand}>
-        <CircleArrowUp size={13} /> Update ready
+        <CircleArrowUp size={14} /> Update ready
       </button>
     );
   }
@@ -144,11 +144,11 @@ function DesktopUpdateNotice({
       className={`desktop-update-notice${error ? " error" : ""}`}
       role={error ? "alert" : "status"}
     >
-      <CircleArrowUp size={15} />
+      <CircleArrowUp size={16} />
       <strong>{error || `RCP ${update?.version || "update"} is ready`}</strong>
       {update && (
         <button className="button secondary" type="button" disabled={applying} onClick={onApply}>
-          {applying ? <LoaderCircle className="spin" size={13} /> : null}
+          {applying ? <LoaderCircle className="spin" size={14} /> : null}
           {activeWork ? "Update now" : "Update"}
         </button>
       )}

@@ -125,7 +125,7 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
           disabled={loading}
           onClick={() => void reload(true)}
         >
-          <RefreshCw className={loading ? "spin" : undefined} size={15} />
+          <RefreshCw className={loading ? "spin" : undefined} size={16} />
         </button>
       </header>
 
@@ -146,7 +146,7 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
         <div className="server-settings-body">
           <section className="server-release-ledger" aria-label="Server release">
             <div className="server-settings-section-title">
-              <GitCompareArrows size={15} />
+              <GitCompareArrows size={16} />
               <h3>Release</h3>
               <StatusMark summary={status.releases.status} />
             </div>
@@ -194,7 +194,7 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
           <div className="server-status-card-grid">
             <article className="server-status-card">
               <header>
-                <DatabaseBackup size={15} />
+                <DatabaseBackup size={16} />
                 <h3>Protected backup</h3>
               </header>
               <StatusMark summary={status.backup.status} />
@@ -243,7 +243,7 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
 
             <article className="server-status-card">
               <header>
-                <ArchiveRestore size={15} />
+                <ArchiveRestore size={16} />
                 <h3>Restore drill</h3>
               </header>
               <StatusMark summary={status.restore.status} />
@@ -266,7 +266,7 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
 
             <article className="server-status-card">
               <header>
-                <ShieldCheck size={15} />
+                <ShieldCheck size={16} />
                 <h3>Execution readiness</h3>
               </header>
               <div className="server-readiness-list">
@@ -283,7 +283,7 @@ export function ServerSettings({ loadStatus = loadServerStatus, onReleaseCheck }
           {status.problems.length > 0 ? (
             <section className="server-problem-ledger" aria-labelledby="server-problems-title">
               <div className="server-settings-section-title">
-                <TriangleAlert size={15} />
+                <TriangleAlert size={16} />
                 <h3 id="server-problems-title">Needs attention</h3>
               </div>
               <ul>

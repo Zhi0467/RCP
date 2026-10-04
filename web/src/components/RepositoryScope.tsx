@@ -48,7 +48,7 @@ export function RepositoryScope({
               : `${selected.length} of ${projectScope.length} repositories`}
           </strong>
         </span>
-        <ChevronDown size={15} />
+        <ChevronDown size={16} />
       </button>
       {open && (
         <div className="scope-popover">

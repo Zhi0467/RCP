@@ -555,7 +555,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               if (index < step && !request) setStep(index);
             }}
           >
-            <span>{index < step ? <Check size={13} /> : number}</span>
+            <span>{index < step ? <Check size={14} /> : number}</span>
             <strong>{label}</strong>
           </button>
         ))}
@@ -564,7 +564,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
       <section className="setup-sheet">
         {resumeLoading && (
           <div className="setup-section setup-resume-loading" role="status">
-            <LoaderCircle className="spin" size={18} />
+            <LoaderCircle className="spin" size={20} />
             <strong>Loading the existing setup request</strong>
           </div>
         )}
@@ -913,7 +913,7 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               disabled={busy !== null}
               onClick={goBack}
             >
-              <ArrowLeft size={15} /> Back
+              <ArrowLeft size={16} /> Back
             </button>
             {step < 3 && createModeAvailable && (
               <button
@@ -923,16 +923,16 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
                 onClick={() => void advance()}
               >
                 {busy === "create-request" ? (
-                  <LoaderCircle className="spin" size={15} />
+                  <LoaderCircle className="spin" size={16} />
                 ) : step === 2 ? (
-                  <ShieldCheck size={15} />
+                  <ShieldCheck size={16} />
                 ) : null}
                 {busy === "create-request"
                   ? "Creating request"
                   : step === 2
                     ? "Create setup request"
                     : "Continue"}
-                {!busy && step < 2 && <ArrowRight size={15} />}
+                {!busy && step < 2 && <ArrowRight size={16} />}
               </button>
             )}
           </footer>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, RefreshCw, TerminalSquare, X } from "lucide-react";
+import { TriangleAlert, RefreshCw, SquareTerminal, X } from "lucide-react";
 import { api } from "../api";
 import { TerminalPane } from "../components/TerminalPane";
 import type { TerminalRepository, TerminalSession } from "../types";
@@ -137,7 +137,7 @@ export function Terminals({ projectId }: { projectId: string }) {
                 onClick={() => setSelected(session.session_id)}
               >
                 <span className="terminal-repository-name">
-                  <TerminalSquare size={16} />
+                  <SquareTerminal size={16} />
                   {session.repository_id}
                 </span>
                 <span className="terminal-session-state">
@@ -170,7 +170,7 @@ export function Terminals({ projectId }: { projectId: string }) {
               onClick={() => void open(repo)}
             >
               <span className="terminal-repository-name">
-                <TerminalSquare size={16} />
+                <SquareTerminal size={16} />
                 {repo.repository_id}
               </span>
               <code>{repo.path}</code>
@@ -190,7 +190,7 @@ export function Terminals({ projectId }: { projectId: string }) {
             </div>
             {active.containment === "cooperative" && (
               <div className="terminal-protection-warning" role="alert">
-                <AlertTriangle size={20} aria-hidden="true" />
+                <TriangleAlert size={20} aria-hidden="true" />
                 <strong>{active.protection_notice}</strong>
               </div>
             )}

@@ -74,7 +74,7 @@ export function AppearancePicker({
               onClick={() => textScale.onChange("decrease")}
               aria-label="Decrease text size"
             >
-              <Minus size={15} />
+              <Minus size={16} />
             </button>
             <button
               className="text-scale-value"
@@ -91,7 +91,7 @@ export function AppearancePicker({
               onClick={() => textScale.onChange("increase")}
               aria-label="Increase text size"
             >
-              <Plus size={15} />
+              <Plus size={16} />
             </button>
           </div>
         </div>

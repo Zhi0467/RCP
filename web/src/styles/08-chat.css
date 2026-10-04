@@ -1254,33 +1254,14 @@
 .chat-skill-menu-status.stale {
   color: var(--oxblood);
 }
-.chat-mode-toggle {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  display: flex;
-  padding: 2px;
-}
-.chat-mode-toggle button {
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  color: var(--muted);
-  font-size: var(--type-2xs);
-  font-weight: 750;
-  min-height: 25px;
-  padding: 0 8px;
-}
-.chat-mode-toggle button:focus-visible {
-  outline: 2px solid currentColor;
-  outline-offset: 2px;
-}
 .chat-mode-toggle button.discuss[aria-pressed="true"] {
   background: var(--plum);
+  box-shadow: none;
   color: var(--accent-ink);
 }
 .chat-mode-toggle button.work[aria-pressed="true"] {
   background: var(--forest);
+  box-shadow: none;
   color: var(--accent-ink);
 }
 .chat-dock[data-mode="discuss"] .chat-send-button {

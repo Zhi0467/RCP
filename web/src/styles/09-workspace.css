@@ -1226,35 +1226,6 @@ a.digest-title:hover {
   margin: -1px 0 2px;
   padding: 0 0 10px;
 }
-.dag-layout-switch {
-  align-items: center;
-  background: var(--paper);
-  border: 1px solid var(--rule);
-  border-radius: 5px;
-  display: inline-flex;
-  padding: 2px;
-}
-.dag-layout-switch button {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 3px;
-  color: var(--ink-soft);
-  display: inline-flex;
-  font-size: var(--type-3xs);
-  font-weight: 750;
-  gap: 5px;
-  height: 25px;
-  padding: 0 9px;
-}
-.dag-layout-switch button:hover {
-  color: var(--ink);
-}
-.dag-layout-switch button.is-active {
-  background: var(--sheet);
-  box-shadow: 0 1px 4px rgb(var(--shadow-rgb) / 18%);
-  color: var(--oxblood-dark);
-}
 .dag-projection-label {
   margin-left: auto;
 }

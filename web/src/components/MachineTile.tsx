@@ -35,7 +35,7 @@ export function MachineTile({
       onClick={onSelect}
     >
       <span className="machine-tile-icon" aria-hidden="true">
-        <Server size={15} />
+        <Server size={16} />
       </span>
       <strong>{name}</strong>
       <span className="machine-tile-host">
@@ -78,7 +78,7 @@ export function AddMachineTile({
       onClick={onSelect}
     >
       <span className="machine-tile-icon" aria-hidden="true">
-        <Plus size={15} />
+        <Plus size={16} />
       </span>
       <strong>{label}</strong>
     </button>

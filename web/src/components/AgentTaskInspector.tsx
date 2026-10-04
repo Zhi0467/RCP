@@ -1,8 +1,7 @@
 import {
-  AlertTriangle,
+  TriangleAlert,
   Check,
-  CheckCircle2,
-  CirclePause,
+  Pause,
   Clock3,
   Copy,
   LoaderCircle,
@@ -117,7 +116,7 @@ export function AgentTaskInspector({
           <div className="run-inspector-detail">
             {loading && !task ? (
               <div className="quiet-empty">
-                <LoaderCircle className="spin" size={15} />
+                <LoaderCircle className="spin" size={16} />
                 <span>Loading task</span>
               </div>
             ) : task ? (
@@ -125,13 +124,13 @@ export function AgentTaskInspector({
                 <section className="run-detail-hero">
                   <div className={`run-detail-icon ${task.status}`}>
                     {task.settled ? (
-                      <CheckCircle2 size={20} />
+                      <Check size={20} />
                     ) : task.paused ? (
-                      <CirclePause size={20} />
+                      <Pause size={20} />
                     ) : isActiveTask(task) ? (
                       <LoaderCircle className="spin" size={20} />
                     ) : (
-                      <AlertTriangle size={20} />
+                      <TriangleAlert size={20} />
                     )}
                   </div>
                   <div>
@@ -144,7 +143,7 @@ export function AgentTaskInspector({
                       /* The turn succeeded, so nothing else on this screen says
                          it did not run the way it was asked to. */
                       <p className="run-degradation">
-                        <AlertTriangle size={13} />
+                        <TriangleAlert size={14} />
                         <span>{task.degradation}</span>
                       </p>
                     )}
@@ -368,7 +367,7 @@ export function AgentTaskInspector({
               <div>
                 {task.can_pause && (
                   <button className="button secondary" disabled={actionBusy} onClick={onPause}>
-                    <CirclePause size={14} /> Pause
+                    <Pause size={14} /> Pause
                   </button>
                 )}
                 {task.can_retry && (

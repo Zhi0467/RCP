@@ -208,7 +208,7 @@ function CompletedGroup({
     <details className="space-runs-group">
       <summary>
         <span aria-hidden="true">
-          {mode === "experiment_loop" ? <FlaskConical size={13} /> : <Telescope size={13} />}
+          {mode === "experiment_loop" ? <FlaskConical size={14} /> : <Telescope size={14} />}
         </span>
         <strong>{title}</strong>
         <span>{entries.length}</span>
@@ -287,12 +287,12 @@ export function SpaceRunRow({
           </span>
           {entry.project_reachable === false && (
             <span className="space-run-unavailable">
-              <WifiOff size={11} aria-hidden="true" /> Unavailable
+              <WifiOff size={12} aria-hidden="true" /> Unavailable
             </span>
           )}
           <time dateTime={entry.started_at}>{formatActivity(entry.started_at)}</time>
         </span>
-        <ChevronRight className="space-run-arrow" size={15} aria-hidden="true" />
+        <ChevronRight className="space-run-arrow" size={16} aria-hidden="true" />
       </button>
       <EpisodeArchiveButton episode={entry} onArchive={onArchive} />
     </li>

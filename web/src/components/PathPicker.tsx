@@ -133,7 +133,7 @@ export function PathPicker({
           {state.path !== null &&
             pathBreadcrumbs(state.path).map((crumb, index, crumbs) => (
               <span key={crumb.path}>
-                {index > 0 && <ChevronRight size={11} aria-hidden="true" />}
+                {index > 0 && <ChevronRight size={12} aria-hidden="true" />}
                 <button
                   type="button"
                   aria-current={index === crumbs.length - 1 ? "location" : undefined}
@@ -144,7 +144,7 @@ export function PathPicker({
                 </button>
               </span>
             ))}
-          {loading && <LoaderCircle className="spin" size={13} aria-label="Loading folders" />}
+          {loading && <LoaderCircle className="spin" size={14} aria-label="Loading folders" />}
         </nav>
         <div className="path-picker-actions">
           <button
@@ -154,7 +154,7 @@ export function PathPicker({
             disabled={!canPickFolder(state, { navigating: loading, picking })}
             onClick={() => void pick()}
           >
-            {picking ? <LoaderCircle className="spin" size={13} /> : null}
+            {picking ? <LoaderCircle className="spin" size={14} /> : null}
             {pickLabel}
           </button>
           <button className="button secondary compact" type="button" onClick={onClose}>
@@ -186,7 +186,7 @@ export function PathPicker({
           >
             <Folder size={14} aria-hidden="true" />
             <strong>..</strong>
-            <ChevronRight size={13} aria-hidden="true" />
+            <ChevronRight size={14} aria-hidden="true" />
           </button>
         )}
         {state.entries.map((entry) =>
@@ -211,7 +211,7 @@ export function PathPicker({
             >
               <Folder size={14} aria-hidden="true" />
               <strong>{entry.name}</strong>
-              <ChevronRight size={13} aria-hidden="true" />
+              <ChevronRight size={14} aria-hidden="true" />
             </button>
           ),
         )}

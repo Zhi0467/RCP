@@ -321,7 +321,7 @@ export function ExperimentRunDetail({
               onClick={() => onRun(reauthorizing ? (authorizedCeiling ?? undefined) : undefined)}
               aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
             >
-              <FlaskConical size={13} aria-hidden="true" />{" "}
+              <FlaskConical size={14} aria-hidden="true" />{" "}
               {runBusy ? "Starting" : control.episode_id ? "Start new episode" : "Start episode"}
             </button>
           )}
