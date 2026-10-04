@@ -93,6 +93,8 @@ TRANSFER_GLOBAL_TABLES = frozenset(
         "team_invitations",
         "team_member_tokens",
         "team_sessions",
+        "owner_credentials",
+        "owner_sign_in_codes",
     }
 )
 _LEGACY_PROJECT_ARCHIVE_TABLES = frozenset(

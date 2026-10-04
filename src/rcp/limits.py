@@ -558,3 +558,6 @@ DIGEST_STOP_TIMEOUT_SECONDS = 10.0
 
 # Landing counts are a lower bound when this latest-event window is full.
 DIGEST_LANDING_EVENT_LIMIT = 1000
+
+# Personal sign-in capabilities expire even if the backend remains running.
+OWNER_SIGN_IN_TTL_MINUTES = 10

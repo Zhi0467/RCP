@@ -80,6 +80,7 @@ class AppStoreBase:
         (36, "operational_lessons_v1"),
         (37, "graph_consolidation_v1"),
         (38, "digest_v1"),
+        (39, "owner_auth_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -373,6 +374,13 @@ class AppStoreBase:
                         pages=BACKUP_SQLITE_PAGES_PER_STEP,
                         sleep=BACKUP_SQLITE_BUSY_SLEEP_SECONDS,
                     )
+                target.execute("PRAGMA secure_delete=ON")
+                target.execute("DELETE FROM owner_credentials")
+                target.execute("DELETE FROM owner_sign_in_codes")
+                target.execute(
+                    "DELETE FROM team_sessions WHERE user_id IN "
+                    "(SELECT user_id FROM space_users WHERE identity_kind='local_owner')"
+                )
                 target.commit()
                 result = [row[0] for row in target.execute("PRAGMA quick_check").fetchall()]
                 if result != ["ok"]:
@@ -693,6 +701,11 @@ class AppStoreBase:
         )
         self._run_storage_schema_migration(
             connection, version=38, name="digest_v1", migration=migrate_digest
+        )
+        from rcp.storage.owner_auth import migrate_owner_auth
+
+        self._run_storage_schema_migration(
+            connection, version=39, name="owner_auth_v1", migration=migrate_owner_auth
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
