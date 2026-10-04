@@ -57,9 +57,7 @@ RESEARCH_LAYER = frozenset(
 NODE_MODELS = typing.get_args(typing.get_args(ProjectNode)[0])
 NODE_CLASS_NAMES = frozenset(model.__name__ for model in NODE_MODELS) | {"RESEARCH"}
 # Meta relations such as ``supersedes`` belong to every graph, not to research.
-RESEARCH_RELATIONS = frozenset(
-    name for name, spec in RELATION_SPEC.items() if spec.layer != "meta"
-)
+RESEARCH_RELATIONS = frozenset(name for name, spec in RELATION_SPEC.items() if spec.layer != "meta")
 RESEARCH_NAMES = ALL_NODE_TYPES | RESEARCH_RELATIONS
 
 
