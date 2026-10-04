@@ -63,7 +63,6 @@ from rcp.core.models import (
     Edge,
     GraphBranchMetadata,
     GraphState,
-    Hypothesis,
     Patch,
     ProjectNode,
     Proposal,
@@ -80,6 +79,7 @@ from rcp.core.operations import (
     UpdateNodesOperation,
     graph_operations_from_proposal,
 )
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import (
     GraphHeadRef,
     TransitionConflictDetail,
@@ -539,8 +539,11 @@ def branch_human_review_changes(
                 )
             elif isinstance(operation, UpdateNodesOperation):
                 for update in operation.nodes:
-                    if "status" in update.changes and isinstance(
-                        branch.nodes.get(update.id), Hypothesis
+                    node = branch.nodes.get(update.id)
+                    if (
+                        "status" in update.changes
+                        and node is not None
+                        and project_type_of(branch).is_belief(node.type)
                     ):
                         review_ops.append(
                             ProposalStatusChangeOperation(
@@ -771,6 +774,9 @@ SemanticWritePath = tuple[str, ...]
 # Why one path still needs judgment, and what discharging it looks like.  The
 # merge contract renders this exact mapping, so the agent is never asked to
 # rediscover the policy that produced its own task.
+_PROJECT_TYPE = project_type_of()
+_PROTECTED_NAMES = _PROJECT_TYPE.label_list(_PROJECT_TYPE.protected_belief_types)
+_CHOOSER_NAME = _PROJECT_TYPE.label_list(_PROJECT_TYPE.chooser_types)
 MERGE_RESIDUE_REASONS: dict[str, str] = {
     "conflict": (
         "Branch and main changed this path differently. Resolve it from the supplied graph "
@@ -780,12 +786,13 @@ MERGE_RESIDUE_REASONS: dict[str, str] = {
         "Another path on this node conflicts, so the whole node moves as one coherent decision."
     ),
     "protected_node": (
-        "The node is a ResearchQuestion or Hypothesis. Carry the change as one pending main "
+        f"The node is a {_PROTECTED_NAMES}. Carry the change as one pending main "
         "Proposal instead of writing it."
     ),
     "decision_outcome": (
-        "The Decision's status or selected_option changes. Write one coherent node update, and "
-        "declare agent_action only when the operation actually chooses the Decision."
+        f"The {_CHOOSER_NAME}'s status or selected_option changes. Write one coherent node "
+        f"update, and declare agent_action only when the operation actually chooses the "
+        f"{_CHOOSER_NAME}."
     ),
     "main_standing_changed": (
         "A human moved this node's standing on main after the branch forked. Carrying the branch "
@@ -835,7 +842,7 @@ def _node_path_residue_reason(
 
     if node is None or current is None:
         return "node_absent"
-    if node.type in {"research_question", "hypothesis"}:
+    if project_type_of().is_protected_belief(node.type):
         return "protected_node"
     # An agent edit resets standing, which is ordinary.  What is not ordinary is
     # a human moving standing on main after the fork: carrying the branch edit
@@ -845,7 +852,7 @@ def _node_path_residue_reason(
     if field in IMMUTABLE_NODE_UPDATE_FIELDS:
         return "system_field"
     # Decision outcomes and conflicts may require one coherent node update.
-    if node.type == "decision" and any(
+    if project_type_of().is_chooser(node.type) and any(
         item[:2] == path[:2] and item[2] in {"status", "selected_option"} for item in allowed
     ):
         return "decision_outcome"

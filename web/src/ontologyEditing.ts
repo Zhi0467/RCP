@@ -8,57 +8,10 @@ import type {
   OntologyState,
   OntologyTypeDefinition,
 } from "./types";
+import { BASE_TYPE_PRESENTATION, carriesOrigin } from "./researchType.ts";
 
-export const baseOntologyTypes: Array<{
-  name: BaseNodeType;
-  label: string;
-  layer: "epistemic" | "action";
-  primaryField: string;
-  primaryLabel: string;
-}> = [
-  {
-    name: "research_question",
-    label: "Research question",
-    layer: "epistemic",
-    primaryField: "question",
-    primaryLabel: "Question",
-  },
-  {
-    name: "hypothesis",
-    label: "Hypothesis",
-    layer: "epistemic",
-    primaryField: "statement",
-    primaryLabel: "Statement",
-  },
-  {
-    name: "decision",
-    label: "Decision",
-    layer: "action",
-    primaryField: "question",
-    primaryLabel: "Question",
-  },
-  {
-    name: "experiment",
-    label: "Experiment",
-    layer: "action",
-    primaryField: "objective",
-    primaryLabel: "Objective",
-  },
-  {
-    name: "evidence",
-    label: "Evidence",
-    layer: "epistemic",
-    primaryField: "observation",
-    primaryLabel: "Observation",
-  },
-  {
-    name: "blocker",
-    label: "Blocker",
-    layer: "action",
-    primaryField: "description",
-    primaryLabel: "Description",
-  },
-];
+/** Base ontology types in canonical order; the research layer owns the table. */
+export const baseOntologyTypes = BASE_TYPE_PRESENTATION;
 
 export const ontologyNamePattern = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 
@@ -194,7 +147,7 @@ export function makeHumanNode(
     extension_fields: extensionFields,
     title: title.trim(),
     [base.primaryField]: primaryText.trim(),
-    ...(base.name === "evidence" && origin ? { origin } : {}),
+    ...(carriesOrigin(base.name) && origin ? { origin } : {}),
   };
 }
 

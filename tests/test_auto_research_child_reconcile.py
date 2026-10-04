@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import uuid
 
+import pytest
+
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_protocol import SpawnArguments
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -200,7 +202,8 @@ class _UnusedExperimentCoordinator:
         raise AssertionError("Experiment coordinator was not expected")
 
 
-def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path) -> None:
+@pytest.mark.parametrize("seat_type", ["blocker", "research_question"])
+def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path, seat_type) -> None:
     store, episode, root = _setup(tmp_path)
     key = "spawn-after-runtime-repair"
     child_id = str(
@@ -233,14 +236,14 @@ def test_restart_reconciles_spawn_from_immutable_snapshot_once(tmp_path) -> None
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: seat_type,
     )
     second = reconcile_pending_auto_research_child_admissions(
         store,
         background,
         _UnusedExperimentCoordinator(),  # type: ignore[arg-type]
         worker_request_factory=_worker_request,
-        seat_node_type=lambda _project_id, _episode_id, _node_id: "blocker",
+        seat_node_type=lambda _project_id, _episode_id, _node_id: seat_type,
     )
 
     route = store.auto_research_child_work(child_id)

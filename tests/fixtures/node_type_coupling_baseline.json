@@ -1,0 +1,21 @@
+{
+  "api/artifacts.py": 1,
+  "api/digest.py": 1,
+  "api/episode_timeline.py": 3,
+  "api/episode_timeline_models.py": 1,
+  "api/notifications.py": 2,
+  "core/operations.py": 1,
+  "core/project_types.py": 1,
+  "digest.py": 2,
+  "notifications.py": 4,
+  "runs/auto_research.py": 2,
+  "runs/auto_research_admission.py": 5,
+  "server_ops/cli.py": 1,
+  "server_ops/git_credentials.py": 2,
+  "server_ops/models.py": 1,
+  "storage/auto_research.py": 2,
+  "storage/auto_research_children.py": 3,
+  "storage/models.py": 1,
+  "storage/notifications.py": 2,
+  "transfer/records.py": 1
+}

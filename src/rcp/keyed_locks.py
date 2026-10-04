@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from typing import Protocol
 
-from rcp.core.models import Experiment
+from rcp.core.project_types import project_type_of
 
 
 class _History(Protocol):
@@ -60,7 +60,9 @@ class ExperimentAdmission:
         control_node_id = self._control_node_id(request)
         if control_node_id is None:
             return
-        if not isinstance(service.history.state().nodes.get(control_node_id), Experiment):
+        state = service.history.state()
+        node = state.nodes.get(control_node_id)
+        if node is None or not project_type_of(state).is_control_node(node.type):
             raise ValueError(
                 f"Experiment {control_node_id} no longer exists; it cannot be continued."
             )

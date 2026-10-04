@@ -156,9 +156,7 @@ class AutoResearchRunRequest(BaseModel):
             instruction = self.instruction.strip()
             self.instruction = instruction or None
         if self.role == "worker" and not self.control_node_id:
-            raise ValueError(
-                "an Auto-research worker must name the Experiment or Blocker seating it"
-            )
+            raise ValueError("an Auto-research worker must name the graph node seating it")
         if self.wake_cause == "lifecycle" and self.role != "orchestrator":
             raise ValueError("only the Auto-research orchestrator may receive lifecycle facts")
         if len(self.watcher_ids) != len(set(self.watcher_ids)):
@@ -1971,9 +1969,9 @@ class AutoResearchCommandDispatcher:
                 context.episode.episode_id,
                 request.arguments.seat_node_id,
             )
-            if node_type is None or node_type.casefold() not in {"experiment", "blocker"}:
+            if node_type is None:
                 raise AutoResearchCommandInvalid(
-                    "Auto-research workers may be seated only on Experiments and Blockers."
+                    "Auto-research workers must be seated on an existing graph node."
                 )
             outcome = self.effects.spawn(context, request.arguments, planned_worker_id)
             if outcome.status != "ok":

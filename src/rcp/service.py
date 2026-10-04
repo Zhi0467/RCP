@@ -42,7 +42,7 @@ from rcp.config import (
     ResolvedComputeProfile,
     launches_work_like,
 )
-from rcp.control import derive_experiment_control_state
+from rcp.control import derive_experiment_control_state, released_attempts
 from rcp.core.attention import (
     project_counts,
     project_graph_attention,
@@ -55,10 +55,8 @@ from rcp.core.authority import (
 )
 from rcp.core.materialize import MaterializationResult, apply_valid_patch
 from rcp.core.models import (
-    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     HUMAN_EDITABLE_NODE_FIELDS,
     AuthorizedHuman,
-    Decision,
     ExperimentDecisionPin,
     GraphState,
     OntologyState,
@@ -78,12 +76,14 @@ from rcp.core.operations import (
     ProposalSupersedeOperation,
     UpdateNodesOperation,
 )
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import (
     CommittedTransition,
     PreparedTransition,
     project_transition_projection,
 )
+from rcp.core.validation.approval import checked_human_decision_choice, is_decision_choice
 from rcp.core.validation.proposals import (
     normalized_decision_proposal_ops,
     proposal_is_stale,
@@ -168,8 +168,13 @@ TaskTrigger = Literal["human", "orchestrator", "experiment_run", "watcher", "sch
 GraphPatchKind = Literal["work", "experiment_loop"]
 
 
-def _is_decision_choice(changes: dict[str, Any]) -> bool:
-    return "selected_option" in changes or changes.get("status") == "decided"
+def _chooses_decision_option(state: GraphState, node_id: str, changes: dict[str, Any]) -> bool:
+    node = state.nodes.get(node_id)
+    return (
+        node is not None
+        and project_type_of(state).is_chooser(node.type)
+        and is_decision_choice(changes)
+    )
 
 
 def _proposal_applies_decision_choice(state: GraphState, proposal: Proposal) -> bool:
@@ -177,9 +182,7 @@ def _proposal_applies_decision_choice(state: GraphState, proposal: Proposal) -> 
         if not isinstance(operation, UpdateNodesOperation):
             continue
         for update in operation.nodes:
-            if isinstance(state.nodes.get(update.id), Decision) and _is_decision_choice(
-                update.changes
-            ):
+            if _chooses_decision_option(state, update.id, update.changes):
                 return True
     return False
 
@@ -2073,12 +2076,12 @@ class ProjectService:
 
         patches: list[Patch] = []
 
+        project_type = project_type_of(state)
         removed_node_ids = set(request.removed_node_ids)
         direct_choice_node_ids = {
             staged.node_id
             for staged in request.nodes
-            if isinstance(state.nodes.get(staged.node_id), Decision)
-            and _is_decision_choice(staged.changes)
+            if _chooses_decision_option(state, staged.node_id, staged.changes)
         }
         superseded_proposal_ids = {
             proposal.id
@@ -2218,7 +2221,7 @@ class ProjectService:
                         f"Accepted node {node_id} cannot be removed; withdraw its acceptance "
                         "and Sync before removing it."
                     )
-                if node.type == "experiment":
+                if project_type.is_control_node(node.type):
                     control = derive_experiment_control_state(
                         state,
                         node_id,
@@ -2281,43 +2284,13 @@ class ProjectService:
             change_summary: list[str] = []
             changed_fields: set[str] = set()
             display_title = str(staged.changes.get("title", node.title))
-            is_direct_choice = isinstance(node, Decision) and _is_decision_choice(staged.changes)
+            is_direct_choice = project_type.is_chooser(node.type) and is_decision_choice(
+                staged.changes
+            )
             if staged.changes:
                 allowed = set(HUMAN_EDITABLE_NODE_FIELDS[node.type])
-                if (
-                    isinstance(node, Decision)
-                    and "status" in staged.changes
-                    and not is_direct_choice
-                    and staged.changes["status"] not in {"open", "ready", "revisit"}
-                ):
-                    raise ValueError(
-                        f"Direct edits to {node.id} may queue it as open, ready, or revisit; "
-                        "only the Decision choice control may decide it."
-                    )
+                selected_option = checked_human_decision_choice(node, staged.changes)
                 if is_direct_choice:
-                    if node.status == "superseded":
-                        raise ValueError(
-                            f"Decision {node.id} is superseded and cannot be decided again."
-                        )
-                    # Choosing the option a Decision already carries stages only
-                    # the status move, so resolve the effective choice against
-                    # the node the way the options list already is.
-                    selected_option = staged.changes.get("selected_option", node.selected_option)
-                    effective_options = staged.changes.get("options", node.options)
-                    if staged.changes.get("status") != "decided":
-                        raise ValueError(
-                            f"Direct choice on {node.id} must set status exactly to decided."
-                        )
-                    if (
-                        not isinstance(selected_option, str)
-                        or not selected_option.strip()
-                        or not isinstance(effective_options, list)
-                        or selected_option not in effective_options
-                    ):
-                        raise ValueError(
-                            f"Direct choice on {node.id} must select one non-empty option from "
-                            "its current options."
-                        )
                     allowed.update({"selected_option", "status"})
                 if "extension_fields" in staged.changes:
                     self._validate_human_extension_fields(state, node, staged.changes)
@@ -2398,9 +2371,7 @@ class ProjectService:
                                 "id": node.id,
                                 "base_updated_rev": staged.base_updated_rev,
                                 "changes": {
-                                    "attempts": self._cancelled_attempts(
-                                        node, staged.cancel_attempt_ids
-                                    )
+                                    "attempts": released_attempts(node, staged.cancel_attempt_ids)
                                 },
                             }
                         ],
@@ -2437,42 +2408,6 @@ class ProjectService:
                 )
 
         return patches
-
-    @staticmethod
-    def _cancelled_attempts(node: ProjectNode, attempt_ids: list[str]) -> list[dict[str, Any]]:
-        """Close the named open attempts, leaving every other attempt untouched.
-
-        The human releases an attempt whose watcher can no longer answer. Only an
-        open attempt can be released — this never rewrites a finished record.
-        """
-
-        from rcp.core.models import Experiment, utc_now
-
-        if not isinstance(node, Experiment):
-            raise ValueError(f"{node.id} has no attempts to release.")
-        open_ids = {
-            attempt.id
-            for attempt in node.attempts
-            if attempt.status in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES
-        }
-        unknown = sorted(set(attempt_ids) - open_ids)
-        if unknown:
-            raise ValueError(f"{node.id} has no open attempt named: {', '.join(unknown)}.")
-        finished_at = utc_now()
-        return [
-            (
-                attempt.model_copy(
-                    update={
-                        "status": "cancelled",
-                        "finished_at": finished_at,
-                        "failure_reason": "Released by the human.",
-                    }
-                )
-                if attempt.id in set(attempt_ids)
-                else attempt
-            ).model_dump(mode="json")
-            for attempt in node.attempts
-        ]
 
     @staticmethod
     def _validate_human_extension_fields(

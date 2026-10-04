@@ -1,5 +1,10 @@
 # Active decision records
 
+- [The kernel asks node-type questions](2026-10-04-the-kernel-asks-node-type-questions.md)
+  records why kernel code asks a project type which node types play which part,
+  why a type's own rules live in a listed research layer, why the project type
+  is not persisted yet, and why Auto-research workers may sit on any node.
+
 - [Agents browse with Playwright CLI](2026-10-04-agents-browse-with-playwright-cli.md)
   records why agents run Playwright CLI in their own shell instead of MCP, a
   command-channel relay, or the providers' own browsers, why every CLI feature

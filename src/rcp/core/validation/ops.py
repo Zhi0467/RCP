@@ -12,18 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from rcp.core.authority import DECIDE_DECISION, QUEUE_DECISION, permits
-from rcp.core.models import (
-    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
-    EXPERIMENT_COMPATIBILITY_STATUSES,
-    RELATION_SPEC,
-    Decision,
-    Edge,
-    Evidence,
-    Experiment,
-    GraphState,
-    Hypothesis,
-    Standing,
-)
+from rcp.core.models import RELATION_SPEC, Edge, GraphState, Standing
 from rcp.core.ontology import (
     custom_relation,
     edge_matches_relation,
@@ -59,6 +48,18 @@ from rcp.core.operations import (
     WithdrawProposalsOperation,
     strict_project_node,
 )
+from rcp.core.project_types import project_type_of
+from rcp.core.research_rules import (
+    EXPECTATION_RELATIONS as EXPECTATION_RELATIONS,
+)
+from rcp.core.research_rules import (
+    evidence_relation_endpoint_error,
+    expectation_applies,
+    has_active_experiment_attempt,
+    queues_decision,
+    reject_live_legacy_new_node,
+    reject_live_legacy_update,
+)
 from rcp.core.validation.constants import (
     IMMUTABLE_NODE_UPDATE_FIELDS,
     LEGACY_COMPATIBILITY_UPDATE_FIELDS,
@@ -75,13 +76,14 @@ from rcp.core.validation.nodes import (
 )
 from rcp.core.validation.proposals import decision_transition_error, validate_proposal
 
-EVIDENCE_HYPOTHESIS_RELATIONS = frozenset(
-    {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
-)
 ASSESSMENT_REQUIRED_FOR = {
-    relation: frozenset({("evidence", "hypothesis")}) for relation in EVIDENCE_HYPOTHESIS_RELATIONS
+    relation: frozenset(
+        (outcome_type, belief_type)
+        for outcome_type in project_type_of().outcome_types
+        for belief_type in project_type_of().belief_types
+    )
+    for relation in project_type_of().belief_outcome_relations
 }
-EXPECTATION_RELATIONS = frozenset({"produces"})
 
 
 def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> None:
@@ -102,20 +104,7 @@ def validate_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> None:
 
 def author_create_nodes(op: CreateNodesOperation, ctx: OpContext) -> Any:
     for node in op.nodes:
-        if isinstance(node, Experiment) and node.status in EXPERIMENT_COMPATIBILITY_STATUSES:
-            ctx.report.reject(
-                "live-legacy-experiment-phase",
-                f"New Experiment {node.id!r} cannot author compatibility-only phase 'unspecified'.",
-                ctx.revision,
-                related_node_ids=[node.id],
-            )
-        if isinstance(node, Evidence) and "legacy_strength" in node.model_fields_set:
-            ctx.report.reject(
-                "live-legacy-evidence-strength",
-                f"New Evidence {node.id!r} cannot set compatibility-only legacy_strength.",
-                ctx.revision,
-                related_node_ids=[node.id],
-            )
+        reject_live_legacy_new_node(node, ctx.report, ctx.revision)
         raw = node.model_dump(mode="python", exclude_unset=True)
         validate_new_node_authoring(ctx.state, ctx.patch, raw, ctx.report)
     return None
@@ -131,29 +120,9 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
             )
             continue
         changes = update.changes
-        live_legacy_phase = (
-            ctx.mode == "admission"
-            and isinstance(node, Experiment)
-            and changes.get("status") in EXPERIMENT_COMPATIBILITY_STATUSES
+        live_legacy_phase, live_legacy_strength = reject_live_legacy_update(
+            node, changes, ctx.report, ctx.revision, admission=ctx.mode == "admission"
         )
-        if live_legacy_phase:
-            ctx.report.reject(
-                "live-legacy-experiment-phase",
-                f"Update to Experiment {node.id!r} cannot author compatibility-only phase "
-                "'unspecified'.",
-                ctx.revision,
-                related_node_ids=[node.id],
-            )
-        live_legacy_strength = (
-            ctx.mode == "admission" and isinstance(node, Evidence) and "legacy_strength" in changes
-        )
-        if live_legacy_strength:
-            ctx.report.reject(
-                "live-legacy-evidence-strength",
-                f"Update to Evidence {node.id!r} cannot set compatibility-only legacy_strength.",
-                ctx.revision,
-                related_node_ids=[node.id],
-            )
         immutable_fields = set(changes) & IMMUTABLE_NODE_UPDATE_FIELDS
         if ctx.mode == "replay" and ctx.patch.schema_generation == 1:
             immutable_fields -= LEGACY_COMPATIBILITY_UPDATE_FIELDS
@@ -195,8 +164,9 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
             and node_id == ctx.experiment_control_node_id
             and set(changes) <= {"attempts", "status"}
         )
+        is_chooser = project_type_of(ctx.state).is_chooser(node.type)
         if not is_control_update and requires_proposal(node, changes):
-            if isinstance(node, Decision):
+            if is_chooser:
                 if ctx.mode == "admission" and not permits(ctx.patch, DECIDE_DECISION):
                     message = (
                         f"Update to {node_id} uses decide_decision; only a human may write "
@@ -217,9 +187,9 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
                     ctx.revision,
                 )
         elif (
-            isinstance(node, Decision)
+            is_chooser
             and ctx.mode == "admission"
-            and changes.get("status") in {"open", "ready", "revisit"}
+            and queues_decision(changes)
             and not permits(ctx.patch, QUEUE_DECISION)
         ):
             ctx.report.reject(
@@ -230,7 +200,7 @@ def validate_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> None:
             )
         if (
             ctx.mode == "admission"
-            and isinstance(node, Decision)
+            and is_chooser
             and (error := decision_transition_error(node, changes))
         ):
             ctx.report.reject(
@@ -266,7 +236,7 @@ def author_update_nodes(op: UpdateNodesOperation, ctx: OpContext) -> Any:
             authoring=True,
         )
         if (
-            isinstance(node, Hypothesis)
+            project_type_of(ctx.state).is_belief(node.type)
             and "status" in changes
             and changes["status"] != node.status
         ):
@@ -312,29 +282,26 @@ def validate_create_edges(op: CreateEdgesOperation, ctx: OpContext) -> Any:
         target_type = _node_type(ctx, target_id)
         assessment_applies = (source_type, target_type) in ASSESSMENT_REQUIRED_FOR.get(relation, ())
         edge_id = edge.id or f"{source_id}::{relation}::{target_id}"
-        evidence_relation_endpoints_apply = target_type == "hypothesis" and (
-            source_type == "evidence" or (relation == "contradicts" and source_type == "hypothesis")
-        )
         if (
             ctx.mode == "admission"
-            and relation in EVIDENCE_HYPOTHESIS_RELATIONS
+            and relation in project_type_of(ctx.state).belief_outcome_relations
             and source_type is not None
             and target_type is not None
-            and not evidence_relation_endpoints_apply
+            and (
+                endpoint_error := evidence_relation_endpoint_error(
+                    relation, source_type, target_type
+                )
+            )
         ):
             ctx.report.reject(
                 "invalid-evidence-relation-endpoints",
-                f"Relation {relation!r} requires Evidence -> Hypothesis"
-                + (" or Hypothesis -> Hypothesis" if relation == "contradicts" else "")
-                + f" endpoints, not {source_type} -> {target_type}.",
+                endpoint_error,
                 ctx.revision,
                 related_node_ids=[source_id, target_id],
                 related_edge_ids=[edge_id],
             )
-        if edge.expectation is not None and (
-            relation not in EXPECTATION_RELATIONS
-            or (source_type is not None and source_type != "experiment")
-            or (target_type is not None and target_type != "evidence")
+        if edge.expectation is not None and not expectation_applies(
+            relation, source_type, target_type
         ):
             ctx.report.reject(
                 "inapplicable-edge-expectation",
@@ -546,14 +513,7 @@ def validate_remove_nodes(op: RemoveNodesOperation, ctx: OpContext) -> Any:
                 ctx.revision,
                 related_node_ids=[node_id],
             )
-        experiment_versions = (
-            candidate for candidate in (initial_node, node) if isinstance(candidate, Experiment)
-        )
-        if any(
-            attempt.status in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES
-            for experiment in experiment_versions
-            for attempt in experiment.attempts
-        ):
+        if has_active_experiment_attempt(initial_node, node):
             ctx.report.reject(
                 "active-experiment-removal",
                 f"Cannot remove Experiment {node_id!r} while its bounded loop has an active "
@@ -947,7 +907,7 @@ def _validate_belief_cause(
     if isinstance(cause, DecisionCause):
         ref_id = cause.ref_id
         node_type = _node_type(ctx, ref_id)
-        if node_type != "decision":
+        if not project_type_of(ctx.state).is_chooser(node_type):
             ctx.report.reject(
                 "invalid-belief-cause",
                 f"Decision cause {ref_id!r} for {hypothesis_id!r} does not name a Decision.",
@@ -985,8 +945,8 @@ def _validate_belief_cause(
     if (
         edge is None
         or edge.target != hypothesis_id
-        or edge.relation not in {"supports", "weakens", "refutes", "inconclusive", "contradicts"}
-        or _node_type(ctx, edge.source) != "evidence"
+        or edge.relation not in project_type_of(ctx.state).belief_outcome_relations
+        or not project_type_of(ctx.state).is_outcome(_node_type(ctx, edge.source))
     ):
         ctx.report.reject(
             "invalid-belief-cause",

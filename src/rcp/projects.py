@@ -45,7 +45,8 @@ from rcp.core.attention import (
     project_graph_mutation_availability,
 )
 from rcp.core.materialize import MaterializationResult
-from rcp.core.models import Experiment, GraphState, upgrade_graph_projection
+from rcp.core.models import GraphState, upgrade_graph_projection
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphAttentionProjection, GraphHeadRef, GraphTargetRef
 from rcp.core.transitions import ProjectTransitionProjection
 from rcp.history import HistoryManager, ProjectIdentityConflict, ReplayHalted
@@ -2745,11 +2746,7 @@ class ProjectDisplayCache:
                 project_id,
                 state,
                 read_models,
-                experiment_ids=[
-                    experiment_id
-                    for experiment_id in read_models
-                    if isinstance(state.nodes.get(experiment_id), Experiment)
-                ],
+                experiment_ids=_control_node_ids(state, read_models),
             )
         )
         payload["experiment_control"] = controls
@@ -2776,9 +2773,7 @@ class ProjectDisplayCache:
             )
         else:
             state = projection.graph
-            experiment_ids = [
-                node.id for node in state.nodes.values() if isinstance(node, Experiment)
-            ]
+            experiment_ids = _control_node_ids(state)
             read_models = self._store.experiment_control_projection_snapshots(
                 project_id,
                 experiment_ids,
@@ -2879,7 +2874,7 @@ class ProjectDisplayCache:
 
         state = GraphState.model_validate(snapshot["graph"])
         target = GraphTargetRef.model_validate(snapshot.get("graph_target", {}))
-        experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
+        experiment_ids = _control_node_ids(state)
         read_models = self._store.experiment_control_projection_snapshots(
             project_id,
             experiment_ids,
@@ -2901,7 +2896,7 @@ class ProjectDisplayCache:
     ) -> dict[str, object]:
         controls: dict[str, object] = {}
         if experiment_ids is None:
-            experiment_ids = [node.id for node in state.nodes.values() if node.type == "experiment"]
+            experiment_ids = _control_node_ids(state)
         for experiment_id in experiment_ids:
             read_model = read_models[experiment_id]
             runtime = read_model.runtime
@@ -3008,6 +3003,20 @@ class ProjectDisplayCache:
                 self._reconciliation_tasks.pop(project_id, None)
 
         task.add_done_callback(forget)
+
+
+def _control_node_ids(state: GraphState, candidates: Iterable[str] | None = None) -> list[str]:
+    """Ids of the nodes a bounded loop drives, in graph order or ``candidates`` order."""
+
+    project_type = project_type_of(state)
+    if candidates is None:
+        return [node.id for node in state.nodes.values() if project_type.is_control_node(node.type)]
+    control_ids: list[str] = []
+    for node_id in candidates:
+        node = state.nodes.get(node_id)
+        if node is not None and project_type.is_control_node(node.type):
+            control_ids.append(node_id)
+    return control_ids
 
 
 def _project_id(manifest: Manifest) -> str:

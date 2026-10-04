@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from rcp.core import transitions
 from rcp.core.materialize import materialize_patches
 from rcp.core.models import (
     Blocker,
@@ -484,6 +485,89 @@ def test_supersede_and_merge_emit_status_events(operation: dict[str, object]) ->
     assert event.cause.action_index == 0
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "supersede_nodes",
+            "nodes": [{"id": "ev/old", "superseded_by": "ev/current"}],
+        },
+        {
+            "op": "merge_nodes",
+            "merges": [{"duplicate": "ev/old", "canonical": "ev/current"}],
+        },
+    ],
+)
+def test_retiring_evidence_on_a_tested_hypothesis_invalidates_guidance(
+    operation: dict[str, object],
+) -> None:
+    experiment = Experiment(
+        id="exp/run",
+        type="experiment",
+        title="Run",
+        objective="Test the hypothesis.",
+        current_summary="The old result supports the hypothesis.",
+        next_action="Replicate the old result.",
+    )
+    hypothesis = Hypothesis(
+        id="hyp/claim",
+        type="hypothesis",
+        title="Claim",
+        statement="The intervention helps.",
+    )
+    evidence = {
+        evidence_id: Evidence(
+            id=evidence_id,
+            type="evidence",
+            title=evidence_id,
+            observation="The run recovered.",
+            interpretation="The intervention helped.",
+            origin="analytic",
+        )
+        for evidence_id in ("ev/old", "ev/current")
+    }
+    edges = [
+        Edge(
+            id="exp/run::tests::hyp/claim",
+            source=experiment.id,
+            target=hypothesis.id,
+            relation="tests",
+            layer="seam",
+        ),
+        *(
+            Edge(
+                id=f"{evidence_id}::supports::hyp/claim",
+                source=evidence_id,
+                target=hypothesis.id,
+                relation="supports",
+                layer="epistemic",
+            )
+            for evidence_id in evidence
+        ),
+    ]
+    state = GraphState(
+        nodes={experiment.id: experiment, hypothesis.id: hypothesis, **evidence},
+        edges={edge.id: edge for edge in edges},
+    )
+    patch = Patch(
+        revision=1,
+        kind="approval",
+        author="human",
+        producer="human",
+        summary="Retire the duplicate result.",
+        ops=[operation],
+    )
+
+    prepared = GraphTransitionManager().prepare_validated(state, [patch])
+
+    retired = prepared.projection.graph.nodes["ev/old"]
+    assert isinstance(retired, Evidence) and retired.validity == "superseded"
+    projected = prepared.projection.graph.nodes[experiment.id]
+    assert isinstance(projected, Experiment)
+    assert projected.current_summary_stale is True
+    assert projected.next_action_stale is True
+
+
 def test_status_event_ignores_earlier_same_value_write_for_attribution() -> None:
     state = GraphState(
         nodes={
@@ -641,7 +725,7 @@ def test_transition_identity_has_a_golden_provenance_digest() -> None:
     assert patch.transition is not None
     assert (
         patch.transition.transition_id
-        == "25c01d5ff34de59cf077d44f5a974a0d9bc7b0d8d02dcb2a8f02f44d538d04ce"
+        == "96c3b5c3fa7a9655beda9a013c9dfe077ea7b704620e4d10c63beadf5e1846da"
     )
 
 
@@ -732,6 +816,152 @@ def test_transition_identity_accepts_a_recomputed_historical_ruleset_tag() -> No
     assert recovered == source_patches
 
 
+def test_edges_of_retired_evidence_no_longer_invalidate_guidance() -> None:
+    evidence = Evidence(
+        id="ev/old",
+        type="evidence",
+        title="Old result",
+        observation="The run recovered.",
+        interpretation="The intervention helped.",
+        origin="analytic",
+        validity="superseded",
+    )
+    edge = Edge(
+        id="ev/old::supports::hyp/claim",
+        source=evidence.id,
+        target="hyp/claim",
+        relation="supports",
+        layer="epistemic",
+    )
+    state = GraphState(
+        nodes={
+            "exp/run": Experiment(
+                id="exp/run",
+                type="experiment",
+                title="Run",
+                objective="Test the hypothesis.",
+                current_summary="The current result supports the hypothesis.",
+                next_action="Replicate the current result.",
+            ),
+            "hyp/claim": Hypothesis(
+                id="hyp/claim",
+                type="hypothesis",
+                title="Claim",
+                statement="The intervention helps.",
+            ),
+            evidence.id: evidence,
+        },
+        edges={
+            "exp/run::tests::hyp/claim": Edge(
+                id="exp/run::tests::hyp/claim",
+                source="exp/run",
+                target="hyp/claim",
+                relation="tests",
+                layer="seam",
+            ),
+            edge.id: edge,
+        },
+    )
+    patch = Patch(
+        revision=1,
+        kind="approval",
+        author="human",
+        producer="human",
+        summary="Drop the retired result's relation.",
+        ops=[{"op": "remove_edges", "edge_ids": [edge.id]}],
+    )
+
+    prepared = GraphTransitionManager().prepare_validated(state, [patch])
+
+    projected = prepared.projection.graph.nodes["exp/run"]
+    assert isinstance(projected, Experiment)
+    assert projected.current_summary_stale is False
+    assert projected.next_action_stale is False
+
+
+def _evidence_retirement_transition() -> tuple[GraphState, Patch]:
+    evidence = {
+        evidence_id: Evidence(
+            id=evidence_id,
+            type="evidence",
+            title=evidence_id,
+            observation="The run recovered.",
+            interpretation="The intervention helped.",
+            origin="analytic",
+        )
+        for evidence_id in ("ev/old", "ev/current")
+    }
+    state = GraphState(nodes=dict(evidence))
+    patch = Patch(
+        revision=1,
+        kind="approval",
+        author="human",
+        producer="human",
+        summary="Retire the duplicate result.",
+        ops=[{"op": "supersede_nodes", "nodes": [{"id": "ev/old", "superseded_by": "ev/current"}]}],
+    )
+    return state, GraphTransitionManager().prepare_validated(state, [patch]).patch
+
+
+def test_retiring_evidence_records_its_lifecycle_event() -> None:
+    _state, patch = _evidence_retirement_transition()
+
+    assert patch.transition is not None
+    assert patch.transition.ruleset_tag == TRANSITION_RULESET_TAG
+    assert [
+        (event.event_type, event.node_id, event.field, event.before, event.after)
+        for event in patch.transition.lifecycle_events
+    ] == [("node_status_changed", "ev/old", "validity", "valid", "superseded")]
+
+
+def test_earlier_rulesets_replay_with_status_only_lifecycle_events() -> None:
+    state, patch = _evidence_retirement_transition()
+    assert patch.transition is not None
+    # A trace recorded under an earlier ruleset tracked only ``status``, so it
+    # carries no event for Evidence ``validity`` and must still replay.
+    ruleset_tag = "rcp.lifecycle.v2"
+    source_patches = [
+        _source_patch_for_group(patch, group) for group in patch.transition.initiating_groups
+    ]
+    source_actions = [
+        (source_patch, operation)
+        for source_patch in source_patches
+        for operation in source_patch.ops
+    ]
+    transition_id = _transition_id(
+        patch.transition.pre_head,
+        source_patches,
+        patch.transition.initiating_groups,
+        source_actions,
+        ruleset_tag=ruleset_tag,
+    )
+    historical_trace = patch.transition.model_copy(
+        update={"ruleset_tag": ruleset_tag, "transition_id": transition_id, "lifecycle_events": []}
+    )
+
+    recovered = validate_transition_trace(
+        state,
+        patch.model_copy(update={"transition": historical_trace}),
+    )
+
+    assert recovered == source_patches
+
+
+def test_historical_guidance_rule_version_still_replays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _gated_state()
+    monkeypatch.setattr(transitions, "GUIDANCE_RULE_ID", "experiment.guidance-validity.v1")
+    patch = GraphTransitionManager().prepare_validated(state, [_resolve_patch()]).patch
+    monkeypatch.undo()
+    assert patch.transition is not None and patch.transition.generated_actions
+    assert {action.rule_id for action in patch.transition.generated_actions} == {
+        "experiment.guidance-validity.v1"
+    }
+
+    assert validate_transition_trace(state, patch)
+
+
 def test_transition_trace_rejects_missing_or_forged_lifecycle_events() -> None:
     state = _gated_state()
     patch = GraphTransitionManager().prepare_validated(state, [_resolve_patch()]).patch
@@ -787,3 +1017,9 @@ def test_trigger_manifest_is_backend_versioned_and_conservative() -> None:
         trigger for trigger in manifest.triggers if trigger.operation == "update_nodes"
     )
     assert {"status", "selected_option", "options"} <= set(node_update.node_fields)
+    # Retiring Evidence keeps its edges, so the browser must route it too.
+    assert {"evidence"} <= set(node_update.node_types)
+    assert "validity" in node_update.node_fields
+    assert {"supersede_nodes", "merge_nodes"} <= {
+        trigger.operation for trigger in manifest.triggers
+    }

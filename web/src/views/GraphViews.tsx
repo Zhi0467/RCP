@@ -120,6 +120,7 @@ import type {
   WatcherRecord,
 } from "../types";
 import { nodeTypeLabel } from "../nodePresentation";
+import { RESEARCH, TYPE_LENS, isControlNode, isQuestion } from "../researchType";
 import { useNarrowViewport } from "../hooks/useNarrowViewport";
 
 export function focusRunDetail(detail: Pick<HTMLDivElement, "focus" | "scrollIntoView">): void {
@@ -137,26 +138,9 @@ interface Props {
 
 interface ScientificProps extends Props, GraphEditingProps {}
 
-const scienceOrder: GraphNode["type"][] = [
-  "research_question",
-  "hypothesis",
-  "decision",
-  "experiment",
-  "evidence",
-  "blocker",
-];
-const dagTypes = scienceOrder;
+const dagTypes = RESEARCH.nodeTypes;
 const NO_CHANGED_NODES: ReadonlySet<string> = new Set();
-// These feed CSS custom properties, so naming the palette tokens rather than
-// their light values keeps the graph legible in both themes.
-const dagTypeMeta: Record<GraphNode["type"], { label: string; color: string }> = {
-  research_question: { label: "Questions", color: "var(--slate)" },
-  hypothesis: { label: "Hypotheses", color: "var(--plum)" },
-  decision: { label: "Decisions", color: "var(--mustard)" },
-  experiment: { label: "Experiments", color: "var(--teal)" },
-  evidence: { label: "Evidence", color: "var(--moss)" },
-  blocker: { label: "Blockers", color: "var(--coral)" },
-};
+const dagTypeMeta = TYPE_LENS;
 
 export function ScientificView({
   graph,
@@ -1240,9 +1224,7 @@ export function ExecutionView({
     exactExperimentEntry,
   );
   const experimentNodes = new Map(
-    exactProjection.nodes
-      .filter((node) => node.type === "experiment")
-      .map((node) => [node.id, node]),
+    exactProjection.nodes.filter((node) => isControlNode(node.type)).map((node) => [node.id, node]),
   );
   const experimentRuns = new Map<string, ExperimentRun>();
   const experimentEntriesByEpisode = new Map<string, ExperimentLoopIndexEntry>();
@@ -1968,7 +1950,7 @@ function dagFocusNode(nodes: GraphNode[], edges: Edge[]): string | undefined {
   const incoming = new Set(edges.map((edge) => edge.target));
   const outgoing = new Map<string, number>();
   edges.forEach((edge) => outgoing.set(edge.source, (outgoing.get(edge.source) ?? 0) + 1));
-  const questions = nodes.filter((node) => node.type === "research_question");
+  const questions = nodes.filter((node) => isQuestion(node.type));
   const roots = questions.filter((node) => !incoming.has(node.id));
   return (
     [...(roots.length > 0 ? roots : questions)].sort(

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from rcp.core.models import (
+    ACTIVE_EXPERIMENT_ATTEMPT_STATUSES,
     CLOSED_EXPERIMENT_STATUSES,
     Blocker,
     Decision,
     Experiment,
     ExperimentDecisionPin,
     GraphState,
+    ProjectNode,
     Proposal,
+    utc_now,
 )
 from rcp.core.operations import (
     ProposalContentChangeOperation,
@@ -21,6 +25,51 @@ from rcp.core.operations import (
     ProposalSupersedeOperation,
 )
 from rcp.storage.models import AgentFailureKind
+
+# The node model the bounded Experiment loop drives. Kernel modules that carry
+# the whole node, such as a response model, name it through this alias.
+ExperimentNode: TypeAlias = Experiment
+
+
+def experiment_node(state: GraphState, node_id: str | None) -> Experiment | None:
+    """The Experiment ``node_id`` names in ``state``, or ``None``."""
+
+    node = state.nodes.get(node_id) if node_id is not None else None
+    return node if isinstance(node, Experiment) else None
+
+
+def released_attempts(node: ProjectNode, attempt_ids: list[str]) -> list[dict[str, Any]]:
+    """Close the named open attempts, leaving every other attempt untouched.
+
+    The human releases an attempt whose watcher can no longer answer. Only an
+    open attempt can be released — this never rewrites a finished record.
+    """
+
+    if not isinstance(node, Experiment):
+        raise ValueError(f"{node.id} has no attempts to release.")
+    open_ids = {
+        attempt.id
+        for attempt in node.attempts
+        if attempt.status in ACTIVE_EXPERIMENT_ATTEMPT_STATUSES
+    }
+    unknown = sorted(set(attempt_ids) - open_ids)
+    if unknown:
+        raise ValueError(f"{node.id} has no open attempt named: {', '.join(unknown)}.")
+    finished_at = utc_now()
+    return [
+        (
+            attempt.model_copy(
+                update={
+                    "status": "cancelled",
+                    "finished_at": finished_at,
+                    "failure_reason": "Released by the human.",
+                }
+            )
+            if attempt.id in set(attempt_ids)
+            else attempt
+        ).model_dump(mode="json")
+        for attempt in node.attempts
+    ]
 
 
 class DecisionDrift(BaseModel):

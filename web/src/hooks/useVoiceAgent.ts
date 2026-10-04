@@ -10,6 +10,7 @@ import {
 import { serviceConnectionFailure } from "../dictation";
 import { errorMessage } from "../errors";
 import { MicrophoneBusyError } from "../microphone";
+import { isControlNode } from "../researchType";
 import { catalog, catalogAsFunctionTools, resolve } from "../toolCatalog";
 import type { AgentProfile, AgentTask, ProjectSnapshot, VoiceSettings } from "../types";
 import {
@@ -110,7 +111,7 @@ async function buildVoicePin(
   if (name === "rcp_start_experiment") {
     const id = String(args.experiment_id ?? "");
     const node = project.graph.nodes[id];
-    if (!node || node.type !== "experiment") throw new Error(`${id} is not an Experiment here.`);
+    if (!node || !isControlNode(node.type)) throw new Error(`${id} is not an Experiment here.`);
     const budget = node.invocation_ceiling;
     if (typeof budget !== "number") throw new Error(`Experiment ${id} has no invocation ceiling.`);
     return {

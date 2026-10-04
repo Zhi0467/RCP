@@ -49,9 +49,17 @@ from rcp.core.operations import (
     UpdateNodesOperation,
     graph_operations_from_proposal,
 )
+from rcp.core.project_types import project_type_of
 from rcp.core.validation.constants import IDENTIFIER_RE
 from rcp.core.validation.nodes import validate_source_refs
 from rcp.core.validation.report import ValidationReport
+
+
+def _protected_names(state: GraphState) -> str:
+    """The protected belief types as rule messages name them."""
+
+    project_type = project_type_of(state)
+    return project_type.label_list(project_type.protected_belief_types)
 
 
 def decision_transition_error(decision: Decision, changes: dict[str, Any]) -> str | None:
@@ -372,7 +380,7 @@ def _validate_content_change_intent(
         return "a content change requires exactly id and changes, with no cause."
     node = _existing_protected_node(state, context_patch, update.id)
     if node is None:
-        return "a content change must target one existing ResearchQuestion or Hypothesis."
+        return f"a content change must target one existing {_protected_names(state)}."
     changes = update.changes
     if not changes:
         return "a content change must contain at least one changed field."
@@ -455,7 +463,7 @@ def _validate_removal_intent(
         node = state.nodes.get(node_ids[0])
         if _is_branch_merge(context_patch) and node is not None and node.standing == "accepted":
             return None
-        return "removal must target one existing ResearchQuestion or Hypothesis."
+        return f"removal must target one existing {_protected_names(state)}."
     return None
 
 
@@ -476,12 +484,12 @@ def _validate_supersede_intent(
     successor_id = item.superseded_by
     predecessor = _existing_protected_node(state, context_patch, node_id)
     if predecessor is None:
-        return "supersede must retire one existing ResearchQuestion or Hypothesis."
+        return f"supersede must retire one existing {_protected_names(state)}."
     if not isinstance(successor_id, str) or not successor_id or successor_id == node_id:
         return "supersede must name a distinct successor node."
     successor_type = _protected_node_type(state, context_patch, successor_id)
     if successor_type is None:
-        return "supersede must name a ResearchQuestion or Hypothesis successor."
+        return f"supersede must name a {_protected_names(state)} successor."
     if successor_type != predecessor.type:
         return "supersede predecessor and successor must be the same protected belief type."
     return None
@@ -504,12 +512,12 @@ def _validate_merge_intent(
     canonical_id = item.canonical
     duplicate = _existing_protected_node(state, context_patch, duplicate_id)
     if duplicate is None:
-        return "merge must fold one existing ResearchQuestion or Hypothesis."
+        return f"merge must fold one existing {_protected_names(state)}."
     if not isinstance(canonical_id, str) or not canonical_id or canonical_id == duplicate_id:
         return "merge must name a distinct canonical node."
     canonical_type = _protected_node_type(state, context_patch, canonical_id)
     if canonical_type is None:
-        return "merge must name a ResearchQuestion or Hypothesis canonical node."
+        return f"merge must name a {_protected_names(state)} canonical node."
     if canonical_type != duplicate.type:
         return "merge duplicate and canonical must be the same protected belief type."
     return None

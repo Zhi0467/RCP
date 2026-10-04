@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { edgeValidationFlags } from "../nodeDetail";
 import { humanize, nodeTypeLabel, presentNode } from "../nodePresentation";
+import { isBelief, isBeliefOutcomeRelation, isOutcome } from "../researchType";
 import type { Edge, GraphNode, ValidationMessage } from "../types";
 
 export interface RelationMapProps {
@@ -25,22 +26,14 @@ export interface OneHopRelationGroups {
 
 type EvidenceAssessmentPresentation = NonNullable<Edge["assessment"]> | "legacy";
 
-const assessedEvidenceRelations = new Set([
-  "supports",
-  "weakens",
-  "refutes",
-  "inconclusive",
-  "contradicts",
-]);
-
 export function evidenceAssessmentPresentation(
   edge: Edge,
   allNodes: Record<string, GraphNode>,
 ): EvidenceAssessmentPresentation | null {
   if (
-    allNodes[edge.source]?.type !== "evidence" ||
-    allNodes[edge.target]?.type !== "hypothesis" ||
-    !assessedEvidenceRelations.has(edge.relation)
+    !isOutcome(allNodes[edge.source]?.type) ||
+    !isBelief(allNodes[edge.target]?.type) ||
+    !isBeliefOutcomeRelation(edge.relation)
   ) {
     return null;
   }

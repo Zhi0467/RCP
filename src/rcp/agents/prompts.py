@@ -19,6 +19,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
+from rcp.core.project_types import project_type_of
 from rcp.limits import ASK_CHOICE_MAX_COUNT, ASK_CHOICE_MAX_LENGTH, ASK_QUESTION_MAX_LENGTH
 from rcp.providers import ProviderSkillReference, profile_for
 
@@ -192,6 +193,23 @@ def _command_client_rule(command_client: str) -> str:
     )
 
 
+def protected_belief_names() -> str:
+    """The protected belief types (invariant 3b) as rule prose names them."""
+
+    project_type = project_type_of()
+    return project_type.label_list(project_type.protected_belief_types)
+
+
+def _protected_question_words() -> str:
+    """Protected question types in running prose, e.g. ``research-question``."""
+
+    project_type = project_type_of()
+    names = project_type.label_list(
+        project_type.question_types & project_type.protected_belief_types
+    )
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", "-", names).lower()
+
+
 def ask_contract(how_it_returns: str) -> str:
     """The one shared `ask` rule; each owner that authorizes ask supplies how it returns.
 
@@ -209,7 +227,7 @@ def ask_contract(how_it_returns: str) -> str:
   chosen `choices`), or `dismissed`. Dismissed means continue without that answer, or say what
   stays blocked.
 - An answer is the human's input, never an approval. It cannot change your capability, write
-  roots, graph target, or budget. A change to an existing ResearchQuestion or Hypothesis is still
+  roots, graph target, or budget. A change to an existing {protected_belief_names()} is still
   a Proposal.
 {how_it_returns}"""
 
@@ -1009,7 +1027,7 @@ Method:
   source records carry factual claims; explicit human decisions, corrections, and reviewed synthesis
   carry project framing; specialist and assistant summaries may route you to evidence but are never
   its sole support.
-- Existing research-question changes require a Proposal, even when described in change_summary.
+- Existing {_protected_question_words()} changes require a Proposal, even when described in change_summary.
   Keep observations separate from untested causal actions and retain invalid attempts when they
   change interpretation.
 - Collector dumps are observations at their filename timestamp, never live state.

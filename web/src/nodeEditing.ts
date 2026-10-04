@@ -5,6 +5,7 @@ import type {
   OntologyFieldDefinition,
   OntologyState,
 } from "./types";
+import { editFieldsFor } from "./researchType.ts";
 
 export interface NodeEditField {
   key: string;
@@ -17,90 +18,9 @@ export interface NodeEditField {
   extensionName?: string;
 }
 
-const title: NodeEditField = { key: "title", label: "Title", kind: "text" };
-
-const fieldsByType: Record<GraphNode["type"], NodeEditField[]> = {
-  research_question: [
-    title,
-    { key: "question", label: "Question", kind: "multiline" },
-    { key: "motivation", label: "Motivation", kind: "multiline" },
-    { key: "scope", label: "Scope", kind: "multiline" },
-  ],
-  hypothesis: [
-    title,
-    { key: "statement", label: "Statement", kind: "multiline" },
-    { key: "rationale", label: "Rationale", kind: "multiline" },
-    { key: "predictions", label: "Predictions", kind: "list" },
-    { key: "scope", label: "Scope", kind: "multiline" },
-  ],
-  decision: [
-    title,
-    { key: "question", label: "Question", kind: "multiline" },
-    { key: "options", label: "Options", kind: "list" },
-    {
-      key: "status",
-      label: "Status",
-      kind: "select",
-      options: [
-        { value: "open", label: "Open" },
-        { value: "ready", label: "Ready" },
-        { value: "revisit", label: "Revisit" },
-      ],
-    },
-    { key: "rationale", label: "Rationale", kind: "multiline", nullable: true },
-    { key: "consequences", label: "Consequences", kind: "list" },
-  ],
-  experiment: [
-    title,
-    { key: "objective", label: "Objective", kind: "multiline" },
-    { key: "design", label: "Design", kind: "multiline" },
-    { key: "proxies", label: "Proxies", kind: "proxies" },
-    { key: "limitations", label: "Limitations", kind: "list" },
-    { key: "expected_outcomes", label: "Expected outcomes", kind: "list" },
-    { key: "interpretation_rules", label: "Interpretation rules", kind: "list" },
-    { key: "completion_criteria", label: "Completion criteria", kind: "list" },
-    {
-      key: "invocation_ceiling",
-      label: "Invocation ceiling",
-      kind: "number",
-      min: 1,
-      integer: true,
-    },
-    { key: "current_summary", label: "Current summary", kind: "multiline" },
-    { key: "next_action", label: "Next action", kind: "multiline", nullable: true },
-  ],
-  evidence: [
-    title,
-    { key: "observation", label: "Observation", kind: "multiline" },
-    { key: "interpretation", label: "Interpretation", kind: "multiline" },
-  ],
-  blocker: [
-    title,
-    {
-      key: "status",
-      label: "Status",
-      kind: "select",
-      options: [
-        { value: "open", label: "Open" },
-        { value: "resolved", label: "Resolved" },
-        { value: "superseded", label: "Superseded" },
-      ],
-    },
-    { key: "description", label: "Description", kind: "multiline" },
-    { key: "resolution_condition", label: "Resolution condition", kind: "multiline" },
-    { key: "recommended_action", label: "Recommended action", kind: "multiline", nullable: true },
-  ],
-};
-
 export function editableNodeFields(node: GraphNode, ontology?: OntologyState): NodeEditField[] {
   const ownerTypes = new Set([node.type, ...(node.extension_type ? [node.extension_type] : [])]);
-  const baseFields =
-    node.type === "decision" &&
-    node.status !== "open" &&
-    node.status !== "ready" &&
-    node.status !== "revisit"
-      ? fieldsByType.decision.filter((field) => field.key !== "status")
-      : fieldsByType[node.type];
+  const baseFields = editFieldsFor(node);
   const extensionFields = ontology
     ? ontology.fields
         .filter((field) => ownerTypes.has(field.owner_type) && !field.deprecated)
