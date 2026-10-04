@@ -37,12 +37,13 @@ and `sys.executable`, which starts RCP's own Python runtime.
 | `loginctl` | team server | `server_ops/install.py`, `server_ops/doctor.py` | Enable and inspect execution-account linger | PATH existence at install; `show-user` readback and doctor | Refuse install or report unhealthy service account |
 | `mkdir` | execution host | `transport/state.py`, `transport/run_stage.py` | `-p` stage/root creation | No probe today | Refuse preparation/publication on command failure |
 | `npm` | desktop / team server | `web_assets.py` | Run the repository's Web build and watch scripts | No independent version probe today | Source Web build fails visibly; packaged prebuilt Web mode does not invoke npm |
-| `ps` | desktop / execution host / team server | `transport/remote_terminate_provider.py` | Process pid, parent, group and command inspection | No independent probe today | Cannot confirm provider process ownership/stopping; no inferred successful stop |
+| `osascript` | desktop | `machine_power_macos.py` | `do shell script … with administrator privileges` for the one-time keep-awake install and uninstall | None; macOS only | A cancelled prompt changes nothing; any other failure is reported as `admin_failed` |
+| `ps` | desktop / execution host / team server | `transport/remote_terminate_provider.py`, `machine_power_macos.py` | Process pid, parent, group and command inspection; backend start-time identity for the keep-awake heartbeat | No independent probe today | Cannot confirm provider process ownership/stopping; no inferred successful stop |
 | `python3` | execution host | `transport/state.py`, `transport/state_transfer.py`, `transport/run_stage.py`, `agents/launcher.py`, `compute_jobs/files.py`, `sources/indexer.py`, `terminals/probe.py`, `server_ops/backup_checkout.py` | Python >=3.9 standard library for shipped helpers | Used in discovery and helper execution; no explicit version gate today | Remote operation fails when interpreter/helper is unavailable |
 | `rm` | execution host | `transport/run_stage.py` | `-f` staged handoff cleanup | No probe today | Stage cleanup reports failure; no silent success |
 | `rsync` | desktop / execution host / team server | `transport/state_transfer.py`, `transport/state.py`, `transport/run_stage.py`, `sources/indexer.py` | Three state transfers and run-stage inputs: protocol >=29 and support for `-a`, `--delete`, `--exclude`, `-R` over `-e ssh` at both ends; GNU rsync and stock macOS openrsync qualify; other owners retain existing flags | State owner passes the required flags before `--version` and parses GNU/openrsync output for local PATH candidates and remote rsync; other owners have no contract probe today | Three state transfers and run-stage inputs use visible tar fallback; backup, restore, kept artifacts/result views and source index: rsync required, no fallback yet. Every owner retries a dropped stream |
 | `runuser` | team server | `server_ops/install.py`, `server_ops/git_credentials.py`, `server_ops/backup_config.py` | Run argv under the exact service account | PATH existence at install; no independent feature/version probe | Refuse affected account operation |
-| `sh` | desktop / execution host / team server | `transport/state.py`, `compute_jobs/backends/launchd.py`, `compute_jobs/backends/systemd_user.py`, `server_ops/provider_update.py` | POSIX command shell for history probe, job wrappers and installer | No independent probe today | Owning command/launch fails |
+| `sh` | desktop / execution host / team server | `transport/state.py`, `compute_jobs/backends/launchd.py`, `compute_jobs/backends/systemd_user.py`, `server_ops/provider_update.py`, `machine_power_macos.py` | POSIX command shell for history probe, job wrappers, installer and the keep-awake watchdog | No independent probe today | Owning command/launch fails |
 | `ssh` | desktop / execution host / team server | `transport/ssh.py`, `transport/remote_compute_probe.py`, `server_ops/git_credentials.py`, `server_ops/install.py`, `server_ops/doctor.py` | OpenSSH batch transport, connection/keepalive options, multiplexing and strict host-key mode where requested | Install PATH/`-V`; doctor checks OpenSSH version prefix; remote readiness executes the route; no general version gate | Remote operation unavailable on transport failure; no alternative transport |
 | `ssh-keygen` | execution host / team server | `server_ops/remote_git_credentials.py`, `server_ops/git_credentials.py`, `server_ops/install.py` | Ed25519 repository-scoped keys and public-key derivation | PATH existence at install; generated key/public-key readback; no version probe | Refuse credential preparation/readback |
 | `sudo` | team server | `server_ops/install.py`, `server_ops/cli.py`, `server_ops/git_credentials.py` | Noninteractive account-policy check and operator privilege boundary | PATH existence and `-n -U <account> -l` at install | Refuse install unless absence of service-account sudo authority is proved; operator command fails if unauthorized |
@@ -465,9 +466,11 @@ ordinary loss recovery is re-invitation by the other enrolled member.
 
 A personal-space backend on macOS keeps its Mac from idle-sleeping while it has
 work. `src/rcp/machine_power.py` owns the policy; Settings → This Mac shows it
-and has one toggle, on by default. A team space has no controller, and the API
+and has an idle-hold toggle, on by default. A team space has no controller, and the API
 returns 404. Other platforms report `supported: false`; each supported
-platform is one entry in `IDLE_HOLD_COMMANDS`.
+platform is one entry in `PLATFORM_PROFILES`. The macOS profile in
+`machine_power_macos.py` owns platform commands, readers, and installation;
+profiles without lid mode declare that capability absent.
 
 **The hold.** While there is demand, the backend runs
 `caffeinate -i -w <backend pid>`, an ordinary idle-sleep assertion. It needs no
@@ -488,6 +491,64 @@ current hold and is logged, since it is not evidence that work ended.
 
 The preference lives in the data directory's SQLite `machine_power_state`
 row, not in project manifests.
+
+### Lid-closed mode
+
+**Lid-closed mode** is opt-in. While there is demand, the kernel
+`SleepDisabled` flag is set. It needs the one-time install below. The
+[decision record](../decisions/2026-10-01-backend-owns-macos-keep-awake.md)
+explains the tradeoffs. The 30 s wake gate in `machine_sleep.py` is unchanged.
+
+**Install** is one admin prompt (`osascript ... with administrator
+privileges`). It writes `/etc/sudoers.d/rcp-keep-awake`, granting the enrolled
+account exactly `/usr/bin/pmset -a disablesleep 0` and `1`; a root
+`RunAtLoad` LaunchDaemon that clears the flag at every boot; and the
+machine-wide directory `/Library/Application Support/RCP/keep-awake/`. The
+sudoers file is checked with `visudo -cf`. Files RCP did not write are refused,
+as is a second macOS account. Uninstall clears and verifies the flag, then
+removes everything but the directory and its `owner.lock`.
+
+**One owner per Mac** holds an advisory lock on `owner.lock`. A flag that is set
+without an RCP activation record is reported as `external_owner`; the
+controller never clears or adopts it. Install and uninstall reload the boot
+daemon, which clears it, as a reboot does.
+
+**The watchdog is the only process that runs `pmset -a disablesleep`.** It is
+`src/rcp/machine_power_watchdog.sh`, copied into the machine-wide directory and
+spawned detached. A safety pass every 10 s writes a heartbeat (generation,
+worker pid and start time, desired state). The watchdog keeps the flag set while
+the heartbeat says `on`, is fresh, and names a live process. Otherwise it
+clears the flag, reads it back, and runs `pmset sleepnow` unless the lid is
+known to be open. After a stale or mismatched heartbeat it revokes that
+generation and exits, so a resumed backend cannot re-arm it.
+
+**Safety.** While lid mode is enabled or an owned activation needs cleanup,
+each pass reads battery, thermal state, lid, and flag through
+lazily loaded macOS frameworks (`ctypes`), with no command-text fallback.
+IOKit power-source descriptions supply AC/battery state and charge;
+`NSProcessInfo.thermalState` supplies thermal state; `AppleClamshellState` on
+`IOPMrootDomain` supplies lid state; and `IOPMCopySystemPowerSettings()` supplies
+`SleepDisabled`. A failed call or missing key is a read failure. With the
+flag set, the kernel refuses its own low-battery and thermal sleep, so RCP
+releases lid mode at 20% or less on battery and on serious or critical thermal state (2 or 3).
+A reading that fails, an installation that is no longer complete, or a watchdog
+failure also releases lid mode only. The idle hold remains demand-driven.
+Ending demand drops
+both holds and never sleeps an open Mac. The independent shell watchdog retains
+its own `pmset -g` flag and `ioreg` lid parsing, tested against captured output.
+Only that shell path treats an omitted `SleepDisabled` line under the pmset
+settings header as off.
+
+**Re-arm.** Thermal and cleanup failures latch lid mode off until the human
+re-enables it, and the latch survives restarts. A successful uninstall clears it. A battery release re-arms on AC
+power. If the flag cannot be cleared, the space home page shows
+`sudo pmset -a disablesleep 0`; if the flag cleared but the closed Mac did not
+sleep, it shows `pmset sleepnow`. A removed sudoers rule can strand the flag;
+that is accepted. A failed clear preserves its release cause and waits for
+human action instead of repeatedly spawning cleanup watchdogs.
+
+Lid-mode preferences and latches share the data directory's SQLite
+`machine_power_state` row.
 
 ## Release selection, deployment, and automatic recovery
 

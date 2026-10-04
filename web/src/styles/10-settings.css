@@ -35,6 +35,13 @@
   margin: 0;
   padding: 20px 24px;
 }
+.project-delete-dialog > ul {
+  font-size: var(--type-xs);
+  line-height: 1.65;
+  margin: 0;
+  list-style: disc;
+  padding: 20px 24px 20px 42px;
+}
 .project-delete-dialog code {
   background: var(--paper);
   border: 1px solid var(--line);
@@ -3460,11 +3467,14 @@ details[open] > .view-disclosure-summary > svg:last-child {
   font-weight: 700;
 }
 
-.machine-power-controls {
+.machine-power-controls,
+.machine-power-warning {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+.machine-power-controls {
   padding: 16px 20px 0;
 }
 .machine-power-controls .settings-repository {
@@ -3727,4 +3737,15 @@ details[open] > .view-disclosure-summary > svg:last-child {
   .agent-board {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.machine-power-warning {
+  padding: 16px;
+  border: 1px solid var(--mustard);
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: var(--walnut);
+}
+.machine-power-warning code {
+  overflow-wrap: anywhere;
 }

@@ -5,8 +5,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 from rcp.frozen_resources import MANIFEST_NAME, resource_manifest
 
-
-PROJECT_ROOT = Path(SPECPATH).parent
+PROJECT_ROOT = Path(SPECPATH).parent  # noqa: F821 - provided by PyInstaller
 SOURCE_ROOT = PROJECT_ROOT / "src"
 WEB_DIST = PROJECT_ROOT / "web" / "dist"
 RUNTIME_HOOK = PROJECT_ROOT / "packaging" / "hooks" / "validate_frozen_resources.py"
@@ -15,7 +14,8 @@ RUNTIME_HOOK = PROJECT_ROOT / "packaging" / "hooks" / "validate_frozen_resources
 # files, not just PyInstaller's importable bytecode. Collect the whole first-party
 # package so new helpers, nested skill assets, and service templates ship by default.
 package_data = collect_data_files("rcp", include_py_files=True)
-datas = [(str(WEB_DIST), "rcp/web_dist"), *package_data]
+WATCHDOG = SOURCE_ROOT / "rcp" / "machine_power_watchdog.sh"
+datas = [(str(WEB_DIST), "rcp/web_dist"), *package_data, (str(WATCHDOG), "rcp")]
 manifest_dir = PROJECT_ROOT / "packaging" / "build" / "resources"
 manifest_dir.mkdir(parents=True, exist_ok=True)
 manifest_path = manifest_dir / MANIFEST_NAME
@@ -25,7 +25,7 @@ datas.append((str(manifest_path), "rcp"))
 if not (WEB_DIST / "index.html").is_file():
     raise SystemExit("web/dist is missing; run the frontend build before PyInstaller")
 
-analysis = Analysis(
+analysis = Analysis(  # noqa: F821 - provided by PyInstaller
     [str(SOURCE_ROOT / "rcp" / "__main__.py")],
     pathex=[str(SOURCE_ROOT)],
     binaries=[],
@@ -39,9 +39,9 @@ analysis = Analysis(
     optimize=1,
 )
 
-pyz = PYZ(analysis.pure)
+pyz = PYZ(analysis.pure)  # noqa: F821 - provided by PyInstaller
 
-executable = EXE(
+executable = EXE(  # noqa: F821 - provided by PyInstaller
     pyz,
     analysis.scripts,
     analysis.binaries,

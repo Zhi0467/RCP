@@ -116,6 +116,32 @@ pmset -g assertions | grep caffeinate
    in between, and the work kept advancing.
 2. **Work ends.** When nothing is running, the assertion is gone.
 
+### Lid-closed mode
+
+Keep-awake changes machine-wide power state, so a disposable `RCP_DATA_DIR`
+does not isolate it. Run these on the packaged candidate, on a Mac you can
+leave on a desk. Inspect the flag at any point:
+
+```bash
+pmset -g | grep SleepDisabled
+```
+
+```bash
+ls -l /etc/sudoers.d/rcp-keep-awake /Library/LaunchDaemons/org.rcp.keep-awake-reset.plist
+```
+
+1. Install, then uninstall.
+2. With the flag set and the lid closed, SIGKILL the backend: the flag
+   clears and the Mac sleeps within the watchdog's stale window.
+3. Reboot with the flag set: the flag is clear before login.
+4. One overnight lid-closed Auto-research run advances.
+
+To clear the flag by hand:
+
+```bash
+sudo pmset -a disablesleep 0
+```
+
 ### Linux laptops
 
 RCP does not change Linux power settings. To keep a Linux laptop running with

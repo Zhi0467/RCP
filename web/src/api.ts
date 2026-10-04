@@ -776,8 +776,19 @@ export function loadMachinePower(): Promise<MachinePowerStatus> {
   return api("/api/machine-power");
 }
 
-export function updateMachinePower(body: { idle_hold: boolean }): Promise<MachinePowerStatus> {
+export function updateMachinePower(body: {
+  idle_hold?: boolean;
+  lid_mode?: boolean;
+}): Promise<MachinePowerStatus> {
   return api("/api/machine-power", { method: "PUT", body: JSON.stringify(body) });
+}
+
+export function installMachinePower(): Promise<MachinePowerStatus> {
+  return api("/api/machine-power/install", { method: "POST" });
+}
+
+export function uninstallMachinePower(): Promise<MachinePowerStatus> {
+  return api("/api/machine-power/uninstall", { method: "POST" });
 }
 
 export function fetchQuestions(apiBase: string, ownerKind: "chat" | "episode", ownerId: string) {

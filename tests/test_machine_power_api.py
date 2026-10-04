@@ -1,27 +1,52 @@
 from __future__ import annotations
 
+import logging
+import socket
+import threading
 from unittest.mock import Mock
 
+import httpx
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 
 from rcp.api import create_app
 from rcp.background import StartupEffectFence
 from rcp.machine_power import MachinePowerController
+from rcp.machine_power_macos import InstallStatus
 from rcp.storage import AppStore
+from tests.helpers import wait_until
+from tests.test_machine_power import FakeMacOSProfile
 
 
 @pytest.fixture
-def mac_power(monkeypatch):
+def mac_power(tmp_path, monkeypatch):
+    installer = Mock()
+    installer.status.return_value = InstallStatus(False, "not_installed")
+    installer.cancelled = True
+    installer.install.return_value = installer.status.return_value
+    installer.uninstall.return_value = installer.status.return_value
+    profile = FakeMacOSProfile()
+    profile.readings["battery"] = (True, None)
+
     def spawn(argv):
         raise AssertionError(f"unexpected process: {argv}")
 
     def factory(store, **kwargs):
         return MachinePowerController(
-            store, demand_reader=lambda: [], platform="darwin", spawn=spawn
+            store,
+            demand_reader=lambda: [],
+            platform="darwin",
+            installer=installer,
+            directory=tmp_path / "machine",
+            profile=profile,
+            spawn=spawn,
+            clock=lambda: 1000,
+            process_identity=lambda: (123, "test start"),
         )
 
     monkeypatch.setattr("rcp.api.app.MachinePowerController", factory)
+    return installer
 
 
 def test_personal_power_status_and_preferences(tmp_path, mac_power):
@@ -31,17 +56,47 @@ def test_personal_power_status_and_preferences(tmp_path, mac_power):
         response = client.get("/api/machine-power")
         assert response.status_code == 200
         status = response.json()
-        assert set(status) == {"supported", "idle_hold", "demand_reasons"}
+        assert set(status) == {
+            "supported",
+            "installed",
+            "install_problem",
+            "idle_hold",
+            "lid_mode",
+            "demand",
+            "demand_reasons",
+            "latched",
+            "last_release",
+            "cleanup_failure",
+            "external_owner",
+        }
         assert status["supported"] is True
+        assert status["lid_mode"] == {"enabled": False, "active": False}
         assert status["idle_hold"] == {"enabled": True, "active": False}
         updated = client.put("/api/machine-power", json={"idle_hold": False})
         assert updated.status_code == 200
         assert updated.json()["idle_hold"] == {"enabled": False, "active": False}
         assert client.get("/api/machine-power").json() == updated.json()
-        assert client.put("/api/machine-power", json={"idle_hold": "yes"}).status_code == 422
+        for invalid in (
+            {},
+            {"idle_hold": "yes"},
+            {"lid_mode": "yes"},
+            {"idle_hold": None},
+            {"lid_mode": None},
+            {"unknown": True},
+        ):
+            assert client.put("/api/machine-power", json=invalid).status_code == 422
 
 
-def test_team_power_endpoints_are_absent(tmp_path):
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("get", "/api/machine-power"),
+        ("put", "/api/machine-power"),
+        ("post", "/api/machine-power/install"),
+        ("post", "/api/machine-power/uninstall"),
+    ],
+)
+def test_team_power_endpoints_are_absent(tmp_path, method, path):
     store, bootstrap = AppStore.initialize_team_space(tmp_path / "rcp.sqlite3", "Team")
     member, _ = store.enroll_team_member(bootstrap, "Member")
     app = create_app(
@@ -49,7 +104,8 @@ def test_team_power_endpoints_are_absent(tmp_path):
         trusted_principal_resolver=lambda _request, current: current.space_user(member.user_id),
     )
     with TestClient(app) as client:
-        assert client.get("/api/machine-power").status_code == 404
+        response = client.request(method, path, json={})
+        assert response.status_code == 404
     assert app.state.machine_power is None
 
 
@@ -87,3 +143,47 @@ def test_failed_startup_stops_power(tmp_path, monkeypatch):
         pass
     controller.start.assert_called_once()
     controller.stop.assert_called_once()
+
+
+@pytest.mark.parametrize("action", ["install", "uninstall"])
+def test_cancelled_admin_prompt_preserves_status(tmp_path, mac_power, action):
+    app = create_app(data_dir=tmp_path / "data")
+    with TestClient(app, raise_server_exceptions=True) as client:
+        assert client.put("/api/machine-power", json={"lid_mode": True}).status_code == 200
+        before = client.get("/api/machine-power").json()
+        # A cross-site HTML form cannot send JSON, so it never reaches the prompt.
+        form = client.post("/api/machine-power/" + action, data={"x": "1"})
+        assert form.status_code == 415
+        getattr(mac_power, action).assert_not_called()
+        response = client.post("/api/machine-power/" + action, json={})
+        assert response.status_code == 200
+        assert response.json() == before
+        getattr(mac_power, action).assert_called_once()
+
+
+def test_served_macos_power_preferences(tmp_path, mac_power, caplog):
+    caplog.set_level(logging.INFO)
+    app = create_app(data_dir=tmp_path / "data")
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 8431))
+        port = sock.getsockname()[1]
+        assert port != 8421
+        server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=True))
+        worker = threading.Thread(target=lambda: server.run(sockets=[sock]), daemon=True)
+        worker.start()
+        try:
+            wait_until(lambda: server.started, timeout=10)
+            with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as client:
+                before = client.get("/api/machine-power")
+                assert before.status_code == 200
+                assert before.json()["supported"] is True
+                changed = client.put("/api/machine-power", json={"idle_hold": False})
+                assert changed.status_code == 200
+                assert changed.json()["idle_hold"] == {"enabled": False, "active": False}
+                assert changed.json()["lid_mode"] == {"enabled": False, "active": False}
+                assert client.get("/api/machine-power").json() == changed.json()
+        finally:
+            server.should_exit = True
+            worker.join(timeout=10)
+        assert not worker.is_alive()
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
