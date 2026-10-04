@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
-import selectors
 import signal
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -76,27 +77,58 @@ def _command(backend: Path, port: int) -> list[str]:
     ]
 
 
-def _launch_outcome(process: subprocess.Popen[str]) -> dict[str, Any]:
+def _launch_outcome(process: subprocess.Popen[str]) -> tuple[dict[str, Any], str]:
+    """Return the launch JSON and the one-time sign-in code printed before it."""
     assert process.stdout is not None
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    try:
-        if not selector.select(LAUNCH_TIMEOUT_SECONDS):
-            raise RuntimeError("Timed out waiting for the backend launch outcome.")
-        line = process.stdout.readline()
-    finally:
-        selector.close()
-    if not line:
-        raise RuntimeError(
-            f"The backend exited before reporting an outcome (status {process.poll()})."
-        )
-    try:
-        outcome = json.loads(line)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"The backend emitted invalid launch JSON: {line!r}") from exc
-    if not isinstance(outcome, dict):
-        raise RuntimeError("The backend launch outcome is not an object.")
-    return outcome
+    lines: queue.Queue[str] = queue.Queue()
+
+    def read() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            lines.put(line)
+        lines.put("")
+
+    threading.Thread(target=read, daemon=True).start()
+    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+    code = None
+    while True:
+        try:
+            line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            raise RuntimeError("Timed out waiting for the backend launch outcome.") from None
+        if not line:
+            raise RuntimeError(
+                f"The backend exited before reporting an outcome (status {process.poll()})."
+            )
+        if line.startswith("RCP sign-in: "):
+            code = line.rstrip("\n").rpartition("#owner-code=")[2]
+            continue
+        try:
+            outcome = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"The backend emitted invalid launch JSON: {line!r}") from exc
+        if not isinstance(outcome, dict):
+            raise RuntimeError("The backend launch outcome is not an object.")
+        if not code:
+            raise RuntimeError("The backend did not print a sign-in code before launching.")
+        return outcome, code
+
+
+def _sign_in(base_url: str, code: str) -> None:
+    """Redeem the printed code, as the desktop app does, and keep its cookie for later calls."""
+    request = urllib.request.Request(
+        f"{base_url}/api/owner/redeem",
+        data=json.dumps({"code": code}).encode(),
+        headers={"Content-Type": "application/json", "Origin": base_url},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=5.0) as response:
+        cookie = response.headers.get("Set-Cookie", "").split(";", 1)[0]
+    if not cookie.startswith("rcp_owner_session="):
+        raise RuntimeError("Redeeming the sign-in code returned no owner session.")
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("Cookie", cookie)]
+    urllib.request.install_opener(opener)
 
 
 def _request(url: str) -> tuple[bytes, str]:
@@ -155,7 +187,7 @@ def main() -> None:
             start_new_session=True,
         )
         try:
-            outcome = _launch_outcome(owner)
+            outcome, code = _launch_outcome(owner)
             if outcome.get("outcome") != "owned" or outcome.get("owned") is not True:
                 raise RuntimeError(f"First launch did not own the backend: {outcome}")
             base_url = outcome.get("base_url")
@@ -193,6 +225,7 @@ def main() -> None:
                 raise RuntimeError(
                     f"Health does not identify the metadata-owning process: {health}"
                 )
+            _sign_in(base_url, code)
             projects, project_type = _request(f"{base_url}/api/projects")
             if project_type != "application/json" or json.loads(projects) != []:
                 raise RuntimeError("The packaged backend project index API is unavailable.")
