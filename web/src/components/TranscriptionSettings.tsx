@@ -427,6 +427,8 @@ function ServiceCard({
   const [model, setModel] = useState(editing?.model ?? SERVICES.openai.model);
   const [delegation, setDelegation] = useState(voice?.delegation_model ?? "");
   const [baseUrl, setBaseUrl] = useState(editing?.base_url ?? "");
+  // The address as last left, so a half-typed host never receives the key.
+  const [listUrl, setListUrl] = useState("");
   const [models, setModels] = useState<ServiceModels | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -437,7 +439,7 @@ function ServiceCard({
   // Uses are picked after connecting, under Dictation and Standby voice agent.
   const dictation = editing ? editing.purposes.includes("transcription") : true;
   const openai = choice === "openai";
-  const address = editing || (custom ? baseUrl.trim() : key.trim());
+  const address = editing || (custom ? listUrl : key.trim());
   const ready =
     Boolean(address) &&
     (!dictation || Boolean(model.trim())) &&
@@ -461,7 +463,7 @@ function ServiceCard({
           : loadServiceModels({
               kind: service.kind,
               preset: service.preset,
-              base_url: custom ? baseUrl.trim() : null,
+              base_url: custom ? listUrl : null,
               key: key.trim(),
             });
         request
@@ -476,7 +478,7 @@ function ServiceCard({
       window.clearTimeout(timer);
       setModelsLoading(false);
     };
-  }, [editing, address, service.kind, service.preset, custom, baseUrl, key]);
+  }, [editing, address, service.kind, service.preset, custom, listUrl, key]);
 
   const save = async () => {
     if (!ready || busy) return;
@@ -549,6 +551,8 @@ function ServiceCard({
                 onChange={(event) => {
                   const next = event.target.value as ServiceChoice;
                   setChoice(next);
+                  // A key belongs to one provider; never list another's models with it.
+                  setKey("");
                   setModel(SERVICES[next].model);
                   setError(null);
                 }}
@@ -572,6 +576,7 @@ function ServiceCard({
                 value={baseUrl}
                 disabled={busy}
                 onChange={(event) => setBaseUrl(event.target.value)}
+                onBlur={() => setListUrl(baseUrl.trim())}
               />
             </label>
           ) : null}

@@ -86,6 +86,8 @@ async def check_voice_connection(connection: dict, key: str) -> None:
 
 
 async def check_delegation_model(connection: dict, key: str, model: str) -> None:
+    if key and key in model:
+        raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
     try:
         body = await _request(connection, key, "GET", f"models/{quote(model, safe='')}")
         if body.get("id") != model:

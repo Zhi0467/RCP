@@ -195,27 +195,19 @@ async def service_request(method: str, url: str, **kwargs) -> tuple[int, bytes]:
 
 async def check_connection(request: ConnectRequest) -> dict:
     connection = request.configuration()
-    return await check_purposes(
-        connection, request.key.get_secret_value(), request.purposes, request.delegation_model
-    )
+    return await check_purposes(connection, request.key.get_secret_value(), request.purposes)
 
 
-async def check_purposes(
-    connection: dict, key: str, added: list[str], delegation_model: str | None = None
-) -> dict:
-    if key and (key in connection["model"] or key in (delegation_model or "")):
+async def check_purposes(connection: dict, key: str, added: list[str]) -> dict:
+    if key and key in connection["model"]:
         raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
-    if "voice" in connection_purposes(connection) or delegation_model is not None:
+    if "voice" in connection_purposes(connection):
         # Import locally: voice uses the shared bounded transport above.
-        from rcp.voice import check_delegation_model, check_voice_connection, require_openai
+        from rcp.voice import check_voice_connection, require_openai
 
         require_openai(connection)
         if "voice" in added:
             await check_voice_connection(connection, key)
-        # The thinking model is an OpenAI account setting, checked whenever it changes,
-        # whether or not this connection runs the voice agent yet.
-        if delegation_model is not None:
-            await check_delegation_model(connection, key, delegation_model)
     result = {"formats": [], **connection}
     if "transcription" in added:
         result["formats"] = await check_transcription(connection, key)

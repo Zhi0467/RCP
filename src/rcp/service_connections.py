@@ -141,14 +141,25 @@ class ServiceConnections:
         _write_private(path, json.dumps(connection))
 
     def update_connection(
-        self, previous: dict, checked: dict, delegation_model: str | None = None
+        self,
+        previous: dict,
+        checked: dict,
+        delegation_model: str | None = None,
+        checked_delegation: str | None = None,
     ) -> dict:
         with self.locked():
             if self._connection(previous["id"]) != previous:
                 raise ConnectionError("connection_changed", 409)
+            self._require_delegation(checked_delegation)
             self._publish(checked)
             self._write_delegation(delegation_model)
             return checked
+
+    def _require_delegation(self, checked: str | None) -> None:
+        # The thinking model was checked against this value; a concurrent change voids that.
+        current = VoiceSettings.model_validate(self._settings().get("voice", {}))
+        if checked is not None and current.delegation_model != checked:
+            raise ConnectionError("connection_changed", 409)
 
     def _write_delegation(self, model: str | None) -> None:
         if model is not None:
@@ -170,8 +181,15 @@ class ServiceConnections:
             key = (self.root / "connections" / connection_id / "key").read_text()
             return connection, key
 
-    def save(self, connection: dict, key: str, delegation_model: str | None = None) -> None:
+    def save(
+        self,
+        connection: dict,
+        key: str,
+        delegation_model: str | None = None,
+        checked_delegation: str | None = None,
+    ) -> None:
         with self.locked():
+            self._require_delegation(checked_delegation)
             path = self.root / "connections" / _component(connection["id"])
             self._mkdir(path)
             _write_private(path / "key", key)

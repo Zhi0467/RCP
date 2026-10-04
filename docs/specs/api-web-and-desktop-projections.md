@@ -1507,7 +1507,12 @@ lists `generateContent` models and custom servers list every id, named ones
 first. A failed listing returns `model_list_failed` (502) and the card falls
 back to a text box with that reason. The save check stays the authority.
 Connect takes `delegation_model` for an OpenAI key, with or without `voice`,
-and checks it with `GET models/{id}`. `PUT /api/service-connections/{id}` takes
+and checks it with `GET models/{id}` using the key of the connection that runs
+voice, or its own key when none does. Giving a connection `voice` checks the
+current value with that connection's key. A value changed by another request
+during a check returns `connection_changed` (409). The card lists models only
+after a key is entered, never sends a key to another service, and lists a
+custom server only once its address field is left. `PUT /api/service-connections/{id}` takes
 `{purposes, model, delegation_model}` and checks only what changed with the
 stored key: a new dictation model reruns the clips, a new delegation model
 reruns the lookup. The key cannot be edited; a new key means disconnecting and
