@@ -46,27 +46,32 @@ from rcp.server_ops.deployment import (
 from rcp.server_ops.maintenance import MaintenanceIdentity, MaintenanceRefused
 from rcp.server_runtime import ServerMetadata
 from rcp.storage import AppStore
+from tests.helpers import isolated_template_build, reset_from_template
 from tests.supervisor_reboot_build import MIGRATION_TABLE, add_forward_migration
 from tests.supervisor_reboot_data import prepare_data
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def socket_root():
     with tempfile.TemporaryDirectory(prefix="rcp-maint-", dir="/tmp") as directory:
         os.chown(directory, os.geteuid(), os.getegid())
         yield Path(directory)
 
 
-@pytest.fixture
-def captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, socket_root: Path):
+def use_captured_layout(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     account = pwd.getpwuid(os.geteuid()).pw_name
     monkeypatch.setattr(
         storage_models,
         "DEFAULT_SERVER_LAYOUT",
-        SimpleNamespace(service_account=account, projects_root=tmp_path / "projects"),
+        SimpleNamespace(service_account=account, projects_root=root / "projects"),
     )
-    state = prepare_data(tmp_path / "data", tmp_path / "projects", account=account)
-    data = tmp_path / "data"
+
+
+def build_captured(root: Path, monkeypatch: pytest.MonkeyPatch, socket_root: Path):
+    use_captured_layout(monkeypatch, root)
+    account = pwd.getpwuid(os.geteuid()).pw_name
+    state = prepare_data(root / "data", root / "projects", account=account)
+    data = root / "data"
     (data / "run-stage").chmod(0o700)
     metadata = ServerMetadata.create(
         data,
@@ -83,11 +88,29 @@ def captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, socket_root: Path)
     request = PrepareRequest(
         version=1,
         data_dir=str(data),
-        output_dir=str(tmp_path / "prepared"),
+        output_dir=str(root / "prepared"),
         sqlite_receipt_path=str(capture.receipt_path),
         sqlite_receipt_sha256=capture.receipt_sha256,
     )
     return request, state, metadata
+
+
+@pytest.fixture(scope="module")
+def captured_template(tmp_path_factory: pytest.TempPathFactory, socket_root: Path):
+    """Build the captured project once; proofs hold absolute paths, so it never moves."""
+    root = tmp_path_factory.mktemp("captured")
+    with isolated_template_build(root / "host") as monkeypatch:
+        value = build_captured(root / "live", monkeypatch, socket_root)
+    shutil.copytree(root / "live", root / "template", symlinks=True)
+    return root, value
+
+
+@pytest.fixture
+def captured(captured_template, monkeypatch: pytest.MonkeyPatch):
+    root, value = captured_template
+    reset_from_template(root / "template", root / "live")
+    use_captured_layout(monkeypatch, root / "live")
+    return deepcopy(value)
 
 
 def _tree_state(root: Path) -> dict:
