@@ -657,6 +657,7 @@ export function DetailDrawer({
                     </label>
                   </div>
                   <BrowserToggle
+                    subject="run"
                     checked={browserRequested}
                     disabled={nodeMutationDisabled || experimentRunBusy}
                     onChange={setBrowserRequested}

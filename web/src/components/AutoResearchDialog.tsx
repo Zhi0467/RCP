@@ -204,6 +204,7 @@ export function AutoResearchDialog({
             />
           </label>
           <BrowserToggle
+            subject="run"
             checked={browserRequested}
             disabled={busy}
             onChange={setBrowserRequested}

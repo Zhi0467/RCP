@@ -1549,11 +1549,18 @@
   font-size: var(--type-md);
   line-height: 1.5;
 }
-.browser-consent > label {
+.browser-consent > .browser-consent-switch {
   display: flex;
   align-items: center;
   gap: 8px;
   font-weight: 600;
+}
+/* Launch dialogs size their text inputs to the row; a switch keeps its own size. */
+.browser-consent input[type="checkbox"] {
+  flex: none;
+  width: auto;
+  margin: 0;
+  padding: 0;
 }
 .browser-consent > p {
   margin: 0;

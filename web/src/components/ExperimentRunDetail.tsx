@@ -350,6 +350,7 @@ export function ExperimentRunDetail({
 
       {allowStart && !control.node_closed && (
         <BrowserToggle
+          subject="run"
           checked={browserRequested}
           disabled={runDisabled || startDisabled || runBusy}
           onChange={setBrowserRequested}
