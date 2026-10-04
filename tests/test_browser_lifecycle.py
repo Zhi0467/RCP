@@ -579,3 +579,19 @@ async def test_failed_remote_continuation_cleanup_settles_retained_lease(
     assert not host.record_path(grant.owner.token()).exists()
     assert store.browser_owners(task.project_id) == []
     assert calls == ["ensure", "release", "close"]
+
+
+def test_reused_owner_routes_through_the_latest_ssh_alias(tmp_path):
+    store = AppStore(tmp_path / "app.sqlite3")
+    owner = BrowserOwnerKey(
+        space_id=store.space_id, project_id="project", stage_name="chat", host_key="gpu"
+    )
+    for alias in ("old-alias", "new-alias"):
+        store.record_browser_owner(
+            owner,
+            execution_host=alias,
+            workspace_dir="/stage/workspace",
+            stage_root="/stage",
+            chat_id="chat",
+        )
+    assert store.browser_owners("project")[0]["execution_host"] == "new-alias"

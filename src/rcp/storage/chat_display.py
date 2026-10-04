@@ -63,6 +63,7 @@ class ChatDisplayStoreMixin:
                 "INSERT INTO browser_owners "
                 "(owner_token, owner_json, execution_host, workspace_dir, stage_root, chat_id, project_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(owner_token) DO UPDATE SET "
+                "execution_host = excluded.execution_host, "
                 "workspace_dir = excluded.workspace_dir, stage_root = excluded.stage_root, "
                 "chat_id = excluded.chat_id",
                 (

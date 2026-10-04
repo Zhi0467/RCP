@@ -529,7 +529,11 @@ pub async fn connect(
     if let Ok(mut status) = state.status() {
         if let Ok(current) = health(&status).await {
             if status.matches_health(&current) {
-                status.owner_authenticated = owner_session::establish(app, &status, None).await?;
+                // Keep a session the backend still accepts; exchanging again would orphan it.
+                let kept = owner_session::has_session(&status)
+                    && matches!(optional_health_details(&status).await, Ok(Some(_)));
+                status.owner_authenticated =
+                    kept || owner_session::establish(app, &status, None).await?;
                 state.update_health(&current);
                 status.active_agent_tasks = current.active_agent_tasks;
                 status.owner_kind = current.owner_kind;
