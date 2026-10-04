@@ -330,7 +330,8 @@ def test_model_list_failure_is_reported_without_the_key(voice_setup, monkeypatch
 
 def test_edit_rechecks_only_changed_models_and_saves_delegation(voice_setup, monkeypatch):
     _, private, client = voice_setup
-    item = {**connection(), "purposes": ["transcription", "voice"]}
+    # A dictation-only OpenAI connection still carries the account's thinking model.
+    item = connection()
     private.save(item, KEY)
     probes = []
 

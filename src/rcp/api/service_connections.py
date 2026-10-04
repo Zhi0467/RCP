@@ -79,8 +79,7 @@ async def connect(request: Request, body: ConnectRequest):
     store.require_member()
     with transcription_slot(store):
         connection = await check_connection(body)
-        delegation = body.delegation_model if "voice" in body.purposes else None
-        store.save(connection, body.key.get_secret_value(), delegation)
+        store.save(connection, body.key.get_secret_value(), body.delegation_model)
     return connection
 
 
@@ -133,10 +132,7 @@ async def update_connection(request: Request, connection_id: str, body: Connecti
             current["model"] = body.model
             added = list(dict.fromkeys([*added, "transcription"]))
         delegation = None
-        if "voice" in body.purposes and body.delegation_model not in (
-            None,
-            store.voice_settings()["delegation_model"],
-        ):
+        if body.delegation_model not in (None, store.voice_settings()["delegation_model"]):
             delegation = body.delegation_model
         checked = await check_purposes(current, key, added, delegation)
         return store.update_connection(previous, checked, delegation)

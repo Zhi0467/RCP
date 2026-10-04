@@ -1485,13 +1485,16 @@ and atomically under one per-member lock that rechecks membership. Keys never
 appear in a response, a validation error, or a log. For dictation, Connect
 transcribes two bundled clips recorded from real `MediaRecorder` output
 (WebM/Opus and fragmented MP4/AAC) and saves the connection only if one passes,
-recording the accepted formats. The connect card asks an OpenAI key whether
-it is for dictation, the standby voice agent, or both; a voice-only key skips
-the clips and gets the voice check instead. A custom base URL must be `https`, or `http` to loopback.
+recording the accepted formats. The connect card does not ask what a service
+is for: the Web connects with the `transcription` purpose, and the member picks
+uses afterwards under **Dictate with** and **Runs on**. Picking an OpenAI
+connection under **Runs on** adds `voice` and runs the voice check then. The
+API still accepts `voice` at Connect, where a voice-only key skips the clips.
+A custom base URL must be `https`, or `http` to loopback.
 
 One card connects a service and later edits it. It holds every model the
-connection's uses need, each with what it does: the dictation model, and for
-voice the thinking (delegation) model and the read-only live model. Each model
+service has, each with what it does: the dictation model, and for an OpenAI
+key the thinking (delegation) model and the read-only live model. Each model
 is a dropdown of the provider's current ids plus **Other…** to type one.
 `POST /api/service-connections/models` lists them for a key not yet saved, and
 `GET /api/service-connections/{id}/models` with a saved connection's key. Both
@@ -1503,13 +1506,14 @@ live, image, or search models. Ids with a `shutdown_date` are hidden. Gemini
 lists `generateContent` models and custom servers list every id, named ones
 first. A failed listing returns `model_list_failed` (502) and the card falls
 back to a text box with that reason. The save check stays the authority.
-Connect takes `delegation_model` with the `voice` purpose and checks it with
-`GET models/{id}`. `PUT /api/service-connections/{id}` takes
+Connect takes `delegation_model` for an OpenAI key, with or without `voice`,
+and checks it with `GET models/{id}`. `PUT /api/service-connections/{id}` takes
 `{purposes, model, delegation_model}` and checks only what changed with the
 stored key: a new dictation model reruns the clips, a new delegation model
 reruns the lookup. The key cannot be edited; a new key means disconnecting and
-connecting again. The delegation model stays a member voice setting, written
-under the same lock as the connection, because one connection holds `voice`.
+connecting again. The delegation model stays one member voice setting, written
+under the same lock as the connection, because one connection holds `voice`;
+two OpenAI connections show and edit the same value.
 
 `POST /api/service-connections/{id}/transcribe` takes one raw audio body of an
 accepted format, bounded by `Content-Length`, the bytes actually received, a

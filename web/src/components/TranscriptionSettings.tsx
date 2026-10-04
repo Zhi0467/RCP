@@ -17,7 +17,6 @@ import type {
   ServiceConnection,
   ServiceConnectionKind,
   ServiceConnectionPreset,
-  ServiceConnectionPurpose,
   ServiceConnections,
   ServiceModels,
   VoiceSettings,
@@ -25,13 +24,6 @@ import type {
 import { formatServerTimestamp } from "./ServerSettings";
 
 type ServiceChoice = "openai" | "groq" | "gemini" | "custom";
-
-/** Only an OpenAI key can also run the standby voice agent. */
-const OPENAI_USES: Record<string, { label: string; purposes: ServiceConnectionPurpose[] }> = {
-  dictation: { label: "Dictation", purposes: ["transcription"] },
-  voice: { label: "Standby voice agent", purposes: ["voice"] },
-  both: { label: "Dictation and standby voice agent", purposes: ["transcription", "voice"] },
-};
 
 const SERVICES: Record<
   ServiceChoice,
@@ -83,11 +75,6 @@ const MODEL_ROLES = {
 function serviceChoice(connection: ServiceConnection): ServiceChoice {
   if (connection.kind === "gemini") return "gemini";
   return connection.preset ?? "custom";
-}
-
-function openAiUse(purposes: ServiceConnectionPurpose[]): string {
-  if (purposes.includes("voice")) return purposes.includes("transcription") ? "both" : "voice";
-  return "dictation";
 }
 
 function failureText(failure: unknown): string {
@@ -316,7 +303,8 @@ function ConnectionModels({
   const rows: { role: keyof typeof MODEL_ROLES; id: string }[] = [];
   if (connection.purposes.includes("transcription"))
     rows.push({ role: "dictation", id: connection.model });
-  if (connection.purposes.includes("voice") && voice)
+  // Only an OpenAI key can run the standby voice agent; its models show either way.
+  if (connection.preset === "openai" && voice)
     rows.push(
       { role: "thinking", id: voice.delegation_model },
       { role: "live", id: voice.live_model },
@@ -438,7 +426,6 @@ function ServiceCard({
   const [key, setKey] = useState("");
   const [model, setModel] = useState(editing?.model ?? SERVICES.openai.model);
   const [delegation, setDelegation] = useState(voice?.delegation_model ?? "");
-  const [use, setUse] = useState(editing ? openAiUse(editing.purposes) : "dictation");
   const [baseUrl, setBaseUrl] = useState(editing?.base_url ?? "");
   const [models, setModels] = useState<ServiceModels | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -447,14 +434,14 @@ function ServiceCard({
   const [error, setError] = useState<string | null>(null);
   const service = SERVICES[choice];
   const custom = choice === "custom";
-  const purposes = choice === "openai" ? OPENAI_USES[use].purposes : ["transcription" as const];
-  const dictation = purposes.includes("transcription");
-  const voiceUse = purposes.includes("voice");
+  // Uses are picked after connecting, under Dictation and Standby voice agent.
+  const dictation = editing ? editing.purposes.includes("transcription") : true;
+  const openai = choice === "openai";
   const address = editing || (custom ? baseUrl.trim() : key.trim());
   const ready =
     Boolean(address) &&
     (!dictation || Boolean(model.trim())) &&
-    (!voiceUse || Boolean(delegation.trim()));
+    (!openai || Boolean(delegation.trim()));
   const destination = custom ? "the server at this address" : service.label;
   const close = () => {
     if (!busy) onClose();
@@ -496,10 +483,10 @@ function ServiceCard({
     setBusy(true);
     setError(null);
     try {
-      const delegationModel = voiceUse ? delegation.trim() : undefined;
+      const delegationModel = openai ? delegation.trim() : undefined;
       if (editing) {
         await updateServiceConnection(editing.id, {
-          purposes,
+          purposes: editing.purposes,
           model: dictation ? model.trim() : undefined,
           delegation_model: delegationModel,
         });
@@ -508,10 +495,9 @@ function ServiceCard({
           kind: service.kind,
           preset: service.preset,
           base_url: custom ? baseUrl.trim() : null,
-          // The transcription model is unused without dictation; send the preset's own.
-          model: dictation ? model.trim() : service.model,
+          model: model.trim(),
           key: key.trim(),
-          purposes,
+          purposes: ["transcription"],
           delegation_model: delegationModel,
         });
       }
@@ -575,18 +561,6 @@ function ServiceCard({
               </select>
             </label>
           )}
-          {choice === "openai" ? (
-            <label>
-              Use for
-              <select value={use} disabled={busy} onChange={(event) => setUse(event.target.value)}>
-                {Object.entries(OPENAI_USES).map(([value, option]) => (
-                  <option key={value} value={value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
           {custom && !editing ? (
             <label>
               Base URL
@@ -636,7 +610,7 @@ function ServiceCard({
               {...fieldState}
             />
           ) : null}
-          {voiceUse ? (
+          {openai ? (
             <>
               <ModelField
                 role="thinking"
@@ -663,16 +637,16 @@ function ServiceCard({
               {destination} keeps is set by your account there.
             </p>
           ) : null}
-          {voiceUse ? (
+          {openai ? (
             <p>
               Standby voice agent audio goes directly between this page and OpenAI; RCP only starts
               each session with the key it keeps on its server.
             </p>
           ) : null}
           <p>
-            {dictation
-              ? "RCP checks dictation with two short test clips before saving."
-              : "RCP checks the key and the thinking model with OpenAI before saving."}
+            {openai
+              ? "RCP checks dictation with two short test clips, and the thinking model with OpenAI, before saving. Pick what each service is used for after connecting."
+              : "RCP checks dictation with two short test clips before saving. Pick what each service is used for after connecting."}
           </p>
         </div>
         {error ? (

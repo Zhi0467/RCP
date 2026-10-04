@@ -205,13 +205,15 @@ async def check_purposes(
 ) -> dict:
     if key and (key in connection["model"] or key in (delegation_model or "")):
         raise ConnectionError("connection_check_failed", 422, "Invalid service configuration.")
-    if "voice" in connection_purposes(connection):
+    if "voice" in connection_purposes(connection) or delegation_model is not None:
         # Import locally: voice uses the shared bounded transport above.
         from rcp.voice import check_delegation_model, check_voice_connection, require_openai
 
         require_openai(connection)
         if "voice" in added:
             await check_voice_connection(connection, key)
+        # The thinking model is an OpenAI account setting, checked whenever it changes,
+        # whether or not this connection runs the voice agent yet.
         if delegation_model is not None:
             await check_delegation_model(connection, key, delegation_model)
     result = {"formats": [], **connection}
