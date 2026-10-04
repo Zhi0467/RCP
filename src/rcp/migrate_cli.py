@@ -9,7 +9,7 @@ import socket
 import sqlite3
 import sys
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -118,8 +118,8 @@ def _run_migrate_locked(data_dir: Path, *, check: bool) -> _MigrationResult:
             pending: tuple[str, ...] = ()
             ledger_head = 0
         else:
-            store = AppStore.open_read_only(database)
-            ledger_head, registry_head, pending = store.check_storage_schema_migrations()
+            with closing(AppStore.open_read_only(database)) as store:
+                ledger_head, registry_head, pending = store.check_storage_schema_migrations()
         if check:
             if pending:
                 names = ", ".join(pending)
@@ -144,8 +144,8 @@ def _run_migrate_locked(data_dir: Path, *, check: bool) -> _MigrationResult:
                 registry_head=registry_head,
                 pending=(),
             )
-        store = AppStore(database)
-        ledger_head = store.storage_schema_ledger_head()
+        with closing(AppStore(database)) as store:
+            ledger_head = store.storage_schema_ledger_head()
     except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
         return _MigrationResult(
             outcome="unknown",

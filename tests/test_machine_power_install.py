@@ -253,24 +253,27 @@ def test_uninstall_bounds_runner_that_ignores_timeout(installer, monkeypatch):
 def test_approved_script_gets_its_own_window(installer, monkeypatch, tmp_path):
     """Work after approval is not bounded by what is left of the prompt's window."""
 
-    monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 2)
-    # The post-approval flag check outlasts the whole 2 s prompt window.
-    (tmp_path / "pmset").write_text("#!/bin/sh\nsleep 2.2\necho ' SleepDisabled 0'\n")
+    monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 4)
+    # The post-approval flag check outlasts the whole 4 s prompt window. The
+    # script's own commands take about 1.6 s unloaded, so the 8 s bound keeps
+    # over 2 s of slack for a loaded machine.
+    (tmp_path / "pmset").write_text("#!/bin/sh\nsleep 4.2\necho ' SleepDisabled 0'\n")
     assert installer.install().installed
 
 
 @macos_tools
 def test_setup_before_approval_marker_gets_its_own_window(installer, monkeypatch, tmp_path):
     """A late approval is not cut off by the setup that precedes the approved marker."""
-    monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 3)
+    monkeypatch.setattr("rcp.machine_power_macos.MACHINE_POWER_ADMIN_TIMEOUT_SECONDS", 5)
     run = installer.run
 
     def late_approval(argv, timeout):
-        time.sleep(2)
-        return run(argv, timeout - 2)
+        time.sleep(3.5)
+        return run(argv, timeout - 3.5)
 
     installer.run = late_approval
-    # The prompt plus two parent checks before the marker outlast the 3 s window.
+    # The prompt plus two parent checks before the marker outlast the 5 s window,
+    # while each bound still leaves over 2 s of slack for a loaded machine.
     stat = tmp_path / "stat"
     stat.write_text("#!/bin/sh\nsleep 0.8\n" + stat.read_text().split("\n", 1)[1])
     assert installer.install().installed

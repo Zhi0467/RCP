@@ -662,12 +662,32 @@ fail the invariant; unproven default factories (including UUIDs and timestamps)
 fail with the field names and require a human-authored explicit migration.
 
 The old-data upgrade CI gate checks every published, non-draft, non-prerelease
-`v*` GitHub release, with separate current-cache and stale-cache cases for each
-tag. CI and test collection share `gh release list` discovery, increasing its
-request limit until the catalog is exhausted. Missing tags or failed discovery
-fail the gate rather than skip sources. Frozen schema-era fixtures and the exact
-candidate-base check remain. No supported source floor has been declared; that
-decision remains open.
+stable `v*` GitHub release at or above the supported update source floor, with
+separate current-cache and stale-cache cases for each tag. CI and test collection
+share `gh release list` discovery, increasing its request limit until the catalog
+is exhausted. Missing tags, a missing floor release, or failed discovery fail the
+gate rather than skip sources. Frozen schema-era fixtures and the exact
+candidate-base check remain.
+
+The supported update source floor is **v0.4.5**. `UPDATE_SOURCE_FLOOR` in
+`src/rcp/server_ops/deployment.py` owns it, and the application advertises it as
+`update_source_floor` in its maintenance capabilities. CI reads the constant from
+source without importing the application. Data from an older release still runs
+the full migration chain, on a server or a desktop, but no CI gate exercises that
+jump beyond the frozen schema-era fixtures. Raise the floor only after confirming
+that no served installation runs below the new value; this keeps the CI window
+small.
+
+Supervisor 0.1.9 reads the prepared target's floor before deployment. It compares
+the installed major.minor.patch numerically and ignores the local `+build...`
+suffix. Below the floor, it changes neither the deployed release nor live data,
+and asks the operator to pin the floor in `/etc/rcp/server.toml`, update, then
+remove the pin and update again. An installed release with no comparable version
+is refused the same way, with an action to repair the selected receipt or finish
+supervised adoption through `server install`. A target without the capability
+keeps the old contract. The field is optional, so maintenance protocol 10 still
+holds. The supervisor version bump makes an older supervisor update itself before
+it can deploy a release that relies on this check.
 
 The installed upgrade gate uses the same release catalog in a job
 matrix on pristine GitHub-hosted Ubuntu runners. It downloads each source's

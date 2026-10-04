@@ -5,13 +5,16 @@ import functools
 import hashlib
 import json
 import re
+import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TypeVar
 
+import pytest
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from pydantic import TypeAdapter
@@ -19,6 +22,7 @@ from pydantic import TypeAdapter
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.provider_environment import ProviderCredentialStore
 from rcp.api import create_app
+from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.operations import GraphOperation, ProposalOperation
 from rcp.history import HistoryManager
@@ -526,3 +530,123 @@ def seed_patch() -> Patch:
             },
         ],
     )
+
+
+def isolate_host(
+    monkeypatch: pytest.MonkeyPatch, root: Path, *, provider_discovery: bool = False
+) -> list[BackgroundAgentTasks]:
+    """Keep one test, or one module template build, off the developer's machine.
+
+    Returns the provider engines constructed under the patch; the caller shuts
+    them down. A module-scoped template build applies this with its own
+    `MonkeyPatch`, because the function-scoped autouse fixture has not run yet.
+    """
+
+    # A provider launch takes an advisory lock under the account's RCP
+    # directory. Left alone, every test would contend on one real file and
+    # leave state in `~/.rcp`, so each test gets its own root.
+    monkeypatch.setattr(
+        "rcp.agents.credential_gate._DEFAULT_ACCOUNT_LOCK_ROOT", root / "credential-locks"
+    )
+    # Keep RCP's own `~/.rcp` temporary files out of the human's home.
+    monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: root / "rcp-home")
+    # The SSH control directory is keyed by user account, not by data
+    # directory, so the developer's own RCP keeps its live masters in the same
+    # place a test would sweep. Starting an app runs that sweep, which means the
+    # whole suite reaches it, not one test. Each test gets its own root instead.
+    monkeypatch.setattr("rcp.transport.ssh._control_directory_path", lambda: root / "ssh-control")
+
+    # Discovery is the seam every unconfigured local provider execution passes
+    # through: readiness runs `--version`, `login status` and `debug models`
+    # through the path it returns, and a turn's own `codex exec` is built from
+    # that same path. No fixture configures a binary, so leaving discovery live
+    # meant a test that dispatched a task prompted the developer's own
+    # authenticated CLI and billed a real provider turn no assertion ever read.
+    # Returning nothing makes readiness `unconfigured`, which refuses the launch
+    # before a command is built.
+    #
+    # Readiness reaches this only for an unconfigured local provider, so an
+    # explicit `binary=` is unaffected; that is how the env-gated live
+    # qualification in `test_server_provider_readiness_live.py` still probes a
+    # real CLI on purpose. A test that needs a configured provider patches
+    # `AgentLauncher.readiness` or replaces `BackgroundAgentTasks.stream`; one
+    # that needs a real child process stages its own stub through
+    # `sys.executable`.
+    #
+    # The `real_provider_discovery` marker opts a test out. It is for the tests
+    # of discovery itself, which replace `PATH` and the OS account home, in this
+    # process and in any subprocess they run, so they reach no installed binary
+    # either.
+    if not provider_discovery:
+        monkeypatch.setattr("rcp.agents.launcher._discover_local_provider", lambda provider: None)
+
+    # A lifespan and a compute settings save check compute routes, and a helper
+    # probe starts a real launchd or systemd job. A test of the refresh restores
+    # the real function and stubs the probe itself.
+    for owner in ("rcp.api.app", "rcp.api.project_state"):
+        monkeypatch.setattr(f"{owner}.refresh_compute_probes", lambda *args, **kwargs: None)
+
+    # `shutdown` kills each live provider process group, and the app lifespan
+    # is the only caller. Most tests build their app with a bare `create_app`
+    # or an unentered `TestClient`, so no lifespan ever runs; their workers are
+    # daemon threads, so interpreter exit drops them without unwinding and the
+    # staged broker plus its provider child are reparented and left running,
+    # holding a `~/.rcp/sockets/rcp-command-*.sock` for as long as they live.
+    # Registering at construction covers every engine a test creates, including
+    # the ones reached through `create_app` and server-operation validation.
+    engines: list[BackgroundAgentTasks] = []
+    construct = BackgroundAgentTasks.__init__
+
+    def register(self: BackgroundAgentTasks, *args: object, **kwargs: object) -> None:
+        construct(self, *args, **kwargs)  # type: ignore[arg-type]
+        engines.append(self)
+
+    monkeypatch.setattr(BackgroundAgentTasks, "__init__", register)
+
+    # An app lifespan teardown sets the process-wide fence; without isolation a
+    # later lock wait in the same worker would abort for no reason.
+    monkeypatch.setattr("rcp.transport.state._CANONICAL_LOCK_WAIT_FENCE", threading.Event())
+
+    # `_print_wrapped` takes its width from `shutil.get_terminal_size`, so every
+    # assertion on rendered prose otherwise depends on the ambient terminal. The
+    # same install plan passes at 100 columns and fails at 80, where a phrase a
+    # test searches for straddles a line break. 100 is the renderer's own
+    # fallback, so this pins the value an undetectable terminal already produces.
+    monkeypatch.setenv("COLUMNS", "100")
+
+    # Test apps never contact GitHub; transport tests opt in against loopback.
+    monkeypatch.setenv("RCP_UPDATE_CHECK", "off")
+
+    # App tests never inspect or alter the host machine's real power state.
+    from rcp.machine_power import MachinePowerController
+
+    def refuse_command(*args, **kwargs):
+        raise AssertionError("App tests must inject machine power commands")
+
+    monkeypatch.setattr(
+        "rcp.api.app.MachinePowerController",
+        lambda *args, **kwargs: MachinePowerController(
+            *args, platform="linux", run=refuse_command, spawn=refuse_command, **kwargs
+        ),
+    )
+    return engines
+
+
+@contextmanager
+def isolated_template_build(root: Path) -> Iterator[pytest.MonkeyPatch]:
+    """Isolate a module template build the way `isolated_host` isolates a test."""
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        engines = isolate_host(monkeypatch, root)
+        try:
+            yield monkeypatch
+        finally:
+            for engine in engines:
+                engine.shutdown()
+
+
+def reset_from_template(template: Path, live: Path) -> None:
+    """Give a test the template's exact tree at the fixed path its proofs name."""
+
+    shutil.rmtree(live, ignore_errors=True)
+    shutil.copytree(template, live, symlinks=True)

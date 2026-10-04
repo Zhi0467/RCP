@@ -44,6 +44,7 @@ def test_database_schema_digest_is_shared_by_live_and_immutable_readers(
 
     with store.connection() as live:
         live_digest = database_schema_sha256(live)
+    store.close()
     uri = f"{database.resolve(strict=True).as_uri()}?mode=ro&immutable=1"
     with sqlite3.connect(uri, uri=True) as immutable:
         immutable_digest = database_schema_sha256(immutable)

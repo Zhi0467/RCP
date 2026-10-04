@@ -38,6 +38,8 @@ class RepositoryGit:
         self.path = path
         self.deadline = deadline
         self.output_limit = output_limit
+        # Only immutable commit trees are cached; checkout/index checks still rerun.
+        self._checked_trees: set[str] = set()
 
     def git(self, *arguments: str, allow_missing: bool = False) -> bytes:
         environment = {
@@ -154,6 +156,8 @@ class RepositoryGit:
         return head
 
     def require_tree(self, head: str) -> None:
+        if head in self._checked_trees:
+            return
         for entry in self.git("ls-tree", "-rz", "--full-tree", head).split(b"\0"):
             if not entry:
                 continue
@@ -171,6 +175,8 @@ class RepositoryGit:
                     for line in attributes.splitlines()
                 ):
                     raise ValueError("repository transfer cannot carry LFS or filtered contents")
+
+        self._checked_trees.add(head)
 
     def require_clean(self, *, allow_untracked: bool = False) -> None:
         for entry in self.git("ls-files", "-v", "-z").split(b"\0"):

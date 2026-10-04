@@ -9,6 +9,8 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import tomlkit
+
 from rcp import __version__
 from rcp.api import create_app
 from rcp.config import AGENT_EXECUTION_PROFILES
@@ -203,6 +205,15 @@ def _source_project(app, root: Path) -> str:
             confirmed=True,
         )
     )
+    # Setup defaults to the developer's real transcript roots; keep indexing in this test.
+    roots = {"claude_roots": [str(root / "claude")], "codex_roots": [str(root / "codex")]}
+    manifest = repository / ".research" / "manifest.toml"
+    document = tomlkit.parse(manifest.read_text(encoding="utf-8"))
+    document["sources"].update(roots)
+    manifest.write_text(tomlkit.dumps(document), encoding="utf-8")
+    live = app.state.catalog.open(card["id"]).manifest.sources
+    for name, value in roots.items():
+        setattr(live, name, value)
     return str(card["id"])
 
 

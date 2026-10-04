@@ -43,6 +43,182 @@ from .storage_helpers import downgrade_artifacts
 from .test_compute_jobs_storage import job_record
 
 
+def test_nested_connections_keep_independent_transactions(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    with store.connection() as outer:
+        outer.execute("CREATE TABLE isolation_probe(value TEXT)")
+        outer.execute("INSERT INTO isolation_probe VALUES ('outer')")
+        with store.connection() as inner:
+            assert inner is not outer
+            assert inner.execute("SELECT * FROM isolation_probe").fetchall() == []
+        outer.rollback()
+        with store.connection() as inner:
+            inner.execute("INSERT INTO isolation_probe VALUES ('inner')")
+        assert outer.execute("SELECT value FROM isolation_probe").fetchone()[0] == "inner"
+    with store.connection() as reused:
+        assert reused is outer
+    store.close()
+
+
+def test_connection_acquire_restores_transaction_and_pragma_state(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    with store.connection() as first:
+        first.execute("PRAGMA foreign_keys = OFF")
+        first.execute("PRAGMA legacy_alter_table = ON")
+        first.row_factory = None
+        first.execute("BEGIN IMMEDIATE")
+    with store.connection() as second:
+        assert second is first
+        assert not second.in_transaction
+        assert second.row_factory is sqlite3.Row
+        assert second.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert second.execute("PRAGMA legacy_alter_table").fetchone()[0] == 0
+        second.execute("BEGIN IMMEDIATE")
+    store.close()
+
+
+def test_connection_reopens_replaced_database(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    replacement = AppStore(tmp_path / "replacement.sqlite3")
+    expected = replacement.space_id
+    replacement.close()
+    with store.connection() as original:
+        # Checkpoint before the external replacement, as restore/transfer must.
+        original.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    replacement.path.replace(store.path)
+    assert store.space_id == expected
+    with store.connection() as current:
+        assert current is not original
+    store.close()
+
+
+def test_connection_rolls_back_exception_and_discards_broken_handle(tmp_path):
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    with store.connection() as connection:
+        connection.execute("CREATE TABLE rollback_probe(value TEXT)")
+    with pytest.raises(RuntimeError), store.connection() as connection:
+        connection.execute("INSERT INTO rollback_probe VALUES ('discard')")
+        raise RuntimeError("abort")
+    with store.connection() as connection:
+        assert not connection.in_transaction
+        assert connection.execute("SELECT * FROM rollback_probe").fetchall() == []
+    with pytest.raises(sqlite3.ProgrammingError), store.connection() as connection:
+        connection.close()
+    with store.connection() as connection:
+        assert connection.execute("SELECT 1").fetchone()[0] == 1
+    store.close()
+
+
+def test_connection_cache_bounds_fds_for_retained_stores_and_finished_threads(tmp_path):
+    import gc
+    import os
+    import weakref
+
+    from rcp.limits import STORAGE_IDLE_CONNECTION_LIMIT
+
+    fd_root = Path("/proc/self/fd") if Path("/proc/self/fd").exists() else Path("/dev/fd")
+
+    def fd_count():
+        return len(os.listdir(fd_root))
+
+    before = fd_count()
+    stores = []
+    gc_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for index in range(150):
+            store = AppStore(tmp_path / str(index) / "rcp.sqlite3")
+            store.cycle = store  # Match apps retained until cyclic GC.
+            stores.append(store)
+            assert fd_count() <= before + 3 * STORAGE_IDLE_CONNECTION_LIMIT + 8
+        for retained in stores:
+            retained.close()
+        idle = fd_count()
+        # Retain Thread objects too: cleanup must follow thread-local lifetime.
+        threads = [threading.Thread(target=lambda: store.space_id) for _ in range(80)]
+        for thread in threads:
+            thread.start()
+            thread.join()
+            assert fd_count() <= idle + 4
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            barrier = threading.Barrier(4)
+
+            def read_on_own_thread(_):
+                with store.connection() as connection:
+                    barrier.wait(timeout=10)
+                    return id(connection)
+
+            assert len(set(executor.map(read_on_own_thread, range(4)))) == 4
+        assert fd_count() <= idle + 4
+        with store.connection():
+            store.close()  # Active handles close at block exit.
+        assert fd_count() <= idle + 4
+        dropped = _TracingAppStore(tmp_path / "dropped.sqlite3")
+        dropped_ref = weakref.ref(dropped)
+        del dropped
+        assert dropped_ref() is None
+        assert fd_count() <= idle + 4
+    finally:
+        for retained in stores:
+            retained.close()
+        if gc_enabled:
+            gc.enable()
+
+
+@pytest.mark.parametrize("kind,bootstrap", [("personal", False), ("team", False), ("team", True)])
+def test_new_database_matches_raw_migration_schema_and_all_seed_rows(
+    tmp_path, monkeypatch, kind, bootstrap
+):
+    fixed_id = uuid.UUID("11111111-1111-4111-8111-111111111111")
+    monkeypatch.setattr(storage_base_module.uuid, "uuid4", lambda: fixed_id)
+    monkeypatch.setattr(AppStore, "now", staticmethod(lambda: "2026-10-04T00:00:00+00:00"))
+    monkeypatch.setattr(
+        storage_base_module, "_new_enrollment_code", lambda _: ("secret", "code", "hash")
+    )
+    reference = AppStore.__new__(AppStore)
+    reference.path = tmp_path / "reference.sqlite3"
+    name = "Test team" if bootstrap else None
+    with reference.connection() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("PRAGMA legacy_alter_table = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        expected_code = reference._run_storage_schema_migrations(
+            connection,
+            kind,
+            initial_space_id=None,
+            initial_space_name=name,
+            issue_bootstrap=bootstrap,
+            require_new=bootstrap,
+            schema_template=False,
+            schema_capture=None,
+            file_root=tmp_path,
+        )
+    # Prime the shared DDL, then prove each actual new store skips the chain.
+    reference._new_database_schema()
+
+    def unexpected_migration(*args, **kwargs):
+        raise AssertionError("new database replayed migrations")
+
+    monkeypatch.setattr(AppStore, "_run_storage_schema_migrations", unexpected_migration)
+    if bootstrap:
+        fresh, actual_code = AppStore.initialize_team_space(tmp_path / "fresh.sqlite3", name)
+        assert actual_code == expected_code
+    else:
+        fresh = AppStore(tmp_path / "fresh.sqlite3", space_kind=kind)
+    with reference.connection() as expected, fresh.connection() as actual:
+        query = "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY rowid"
+        assert [tuple(row) for row in actual.execute(query)] == [
+            tuple(row) for row in expected.execute(query)
+        ]
+        for (table,) in expected.execute("SELECT name FROM sqlite_master WHERE type = 'table'"):
+            query = f'SELECT * FROM "{table}" ORDER BY rowid'
+            assert [tuple(row) for row in actual.execute(query)] == [
+                tuple(row) for row in expected.execute(query)
+            ], table
+    reference.close()
+    fresh.close()
+
+
 def test_command_mailbox_checkpoint_resumes_privately(tmp_path: Path) -> None:
     import stat
 

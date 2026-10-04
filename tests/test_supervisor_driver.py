@@ -204,7 +204,7 @@ def test_update_displays_bound_target_before_any_install_or_admission(monkeypatc
     assert json.loads(events[0])["event"] == "plan"
 
 
-@pytest.mark.parametrize("installed", ["0.1.0", "0.2.0", "0.3.0"])
+@pytest.mark.parametrize("installed", ["0.1.8", "0.1.9", "0.2.0"])
 def test_update_requires_bundled_supervisor_before_application_preparation(
     monkeypatch, capsys, installed
 ):
@@ -214,7 +214,7 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
     monkeypatch.setattr(driver, "SystemRuntime", lambda *args: object())
     monkeypatch.setattr(driver, "selected_pointer", lambda paths: {"build": 8})
     monkeypatch.setattr(
-        driver, "followed_release", lambda runtime: SimpleNamespace(supervisor_version="0.2.0")
+        driver, "followed_release", lambda runtime: SimpleNamespace(supervisor_version="0.1.9")
     )
     monkeypatch.setattr(driver, "release_receipt", lambda *args: target)
     monkeypatch.setattr(
@@ -223,14 +223,71 @@ def test_update_requires_bundled_supervisor_before_application_preparation(
     monkeypatch.setattr(driver, "update", driver.update.__wrapped__)
     code = cli.main(["--machine-readable", "server", "update"])
     step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
-    if installed == "0.1.0":
+    if installed == "0.1.8":
         assert code == 1
         assert step.state == "failed"
-        assert "Update the independent supervisor" in step.message
     else:
         assert code == 3
         assert step.state == "operator_action_needed"
         assert step.resume_argv[-1] == f"v0.3.4:{'a' * 64}"
+
+
+@pytest.mark.parametrize(
+    "version,floor,allowed",
+    [
+        ("0.4.4+build.999.gabcdef0", "0.4.5", False),
+        ("0.4.5+build.1.gabcdef0", "0.4.5", True),
+        ("0.4.10+build.1.gabcdef0", "0.4.5", True),
+        ("0.4.9+build.1.gabcdef0", "0.4.10", False),
+        ("source", "0.4.5", False),
+        (None, "0.4.5", False),
+        ("0.3.4+build.1.gabcdef0", None, True),
+    ],
+)
+def test_update_checks_target_floor_before_deployment(monkeypatch, capsys, version, floor, allowed):
+    previous = {"build": 1, "version_string": version}
+    target = {"release_tag": "v0.5.0", "manifest_sha256": "a" * 64, "build": 2}
+    calls = []
+
+    def prepare(*args):
+        calls.append("prepare")
+        return target
+
+    def application(receipt, action):
+        assert receipt == target and action == "capabilities"
+        assert calls == ["prepare"]
+        return {} if floor is None else {"update_source_floor": floor}
+
+    def deploy(old, new):
+        assert allowed
+        assert old == previous and new == target
+        calls.append("deploy")
+        return {"phase": "committed"}
+
+    runtime = SimpleNamespace(require_capability=lambda _: None, application=application)
+    monkeypatch.setattr(driver, "recover", lambda **_: None)
+    monkeypatch.setattr(driver, "SystemRuntime", lambda *_: runtime)
+    monkeypatch.setattr(driver, "selected_pointer", lambda _: previous)
+    monkeypatch.setattr(
+        driver, "followed_release", lambda _: SimpleNamespace(supervisor_version="0.1.9")
+    )
+    monkeypatch.setattr(driver, "release_receipt", lambda *_: target)
+    monkeypatch.setattr(driver, "prepare_release", prepare)
+    monkeypatch.setattr(driver, "store_for", lambda _: object())
+    monkeypatch.setattr(
+        driver, "Coordinator", lambda *_: SimpleNamespace(deploy=deploy, backup_warning=None)
+    )
+    monkeypatch.setattr(driver, "_retention_after_commit", lambda *_: [])
+    emitter = EventEmitter("server update", machine_readable=True)
+    emitter.emit("running", "Verify")
+    code = driver.update.__wrapped__(SimpleNamespace(confirm_target=f"v0.5.0:{'a' * 64}"), emitter)
+    step = ServerStepEvent.model_validate_json(capsys.readouterr().out.splitlines()[-1]).step
+    assert code == (0 if allowed else 3)
+    assert calls == (["prepare", "deploy"] if allowed else ["prepare"])
+    assert step.state == ("succeeded" if allowed else "operator_action_needed")
+    if not allowed:
+        assert step.actions
+        assert previous == {"build": 1, "version_string": version}
 
 
 @pytest.mark.parametrize("position", [0, 1, 2, 3])

@@ -1,149 +1,50 @@
 from __future__ import annotations
 
-import threading
+import os
+import shutil
+import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from rcp.background import BackgroundAgentTasks
 from rcp.config import Manifest, load_manifest
 
-
-@pytest.fixture(autouse=True)
-def account_credential_lock_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the cross-process credential lock out of the human's own home.
-
-    A provider launch takes an advisory lock under the account's RCP directory.
-    Left alone, every test would contend on one real file and leave state in
-    `~/.rcp`, so each test gets its own root.
-    """
-
-    monkeypatch.setattr(
-        "rcp.agents.credential_gate._DEFAULT_ACCOUNT_LOCK_ROOT",
-        tmp_path / "credential-locks",
-    )
+from .helpers import isolate_host
 
 
-@pytest.fixture(autouse=True)
-def rcp_home_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep RCP's own `~/.rcp` temporary files out of the human's home."""
-
-    monkeypatch.setattr("rcp.rcp_home.rcp_home", lambda: tmp_path / "rcp-home")
-
-
-@pytest.fixture(autouse=True)
-def ssh_control_socket_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the mux-socket sweep out of the human's own live connections.
-
-    The SSH control directory is keyed by user account, not by data directory,
-    so the developer's own RCP keeps its live masters in the same place a test
-    would sweep. Starting an app runs that sweep, which means the whole suite
-    reaches it, not one test. Each test gets its own root instead.
-    """
-
-    monkeypatch.setattr(
-        "rcp.transport.ssh._control_directory_path",
-        lambda: tmp_path / "ssh-control",
-    )
-
-
-@pytest.fixture(autouse=True)
-def unconfigured_local_providers(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Keep the suite off the machine's installed provider CLIs.
-
-    Discovery is the seam every unconfigured local provider execution passes
-    through: readiness runs `--version`, `login status` and `debug models`
-    through the path it returns, and a turn's own `codex exec` is built from
-    that same path. No fixture configures a binary, so leaving discovery live
-    meant a test that dispatched a task prompted the developer's own
-    authenticated CLI and billed a real provider turn no assertion ever read.
-    Returning nothing makes readiness `unconfigured`, which refuses the launch
-    before a command is built.
-
-    Readiness reaches this only for an unconfigured local provider, so an
-    explicit `binary=` is unaffected; that is how the env-gated live
-    qualification in `test_server_provider_readiness_live.py` still probes a
-    real CLI on purpose. A test that needs a configured provider patches
-    `AgentLauncher.readiness` or replaces `BackgroundAgentTasks.stream`; one
-    that needs a real child process stages its own stub through
-    `sys.executable`.
-
-    `real_provider_discovery` opts a test out. It is for the tests of discovery
-    itself, which replace `PATH` and the OS account home, in this process and
-    in any subprocess they run, so they reach no installed binary either.
-    """
-
-    if request.node.get_closest_marker("real_provider_discovery"):
+def _skip_xcrun_git_trampoline() -> None:
+    # macOS /usr/bin/git is an xcrun trampoline costing ~10 ms a call; put the
+    # binary it execs just ahead of /usr/bin so git-heavy tests skip the hop.
+    if sys.platform != "darwin" or shutil.which("git") != "/usr/bin/git":
         return
-    monkeypatch.setattr("rcp.agents.launcher._discover_local_provider", lambda provider: None)
+    found = subprocess.run(["xcrun", "-f", "git"], capture_output=True, text=True, check=False)
+    real = Path(found.stdout.strip())
+    if found.returncode or not real.is_absolute() or real.parent == Path("/usr/bin"):
+        return
+    if not os.access(real, os.X_OK):
+        return
+    entries = os.environ["PATH"].split(os.pathsep)
+    usr_bin = next(index for index, entry in enumerate(entries) if Path(entry) == Path("/usr/bin"))
+    entries.insert(usr_bin, str(real.parent))
+    os.environ["PATH"] = os.pathsep.join(entries)
+
+
+_skip_xcrun_git_trampoline()
 
 
 @pytest.fixture(autouse=True)
-def unprobed_compute_routes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep app startup from launching real helper and scheduler probe jobs.
+def isolated_host(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Apply `isolate_host` to every test and stop the engines it started."""
 
-    A lifespan and a compute settings save check compute routes, and a helper
-    probe starts a real launchd or systemd job. A test of the refresh restores
-    the real function and stubs the probe itself.
-    """
-
-    for owner in ("rcp.api.app", "rcp.api.project_state"):
-        monkeypatch.setattr(f"{owner}.refresh_compute_probes", lambda *args, **kwargs: None)
-
-
-@pytest.fixture(autouse=True)
-def terminated_background_tasks(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Stop every provider worker a test started, whether or not it ran a lifespan.
-
-    `shutdown` kills each live provider process group, and the app lifespan is
-    the only caller. Most tests build their app with a bare `create_app` or an
-    unentered `TestClient`, so no lifespan ever runs; their workers are daemon
-    threads, so interpreter exit drops them without unwinding and the staged
-    broker plus its provider child are reparented and left running, holding a
-    `~/.rcp/sockets/rcp-command-*.sock` for as long as they live. Registering at
-    construction covers every engine a test creates, including the ones reached
-    through `create_app` and server-operation validation.
-    """
-
-    engines: list[BackgroundAgentTasks] = []
-    construct = BackgroundAgentTasks.__init__
-
-    def register(self: BackgroundAgentTasks, *args: object, **kwargs: object) -> None:
-        construct(self, *args, **kwargs)  # type: ignore[arg-type]
-        engines.append(self)
-
-    monkeypatch.setattr(BackgroundAgentTasks, "__init__", register)
+    discovery = request.node.get_closest_marker("real_provider_discovery") is not None
+    engines = isolate_host(monkeypatch, tmp_path, provider_discovery=discovery)
     yield
     for engine in engines:
         engine.shutdown()
-
-
-@pytest.fixture(autouse=True)
-def fresh_canonical_lock_fence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Give every test its own shutdown fence.
-
-    An app lifespan teardown sets the process-wide fence; without isolation a
-    later lock wait in the same worker would abort for no reason.
-    """
-
-    monkeypatch.setattr("rcp.transport.state._CANONICAL_LOCK_WAIT_FENCE", threading.Event())
-
-
-@pytest.fixture(autouse=True)
-def fixed_terminal_width(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the width the console renderers wrap to.
-
-    `_print_wrapped` takes its width from `shutil.get_terminal_size`, so every
-    assertion on rendered prose otherwise depends on the ambient terminal. The
-    same install plan passes at 100 columns and fails at 80, where a phrase a
-    test searches for straddles a line break. 100 is the renderer's own
-    fallback, so this pins the value an undetectable terminal already produces.
-    """
-
-    monkeypatch.setenv("COLUMNS", "100")
 
 
 @pytest.fixture
@@ -200,25 +101,3 @@ default_reasoning = "medium"
         encoding="utf-8",
     )
     return load_manifest(path)
-
-
-@pytest.fixture(autouse=True)
-def disabled_release_checks(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test apps never contact GitHub; transport tests opt in against loopback."""
-    monkeypatch.setenv("RCP_UPDATE_CHECK", "off")
-
-
-@pytest.fixture(autouse=True)
-def isolated_machine_power(monkeypatch: pytest.MonkeyPatch) -> None:
-    """App tests never inspect or alter the host machine's real power state."""
-    from rcp.machine_power import MachinePowerController
-
-    def refuse_command(*args, **kwargs):
-        raise AssertionError("App tests must inject machine power commands")
-
-    monkeypatch.setattr(
-        "rcp.api.app.MachinePowerController",
-        lambda *args, **kwargs: MachinePowerController(
-            *args, platform="linux", run=refuse_command, spawn=refuse_command, **kwargs
-        ),
-    )

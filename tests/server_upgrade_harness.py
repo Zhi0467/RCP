@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -150,8 +151,25 @@ def build_exact_base_checkout(work_root: Path) -> tuple[Path, str]:
     return _build_checkout(base_ref, work_root, web=True), base_commit
 
 
+def update_source_floor() -> str:
+    """Read the application's policy before CI has installed its dependencies."""
+    source = REPOSITORY_ROOT / "src/rcp/server_ops/deployment.py"
+    for node in ast.parse(source.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "UPDATE_SOURCE_FLOOR"
+            for target in node.targets
+        ):
+            floor = ast.literal_eval(node.value)
+            if isinstance(floor, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", floor):
+                return floor
+            break
+    raise ValueError("the application must declare a stable UPDATE_SOURCE_FLOOR")
+
+
 def published_release_tags() -> list[str]:
-    """Every promoted v* release, without a count window or a supported floor."""
+    """Every promoted stable release at or above the application's update floor."""
+    floor = update_source_floor()
+    floor_version = tuple(map(int, floor.split(".")))
     # gh release list paginates internally but requires a finite --limit. Grow
     # that request until it is exhausted; this is not a source-release ceiling.
     limit = 100
@@ -178,11 +196,11 @@ def published_release_tags() -> list[str]:
         for release in releases
         if not release["isDraft"]
         and not release["isPrerelease"]
-        and release["tagName"].startswith("v")
+        and re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", release["tagName"])
     ]
-    if not tags:
-        raise ValueError("the upgrade gate requires published v* releases")
-    return tags
+    if f"v{floor}" not in tags:
+        raise ValueError(f"the upgrade gate requires published floor release v{floor}")
+    return [tag for tag in tags if tuple(map(int, tag[1:].split("."))) >= floor_version]
 
 
 def _release_helper(workspace: Path, *arguments: str) -> None:

@@ -591,6 +591,13 @@ On a server installed before `server prune` existed, run
 The installed `[release]` table defaults to `followed = "stable"`. An operator
 may set `pin = "vX.Y.Z"` in `/etc/rcp/server.toml` to hold an exact promoted release;
 removing the pin follows stable again. Prereleases and build tags are refused.
+
+The supported update source floor is **v0.4.5**. For a server on an older release,
+set `pin = "v0.4.5"` in that table and run `sudo /usr/local/bin/rcp server update`,
+confirming the displayed release. After v0.4.5 is serving, remove the pin and run
+the update command again to follow stable. If asked to update the supervisor,
+run `sudo /usr/local/bin/rcp server supervisor update` before retrying.
+
 If preparation of a build fails, its directory `releases/<build>` keeps
 `install.log` for inspection until the next update attempt, which removes the
 unsealed directory and installs the build again. Before

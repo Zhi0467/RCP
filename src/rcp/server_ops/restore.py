@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import tarfile
 import uuid
+from contextlib import ExitStack, closing
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Literal
@@ -372,15 +373,15 @@ def detach_restore_database(
     confirmed_by: str,
     detached_at: datetime,
 ) -> None:
-    store = AppStore(database)
-    store.detach_restored_lifecycle(
-        diagnostic=(
-            "This operation was captured by a replacement-server archive and cannot resume on "
-            "the restored machine."
-        ),
-        confirmed_by=confirmed_by,
-        detached_at=detached_at.isoformat(),
-    )
+    with closing(AppStore(database)) as store:
+        store.detach_restored_lifecycle(
+            diagnostic=(
+                "This operation was captured by a replacement-server archive and cannot resume on "
+                "the restored machine."
+            ),
+            confirmed_by=confirmed_by,
+            detached_at=detached_at.isoformat(),
+        )
     _verify_sqlite_integrity(database)
 
 
@@ -1059,7 +1060,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
     database = app / "rcp.sqlite3"
     shutil.copyfile(archived_database, database)
     database.chmod(0o600)
-    with sqlite3.connect(database) as archived_connection:
+    with closing(sqlite3.connect(database)) as archived_connection:
         has_artifact_storage = (
             archived_connection.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'artifacts'"
@@ -1078,54 +1079,58 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         temporary = target.with_suffix(".partial")
         shutil.copyfile(source, temporary)
         os.replace(temporary, target)
-    store = AppStore(database)
-    if "artifact_inventory" in manifest.model_fields_set:
-        recorded = {
-            (i.artifact_id, i.file_id, i.sha256, i.size_bytes) for i in store.artifact_inventory()
-        }
-        archived = {
-            (i.artifact_id, i.file_id, i.sha256, i.size_bytes) for i in manifest.artifact_inventory
-        }
-        if recorded != archived:
-            raise RestoreRefused("Artifact inventory differs from the protected database.")
-    if (
-        store.space_kind != "team"
-        or store.space_id != manifest.space_id
-        or store.space_name != manifest.space_name
-    ):
-        raise RestoreRefused("Archived SQLite identity differs from its protected manifest.")
-    if request.remove_stale_member:
-        preview = store.member_removal_preview(request.remove_stale_member)
-        store.begin_member_removal(
-            request.remove_stale_member, expected_boundary_sha256=preview.boundary_sha256
+    with closing(AppStore(database)) as store:
+        if "artifact_inventory" in manifest.model_fields_set:
+            recorded = {
+                (i.artifact_id, i.file_id, i.sha256, i.size_bytes)
+                for i in store.artifact_inventory()
+            }
+            archived = {
+                (i.artifact_id, i.file_id, i.sha256, i.size_bytes)
+                for i in manifest.artifact_inventory
+            }
+            if recorded != archived:
+                raise RestoreRefused("Artifact inventory differs from the protected database.")
+        if (
+            store.space_kind != "team"
+            or store.space_id != manifest.space_id
+            or store.space_name != manifest.space_name
+        ):
+            raise RestoreRefused("Archived SQLite identity differs from its protected manifest.")
+        if request.remove_stale_member:
+            preview = store.member_removal_preview(request.remove_stale_member)
+            store.begin_member_removal(
+                request.remove_stale_member, expected_boundary_sha256=preview.boundary_sha256
+            )
+            store.complete_member_removal(request.remove_stale_member)
+        members = tuple(
+            RestoreMemberRosterEntry(
+                member_id=m.member_id,
+                display_name=m.display_name,
+                active_token_ids=m.active_token_ids,
+            )
+            for m in store.active_team_member_authority()
         )
-        store.complete_member_removal(request.remove_stale_member)
-    members = tuple(
-        RestoreMemberRosterEntry(
-            member_id=m.member_id, display_name=m.display_name, active_token_ids=m.active_token_ids
-        )
-        for m in store.active_team_member_authority()
-    )
-    if not members:
-        raise RestoreRefused("Restored team must retain an active authenticating member.")
-    authority = restore_old_authority_boundary(manifest)
-    roster = restore_member_roster_boundary(manifest.captured_at, members)
-    if request.confirm_old_authority is not None and request.confirm_old_authority != authority:
-        raise RestoreRefused("Archived authority changed after confirmation.")
-    if request.confirm_member_roster is not None and request.confirm_member_roster != roster:
-        raise RestoreRefused("Retained member authority changed after confirmation.")
-    if (
-        request.old_authority_disposition is None
-        or request.confirm_old_authority is None
-        or request.confirm_member_roster is None
-    ):
-        return _operator_reply(
-            request,
-            manifest,
-            members,
-            message="Review the archived authority and retained member/token inventory, then confirm both exact boundaries.",
-        )
-    with instance_lock(data, timeout=0):
+        if not members:
+            raise RestoreRefused("Restored team must retain an active authenticating member.")
+        authority = restore_old_authority_boundary(manifest)
+        roster = restore_member_roster_boundary(manifest.captured_at, members)
+        if request.confirm_old_authority is not None and request.confirm_old_authority != authority:
+            raise RestoreRefused("Archived authority changed after confirmation.")
+        if request.confirm_member_roster is not None and request.confirm_member_roster != roster:
+            raise RestoreRefused("Retained member authority changed after confirmation.")
+        if (
+            request.old_authority_disposition is None
+            or request.confirm_old_authority is None
+            or request.confirm_member_roster is None
+        ):
+            return _operator_reply(
+                request,
+                manifest,
+                members,
+                message="Review the archived authority and retained member/token inventory, then confirm both exact boundaries.",
+            )
+    with instance_lock(data, timeout=0), closing(store), ExitStack() as snapshots:
         from rcp.server_ops.deployment import InspectRequest, inspect
 
         previous = (
@@ -1134,6 +1139,8 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             == "initialized_team"
             else None
         )
+        if previous is not None:
+            snapshots.callback(previous.close)
         progress_reply = _recover_repositories(request, manifest, previous, members)
         if progress_reply is not None:
             return progress_reply
@@ -1143,7 +1150,8 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
                     capture.inventory.model_dump()
                 )
                 ImportedProviderSourceStore(app, capture.project_id).publish_snapshot(
-                    payload / "project-sources" / capture.project_id / "provider-history", expected
+                    payload / "project-sources" / capture.project_id / "provider-history",
+                    expected,
                 )
         operation_projects = {
             task.operation_id: task.project_id
@@ -1205,7 +1213,7 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
             )
             complete_restored_project_publication(store, capture, owners, materialization)
             if record.state_remote:
-                with sqlite3.connect(database) as connection:
+                with closing(sqlite3.connect(database)) as connection, connection:
                     connection.execute(
                         "UPDATE projects SET locator=? WHERE project_id=?",
                         (new_locator, record.project_id),
@@ -1323,6 +1331,8 @@ def prepare_restore(request: RestorePrepareRequest) -> dict[str, object]:
         )
         proof_path = output / "proof.json"
         proof_digest = _publish_proof(proof_path, proof)
+        # Publish a standalone database, including every candidate WAL write.
+        store.close()
         _set_private_directory_modes(output)
         _fsync_tree(output)
         return {

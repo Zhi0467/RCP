@@ -1959,6 +1959,7 @@ def create_app(
                 if machine_power is not None and app.state.machine_power_started:
                     app.state.machine_power_started = False
                     await asyncio.to_thread(machine_power.stop)
+                store.close()
                 raise
         try:
             if fenced_startup:
@@ -2036,6 +2037,8 @@ def create_app(
             if getattr(sys, "frozen", False):
                 remove_server_metadata(app_data, instance_id=identity.instance_id)
             runtime_loop[0] = None
+            # Persistent connections keep the WAL open; closing checkpoints it.
+            store.close()
 
     app = FastAPI(title="RCP", version=__version__, lifespan=lifespan)
     app.state.services = services

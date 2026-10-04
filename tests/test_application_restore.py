@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import tarfile
 import uuid
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,9 +28,13 @@ from rcp.server_ops.maintenance import MaintenanceIdentity
 from rcp.server_ops.restore import RestorePrepareRequest, RestoreRefused, prepare_restore
 from rcp.storage import AppStore
 from rcp.storage.digest import append_digest_event
-from tests.helpers import signed_in_client
+from tests.helpers import isolated_template_build, reset_from_template, signed_in_client
 from tests.legacy_artifacts import insert_legacy_view
-from tests.test_application_deployment import captured, socket_root  # noqa: F401
+from tests.test_application_deployment import (  # noqa: F401 - shared fixture
+    build_captured,
+    socket_root,
+    use_captured_layout,
+)
 
 
 def _archive_manifest(value):
@@ -45,9 +51,8 @@ def _write_archive(value, manifest, root):
     value["plaintext_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-@pytest.fixture
-def restore_request(captured, tmp_path):  # noqa: F811 - imported shared fixture
-    request, state, metadata = captured
+def _build_restore_request(root, monkeypatch, socket_root):  # noqa: F811
+    request, state, metadata = build_captured(root, monkeypatch, socket_root)
     store = AppStore(Path(request.data_dir) / "rcp.sqlite3")
     project_id = store.projects()[0].project_id
     with store.connection() as connection:
@@ -68,6 +73,7 @@ def restore_request(captured, tmp_path):  # noqa: F811 - imported shared fixture
             "INSERT INTO digest_heads VALUES(?,?,?,?)", (project_id, "main", 1, "restored-head")
         )
     capture = BackupCaptureCoordinator(store, Path(request.data_dir), metadata).capture_sqlite()
+    store.close()
     request = request.model_copy(
         update={
             "sqlite_receipt_path": str(capture.receipt_path),
@@ -88,14 +94,14 @@ def restore_request(captured, tmp_path):  # noqa: F811 - imported shared fixture
     manifest = build_archive_manifest(
         installed=installed, sqlite_receipt=proof.sqlite_receipt, project_publication=publication
     )
-    archive = tmp_path / "archive.tar"
+    archive = root / "archive.tar"
     with archive.open("wb") as stream:
         _write_deterministic_archive(stream, manifest, Path(proof.capture_root))
     archive.chmod(0o600)
     value = dict(
         version=1,
         data_dir=request.data_dir,
-        output_dir=str(tmp_path / "restore-review"),
+        output_dir=str(root / "restore-review"),
         plaintext_path=str(archive),
         plaintext_sha256=hashlib.sha256(archive.read_bytes()).hexdigest(),
         recipient_fingerprint=manifest.encryption_recipient_fingerprint,
@@ -107,6 +113,24 @@ def restore_request(captured, tmp_path):  # noqa: F811 - imported shared fixture
         previous_roots=tuple(previous["roots"]),
     )
     return value, state, previous
+
+
+@pytest.fixture(scope="module")
+def restore_template(tmp_path_factory, socket_root):  # noqa: F811
+    """Build the prepared restore once; proofs hold absolute paths, so it never moves."""
+    root = tmp_path_factory.mktemp("restore")
+    with isolated_template_build(root / "host") as monkeypatch:
+        value = _build_restore_request(root / "live", monkeypatch, socket_root)
+    shutil.copytree(root / "live", root / "template", symlinks=True)
+    return root, value
+
+
+@pytest.fixture
+def restore_request(restore_template, monkeypatch):
+    root, value = restore_template
+    reset_from_template(root / "template", root / "live")
+    use_captured_layout(monkeypatch, root / "live")
+    return deepcopy(value)
 
 
 def test_restore_reviews_then_prepares_exact_candidate_without_changing_live(
@@ -446,6 +470,7 @@ def test_restore_relocates_every_artifact_version(restore_request, tmp_path, omi
     )
     manifest = _archive_manifest(value)
     inventory = tuple(store.artifact_inventory())
+    store.close()
     snapshot = manifest.sqlite_snapshot.model_copy(
         update={
             "sha256": hashlib.sha256(database.read_bytes()).hexdigest(),

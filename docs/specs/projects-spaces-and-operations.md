@@ -400,6 +400,21 @@ remote publication.
 `AppStore` may keep one SQLite file. Add compound transactions for proven harmful
 partial-write windows; do not split the store for aesthetic breadth alone.
 
+Each store reuses one connection per thread for outermost connection blocks.
+Nested blocks keep separate connections and independent commit boundaries.
+Acquisition restores transaction, foreign-key, row-factory, and migration-pragma
+state. Memory databases remain uncached. Idle handles have a process-wide bound;
+thread exit, store disposal, and explicit `close()` release them. App shutdown
+and temporary-store retirement call `close()`; active blocks close on exit.
+A replaced database inode invalidates its cached connection on the next acquire.
+Live snapshots use SQLite backup. Offline copies, hashes, and publication must
+close their stores first so committed WAL data reaches the database file.
+
+New empty databases replay the raw current DDL captured from a real migration
+run, preserving SQLite creation order, then stamp the complete ledger and seed
+space identity, the personal owner, or a requested team bootstrap code. Existing
+databases still execute the ordered migration chain and its validation.
+
 Agent task status transitions are one durable contract: `running` may follow
 `queued`; `pausing` may follow `queued` or `running`; and `paused`, `succeeded`,
 `failed`, or `interrupted` may follow any active status (`queued`, `running`, or

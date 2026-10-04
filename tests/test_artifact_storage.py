@@ -170,6 +170,7 @@ def test_migration_check_uses_throwaway_files_and_relocation(tmp_path):
         }
     relocated = tmp_path / "relocated"
     relocated.mkdir()
+    store.close()
     path.rename(relocated / path.name)
     (tmp_path / "artifacts").rename(relocated / "artifacts")
     assert AppStore(relocated / path.name).read_artifact_bytes("a" * 24) == b"page"
@@ -264,6 +265,7 @@ def test_live_snapshot_metadata_integrity_and_relocation(store, tmp_path):
         )
     relocated = tmp_path / "relocated"
     relocated.mkdir()
+    store.close()
     store.path.rename(relocated / "rcp.sqlite3")
     (tmp_path / "artifacts").rename(relocated / "artifacts")
     store = AppStore(relocated / "rcp.sqlite3")

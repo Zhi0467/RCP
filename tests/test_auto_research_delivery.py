@@ -1571,7 +1571,11 @@ def test_reconciliation_retries_every_pending_canonical_actor(tmp_path) -> None:
 
     async def stream(_project_id, _kind, request, execution):
         if execution.continuation == "fresh":
-            execution.checkpoint_stage("execution-host", str(stage))
+            # Distinct sessions never share a workspace; one shared stage made
+            # the two concurrent wakes refuse each other.
+            own_stage = stage / execution.operation_id
+            own_stage.mkdir()
+            execution.checkpoint_stage("execution-host", str(own_stage))
         yield _sse(
             AgentEvent(
                 event="session",

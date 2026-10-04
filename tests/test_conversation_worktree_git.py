@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -18,9 +19,9 @@ def git(root: Path, *arguments: str) -> str:
     ).stdout.strip()
 
 
-@pytest.fixture
-def repository(tmp_path: Path) -> Path:
-    root = tmp_path / "shared checkout"
+@pytest.fixture(scope="module")
+def repository_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    root = tmp_path_factory.mktemp("template") / "shared checkout"
     root.mkdir()
     git(root, "init", "--initial-branch=research")
     git(root, "config", "user.email", "fixture@example.invalid")
@@ -32,6 +33,12 @@ def repository(tmp_path: Path) -> Path:
     git(root, "update-ref", "refs/remotes/origin/release", "HEAD")
     git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release")
     return root
+
+
+@pytest.fixture
+def repository(repository_template: Path, tmp_path: Path) -> Path:
+    # The template holds no absolute paths, so a copy equals a fresh build.
+    return Path(shutil.copytree(repository_template, tmp_path / "shared checkout", symlinks=True))
 
 
 def run(operation: str, **kwargs: object) -> dict:
@@ -377,6 +384,7 @@ def test_episode_uses_shared_worktree_lifecycle_and_fails_closed(repository: Pat
 
 @pytest.mark.parametrize("version,supported", [("2.37.9", False), ("2.38.0", True)])
 def test_episode_git_version_probe_runs_on_execution_host(monkeypatch, version, supported) -> None:
+    monkeypatch.setattr(conversation_worktree, "_GIT_VERSION", None)
     commands = []
 
     def probe(arguments, **kwargs):
@@ -482,20 +490,33 @@ def test_episode_leftovers_respect_ignore_and_do_not_commit_shared_changes(repos
         ("missing", "target_missing"),
         ("same", "target_is_episode_branch"),
         ("other", "target_checked_out_elsewhere"),
+        ("late_other", "target_checked_out_elsewhere"),
         ("dirty", "target_dirty"),
     ],
 )
-def test_episode_target_refusals_preserve_leftovers(repository, rule, code):
+def test_episode_target_refusals_preserve_leftovers(repository, monkeypatch, rule, code):
     binding = episode_binding(repository)
     worktree = episode_edit(binding)
     target = "research"
+    other = repository.parent / "other"
     if rule == "missing":
         target = "missing"
     elif rule == "same":
         target = binding["branch"]
     elif rule == "other":
         target = "release"
-        git(repository, "worktree", "add", str(repository.parent / "other"), target)
+        git(repository, "worktree", "add", str(other), target)
+    elif rule == "late_other":
+        # Checked out only after validation listed the registrations.
+        target = "release"
+        interrupted = conversation_worktree._interrupted
+
+        def check_out_target_late(root, timeout):
+            interrupted(root, timeout)
+            if not other.exists():
+                git(repository, "worktree", "add", str(other), target)
+
+        monkeypatch.setattr(conversation_worktree, "_interrupted", check_out_target_late)
     else:
         (repository / "human.txt").write_text("human\n")
     with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
@@ -572,6 +593,7 @@ def test_episode_old_git_refuses_merge_before_writes(repository, monkeypatch):
             return subprocess.CompletedProcess(arguments, 0, "git version 2.37.0\n", "")
         return original(arguments, **kwargs)
 
+    monkeypatch.setattr(conversation_worktree, "_GIT_VERSION", None)
     monkeypatch.setattr(conversation_worktree.subprocess, "run", old_git)
     with pytest.raises(conversation_worktree.WorktreeValidationError) as exc:
         run("commit_leftovers", binding=binding)

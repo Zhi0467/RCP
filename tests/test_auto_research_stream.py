@@ -79,7 +79,7 @@ from .helpers import (
     wait_for_task,
     write_local_test_manifest,
 )
-from .test_conversation_worktree_git import repository  # noqa: F401
+from .test_conversation_worktree_git import repository, repository_template  # noqa: F401
 
 
 def test_refreshed_orchestrator_paths_return_the_staged_context_revision(monkeypatch) -> None:

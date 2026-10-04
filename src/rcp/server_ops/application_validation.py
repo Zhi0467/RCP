@@ -332,7 +332,7 @@ def build_rehearsal_overlay(
     if candidate_migrator is None:
         from rcp.storage import AppStore
 
-        AppStore(database_path)
+        AppStore(database_path).close()
     else:
         candidate_migrator(database_path)
 
@@ -566,7 +566,10 @@ def _expected_startup_recovery(database_path: Path) -> StartupRecoveryReadModel:
     try:
         return StartupRecoveryReadModel.model_validate(tasks.plan_startup_recovery().as_dict())
     finally:
-        tasks.shutdown()
+        try:
+            tasks.shutdown()
+        finally:
+            tasks.store.close()
 
 
 def _configuration_state_is_remote(configuration: BackupManifestConfiguration) -> bool:
@@ -873,6 +876,7 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
     fence = StartupEffectFence("candidate update rehearsal")
     lock_context = None
     lock_acquired = False
+    opened = None
     try:
         overlay = RehearsalOverlay.model_validate_json(_read_bounded_file(overlay_path))
         if overlay_path.parent != Path(overlay.root).parent:
@@ -1067,6 +1071,8 @@ def run_candidate_child(overlay_path: Path, result_path: Path) -> int:
             _write_private_json(result_path, failed)
         return 1
     finally:
+        if opened is not None:
+            opened.close()
         if lock_context is not None and lock_acquired:
             lock_context.__exit__(None, None, None)
 

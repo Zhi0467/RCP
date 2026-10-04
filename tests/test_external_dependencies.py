@@ -44,6 +44,10 @@ RUNNERS = {
     "_target_result",
 }
 SSH_BUILDERS = {"ssh_arguments", "_strict_ssh_arguments"}
+# `_programs` records names only at calls to these; a file without one has none.
+LAUNCH_CALL = re.compile(
+    r"\b(?:" + "|".join(sorted(map(re.escape, RUNNERS | SSH_BUILDERS))) + r")\s*\("
+)
 
 
 def _name(node: ast.expr) -> str:
@@ -267,7 +271,10 @@ def _programs(source: str) -> set[str]:
 def test_external_dependency_names_match_source() -> None:
     locations: dict[str, list[str]] = defaultdict(list)
     for path in sorted((ROOT / "src/rcp").rglob("*.py")):
-        for program in _programs(path.read_text()):
+        source = path.read_text()
+        if not LAUNCH_CALL.search(source):
+            continue
+        for program in _programs(source):
             locations[program].append(str(path.relative_to(ROOT)))
     spec = (ROOT / "docs/specs/server-and-machine-operations.md").read_text()
     section = spec.split("## External dependencies\n", 1)[1].split("\n## ", 1)[0]

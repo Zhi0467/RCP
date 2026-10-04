@@ -776,8 +776,11 @@ def test_report_title_upgrade_backfills_once_and_summaries_never_read_html(
         pytest.fail("existing report titles were reparsed")
 
     monkeypatch.setattr(storage_base_module, "html_document_title", unexpected_extraction)
+    # Close both stores so any write would leave the WAL and reach the file.
+    upgraded.close()
     before = path.read_bytes()
     reopened = AppStore(path)
+    reopened.close()
     assert path.read_bytes() == before
     original_connection = reopened.connection
 

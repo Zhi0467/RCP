@@ -9,6 +9,7 @@ import re
 import sqlite3
 import stat
 import uuid
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -454,8 +455,8 @@ class BackupCaptureCoordinator:
         snapshot_path = capture_root / "rcp.sqlite3"
         with self.store.artifact_capture():
             self.store.online_snapshot(snapshot_path)
-            captured_store = AppStore.open_read_only_snapshot(snapshot_path)
-            artifact_inventory = tuple(captured_store.artifact_inventory())
+            with closing(AppStore.open_read_only_snapshot(snapshot_path)) as captured_store:
+                artifact_inventory = tuple(captured_store.artifact_inventory())
             for item in artifact_inventory:
                 source = self.store.artifact_file_path(item)
                 target = capture_root / "artifacts" / item.artifact_id / item.file_id
@@ -470,20 +471,21 @@ class BackupCaptureCoordinator:
                     os.fsync(stream.fileno())
                 temporary.chmod(0o400)
                 os.replace(temporary, target)
-        snapshot_store = AppStore.open_read_only_snapshot(snapshot_path)
-        space_id = snapshot_store.space_id
-        space_name = snapshot_store.space_name
-        if snapshot_store.space_kind != "team" or space_name is None:
-            raise BackupCaptureUnavailable("The SQLite snapshot is not one named team space.")
-        records = tuple(sorted(snapshot_store.projects(), key=lambda item: item.project_id))
-        projects = tuple(
-            inspect_snapshot_project_inventory(
-                snapshot_store, record, data_dir=self.data_dir, captured_at=captured_at
+        with closing(AppStore.open_read_only_snapshot(snapshot_path)) as snapshot_store:
+            space_id = snapshot_store.space_id
+            space_name = snapshot_store.space_name
+            if snapshot_store.space_kind != "team" or space_name is None:
+                raise BackupCaptureUnavailable("The SQLite snapshot is not one named team space.")
+            records = tuple(sorted(snapshot_store.projects(), key=lambda item: item.project_id))
+            projects = tuple(
+                inspect_snapshot_project_inventory(
+                    snapshot_store, record, data_dir=self.data_dir, captured_at=captured_at
+                )
+                for record in records
             )
-            for record in records
-        )
-        if len(projects) > BACKUP_INVENTORY_MAX_ENTRIES:
-            raise BackupCaptureUnavailable("The project inventory exceeds its entry bound.")
+            if len(projects) > BACKUP_INVENTORY_MAX_ENTRIES:
+                raise BackupCaptureUnavailable("The project inventory exceeds its entry bound.")
+            database_schema_sha256 = _database_schema_sha256(snapshot_store)
         project_ids = tuple(record.project_id for record in records)
         try:
             if ImportedProviderSourceStore.project_ids(self.data_dir) != tuple(
@@ -511,7 +513,6 @@ class BackupCaptureCoordinator:
             raise BackupCaptureUnavailable(
                 "The imported provider-source inventory is invalid or unavailable."
             ) from exc
-        database_schema_sha256 = _database_schema_sha256(snapshot_store)
         final_app_data_plan = inspect_app_data_capture_plan(self.data_dir)
         if final_app_data_plan.database_path != app_data_plan.database_path:
             raise BackupCaptureUnavailable(
@@ -817,16 +818,16 @@ def validate_backup_sqlite_snapshot(receipt: BackupSQLiteCaptureReceipt) -> None
     digest, size = _file_sha256(snapshot_path)
     if digest != receipt.sqlite_snapshot.sha256 or size != receipt.sqlite_snapshot.size_bytes:
         raise BackupCaptureUnavailable("The SQLite snapshot no longer matches its receipt.")
-    store = AppStore.open_read_only_snapshot(snapshot_path)
-    if (
-        store.space_id != receipt.space_id
-        or store.space_name != receipt.space_name
-        or store.space_kind != "team"
-        or _database_schema_sha256(store) != receipt.database_schema_sha256
-    ):
-        raise BackupCaptureUnavailable(
-            "The SQLite snapshot identity no longer matches its receipt."
-        )
+    with closing(AppStore.open_read_only_snapshot(snapshot_path)) as store:
+        if (
+            store.space_id != receipt.space_id
+            or store.space_name != receipt.space_name
+            or store.space_kind != "team"
+            or _database_schema_sha256(store) != receipt.database_schema_sha256
+        ):
+            raise BackupCaptureUnavailable(
+                "The SQLite snapshot identity no longer matches its receipt."
+            )
 
 
 __all__ = [
