@@ -190,7 +190,8 @@ def assemble_digest(
     events = [
         event
         for event in events
-        if event["kind"] not in {"graph_change", "question_attention", "episode_attention"}
+        if event["kind"]
+        not in {"graph_change", "branch_change", "question_attention", "episode_attention"}
         or event["seq"] > resets.get(event["target"], 0)
     ]
     attention, latest_nodes, groups, branches, ran = {}, {}, {}, {}, {}
@@ -527,6 +528,9 @@ class DigestProjector:
                 except Exception:
                     _LOG.exception("Digest branch projection failed for %s/%s", project_id, target)
             if initial and (targets is None or "main" in targets):
+                # Episodes too: a mark made before their baseline would hide
+                # an episode that starts needing the human in that gap.
+                self._observe_episodes(project_id)
                 self._project_history(project_id, "main", history)
 
     def _project_history(self, project_id, target, history):

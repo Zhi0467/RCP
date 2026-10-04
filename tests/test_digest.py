@@ -258,6 +258,17 @@ def test_grouping_excludes_own_edit_retains_agent_touch_and_suppresses_merged_br
     assert len(result["changed"]) == 2
 
 
+def test_branch_reset_drops_changes_from_the_replaced_history(tmp_path):
+    store = AppStore(tmp_path / "app.db")
+    live = GraphState(nodes={"d/one": _decision()})
+    branch = graph_event(store, "p", "branch:b", GraphState(), _patch(), live)
+    branch.update(seq=1, item_id="1", payload=dict(episode_id="e", title="E", edits=1))
+    reset = dict(branch, seq=2, kind="reset", payload={})
+    mark = {"seq": 0, "marked_at": "now"}
+    assert len(assemble_digest("p", "me", [branch], mark, 1, live)["branches"]) == 1
+    assert assemble_digest("p", "me", [branch, reset], mark, 2, live)["branches"] == []
+
+
 def test_branch_accepted_hook_projects_without_main_changes(manifest, tmp_path):
     from rcp.digest import read_digest
 
@@ -320,3 +331,31 @@ def test_first_pass_baselines_existing_branches_before_main(manifest, tmp_path):
     assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0
     projector.run_pass()
     assert read_digest(store, app.state.catalog, episode.project_id, user_id)["count"] == 0
+
+
+def test_episode_needing_action_after_the_first_mark_reaches_the_digest(
+    manifest, tmp_path, monkeypatch
+):
+    import rcp.digest as digest
+
+    from .test_branch_chats import _app_branch
+
+    app, _, episode, _ = _app_branch(manifest, tmp_path)
+    store = app.state.background_tasks.store
+    user_id = store.local_owner.user_id
+    real = digest._episode_attention
+    needs = {"value": False}
+
+    def attention(store, project_id, episode_ids=None):
+        episodes, active = real(store, project_id, episode_ids)
+        return episodes, dict.fromkeys(active, needs["value"])
+
+    monkeypatch.setattr(digest, "_episode_attention", attention)
+    projector = DigestProjector(store, app.state.catalog, admission=RuntimeAdmissionGate())
+    projector.reconcile_project(episode.project_id)
+    # The member's mark lands before the projector's episode pass.
+    digest.read_digest(store, app.state.catalog, episode.project_id, user_id)
+    needs["value"] = True
+    projector.run_pass()
+    result = digest.read_digest(store, app.state.catalog, episode.project_id, user_id)
+    assert [item["item_id"] for item in result["needs_you"]] == [episode.episode_id]

@@ -48,6 +48,8 @@ def test_caught_up_keeps_events_committed_after_displayed_cursor(manifest, tmp_p
     project_id = app.state.default_project_id
     url = f"/api/projects/{project_id}/digest"
     app.state.digest_projector.run_pass()
+    # Acknowledging needs a displayed digest; reading it sets the baseline.
+    assert client.post(f"{url}/caught-up", json={"seq": 0}).status_code == 409
     initial = client.get(url)
     assert initial.status_code == 200
     assert initial.json()["count"] == 0

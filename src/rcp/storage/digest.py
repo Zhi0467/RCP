@@ -148,12 +148,20 @@ class DigestStoreMixin:
             maximum = digest_cursor(conn)
             if seq < 0 or seq > maximum:
                 raise ValueError("digest cursor is ahead of the event log")
-            conn.execute(
-                """INSERT INTO digest_marks(project_id,user_id,seq,marked_at) VALUES(?,?,?,?)
-                ON CONFLICT(project_id,user_id) DO UPDATE SET seq=excluded.seq,
-                marked_at=excluded.marked_at WHERE excluded.seq>digest_marks.seq""",
-                (project_id, user_id, seq, self.now()),
-            )
+            # Only a displayed digest can be acknowledged; reading it sets the baseline.
+            if (
+                conn.execute(
+                    "UPDATE digest_marks SET seq=?, marked_at=? WHERE project_id=? AND user_id=? AND seq<?",
+                    (seq, self.now(), project_id, user_id, seq),
+                ).rowcount
+                == 0
+                and conn.execute(
+                    "SELECT 1 FROM digest_marks WHERE project_id=? AND user_id=?",
+                    (project_id, user_id),
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("The project digest has not been read yet.")
             return dict(
                 conn.execute(
                     "SELECT seq,marked_at FROM digest_marks WHERE project_id=? AND user_id=?",

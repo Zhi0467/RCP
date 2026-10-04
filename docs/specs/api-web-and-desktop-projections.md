@@ -76,15 +76,16 @@ returns `cursor`, `mark`, `needs_you`, `changed`, `branches`, `ran`,
 those four groups. Opening a project or reading its digest never advances an
 existing mark. A member without a mark starts at the event log's current cursor
 and sees an empty digest; listing project cards does not create marks. The initial
-main projector checkpoint is persisted before a member mark can be inserted.
+main projector checkpoint is persisted, after existing branches and episodes are
+baselined, before a member mark can be inserted.
 Before that checkpoint, GET signals the application projector and returns an
 empty digest with `mark: null` and `cursor: 0`, without creating a mark;
 Caught up returns 409 and landing counts are zero. Requests never project history.
 
 `POST /api/projects/{id}/digest/caught-up {"seq": ...}` acknowledges the cursor
 that was displayed. It returns `{"mark": {"seq": ..., "marked_at": ...}}`,
-never decreases the mark, and rejects a cursor ahead of the committed event
-sequence with 409. The sequence high-water survives project deletion, so
+never decreases the mark, and rejects with 409 a cursor ahead of the committed
+event sequence or a member who has no mark yet. The sequence high-water survives project deletion, so
 deleting another project cannot invalidate a cursor already displayed.
 Events committed after the displayed cursor remain new. The acting member owns
 the mark across devices. This acknowledgment skips project work admission but
