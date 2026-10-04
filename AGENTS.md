@@ -146,9 +146,10 @@ renumber it; `docs/design.md` states the same promises unnumbered and coarser.
   a command string.
 - Prompt prose describing enforcement must render the same resolved object used
   by enforcement. Do not maintain parallel human-written allowlists.
-- Code outside the ontology asks node-type questions through `core/roles.py`
-  rather than naming node types or classes; `tests/test_node_type_roles.py`
-  holds each module's count to a falling baseline
+- Kernel code asks `project_type_of(state)` which node types play which part;
+  only the listed research layer names research node types, classes, or
+  relations. `tests/test_project_types.py` and `web/tests/projectType.test.mjs`
+  hold every other file to a falling count
   ([decision](docs/decisions/2026-10-04-the-kernel-asks-node-type-questions.md)).
 
 ## Documentation lifecycle

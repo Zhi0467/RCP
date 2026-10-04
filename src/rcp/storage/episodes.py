@@ -6,6 +6,7 @@ import sqlite3
 import uuid
 
 from rcp.core.models import AuthorizedHuman
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.storage.digest import (
     append_digest_event,
@@ -3226,12 +3227,16 @@ def _ops_pause_for_human(operations: list[object], control_node_id: str) -> bool
                 changes = update.get("changes")
                 if isinstance(changes, dict) and changes.get("status") in {"ready", "revisit"}:
                     return True
+    # Legacy records hold only research graphs, whose type answers here.
+    project_type = project_type_of()
     created_blockers = {
         node.get("id")
         for operation in operations
         if isinstance(operation, dict) and operation.get("op") == "create_nodes"
         for node in operation.get("nodes", [])
-        if isinstance(node, dict) and node.get("type") == "blocker"
+        if isinstance(node, dict)
+        and isinstance(node_type := node.get("type"), str)
+        and project_type.is_blocker(node_type)
     }
     return any(
         isinstance(operation, dict)
@@ -3239,7 +3244,8 @@ def _ops_pause_for_human(operations: list[object], control_node_id: str) -> bool
         and any(
             isinstance(edge, dict)
             and edge.get("source") == control_node_id
-            and edge.get("relation") == "blocked_by"
+            and isinstance(relation := edge.get("relation"), str)
+            and relation in project_type.blocking_relations
             and edge.get("target") in created_blockers
             for edge in operation.get("edges", [])
         )

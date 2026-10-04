@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 from rcp.artifacts import read_local_regular_file
+from rcp.core.project_types import project_type_of
 from rcp.limits import (
     LIVE_ARTIFACT_LOG_TAIL_LINES,
     LIVE_ARTIFACT_MAX_BYTES,
@@ -402,6 +403,7 @@ def _snapshot(store, service, artifact, version, *, final=False):
             else:
                 graph = graph or graph_history.state()
                 node = graph.nodes[need.id]
+                project_type = project_type_of(graph)
                 evidence = []
                 for edge in graph.edges.values():
                     other_id = (
@@ -412,7 +414,7 @@ def _snapshot(store, service, artifact, version, *, final=False):
                         else None
                     )
                     other = graph.nodes.get(other_id)
-                    if other is not None and other.type == "evidence":
+                    if other is not None and project_type.is_outcome(other.type):
                         evidence.append(
                             LiveEvidence(id=other.id, title=other.title, stance=edge.relation)
                         )

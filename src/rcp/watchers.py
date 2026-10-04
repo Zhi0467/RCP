@@ -16,7 +16,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
-from rcp.core.models import AuthorizedHuman, Experiment, ExperimentDecisionPin, GraphState, Patch
+from rcp.core.models import AuthorizedHuman, ExperimentDecisionPin, GraphState, Patch
+from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import (
     GraphHeadRef,
     GraphTargetRef,
@@ -795,7 +796,10 @@ class WatcherDelivery:
                 state = service.history.state()
                 if not self._retry.generation_is_current(retry_generation):
                     return
-                if not isinstance(state.nodes.get(control_node_id), Experiment):
+                control_node = state.nodes.get(control_node_id)
+                if control_node is None or not project_type_of(state).is_control_node(
+                    control_node.type
+                ):
                     self._store.stop_watchers(first.project_id, watcher_ids)
                     return
                 runtime = self._store.experiment_loop_runtime_for_target(

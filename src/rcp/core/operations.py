@@ -24,6 +24,14 @@ from rcp.core.models import (
     Proposal,
     Standing,
 )
+from rcp.core.research_compat import (
+    adapt_legacy_created_node,
+    adapt_legacy_node_changes,
+    adapt_legacy_snapshot_node,
+    adapt_wire_node_datetimes,
+    is_legacy_status_change,
+    reject_current_generation_legacy_node,
+)
 
 
 class _StrictPayload(BaseModel):
@@ -58,16 +66,11 @@ def strict_project_node(value: Any) -> ProjectNode:
     if isinstance(standing, str):
         document["standing"] = Standing(standing)
     _adapt_source_ref_datetimes(document.get("source_refs"))
-    if document.get("type") == "experiment":
-        attempts = document.get("attempts")
-        if isinstance(attempts, list):
-            for attempt in attempts:
-                if not isinstance(attempt, dict):
-                    continue
-                for field in ("started_at", "finished_at"):
-                    if field in attempt:
-                        attempt[field] = _wire_datetime(attempt[field])
-                _adapt_source_ref_datetimes(attempt.get("source_refs"))
+    adapt_wire_node_datetimes(
+        document,
+        wire_datetime=_wire_datetime,
+        adapt_source_ref_datetimes=_adapt_source_ref_datetimes,
+    )
     return _PROJECT_NODE_ADAPTER.validate_python(document, strict=True)
 
 
@@ -544,15 +547,7 @@ def adapt_persisted_patch_document(document: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(nodes, list):
                 continue
             for node in nodes:
-                if (
-                    isinstance(node, dict)
-                    and node.get("type") == "evidence"
-                    and "legacy_strength" in node
-                ):
-                    raise ValueError(
-                        "schema-generation 2 patches cannot create Evidence with "
-                        "legacy_strength compatibility metadata"
-                    )
+                reject_current_generation_legacy_node(node)
     for operation in operations:
         if legacy_generation and adapted.get("kind") == "approval":
             _adapt_legacy_approval_operation(operation)
@@ -600,10 +595,7 @@ def adapt_persisted_graph_state_document(document: dict[str, Any]) -> dict[str, 
         for node in nodes.values():
             if not isinstance(node, dict):
                 continue
-            if node.get("type") == "evidence":
-                _adapt_legacy_evidence_record(node, assume_default_strength=True)
-            elif node.get("type") == "experiment":
-                _adapt_legacy_experiment_record(node)
+            adapt_legacy_snapshot_node(node)
     proposals = adapted.get("proposals")
     if isinstance(proposals, dict):
         for proposal in proposals.values():
@@ -637,25 +629,16 @@ def _adapt_legacy_node_operation(operation: Any, *, legacy_generation: bool) -> 
         nodes = operation.get("nodes")
         if isinstance(nodes, list):
             for node in nodes:
-                if legacy_generation and isinstance(node, dict) and node.get("type") == "evidence":
-                    _adapt_legacy_evidence_record(node, assume_default_strength=legacy_generation)
-                if (
-                    legacy_generation
-                    and isinstance(node, dict)
-                    and node.get("type") == "experiment"
-                ):
-                    _adapt_legacy_experiment_record(node)
+                if legacy_generation:
+                    adapt_legacy_created_node(node)
     elif operation.get("op") == "update_nodes":
         updates = operation.get("nodes")
         if isinstance(updates, list):
             for update in updates:
                 if not isinstance(update, dict):
                     continue
-                changes = update.get("changes")
-                if legacy_generation and isinstance(changes, dict) and "strength" in changes:
-                    _adapt_legacy_evidence_record(changes, assume_default_strength=False)
-                if legacy_generation and isinstance(changes, dict):
-                    _adapt_legacy_experiment_record(changes)
+                if legacy_generation:
+                    adapt_legacy_node_changes(update.get("changes"))
 
 
 def _adapt_legacy_ambiguity_operation(operation: dict[str, Any]) -> None:
@@ -676,39 +659,17 @@ def _adapt_legacy_ambiguity_operation(operation: dict[str, Any]) -> None:
             ambiguity.pop("raised_rev", None)
 
 
-def _adapt_legacy_evidence_record(record: dict[str, Any], *, assume_default_strength: bool) -> None:
-    strength = record.pop("strength", None)
-    if strength is None and assume_default_strength and "role" not in record:
-        strength = "preliminary"
-    if strength is None:
-        return
-    record["role"] = "diagnostic" if strength == "diagnostic" else "result"
-    record["legacy_strength"] = strength
-
-
-def _adapt_legacy_experiment_record(record: dict[str, Any]) -> None:
-    if record.get("status") == "blocked":
-        record["status"] = "unspecified"
-        if record.get("current_summary"):
-            record["current_summary_stale"] = True
-        if record.get("next_action"):
-            record["next_action_stale"] = True
-
-
 def _legacy_proposal_intent(operation: dict[str, Any]) -> str | None:
     name = operation.get("op")
     if name == "update_nodes":
         updates = operation.get("nodes")
-        if isinstance(updates, list) and len(updates) == 1 and isinstance(updates[0], dict):
-            changes = updates[0].get("changes")
-            cause = updates[0].get("cause")
-            if (
-                isinstance(changes, dict)
-                and set(changes) == {"status"}
-                and isinstance(cause, dict)
-                and cause.get("kind") == "evidence_edge"
-            ):
-                return "legacy_status_change"
+        if (
+            isinstance(updates, list)
+            and len(updates) == 1
+            and isinstance(updates[0], dict)
+            and is_legacy_status_change(updates[0].get("changes"), updates[0].get("cause"))
+        ):
+            return "legacy_status_change"
         return "legacy_content_change"
     return {
         "create_nodes": "legacy_create_nodes",

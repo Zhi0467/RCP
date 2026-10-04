@@ -1,4 +1,5 @@
 import { graphSessionKey, MAIN_GRAPH } from "./graphTarget";
+import { isChooser } from "./researchType";
 import type { GraphTargetRef } from "./types";
 import {
   proposalSemantics,
@@ -253,7 +254,7 @@ export function stageDecisionChoice(
   const options = draft.nodes[nodeId]?.changes.options ?? node?.options;
   if (
     !node ||
-    node.type !== "decision" ||
+    !isChooser(node.type) ||
     node.status === "superseded" ||
     draft.removed_node_ids.includes(nodeId) ||
     !Array.isArray(options) ||
@@ -698,7 +699,7 @@ function proposalDecisionsWithoutDirectChoices(
 ): HumanDraft["proposals"] {
   const decisionIds = Object.entries(draft.nodes).flatMap(([nodeId, entry]) => {
     const node = graph.nodes[nodeId];
-    return node?.type === "decision" &&
+    return isChooser(node?.type) &&
       (entry.changes.selected_option !== undefined || entry.changes.status === "decided")
       ? [nodeId]
       : [];

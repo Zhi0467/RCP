@@ -12,7 +12,6 @@ from rcp.core.models import (
     Edge,
     GlossaryTerm,
     GraphState,
-    Hypothesis,
     Patch,
     ProjectNode,
     Proposal,
@@ -594,9 +593,10 @@ def _record_belief_transition(
     revision: int,
     cause: BeliefCause | None,
 ) -> None:
+    project_type = project_type_of(state)
     if (
-        not isinstance(previous, Hypothesis)
-        or not isinstance(updated, Hypothesis)
+        not project_type.is_belief(previous.type)
+        or not project_type.is_belief(updated.type)
         or previous.status == updated.status
         or cause is None
     ):

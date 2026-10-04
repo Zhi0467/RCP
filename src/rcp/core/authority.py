@@ -7,8 +7,8 @@ from typing import Literal, get_args
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.core.models import (
+    RELATION_SPEC,
     AuthorizedHuman,
-    Decision,
     GraphState,
     Patch,
 )
@@ -32,7 +32,8 @@ from rcp.core.operations import (
     UpsertGlossaryOperation,
     WithdrawProposalsOperation,
 )
-from rcp.core.project_types import project_type_of
+from rcp.core.project_types import ProjectType, project_type_of
+from rcp.core.research_rules import queues_decision
 from rcp.core.transition_models import GraphTargetRef
 from rcp.providers import AgentCapability
 
@@ -333,9 +334,18 @@ def require_apply(
 
 HYPOTHESIS_PROPOSAL_FIELDS = frozenset({"status"})
 EVIDENCE_EDGE_CAUSE_KIND = "evidence_edge"
-PROTECTED_EPISTEMIC_RELATIONS = frozenset(
-    {"has_subquestion", "has_hypothesis", "supersedes", "duplicate_of"}
-)
+# Supersede and merge restructure any graph, so they are protected beside the
+# project type's own structural relations.
+_LIFECYCLE_RELATIONS = frozenset({"supersedes", "duplicate_of"})
+
+
+def protected_epistemic_relations(state: GraphState | None = None) -> frozenset[str]:
+    """Relations that restructure an existing protected belief."""
+
+    return project_type_of(state).protected_relations | _LIFECYCLE_RELATIONS
+
+
+PROTECTED_EPISTEMIC_RELATIONS = protected_epistemic_relations()
 
 CONTENT_CHANGE_INTENT = "content_change"
 REMOVAL_INTENT = "removal"
@@ -437,36 +447,63 @@ HUMAN_GRAPH_ACTIONS = GRAPH_ACTIONS - {
     RESOLVE_AMBIGUITY,
 }
 
-_AGENT_GRAPH_AUTHORITY_BODY = """Assert directly:
+
+def _code_list(names: Iterable[str]) -> str:
+    words = [f"`{name}`" for name in names]
+    if len(words) <= 2:
+        return " or ".join(words)
+    return f"{', '.join(words[:-1])}, or {words[-1]}"
+
+
+def _render_agent_graph_authority_body(project_type: ProjectType) -> str:
+    """Render the authority rules with the type names enforcement resolves."""
+
+    def names(node_types: Iterable[str]) -> str:
+        return project_type.label_list(node_types)
+
+    chooser = names(project_type.chooser_types)
+    belief = names(project_type.belief_types)
+    outcome = names(project_type.outcome_types)
+    control = names(project_type.control_node_types)
+    protected = names(project_type.protected_belief_types)
+    content_lifecycle = names(project_type.protected_belief_types - project_type.belief_types)
+    protected_relations = project_type.protected_relations | _LIFECYCLE_RELATIONS
+    relations = _code_list(
+        relation for relation in RELATION_SPEC if relation in protected_relations
+    )
+    return f"""Assert directly:
 - Ordinary legal graph structure and content are assertions, not Proposals, outside the protected
   changes below. Agents may create legal nodes, edit same-Patch nodes, and edit ordinary nodes.
 - Editing accepted ordinary-node content resets that node to asserted standing for review. Removing
   an asserted or contested ordinary node also removes its edges; never directly remove an accepted
-  node or an Experiment with an active bounded-loop attempt.
-- Agents may create a Decision as `open` or `ready`, and may queue an existing Decision as `open`,
+  node or an {control} with an active bounded-loop attempt.
+- Agents may create a {chooser} as `open` or `ready`, and may queue an existing {chooser} as `open`,
   `ready`, or `revisit`. Agents never write `selected_option` or set `status="decided"`; every
-  agent-created Hypothesis starts `status="proposed"`.
-- Legal edges are direct except `has_subquestion`, `has_hypothesis`, `supersedes`, or `duplicate_of`
-  restructuring an existing belief. Same-Patch nodes and Evidence/Experiment relations stay direct.
+  agent-created {belief} starts `status="proposed"`.
+- Legal edges are direct except {relations}
+  restructuring an existing belief. Same-Patch nodes and {outcome}/{control} relations stay direct.
 - Agents may remove, supersede, or merge ordinary nodes.
 - Add or revise thin project-wide definitions with `upsert_glossary`; terms explain prose, not claims.
 Proposal-only changes:
 - Any edit, removal, supersede, merge, or protected relation change involving an existing
-  ResearchQuestion or Hypothesis waits for a human. Put exactly one semantic operation in the
+  {protected} waits for a human. Put exactly one semantic operation in the
   Proposal and declare its `intent` as `content_change`, `removal`, `supersede`, `merge`,
   `protected_relation_change`, or `status_change`; never bundle separate changes.
-- `status_change` updates exactly one Hypothesis's `status`, including one created earlier in the
-  same outer Patch, and requires `kind="evidence_edge"` naming a valid Evidence -> Hypothesis
-  epistemic edge. A ResearchQuestion lifecycle change uses `content_change`, like its other
+- `status_change` updates exactly one {belief}'s `status`, including one created earlier in the
+  same outer Patch, and requires `kind="evidence_edge"` naming a valid {outcome} -> {belief}
+  epistemic edge. A {content_lifecycle} lifecycle change uses `content_change`, like its other
   human-held fields, and carries no evidence cause. Other intents likewise carry their reasoning in
   the Proposal card and do not carry a cause.
 Human-only authority:
 - Agents never set `standing`, approve, or reject Proposals; they may withdraw any pending Proposal
   with `withdraw_proposals` when obsolete or duplicated. Withdrawal applies no semantic operations.
   Agents may not change project configuration or the ontology, and may neither apply nor propose
-  `set_ontology`. Agents may not authorize an Experiment **Run**. Approval never
-  launches or resumes an Experiment. Only the human pressing **Run** grants RCP permission to
+  `set_ontology`. Agents may not authorize an {control} **Run**. Approval never
+  launches or resumes an {control}. Only the human pressing **Run** grants RCP permission to
   launch. A human request cannot delegate these actions."""
+
+
+_AGENT_GRAPH_AUTHORITY_BODY = _render_agent_graph_authority_body(project_type_of())
 
 AGENT_GRAPH_AUTHORITY_POLICY_DIGEST = sha256(
     _AGENT_GRAPH_AUTHORITY_BODY.encode("utf-8")
@@ -590,6 +627,7 @@ def _update_actions(
     patch: Patch,
     operation: UpdateNodesOperation,
 ) -> frozenset[GraphAction]:
+    project_type = project_type_of(state)
     actions: set[GraphAction] = set()
     for update in operation.nodes:
         node_id = update.id
@@ -597,16 +635,13 @@ def _update_actions(
             actions.add(UPDATE_PROTECTED_EPISTEMIC)
             continue
         node = state.nodes.get(node_id)
-        is_decision = isinstance(node, Decision) or _created_node_type(patch, node_id) == "decision"
-        if is_decision and (
+        existing_chooser = node is not None and project_type.is_chooser(node.type)
+        is_chooser = existing_chooser or project_type.is_chooser(_created_node_type(patch, node_id))
+        if is_chooser and (
             patch.human_action == "decision_choice" or patch.agent_action == "decision_choice"
         ):
             actions.add(DECIDE_DECISION)
-        elif isinstance(node, Decision) and update.changes.get("status") in {
-            "open",
-            "ready",
-            "revisit",
-        }:
+        elif existing_chooser and queues_decision(update.changes):
             actions.add(QUEUE_DECISION)
         else:
             actions.add(UPDATE_NODE)
@@ -655,7 +690,7 @@ def _remove_edge_actions(
         restructures = (
             edge is not None
             and edge_id not in new_edge_ids
-            and edge.relation in PROTECTED_EPISTEMIC_RELATIONS
+            and edge.relation in protected_epistemic_relations(state)
             and any(
                 is_existing_protected_node(state, node_id) for node_id in (edge.source, edge.target)
             )
@@ -712,7 +747,7 @@ def _restructures_protected_relation(
 ) -> bool:
     return (
         len(endpoints) == 2
-        and relation in PROTECTED_EPISTEMIC_RELATIONS
+        and relation in protected_epistemic_relations(state)
         and not new_node_ids.intersection(endpoints)
         and any(is_existing_protected_node(state, node_id) for node_id in endpoints)
     )

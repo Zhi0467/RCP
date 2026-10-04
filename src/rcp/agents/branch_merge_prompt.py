@@ -5,7 +5,8 @@ from __future__ import annotations
 from rcp.agents.auto_research_prompt import orchestrator_graph_authority_contract
 from rcp.agents.continuation_prompt import MASTER_OVERLAY_RULE
 from rcp.agents.graph_rules import graph_rules
-from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME
+from rcp.agents.prompts import PROVIDER_NATIVE_SUBAGENT_LIFETIME, protected_belief_names
+from rcp.core.project_types import project_type_of
 
 # Bumped when the branch-merge task contract's stable policy prose changes.
 BRANCH_MERGE_POLICY_VERSION = "branch-merge-v2"
@@ -26,6 +27,8 @@ def branch_merge_task_contract(
     """Describe one fresh semantic rebase; repositories appear only with a code block."""
 
     _require_inputs(context_path, context_id, patch_path, validator_command)
+    project_type = project_type_of()
+    chooser = project_type.label_list(project_type.chooser_types)
     authority = (
         "This task carries orchestrator graph authority and the one repository write boundary\n"
         "in the code merge section below, and no authority over project configuration,\n"
@@ -91,7 +94,7 @@ Standing changes and a status_change with human_edit cause require an exact
 matching human_changes fact in the policy above; do not invent a human cause.
 When several protected edits target the same node, use the policy's same_node_bundle:
 one Proposal may contain at most one content_change, one status_change, and one standing_change
-for that same ResearchQuestion or Hypothesis. This keeps their approval atomic. An explicit
+for that same {protected_belief_names()}. This keeps their approval atomic. An explicit
 standing_change is applied exactly; otherwise normal content/status approval accepts the node's
 standing. Keep different nodes and structural actions in separate Proposals.
 If the source removed an ordinary node that is still accepted on main, carry that exact
@@ -106,7 +109,7 @@ Only permitted file output:
 - Write exactly one JSON object to `{patch_path}` matching the orchestrator agent Patch schema in
   the merge context.
 - Include only `summary`, semantic `ops`, `repositories_read` (which must be `[]`),
-  `change_summary`, and `agent_action` only when the operation actually chooses a Decision.
+  `change_summary`, and `agent_action` only when the operation actually chooses a {chooser}.
 - Preserve non-conflicting `source_refs` verbatim. For a source-ref conflict, choose among
   the supplied main and branch refs; never invent a ref or remove provenance just to pass
   validation. Read no repository for the graph Patch.

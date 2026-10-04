@@ -10,6 +10,7 @@ import type {
   WatcherRecord,
 } from "./types";
 import { blockedReasonLead } from "./campaigns.ts";
+import { isControlNode } from "./researchType.ts";
 
 export interface AgentTaskGroup {
   rootId: string;
@@ -79,7 +80,7 @@ export function visibleChatWatchers(
   chatId: string,
   node: GraphNode | null | undefined,
 ): WatcherRecord[] {
-  const experimentNodeId = node?.type === "experiment" ? node.id : null;
+  const experimentNodeId = node && isControlNode(node.type) ? node.id : null;
   const visible = new Map<string, WatcherRecord>();
   for (const watcher of watchers) {
     if (watcher.status === "stopped" && !isExternalWatcherRecord(watcher)) continue;

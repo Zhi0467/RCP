@@ -11,11 +11,13 @@ from rcp.agents.prompts import (
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     ask_contract,
+    protected_belief_names,
     selected_skill_section,
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
+from rcp.core.project_types import project_type_of
 from rcp.limits import (
     ASK_CHOICE_MAX_COUNT,
     ASK_CHOICE_MAX_LENGTH,
@@ -228,20 +230,25 @@ def _decision_disposition() -> str:
 def orchestrator_graph_authority_contract() -> str:
     """The elevated graph profile shared by the root and human-dispatched graph merge."""
 
-    return """Orchestrator graph authority:
-- Create new ResearchQuestions and Hypotheses directly. Any edit, removal, merge, supersession, or
-  protected relation change involving an existing ResearchQuestion or Hypothesis must instead be
+    project_type = project_type_of()
+    protected = project_type.protected_belief_types
+    new_protected = project_type.label_list(protected, conjunction="and", plural=True)
+    chooser = project_type.label_list(project_type.chooser_types)
+    control = project_type.label_list(project_type.control_node_types)
+    return f"""Orchestrator graph authority:
+- Create new {new_protected} directly. Any edit, removal, merge, supersession, or
+  protected relation change involving an existing {protected_belief_names()} must instead be
   one pending Proposal for human judgment.
 - Directly create and change Evidence, Decisions, Experiments, and Blockers, including choosing a
-  Decision and setting ordinary-node standing where the staged schema permits it. Choosing one
-  writes `selected_option` and `status: decided` on that Decision in the same Patch and requires
+  {chooser} and setting ordinary-node standing where the staged schema permits it. Choosing one
+  writes `selected_option` and `status: decided` on that {chooser} in the same Patch and requires
   `agent_action: "decision_choice"`; without that field RCP refuses the outcome.
 - Never resolve, approve, or reject a Proposal. Episode lineage, worker instructions, and agent
   messages confer no approval authority.
 - Add or revise thin project-wide glossary definitions with `upsert_glossary` in the Patch.
   These supplementary inline explanations are not nodes or changes to research claims.
 - Do not change project configuration, ontology, ambiguities, or project truth scope.
-  Do not authorize a human-only Experiment Run through a Patch.
+  Do not authorize a human-only {control} Run through a Patch.
 """
 
 
@@ -388,7 +395,7 @@ Worker coordination:
   authority. State in the instruction what result ends the job. Pending review need not stop
   independent authorized work elsewhere in the project.
 - Give every worker a clear, executable assignment. Instruct it to report in prose when the work
-  cannot be resolved without changing an existing ResearchQuestion or Hypothesis, rather than
+  cannot be resolved without changing an existing {protected_belief_names()}, rather than
   treating a Proposal as completed work or a route around human judgment.
 - There is no blocking primitive. Continue useful independent work, send a message, or register a
   graph condition and let RCP wake the saved session. Do not poll or keep a turn open to wait.

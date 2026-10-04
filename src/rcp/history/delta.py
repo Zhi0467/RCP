@@ -827,12 +827,13 @@ def _edge_assessment_sentence(
         return f"{sentence}: {explanation}." if explanation else f"{sentence}."
     source_node = state.nodes.get(edge.source) or previous_state.nodes.get(edge.source)
     target_node = state.nodes.get(edge.target) or previous_state.nodes.get(edge.target)
+    project_type = project_type_of(state)
     is_evidence_hypothesis = (
-        edge.relation in project_type_of(state).belief_outcome_relations
+        edge.relation in project_type.belief_outcome_relations
         and source_node is not None
-        and source_node.type == "evidence"
+        and project_type.is_outcome(source_node.type)
         and target_node is not None
-        and target_node.type == "hypothesis"
+        and project_type.is_belief(target_node.type)
     )
     assessment = edge.assessment
     if assessment is None:

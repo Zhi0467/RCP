@@ -20,6 +20,7 @@ import {
 import type { DraftNodeChange, DraftNodeValue } from "../humanDraft";
 import { beliefCausePresentation, nodeBeliefTransitions } from "../nodeDetail";
 import { humanFieldLabels, humanize, nodeTypeLabel, presentNode } from "../nodePresentation";
+import { carriesOrigin, isChooser, isControlNode } from "../researchType";
 import type {
   BeliefTransition,
   Edge,
@@ -177,7 +178,7 @@ export function DetailDrawer({
     () =>
       editableNodeFields(editBase, ontology).map((field) => {
         if (
-          editBase.type !== "experiment" ||
+          !isControlNode(editBase.type) ||
           (field.key !== "current_summary" && field.key !== "next_action")
         ) {
           return field;
@@ -299,17 +300,16 @@ export function DetailDrawer({
   };
   const transitions = nodeBeliefTransitions(node.id, beliefTransitions);
   const rawPresentation = presentNode(node);
-  const presentation =
-    node.type === "experiment"
-      ? {
-          ...rawPresentation,
-          context: rawPresentation.context.map((item) => {
-            if (item.key !== "current_summary" && item.key !== "next_action") return item;
-            const guidance = experimentGuidanceDetail(node, item.key);
-            return { ...item, label: guidance.label };
-          }),
-        }
-      : rawPresentation;
+  const presentation = isControlNode(node.type)
+    ? {
+        ...rawPresentation,
+        context: rawPresentation.context.map((item) => {
+          if (item.key !== "current_summary" && item.key !== "next_action") return item;
+          const guidance = experimentGuidanceDetail(node, item.key);
+          return { ...item, label: guidance.label };
+        }),
+      }
+    : rawPresentation;
   const presentedKeys = new Set([
     presentation.key,
     ...presentation.context.map((item) => item.key),
@@ -318,17 +318,15 @@ export function DetailDrawer({
     ([key, value]) =>
       !ignored.has(key) &&
       !presentedKeys.has(key) &&
-      !(node.type === "decision" && ["options", "selected_option", "status"].includes(key)) &&
+      !(isChooser(node.type) && ["options", "selected_option", "status"].includes(key)) &&
       hasValue(value),
   );
   const decisionOptions =
-    node.type === "decision" && Array.isArray(node.options)
+    isChooser(node.type) && Array.isArray(node.options)
       ? [...new Set(node.options.filter((option): option is string => typeof option === "string"))]
       : [];
   const selectedDecisionOption =
-    node.type === "decision" && typeof node.selected_option === "string"
-      ? node.selected_option
-      : null;
+    isChooser(node.type) && typeof node.selected_option === "string" ? node.selected_option : null;
   const decisionChoiceDisabled =
     nodeMutationDisabled || node.status === "superseded" || !onDecisionChoice;
   const fullscreenTarget = typeof document === "undefined" ? null : document.fullscreenElement;
@@ -361,7 +359,7 @@ export function DetailDrawer({
                 {canonicalStanding !== node.standing && " · staged"}
               </span>
               {behind && <span className="node-draft-behind">behind</span>}
-              {node.type === "evidence" && node.origin && (
+              {carriesOrigin(node.type) && node.origin && (
                 <span className="node-origin">{originLabels[node.origin]}</span>
               )}
             </div>
@@ -520,7 +518,7 @@ export function DetailDrawer({
             </form>
           ) : (
             <>
-              {node.type === "decision" ? (
+              {isChooser(node.type) ? (
                 <section className="decision-choice-section">
                   <div className="decision-choice-heading">
                     <span className="eyebrow">Decision</span>
@@ -581,7 +579,7 @@ export function DetailDrawer({
                 </section>
               )}
 
-              {node.type === "experiment" && experimentControl && onRunExperiment && (
+              {isControlNode(node.type) && experimentControl && onRunExperiment && (
                 <section
                   className={`experiment-control${experimentControlActive ? " active" : ""}${experimentPausedAtLimit ? " paused" : ""}`}
                 >

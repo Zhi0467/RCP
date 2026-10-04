@@ -165,7 +165,7 @@ stable. Current operation families are:
 
 Supersede and merge retire a node by setting its lifecycle field to
 `superseded` (`validity` on Evidence, `status` on every other base type, as
-`core/roles.py` names) and adding the `supersedes` or `duplicate_of` edge. They
+the project type names) and adding the `supersedes` or `duplicate_of` edge. They
 keep the retired node and its edges; `remove_nodes` deletes a node and every
 edge touching it.
 

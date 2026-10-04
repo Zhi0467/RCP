@@ -252,6 +252,7 @@ import { ProjectLanding } from "./views/ProjectLanding";
 import { SpaceSettings } from "./views/SpaceSettings";
 import { LandingIdentityMenu } from "./components/LandingIdentityMenu";
 import { ProjectOverview } from "./views/ProjectOverview";
+import { isBlocker, isChooser, isControlNode } from "./researchType";
 import { ProjectSetup } from "./views/ProjectSetup";
 import {
   parseProjectSetupRoute,
@@ -651,7 +652,7 @@ export function humanAttentionBlockers(
 ): GraphNode[] {
   return blockerIds.map((nodeId) => {
     const node = presentedNodes[nodeId];
-    if (node?.type !== "blocker") {
+    if (!isBlocker(node?.type)) {
       throw new Error(`Attention member ${nodeId} is not a presented Blocker.`);
     }
     return node;
@@ -666,7 +667,7 @@ export function decisionsAwaitingChoice(
   return decisionIds.map((nodeId) => {
     const membershipNode = membershipNodes[nodeId];
     const presented = presentedNodes[nodeId] ?? membershipNode;
-    if (membershipNode?.type !== "decision" || presented?.type !== "decision") {
+    if (!isChooser(membershipNode?.type) || !isChooser(presented?.type)) {
       throw new Error(`Attention member ${nodeId} is not a presented Decision.`);
     }
     return { ...presented, status: membershipNode.status };
@@ -791,9 +792,9 @@ export function humanDraftTransitionRouting(
   const changesExperimentControl =
     request.nodes.some(
       (item) =>
-        graph.nodes[item.node_id]?.type === "experiment" &&
+        isControlNode(graph.nodes[item.node_id]?.type) &&
         Object.hasOwn(item.changes, "invocation_ceiling"),
-    ) || request.custom_nodes.some((node) => node.type === "experiment");
+    ) || request.custom_nodes.some((node) => isControlNode(node.type));
   // Removal expands to incident relation changes, and a Proposal decision may expand to any
   // Proposal operation. Experiment ceiling updates and new Experiments also change the coherent
   // control projection even though the current manifest does not list them. The browser does not
@@ -2361,7 +2362,7 @@ export default function App() {
     reportErrorNotice,
   ]);
   const experimentControlForNode = (node: GraphNode): ExperimentControlState | null => {
-    if (!project || node.type !== "experiment") return null;
+    if (!project || !isControlNode(node.type)) return null;
     const control = presentedExperimentControl[node.id];
     if (!control) {
       throw new Error(`Experiment ${node.id} is missing its backend control projection.`);
@@ -3388,7 +3389,7 @@ export default function App() {
       invocationCeiling?: number,
       isolation?: EpisodeIsolationChoice,
     ): Promise<AgentTask> => {
-      if (!project || node.type !== "experiment") {
+      if (!project || !isControlNode(node.type)) {
         throw new Error("The requested Experiment is not present in the open project.");
       }
       if (mutationsDisabled) throw new Error("Graph mutations are currently disabled.");
@@ -4506,7 +4507,7 @@ export default function App() {
     selectedExperimentExecution.nodes.map((node) => [node.id, node]),
   );
   const selectedExperimentConversation =
-    selectedExperimentChatId && selectedExperimentNode?.type === "experiment" ? (
+    selectedExperimentChatId && isControlNode(selectedExperimentNode?.type) ? (
       <Suspense
         fallback={
           <div className="project-view-loading" aria-label="Loading run conversation">

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { currentExperimentGuidance } from "../experimentGuidance";
+import { isBelief, isBlocker, isControlNode } from "../researchType";
 import {
   editCountLabel,
   needsYouKindLabel,
@@ -54,10 +55,10 @@ export function ProjectOverview({
 }: Props) {
   const nodes = Object.values(graph.nodes);
   const activeExperiments = nodes.filter(
-    (node) => node.type === "experiment" && !project.experiment_control[node.id]?.node_closed,
+    (node) => isControlNode(node.type) && !project.experiment_control[node.id]?.node_closed,
   );
   const latestNode = [...nodes].sort((left, right) => right.updated_rev - left.updated_rev)[0];
-  const blockers = nodes.filter((node) => node.type === "blocker" && node.status === "open");
+  const blockers = nodes.filter((node) => isBlocker(node.type) && node.status === "open");
   const nextExperiment = activeExperiments.find((node) =>
     currentExperimentGuidance(node, "next_action"),
   );
@@ -86,7 +87,7 @@ export function ProjectOverview({
       number: "01",
       prompt: "What are we asking?",
       answer: String(question),
-      detail: `${nodes.filter((node) => node.type === "hypothesis").length} hypotheses · ${project.counts.accepted} accepted nodes`,
+      detail: `${nodes.filter((node) => isBelief(node.type)).length} hypotheses · ${project.counts.accepted} accepted nodes`,
       view: "scientific",
     },
     {

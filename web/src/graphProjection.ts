@@ -1,3 +1,4 @@
+import { isBlocker } from "./researchType.ts";
 import type { Edge, GraphNode, GraphState, TrustView } from "./types";
 
 export type DagOntologyProjection = "all" | "belief" | "action";
@@ -24,7 +25,7 @@ export function projectNodes(
         ? nodes.filter((node) => node.standing === "accepted")
         : nodes;
   if (options.includeResolvedBlockers) return trusted;
-  return trusted.filter((node) => node.type !== "blocker" || node.status !== "resolved");
+  return trusted.filter((node) => !isBlocker(node.type) || node.status !== "resolved");
 }
 
 export function buildDagProjection(

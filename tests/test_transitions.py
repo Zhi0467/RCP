@@ -484,6 +484,89 @@ def test_supersede_and_merge_emit_status_events(operation: dict[str, object]) ->
     assert event.cause.action_index == 0
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {
+            "op": "supersede_nodes",
+            "nodes": [{"id": "ev/old", "superseded_by": "ev/current"}],
+        },
+        {
+            "op": "merge_nodes",
+            "merges": [{"duplicate": "ev/old", "canonical": "ev/current"}],
+        },
+    ],
+)
+def test_retiring_evidence_on_a_tested_hypothesis_invalidates_guidance(
+    operation: dict[str, object],
+) -> None:
+    experiment = Experiment(
+        id="exp/run",
+        type="experiment",
+        title="Run",
+        objective="Test the hypothesis.",
+        current_summary="The old result supports the hypothesis.",
+        next_action="Replicate the old result.",
+    )
+    hypothesis = Hypothesis(
+        id="hyp/claim",
+        type="hypothesis",
+        title="Claim",
+        statement="The intervention helps.",
+    )
+    evidence = {
+        evidence_id: Evidence(
+            id=evidence_id,
+            type="evidence",
+            title=evidence_id,
+            observation="The run recovered.",
+            interpretation="The intervention helped.",
+            origin="analytic",
+        )
+        for evidence_id in ("ev/old", "ev/current")
+    }
+    edges = [
+        Edge(
+            id="exp/run::tests::hyp/claim",
+            source=experiment.id,
+            target=hypothesis.id,
+            relation="tests",
+            layer="seam",
+        ),
+        *(
+            Edge(
+                id=f"{evidence_id}::supports::hyp/claim",
+                source=evidence_id,
+                target=hypothesis.id,
+                relation="supports",
+                layer="epistemic",
+            )
+            for evidence_id in evidence
+        ),
+    ]
+    state = GraphState(
+        nodes={experiment.id: experiment, hypothesis.id: hypothesis, **evidence},
+        edges={edge.id: edge for edge in edges},
+    )
+    patch = Patch(
+        revision=1,
+        kind="approval",
+        author="human",
+        producer="human",
+        summary="Retire the duplicate result.",
+        ops=[operation],
+    )
+
+    prepared = GraphTransitionManager().prepare_validated(state, [patch])
+
+    retired = prepared.projection.graph.nodes["ev/old"]
+    assert isinstance(retired, Evidence) and retired.validity == "superseded"
+    projected = prepared.projection.graph.nodes[experiment.id]
+    assert isinstance(projected, Experiment)
+    assert projected.current_summary_stale is True
+    assert projected.next_action_stale is True
+
+
 def test_status_event_ignores_earlier_same_value_write_for_attribution() -> None:
     state = GraphState(
         nodes={
@@ -787,3 +870,9 @@ def test_trigger_manifest_is_backend_versioned_and_conservative() -> None:
         trigger for trigger in manifest.triggers if trigger.operation == "update_nodes"
     )
     assert {"status", "selected_option", "options"} <= set(node_update.node_fields)
+    # Retiring Evidence keeps its edges, so the browser must route it too.
+    assert {"evidence"} <= set(node_update.node_types)
+    assert "validity" in node_update.node_fields
+    assert {"supersede_nodes", "merge_nodes"} <= {
+        trigger.operation for trigger in manifest.triggers
+    }
